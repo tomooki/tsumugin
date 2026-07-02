@@ -1,7 +1,42 @@
 [project]
 name = "tsumugin"
 version = "0.1.0"
-description = "Add your description here"
+description = "多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0)"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# GSAS-II 本体は PyPI 非公開のためソースツリー (.pth) + buildtools バイナリで導入する。
+# ここにはそのランタイム依存のみを置く。導入手順は README を参照。
+gsas = [
+    "scipy>=1.11",
+    "pycifrw>=4.4",
+    "requests>=2.31",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tsumugin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "gsas: GSAS-II がインストールされている環境でのみ実行する contract test",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
