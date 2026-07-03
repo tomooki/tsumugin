@@ -19,6 +19,22 @@ class GSASUnavailableError(TsumuginError):
     """GSAS-II (GSASIIscriptable) が未導入の環境で GSASIIBackend を要求したとき。"""
 
 
+class LedgerIntegrityError(TsumuginError):
+    """永続 ledger (JSONL) の破損を検出したときに送出 (EDGE-003 / NFR-105)。
+
+    ハッシュ不整合・prev_hash 断裂・index 不連続・不正 JSON 行を再オープン時に検出する。
+    検出時にファイルの修復・上書き・切り詰めは一切行わない（無修復 / P2）。
+    """
+
+
+class SnapshotIntegrityError(TsumuginError):
+    """永続 snapshot (JSONL) の破損 (不正 JSON 行・必須キー欠落) を検出したときに送出。
+
+    ``LedgerIntegrityError`` と対称の fail-loud。検出時にファイルの修復・上書き・
+    切り詰めは一切行わない (無修復 / P2)。
+    """
+
+
 class WebUIUnavailableError(TsumuginError):
     """optional extra ``web`` (fastapi/uvicorn) 未導入の環境で Web UI を要求したとき。
 

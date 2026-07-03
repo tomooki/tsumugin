@@ -8,7 +8,7 @@
 Tsumugin — 粉末回折の多仮説・全自動 Rietveld 解析プラットフォーム。
 バックエンドは GSAS-II (`GSASIIscriptable`) を想定するが、コアは `RefinementBackend`
 抽象で分離し、GSAS-II 非導入環境でも `SimulatedBackend` で全パイプラインを検証できる。
-本コンテキストは **M0 (PoC) + M1 (多仮説木探索)** スコープ。仕様は [docs/tsumugin_spec_v0.3.md](../tsumugin_spec_v0.3.md)。
+本コンテキストは **M0 (PoC) + M1 (多仮説木探索) + M2 (シーケンシャル解析)** スコープ。仕様は [docs/tsumugin_spec_v0.3.md](../tsumugin_spec_v0.3.md)。
 
 ## Tech Stack
 
@@ -35,22 +35,31 @@ Tsumugin — 粉末回折の多仮説・全自動 Rietveld 解析プラットフ
 
 ```
 src/tsumugin/
-├── model/          # データモデル (Project/Dataset/Frame/Hypothesis/PhaseInstance)
+├── model/          # データモデル (Project/Dataset/Frame/Hypothesis/PhaseInstance/PhaseLifecycle/ExternalChannel)
 ├── backends/       # RefinementBackend 抽象 + SimulatedBackend + GSASIIBackend(薄いラッパ)
 ├── refinement/     # 段階解放エンジン(FR-200) + ガードレール(FR-210)
 ├── evidence/       # Evidence Engine (bic/aic, FR-121)
-├── store/          # Ledger / Snapshot (追記専用・非破壊 P2/NFR-101/105)
+├── store/          # Ledger / Snapshot (in-memory) + persistent.py (JSONL 永続化 PersistentLedger/PersistentSnapshotStore) + serialization.py (追記専用・非破壊 P2/NFR-101/105)
 ├── search/         # 多仮説木探索: peaks/matcher/clustering/pruning/tree (FR-110〜117)
 ├── export/         # 相集合+観測を .gpx へ書き出し export_gpx (FR-505)
 ├── webui/          # read-only Web UI: create_app/serve (FastAPI, optional web, FR-421〜424)
+├── sequential/     # M2 フレーム列逐次精密化: engine/changepoint/lifecycle/thermal/trajectory/series (REQ-001〜008)
+├── selection/      # M2 最終選択エンジン (agent/human 2 モード) + Review Queue + エスカレーション (REQ-013〜015)
 └── pipeline.py     # 単一パターン自動多相精密化 (M0)
 tests/              # pytest テスト (実装ファイルと 1:1 対応)
 docs/dev/plans/     # dev-plan 出力
 ```
 
 公開 API: M0 中核シンボルに加え M1 の `HypothesisTreeSearch` / `SearchConfig` /
-`SearchResult` / `PhaseCandidate` / `Peak` / `UnmatchedPeakReport` / `export_gpx` を
-`from tsumugin import ...` でトップレベル公開 (`__init__.py` の `__all__`、アルファベット昇順)。
+`SearchResult` / `PhaseCandidate` / `Peak` / `UnmatchedPeakReport` / `export_gpx`、および
+M2 の `SequentialEngine` / `SequentialConfig` / `SequentialResult` / `FrameSeries` /
+`FrameRecord` / `Trajectory` / `ChangepointConfig` / `ChangepointSignal` / `LifecycleConfig` /
+`LifecycleTracker` / `ThermalBaseline` / `TransitionEstimate` / `detect_changepoint` /
+`estimate_transition` / `fit_thermal_baseline` / `FinalSelectionEngine` / `Decision` /
+`ReviewQueue` / `ReviewItem` / `detect_escalations` / `PersistentLedger` /
+`PersistentSnapshotStore` / `phase_to_dict` / `phase_from_dict` / `ExternalChannel` /
+`PhaseLifecycle` を `from tsumugin import ...` でトップレベル公開 (`__init__.py` の `__all__`
+52 件、アルファベット昇順。M0/M1 の公開面は非破壊維持 = REQ-404)。
 
 ## Coding Conventions
 
@@ -98,4 +107,8 @@ docs/dev/plans/     # dev-plan 出力
   読めず起動時に "Error reading {cfgfile}" を出すが動作に影響なし (upstream の表示バグ含む)。
 - M1 実装済み: 多仮説木探索 (`tsumugin.search`)、`.gpx` 書き出し (`tsumugin.export`)、
   read-only Web UI (`tsumugin.webui`、optional extra `web`)。
-- M1 以降スコープ外（M2+）: シーケンシャル、operando、MEM、nested sampling、REST/MCP、永続化 DB。
+- M2 実装済み: 時系列フレーム列の逐次精密化 (`tsumugin.sequential`: changepoint 検出・
+  lifecycle・転移温度推定・trajectory/CSV)、agent/human 2 モードの最終選択とエスカレーション
+  (`tsumugin.selection`)、JSONL 永続化 (`tsumugin.store` の `PersistentLedger` /
+  `PersistentSnapshotStore`、追記専用・再オープン時にハッシュチェーン再検証)。
+- M2 以降スコープ外（M3+）: operando 高度解析、MEM、nested sampling、REST/MCP、永続化 DB (RDB)。

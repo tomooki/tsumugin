@@ -32,3 +32,5 @@ class Hypothesis:
     metrics: RefinementMetrics | None = None
     status: HypothesisStatus = "candidate"
     accepted_by: Literal["agent", "human", None] = None
+    # 【追加フィールド】: 仮説の有効フレーム区間 [start, end]。末尾・既定 None で後方互換 (REQ-404) 🔵
+    frame_range: tuple[int, int] | None = None
