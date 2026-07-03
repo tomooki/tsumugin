@@ -7,6 +7,7 @@ TASK-0015 では時系列フレーム列を保持する ``FrameSeries`` と、�
 from __future__ import annotations
 
 from .changepoint import ChangepointConfig, ChangepointSignal, detect_changepoint
+from .engine import SequentialConfig, SequentialEngine, SequentialResult
 from .lifecycle import LifecycleConfig, LifecycleTracker
 from .series import FrameSeries
 from .thermal import (
@@ -24,6 +25,9 @@ __all__ = [
     "FrameSeries",
     "LifecycleConfig",
     "LifecycleTracker",
+    "SequentialConfig",
+    "SequentialEngine",
+    "SequentialResult",
     "ThermalBaseline",
     "Trajectory",
     "TransitionEstimate",
