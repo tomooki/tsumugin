@@ -23,8 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .._json import finite_or_none
 from ..errors import WebUIUnavailableError
-from ..search.tree import _finite_or_none
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import を避けコア依存を汚染しない 🔵 D6
     from fastapi import FastAPI
@@ -77,13 +77,15 @@ def _serialize_metrics(metrics: "RefinementMetrics | None") -> dict[str, Any] | 
     # 非有限 (chi2=inf は EDGE-004 の正常経路) は JSON に存在しないため None で配信する。
     # FastAPI の暗黙 inf→null 変換に依存せず、契約としてここで保証する (to_summary と同一規則)。
     return {
-        "rwp": _finite_or_none(metrics.rwp),
-        "gof": _finite_or_none(metrics.gof),
-        "chi2": _finite_or_none(metrics.chi2),
+        "rwp": finite_or_none(metrics.rwp),
+        "gof": finite_or_none(metrics.gof),
+        "chi2": finite_or_none(metrics.chi2),
         "n_obs": int(metrics.n_obs),
         "n_params": int(metrics.n_params),
         # 【evidence 全量】: backend 名 -> 値を純型化して残らず配信する 🟡 §2.4
-        "evidence": {str(k): _finite_or_none(v) for k, v in metrics.evidence.items()},
+        # 【センチネル非関与】: 詳細 API が読む metrics.evidence は生 backend 値 (失敗ノードは inf)
+        #   のため素の finite_or_none で足りる。センチネル純化は to_summary 経由 (tree) が担う 🔵
+        "evidence": {str(k): finite_or_none(v) for k, v in metrics.evidence.items()},
     }
 
 

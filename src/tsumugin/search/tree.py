@@ -39,6 +39,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from .._json import finite_or_none
 from ..backends.base import RefinementBackend, RefinementModel, param_name
 from ..evidence.base import EvidenceBackend, EvidenceResult
 from ..evidence.ic import BICBackend
@@ -185,9 +186,14 @@ def _finite_or_none(value: float) -> float | None:
     None として表現する。``_FiniteGuardedEvidence`` のセンチネル (ランキング内部用) も
     観測者には無意味な値なので同様に None へ写像し、/api/result と /api/hypotheses/{id} の
     evidence 表現を一致させる。
+
+    非有限判定は共有ユーティリティ ``_json.finite_or_none`` へ委譲し (単一情報源化, TASK-0023)、
+    探索固有のセンチネル閾値判定 (``>= _EVIDENCE_SENTINEL``) のみ tree 側に残す (D-Q9)。
     """
-    v = float(value)
-    if not math.isfinite(v) or v >= _EVIDENCE_SENTINEL:
+    # 【委譲】: 非有限 (inf/-inf/NaN) → None の純化は共有関数へ集約する 🔵 TASK-0023
+    v = finite_or_none(value)
+    # 【センチネル局所判定】: 探索固有のセンチネル以上は観測者に無意味なため None 化する 🔵 D-Q9
+    if v is None or v >= _EVIDENCE_SENTINEL:
         return None
     return v
 
