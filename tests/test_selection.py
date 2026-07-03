@@ -486,3 +486,441 @@ def test_detect_escalations_is_pure():
     assert result.ranked == before_ranked  # 【確認内容】: ranked 非破壊 🔵
     assert result.unmatched == before_unmatched  # 【確認内容】: unmatched 非破壊 🔵
     assert len(result.ledger.entries) == before_entries  # 【確認内容】: ledger に書かない 🔵
+
+
+# ===========================================================================
+# TASK-0021: Decision / FinalSelectionEngine の失敗テスト (TDD Red / 17 件)
+#
+# 対象実装 (未実装): tsumugin.selection.Decision / FinalSelectionEngine。
+# import はファイル冒頭でなく各テスト関数内で行う。冒頭 import で未実装シンボルを参照すると
+# collection が失敗し TASK-0020 の既存 19 テストまで巻き込んで fail するため。関数内 import なら
+# 新規 17 件のみ ImportError で fail し、既存 19 件は pass を維持できる (Red フェーズの分離)。
+# 既存ヘルパ _ranked / _result を流用する (テストダブル方針)。
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# 1. 正常系テストケース（基本的な動作）
+# ---------------------------------------------------------------------------
+
+
+def test_agent_clear_best_auto_accepts():
+    # 【テスト目的】: agent + エスカレーションゼロ + best 非僅差で自動 accept される (N-01)
+    # 【テスト内容】: decide が accepted_by="agent" の新 Hypothesis を返しレジストリへ登録する
+    # 【期待される動作】: accepted!=None / status=="accepted" / escalations==() / provisional なし
+    # 🔵 信頼性: TC-107-01 / REQ-102 / interview Q8 に直接対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: rwp 低め・close=False の 2 仮説で all_high_r/close を誤発火させない
+    # 【初期条件設定】: agent モード + 注入 Ledger で自動 accept 経路を検証する
+    led = Ledger()
+    engine = FinalSelectionEngine(mode="agent", ledger=led)
+    result = _result([_ranked("h1", 10.0, False), _ranked("h2", 12.0, False)])
+
+    # 【実際の処理実行】: 単一 SearchResult に対し agent 裁定を実行
+    # 【処理内容】: Q8 4 条件を満たすため best (ranked[0]) を by="agent" で自動 accept する
+    d = engine.decide(result)
+
+    # 【結果検証】: 自動 accept 成立と accepted_by / レジストリ登録を確認
+    # 【期待値確認】: best が accepted 化され escalation なしで完了する
+    assert d.accepted is not None  # 【確認内容】: 自動 accept 成立 🔵
+    assert d.accepted.status == "accepted"  # 【確認内容】: 新 Hypothesis が accepted 状態 🔵
+    assert d.accepted.accepted_by == "agent"  # 【確認内容】: 採択主体が agent 🔵
+    assert d.accepted.id == "h1"  # 【確認内容】: 対象は best=ranked[0] 🔵
+    assert d.escalations == ()  # 【確認内容】: エスカレーションなし 🔵
+    assert d.provisional_id is None  # 【確認内容】: 暫定裁定でない 🔵
+    assert engine.accepted["h1"].status == "accepted"  # 【確認内容】: レジストリに accepted 登録 🔵
+
+
+def test_agent_close_competitor_provisional_and_queue():
+    # 【テスト目的】: agent + 僅差でも例外なく provisional + Review Queue で完了する (N-02)
+    # 【テスト内容】: 2 位 close=True でエスカレーション発火 → accept せず暫定裁定 + Queue 通知
+    # 【期待される動作】: accepted is None / provisional_id==best / escalations 非空 / 例外なし
+    # 🔵 信頼性: TC-107-02 / REQ-102 / FR-403 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: 2 位 close_competitor=True で detect_escalations が close_competitor を返す
+    # 【初期条件設定】: queue を注入し暫定時に Queue へ通知されることを検証する
+    queue = ReviewQueue()
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger(), queue=queue)
+    result = _result([_ranked("h1", 10.0, False), _ranked("h2", 10.0, True)])
+
+    # 【実際の処理実行】: 僅差競合下で agent 裁定を実行 (ブロックしない)
+    # 【処理内容】: Q8 (d) 欠如で自動 accept せず best を provisional として記録する
+    d = engine.decide(result)
+
+    # 【結果検証】: 暫定裁定・Queue 追加・非 accept・処理完了を確認
+    # 【期待値確認】: ブロックせず best を暫定提示し escalation reason を Queue に積む
+    assert d.accepted is None  # 【確認内容】: 自動 accept しない 🔵
+    assert d.provisional_id == "h1"  # 【確認内容】: 暫定裁定は best 🔵
+    assert "close_competitor" in d.escalations  # 【確認内容】: 僅差 escalation を検出 🔵
+    assert len(queue.items) >= 1  # 【確認内容】: Review Queue へ通知された 🔵
+    assert any(i.reason == "close_competitor" for i in queue.items)  # 【確認内容】: 該当 reason 追加 🔵
+    assert len(engine.accepted) == 0  # 【確認内容】: accepted 化はしない 🔵
+
+
+def test_human_decide_recommends_only():
+    # 【テスト目的】: human モードの decide は推奨提示のみで自動 accept しない (N-03)
+    # 【テスト内容】: decide が recommended_id=best を返し accepted は None のまま
+    # 【期待される動作】: mode=="human" / recommended_id==best / accepted is None / レジストリ空
+    # 🔵 信頼性: TC-107-03 前半 / REQ-103 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: 明確な最良仮説 1 件 (agent なら auto accept される条件)
+    # 【初期条件設定】: human モードでは自動 accept が絶対に起きないことを検証する
+    engine = FinalSelectionEngine(mode="human", ledger=Ledger())
+    result = _result([_ranked("h1", 10.0, False)])
+
+    # 【実際の処理実行】: human モードで裁定を実行
+    # 【処理内容】: best を recommended_id に載せるのみで accepted 化しない
+    d = engine.decide(result)
+
+    # 【結果検証】: 推奨のみ・非 accept・レジストリ空を確認
+    # 【期待値確認】: human は明示 accept 前に accepted を作らない
+    assert d.mode == "human"  # 【確認内容】: 裁定モードは human 🔵
+    assert d.recommended_id == "h1"  # 【確認内容】: 推奨は best 🔵
+    assert d.accepted is None  # 【確認内容】: 自動 accept しない 🔵
+    assert len(engine.accepted) == 0  # 【確認内容】: レジストリ空 🔵
+
+
+def test_human_explicit_accept_sets_accepted_by_human():
+    # 【テスト目的】: human 明示 accept API で accepted_by="human" になり登録される (N-04)
+    # 【テスト内容】: decide 後に accept(result, id, by="human") を呼び新 Hypothesis を得る
+    # 【期待される動作】: status=="accepted" / accepted_by=="human" / engine.accepted に登録
+    # 🔵 信頼性: TC-107-03 後半 / REQ-013/014 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: N-03 と同じ human engine / result
+    # 【初期条件設定】: 単一 accept API 経由で accepted 化することを検証する
+    engine = FinalSelectionEngine(mode="human", ledger=Ledger())
+    result = _result([_ranked("h1", 10.0, False)])
+    engine.decide(result)
+
+    # 【実際の処理実行】: 明示 accept API を human で呼ぶ
+    # 【処理内容】: replace(hyp, status="accepted", accepted_by="human") の新インスタンスを返す
+    h = engine.accept(result, "h1", by="human")
+
+    # 【結果検証】: accepted_by と登録を確認
+    # 【期待値確認】: accepted 化は単一 API 経由・accepted_by を仮説へ記録
+    assert h.status == "accepted"  # 【確認内容】: accepted 状態 🔵
+    assert h.accepted_by == "human"  # 【確認内容】: 採択主体が human 🔵
+    assert h.id == "h1"  # 【確認内容】: 対象仮説 id 一致 🔵
+    assert engine.accepted["h1"] == h  # 【確認内容】: レジストリに登録された 🔵
+
+
+def test_set_mode_records_to_ledger():
+    # 【テスト目的】: set_mode がモード切替を ledger に記録する (N-05)
+    # 【テスト内容】: agent→human へ切替し ledger payload と切替後の振る舞いを確認する
+    # 【期待される動作】: ledger に mode=="human" 記録 / verify True / 切替後は自動 accept しない
+    # 🔵 信頼性: TC-107-04 / REQ-104 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: 注入 Ledger 付き agent engine
+    # 【初期条件設定】: 実行中いつでも切替可能・切替は追記される
+    led = Ledger()
+    engine = FinalSelectionEngine(mode="agent", ledger=led)
+
+    # 【実際の処理実行】: モードを human に切替
+    # 【処理内容】: mode を更新し payload={"mode":"human"} 相当を ledger に追記する
+    engine.set_mode("human")
+
+    # 【結果検証】: ledger 記録・整合性・切替後の振る舞い
+    # 【期待値確認】: 切替が素の型で追記され、以後 human として振る舞う
+    assert any(e.payload.get("mode") == "human" for e in led.entries)  # 【確認内容】: mode 切替記録 🔵
+    assert led.verify() is True  # 【確認内容】: ハッシュチェーン整合 🔵
+    d = engine.decide(_result([_ranked("h1", 10.0, False)]))
+    assert d.accepted is None  # 【確認内容】: 切替後は human で自動 accept しない 🔵
+    assert d.mode == "human"  # 【確認内容】: 現在モードが human 🔵
+
+
+def test_revert_marks_superseded_and_keeps_history():
+    # 【テスト目的】: revert で status=superseded になり旧裁定履歴が ledger に残る (N-06)
+    # 【テスト内容】: agent 自動 accept 済み仮説を revert し status と件数を確認する
+    # 【期待される動作】: status=="superseded" / レジストリも superseded / ledger 件数が減らない
+    # 🟡 信頼性: TC-107-05 (status 遷移詳細) / REQ-202 に準拠
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: agent で h1 を自動 accept 済みの engine
+    # 【初期条件設定】: revert は削除でなく状態遷移 (P2) で表現する
+    led = Ledger()
+    engine = FinalSelectionEngine(mode="agent", ledger=led)
+    result = _result([_ranked("h1", 10.0, False), _ranked("h2", 12.0, False)])
+    engine.decide(result)  # h1 を自動 accept
+    before = len(led.entries)
+
+    # 【実際の処理実行】: 採択済み h1 を差し戻す
+    # 【処理内容】: replace(hyp, status="superseded") の新インスタンスを返し revert を追記する
+    h = engine.revert("h1", note="再検討")
+
+    # 【結果検証】: 状態遷移と履歴保持を確認
+    # 【期待値確認】: 削除せず superseded へ遷移し ledger は追記のみ (減らない)
+    assert h.status == "superseded"  # 【確認内容】: 返り値が superseded 🟡
+    assert engine.accepted["h1"].status == "superseded"  # 【確認内容】: レジストリも superseded 🟡
+    assert len(led.entries) > before  # 【確認内容】: revert 追記 + accept 履歴保持 🔵
+    assert led.verify() is True  # 【確認内容】: ハッシュチェーン整合 🔵
+
+
+def test_accept_rationale_recorded_in_ledger():
+    # 【テスト目的】: 裁定根拠 (rationale/by/hypothesis_id) が ledger に記録される (N-07)
+    # 【テスト内容】: agent 自動 accept 後に Decision.rationale と accept payload を検査する
+    # 【期待される動作】: rationale 非空で best.id を含む / payload に by・rationale・hypothesis_id
+    # 🔵 信頼性: REQ-014 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: N-01 と同じ agent 自動 accept ケース
+    # 【初期条件設定】: 根拠の追跡可能性 (payload は素の型のみ) を検証する
+    led = Ledger()
+    engine = FinalSelectionEngine(mode="agent", ledger=led)
+    result = _result([_ranked("h1", 10.0, False), _ranked("h2", 12.0, False)])
+
+    # 【実際の処理実行】: agent 裁定を実行し rationale と ledger を取得
+    # 【処理内容】: rationale は best.id / 確率 / evidence 等を固定順で組んだ文字列
+    d = engine.decide(result)
+
+    # 【結果検証】: rationale の中身と accept payload の内容
+    # 【期待値確認】: 根拠が Decision と ledger の双方から追跡できる
+    assert isinstance(d.rationale, str) and d.rationale != ""  # 【確認内容】: rationale 非空 🔵
+    assert "h1" in d.rationale  # 【確認内容】: rationale に best.id を含む 🔵
+    accept_entries = [e for e in led.entries if e.payload.get("hypothesis_id") == "h1"]
+    assert accept_entries  # 【確認内容】: accept が ledger に記録される 🔵
+    payload = accept_entries[0].payload
+    assert payload.get("by") == "agent"  # 【確認内容】: payload に採択主体 🔵
+    assert "rationale" in payload  # 【確認内容】: payload に rationale 相当 🔵
+
+
+def test_accepted_registry_is_append_only_mapping():
+    # 【テスト目的】: accepted レジストリが追記型の読み取り専用 Mapping であること (N-08)
+    # 【テスト内容】: human モードで別 result の h1/h2 を accept し keys と型を確認する
+    # 【期待される動作】: keys=={"h1","h2"} / 各 status=="accepted" / Mapping インスタンス
+    # 🔵 信頼性: REQ-013 / P2 に対応
+    from collections.abc import Mapping
+
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: 2 つの SearchResult から個別に accept する
+    # 【初期条件設定】: 追記のみ・削除 API 不在 (P2) を検証する
+    engine = FinalSelectionEngine(mode="human", ledger=Ledger())
+    result_a = _result([_ranked("h1", 10.0, False)])
+    result_b = _result([_ranked("h2", 10.0, False)])
+
+    # 【実際の処理実行】: h1・h2 を順に accept
+    # 【処理内容】: それぞれ accepted 化しレジストリへ追記する
+    engine.accept(result_a, "h1", by="human")
+    engine.accept(result_b, "h2", by="human")
+
+    # 【結果検証】: keys・status・公開型を確認
+    # 【期待値確認】: 複数 accept が追記され Mapping で読み取り専用公開される
+    assert set(engine.accepted.keys()) == {"h1", "h2"}  # 【確認内容】: 2 件が追記された 🔵
+    assert engine.accepted["h1"].status == "accepted"  # 【確認内容】: h1 accepted 🔵
+    assert engine.accepted["h2"].status == "accepted"  # 【確認内容】: h2 accepted 🔵
+    assert isinstance(engine.accepted, Mapping)  # 【確認内容】: 読み取り専用 Mapping で公開 🔵
+
+
+# ---------------------------------------------------------------------------
+# 2. 異常系テストケース（エラーハンドリング）
+# ---------------------------------------------------------------------------
+
+
+def test_empty_ranked_no_accept_escalation_only():
+    # 【テスト目的】: ranked 空 (裁定対象ゼロ) で accept せず処理が完了する (E-01)
+    # 【テスト内容】: _result([]) を agent decide し accepted/provisional が None であること
+    # 【期待される動作】: accepted is None / provisional_id is None / 例外なし / レジストリ空
+    # 🟡 信頼性: EDGE-004 / TC-107-08 は 🟡
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: 候補が全滅し ranked が空になった縮退フレーム
+    # 【初期条件設定】: best 不在で accept API を呼ばずエスカレーションのみに落とす
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger())
+    result = _result([])
+
+    # 【実際の処理実行】: 裁定対象ゼロで agent 裁定を実行 (落ちない)
+    # 【処理内容】: best 不在のため自動 accept を試みず Decision を返す
+    d = engine.decide(result)
+
+    # 【結果検証】: 非 accept・非 provisional・レジストリ空を確認
+    # 【期待値確認】: best が無い場合は accept を試みない (安全側)
+    assert d.accepted is None  # 【確認内容】: accepted 化しない 🟡
+    assert d.provisional_id is None  # 【確認内容】: best 不在で provisional なし 🟡
+    assert len(engine.accepted) == 0  # 【確認内容】: accept API 未呼び 🟡
+
+
+def test_accept_unknown_hypothesis_id_raises():
+    # 【テスト目的】: 存在しない hypothesis_id を accept すると防御的に例外になる (E-02)
+    # 【テスト内容】: result に無い "nope" を accept し例外と非登録を確認する
+    # 【期待される動作】: KeyError/ValueError を送出し engine.accepted に登録されない
+    # 🟡 信頼性: REQ-013 誤操作防御からの妥当な推測
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: h1 のみを含む result
+    # 【初期条件設定】: 存在しない仮説を「採択した」と誤認させない
+    engine = FinalSelectionEngine(mode="human", ledger=Ledger())
+    result = _result([_ranked("h1", 10.0, False)])
+
+    # 【実際の処理実行 & 結果検証】: 未知 id で例外を送出させる
+    # 【期待値確認】: 誤操作は防御的に拒否しレジストリを汚さない
+    with pytest.raises((KeyError, ValueError)):
+        engine.accept(result, "nope", by="human")  # 【確認内容】: 未知 id は例外 🟡
+    assert len(engine.accepted) == 0  # 【確認内容】: 登録されない 🟡
+
+
+def test_revert_unknown_hypothesis_id_raises():
+    # 【テスト目的】: 未 accept / 未知 id を revert すると防御的に例外になる (E-03)
+    # 【テスト内容】: 何も accept していない engine で revert("h1") を呼ぶ
+    # 【期待される動作】: KeyError/ValueError を送出する
+    # 🟡 信頼性: REQ-202 誤操作防御からの妥当な推測
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: accepted レジストリが空の engine
+    # 【初期条件設定】: 存在しない裁定を superseded にしない (履歴の一貫性)
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger())
+
+    # 【実際の処理実行 & 結果検証】: 未 accept の id を revert し例外を送出させる
+    # 【期待値確認】: レジストリに無い仮説の差し戻しは拒否する
+    with pytest.raises((KeyError, ValueError)):
+        engine.revert("h1")  # 【確認内容】: 未 accept id は例外 🟡
+
+
+def test_decision_is_frozen():
+    # 【テスト目的】: Decision が frozen で再代入すると例外になる (E-04)
+    # 【テスト内容】: decide の返り値 Decision の accepted へ直接代入を試みる
+    # 【期待される動作】: dataclasses.FrozenInstanceError を送出する
+    # 🔵 信頼性: interfaces.py L328 で @dataclass(frozen=True) 明記
+    from tsumugin.selection import Decision, FinalSelectionEngine
+
+    # 【テストデータ準備】: decide で得た Decision インスタンス
+    # 【初期条件設定】: 値オブジェクトの不変性を担保する
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger())
+    result = _result([_ranked("h1", 10.0, False)])
+    d = engine.decide(result)
+
+    # 【実際の処理実行 & 結果検証】: frozen 再代入で FrozenInstanceError を送出させる
+    # 【期待値確認】: 裁定結果は生成後に書き換えられない
+    assert isinstance(d, Decision)  # 【確認内容】: 返り値が Decision 型 🔵
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        d.accepted = None  # 【確認内容】: frozen のため再代入不可 🔵
+
+
+# ---------------------------------------------------------------------------
+# 3. 境界値テストケース（最小値、最大値、状態不変等）
+# ---------------------------------------------------------------------------
+
+
+def test_agent_best_close_only_provisional():
+    # 【テスト目的】: agent + best.close_competitor=True のみ (detect 空) で暫定裁定になる (B-01)
+    # 【テスト内容】: 単一 ranked (best.close=True) を decide し自動 accept が阻まれることを確認する
+    # 【期待される動作】: accepted is None / provisional_id==best (detect は空でも Q8(b) 欠如)
+    # 🔵 信頼性: interview Q8 (b) / note の detect と Q8 close の意味差に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: 単一 ranked かつ best.close=True (2 位不在で detect_escalations は空)
+    # 【初期条件設定】: detect が空でも best 自身の close フラグが自動 accept を阻む境界
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger())
+    result = _result([_ranked("h1", 10.0, True)])
+
+    # 【実際の処理実行】: best が僅差扱いの単一候補で agent 裁定を実行
+    # 【処理内容】: Q8 (b) `ranked[0].close_competitor is False` が偽 → 自動 accept しない
+    d = engine.decide(result)
+
+    # 【結果検証】: 非 accept・暫定裁定を確認
+    # 【期待値確認】: detect_escalations が空でも Q8(b) 欠如で auto accept しない
+    assert d.accepted is None  # 【確認内容】: best.close=True で自動 accept しない 🔵
+    assert d.provisional_id == "h1"  # 【確認内容】: best を暫定裁定に載せる 🔵
+
+
+def test_agent_unknown_phase_only_provisional():
+    # 【テスト目的】: agent + unknown_phase_flag=True のみで暫定裁定 + unknown_phase reason (B-02)
+    # 【テスト内容】: unknown_phase=True の result を decide し escalation と暫定を確認する
+    # 【期待される動作】: accepted is None / "unknown_phase" in escalations / provisional_id==best
+    # 🔵 信頼性: interview Q8 (c) / REQ-102 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: best は close=False だが unknown_phase フラグが立った result
+    # 【初期条件設定】: 未知相フラグ単独で自動 accept を阻む境界を検証する
+    queue = ReviewQueue()
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger(), queue=queue)
+    result = _result([_ranked("h1", 10.0, False)], unknown_phase=True)
+
+    # 【実際の処理実行】: 未知相フラグ下で agent 裁定を実行
+    # 【処理内容】: detect_escalations が unknown_phase を返し Q8 (c) が欠ける → 暫定
+    d = engine.decide(result)
+
+    # 【結果検証】: escalation・暫定・Queue 通知を確認
+    # 【期待値確認】: 未知相フラグが立つと保留し要確認へ回す
+    assert d.accepted is None  # 【確認内容】: 未知相で自動 accept しない 🔵
+    assert "unknown_phase" in d.escalations  # 【確認内容】: unknown_phase を検出 🔵
+    assert d.provisional_id == "h1"  # 【確認内容】: best を暫定裁定に載せる 🔵
+    assert any(i.reason == "unknown_phase" for i in queue.items)  # 【確認内容】: Queue に通知 🔵
+
+
+def test_decide_and_accept_do_not_mutate_search_result():
+    # 【テスト目的】: decide/accept が入力 SearchResult を変更しない (B-03, D5 非破壊)
+    # 【テスト内容】: decide→accept 前後で ranked[0] の status/accepted_by と result.ledger を確認
+    # 【期待される動作】: status=="refined" / accepted_by is None / result.ledger 件数不変
+    # 🔵 信頼性: architecture.md D5 / CLAUDE.md P2 に直接対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: refined 状態の h1 を持つ result を保持する
+    # 【初期条件設定】: accepted 化は engine 側の新 Hypothesis に反映し入力は汚さない
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger())
+    result = _result([_ranked("h1", 10.0, False)])
+    before_entries = len(result.ledger.entries)
+
+    # 【実際の処理実行】: decide (自動 accept) と明示 accept を実行
+    # 【処理内容】: いずれも dataclasses.replace の新インスタンスで表現する
+    engine.decide(result)
+    engine.accept(result, "h1", by="agent")
+
+    # 【結果検証】: 入力 SearchResult の各要素と ledger が不変であること
+    # 【期待値確認】: 共有された SearchResult を 1 バイトも変更しない
+    assert result.ranked[0].hypothesis.status == "refined"  # 【確認内容】: status 不変 🔵
+    assert result.ranked[0].hypothesis.accepted_by is None  # 【確認内容】: accepted_by 不変 🔵
+    assert len(result.ledger.entries) == before_entries  # 【確認内容】: result.ledger 不変 🔵
+
+
+def test_rationale_is_deterministic():
+    # 【テスト目的】: 同一入力で rationale と escalations がビット同一 (B-04, NFR-102)
+    # 【テスト内容】: 同一 result を独立 engine で 2 回 decide し文字列/タプルの一致を確認する
+    # 【期待される動作】: rationale 完全一致 / escalations も順序含め一致
+    # 🔵 信頼性: NFR-102 / REQ-402 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: エスカレーションを含む同一 result (rationale に escalations が載る)
+    # 【初期条件設定】: 乱数・時刻不使用で固定順に rationale を組む
+    result = _result([_ranked("h1", 10.0, False), _ranked("h2", 10.0, True)])
+    engine1 = FinalSelectionEngine(mode="agent", ledger=Ledger())
+    engine2 = FinalSelectionEngine(mode="agent", ledger=Ledger())
+
+    # 【実際の処理実行】: 独立した 2 engine で同一 result を裁定
+    # 【処理内容】: 同一入力なら分岐・rationale・返り値はビット同一になるはず
+    d1 = engine1.decide(result)
+    d2 = engine2.decide(result)
+
+    # 【結果検証】: rationale と escalations の一致
+    # 【期待値確認】: 再現性 (同一入力で同一出力) を担保する
+    assert d1.rationale == d2.rationale  # 【確認内容】: rationale がビット同一 🔵
+    assert d1.escalations == d2.escalations  # 【確認内容】: escalations も順序含め一致 🔵
+
+
+def test_revert_ledger_count_never_decreases():
+    # 【テスト目的】: revert 後も ledger 件数が減らない (B-05, 追記型)
+    # 【テスト内容】: accept 済み仮説を revert した前後で led.entries 件数を比較する
+    # 【期待される動作】: revert 後件数 > revert 前件数 / verify True
+    # 🔵 信頼性: CLAUDE.md P2/NFR-105 / REQ-202 に対応
+    from tsumugin.selection import FinalSelectionEngine
+
+    # 【テストデータ準備】: agent で h1 を自動 accept 済みの engine
+    # 【初期条件設定】: 削除・上書き不在で件数は単調増加する
+    led = Ledger()
+    engine = FinalSelectionEngine(mode="agent", ledger=led)
+    result = _result([_ranked("h1", 10.0, False)])
+    engine.decide(result)  # h1 auto accept
+    before = len(led.entries)
+
+    # 【実際の処理実行】: 採択済み h1 を revert
+    # 【処理内容】: revert エントリが追記され元 accept エントリは残る
+    engine.revert("h1")
+
+    # 【結果検証】: 件数の単調増加とハッシュチェーン整合
+    # 【期待値確認】: revert は削除でなく追記で表現される
+    assert len(led.entries) > before  # 【確認内容】: 件数が減らず増える 🔵
+    assert led.verify() is True  # 【確認内容】: ハッシュチェーン整合維持 🔵

@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
-from .engine import detect_escalations
+from .engine import Decision, FinalSelectionEngine, detect_escalations
 from .review_queue import EscalationReason, ReviewItem, ReviewQueue
 
 __all__ = [
+    "Decision",
     "EscalationReason",
+    "FinalSelectionEngine",
     "ReviewItem",
     "ReviewQueue",
     "detect_escalations",
