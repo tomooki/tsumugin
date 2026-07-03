@@ -33,7 +33,7 @@
 - [x] [TASK-0019: SequentialEngine (オンライン逐次+局所探索)](TASK-0019.md) - 6h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0020: ReviewQueue + detect_escalations](TASK-0020.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0021: FinalSelectionEngine (agent/human)](TASK-0021.md) - 4h (TDD) 🔵 ✅ 完了 (2026-07-03)
-- [ ] [TASK-0022: 公開 API 統合 + E2E + ドキュメント](TASK-0022.md) - 4h (TDD) 🔵
+- [x] [TASK-0022: 公開 API 統合 + E2E + ドキュメント](TASK-0022.md) - 4h (TDD) 🔵 ✅ 完了 (2026-07-03)
 
 ```
 0011 → 0012 → 0014          0011 → 0015,0016,0017,0018,0020

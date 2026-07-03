@@ -4,11 +4,14 @@
 多相 Rietveld 精密化・時系列解析を、AI エージェントと人間の介入点を明示的に設計した上で
 自動化することを目指す。設計思想は [docs/tsumugin_spec_v0.3.md](docs/tsumugin_spec_v0.3.md) を参照。
 
-> **状態**: M0 (PoC) + M1 (多仮説木探索) 実装済み。単一パターン自動多相精密化の中核
-> (段階的パラメータ解放・ガードレール・Evidence Engine・追記専用 Ledger/Snapshot) に加え、
-> 候補相集合からの多仮説木探索 (`tsumugin.search`)・`.gpx` 書き出し (`tsumugin.export`)・
-> read-only Web UI (`tsumugin.webui`) が、`SimulatedBackend` (GSAS-II 不要) と
-> `GSASIIBackend` (実 Rietveld) の両方で動作する。
+> **状態**: M0 (PoC) + M1 (多仮説木探索) + M2 (シーケンシャル解析) 実装済み。単一パターン
+> 自動多相精密化の中核 (段階的パラメータ解放・ガードレール・Evidence Engine・追記専用
+> Ledger/Snapshot)、候補相集合からの多仮説木探索 (`tsumugin.search`)・`.gpx` 書き出し
+> (`tsumugin.export`)・read-only Web UI (`tsumugin.webui`) に加え、時系列フレーム列の逐次
+> 精密化 (`tsumugin.sequential`: changepoint 検出・lifecycle・転移温度・trajectory/CSV)・
+> agent/human 2 モードの最終選択 (`tsumugin.selection`)・JSONL 永続化
+> (`tsumugin.store` の `PersistentLedger`/`PersistentSnapshotStore`) が、`SimulatedBackend`
+> (GSAS-II 不要) と `GSASIIBackend` (実 Rietveld) の両方で動作する。
 
 ## セットアップ
 
@@ -110,7 +113,54 @@ assert result.ledger.verify()  # 全操作は追記専用 Ledger に記録 (非�
 `export_gpx(path, phases, two_theta, intensity)` で任意時点の相集合を GSAS-II GUI で
 再オープン可能な `.gpx` へ書き出せる (GSAS-II 導入時)。
 
-## アーキテクチャ (M0 + M1 実装済み範囲)
+## 使い方 (M2): シーケンシャル解析
+
+昇温などで時間発展する回折フレーム列を `FrameSeries` にまとめ、`SequentialEngine` で逐次
+精密化する。frame0 は staged 精密化で確立、以降は直近成功フレームからの warm start + direct
+refine で軽量に処理し、`detect_changepoint` (複合指標ロバスト z) が発火したフレームでのみ
+局所木探索を起動して新相を採択する。lifecycle・転移温度・CSV まで一気通貫で得られる:
+
+```python
+import numpy as np
+from tsumugin import (
+    SequentialEngine, FrameSeries, ExternalChannel,
+    SimulatedBackend, PhaseInstance, LatticeParams,
+)
+
+backend = SimulatedBackend(peak_fwhm=0.2)
+two_theta = np.arange(15.0, 60.0, 0.02)
+
+# 昇温で格子が膨張しつつ frame 8 以降で新相 B が出現する合成フレーム列を組む
+rows, temps = [], []
+for i in range(12):
+    a = 5.0 + 0.01 * i  # 熱膨張する主相 A の格子定数
+    phases = [PhaseInstance("A", LatticeParams(a, a, a))]
+    if i >= 8:
+        phases.append(PhaseInstance("B", LatticeParams(6.0, 6.0, 6.0)))  # 転移で新相 B
+    rows.append(backend.simulate(phases, two_theta))
+    temps.append(300.0 + 5.0 * i)
+series = FrameSeries(
+    two_theta, np.asarray(rows, dtype=float),
+    axis_values=tuple(temps), axis_kind="temperature",
+    channels=(ExternalChannel("temperature", {i: t for i, t in enumerate(temps)}),),
+)
+
+# 逐次精密化 → changepoint 発火時のみ局所探索で新相 B を採択 → trajectory 組立
+engine = SequentialEngine(backend, candidates=[PhaseInstance("B", LatticeParams(6.0, 6.0, 6.0))])
+result = engine.run(series, [PhaseInstance("A", LatticeParams(5.0, 5.0, 5.0))])
+
+result.trajectory.to_csv("traj.csv")                       # 相分率・格子・Rwp の時系列を CSV 出力
+print("phases seen:", sorted(result.trajectory.lifecycles))  # -> ['A', 'B']
+assert result.ledger.verify()                              # 全操作は追記専用 Ledger に記録 (P2)
+```
+
+`PersistentLedger(path)` / `PersistentSnapshotStore(path, ledger=...)` を注入すると全操作が
+JSONL に追記され、別プロセスで再オープンしても `verify()` でハッシュチェーンの改竄を検知できる。
+`estimate_transition(temperatures, fractions, phase_ref="B")` で相分率シグモイドから転移温度
+(onset/midpoint) を推定でき、`FinalSelectionEngine(mode="agent")` で局所探索結果に自動裁定
+(または Review Queue へのエスカレーション) を適用できる。
+
+## アーキテクチャ (M0 + M1 + M2 実装済み範囲)
 
 | モジュール | 役割 | 主な仕様 FR |
 |-----------|------|------------|
@@ -123,5 +173,8 @@ assert result.ledger.verify()  # 全操作は追記専用 Ledger に記録 (非�
 | `tsumugin.search` | ピーク検出→マッチ→クラスタリング→枝刈り→多仮説木探索 | FR-110〜117 |
 | `tsumugin.export` | 相集合 + 観測を再オープン可能な `.gpx` へ書き出し | FR-505 |
 | `tsumugin.webui` | 仮説一覧・ランキング閲覧の read-only Web UI (optional `web`) | FR-421〜424 |
+| `tsumugin.sequential` | フレーム列逐次精密化 + changepoint + lifecycle + 転移温度 + trajectory/CSV | REQ-001〜008 |
+| `tsumugin.selection` | 最終選択エンジン (agent/human 2 モード) + エスカレーション + Review Queue | REQ-013〜015 |
+| `tsumugin.store` (persistent) | JSONL 永続化 Ledger / Snapshot (追記専用・再オープン改竄検知) | REQ-010〜012, NFR-105 |
 
 実装計画は [docs/dev/plans/m0-refinement-core/](docs/dev/plans/m0-refinement-core/) を参照。
