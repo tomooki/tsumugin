@@ -13,6 +13,10 @@ TASK-0032 では固溶体 vs 二相判別層 (``DiscriminationConfig`` / ``Discr
 
 TASK-0033 では IC 区間自動分割層 (``SegmentationConfig`` / ``SegmentationResult`` /
 ``segment_series``) を追加する (FR-316 / 設計 D5/D6)。
+
+TASK-0034 では結合出力層 (``combined_csv`` / ``TransitionPoint`` / ``transition_point``) と
+ヒステリシス解析層 (``BranchComparison`` / ``split_branches`` / ``branch_differences``) を
+追加する (FR-314 / FR-315 / 設計 D9 / D-Q10)。
 """
 
 from __future__ import annotations
@@ -33,6 +37,16 @@ from .echem import (
     EchemLoader,
     read_echem_csv,
 )
+from .hysteresis import (
+    BranchComparison,
+    branch_differences,
+    split_branches,
+)
+from .output import (
+    TransitionPoint,
+    combined_csv,
+    transition_point,
+)
 from .segmentation import (
     SegmentationConfig,
     SegmentationResult,
@@ -42,6 +56,7 @@ from .segmentation import (
 __all__ = [
     "CELL_PHASE_PRESETS",
     "BiologicMprLoader",
+    "BranchComparison",
     "DiscriminationConfig",
     "DiscriminationResult",
     "EchemData",
@@ -49,8 +64,13 @@ __all__ = [
     "FixedPhaseSpec",
     "SegmentationConfig",
     "SegmentationResult",
+    "TransitionPoint",
+    "branch_differences",
+    "combined_csv",
     "discriminate_interval",
     "fixed_free_suffixes",
     "read_echem_csv",
     "segment_series",
+    "split_branches",
+    "transition_point",
 ]

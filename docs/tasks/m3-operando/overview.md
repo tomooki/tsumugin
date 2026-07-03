@@ -34,7 +34,7 @@
 - [x] [TASK-0031: changepoint 感度較正 (Issue #3)](TASK-0031.md) - 3h (TDD) 🔵 ✅ 完了
 - [x] [TASK-0032: operando/discrimination (FR-313)](TASK-0032.md) - 6h (TDD) 🔵
 - [x] [TASK-0033: operando/segmentation (FR-316)](TASK-0033.md) - 5h (TDD) 🔵
-- [ ] [TASK-0034: operando/hysteresis + output (FR-315/314)](TASK-0034.md) - 4h (TDD) 🔵
+- [x] [TASK-0034: operando/hysteresis + output (FR-315/314)](TASK-0034.md) - 4h (TDD) 🔵
 - [ ] [TASK-0035: 公開 API 統合 + E2E + ドキュメント](TASK-0035.md) - 4h (TDD) 🔵
 
 ```
