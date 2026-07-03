@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..errors import WebUIUnavailableError
+from ..search.tree import _finite_or_none
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import を避けコア依存を汚染しない 🔵 D6
     from fastapi import FastAPI
@@ -73,14 +74,16 @@ def _serialize_metrics(metrics: "RefinementMetrics | None") -> dict[str, Any] | 
     # 【None 分岐】: metrics 未付与ノードは 500 化させず null で返す 🟡 §4
     if metrics is None:
         return None
+    # 非有限 (chi2=inf は EDGE-004 の正常経路) は JSON に存在しないため None で配信する。
+    # FastAPI の暗黙 inf→null 変換に依存せず、契約としてここで保証する (to_summary と同一規則)。
     return {
-        "rwp": float(metrics.rwp),
-        "gof": float(metrics.gof),
-        "chi2": float(metrics.chi2),
+        "rwp": _finite_or_none(metrics.rwp),
+        "gof": _finite_or_none(metrics.gof),
+        "chi2": _finite_or_none(metrics.chi2),
         "n_obs": int(metrics.n_obs),
         "n_params": int(metrics.n_params),
         # 【evidence 全量】: backend 名 -> 値を純型化して残らず配信する 🟡 §2.4
-        "evidence": {str(k): float(v) for k, v in metrics.evidence.items()},
+        "evidence": {str(k): _finite_or_none(v) for k, v in metrics.evidence.items()},
     }
 
 
@@ -187,6 +190,11 @@ def serve(
     【機能概要】: 既定 ``127.0.0.1:8765`` (localhost バインド, NFR-101) で ASGI アプリを起動する。
     【実装方針】: fastapi/uvicorn を遅延 import し、未導入なら ``WebUIUnavailableError`` を送出する。
       呼び出しは ``uvicorn.run`` に委譲するブロッキング処理 (戻り値 None)。
+
+    .. warning::
+        本 UI に認証は無い。``host`` を ``127.0.0.1`` 以外 (例 ``0.0.0.0``) に変更すると、
+        解析データ全量が同一ネットワークへ無認証で公開される。M1 はローカル閲覧専用であり、
+        外部公開はサポートしない (NFR-101)。
     🟡 信頼性レベル: シグネチャ・既定値は interfaces.py L221-233 / NFR-101 に依拠、起動委譲は実装時確定。
 
     Args:

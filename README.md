@@ -47,6 +47,9 @@ uv run pytest -m gsas
 uv sync --extra gsas --extra web   # gsas を必ず併用 (プレーン uv sync は gsas 依存が外れる)
 ```
 
+> **注意**: Web UI に認証はない。既定の `127.0.0.1` バインドのままローカル閲覧専用で使うこと。
+> `serve(host="0.0.0.0")` 等に変更すると解析データ全量が同一ネットワークへ無認証で公開される。
+
 ## 使い方 (M0)
 
 ```python

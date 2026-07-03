@@ -346,3 +346,100 @@ def test_module_skipped_without_web_extra():
     # 【期待される動作】: 未導入環境では collection エラーにせず skip、導入環境では実行する
     assert fastapi is not None  # 【検証項目】: importorskip 通過 (fastapi 導入済み) 🟡
     assert TestClient is not None  # 【検証項目】: TestClient (httpx) 利用可能 🟡
+
+
+# ---------------------------------------------------------------------------
+# PR #1 レビュー指摘対応 (非有限メトリクスの配信 / XSS シンク不在)
+# ---------------------------------------------------------------------------
+
+from tsumugin.backends.base import RefinementResult  # noqa: E402
+from tsumugin.search.tree import SearchConfig  # noqa: E402
+from tsumugin.webui.app import _INDEX_HTML  # noqa: E402
+
+
+class _AllInfBackend:
+    """全ノードの精密化が失敗 (chi2=rwp=inf) する決定論バックエンド (EDGE-004 経路)。
+
+    chi2=inf は仕様上の正常経路のため、配信層 (to_summary / Web API) が inf を
+    JSON へ漏らさないことを検証する専用ダブル。simulate/peak_positions は
+    候補ピーク生成経路を成立させるため SimulatedBackend へ委譲する。
+    """
+
+    name = "allinf"
+
+    def __init__(self) -> None:
+        self._sim = SimulatedBackend(peak_fwhm=0.2)
+
+    def simulate(self, phases, two_theta):
+        return self._sim.simulate(phases, two_theta)
+
+    def peak_positions(self, phase, two_theta):
+        return self._sim.peak_positions(phase, two_theta)
+
+    def refine(self, model, *, max_cycles: int = 20) -> RefinementResult:
+        return RefinementResult(
+            phases=model.phases,
+            chi2=float("inf"),
+            rwp=float("inf"),
+            n_obs=int(np.asarray(model.intensity).size),
+            n_params=len(model.free_params),
+            converged=False,
+            n_cycles=1,
+            free_params=frozenset(model.free_params),
+        )
+
+
+@pytest.fixture(scope="module")
+def inf_result():
+    # 全ノード chi2=inf の探索結果 (フル精密化は無効化して全 inf のまま配信層へ渡す)
+    backend = _AllInfBackend()
+    y = backend.simulate([PHASE_A], GRID)
+    config = SearchConfig(final_full_refine=False)
+    return HypothesisTreeSearch(backend, config=config).search(GRID, y, [PHASE_A, PHASE_C])
+
+
+@pytest.fixture(scope="module")
+def inf_client(inf_result):
+    return TestClient(create_app(inf_result))
+
+
+def test_summary_with_infinite_metrics_is_strict_json(inf_result):
+    # 【テスト目的】: chi2=inf (正常経路) が to_summary の JSON を汚染しないことの契約検証
+    # 【期待される動作】: allow_nan=False の厳格 JSON 化が成功し、非有限値は None に落ちる
+    summary = inf_result.to_summary()
+    text = json.dumps(summary, allow_nan=False)  # inf/nan が残っていれば ValueError
+    assert text
+    assert len(summary["ranked"]) > 0
+    for row in summary["ranked"]:
+        assert row["rwp"] is None  # 【検証項目】: inf rwp は null 表現 🔵
+        assert row["gof"] is None
+        assert row["evidence"]["value"] is None  # 【検証項目】: センチネルも露出しない 🔵
+
+
+def test_api_result_with_infinite_metrics_returns_null(inf_client):
+    # 【テスト目的】: /api/result が FastAPI の暗黙変換に依存せず契約として null を返す
+    resp = inf_client.get("/api/result")
+    assert resp.status_code == 200
+    ranked = resp.json()["ranked"]
+    assert len(ranked) > 0
+    assert ranked[0]["rwp"] is None
+    assert ranked[0]["evidence"]["value"] is None
+
+
+def test_detail_and_summary_evidence_representation_is_consistent(inf_client, inf_result):
+    # 【テスト目的】: 失敗ノードの evidence 表現が 2 エンドポイントで一致する (レビュー LOW 対応)
+    row = inf_result.to_summary()["ranked"][0]
+    detail = inf_client.get(f"/api/hypotheses/{row['id']}")
+    assert detail.status_code == 200
+    metrics = detail.json()["metrics"]
+    assert metrics["rwp"] is None
+    assert metrics["chi2"] is None
+    assert metrics["evidence"].get("bic") is None
+    assert row["evidence"]["value"] is None  # 両者とも null で不一致がない
+
+
+def test_index_html_has_no_innerhtml_sink():
+    # 【テスト目的】: API 由来の任意文字列 (phase_ref/id) を innerHTML に注入する
+    #   DOM XSS シンクが存在しないことの構造的検証 (textContent/DOM API のみ許可)
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+    assert "innerHTML" not in html

@@ -86,33 +86,50 @@
       }
 
       // 【フラグ表示】: 未知相フラグ・仮説数を常時トップに表示する。
+      // API 由来の値は textContent でのみ描画する (XSS 対策: HTML 文字列組み立てを禁止)。
       function renderFlags(data) {
         const box = document.getElementById("flags");
+        box.replaceChildren();
         const unknown = data.unknown_phase_flag === true;
-        const cls = unknown ? "flag warn" : "flag ok";
-        const label = unknown ? "未知相フラグ: あり" : "未知相フラグ: なし";
-        box.innerHTML =
-          '<span class="' + cls + '">' + label + "</span>" +
-          '<span class="flag ok">仮説数: ' + (data.n_hypotheses ?? 0) + "</span>";
+        box.appendChild(
+          makeFlag(unknown ? "flag warn" : "flag ok",
+                   unknown ? "未知相フラグ: あり" : "未知相フラグ: なし"),
+        );
+        box.appendChild(makeFlag("flag ok", "仮説数: " + (data.n_hypotheses ?? 0)));
+      }
+
+      function makeFlag(cls, text) {
+        const span = document.createElement("span");
+        span.className = cls;
+        span.textContent = text;
+        return span;
       }
 
       // 【行描画】: ranked 各行をテーブル化し、クリックで詳細取得を紐付ける。
+      // phase_ref / id は候補相由来の任意文字列のため、必ず textContent で描画する。
       function renderRows(rows) {
         const tbody = document.querySelector("#ranking tbody");
-        tbody.innerHTML = "";
+        tbody.replaceChildren();
         for (const r of rows) {
           const tr = document.createElement("tr");
           if (r.close_competitor) tr.classList.add("close");
           const phases = (r.phases || []).map((p) => p.phase_ref).join(" + ");
-          tr.innerHTML =
-            "<td>" + r.rank + "</td>" +
-            '<td class="id">' + r.id + "</td>" +
-            "<td>" + fmt(r.probability) + "</td>" +
-            "<td>" + fmt(r.rwp) + "</td>" +
-            "<td>" + fmt(r.gof) + "</td>" +
-            "<td>" + (r.close_competitor ? "●" : "") + "</td>" +
-            "<td>" + (r.in_good_cluster ? "●" : "") + "</td>" +
-            '<td class="phases">' + phases + "</td>";
+          const cells = [
+            ["", r.rank],
+            ["id", r.id],
+            ["", fmt(r.probability)],
+            ["", fmt(r.rwp)],
+            ["", fmt(r.gof)],
+            ["", r.close_competitor ? "●" : ""],
+            ["", r.in_good_cluster ? "●" : ""],
+            ["phases", phases],
+          ];
+          for (const [cls, value] of cells) {
+            const td = document.createElement("td");
+            if (cls) td.className = cls;
+            td.textContent = String(value);
+            tr.appendChild(td);
+          }
           tr.addEventListener("click", () => loadDetail(r.id));
           tbody.appendChild(tr);
         }

@@ -17,7 +17,8 @@ class BICBackend:
     name = "bic"
 
     def score(self, metrics: RefinementMetrics) -> EvidenceResult:
-        value = metrics.chi2 + metrics.n_params * math.log(metrics.n_obs)
+        # n_obs=0 (空パターン等の縮退) は log(1)=0 として非例外化する
+        value = metrics.chi2 + metrics.n_params * math.log(max(metrics.n_obs, 1))
         return EvidenceResult(backend=self.name, value=value)
 
 

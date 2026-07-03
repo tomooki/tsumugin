@@ -147,11 +147,12 @@ class SearchResult:
                     "rank": i + 1,  # 【1 起番】: rank は 1 から連番 🔵
                     "probability": float(rk.probability),
                     "close_competitor": bool(rk.close_competitor),
-                    "rwp": float(metrics.rwp) if metrics is not None else None,
-                    "gof": float(metrics.gof) if metrics is not None else None,
+                    "rwp": _finite_or_none(metrics.rwp) if metrics is not None else None,
+                    "gof": _finite_or_none(metrics.gof) if metrics is not None else None,
                     "evidence": {
                         "backend": str(rk.evidence.backend),
-                        "value": float(rk.evidence.value),
+                        # 非有限/センチネルは None (JSON に inf は無い。詳細 API と表現を統一)
+                        "value": _finite_or_none(rk.evidence.value),
                     },
                     "phases": phase_rows,
                     "parent_id": hyp.parent_id,
@@ -173,6 +174,24 @@ class SearchResult:
         }
 
 
+# 有限 BIC (chi2 + k·ln n、実データでは高々 ~1e6) を確実に上回る大きな有限センチネル。
+_EVIDENCE_SENTINEL = 1e18
+
+
+def _finite_or_none(value: float) -> float | None:
+    """JSON 配信用に数値を純化する。非有限 (inf/NaN) とセンチネル以上は None に落とす。
+
+    chi2=inf は仕様上の正常経路 (EDGE-004) だが、JSON には inf が存在しないため配信層では
+    None として表現する。``_FiniteGuardedEvidence`` のセンチネル (ランキング内部用) も
+    観測者には無意味な値なので同様に None へ写像し、/api/result と /api/hypotheses/{id} の
+    evidence 表現を一致させる。
+    """
+    v = float(value)
+    if not math.isfinite(v) or v >= _EVIDENCE_SENTINEL:
+        return None
+    return v
+
+
 class _FiniteGuardedEvidence:
     """全仮説 evidence が非有限のとき softmax が 0/0 → NaN 縮退するのを防ぐガード付き backend。
 
@@ -185,8 +204,8 @@ class _FiniteGuardedEvidence:
     🟡 信頼性レベル: ガード必要性は note.md §6 に依拠 🔵、センチネル方式は実装時確定 🟡。
     """
 
-    # 【センチネル】: 有限 BIC (chi2 + k·ln n、実データでは高々 ~1e6) を確実に上回る大きな有限値 🟡
-    _SENTINEL = 1e18
+    # 【センチネル】: モジュール定数を共有 (to_summary の None 写像と同一値であることが要件) 🟡
+    _SENTINEL = _EVIDENCE_SENTINEL
 
     def __init__(self, inner: EvidenceBackend) -> None:
         # 【委譲先保持】: 実 evidence backend を保持し name を踏襲 (backend 名の一貫性) 🔵

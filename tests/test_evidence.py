@@ -80,3 +80,9 @@ def test_missing_metrics_raises():
 
 def test_empty_input_returns_empty():
     assert rank([], BICBackend()) == ()
+
+
+def test_bic_with_zero_observations_does_not_raise():
+    # n_obs=0 (空パターンの縮退) でも math domain error にせず log(1)=0 として扱う
+    r = BICBackend().score(_metrics(5.0, 3, n=0))
+    assert r.value == pytest.approx(5.0)
