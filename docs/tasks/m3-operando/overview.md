@@ -27,7 +27,7 @@
 - [x] [TASK-0024: thermal onset 意味論修正 (Issue #4)](TASK-0024.md) - 2h (TDD) 🔵 ✅ 完了
 - [x] [TASK-0025: model 拡張 (CellConfig/channel/metrics.multistart)](TASK-0025.md) - 3h (TDD) 🔵 ✅ 完了
 - [x] [TASK-0026: backends 拡張 (global 文法/吸収補正)](TASK-0026.md) - 5h (TDD) 🔵 ✅ 完了
-- [ ] [TASK-0027: multistart/perturb (決定論摂動列)](TASK-0027.md) - 3h (TDD) 🔵
+- [x] [TASK-0027: multistart/perturb (決定論摂動列)](TASK-0027.md) - 3h (TDD) 🔵 ✅ 完了
 - [ ] [TASK-0028: multistart/basin + MultistartEngine](TASK-0028.md) - 5h (TDD) 🔵
 - [ ] [TASK-0029: operando/echem (CSV マッパ + Loader Protocol)](TASK-0029.md) - 3h (TDD) 🔵
 - [ ] [TASK-0030: operando/cell_phases (固定相プリセット)](TASK-0030.md) - 2h (TDD) 🔵
