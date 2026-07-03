@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Mapping, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -37,6 +37,10 @@ class RefinementResult:
     converged: bool
     n_cycles: int
     free_params: frozenset[str] = field(default_factory=frozenset)
+    # 【大域 fitted 値】: 相に属さない精密化値 (例 {"mu_t": 0.48})。既定 空 dict (非破壊追加) 🔵
+    globals: Mapping[str, float] = field(default_factory=dict)
+    # 【警告列】: 経験推定モード明示 / 逆算 μt 提示 / restraint 逸脱の相関疑い。既定 空 tuple 🔵
+    warnings: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -55,8 +59,16 @@ def param_name(phase_index: int, key: str) -> str:
 
 
 def parse_param(name: str) -> tuple[int, str]:
-    """正準パラメータ名を (相インデックス, キー) へ逆変換。キーはドットを含みうる。"""
+    """正準パラメータ名を (相インデックス, キー) へ逆変換。キーはドットを含みうる。
+
+    ``"phase{i}.{suffix}" -> (i, suffix)`` (既存・不変)。大域パラメータは
+    ``"global.{key}" -> (-1, key)`` を返す。相インデックス -1 は「どの相にも属さない
+    大域パラメータ」の標識 (例: ``"global.mu_t" -> (-1, "mu_t")``)。
+    """
     head, _, tail = name.partition(".")
+    # 【大域分岐】: head=="global" かつ tail 非空のとき相インデックス -1 を返す (D8) 🔵
+    if head == "global" and tail:
+        return -1, tail
     if not head.startswith("phase") or not tail:
         raise ValueError(f"invalid parameter name: {name!r}")
     return int(head[len("phase"):]), tail
