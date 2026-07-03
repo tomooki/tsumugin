@@ -35,7 +35,7 @@
 - [x] [TASK-0032: operando/discrimination (FR-313)](TASK-0032.md) - 6h (TDD) 🔵
 - [x] [TASK-0033: operando/segmentation (FR-316)](TASK-0033.md) - 5h (TDD) 🔵
 - [x] [TASK-0034: operando/hysteresis + output (FR-315/314)](TASK-0034.md) - 4h (TDD) 🔵
-- [ ] [TASK-0035: 公開 API 統合 + E2E + ドキュメント](TASK-0035.md) - 4h (TDD) 🔵
+- [x] [TASK-0035: 公開 API 統合 + E2E + ドキュメント](TASK-0035.md) - 4h (TDD) 🔵
 
 ```
 0023, 0024, 0025, 0030, 0031: 先行依存なし (0023/0024 は既存資産のみ)

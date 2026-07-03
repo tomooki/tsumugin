@@ -1,20 +1,58 @@
-"""Tsumugin — 多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0 + M1 + M2)."""
+"""Tsumugin — 多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0 + M1 + M2 + M3)."""
 
 from __future__ import annotations
 
+# 各サブパッケージ実体からの re-export (サブパッケージ名のアルファベット昇順で配置)。
+# M0/M1/M2/M3 の公開面をトップレベル tsumugin 名前空間へ集約する (別実装でなく is 同一実体 / REQ-404)。
+from .absorption import AbsorptionConfig, transmission_factor
 from .backends.base import RefinementBackend, RefinementModel, RefinementResult
 from .backends.simulated import SimulatedBackend
 from .evidence.ic import AICBackend, BICBackend
 from .evidence.ranking import RankedHypothesis, rank
 from .export import export_gpx
 from .model import (
+    BeamConfig,
+    CellConfig,
+    CellLayer,
     ExternalChannel,
     Hypothesis,
     LatticeParams,
+    MuCalculator,
     PhaseInstance,
     PhaseLifecycle,
     Project,
     RefinementMetrics,
+    XraylibMuCalculator,
+)
+from .multistart import (
+    BasinInfo,
+    MultistartConfig,
+    MultistartEngine,
+    MultistartResult,
+    PerturbationSpec,
+    cluster_basins,
+    generate_starts,
+)
+from .operando import (
+    CELL_PHASE_PRESETS,
+    BiologicMprLoader,
+    BranchComparison,
+    DiscriminationConfig,
+    DiscriminationResult,
+    EchemData,
+    EchemLoader,
+    FixedPhaseSpec,
+    SegmentationConfig,
+    SegmentationResult,
+    TransitionPoint,
+    branch_differences,
+    combined_csv,
+    discriminate_interval,
+    fixed_free_suffixes,
+    read_echem_csv,
+    segment_series,
+    split_branches,
+    transition_point,
 )
 from .pipeline import AnalysisResult, analyze_single_pattern
 from .refinement.staged import RefinementReport, StagedRefinementEngine
@@ -61,16 +99,30 @@ from .store import (
 
 __version__ = "0.1.0"
 
-# アルファベット昇順を維持する (公開面の一貫性。test_m1/m2_symbols_in_dunder_all_and_sorted が固定)。
+# アルファベット昇順を維持する (公開面の一貫性。test_m1/m2/m3_symbols_in_dunder_all_and_sorted が固定)。
+# M3 (operando/multistart/absorption/model.cell) 分は非破壊追記。既存 M0/M1/M2 公開面は不変 (REQ-404)。
 __all__ = [
     "AICBackend",
+    "AbsorptionConfig",
     "AnalysisResult",
     "BICBackend",
+    "BasinInfo",
+    "BeamConfig",
+    "BiologicMprLoader",
+    "BranchComparison",
+    "CELL_PHASE_PRESETS",
+    "CellConfig",
+    "CellLayer",
     "ChangepointConfig",
     "ChangepointSignal",
     "Decision",
+    "DiscriminationConfig",
+    "DiscriminationResult",
+    "EchemData",
+    "EchemLoader",
     "ExternalChannel",
     "FinalSelectionEngine",
+    "FixedPhaseSpec",
     "FrameRecord",
     "FrameSeries",
     "Hypothesis",
@@ -79,9 +131,14 @@ __all__ = [
     "Ledger",
     "LifecycleConfig",
     "LifecycleTracker",
+    "MuCalculator",
+    "MultistartConfig",
+    "MultistartEngine",
+    "MultistartResult",
     "Peak",
     "PersistentLedger",
     "PersistentSnapshotStore",
+    "PerturbationSpec",
     "PhaseCandidate",
     "PhaseInstance",
     "PhaseLifecycle",
@@ -96,6 +153,8 @@ __all__ = [
     "ReviewQueue",
     "SearchConfig",
     "SearchResult",
+    "SegmentationConfig",
+    "SegmentationResult",
     "SequentialConfig",
     "SequentialEngine",
     "SequentialResult",
@@ -105,14 +164,27 @@ __all__ = [
     "ThermalBaseline",
     "Trajectory",
     "TransitionEstimate",
+    "TransitionPoint",
     "UnmatchedPeakReport",
+    "XraylibMuCalculator",
     "analyze_single_pattern",
+    "branch_differences",
+    "cluster_basins",
+    "combined_csv",
     "detect_changepoint",
     "detect_escalations",
+    "discriminate_interval",
     "estimate_transition",
     "export_gpx",
     "fit_thermal_baseline",
+    "fixed_free_suffixes",
+    "generate_starts",
     "phase_from_dict",
     "phase_to_dict",
     "rank",
+    "read_echem_csv",
+    "segment_series",
+    "split_branches",
+    "transition_point",
+    "transmission_factor",
 ]
