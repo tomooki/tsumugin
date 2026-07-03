@@ -71,8 +71,9 @@
 
 ## REQ-021/022: Issue #4/#5 🔵
 
-- [ ] **TC-208-01**: appearing で onset(10%) < midpoint(50%)、disappearing で onset(90%) > midpoint —
-      いずれも onset が「遷移開始側」🔵 *Issue #4*
+- [ ] **TC-208-01**: appearing は onset=10% 交差、disappearing は onset=90% 交差 — いずれも
+      onset が「遷移開始側」(昇温スキャンでは両方向とも onset < midpoint) 🔵 *Issue #4*
+      (訂正: 当初の「disappearing で onset > midpoint」は誤記。TASK-0024 prep で数値検証済み)
 - [ ] **TC-208-02**: 既存 thermal テストが (意味論修正後の期待値で) green 🔵
 - [ ] **TC-208-03**: finite_or_none が _json.py 単一実装になり、tree/webui/serialization が委譲 (挙動不変・全テスト無退行) 🔵 *Issue #5*
 

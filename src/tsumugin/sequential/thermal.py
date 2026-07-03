@@ -4,8 +4,10 @@
 
 - ``fit_thermal_baseline``: 格子定数-温度曲線を多項式 (既定 1 次) でフィットし、残差の中央値/MAD
   ロバスト z が閾値を超えるフレームを ``outlier_frames`` (= ベースライン逸脱 = 転移候補) として分離する。
-- ``estimate_transition``: 相分率のシグモイド遷移から転移温度を onset (10% 交差) / midpoint (50% 交差の
-  線形補間) ± σ で推定する。遷移が無い (定数分率・交差なし・点数不足) 場合は ``None`` を返す。
+- ``estimate_transition``: 相分率のシグモイド遷移から転移温度を onset / midpoint (50% 交差の線形補間)
+  ± σ で推定する。onset は direction に依らず「遷移開始側 (低温側・先行するエッジ)」を指し、
+  appearing (0→1) では分率 10% 交差、disappearing (1→0) では分率 90% 交差を採る (Issue #4 / REQ-021)。
+  いずれの方向でも onset < midpoint。遷移が無い (定数分率・交差なし・点数不足) 場合は ``None`` を返す。
 
 いずれも同一入力で結果がビット同一になる決定論 (REQ-402 / NFR-102) を満たし、算出不能な縮退では例外化・
 非有限漏洩 (M1 教訓 / CLAUDE.md) を避けて ``None`` / 空タプルへ安全側に縮退する。
@@ -26,9 +28,15 @@ _MODIFIED_Z_CONST = 0.6745
 #   正常 (z≲1.3) を明瞭に分離する。🟡 Green 決定 (changepoint.py の既定 5.0 に整合)。
 _OUTLIER_Z_THRESHOLD = 5.0
 
-# 【転移レベル】: onset=分率 10% 交差 / midpoint=分率 50% 交差 (interview Q6 / interfaces.py L188-189)。
-# 🟡 信頼性レベル: interfaces.py の注記に依拠。
-_ONSET_LEVEL = 0.10
+# 【転移レベル】: onset は遷移開始側 = appearing なら分率 10% 交差 / disappearing なら 90% 交差。
+#   midpoint は方向非依存に分率 50% 交差 (Issue #4 / REQ-021 / interfaces.py L372-373)。
+# 【設計方針】: direction 別 onset レベルを named 定数として明示 (真理値表を module 先頭に集約) し、
+#   呼び出し側からインライン算術 (1 - _ONSET_LEVEL) を排して意図を自己文書化する。
+# 🔵 信頼性レベル: requirements §2 の direction 別 onset レベル真理値表に依拠。
+_ONSET_LEVEL = 0.10  # 【appearing onset】: 分率 10% 交差 = 増加相の遷移開始側 (低温側)
+# 【disappearing onset】: 分率 90% 交差 (= 1 - _ONSET_LEVEL) = 減少相の遷移開始側 (低温側)。
+#   appearing の 10% と対称。両方向とも onset < midpoint となる。🔵
+_DISAPPEARING_ONSET_LEVEL = 1.0 - _ONSET_LEVEL
 _MIDPOINT_LEVEL = 0.50
 
 
@@ -59,7 +67,9 @@ class TransitionEstimate:
     """
 
     phase_ref: str  # 【対象相識別子】: 入力 phase_ref を透過保持 🔵
-    onset: float | None  # 【onset】: 分率 10% 交差温度 (線形補間、交差なしは None) 🟡
+    # 【onset】: 遷移開始側 (低温側) の分率交差温度 (線形補間、交差なしは None)。direction に依らず
+    #   onset < midpoint。appearing=10% 交差 / disappearing=90% 交差 (Issue #4 / REQ-021) 🔵
+    onset: float | None
     midpoint: float | None  # 【midpoint】: 分率 50% 交差温度 (線形補間) 🟡
     sigma: float | None  # 【σ】: 遷移幅の代理散布度 (隣接フレーム間隔ベース、> 0) 🟡
     direction: Literal["appearing", "disappearing"]  # 【方向】: 増加→出現 / 減少→消滅 🟡
@@ -175,12 +185,16 @@ def estimate_transition(
 ) -> TransitionEstimate | None:
     """相分率シグモイド遷移から転移温度を onset/midpoint ± σ で推定する純関数。
 
-    【機能概要】: 分率が 50% を横切る温度を midpoint、10% を横切る温度を onset として線形補間で求め、
-      遷移幅の代理散布度 σ (隣接フレーム間隔ベース) と方向を推定する (FR-323 / REQ-008)。
+    【機能概要】: 分率が 50% を横切る温度を midpoint、遷移開始側レベルを横切る温度を onset として
+      線形補間で求め、遷移幅の代理散布度 σ (隣接フレーム間隔ベース) と方向を推定する (FR-323 / REQ-008)。
+    【onset 意味論】: onset は direction に依らず「遷移が始まる側 (低温側・先行するエッジ)」を指す。
+      appearing (0→1) は分率 10% 交差、disappearing (1→0) は分率 90% 交差を採り、いずれの方向でも
+      onset < midpoint となる (Issue #4 / REQ-021 / TC-208-01)。
     【実装方針】: 補間に必要な隣接対が作れない (点数 < 2) / 50% 交差が無い (定数分率等) 場合は例外化せず
       None へ縮退。方向は分率の全体トレンドで判定。乱数・I/O なしで決定論 (同一入力ビット同一)。
-    【テスト対応】: TE-N01〜N03 (midpoint/方向/識別子) / TE-E01〜E03 (定数・空/単一・frozen) / TE-B01〜B03。
-    🔵 信頼性レベル: requirements §2.2 / interfaces.py L199-203 / TC-105-04 に依拠 (onset/σ/方向は 🟡)。
+    【テスト対応】: TE-N01〜N03 (midpoint/方向/識別子) / TE-E01〜E03 (定数・空/単一・frozen) / TE-B01〜B03 /
+      TC-T-N02〜N03・TC-T-E01・TC-T-B01〜B04 (disappearing onset=90% 交差の意味論修正)。
+    🔵 信頼性レベル: requirements §2.2 / interfaces.py L372-373 / TC-105-04 / TASK-0024 requirements §2 に依拠。
     @param temperatures: フレーム毎の温度 (fractions と同長)
     @param fractions: フレーム毎の相分率トラジェクトリ (0..1 想定)
     @param phase_ref: 対象相の識別子 (キーワード専用、結果へ透過保持)
@@ -201,8 +215,11 @@ def estimate_transition(
         "appearing" if float(fractions[-1]) >= float(fractions[0]) else "disappearing"
     )
 
-    # 【onset 推定】: 分率 10% を最初に横切る温度 (交差が無ければ None) 🟡
-    onset_hit = _interpolate_crossing(temperatures, fractions, _ONSET_LEVEL)
+    # 【onset レベル選択】: onset は遷移開始側 (低温側) — appearing は 10% 交差、disappearing は
+    #   90% 交差 (_DISAPPEARING_ONSET_LEVEL) を採る。direction 依存化はこの 1 点のみの最小修正 (Issue #4) 🔵
+    onset_level = _ONSET_LEVEL if direction == "appearing" else _DISAPPEARING_ONSET_LEVEL
+    # 【onset 推定】: 選択レベルを最初に横切る温度 (交差が無ければ None へ縮退し非有限を漏らさない) 🔵
+    onset_hit = _interpolate_crossing(temperatures, fractions, onset_level)
     onset = onset_hit[0] if onset_hit is not None else None
 
     # 【σ 推定】: 遷移が起きた隣接フレームの温度間隔を遷移幅の代理散布度とする (> 0・有限・間隔オーダー) 🟡

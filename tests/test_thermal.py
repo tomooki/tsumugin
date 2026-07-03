@@ -153,12 +153,12 @@ def test_transition_sigmoid_up_midpoint_onset_sigma():
 
 
 def test_transition_sigmoid_down_direction_disappearing():
-    # 【テスト目的】: 減少シグモイド (1→0) で direction="disappearing" になること (TE-N02)
+    # 【テスト目的】: 減少シグモイド (1→0) で direction="disappearing"・onset=遷移開始側 (TE-N02 / TC-T-N02)
     # 【テスト内容】: 中心 400 K の減少シグモイド分率で estimate_transition を呼ぶ
-    # 【期待される動作】: direction="disappearing"、midpoint≈400 (方向非依存に 50% 交差)、σ>0
-    # 🟡 信頼性レベル: interfaces.py L191 direction (🟡) / 完了条件「方向判定 🟡」に依拠
+    # 【期待される動作】: direction="disappearing"、midpoint≈400 (方向非依存に 50% 交差)、σ>0、onset<midpoint
+    # 🔵 信頼性レベル: TASK-0024 要件定義 §2 真理値表 / D-Q8 (L44-48) / interfaces.py L372-373 に依拠
 
-    # 【テストデータ準備】: 相が昇温で消滅する 1→0 の減少シグモイド遷移 (方向判定の検証)
+    # 【テストデータ準備】: 相が昇温で消滅する 1→0 の減少シグモイド遷移 (方向判定・onset 意味論の検証)
     # 【初期条件設定】: temperatures 300..490、phase_ref 指定
     est = estimate_transition(TEMPS_20, SIGMOID_DOWN, phase_ref="phase_A")
 
@@ -168,6 +168,13 @@ def test_transition_sigmoid_down_direction_disappearing():
     assert est.direction == "disappearing"  # 【確認内容】: 減少基調は消滅方向 🟡
     assert est.midpoint == pytest.approx(400.0, abs=10.0)  # 【確認内容】: midpoint は方向非依存 🟡
     assert est.sigma > 0.0  # 【確認内容】: σ が正 🟡
+
+    # TASK-0024 (Issue #4): disappearing の onset は 90% 交差=遷移開始側 (低温側) を指すべき。
+    # 旧実装は direction 非依存に 10% 交差 (≈433.54 K, onset>midpoint) を返し「遷移開始温度」を誤読させた。
+    # 90% 交差 (≈366.46 K) へ切り替わり onset<midpoint となることを追加固定する (TC-T-N02, 理由コメント付き最小修正)。
+    assert est.onset is not None  # 【確認内容】: disappearing でも onset が縮退せず算出される 🔵
+    assert est.onset < est.midpoint  # 【確認内容】: onset は遷移開始側 (低温側, < midpoint) 🔵
+    assert math.isfinite(est.onset)  # 【確認内容】: onset に inf/nan を漏らさない 🔵
 
 
 def test_transition_phase_ref_preserved():
@@ -380,3 +387,124 @@ def test_transition_deterministic_bit_identical():
     # 【結果検証】: float フィールド含め全フィールドが構造的に等価であること
     # 【期待値確認】: frozen dataclass の == で全フィールド一致
     assert est1 == est2  # 【確認内容】: 2 回呼び出しがビット同一 (決定論) 🔵
+
+
+# ---------------------------------------------------------------------------
+# 4. TASK-0024: onset 意味論修正 (Issue #4) — disappearing の onset を 90% 交差=遷移開始側へ
+#    ⚠️ 期待順序: 90% 交差メカニズム + 数値検証により両方向とも onset < midpoint (遷移開始側=低温側)。
+#       TASK-0024.md/TC-208-01 の「disappearing: onset > midpoint」表記は誤記のため onset < midpoint で固定。
+#       SIGMOID_DOWN 実測交差: 90% ≈ 366.46 K < 50% = 400 K < 10% ≈ 433.54 K。
+# ---------------------------------------------------------------------------
+
+# 【onset 交差レベルの具体温度 (SIGMOID_DOWN, 中心 400 K・幅 15・線形補間の実測値)】:
+#   90% 交差 ≈ 366.46 K (新: disappearing onset=遷移開始側) / 10% 交差 ≈ 433.54 K (旧: 誤って高温側)。
+_DISAPPEARING_ONSET_90PCT = 366.46  # disappearing の正しい onset (90% 交差=低温側) 🔵
+_DISAPPEARING_ONSET_10PCT_OLD = 433.54  # 旧実装の誤 onset (10% 交差=高温側)。修正後は返してはならない 🔵
+
+
+def test_transition_disappearing_onset_is_ninety_pct_value():
+    # 【テスト目的】: disappearing の onset が 90% 交差の具体値 (≈366.46 K) で、旧 10% 交差 (≈433.54 K) でないこと (TC-T-N03)
+    # 【テスト内容】: 減少シグモイド (1→0) で estimate_transition を呼び onset の値レベルを固定検証
+    # 【期待される動作】: onset ≈ 366.46 K (90% 交差=低温側)、onset < midpoint。旧値 433.54 K を返さない
+    # 🔵 信頼性レベル: 要件定義 §2 具体値表 / 数値検証 (90% 交差=366.46 K) に直接依拠
+
+    # 【テストデータ準備】: onset が「10%→90% 交差」へ切り替わったことを具体値で明示的に固定 (回帰防止)
+    # 【初期条件設定】: TEMPS_20 (300..490 K)、SIGMOID_DOWN、phase_ref 指定
+    est = estimate_transition(TEMPS_20, SIGMOID_DOWN, phase_ref="phase_A")
+
+    # 【結果検証】: 90% 交差レベルを使ったこと (旧実装は 433.54 K を返し本 assert が落ちる) を値レベルで固定
+    # 【期待値確認】: onset≈366.46 K、旧 433.54 K でない、onset<midpoint
+    assert est is not None and est.direction == "disappearing"  # 【確認内容】: disappearing 遷移 🔵
+    assert est.onset == pytest.approx(_DISAPPEARING_ONSET_90PCT, abs=1.0)  # 【確認内容】: onset=90% 交差値 🔵
+    assert est.onset != pytest.approx(_DISAPPEARING_ONSET_10PCT_OLD, abs=1.0)  # 【確認内容】: 旧 10% 値でない 🔵
+    assert est.onset < est.midpoint  # 【確認内容】: onset は遷移開始側 (低温側) 🔵
+
+
+def test_transition_disappearing_shallow_below_ninety_returns_none():
+    # 【テスト目的】: 90%/50% を横切らない浅い disappearing 遷移は例外化せず None へ縮退 (TC-T-E01)
+    # 【テスト内容】: 分率が 0.90/0.50 を割らない微減トラジェクトリ (1.0→0.924) で estimate_transition を呼ぶ
+    # 【期待される動作】: midpoint (50%) 交差が無いため None。onset レベル変更は縮退の前段を壊さない
+    # 🟡 信頼性レベル: 要件定義 §4 エッジ (90% 未達→None) / 既存 _interpolate_crossing の None 経路に依拠
+
+    # 【テストデータ準備】: 相がわずかに減るだけで消滅しない区間 (0.9 を割らない微減=遷移未確定)
+    # 【初期条件設定】: fractions=[1.0-0.004*i] (1.0→0.924)、TEMPS_20、phase_ref="A"
+    shallow = [1.0 - 0.004 * i for i in range(20)]
+    result = estimate_transition(TEMPS_20, shallow, phase_ref="A")
+
+    # 【結果検証】: 交差なしを None で表現し、偽の onset/midpoint・非有限を漏らさないこと
+    # 【期待値確認】: 戻り値が None
+    assert result is None  # 【確認内容】: 90%/50% 未達は None に縮退 (非例外化) 🟡
+
+
+def test_transition_disappearing_ninety_pct_on_grid_point():
+    # 【テスト目的】: disappearing で分率がちょうど 90% の端点一致でも一意な onset・0 除算なし (TC-T-B01)
+    # 【テスト内容】: index 1 の分率が丁度 0.90、index 2 が丁度 0.50 の分率列で estimate_transition を呼ぶ
+    # 【期待される動作】: onset=350 K (90% 端点一致)、midpoint=400 K (50% 端点一致)、onset<midpoint、有限
+    # 🟡 信頼性レベル: 既存 _interpolate_crossing の端点一致契約 / 要件定義 §4 エッジに依拠
+
+    # 【テストデータ準備】: 分率がグリッド上で丁度 90%/50% になるフレーム (端点一致の罠を突く)
+    # 【初期条件設定】: temperatures=[300,350,400,450,500]、fractions=[1.0,0.9,0.5,0.1,0.0]
+    est = estimate_transition(
+        [300.0, 350.0, 400.0, 450.0, 500.0], [1.0, 0.9, 0.5, 0.1, 0.0], phase_ref="A"
+    )
+
+    # 【結果検証】: 90% 端点一致で onset=350、50% 端点一致で midpoint=400、0 除算・NaN なし
+    # 【期待値確認】: onset≈350、midpoint≈400、onset<midpoint、onset 有限
+    assert est is not None and est.direction == "disappearing"  # 【確認内容】: disappearing 遷移 🟡
+    assert est.onset == pytest.approx(350.0)  # 【確認内容】: 90% 端点一致 onset=350 K 🟡
+    assert est.midpoint == pytest.approx(400.0)  # 【確認内容】: 50% 端点一致 midpoint=400 K 🟡
+    assert est.onset < est.midpoint and math.isfinite(est.onset)  # 【確認内容】: 遷移開始側・有限 🟡
+
+
+def test_transition_direction_tie_is_appearing_with_ten_pct_onset():
+    # 【テスト目的】: direction 判定の等号境界 (fractions[-1]==fractions[0]) は appearing 側で onset=10% レベル (TC-T-B02)
+    # 【テスト内容】: 始終端が等値 (0.0) の山型分率で estimate_transition を呼び direction/onset を検査
+    # 【期待される動作】: direction="appearing" (等号は appearing 側)、onset<midpoint (前半上昇の 10% 交差)
+    # 🟡 信頼性レベル: 既存 direction 判定式 (fractions[-1]>=fractions[0]) / 要件定義 §2 真理値表に依拠
+
+    # 【テストデータ準備】: 出現後に再消滅する山型分率 (始終端 0.0 で等号境界に当たる)
+    # 【初期条件設定】: temperatures=[300,350,400,450,500]、fractions=[0.0,0.5,1.0,0.5,0.0]
+    est = estimate_transition(
+        [300.0, 350.0, 400.0, 450.0, 500.0], [0.0, 0.5, 1.0, 0.5, 0.0], phase_ref="A"
+    )
+
+    # 【結果検証】: 等号で appearing に確定し、onset は 10% 交差 (前半の低温側) で midpoint より前側
+    # 【期待値確認】: direction="appearing"、onset<midpoint
+    assert est is not None  # 【確認内容】: 遷移が検出される 🟡
+    assert est.direction == "appearing"  # 【確認内容】: 始終端等値は appearing 側に倒れる 🟡
+    assert est.onset < est.midpoint  # 【確認内容】: appearing の onset は 10% 交差=低温側 🟡
+
+
+def test_transition_disappearing_deterministic_bit_identical():
+    # 【テスト目的】: disappearing 経路 (90% 交差) の決定論ビット同一 (TC-T-B03)
+    # 【テスト内容】: 減少シグモイドで 2 回独立に estimate_transition を呼び == を検証
+    # 【期待される動作】: onset レベル選択を含め同一入力 2 回で TransitionEstimate が == (ビット同一)
+    # 🔵 信頼性レベル: 要件定義 §3 (決定論 NFR-102) / 既存 test_transition_deterministic_bit_identical の disappearing 版
+
+    # 【テストデータ準備】: 90% 交差経路の丸め揺らぎゼロを検証 (監査・再現性)。決定論は pytest.approx 禁止・== 比較
+    # 【初期条件設定】: TEMPS_20、SIGMOID_DOWN、phase_ref="A" を 2 回
+    e1 = estimate_transition(TEMPS_20, SIGMOID_DOWN, phase_ref="A")
+    e2 = estimate_transition(TEMPS_20, SIGMOID_DOWN, phase_ref="A")
+
+    # 【結果検証】: onset/midpoint/sigma/direction/phase_ref の全フィールドが構造的に等価であること
+    # 【期待値確認】: frozen dataclass の == で全フィールド一致
+    assert e1 == e2  # 【確認内容】: 2 回呼び出しがビット同一 (disappearing 経路も決定論) 🔵
+
+
+@pytest.mark.parametrize("fractions", [SIGMOID_DOWN, SIGMOID_UP])
+def test_transition_no_nonfinite_leak_both_directions(fractions):
+    # 【テスト目的】: onset レベル変更後も inf/nan を下流へ漏らさない (両方向, TC-T-B04)
+    # 【テスト内容】: disappearing/appearing 双方で onset/midpoint/sigma の有限性 (or None) を検査
+    # 【期待される動作】: onset は有限 or None、midpoint は有限、sigma は有限 or None。inf/nan を返さない
+    # 🔵 信頼性レベル: 要件定義 §3 (非有限漏洩なし) / CLAUDE.md / 既存 math.isfinite 検査方針に依拠
+
+    # 【テストデータ準備】: JSON/CSV 配信前の値純化前提 (非有限禁止)。90% 交差経路も対象に含める
+    # 【初期条件設定】: TEMPS_20、SIGMOID_DOWN / SIGMOID_UP をパラメータ化、phase_ref="A"
+    est = estimate_transition(TEMPS_20, fractions, phase_ref="A")
+
+    # 【結果検証】: 有限値は math.isfinite、交差なしは None のみ。inf/nan を一切下流へ渡さないこと
+    # 【期待値確認】: onset (有限 or None)・midpoint 有限・sigma (有限 or None)
+    assert est is not None  # 【確認内容】: 遷移が検出される 🔵
+    assert est.onset is None or math.isfinite(est.onset)  # 【確認内容】: onset は有限 or None 🔵
+    assert math.isfinite(est.midpoint)  # 【確認内容】: midpoint に inf/nan なし 🔵
+    assert est.sigma is None or math.isfinite(est.sigma)  # 【確認内容】: sigma は有限 or None 🔵
