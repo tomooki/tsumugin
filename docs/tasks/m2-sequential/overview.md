@@ -27,7 +27,7 @@
 - [x] [TASK-0013: PersistentLedger (JSONL 追記+検証)](TASK-0013.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0014: PersistentSnapshotStore](TASK-0014.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0015: FrameSeries + changepoint 検出](TASK-0015.md) - 4h (TDD) 🔵 ✅ 完了 (2026-07-03)
-- [ ] [TASK-0016: LifecycleTracker (ヒステリシス)](TASK-0016.md) - 3h (TDD) 🔵
+- [x] [TASK-0016: LifecycleTracker (ヒステリシス)](TASK-0016.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [ ] [TASK-0017: Trajectory + to_csv](TASK-0017.md) - 3h (TDD) 🔵
 - [ ] [TASK-0018: thermal (ベースライン+転移温度)](TASK-0018.md) - 4h (TDD) 🔵
 - [ ] [TASK-0019: SequentialEngine (オンライン逐次+局所探索)](TASK-0019.md) - 6h (TDD) 🔵

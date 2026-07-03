@@ -7,11 +7,14 @@ TASK-0015 では時系列フレーム列を保持する ``FrameSeries`` と、�
 from __future__ import annotations
 
 from .changepoint import ChangepointConfig, ChangepointSignal, detect_changepoint
+from .lifecycle import LifecycleConfig, LifecycleTracker
 from .series import FrameSeries
 
 __all__ = [
     "ChangepointConfig",
     "ChangepointSignal",
     "FrameSeries",
+    "LifecycleConfig",
+    "LifecycleTracker",
     "detect_changepoint",
 ]
