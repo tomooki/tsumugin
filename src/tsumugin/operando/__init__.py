@@ -7,6 +7,9 @@ TASK-0029 では電気化学 (充放電) CSV を読み込み、電圧/電流/容
 
 TASK-0030 ではセル固定相プリセット層 (``FixedPhaseSpec`` / ``CELL_PHASE_PRESETS`` /
 ``fixed_free_suffixes``) を追加する (FR-312 / REQ-009)。
+
+TASK-0032 では固溶体 vs 二相判別層 (``DiscriminationConfig`` / ``DiscriminationResult`` /
+``discriminate_interval``) を追加する (FR-313 / 設計 D4)。
 """
 
 from __future__ import annotations
@@ -15,6 +18,11 @@ from .cell_phases import (
     CELL_PHASE_PRESETS,
     FixedPhaseSpec,
     fixed_free_suffixes,
+)
+from .discrimination import (
+    DiscriminationConfig,
+    DiscriminationResult,
+    discriminate_interval,
 )
 from .echem import (
     BiologicMprLoader,
@@ -26,9 +34,12 @@ from .echem import (
 __all__ = [
     "CELL_PHASE_PRESETS",
     "BiologicMprLoader",
+    "DiscriminationConfig",
+    "DiscriminationResult",
     "EchemData",
     "EchemLoader",
     "FixedPhaseSpec",
+    "discriminate_interval",
     "fixed_free_suffixes",
     "read_echem_csv",
 ]
