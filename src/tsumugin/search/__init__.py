@@ -9,11 +9,13 @@ from .matcher import (
     unmatched_peaks,
 )
 from .peaks import Peak, find_peaks
+from .pruning import dynamic_threshold
 
 __all__: list[str] = [
     "MatchResult",
     "Peak",
     "UnmatchedPeakReport",
+    "dynamic_threshold",
     "find_peaks",
     "match_score",
     "unmatched_peaks",

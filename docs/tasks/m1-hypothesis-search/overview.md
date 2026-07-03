@@ -27,7 +27,7 @@
 - [x] [TASK-0001: web extra 追加とパッケージ骨格](TASK-0001.md) - 1h (DIRECT) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0002: 観測ピーク検出 find_peaks](TASK-0002.md) - 3h (TDD) 🟡 ✅ 完了 (2026-07-03)
 - [x] [TASK-0003: PeakMatcher (スコア/未マッチ)](TASK-0003.md) - 4h (TDD) 🔵 ✅ 完了 (2026-07-03)
-- [ ] [TASK-0004: 動的枝刈り閾値 dynamic_threshold](TASK-0004.md) - 2h (TDD) 🔵
+- [x] [TASK-0004: 動的枝刈り閾値 dynamic_threshold](TASK-0004.md) - 2h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [ ] [TASK-0005: Jaccard クラスタ + FoM + Jenks](TASK-0005.md) - 4h (TDD) 🔵
 - [ ] [TASK-0006: 木探索コア (展開/探索精密化/ledger)](TASK-0006.md) - 6h (TDD) 🔵
 - [ ] [TASK-0007: 探索後処理 (良好解/フル精密化/未知相/summary)](TASK-0007.md) - 4h (TDD) 🔵
