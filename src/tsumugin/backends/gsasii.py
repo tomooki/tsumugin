@@ -167,7 +167,6 @@ class GSASIIBackend:
     def refine(
         self, model: RefinementModel, *, max_cycles: int = 20
     ) -> RefinementResult:
-        G2sc = _g2sc()
         two_theta = np.asarray(model.two_theta, dtype=float)
         intensity = np.asarray(model.intensity, dtype=float)
 
@@ -176,14 +175,16 @@ class GSASIIBackend:
 
         with tempfile.TemporaryDirectory(prefix="tsumugin-g2ref-") as tmp:
             tmp_path = Path(tmp)
-            instprm = tmp_path / "inst.instprm"
-            datafile = tmp_path / "pattern.xye"
-            _write_instprm(instprm, self.wavelength)
-            _write_xye(datafile, two_theta, intensity, model.weights)
-
-            gpx = G2sc.G2Project(newgpx=str(tmp_path / "refine.gpx"))
-            hist = gpx.add_powder_histogram(str(datafile), str(instprm))
-            g2phases = self._add_phases(gpx, hist, model.phases, tmp_path)
+            # 【gpx 構築】: 共有ヘルパで instprm/xye 書き出し + 観測ヒストグラム/全相追加を行う。
+            # 一時 refine.gpx を生成し、精密化フラグ設定・読み戻しは本メソッドで続ける 🔵
+            gpx, hist, g2phases = self._build_project(
+                tmp_path / "refine.gpx",
+                tmp_path,
+                model.phases,
+                two_theta,
+                intensity,
+                model.weights,
+            )
 
             for i, g2ph in enumerate(g2phases):
                 if i in cell_free:
@@ -233,6 +234,43 @@ class GSASIIBackend:
         )
 
     # ---- 内部ヘルパ -----------------------------------------------------
+
+    def _build_project(
+        self,
+        gpx_path: Path,
+        work_dir: Path,
+        phases: Sequence[PhaseInstance],
+        two_theta: np.ndarray,
+        intensity: np.ndarray,
+        weights: np.ndarray | None,
+    ) -> tuple[object, object, list[object]]:
+        """観測データ入り GSAS-II プロジェクトを構築する共有ヘルパ (D-Q8 単一情報源)。
+
+        【責務】: 補助ファイル (instprm/xye) の書き出しから gpx_path への G2Project 生成、
+        観測ヒストグラム追加、全相追加までを担う。精密化フラグ設定・do_refinements・保存・
+        読み戻しといった用途固有の処理は呼び出し側 (refine / export_gpx) の責務とする。
+        🔵 信頼性レベル: 要件定義 §2.3 / note §3.1 の推奨シグネチャに準拠
+
+        :param gpx_path: 生成する .gpx のパス (refine は一時、export_gpx は永続)
+        :param work_dir: instprm/xye/cif を置く作業ディレクトリ
+        :param phases: gpx に追加する相集合
+        :param two_theta: 観測 2θ グリッド
+        :param intensity: 観測強度 (Yobs としてヒストグラムに埋め込む)
+        :param weights: 観測重み。None なら _write_xye の統計重み既定
+        :returns: (gpx, hist, g2phases) — 呼び出し側が用途固有処理を続けるためのハンドル
+        """
+        G2sc = _g2sc()
+        # 【補助ファイル書き出し】: 装置パラメータと観測パターンを作業ディレクトリへ置く 🔵
+        instprm = work_dir / "inst.instprm"
+        datafile = work_dir / "pattern.xye"
+        _write_instprm(instprm, self.wavelength)
+        _write_xye(datafile, two_theta, intensity, weights)
+
+        # 【プロジェクト構築】: gpx 生成 → 観測ヒストグラム追加 → 全相追加 🔵
+        gpx = G2sc.G2Project(newgpx=str(gpx_path))
+        hist = gpx.add_powder_histogram(str(datafile), str(instprm))
+        g2phases = self._add_phases(gpx, hist, phases, work_dir)
+        return gpx, hist, g2phases
 
     def _recognized(
         self, free_params: frozenset[str], n_phases: int
