@@ -146,7 +146,7 @@ class Trajectory:
             str(record.refine_failed),
         ]
 
-        # 【当該フレームの相を ref で引けるよう索引化】: 同一 ref は先勝ち (契約上 ref は一意想定) 🔵
+        # 【当該フレームの相を ref で引けるよう索引化】: dict 内包のため同一 ref は後勝ち (契約上 ref は一意) 🔵
         phase_by_ref = {phase.phase_ref: phase for phase in record.phases}
 
         for ref in phase_refs:

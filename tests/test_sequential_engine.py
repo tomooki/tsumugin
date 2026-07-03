@@ -679,3 +679,21 @@ def test_non_improving_evidence_keeps_current_and_records_reject():
         h.frame_range is not None and "B" in _refs(h.phases)
         for h in result.hypotheses.values()
     )  # 【確認内容】: 新採択 (B 込み frame_range) が増えない 🟡
+
+
+# ---------------------------------------------------------------------------
+# PR #2 レビュー指摘対応 (履歴量子化の挙動を回帰テストで固定)
+# ---------------------------------------------------------------------------
+
+
+def test_quantize_history_suppresses_noise_floor_but_keeps_real_change():
+    # 【テスト目的】: changepoint 履歴の 6 桁量子化 (小数第 6 位) の両側挙動を固定する
+    #   (a) 1e-7 級のノイズフロアジッタは同一値に潰れる (偽発火の材料を消す)
+    #   (b) 1e-4 級の真の緩慢な変化は量子化後も区別可能 (真の変化を潰さない)
+    q = SequentialEngine._quantize_history
+    # (a) ノイズフロア: 5.0 ± 1e-8 は全て同一値へ
+    assert q(5.0 + 1e-8) == q(5.0) == q(5.0 - 1e-8) == 5.0
+    # (b) 物理的に意味のある変化 (1e-4 Å 級) は保存される
+    assert q(5.0001) != q(5.0)
+    # 丸めは小数第 6 位固定 (round half to even) であることを固定
+    assert q(1.2345678) == 1.234568

@@ -50,6 +50,23 @@ def _value_or_default(value: float | None, default: float) -> float:
     return default if value is None else value
 
 
+def _require_finite_lattice(value: Any, field: str) -> float:
+    """格子 a/b/c の復元値を検証する。None (非有限純化済み) と非有限は ValueError。
+
+    格子長は構造的必須値で、既定値による捏造も None のままの復元 (下流の数値演算で
+    沈黙破綻) も許されない。fail-loud で明示拒否する (PR #2 レビュー指摘対応)。
+    """
+    if value is None:
+        raise ValueError(
+            f"lattice.{field} が None (非有限として純化済み) のため PhaseInstance を"
+            " 復元できません。非有限格子の相は永続化対象外です。"
+        )
+    v = float(value)
+    if not math.isfinite(v):
+        raise ValueError(f"lattice.{field}={v!r} は非有限のため復元できません。")
+    return v
+
+
 def phase_to_dict(phase: PhaseInstance) -> dict[str, Any]:
     """【機能概要】: PhaseInstance を JSON ネイティブ型のみの dict へ直列化する。
     【実装方針】: 要件定義 §2.1 の固定スキーマに従い、全 float フィールドを
@@ -108,9 +125,11 @@ def phase_from_dict(data: Mapping[str, Any]) -> PhaseInstance:
     # 【必須キー取り出し】: phase_ref / lattice は契約上必須 (欠落は KeyError に委ねる) 🔵
     lattice_data: Mapping[str, Any] = data["lattice"]
     lattice = LatticeParams(
-        a=lattice_data["a"],
-        b=lattice_data["b"],
-        c=lattice_data["c"],
+        # 【格子検証】: a/b/c は構造的必須。None (非有限純化済み) は既定値で捏造せず
+        #   fail-loud で拒否する (往復非対称の解消、PR #2 レビュー MEDIUM 対応)
+        a=_require_finite_lattice(lattice_data["a"], "a"),
+        b=_require_finite_lattice(lattice_data["b"], "b"),
+        c=_require_finite_lattice(lattice_data["c"], "c"),
         # 【欠損補完】: 角欠落 (旧スキーマ) は既定 90.0 で補完 (後方互換) 🟡
         alpha=_value_or_default(lattice_data.get("alpha"), 90.0),
         beta=_value_or_default(lattice_data.get("beta"), 90.0),

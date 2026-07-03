@@ -662,3 +662,40 @@ def test_current_id_initial_and_reopen_value(tmp_path):
     assert st2.current_id == "snap-0001"  # 【確認内容】: 再オープン後も最新 save を指す
     s = st2.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="c")  # snap-0002
     assert s.parent_id == "snap-0001"  # 【確認内容】: 後続 save が最新へ連結
+
+
+# ---------------------------------------------------------------------------
+# PR #2 レビュー指摘対応 (snapshot 破損の fail-loud / 非有限格子の書き込み拒否)
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_store_corrupted_line_raises_integrity_error(tmp_path):
+    # 【テスト目的】: 不正 JSON 行を含む snapshot JSONL の再オープンが
+    #   SnapshotIntegrityError で fail-loud し、ファイルを修復しないことの検証
+    from tsumugin.errors import SnapshotIntegrityError
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snaps.jsonl"
+    st = PersistentSnapshotStore(path)
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5), scale=1.0),), label="a")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("{broken json\n")
+    before = path.read_bytes()
+    with pytest.raises(SnapshotIntegrityError, match="2 行目"):
+        PersistentSnapshotStore(path)
+    assert path.read_bytes() == before  # 無修復・ファイル無変更
+
+
+def test_snapshot_store_rejects_non_finite_lattice_before_write(tmp_path):
+    # 【テスト目的】: 非有限格子の相は「復元不能な行」になるため、書き込み前に
+    #   ValueError で拒否しファイルを汚さないことの検証 (PR #2 レビュー MEDIUM 対応)
+    import math
+
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snaps.jsonl"
+    st = PersistentSnapshotStore(path)
+    bad = PhaseInstance("X", LatticeParams(math.nan, 5, 5), scale=1.0)
+    with pytest.raises(ValueError, match="lattice.a"):
+        st.save((bad,), label="diverged")
+    assert not path.exists()  # 復元不能な行を一切書き込まない

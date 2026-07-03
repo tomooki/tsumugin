@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..errors import LedgerIntegrityError
+from ..errors import LedgerIntegrityError, SnapshotIntegrityError
 from ..model import PhaseInstance
 from .ledger import GENESIS_HASH, Ledger, LedgerEntry, _compute_hash, verify_entries
 from .serialization import phase_from_dict, phase_to_dict
@@ -163,19 +163,27 @@ class PersistentSnapshotStore:
         🔵 信頼性レベル: 要件定義 §2.1 動作 1-4（末尾空行スキップは 🟡）
         """
         text = self._path.read_text(encoding="utf-8")
-        for line in text.splitlines():
+        for line_no, line in enumerate(text.splitlines(), start=1):
             # 【空行スキップ】: 末尾の空行・改行のみの行は破損扱いにせず無視 🟡
             if not line.strip():
                 continue
-            row = json.loads(line)
-            # 【phases 型復元】: dict 配列を phase_from_dict で PhaseInstance タプルへ 🔵
-            phases = tuple(phase_from_dict(p) for p in row["phases"])
-            snap = Snapshot(
-                id=row["id"],
-                label=row["label"],
-                phases=phases,
-                parent_id=row["parent_id"],
-            )
+            # 【破損の fail-loud】: 不正 JSON / 必須キー欠落 / 復元不能 phases は
+            #   SnapshotIntegrityError へ包んで無修復で報告する (ledger と対称、P2)
+            try:
+                row = json.loads(line)
+                # 【phases 型復元】: dict 配列を phase_from_dict で PhaseInstance タプルへ 🔵
+                phases = tuple(phase_from_dict(p) for p in row["phases"])
+                snap = Snapshot(
+                    id=row["id"],
+                    label=row["label"],
+                    phases=phases,
+                    parent_id=row["parent_id"],
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise SnapshotIntegrityError(
+                    f"snapshot JSONL の {line_no} 行目が破損しています"
+                    f" ({self._path}): {exc}"
+                ) from exc
             self._snaps.append(snap)
             self._index[snap.id] = snap
             # 【current_id 継続】: 最後まで回ると最新 save の id が残る（連番・親連結の起点）🟡
@@ -196,11 +204,21 @@ class PersistentSnapshotStore:
             id=snap_id, label=label, phases=tuple(phases), parent_id=self._current_id
         )
         # 【行スキーマ】: 1 snapshot = 1 行。phases を phase_to_dict で JSON-safe dict 化 🔵
+        phase_rows = [phase_to_dict(p) for p in snap.phases]
+        # 【書き込み前検証】: 非有限格子 (dict 化で None) は復元不能のため、ファイルへ
+        #   書く前に fail-loud で拒否する (復元不能な行を永続化しない、PR #2 レビュー対応)
+        for i, phase_row in enumerate(phase_rows):
+            for axis in ("a", "b", "c"):
+                if phase_row["lattice"][axis] is None:
+                    raise ValueError(
+                        f"phases[{i}] の lattice.{axis} が非有限のため snapshot として"
+                        " 永続化できません (復元不能な行は書き込まない)。"
+                    )
         row = {
             "id": snap_id,
             "label": label,
             "parent_id": snap.parent_id,
-            "phases": [phase_to_dict(p) for p in snap.phases],
+            "phases": phase_rows,
         }
         # 【追記 I/O】: "a" モードで 1 行 + 改行のみ書く（既存バイト列不変 / 不在なら新規作成）🔵
         with open(self._path, "a", encoding="utf-8") as f:

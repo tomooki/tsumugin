@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import pytest
 
 from tsumugin.model import LatticeParams, PhaseInstance, PhaseLifecycle
 from tsumugin.store.ledger import _canonical_json
@@ -347,3 +348,28 @@ def test_confidence_boundary_values_roundtrip():
     # 【結果検証】: 端点が丸め・クランプ・偽陽性 None なく保持されること
     assert q0.lifecycle.confidence == 0.0  # 【確認内容】: 下限 0.0 を保持 (None 化しない) 🟡
     assert q1.lifecycle.confidence == 1.0  # 【確認内容】: 上限 1.0 を保持 🟡
+
+
+# ---------------------------------------------------------------------------
+# 4. PR #2 レビュー指摘対応 (往復非対称の解消)
+# ---------------------------------------------------------------------------
+
+
+def test_from_dict_rejects_none_lattice_fail_loud():
+    # 【テスト目的】: 非有限で None 化された格子 a/b/c を from_dict が既定値で捏造せず
+    #   fail-loud で拒否することの検証 (PR #2 レビュー MEDIUM: 往復非対称の解消)
+    # 【期待される動作】: ValueError (LatticeParams(a=None) の沈黙生成を許さない)
+    p = PhaseInstance("A", LatticeParams(math.nan, 5, 5))
+    d = phase_to_dict(p)
+    assert d["lattice"]["a"] is None  # to_dict 側は既存契約どおり None 化
+    with pytest.raises(ValueError, match="lattice.a"):
+        phase_from_dict(d)
+
+
+def test_from_dict_rejects_non_finite_lattice_value():
+    # 【テスト目的】: 外部生成 dict が非有限格子を直接持つ場合も復元を拒否する
+    p = PhaseInstance("A", LatticeParams(5, 5, 5))
+    d = phase_to_dict(p)
+    d["lattice"]["b"] = math.inf
+    with pytest.raises(ValueError, match="lattice.b"):
+        phase_from_dict(d)
