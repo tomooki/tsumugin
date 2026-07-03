@@ -23,9 +23,11 @@ best-first で構築し、探索モード精密化・BIC 一次評価・ラン�
 降格して探索を続行する。全ノードに ``RefinementMetrics`` を付与し、全仮説 inf 時の
 softmax NaN 縮退を ``_FiniteGuardedEvidence`` でガードする。
 
-スコープ境界: 本タスク (TASK-0006) は探索コア + ``SearchResult`` 骨格まで。
-``good_cluster_ids`` / ``unmatched`` / ``final_reports`` / ``warnings`` / ``to_summary()``
-は空値/スタブとし、実体は TASK-0007 が実装する。
+探索後処理 (TASK-0007): 探索コアの後段で ``SearchResult`` の後処理フィールドを実体化する。
+Jenks 良好解抽出 (``good_cluster_ids``)、良好解上位への ``StagedRefinementEngine`` フル精密化と
+再ランク (``final_reports`` / ``ranked``)、最良仮説基準の未マッチ集約・未知相フラグ
+(``unmatched``)、縮退警告 (``warnings``, EDGE-003)、``/api/result`` スキーマ準拠の純 dict 化
+(``to_summary()``) を単一 ledger 共有・非破壊で行う (REQ-005/104/106 / D3/D6)。
 """
 
 from __future__ import annotations
@@ -42,11 +44,11 @@ from ..evidence.base import EvidenceBackend, EvidenceResult
 from ..evidence.ic import BICBackend
 from ..evidence.ranking import RankedHypothesis, rank
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
-from ..refinement.staged import RefinementReport
+from ..refinement.staged import RefinementReport, StagedRefinementEngine
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
-from .clustering import PhaseCandidate, jaccard_clusters
-from .matcher import UnmatchedPeakReport, match_score
+from .clustering import PhaseCandidate, jaccard_clusters, jenks_breaks
+from .matcher import MatchResult, UnmatchedPeakReport, match_score, unmatched_peaks
 from .peaks import Peak, find_peaks
 from .pruning import dynamic_threshold
 
@@ -62,6 +64,13 @@ _EXPLORE_KEYS = ("scale", "lattice.a", "lattice.b", "lattice.c")
 #   1 箇所に定義する (frozen ゆえ共有安全、search() と _empty_result() の重複構築を排除) 🟡
 _EMPTY_UNMATCHED = UnmatchedPeakReport(
     unmatched_observed=(), extra_calculated=(), unknown_phase_flag=False
+)
+
+# 【縮退警告 (EDGE-003)】: フラットパターン (観測ピーク 0) で後処理を安全側へ倒した理由文字列。
+#   説明対象が無いため未知相フラグは立てず、良好解抽出・フル精密化はスキップする 🟡 EDGE-003
+_FLAT_PATTERN_WARNING = (
+    "観測ピークが検出されませんでした (フラットパターン)。"
+    "良好解抽出・最終フル精密化・未マッチ集約をスキップしました。"
 )
 
 
@@ -86,26 +95,80 @@ class SearchConfig:
 class SearchResult:
     """木探索の出力 (frozen・非破壊)。🔵 REQ-001/202/402
 
-    本タスクで実体を持つのは ``ranked`` / ``hypotheses`` / ``alternatives`` / ``ledger`` /
-    ``snapshots``。``good_cluster_ids`` / ``unmatched`` / ``final_reports`` / ``warnings`` /
-    ``to_summary()`` は TASK-0007 のスコープでダミー (空値/スタブ) を置く。
+    TASK-0006 の探索コア (``ranked`` / ``hypotheses`` / ``alternatives`` / ``ledger`` /
+    ``snapshots``) に加え、TASK-0007 の後処理フィールド (``good_cluster_ids`` / ``unmatched`` /
+    ``final_reports`` / ``warnings`` / ``to_summary()``) を実体化して保持する。
     """
 
     ranked: tuple[RankedHypothesis, ...]  # refined 仮説を良い順で実体化 🔵 REQ-201
     hypotheses: Mapping[str, Hypothesis]  # 全評価ノード (parent_id で系譜) 🔵 REQ-202
-    good_cluster_ids: tuple[str, ...]  # TASK-0007 (本タスクはダミー空)
+    good_cluster_ids: tuple[str, ...]  # Jenks 低群 (良好解) の仮説 ID 🔵 REQ-104/FR-116
     alternatives: Mapping[int, tuple[int, ...]]  # 代表候補idx -> 代替候補idx 🔵 FR-114
-    unmatched: UnmatchedPeakReport  # TASK-0007 (本タスクは空ダミー)
-    final_reports: Mapping[str, RefinementReport]  # TASK-0007 (本タスクはダミー空)
+    unmatched: UnmatchedPeakReport  # 最良仮説基準の未マッチ集約 🔵 REQ-005/106
+    final_reports: Mapping[str, RefinementReport]  # フル精密化した仮説 ID -> report 🟡 D3
     ledger: Ledger  # 全操作を理由付き記録 🔵 REQ-402
     snapshots: SnapshotStore  # 実体を返す 🔵
-    warnings: tuple[str, ...] = ()  # TASK-0007
+    warnings: tuple[str, ...] = ()  # 縮退警告 (EDGE-003 等) 🟡
 
     def to_summary(self) -> dict:
-        """Web UI / JSON 出力用サマリ。本タスクは骨格スタブ、実体は TASK-0007。🟡 D6"""
-        # 【最小スタブ】: TASK-0007 で本実装する。骨格段階では純 dict を返すのみ 🟡
+        """``/api/result`` スキーマ準拠の JSON 化可能な純 dict を返す (D6 / api-endpoints.md)。🟡
+
+        【機能概要】: ``ranked`` / ``unmatched`` / ``good_cluster_ids`` / ``warnings`` を
+          Web UI へそのまま配信できる素の型 (str/int/float/bool/None/list/dict) へ写像する。
+        【実装方針】: numpy スカラー・dataclass を一切露出させず、``float()`` / ``bool()`` /
+          ``list`` で純 Python 型へ明示変換する (``json.dumps`` 成功を保証、TC-N17/TC-E07)。
+        【テスト対応】: test_to_summary_matches_api_result_schema_and_is_json_serializable ほか。
+        🟡 信頼性レベル: キー集合は api-endpoints.md 🔵 / D6 自体は設計由来 🟡。
+        """
+        # 【良好解判定集合】: in_good_cluster を O(1) 判定するため ID 集合化する 🔵
+        good = set(self.good_cluster_ids)
+
+        # 【ランキング行の純 dict 化】: 各 RankedHypothesis を素の型へ写像する 🔵 §4.4
+        ranked_rows: list[dict] = []
+        for i, rk in enumerate(self.ranked):
+            hyp = rk.hypothesis
+            metrics = hyp.metrics
+            # 【相詳細】: phase_ref / wt_frac / 格子 a,b,c を素の型で並べる 🔵
+            phase_rows = [
+                {
+                    "phase_ref": p.phase_ref,
+                    "wt_frac": (float(p.wt_frac) if p.wt_frac is not None else None),
+                    "lattice": {
+                        "a": float(p.lattice.a),
+                        "b": float(p.lattice.b),
+                        "c": float(p.lattice.c),
+                    },
+                }
+                for p in hyp.phases
+            ]
+            ranked_rows.append(
+                {
+                    "id": hyp.id,
+                    "rank": i + 1,  # 【1 起番】: rank は 1 から連番 🔵
+                    "probability": float(rk.probability),
+                    "close_competitor": bool(rk.close_competitor),
+                    "rwp": float(metrics.rwp) if metrics is not None else None,
+                    "gof": float(metrics.gof) if metrics is not None else None,
+                    "evidence": {
+                        "backend": str(rk.evidence.backend),
+                        "value": float(rk.evidence.value),
+                    },
+                    "phases": phase_rows,
+                    "parent_id": hyp.parent_id,
+                    "in_good_cluster": hyp.id in good,  # 【bool】: 良好解メンバか 🔵
+                }
+            )
+
+        # 【トップレベル】: /api/result の必須キーを素の型で揃える 🔵 §4.4
         return {
-            "ranked": [rk.hypothesis.id for rk in self.ranked],
+            "ranked": ranked_rows,
+            "unknown_phase_flag": bool(self.unmatched.unknown_phase_flag),
+            "unmatched_observed": [
+                {"position": float(pk.position), "height": float(pk.height)}
+                for pk in self.unmatched.unmatched_observed
+            ],
+            "extra_calculated": [float(v) for v in self.unmatched.extra_calculated],
+            "warnings": list(self.warnings),
             "n_hypotheses": len(self.hypotheses),
         }
 
@@ -243,19 +306,21 @@ class HypothesisTreeSearch:
         # 【best-first 木探索】: 生存候補で組合せ仮説を評価・展開し全ノードを保持する 🔵 D1
         hypotheses = self._explore(eligible, scores, normalized, two_theta, intensity, weights, ledger)
 
-        # 【ランキング】: 全 refined ノードを BIC 昇順+softmax でランクし採択を記録する 🔵 REQ-201
+        # 【ランキング (一次)】: 全 refined ノードを BIC 昇順+softmax でランクする 🔵 REQ-201
         ranked = self._rank(hypotheses, ledger)
 
-        return SearchResult(
+        # 【探索後処理 (TASK-0007)】: 良好解抽出 → フル精密化 → 再ランク → 未マッチ集約を
+        #   単一メソッドへ委譲し、後処理済みの SearchResult を返す 🔵 REQ-005/104/106
+        return self._postprocess(
             ranked=ranked,
             hypotheses=hypotheses,
-            good_cluster_ids=(),
             alternatives=alternatives,
-            unmatched=_EMPTY_UNMATCHED,
-            final_reports={},
+            observed=observed,
+            two_theta=two_theta,
+            intensity=intensity,
+            weights=weights,
             ledger=ledger,
             snapshots=snapshots,
-            warnings=(),
         )
 
     # ---- パイプライン各段 (純関数的ヘルパ) --------------------------------
@@ -572,3 +637,231 @@ class HypothesisTreeSearch:
             },
         )
         return ranked
+
+    # ---- TASK-0007 探索後処理ヘルパ --------------------------------------
+
+    def _postprocess(
+        self,
+        *,
+        ranked: tuple[RankedHypothesis, ...],
+        hypotheses: dict[str, Hypothesis],
+        alternatives: Mapping[int, tuple[int, ...]],
+        observed: tuple[Peak, ...],
+        two_theta: np.ndarray,
+        intensity: np.ndarray,
+        weights: np.ndarray | None,
+        ledger: Ledger,
+        snapshots: SnapshotStore,
+    ) -> SearchResult:
+        """探索コアの後段で SearchResult の後処理フィールドを実体化する (TASK-0007)。🔵
+
+        【機能概要】: 良好解抽出 (Jenks) → 最終フル精密化 + 再ランク (D3) → 未マッチ集約
+          (REQ-005/106) を単一 ledger 共有・非破壊で行い、完成した SearchResult を返す。
+        【設計方針】: search() の一次ランキングまで (TASK-0006 コア) と後処理 (TASK-0007) を
+          分離し、後処理群を 1 メソッドへ凝集させて search() の流れを二段構成に保つ。フラット/
+          通常の両経路を末尾 1 箇所の SearchResult 構築へ集約し、フィールド列の重複を排する。
+        【EDGE-003】: 観測ピーク 0 (フラットパターン) は説明対象が無いため良好解抽出・フル精密化・
+          未マッチ集約をスキップし、警告のみ積んで空良好解・未知相フラグ False へ倒す 🟡。
+        🔵 信頼性レベル: dataflow.md L39-74 / architecture.md D3 / note.md §4.5 に依拠。
+        """
+        # 【EDGE-003 フラット縮退】: 例外化せず後処理をスキップし警告のみ積む 🟡 EDGE-003
+        if not observed:
+            ledger.append("warning", {"reason": "flat_pattern_no_observed_peaks"})
+            good_cluster_ids: tuple[str, ...] = ()
+            final_reports: Mapping[str, RefinementReport] = {}
+            unmatched = _EMPTY_UNMATCHED
+            warnings: tuple[str, ...] = (_FLAT_PATTERN_WARNING,)
+        else:
+            # 【良好解抽出 (Jenks)】: 一次 evidence を 2 群化した低群を良好解 ID に確定 🔵 REQ-104
+            good_cluster_ids = self._extract_good_cluster(ranked, ledger)
+            # 【最終フル精密化 + 再ランク】: 良好解上位に staged 精密化を適用し metrics 更新 🟡 D3
+            final_reports, ranked = self._final_refine(
+                ranked,
+                good_cluster_ids,
+                hypotheses,
+                two_theta,
+                intensity,
+                weights,
+                ledger,
+                snapshots,
+            )
+            # 【未マッチ集約 + 未知相フラグ】: 最良仮説を基準に未説明観測を集約 🔵 REQ-005/106
+            unmatched = self._compute_unmatched(
+                ranked, hypotheses, two_theta, observed, ledger
+            )
+            warnings = ()
+
+        # 【単一構築】: フラット/通常の両経路を 1 箇所の SearchResult 構築へ集約する (DRY) 🔵
+        return SearchResult(
+            ranked=ranked,
+            hypotheses=hypotheses,
+            good_cluster_ids=good_cluster_ids,
+            alternatives=alternatives,
+            unmatched=unmatched,
+            final_reports=final_reports,
+            ledger=ledger,
+            snapshots=snapshots,
+            warnings=warnings,
+        )
+
+    def _extract_good_cluster(
+        self, ranked: tuple[RankedHypothesis, ...], ledger: Ledger
+    ) -> tuple[str, ...]:
+        """一次 evidence を Jenks 2 群化し低 evidence 群 (良好解) の仮説 ID を返す (REQ-104/FR-116)。🔵
+
+        【機能概要】: ``ranked`` の evidence 値 (低いほど良い) を ``jenks_breaks(n_classes=2)``
+          で 2 群に分け、境界以下 (``value <= breaks[0]``) の仮説を良好解とする。
+        【実装方針】: 非有限 evidence は ``_rank`` が有限センチネルへ丸め済みのため jenks が安定。
+          境界不能 (仮説 1 件 → ``jenks_breaks`` が ``()``) は全 ranked を良好解とみなす
+          フォールバック (§3.6)。全同値は境界=同値となり ``<=`` で全件が良好解になる。返す ID は
+          決定論のため昇順に整列する。
+        【テスト対応】: test_jenks_good_cluster_ids_* / _single_hypothesis_falls_back /
+          _all_equal_evidence_makes_every_hypothesis_good。
+        🔵 信頼性レベル: acceptance-criteria TC-004-03 / FR-116 / REQ-104 に依拠
+          (縮退フォールバックは §3.6 の実装時確定事項 🟡)。
+        """
+        # 【空縮退】: ランキング空 (候補ゼロ経路) では良好解も空 🔵
+        if not ranked:
+            return ()
+        # 【Jenks 2 群化】: 低群 (良好) と高群 (劣位) の境界値を DP で求める 🔵 REQ-104
+        values = [rk.evidence.value for rk in ranked]
+        breaks = jenks_breaks(values, n_classes=2)
+        if breaks:
+            # 【低群抽出】: 境界以下の evidence を持つ仮説を良好解とする (低いほど良い) 🔵
+            threshold = breaks[0]
+            good = [rk.hypothesis.id for rk in ranked if rk.evidence.value <= threshold]
+        else:
+            # 【縮退フォールバック】: 仮説 1 件で境界不能 → その 1 件をそのまま良好解にする 🟡 §3.6
+            good = [rk.hypothesis.id for rk in ranked]
+        # 【決定論整列】: 良好解 ID を昇順に固定する (入力順非依存) 🔵 NFR-102
+        good_ids = tuple(sorted(good))
+        ledger.append(
+            "good_cluster", {"ids": list(good_ids), "n_ranked": len(ranked)}
+        )
+        return good_ids
+
+    def _final_refine(
+        self,
+        ranked: tuple[RankedHypothesis, ...],
+        good_cluster_ids: tuple[str, ...],
+        hypotheses: dict[str, Hypothesis],
+        two_theta: np.ndarray,
+        intensity: np.ndarray,
+        weights: np.ndarray | None,
+        ledger: Ledger,
+        snapshots: SnapshotStore,
+    ) -> tuple[dict[str, RefinementReport], tuple[RankedHypothesis, ...]]:
+        """良好解上位 max_final_refine 件に staged フル精密化を適用し metrics 更新・再ランクする (D3)。🟡
+
+        【機能概要】: ``final_full_refine=True`` のとき良好解のうち evidence 昇順上位
+          ``max_final_refine`` 件へ ``StagedRefinementEngine.run`` を適用し、BIC を再計算して
+          ``hypotheses`` の該当ノードを非破壊で差し替え、``rank`` を再実行する。
+        【実装方針】: 探索と同一 ``ledger`` / ``snapshots`` を共有し追記のみで監査一貫性を保つ
+          (§3.2)。metrics 反映は ``dataclasses.replace`` による新インスタンス生成で行い元
+          ``Hypothesis`` を破壊しない。``final_full_refine=False`` / 良好解空では
+          ``({}, 元の ranked)`` を返し metrics 不変。
+        【テスト対応】: test_final_full_refine_records_reports_and_updates_metrics /
+          _reranking_orders_ranked_ascending_after_full_refine / _disabled_keeps_reports_empty /
+          _max_final_refine_clips_to_top_good_cluster / _postprocess_appends_to_single_ledger。
+        🟡 信頼性レベル: architecture.md D3 / 要件定義 §3.6 からの妥当な導出。
+        """
+        config = self._config
+        # 【無効化 / 空縮退】: フラグ False または良好解空なら何もせず不変で返す 🟡 §3.6
+        if not config.final_full_refine or not good_cluster_ids:
+            return {}, ranked
+
+        # 【対象選出】: 良好解のうち evidence 昇順 (= ranked 順) 上位 max_final_refine 件 🟡 D3
+        good_set = set(good_cluster_ids)
+        targets = [rk.hypothesis.id for rk in ranked if rk.hypothesis.id in good_set]
+        targets = targets[: config.max_final_refine]
+
+        # 【共有エンジン】: 探索と同一 ledger/snapshots で staged 精密化を行う (監査一貫性) 🔵 §3.2
+        engine = StagedRefinementEngine(self._backend, store=snapshots, ledger=ledger)
+        final_reports: dict[str, RefinementReport] = {}
+        for hid in targets:
+            hyp = hypotheses[hid]
+            # 【フル精密化】: 段階的パラメータ解放で最終評価精度を上げる 🟡 D3
+            report = engine.run(hyp.phases, two_theta, intensity, weights=weights)
+            # 【BIC 再計算】: フル精密化後 metrics から evidence を再評価する 🟡 REQ-004
+            ev = self._evidence.score(report.metrics)
+            new_metrics = replace(report.metrics, evidence={ev.backend: ev.value})
+            # 【非破壊反映】: phases/metrics を差し替えた新 Hypothesis へ置換 (id/parent_id/status 保持) 🔵
+            hypotheses[hid] = replace(
+                hyp, phases=report.final_phases, metrics=new_metrics
+            )
+            final_reports[hid] = report
+            # 【監査記録】: フル精密化の適用を kind="final_refine" で追跡可能にする 🔵 §3.2
+            ledger.append(
+                "final_refine",
+                {
+                    "id": hid,
+                    "rwp": float(report.metrics.rwp),
+                    "chi2": float(report.metrics.chi2),
+                    "escalated": bool(report.escalated),
+                },
+            )
+
+        # 【再ランク】: 更新後 metrics で BIC 昇順ランキングを確定する 🟡 D3
+        ranked = self._rank(hypotheses, ledger)
+        return final_reports, ranked
+
+    def _compute_unmatched(
+        self,
+        ranked: tuple[RankedHypothesis, ...],
+        hypotheses: Mapping[str, Hypothesis],
+        two_theta: np.ndarray,
+        observed: tuple[Peak, ...],
+        ledger: Ledger,
+    ) -> UnmatchedPeakReport:
+        """最良仮説を基準に未マッチ観測ピークを集約し未知相フラグを判定する (REQ-005/106)。🔵
+
+        【機能概要】: 最良仮説 (``ranked[0]``) の各相を ``simulate → find_peaks → match_score``
+          で観測と突き合わせ、``unmatched_peaks`` でどの相でも説明できない観測ピークを Peak 実体
+          (位置・強度付き) で集約する。未知相フラグは「未マッチ非空」または「全 refined 仮説の
+          Rwp > high_r_threshold」で立てる。
+        【実装方針】: 探索時の候補マッチ結果を再利用せず最良仮説の相で再計算することで、再ランク後の
+          最良解に整合した決定論的な未マッチ集約を得る (§6 選択肢2)。``high_r_flag`` は厳密比較
+          (``>``) で境界値を高 R に含めない (§3.6)。
+        【テスト対応】: test_complete_explanation_has_no_unmatched_and_flag_false /
+          _unknown_phase_reports_unmatched_peaks_with_flag / _all_high_r_forces_unknown_phase_flag /
+          _high_r_threshold_uses_strict_greater_comparison。
+        🔵 信頼性レベル: acceptance-criteria TC-005-01/02 / TC-E02 / REQ-005/106 に依拠。
+        """
+        config = self._config
+        # 【空縮退】: ランキング空では未マッチ集約対象が無いため空へ倒す 🔵
+        if not ranked:
+            return _EMPTY_UNMATCHED
+
+        # 【全高 R 判定】: 全 refined 仮説の Rwp が閾値を厳密超過するとき未知相フラグを強制する 🔵 REQ-106
+        high_r_flag = all(
+            h.metrics is not None and h.metrics.rwp > config.high_r_threshold
+            for h in hypotheses.values()
+        )
+
+        # 【最良仮説の相ごとマッチ】: 各相を simulate してピーク化し観測と突き合わせる 🔵
+        best = ranked[0].hypothesis
+        match_results: list[MatchResult] = []
+        for i, phase in enumerate(best.phases):
+            calc = self._backend.simulate([phase], two_theta)
+            cpeaks = find_peaks(
+                two_theta, calc, min_height_frac=config.min_peak_height_frac
+            )
+            match_results.append(
+                match_score(
+                    cpeaks, observed, tol_deg=config.match_tol_deg, candidate_index=i
+                )
+            )
+
+        # 【未マッチ集約】: 説明済み観測の補集合を Peak 実体で復元し未知相フラグを立てる 🔵 FR-117
+        report = unmatched_peaks(match_results, observed, high_r_flag=high_r_flag)
+        # 【監査記録】: 未マッチ集約結果を kind="unmatched" で追跡可能にする 🔵
+        ledger.append(
+            "unmatched",
+            {
+                "n_unmatched_observed": len(report.unmatched_observed),
+                "n_extra_calculated": len(report.extra_calculated),
+                "unknown_phase_flag": bool(report.unknown_phase_flag),
+                "high_r_flag": bool(high_r_flag),
+            },
+        )
+        return report

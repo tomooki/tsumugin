@@ -351,10 +351,14 @@ def test_search_result_skeleton_contract():
         assert result.hypotheses  # 【確認内容】: 両入力形で探索が成功 🔵
         for hid in result.hypotheses:
             assert re.match(r"^hyp-\d{4}$", hid)  # 【確認内容】: ID が hyp-XXXX 連番形式 🔵
-        assert result.good_cluster_ids == ()  # 【確認内容】: TASK-0007 ダミー空 🔵
-        assert result.final_reports == {}  # 【確認内容】: TASK-0007 ダミー空 Mapping 🔵
-        assert result.warnings == ()  # 【確認内容】: TASK-0007 ダミー空 🔵
-        assert result.unmatched.unmatched_observed == ()  # 【確認内容】: unmatched は空ダミー 🔵
+        # 【TASK-0007 整合】: good_cluster_ids / final_reports は TASK-0007 で実体化された。
+        #   旧スタブ (空値) 断言は TC-N11/TC-B07 (良好解・フル精密化の非空要件) と矛盾するため、
+        #   最良解が良好解に含まれ・精密化対象が良好解の部分集合であることの契約検証へ最小修正する。
+        assert isinstance(result.good_cluster_ids, tuple)  # 【確認内容】: 良好解 ID は tuple 🔵
+        assert result.ranked[0].hypothesis.id in result.good_cluster_ids  # 最良解が良好解 🔵
+        assert set(result.final_reports) <= set(result.good_cluster_ids)  # 精密化対象⊆良好解 🔵
+        assert result.warnings == ()  # 【確認内容】: 非フラットなので警告なし 🔵
+        assert result.unmatched.unmatched_observed == ()  # 【確認内容】: 完全説明で未マッチ空 🔵
         for rk in result.ranked:
             assert rk.hypothesis.id in result.hypotheses  # 【確認内容】: ランキング ID が整合 🔵
 
@@ -366,9 +370,15 @@ def test_explore_mode_refine_uses_scale_lattice_and_max_cycles():
     # 🔵 信頼性レベル: architecture.md D2 / REQ-003 / FR-113 に直接依拠 (スパイ検証方式は 🟡)
 
     # 【既定サイクル数の確認】: SimulatedBackend をラップしたスパイで呼び出し契約を観測
+    # 【TASK-0007 整合】: 本ケースは「探索モード」精密化の free_params/max_cycles 契約 (D2) の
+    #   検証が目的。TASK-0007 で有効化された最終フル精密化 (StagedRefinementEngine, max_cycles=20 /
+    #   段階別 free_params) はスパイに別契約の refine を混入させ本旨を覆すため、対照的に
+    #   final_full_refine=False で切り離して探索モードのみを観測する (要件矛盾の最小修正)。
     spy = RecordingSpyBackend()
     y = spy.simulate([PHASE_A], GRID)
-    HypothesisTreeSearch(spy).search(GRID, y, [PHASE_A])
+    HypothesisTreeSearch(spy, config=SearchConfig(final_full_refine=False)).search(
+        GRID, y, [PHASE_A]
+    )
 
     assert spy.refine_calls  # 【確認内容】: ノード評価で refine が直接呼ばれる 🔵
     nonempty = [fp for fp, _ in spy.refine_calls if fp]
@@ -380,8 +390,11 @@ def test_explore_mode_refine_uses_scale_lattice_and_max_cycles():
         assert mc == 5  # 【確認内容】: 既定 explore_max_cycles=5 で呼ばれる 🔵
 
     # 【明示サイクル数の確認】: SearchConfig(explore_max_cycles=3) が refine へ伝播する
+    # 【TASK-0007 整合】: 上記同様、探索モード伝播のみを観測するためフル精密化を切り離す。
     spy3 = RecordingSpyBackend()
-    HypothesisTreeSearch(spy3, config=SearchConfig(explore_max_cycles=3)).search(GRID, y, [PHASE_A])
+    HypothesisTreeSearch(
+        spy3, config=SearchConfig(explore_max_cycles=3, final_full_refine=False)
+    ).search(GRID, y, [PHASE_A])
     assert spy3.refine_calls  # 【確認内容】: 明示設定でも refine が呼ばれる 🔵
     assert all(mc == 3 for _, mc in spy3.refine_calls)  # 【確認内容】: 明示 max_cycles=3 が伝播 🔵
 
@@ -628,3 +641,412 @@ def test_fewer_than_min_candidates_disables_pruning():
     assert {"A", "C", "D"} <= single_refs  # 【確認内容】: 候補 3 では全展開 (刈られない) 🔵
     kinds = [e.kind for e in result.ledger.entries]
     assert "prune_threshold" in kinds  # 【確認内容】: -inf 閾値 (全展開) も記録される 🔵
+
+
+# ===========================================================================
+# TASK-0007 探索後処理 (good_cluster / final_reports / unmatched / warnings /
+# to_summary) の失敗テスト (TDD Red)。既存 20 ケースはそのままに、TC-N11〜18 /
+# TC-E05〜07 / TC-B07〜11 の 16 ケースを追加する。現状の tree.py はこれらを
+# スタブ (空値/最小 summary) で返すため、下記アサーションは全て失敗する想定。
+#
+# 書式の範: 上記既存ケース / docs/implements/.../TASK-0007/search-postprocess-*。
+# ===========================================================================
+
+# 【スキーマ契約】: to_summary() トップレベルの必須キー集合 (api-endpoints.md /api/result)。🔵
+_SUMMARY_TOP_KEYS = {
+    "ranked",
+    "unknown_phase_flag",
+    "unmatched_observed",
+    "extra_calculated",
+    "warnings",
+    "n_hypotheses",
+}
+
+# 【スキーマ契約】: to_summary()["ranked"][i] の必須キー集合 (note §4.4)。🔵
+_SUMMARY_RANKED_KEYS = {
+    "id",
+    "rank",
+    "probability",
+    "close_competitor",
+    "rwp",
+    "gof",
+    "evidence",
+    "phases",
+    "parent_id",
+    "in_good_cluster",
+}
+
+
+def _run_ab_search(config: SearchConfig | None = None) -> SearchResult:
+    """A+B 合成データ・候補 [A,B,C,D] の標準探索を実行する共通ヘルパ (後処理系で再利用)。
+
+    C/D は無関係相で枝刈りされ hypotheses は {A}/{B}/{A,B} の 3 ノードに収束するため、
+    良好解抽出・フル精密化・再ランクの後処理を最小コストで検証できる (実行時間抑制)。🔵
+    """
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    y = backend.simulate([PHASE_A, PHASE_B], GRID)
+    engine = HypothesisTreeSearch(backend, config=config or SearchConfig())
+    return engine.search(GRID, y, [PHASE_A, PHASE_B, PHASE_C, PHASE_D])
+
+
+# ---------------------------------------------------------------------------
+# 1. 正常系テストケース (TC-N11〜N18)
+# ---------------------------------------------------------------------------
+
+
+def test_jenks_good_cluster_ids_contains_top_and_excludes_worst():
+    # 【テスト目的】: Jenks が低 evidence 群 (良好解) を分離し good_cluster_ids に ID が入る (TC-N11)
+    # 【テスト内容】: A+B 合成・候補 [A,B,C,D] で search() を実行し good_cluster_ids を検証
+    # 【期待される動作】: rank1 (最良) の ID が含まれ、最劣位 (evidence 最大) の ID は含まれない
+    # 🔵 信頼性レベル: acceptance-criteria TC-004-03 / FR-116 / REQ-104 に直接依拠
+
+    # 【テストデータ準備】: 真の相 A/B + 無関係相 C/D で evidence が良好/劣位の 2 群に分かれる
+    # 【前提条件確認】: 既存 TC-N01 で {A,B} が rank1 になることは保証済み
+    result = _run_ab_search()
+
+    # 【結果検証】: good_cluster_ids は非空の ID タプルで rank1 を含み最劣位を含まない
+    assert isinstance(result.good_cluster_ids, tuple)  # 【確認内容】: 戻り値は tuple 🔵
+    assert result.good_cluster_ids  # 【確認内容】: 良好解が非空 (スタブ () では失敗) 🔵
+    assert result.ranked[0].hypothesis.id in result.good_cluster_ids  # 【確認内容】: 最良解が含まれる 🔵
+    for hid in result.good_cluster_ids:
+        assert hid in result.hypotheses  # 【確認内容】: 中身は index でなく仮説 ID である 🔵
+    worst_id = result.ranked[-1].hypothesis.id
+    assert worst_id not in result.good_cluster_ids  # 【確認内容】: 最劣位仮説は良好解に入らない 🔵
+
+
+def test_final_full_refine_records_reports_and_updates_metrics():
+    # 【テスト目的】: 良好解上位にフル精密化が適用され final_reports 記録と metrics 更新が起きる (TC-N12)
+    # 【テスト内容】: 既定 config (final_full_refine=True) で final_reports と hypotheses metrics を検証
+    # 【期待される動作】: final_reports のキーが good_cluster_ids に含まれ、metrics が report と整合する
+    # 🟡 信頼性レベル: architecture.md D3 / 要件定義 §3.6 からの妥当な導出
+
+    result = _run_ab_search()
+
+    # 【結果検証】: final_reports が非空で全キーが良好解、件数は max_final_refine 以内
+    assert result.final_reports  # 【確認内容】: フル精密化記録が非空 (スタブ {} では失敗) 🟡
+    assert len(result.final_reports) <= SearchConfig().max_final_refine  # 【確認内容】: 上位のみ精密化 🟡
+    for key, report in result.final_reports.items():
+        assert key in result.good_cluster_ids  # 【確認内容】: 精密化対象は良好解のみ 🟡
+        # 【RefinementReport 形状】: D3 の値型は RefinementReport (5 フィールド) 🟡
+        for attr in ("final_phases", "metrics", "stage_outcomes", "escalated", "free_params"):
+            assert hasattr(report, attr)  # 【確認内容】: RefinementReport のフィールドを備える 🟡
+        hyp = result.hypotheses[key]
+        assert hyp.metrics is not None  # 【確認内容】: 精密化後ノードは metrics を持つ 🟡
+        # 【非破壊反映】: hypotheses[key] の metrics が report.metrics と整合 (rwp/gof) 🟡
+        assert hyp.metrics.rwp == report.metrics.rwp  # 【確認内容】: rwp がフル精密化値に更新 🟡
+        assert hyp.metrics.gof == report.metrics.gof  # 【確認内容】: gof がフル精密化値に更新 🟡
+        assert "bic" in hyp.metrics.evidence  # 【確認内容】: BIC が再計算され格納される 🟡
+
+
+def test_reranking_orders_ranked_ascending_after_full_refine():
+    # 【テスト目的】: フル精密化後に rank() が再実行され ranked が evidence 昇順で確定する (TC-N13)
+    # 【テスト内容】: 再ランク後の evidence 値列の単調性と ranked/hypotheses の整合を検証
+    # 【期待される動作】: evidence 値が昇順、rank1 が {A,B}、各 evidence が hypotheses の bic と一致
+    # 🟡 信頼性レベル: architecture.md D3 + ranking 既存契約からの妥当な導出
+
+    result = _run_ab_search()
+
+    # 【結果検証】: 再ランク後の evidence 値が昇順 (良い順) で真の構成が 1 位を維持する
+    values = [rk.evidence.value for rk in result.ranked]
+    assert values == sorted(values)  # 【確認内容】: evidence 値列が非減少 (昇順) 🟡
+    assert _refs(result.ranked[0].hypothesis) == {"A", "B"}  # 【確認内容】: rank1 が真の構成 {A,B} 🟡
+    # 【整合性】: ranked の evidence が更新後 hypotheses の bic と一致 (同一 metrics で再計算) 🟡
+    for rk in result.ranked:
+        bic = result.hypotheses[rk.hypothesis.id].metrics.evidence["bic"]
+        assert rk.evidence.value == bic  # 【確認内容】: 更新後の値で整列している 🟡
+    # 【フル精密化の実行痕跡】: 再ランクはフル精密化後に走る (スタブ {} では失敗) 🟡
+    assert result.ranked[0].hypothesis.id in result.final_reports  # 【確認内容】: rank1 が精密化済み 🟡
+
+
+def test_final_full_refine_disabled_keeps_reports_empty():
+    # 【テスト目的】: final_full_refine=False でフル精密化がスキップされる (TC-N14)
+    # 【テスト内容】: 無効時 final_reports は空だが良好解抽出等その他後処理は成立することを検証
+    # 【期待される動作】: final_reports=={} かつ good_cluster_ids は有効時と同一で非空
+    # 🟡 信頼性レベル: 要件定義 §3.6 (D3 無効化仕様) に依拠した妥当な導出
+
+    # 【対照実験】: 同一データで有効/無効の差分だけを観測する
+    res_on = _run_ab_search(SearchConfig(final_full_refine=True))
+    res_off = _run_ab_search(SearchConfig(final_full_refine=False))
+
+    # 【結果検証】: 無効時はフル精密化記録が空、その他後処理は有効時と同一に成立
+    assert dict(res_off.final_reports) == {}  # 【確認内容】: 無効時 final_reports は空 Mapping 🟡
+    assert res_on.final_reports  # 【確認内容】: 有効時は非空 (スタブでは失敗する対照) 🟡
+    assert res_off.good_cluster_ids  # 【確認内容】: 無効化しても良好解抽出は成立 (スタブ () で失敗) 🟡
+    assert res_off.good_cluster_ids == res_on.good_cluster_ids  # 【確認内容】: 良好解は有効時と同一 🟡
+    # 【後続後処理の健全性】: unmatched / to_summary が無効時も例外なく成立 🟡
+    assert "unknown_phase_flag" in res_off.to_summary()  # 【確認内容】: summary スキーマが成立 🟡
+
+
+def test_complete_explanation_has_no_unmatched_and_flag_false():
+    # 【テスト目的】: 候補相で完全に説明できるデータで未マッチ空・未知相フラグ False (TC-N15)
+    # 【テスト内容】: A+B 合成・候補 [A,B,C,D] (真の構成が候補に含まれる) の unmatched を検証
+    # 【期待される動作】: unmatched_observed==() かつ unknown_phase_flag is False
+    # 🔵 信頼性レベル: acceptance-criteria TC-005-02 / REQ-005/106 に直接依拠
+
+    result = _run_ab_search()
+
+    # 【結果検証】: 観測の全ピークが最良仮説で説明され、偽陽性の未知相フラグが立たない
+    assert result.unmatched.unmatched_observed == ()  # 【確認内容】: 未マッチ観測が空 🔵
+    assert result.unmatched.unknown_phase_flag is False  # 【確認内容】: bool 型で厳密に False 🔵
+    # 【スキーマ経路】: to_summary 側にもフラグ False が現れる (スタブは当該キー無しで失敗) 🔵
+    assert result.to_summary()["unknown_phase_flag"] is False  # 【確認内容】: summary もフラグ False 🔵
+
+
+def test_unknown_phase_reports_unmatched_peaks_with_flag():
+    # 【テスト目的】: 候補にない相の混入で未マッチ観測ピークが位置・強度付きで報告される (TC-N16)
+    # 【テスト内容】: A+B+G の 3 相合成 (G は候補外)・候補 [A,B,C,D] で unmatched を検証
+    # 【期待される動作】: 未説明ピークが Peak 実体・位置昇順で報告され unknown_phase_flag が True
+    # 🔵 信頼性レベル: acceptance-criteria TC-005-01 / REQ-005/106 に直接依拠
+
+    from tsumugin.search.peaks import find_peaks
+
+    # 【テストデータ準備】: G(a=6.5) を候補に入れず混ぜ、どの候補でも説明できない未知相を模擬
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    y = backend.simulate([PHASE_A, PHASE_B, PHASE_G], GRID)
+    result = HypothesisTreeSearch(backend).search(GRID, y, [PHASE_A, PHASE_B, PHASE_C, PHASE_D])
+
+    unmatched = result.unmatched
+    # 【結果検証】: 未マッチ観測が非空で各要素が位置・正の強度を持ち位置昇順に整列する
+    assert unmatched.unmatched_observed  # 【確認内容】: 未マッチ観測が報告される (スタブは空で失敗) 🔵
+    positions = [pk.position for pk in unmatched.unmatched_observed]
+    assert all(isinstance(pk.position, float) for pk in unmatched.unmatched_observed)  # 位置は float 🔵
+    assert all(pk.height > 0.0 for pk in unmatched.unmatched_observed)  # 【確認内容】: 強度は正値 🔵
+    assert positions == sorted(positions)  # 【確認内容】: 位置昇順に整列 🔵
+    assert unmatched.unknown_phase_flag is True  # 【確認内容】: 未マッチ非空でフラグ True 🔵
+    # 【由来検証】: 未マッチ位置の少なくとも 1 つが G 由来ピーク近傍 (match_tol_deg 相当内) 🔵
+    g_peaks = [p.position for p in find_peaks(GRID, backend.simulate([PHASE_G], GRID))]
+    assert g_peaks  # 【確認内容】: G は範囲内に検出可能なピークを持つ 🔵
+    assert any(any(abs(pos - gp) <= 0.25 for gp in g_peaks) for pos in positions)  # G 近傍 🔵
+
+
+def test_to_summary_matches_api_result_schema_and_is_json_serializable():
+    # 【テスト目的】: to_summary() が /api/result スキーマの全キーを持つ純 dict で JSON 化可能 (TC-N17)
+    # 【テスト内容】: キー集合・値の素の型 (str/int/float/bool)・json.dumps 往復を検証
+    # 【期待される動作】: numpy スカラー/dataclass を露出しない完全な純 dict を返す
+    # 🔵🟡 信頼性レベル: キー集合は api-endpoints.md 🔵 / D6 自体は設計由来 🟡
+
+    result = _run_ab_search()
+    summary = result.to_summary()
+
+    # 【結果検証】: トップレベルの必須キーが全て存在し、件数・フラグが実体と整合
+    assert _SUMMARY_TOP_KEYS <= set(summary)  # 【確認内容】: 必須トップキーを全て備える 🔵
+    assert summary["n_hypotheses"] == len(result.hypotheses)  # 【確認内容】: 仮説総数が一致 🔵
+    assert summary["unknown_phase_flag"] is False  # 【確認内容】: 完全説明なのでフラグ False 🔵
+    assert isinstance(summary["ranked"], list)  # 【確認内容】: ranked は list (スタブは id 列で失敗) 🔵
+
+    # 【行スキーマ】: ranked[i] が全キーを持ち rank==i+1、値が素の型である
+    for i, row in enumerate(summary["ranked"]):
+        assert _SUMMARY_RANKED_KEYS <= set(row)  # 【確認内容】: 行の必須キーを全て備える 🔵
+        assert row["rank"] == i + 1  # 【確認内容】: rank は 1 起番の連番 🔵
+        assert type(row["id"]) is str  # 【確認内容】: id は素の str 🔵
+        assert type(row["rank"]) is int  # 【確認内容】: rank は素の int 🔵
+        assert type(row["rwp"]) is float  # 【確認内容】: rwp は素の float (np.float64 非露出) 🔵
+        assert type(row["probability"]) is float  # 【確認内容】: probability は素の float 🔵
+        assert type(row["in_good_cluster"]) is bool  # 【確認内容】: in_good_cluster は素の bool 🔵
+        assert set(row["evidence"]) == {"backend", "value"}  # 【確認内容】: evidence キー集合 🔵
+        assert type(row["evidence"]["value"]) is float  # 【確認内容】: evidence 値は素の float 🔵
+        for p in row["phases"]:
+            assert {"phase_ref", "wt_frac", "lattice"} <= set(p)  # 【確認内容】: 相の必須キー 🔵
+            assert {"a", "b", "c"} <= set(p["lattice"])  # 【確認内容】: 格子 a/b/c を備える 🔵
+        # 【整合性】: in_good_cluster の真偽が good_cluster_ids と一致 🔵
+        assert row["in_good_cluster"] == (row["id"] in result.good_cluster_ids)
+
+    assert summary["ranked"][0]["in_good_cluster"] is True  # 【確認内容】: rank1 は良好解 🔵
+    # 【JSON 化】: json.dumps が例外なく成功し、往復で同値になる 🔵
+    assert json.loads(json.dumps(summary)) == summary  # 【確認内容】: JSON 往復で同値 🔵
+
+
+def test_postprocess_appends_to_single_ledger_and_verifies():
+    # 【テスト目的】: フル精密化・再ランクを含む後処理後も ledger.verify() が True を維持する (TC-N18)
+    # 【テスト内容】: 有効/無効でエントリ総数を比較し、単一 ledger への追記と監査健全性を検証
+    # 【期待される動作】: verify() is True かつ 後処理有効時のエントリ数が無効時より多い
+    # 🔵 信頼性レベル: 要件定義 §3.2 / REQ-402 (単一 ledger/snapshots 共有) に直接依拠
+
+    res_on = _run_ab_search(SearchConfig(final_full_refine=True))
+    res_off = _run_ab_search(SearchConfig(final_full_refine=False))
+
+    # 【結果検証】: 後処理を含めても監査チェーンが 1 本で健全、記録は追記で増える
+    assert res_on.ledger.verify() is True  # 【確認内容】: 後処理後も改竄検証が通る 🔵
+    assert len(res_on.ledger.entries) > 0  # 【確認内容】: 空 ledger の自明 True でない 🔵
+    # 【追記のみ】: フル精密化分だけエントリが上乗せされる (スタブは同数で失敗) 🔵
+    assert len(res_on.ledger.entries) > len(res_off.ledger.entries)  # 【確認内容】: 後処理分の追記 🔵
+
+
+# ---------------------------------------------------------------------------
+# 2. 異常系テストケース (TC-E05〜E07)
+# ---------------------------------------------------------------------------
+
+
+def test_all_high_r_forces_unknown_phase_flag():
+    # 【テスト目的】: 全 refined 仮説の Rwp が閾値超のとき未知相フラグが強制的に立つ (TC-E05)
+    # 【テスト内容】: 全組合せ Rwp=50 (>既定 30) の FakeBackend で縮退経路を検証
+    # 【期待される動作】: 例外なく完走し unknown_phase_flag is True、最良仮説は結果に残る
+    # 🔵 信頼性レベル: acceptance-criteria TC-E02 / EDGE-002 / REQ-106 に直接依拠
+
+    # 【テストデータ準備】: どの候補も観測を説明できない (全 Rwp=50 > high_r_threshold=30) 全滅状況
+    fake = FakeBackend(default_rwp=50.0, default_chi2=10.0)
+    y = fake.simulate([PHASE_A, PHASE_B], GRID)
+
+    # 【実際の処理実行】: 全高 R でも例外化せず結果構造を完全な形で返す
+    result = HypothesisTreeSearch(fake).search(GRID, y, [PHASE_A, PHASE_B])
+
+    # 【結果検証】: 未マッチの有無に依らずフラグが強制 True、最良仮説が要確認情報として返る
+    assert result.ranked  # 【確認内容】: 全滅でも最良仮説を返す 🔵
+    assert result.unmatched.unknown_phase_flag is True  # 【確認内容】: all(rwp>threshold) で強制 True 🔵
+    assert result.to_summary()["unknown_phase_flag"] is True  # 【確認内容】: summary もフラグ True 🔵
+
+
+def test_flat_pattern_degrades_with_warnings_and_no_flag():
+    # 【テスト目的】: 観測ピーク 0 のフラットパターンで例外なく縮退し警告が積まれる (TC-E06)
+    # 【テスト内容】: 完全フラット強度で good_cluster 空・warnings 非空・フラグ False を検証
+    # 【期待される動作】: 例外なし、good_cluster_ids==()、warnings 非空、unknown_phase_flag is False
+    # 🟡 信頼性レベル: acceptance-criteria TC-005-03 / EDGE-003 (フラグ False は note §6 設計) に依拠
+
+    # 【テストデータ準備】: 強度一定 (find_peaks が () を返しマッチング対象が存在しない縮退入力)
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    intensity = np.full_like(GRID, 100.0)
+
+    # 【実際の処理実行】: 空測定でもパイプラインを止めず警告へ縮退する
+    result = HypothesisTreeSearch(backend).search(GRID, intensity, [PHASE_A, PHASE_B])
+
+    # 【結果検証】: 空良好解 + 警告蓄積。説明対象が無いので未知相フラグは立てない (EDGE-002 と区別)
+    assert result.good_cluster_ids == ()  # 【確認内容】: 良好解は空 🟡
+    assert len(result.warnings) >= 1  # 【確認内容】: 縮退理由の警告が積まれる (スタブ () で失敗) 🟡
+    assert all(isinstance(w, str) for w in result.warnings)  # 【確認内容】: 警告は文字列 🟡
+    assert result.unmatched.unknown_phase_flag is False  # 【確認内容】: フラット時はフラグ False 🟡
+    summary = result.to_summary()
+    assert summary["warnings"]  # 【確認内容】: summary にも警告が現れる 🟡
+    json.dumps(summary)  # 【確認内容】: 空スキーマの summary が JSON 化可能 🟡
+
+
+def test_zero_candidates_empty_result_has_empty_schema_summary():
+    # 【テスト目的】: 候補ゼロで空 SearchResult が返り to_summary が空スキーマで成立する (TC-E07)
+    # 【テスト内容】: candidates=[] で good_cluster/final_reports/unmatched が空、summary が同一スキーマ
+    # 【期待される動作】: 空でも TC-N17 と同一トップキー集合・ranked==[]・n_hypotheses==0・JSON 化可能
+    # 🔵 信頼性レベル: EDGE-001 + note §6 (候補ゼロ経路との整合) に直接依拠
+
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    y = backend.simulate([PHASE_A], GRID)
+
+    # 【実際の処理実行】: 上流候補が全滅しても API 応答契約 (キー集合) を破らない
+    result = HypothesisTreeSearch(backend).search(GRID, y, [])
+
+    # 【結果検証】: 空でも各後処理フィールドが空値で成立し、summary が空スキーマになる
+    assert result.good_cluster_ids == ()  # 【確認内容】: 良好解は空 🔵
+    assert dict(result.final_reports) == {}  # 【確認内容】: フル精密化記録は空 Mapping 🔵
+    assert result.unmatched.unmatched_observed == ()  # 【確認内容】: 未マッチ観測は空 🔵
+    summary = result.to_summary()
+    assert _SUMMARY_TOP_KEYS <= set(summary)  # 【確認内容】: 空でも同一トップキー集合 (スタブで失敗) 🔵
+    assert summary["ranked"] == []  # 【確認内容】: ranked は空 list 🔵
+    assert summary["n_hypotheses"] == 0  # 【確認内容】: 仮説総数 0 🔵
+    json.dumps(summary)  # 【確認内容】: 空スキーマでも JSON 化可能 🔵
+
+
+# ---------------------------------------------------------------------------
+# 3. 境界値テストケース (TC-B07〜B11)
+# ---------------------------------------------------------------------------
+
+
+def test_single_hypothesis_falls_back_to_good_cluster():
+    # 【テスト目的】: refined 仮説 1 件で Jenks 境界不能でも単一仮説が良好解になる (TC-B07)
+    # 【テスト内容】: A 単相・候補 [A] で jenks_breaks 縮退時のフォールバックを検証
+    # 【期待される動作】: good_cluster_ids==(ranked[0].id,)、final_reports にその 1 件、例外なし
+    # 🟡 信頼性レベル: 縮退条件は clustering.py 契約 🔵、フォールバック規則は §3.6 実装時確定 🟡
+
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    y = backend.simulate([PHASE_A], GRID)
+    result = HypothesisTreeSearch(backend).search(GRID, y, [PHASE_A])
+
+    # 【結果検証】: 単一仮説はそのまま良好解になり、フル精密化にも 1 件記録される
+    only_id = result.ranked[0].hypothesis.id
+    assert result.good_cluster_ids == (only_id,)  # 【確認内容】: 単一仮説がそのまま良好解 (スタブ () で失敗) 🟡
+    assert len(result.final_reports) == 1  # 【確認内容】: フル精密化が 1 件記録される 🟡
+    assert only_id in result.final_reports  # 【確認内容】: 記録キーが当該仮説 ID 🟡
+    assert "unknown_phase_flag" in result.to_summary()  # 【確認内容】: to_summary が成立 🟡
+
+
+def test_all_equal_evidence_makes_every_hypothesis_good():
+    # 【テスト目的】: 全 refined 仮説の evidence が同値のとき全仮説が良好解になる (TC-B08)
+    # 【テスト内容】: FakeBackend で全組合せ同一 (rwp=100=基準, chi2=10) を返し展開を止め同値化する
+    # 【期待される動作】: good_cluster_ids が全仮説 ID、並びは ID 昇順で決定論的、例外なし
+    # 🟡 信頼性レベル: 要件定義 §3.6 の推奨フォールバック (実装時確定事項) に基づく
+
+    # 【テストデータ準備】: rwp=基準 100 で改善 0 → 展開されず {A}/{B} の 2 単相のみ (同一 BIC) になる
+    fake = FakeBackend(default_rwp=100.0, default_chi2=10.0)
+    y = fake.simulate([PHASE_A, PHASE_B], GRID)
+    result = HypothesisTreeSearch(fake, config=SearchConfig(final_full_refine=False)).search(
+        GRID, y, [PHASE_A, PHASE_B]
+    )
+
+    # 【結果検証】: 区別できない (evidence 同値) 場合は落とさず全て良好解に残す安全側縮退
+    all_ids = set(result.hypotheses)
+    assert set(result.good_cluster_ids) == all_ids  # 【確認内容】: 全仮説が良好解 (スタブ () で失敗) 🟡
+    assert len(result.good_cluster_ids) == len(all_ids)  # 【確認内容】: 重複なく全件 🟡
+    assert list(result.good_cluster_ids) == sorted(result.good_cluster_ids)  # 【確認内容】: ID 昇順で決定論 🟡
+
+
+def test_high_r_threshold_uses_strict_greater_comparison():
+    # 【テスト目的】: Rwp==high_r_threshold では高 R フラグが立たない (厳密比較 >) (TC-B09)
+    # 【テスト内容】: 完全説明データ + FakeBackend の rwp を閾値ちょうど/超で振って境界の両側を検証
+    # 【期待される動作】: rwp==30 → フラグ False、rwp==30.1 → フラグ True
+    # 🟡 信頼性レベル: 条件式 (>) は §3.6 🔵、等値ケースの挙動指定はそこからの論理的導出 🟡
+
+    # 【完全説明構成】: {A,B} の chi2 を最小化し最良仮説が観測を全説明 (未マッチ由来のフラグを排除)
+    chi2_map = {frozenset({"A", "B"}): 5.0}
+    cfg = SearchConfig(final_full_refine=False)
+
+    def run(default_rwp: float) -> SearchResult:
+        fake = FakeBackend(default_rwp=default_rwp, chi2_by_refs=chi2_map, default_chi2=100.0)
+        y = fake.simulate([PHASE_A, PHASE_B], GRID)
+        return HypothesisTreeSearch(fake, config=cfg).search(GRID, y, [PHASE_A, PHASE_B])
+
+    res_eq = run(30.0)  # 閾値ちょうど
+    res_gt = run(30.1)  # 閾値超
+
+    # 【結果検証】: 閾値ちょうどは「高 R でない」側へ、閾値超で初めてフラグが立つ
+    assert res_eq.unmatched.unknown_phase_flag is False  # 【確認内容】: rwp==threshold は False (>) 🟡
+    assert res_gt.unmatched.unknown_phase_flag is True  # 【確認内容】: rwp>threshold で True (スタブで失敗) 🟡
+
+
+def test_max_final_refine_clips_to_top_good_cluster():
+    # 【テスト目的】: フル精密化対象が「良好解上位 min(max_final_refine, 良好解数) 件」になる (TC-B10)
+    # 【テスト内容】: (a) 上限 1 で 1 件のみ (最良)、(b) 良好解 1 件で上限 3 でも 1 件 を検証
+    # 【期待される動作】: (a) len==1 かつキーは evidence 最小 (最良) の ID、(b) len==1 (上限未達)
+    # 🟡 信頼性レベル: 設計 D3「上位 max_final_refine 件」からの境界導出
+
+    # (a) 上限クリップ: max_final_refine=1 で良好解のうち最良 1 件のみ精密化
+    res_a = _run_ab_search(SearchConfig(max_final_refine=1))
+    assert len(res_a.final_reports) == 1  # 【確認内容】: 上位 1 件へクリップ (スタブ 0 件で失敗) 🟡
+    assert set(res_a.final_reports) == {res_a.ranked[0].hypothesis.id}  # 【確認内容】: 最良を選出 🟡
+    assert res_a.ranked[0].hypothesis.id in res_a.good_cluster_ids  # 【確認内容】: 選出は良好解内 🟡
+
+    # (b) 上限未達: 良好解 1 件 (単一候補) では上限 3 でも 1 件 (= 良好解数)
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    y = backend.simulate([PHASE_A], GRID)
+    res_b = HypothesisTreeSearch(backend, config=SearchConfig(max_final_refine=3)).search(
+        GRID, y, [PHASE_A]
+    )
+    assert len(res_b.final_reports) == 1  # 【確認内容】: 良好解数 (1) で頭打ち 🟡
+
+
+def test_deterministic_bit_identical_including_postprocess():
+    # 【テスト目的】: 再ランク・後処理を含めて 2 回実行で to_summary() までビット同一 (TC-B11)
+    # 【テスト内容】: 同一入力で独立 2 回探索し good_cluster/final_reports/ranked/summary の一致を検証
+    # 【期待される動作】: 4 系列すべてが == でビット同一 (pytest.approx を使わない)
+    # 🔵 信頼性レベル: NFR-102 / REQ-403 / 要件定義 §3.1 に直接依拠
+
+    r1 = _run_ab_search()
+    r2 = _run_ab_search()
+
+    # 【非空ガード】: 空同士の自明一致でなく後処理が実体化していることを担保 (スタブで失敗)
+    assert r1.good_cluster_ids  # 【確認内容】: 良好解が非空 (実体化の担保) 🔵
+    assert r1.final_reports  # 【確認内容】: フル精密化記録が非空 🔵
+    assert "unknown_phase_flag" in r1.to_summary()  # 【確認内容】: summary スキーマが成立 🔵
+
+    # 【結果検証】: 後処理フィールドまで含めて 2 回実行がビット同一 (再現性)
+    assert r1.good_cluster_ids == r2.good_cluster_ids  # 【確認内容】: 良好解がビット同一 🔵
+    assert tuple(r1.final_reports.keys()) == tuple(r2.final_reports.keys())  # 精密化キーが同順 🔵
+    order1 = [(rk.hypothesis.id, rk.probability, rk.evidence.value) for rk in r1.ranked]
+    order2 = [(rk.hypothesis.id, rk.probability, rk.evidence.value) for rk in r2.ranked]
+    assert order1 == order2  # 【確認内容】: ランキング列がビット同一 🔵
+    assert r1.to_summary() == r2.to_summary()  # 【確認内容】: summary が dict 完全一致 🔵
