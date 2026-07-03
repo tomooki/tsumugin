@@ -9,12 +9,15 @@ from __future__ import annotations
 from .changepoint import ChangepointConfig, ChangepointSignal, detect_changepoint
 from .lifecycle import LifecycleConfig, LifecycleTracker
 from .series import FrameSeries
+from .trajectory import FrameRecord, Trajectory
 
 __all__ = [
     "ChangepointConfig",
     "ChangepointSignal",
+    "FrameRecord",
     "FrameSeries",
     "LifecycleConfig",
     "LifecycleTracker",
+    "Trajectory",
     "detect_changepoint",
 ]
