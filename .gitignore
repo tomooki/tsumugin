@@ -1,6 +1,7 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+.coverage
 build/
 dist/
 wheels/
@@ -11,3 +12,6 @@ wheels/
 
 # Secret files
 .env
+
+# Local agent instructions
+CLAUDE.md
