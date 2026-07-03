@@ -16,12 +16,16 @@ from .matcher import (
 )
 from .peaks import Peak, find_peaks
 from .pruning import dynamic_threshold
+from .tree import HypothesisTreeSearch, SearchConfig, SearchResult
 
 __all__: list[str] = [
     "ClusterResult",
+    "HypothesisTreeSearch",
     "MatchResult",
     "Peak",
     "PhaseCandidate",
+    "SearchConfig",
+    "SearchResult",
     "UnmatchedPeakReport",
     "dynamic_threshold",
     "find_peaks",
