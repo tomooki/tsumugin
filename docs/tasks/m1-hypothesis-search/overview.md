@@ -33,7 +33,7 @@
 - [x] [TASK-0007: 探索後処理 (良好解/フル精密化/未知相/summary)](TASK-0007.md) - 4h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0008: .gpx 書き出し export_gpx](TASK-0008.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0009: Web UI 最小版 (FastAPI read-only)](TASK-0009.md) - 4h (TDD) 🟡 ✅ 完了 (2026-07-03)
-- [ ] [TASK-0010: 公開 API 統合 + E2E + ドキュメント](TASK-0010.md) - 3h (TDD) 🔵
+- [x] [TASK-0010: 公開 API 統合 + E2E + ドキュメント](TASK-0010.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 
 ```
 TASK-0001 → 0002 → 0003 → 0004 → 0006

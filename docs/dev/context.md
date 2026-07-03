@@ -8,7 +8,7 @@
 Tsumugin — 粉末回折の多仮説・全自動 Rietveld 解析プラットフォーム。
 バックエンドは GSAS-II (`GSASIIscriptable`) を想定するが、コアは `RefinementBackend`
 抽象で分離し、GSAS-II 非導入環境でも `SimulatedBackend` で全パイプラインを検証できる。
-本コンテキストは **M0 (PoC)** スコープ。仕様は [docs/tsumugin_spec_v0.3.md](../tsumugin_spec_v0.3.md)。
+本コンテキストは **M0 (PoC) + M1 (多仮説木探索)** スコープ。仕様は [docs/tsumugin_spec_v0.3.md](../tsumugin_spec_v0.3.md)。
 
 ## Tech Stack
 
@@ -39,10 +39,18 @@ src/tsumugin/
 ├── backends/       # RefinementBackend 抽象 + SimulatedBackend + GSASIIBackend(薄いラッパ)
 ├── refinement/     # 段階解放エンジン(FR-200) + ガードレール(FR-210)
 ├── evidence/       # Evidence Engine (bic/aic, FR-121)
-└── store/          # Ledger / Snapshot (追記専用・非破壊 P2/NFR-101/105)
+├── store/          # Ledger / Snapshot (追記専用・非破壊 P2/NFR-101/105)
+├── search/         # 多仮説木探索: peaks/matcher/clustering/pruning/tree (FR-110〜117)
+├── export/         # 相集合+観測を .gpx へ書き出し export_gpx (FR-505)
+├── webui/          # read-only Web UI: create_app/serve (FastAPI, optional web, FR-421〜424)
+└── pipeline.py     # 単一パターン自動多相精密化 (M0)
 tests/              # pytest テスト (実装ファイルと 1:1 対応)
 docs/dev/plans/     # dev-plan 出力
 ```
+
+公開 API: M0 中核シンボルに加え M1 の `HypothesisTreeSearch` / `SearchConfig` /
+`SearchResult` / `PhaseCandidate` / `Peak` / `UnmatchedPeakReport` / `export_gpx` を
+`from tsumugin import ...` でトップレベル公開 (`__init__.py` の `__all__`、アルファベット昇順)。
 
 ## Coding Conventions
 
@@ -88,4 +96,6 @@ docs/dev/plans/     # dev-plan 出力
   profile 以降の suffix は M2+ で拡張。
 - 既知の無害な警告: `~/.GSASII/config.ini` (ユーザーの既存ファイル、cp932) を GSAS-II が UTF-8 で
   読めず起動時に "Error reading {cfgfile}" を出すが動作に影響なし (upstream の表示バグ含む)。
-- M0 スコープ外（M1 以降）: 多仮説木探索、シーケンシャル、operando、MEM、nested sampling、Web/REST/MCP。
+- M1 実装済み: 多仮説木探索 (`tsumugin.search`)、`.gpx` 書き出し (`tsumugin.export`)、
+  read-only Web UI (`tsumugin.webui`、optional extra `web`)。
+- M1 以降スコープ外（M2+）: シーケンシャル、operando、MEM、nested sampling、REST/MCP、永続化 DB。

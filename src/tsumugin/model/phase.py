@@ -36,7 +36,7 @@ class PhaseInstance:
 
     phase_ref: str
     lattice: LatticeParams
-    scale: float
+    scale: float = 1.0  # 相スケール因子
     wt_frac: float | None = None
     occupancies: Mapping[str, float] = field(default_factory=dict)
 
