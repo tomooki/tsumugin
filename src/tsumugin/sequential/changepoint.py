@@ -29,6 +29,12 @@ class ChangepointConfig:
     window: int = 5  # 【ローリング窓】: 直近 W フレーム 🟡 D-Q3
     z_threshold: float = 5.0  # 【発火閾値】: robust z の strict 超過閾値 🟡 D-Q3
     min_new_peaks: int = 1  # 【新規ピーク下限】: new_peaks 発火の下限 🟡 interfaces.py L88
+    # 【強度閾値 (TASK-0031 較正 / Issue #3)】: 未マッチ観測ピークを new_peaks へ計上する相対高さ下限。
+    #   実 GSAS-II の未モデル微小ピーク (ノイズフロア) を除外し毎フレーム発火を抑える。engine 側で適用 🔵
+    new_peak_min_height_frac: float = 0.05
+    # 【持続条件 (TASK-0031 較正 / Issue #3)】: 同一位置ビンで連続 M フレーム継続時のみ計上 (M=1 は現行等価)。
+    #   単発 (1 フレーム) のスパイクノイズを抑える。engine 側の位置ビンごと連続出現カウンタで評価 🔵
+    new_peak_persistence: int = 2
 
 
 @dataclass(frozen=True)

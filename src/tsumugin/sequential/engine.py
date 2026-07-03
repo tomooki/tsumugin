@@ -28,7 +28,7 @@ from ..model import Hypothesis, PhaseInstance, RefinementMetrics
 from ..refinement.staged import RefinementReport, StagedRefinementEngine
 from ..search.clustering import PhaseCandidate
 from ..search.matcher import match_score, unmatched_peaks
-from ..search.peaks import find_peaks
+from ..search.peaks import Peak, find_peaks
 from ..search.tree import HypothesisTreeSearch, SearchConfig, SearchResult
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
@@ -50,6 +50,12 @@ _EXPLORE_KEYS = ("scale", "lattice.a", "lattice.b", "lattice.c")
 #   ノイズフロア発火を抑える。量子化は changepoint 入力に限定し、記録用 (record.rwp /
 #   record.phases) は full precision を保持する 🟡 NFR-102。
 _HISTORY_QUANTIZE_DIGITS = 6
+
+# 【新規未マッチピークの位置ビン幅 (TASK-0031 較正)】: 未マッチ観測ピークの 2θ 位置を
+#   連続出現カウンタのキーへ量子化する刻み (度)。同一物理ピークがフレーム間の微小ジッタで
+#   別ビンに割れないよう、マッチング許容 (SearchConfig.match_tol_deg 既定 0.15) 相当の 0.15° を
+#   採る。決定論 (NFR-102): round による安定量子化で dict 反復順・カウンタ更新順に非依存 🟡
+_NEW_PEAK_BIN_WIDTH_DEG = 0.15
 
 
 @dataclass(frozen=True)
@@ -183,6 +189,11 @@ class SequentialEngine:
         warnings: list[str] = []
         rwp_history: list[float] = []  # 成功フレームのみ (非有限を robust z に渡さない) 🔵
         lattice_history: list[dict[str, float]] = []  # 主相 (phases[0]) の格子 a/b/c 🔵
+        # 【未マッチピークの位置ビンごと連続出現カウンタ (TASK-0031 較正 / Issue #3)】: 強度閾値以上の
+        #   未マッチ観測ピークが同一位置ビンで連続して現れたフレーム数を保持する逐次状態。持続 M フレーム
+        #   以上のビンのみ new_peaks 指標へ計上し、単発ノイズ/微小ピークによる探索連発を抑える。
+        #   失敗フレーム (非有限) では更新せず据え置き、成功フレーム系列で連続性を評価する 🔵
+        persistence_counter: dict[int, int] = {}
         segments: list[tuple[str, tuple[PhaseInstance, ...], RefinementMetrics | None, int]] = []
         first_frame_report: RefinementReport | None = None
         warm_phases: tuple[PhaseInstance, ...] | None = None  # 直近成功フレームの確定 phases
@@ -231,7 +242,15 @@ class SequentialEngine:
 
             # 【成功フレーム】: 現行モデルとフレーム指標を確定し履歴へ蓄積する 🔵
             current_phases = refined
-            new_unmatched = self._count_unmatched(current_phases, two_theta, intensity_i)
+            # 【new_peaks 指標の強度/持続ゲート (TASK-0031 較正)】: 未マッチ観測ピーク (位置+高さ) を抽出し、
+            #   強度閾値以上のものを位置ビンごと連続出現カウンタで評価。持続 M フレーム以上のビン数のみを
+            #   detect_changepoint へ渡す new_unmatched として計上する (単発/微小ピークの探索連発を抑制) 🔵
+            unmatched_obs = self._unmatched_observed_peaks(
+                current_phases, two_theta, intensity_i
+            )
+            new_unmatched, persistence_counter = self._gate_new_unmatched(
+                unmatched_obs, intensity_i, persistence_counter, config.changepoint
+            )
             # 【Rwp 量子化】: ノイズフロア発火抑止のため履歴へは量子化値を渡す (_HISTORY_QUANTIZE_DIGITS
             #   の rationale 参照)。記録用 record.rwp は full precision を保持する 🟡 NFR-102
             rwp_history.append(self._quantize_history(rwp_raw))
@@ -409,22 +428,24 @@ class SequentialEngine:
         # 【相集合ごと継承】: 既定は前フレーム出力をそのまま次フレーム入力にする (warm start) 🔵
         return phases
 
-    def _count_unmatched(
+    def _unmatched_observed_peaks(
         self, phases: tuple[PhaseInstance, ...], two_theta: np.ndarray, intensity: np.ndarray
-    ) -> int:
-        """現行モデルで説明できない観測ピーク数を求める (changepoint の new_peaks 指標)。🔵
+    ) -> tuple[Peak, ...]:
+        """現行モデルで説明できない観測ピーク (位置+高さ) を返す (changepoint の new_peaks 指標源)。🔵
 
         【実装方針】: 観測ピークを検出し、各相を simulate→find_peaks→match_score で突き合わせ、
-          unmatched_peaks でどの相でも説明できない観測ピークを集約して件数を返す (tree.py 踏襲)。
+          unmatched_peaks でどの相でも説明できない観測ピークを集約して Peak 実体 (位置/高さ) を返す
+          (tree.py 踏襲)。TASK-0031 較正で位置ビンごと連続出現カウンタと強度ゲートに用いるため、
+          従来の「件数のみ」から「位置/高さを保持した未マッチ観測ピーク列」へ拡張した。
         🔵 信頼性レベル: note.md §3.2 (matcher で算出) / architecture.md 複合指標に依拠。
         """
         search_cfg = self._config.search
         observed = find_peaks(
             two_theta, intensity, min_height_frac=search_cfg.min_peak_height_frac
         )
-        # 【空縮退】: 観測ピークが無ければ未マッチも 0 (フラットパターン) 🔵
+        # 【空縮退】: 観測ピークが無ければ未マッチも空 (フラットパターン) 🔵
         if not observed:
-            return 0
+            return ()
         match_results = []
         for idx, phase in enumerate(phases):
             calc = self._backend.simulate([phase], two_theta)
@@ -437,7 +458,57 @@ class SequentialEngine:
                 )
             )
         report = unmatched_peaks(match_results, observed)
-        return len(report.unmatched_observed)
+        return report.unmatched_observed
+
+    def _gate_new_unmatched(
+        self,
+        unmatched_observed: tuple[Peak, ...],
+        intensity: np.ndarray,
+        prev_counter: Mapping[int, int],
+        cp_config: ChangepointConfig,
+    ) -> tuple[int, dict[int, int]]:
+        """未マッチ観測ピークに強度/持続ゲートを課し new_peaks 計上値と更新カウンタを返す。🔵 D7
+
+        【機能概要】: (1) 相対高さ < ``new_peak_min_height_frac`` の微小ピークを除外、(2) 位置を決定論
+          ビンへ量子化、(3) 前フレーム継続ビンは +1・非継続ビンはリセット (dict から脱落)、
+          (4) 連続カウント >= ``new_peak_persistence`` のビン数を new_peaks 指標 (new_unmatched) とする。
+        【実装方針】: 単発 (連続 1) のスパイクノイズと強度閾値未満の微小ピークをここで抑制し、
+          持続する真の新相ピークのみを detect_changepoint へ計上する (Issue #3 探索連発の較正)。
+        【テスト対応】: TC-CP-N01/N02/N03・E01・B01/B02/B06 (単発非発火/持続発火/強度/非連続リセット)。
+        🔵 信頼性レベル: 要件定義 §2.3 / 設計 D7 (engine が連続出現カウントを保持) に依拠。
+        @param unmatched_observed: 未マッチ観測ピーク列 (位置+高さ)。
+        @param intensity: 現フレームの観測強度 (相対高さの基準最大値の算出に用いる)。
+        @param prev_counter: 前フレームまでの位置ビンごと連続出現カウンタ。
+        @param cp_config: changepoint 設定 (強度閾値/持続条件を参照)。
+        @returns: (new_unmatched 計上値, 更新後の連続出現カウンタ)。
+        """
+        # 【基準最大強度】: 相対高さ = 観測ピーク高さ / パターン最大強度。空/非正なら強度ゲートで全除外 🟡
+        max_height = float(np.max(intensity)) if intensity.size else 0.0
+        threshold = cp_config.new_peak_min_height_frac
+        # 【強度ゲート + 位置ビン化】: 相対高さが閾値以上の未マッチピークのみを決定論ビンへ集約する 🔵
+        current_bins: set[int] = set()
+        if max_height > 0.0:
+            for peak in unmatched_observed:
+                if float(peak.height) >= threshold * max_height:
+                    current_bins.add(self._position_bin(peak.position))
+        # 【連続カウンタ更新】: 継続ビンは +1、非継続ビンは新 dict へ載せないことでリセット (0 復帰)。
+        #   ソート済みビンで反復し dict 挿入順を安定化して決定論を担保する (NFR-102) 🔵
+        new_counter: dict[int, int] = {}
+        for key in sorted(current_bins):
+            new_counter[key] = int(prev_counter.get(key, 0)) + 1
+        # 【持続ゲート】: 連続カウント >= persistence の包含境界 (>=) を満たすビン数を計上する 🔵
+        persistence = cp_config.new_peak_persistence
+        new_unmatched = sum(1 for count in new_counter.values() if count >= persistence)
+        return new_unmatched, new_counter
+
+    @staticmethod
+    def _position_bin(position: float) -> int:
+        """未マッチ観測ピークの 2θ 位置を連続出現カウンタの決定論ビンキーへ量子化する。🔵 NFR-102
+
+        【ヘルパ関数】: ``_NEW_PEAK_BIN_WIDTH_DEG`` 刻みで丸めた整数ビン index を返す。同一物理ピークが
+          フレーム間の微小ジッタで別ビンに割れないようにしつつ、round による安定量子化で決定論を保つ。
+        """
+        return int(round(float(position) / _NEW_PEAK_BIN_WIDTH_DEG))
 
     def _decide(
         self,
