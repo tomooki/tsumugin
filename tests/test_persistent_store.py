@@ -337,3 +337,328 @@ def test_trailing_blank_line_skipped(tmp_path):
     # 【結果検証】: 空行は無視され破損扱いにならない（E-03 の不正 JSON とは区別）
     assert pl2.verify() is True  # 【確認内容】: 末尾空行があっても検証成功
     assert len(pl2.entries) == 1  # 【確認内容】: 空行を除いたエントリ数が正しい
+
+
+# ---------------------------------------------------------------------------
+# TASK-0014: PersistentSnapshotStore (未実装) の TDD Red フェーズテスト（13 件）
+#
+# 対象実装（未実装）: tsumugin.store.persistent.PersistentSnapshotStore
+#   SnapshotStore (store/snapshot.py) と同一契約 (save/load/revert/snapshots/current_id)
+#   を持つ JSONL 永続版。phases は serialization.phase_to_dict/phase_from_dict で相互変換。
+# 既存の PersistentLedger テスト 14 件は変更しない（本セクションは追記のみ）。
+# PersistentSnapshotStore は未実装のため、各テストは関数内 import の ImportError で失敗する
+# （モジュール収集は成立し、既存 14 件は pass のまま = Red フェーズの分離失敗）。
+# 内訳: 正常系 N-01〜N-06 / 異常系 E-01〜E-02 / 境界値 B-01〜B-05。
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_save_reopen_load_roundtrip(tmp_path):
+    # 【テスト目的】: save → 再オープン → load(id) で phases 等価復元を確認 (完了条件① / TC-106-03)
+    # 【テスト内容】: 2 件 save し別インスタンスで同一パスを再オープンして load(id) を検証
+    # 【期待される動作】: load(id).phases が保存時 phases と値等価・parent_id/label も復元
+    # 🔵 信頼性レベル: 要件定義 §2.1/2.3 完了条件① / TC-106-03 / serialization roundtrip
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    # 【テストデータ準備】: 逐次解析で確定する代表 phases（相 1 個 → 相 2 個へ変化）
+    # 【初期条件設定】: 空の snapshot JSONL パスから開始
+    path = tmp_path / "snapshots.jsonl"
+    st = PersistentSnapshotStore(path)
+    p0 = (PhaseInstance("A", LatticeParams(5.0, 5.0, 5.0), scale=1.0),)
+    p1 = (
+        PhaseInstance("A", LatticeParams(5.1, 5.1, 5.1), scale=0.8),
+        PhaseInstance("B", LatticeParams(6.0, 6.0, 6.0)),
+    )
+    st.save(p0, label="init")   # snap-0000
+    st.save(p1, label="stage")  # snap-0001
+
+    # 【実際の処理実行】: 同一パスを別インスタンスで再オープン（プロセス再起動相当）
+    st2 = PersistentSnapshotStore(path)
+
+    # 【結果検証】: load が保存時 phases・parent_id・label を等価復元
+    assert st2.load("snap-0000").phases == p0  # 【確認内容】: 単相 phases 等価復元
+    assert st2.load("snap-0001").phases == p1  # 【確認内容】: 複数相 phases も等価復元
+    assert st2.load("snap-0001").label == "stage"  # 【確認内容】: label が復元される
+    assert st2.load("snap-0001").parent_id == "snap-0000"  # 【確認内容】: parent_id 連結復元
+
+
+def test_snapshot_reopen_revert_returns_phases_and_moves_current(tmp_path):
+    # 【テスト目的】: 再オープン → revert(id) で phases tuple 等価復元・current_id 移動 (完了条件①)
+    # 【テスト内容】: 2 件 save → 再オープン → 過去 snapshot へ非破壊 revert
+    # 【期待される動作】: revert(id) が保存時 phases を返し current_id が移るが履歴は縮小しない
+    # 🔵 信頼性レベル: 要件定義 §2.4 完了条件① / TC-106-03 / snapshot.py L53-61
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snapshots.jsonl"
+    st = PersistentSnapshotStore(path)
+    p0 = (PhaseInstance("A", LatticeParams(5.0, 5.0, 5.0)),)
+    p1 = (PhaseInstance("A", LatticeParams(5.1, 5.1, 5.1)),)
+    st.save(p0, label="init")
+    st.save(p1, label="stage")
+
+    # 【実際の処理実行】: 再オープンして過去状態へ revert
+    st2 = PersistentSnapshotStore(path)
+    reverted = st2.revert("snap-0000")
+
+    assert reverted == p0  # 【確認内容】: revert が phases tuple を等価復元
+    assert st2.current_id == "snap-0000"  # 【確認内容】: current_id が revert 先へ移動
+    assert len(st2.snapshots) == 2  # 【確認内容】: revert は前方履歴を消さない
+
+
+def test_snapshot_id_sequence_continues_across_reopen(tmp_path):
+    # 【テスト目的】: snapshot ID 連番が再オープン跨ぎで継続する (完了条件②)
+    # 【テスト内容】: save(snap-0000) → 再オープン → save(snap-0001) の連番継続を確認
+    # 【期待される動作】: 復元数から連番継続・parent_id 連結・件数一貫
+    # 🔵 信頼性レベル: 要件定義 §2.1/2.2 完了条件② / snapshot.py L31 snap-{len:04d}
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snapshots.jsonl"
+    st = PersistentSnapshotStore(path)
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="a")  # snap-0000
+
+    # 【実際の処理実行】: 再オープン（既存 1 件）してさらに save
+    st2 = PersistentSnapshotStore(path)
+    s = st2.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="b")  # snap-0001
+
+    assert s.id == "snap-0001"  # 【確認内容】: 連番が再オープン跨ぎで継続
+    assert s.parent_id == "snap-0000"  # 【確認内容】: parent_id が直前 snapshot に連結
+    assert len(st2.snapshots) == 2  # 【確認内容】: 復元 1 + 新規 1 = 2 件
+
+    # 【追加検証】: 3 回目のオープンでも id 列が一貫して復元される
+    st3 = PersistentSnapshotStore(path)
+    assert [snap.id for snap in st3.snapshots] == ["snap-0000", "snap-0001"]
+    # 【確認内容】: 永続化された id 列が復元される
+
+
+def test_snapshot_save_records_ledger_snapshot_save(tmp_path):
+    # 【テスト目的】: ledger 注入下の save で snapshot_save が記録される (完了条件⑤)
+    # 【テスト内容】: PersistentLedger 注入で save → payload 一致と ledger 再オープン検証
+    # 【期待される動作】: snapshot_save の payload が in-memory 版と一致・再オープンで verify True
+    # 🔵 信頼性レベル: 要件定義 §2.2 完了条件⑤ / snapshot.py L38-48
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    snap_path = tmp_path / "snapshots.jsonl"
+    led_path = tmp_path / "ledger.jsonl"
+    pl = PersistentLedger(led_path)
+    st = PersistentSnapshotStore(snap_path, ledger=pl)
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="init")
+
+    assert pl.entries[-1].kind == "snapshot_save"  # 【確認内容】: save が ledger へ記録
+    assert pl.entries[-1].payload == {
+        "snapshot_id": "snap-0000",
+        "label": "init",
+        "parent_id": None,
+        "n_phases": 1,
+    }  # 【確認内容】: payload が in-memory SnapshotStore と同一契約
+
+    # 【追加検証】: 注入 ledger の再オープンで永続化と検証が成立
+    pl2 = PersistentLedger(led_path)
+    assert pl2.verify() is True  # 【確認内容】: 注入 ledger 再オープンで検証成功
+    assert pl2.entries[-1].payload["snapshot_id"] == "snap-0000"  # 【確認内容】: payload 往復
+
+
+def test_snapshot_revert_records_ledger_and_file_unchanged(tmp_path):
+    # 【テスト目的】: revert で snapshot_revert が ledger に記録され snapshot ファイルは無変更 (完了条件⑤/P2)
+    # 【テスト内容】: ledger 注入下で save → revert し ledger 記録とファイル無変更を確認
+    # 【期待される動作】: ledger に snapshot_revert 追記、snapshot JSONL のバイト列は不変
+    # 🔵 信頼性レベル: 要件定義 §2.4/§3 完了条件⑤ / snapshot.py L56-60
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    pl = PersistentLedger(tmp_path / "ledger.jsonl")
+    snap_path = tmp_path / "snapshots.jsonl"
+    st = PersistentSnapshotStore(snap_path, ledger=pl)
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="init")  # snap-0000
+    before = snap_path.read_bytes()
+
+    # 【実際の処理実行】: 過去へ revert（状態遷移でありデータ追加ではない）
+    st.revert("snap-0000")
+    after = snap_path.read_bytes()
+
+    assert pl.entries[-1].kind == "snapshot_revert"  # 【確認内容】: revert が ledger へ記録
+    assert pl.entries[-1].payload == {"snapshot_id": "snap-0000", "label": "init"}
+    # 【確認内容】: revert payload が in-memory SnapshotStore と同一
+    assert after == before  # 【確認内容】: snapshot ファイルは追記されず無変更（非破壊 revert）
+
+
+def test_persistent_snapshot_store_injectable_into_staged_engine(tmp_path):
+    # 【テスト目的】: StagedRefinementEngine へ無改変注入で M0 経路が in-memory 版と等価 (TC-106-06/REQ-012)
+    # 【テスト内容】: 同一入力で in-memory 版と永続版を run し RefinementReport を比較
+    # 【期待される動作】: metrics/final_phases/escalated 等価・例外なく完走・snapshot 永続化
+    # 🔵 信頼性レベル: 要件定義 §3 REQ-012 / TC-106-06 / staged.py L131,171,197
+    import numpy as np
+
+    from tsumugin.backends.simulated import SimulatedBackend
+    from tsumugin.refinement.staged import StagedRefinementEngine
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    backend = SimulatedBackend()
+    phases = (PhaseInstance("A", LatticeParams(5.0, 5.0, 5.0)),)
+    tt = np.arange(15.0, 60.0, 0.05)
+    y = backend.simulate(phases, tt)
+
+    # 【基準】: in-memory SnapshotStore 版で run
+    rep_mem = StagedRefinementEngine(backend, SnapshotStore(), Ledger()).run(phases, tt, y)
+
+    # 【差し替え】: 永続版 PersistentSnapshotStore を無改変注入して run
+    snap_path = tmp_path / "snapshots.jsonl"
+    rep_pers = StagedRefinementEngine(
+        backend, PersistentSnapshotStore(snap_path), Ledger()
+    ).run(phases, tt, y)
+
+    assert rep_pers.metrics == rep_mem.metrics  # 【確認内容】: メトリクス等価（決定論）
+    assert rep_pers.final_phases == rep_mem.final_phases  # 【確認内容】: 最終 phases 等価
+    assert rep_pers.escalated == rep_mem.escalated  # 【確認内容】: エスカレーション判定一致
+
+    # 【追加検証】: snapshot が永続化され再オープンで復元できる
+    assert snap_path.exists()  # 【確認内容】: run 実行で snapshot JSONL が生成される
+    assert len(PersistentSnapshotStore(snap_path).snapshots) > 0  # 【確認内容】: 再オープンで非空復元
+
+
+def test_load_and_revert_unknown_id_raises_keyerror(tmp_path):
+    # 【テスト目的】: 未知 snapshot_id への load/revert が KeyError（in-memory と同一縮退）(E-01)
+    # 【テスト内容】: 1 件のみ save 後、存在しない id を load/revert
+    # 【期待される動作】: いずれも KeyError を送出し沈黙 None を返さない
+    # 🔵 信頼性レベル: 要件定義 §2.3/2.4/§4.4 / snapshot.py L50-54 self._index[snapshot_id]
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    st = PersistentSnapshotStore(tmp_path / "snapshots.jsonl")
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="init")  # snap-0000 のみ
+
+    with pytest.raises(KeyError):  # 【確認内容】: 未知 id の load は KeyError
+        st.load("snap-9999")
+    with pytest.raises(KeyError):  # 【確認内容】: 未知 id の revert は KeyError
+        st.revert("snap-9999")
+
+
+def test_new_path_opens_empty_and_first_save_creates_file(tmp_path):
+    # 【テスト目的】: 新規/空パスは空ストア・初回 save でファイル新規作成 (E-02)
+    # 【テスト内容】: 不在パスで開き、オープン直後の状態と初回 save 後のファイルを確認
+    # 【期待される動作】: オープンのみではファイルを作らず、初回 save で 1 行追記作成
+    # 🟡 信頼性レベル: 要件定義 §4.3。新規ファイル生成タイミングは 🟡 具体化
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "new.jsonl"
+    st = PersistentSnapshotStore(path)
+
+    assert st.snapshots == ()  # 【確認内容】: オープン直後は空ストア
+    assert st.current_id is None  # 【確認内容】: 未 save の current_id は None
+    assert not path.exists()  # 【確認内容】: オープンのみではファイルを作らない（読み取りのみ）
+
+    # 【実際の処理実行】: 初回 save でファイル新規作成
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="init")
+
+    assert path.exists()  # 【確認内容】: 初回 save でファイルが作成される
+    lines = path.read_text(encoding="utf-8").splitlines()
+    row = json.loads(lines[0])  # 【確認内容】: 1 行目が json.loads 可能
+    assert row["id"] == "snap-0000"  # 【確認内容】: 初回 snapshot id は snap-0000
+    assert row["parent_id"] is None  # 【確認内容】: 初回 parent_id は None
+
+
+def test_no_destructive_methods_and_same_surface_as_in_memory(tmp_path):
+    # 【テスト目的】: 削除・上書き API 不在・in-memory と同一属性集合 (完了条件③ / TC-106-05)
+    # 【テスト内容】: 破壊的メソッド名の hasattr 否定と公開メソッド集合の一致を確認
+    # 【期待される動作】: save/load/revert/snapshots/current_id のみを持ち破壊的 API を持たない
+    # 🔵 信頼性レベル: 要件定義 §3 P2/REQ-401 / TC-106-05 / snapshot.py SnapshotStore
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    st = PersistentSnapshotStore(tmp_path / "snapshots.jsonl")
+
+    destructive = (
+        "delete", "remove", "update", "overwrite",
+        "clear", "pop", "truncate", "__delitem__",
+    )
+    for name in destructive:
+        assert not hasattr(st, name), f"PersistentSnapshotStore must not expose {name} (P2)"
+        # 【確認内容】: 破壊的 API を誤って足していないこと
+    for name in ("save", "load", "revert", "snapshots", "current_id"):
+        assert hasattr(st, name)  # 【確認内容】: in-memory SnapshotStore と同一表面積
+
+
+def test_snapshot_append_only_growth_prefix_unchanged(tmp_path):
+    # 【テスト目的】: save 前後で先頭バイト列が不変（追記のみで成長）(NFR-203)
+    # 【テスト内容】: 1 件 save 後にバイト列を記録し、再 save 後の先頭と比較
+    # 【期待される動作】: after.startswith(before) かつ末尾に 1 行増加
+    # 🔵 信頼性レベル: 要件定義 §3 NFR-203 / persistent.py PersistentLedger.append 追記パターン
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snapshots.jsonl"
+    st = PersistentSnapshotStore(path)
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="a")  # snap-0000
+    before = path.read_bytes()
+
+    st.save((PhaseInstance("B", LatticeParams(6, 6, 6)),), label="b")  # snap-0001（追記）
+    after = path.read_bytes()
+
+    assert after.startswith(before)  # 【確認内容】: 既存バイト列が 1 バイトも変わらない
+    assert len(after) > len(before)  # 【確認内容】: 末尾に 1 行増加
+    added = after[len(before):]
+    assert json.loads(added.decode("utf-8"))  # 【確認内容】: 追加分は json.loads 可能な 1 行
+
+
+def test_revert_is_non_destructive_and_keeps_forward_history(tmp_path):
+    # 【テスト目的】: revert は snapshot JSONL に追記せず前方履歴を消さない (REQ-011 / P2)
+    # 【テスト内容】: 2 件 save → revert → save し、ファイル無変更・件数・分岐連結を確認
+    # 【期待される動作】: revert 後もファイル不変・件数不変、revert 後 save は新規 id を発番
+    # 🔵 信頼性レベル: 要件定義 §2.4/§3 REQ-011/P2 / snapshot.py L53-61
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snapshots.jsonl"
+    st = PersistentSnapshotStore(path)  # ledger なし（ファイル観点に集中）
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="a")  # snap-0000
+    st.save((PhaseInstance("B", LatticeParams(6, 6, 6)),), label="b")  # snap-0001
+    before = path.read_bytes()
+
+    st.revert("snap-0000")  # 【実際の処理実行】: 過去へ現在位置を移す
+    after = path.read_bytes()
+
+    assert after == before  # 【確認内容】: revert は snapshot ファイルへ追記しない
+    assert st.current_id == "snap-0000"  # 【確認内容】: current_id が revert 先へ移動
+    assert len(st.snapshots) == 2  # 【確認内容】: revert では履歴が消えない
+
+    # 【追加検証】: revert 後の save は新規 id を発番し分岐を追記保持
+    s2 = st.save((PhaseInstance("C", LatticeParams(7, 7, 7)),), label="c")
+    assert s2.id == "snap-0002"  # 【確認内容】: 連番継続（revert で巻き戻らない）
+    assert s2.parent_id == "snap-0000"  # 【確認内容】: revert 位置が親になる
+    assert len(st.snapshots) == 3  # 【確認内容】: 分岐が追記で保持される
+
+
+def test_empty_phases_snapshot_roundtrip(tmp_path):
+    # 【テスト目的】: 空 phases（n_phases=0）の save/reopen/load/revert 成立 (B-04)
+    # 【テスト内容】: save((), label=...) → 再オープンで空タプル復元・ledger n_phases=0
+    # 【期待される動作】: 空 phases が [] として直列化され () へ復元される
+    # 🟡 信頼性レベル: 要件定義 §4.3 空 phases。空配列 roundtrip は妥当な推測
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snapshots.jsonl"
+    pl = PersistentLedger(tmp_path / "ledger.jsonl")
+    st = PersistentSnapshotStore(path, ledger=pl)
+    s = st.save((), label="empty")  # phases 空タプル
+
+    assert s.phases == ()  # 【確認内容】: 空 phases の Snapshot を構築
+    assert pl.entries[-1].payload["n_phases"] == 0  # 【確認内容】: ledger の n_phases は 0
+
+    # 【実際の処理実行】: 再オープンで空タプルが復元される
+    st2 = PersistentSnapshotStore(path)
+    assert st2.load("snap-0000").phases == ()  # 【確認内容】: load で空タプル復元
+    assert st2.revert("snap-0000") == ()  # 【確認内容】: revert で空タプル復元
+
+
+def test_current_id_initial_and_reopen_value(tmp_path):
+    # 【テスト目的】: current_id の初期値(None)・save 後(最新)・再オープン後(最新) (B-05)
+    # 【テスト内容】: 未 save/save 後/再オープン後の current_id と後続 save の parent_id 連結
+    # 【期待される動作】: 未 save は None、以後は最新 save の id を指し parent_id 連結が成立
+    # 🟡 信頼性レベル: 要件定義 §2.1/2.5。再オープン時 current_id を最新 save に設定は 🟡 設計判断
+    from tsumugin.store.persistent import PersistentSnapshotStore
+
+    path = tmp_path / "snapshots.jsonl"
+    st = PersistentSnapshotStore(path)
+    assert st.current_id is None  # 【確認内容】: 未 save の current_id は None
+
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="a")  # snap-0000
+    st.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="b")  # snap-0001
+    assert st.current_id == "snap-0001"  # 【確認内容】: save 後は最新 id を指す
+
+    # 【実際の処理実行】: 再オープンで current_id が最新 save を指す
+    st2 = PersistentSnapshotStore(path)
+    assert st2.current_id == "snap-0001"  # 【確認内容】: 再オープン後も最新 save を指す
+    s = st2.save((PhaseInstance("A", LatticeParams(5, 5, 5)),), label="c")  # snap-0002
+    assert s.parent_id == "snap-0001"  # 【確認内容】: 後続 save が最新へ連結
