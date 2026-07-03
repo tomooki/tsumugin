@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 GENESIS_HASH = "0" * 64
 
@@ -21,6 +21,26 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
 def _compute_hash(index: int, kind: str, payload: Mapping[str, Any], prev_hash: str) -> str:
     material = f"{prev_hash}|{index}|{kind}|{_canonical_json(payload)}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def verify_entries(entries: Sequence["LedgerEntry"]) -> bool:
+    """【機能概要】: エントリ列のハッシュチェーン整合性を検証する共有ヘルパ。
+
+    【実装方針】: Ledger.verify の既存ロジックを module-level へ切り出し、
+    PersistentLedger の再オープン検証と単一情報源で共有する (D-Q5 / 挙動不変)。
+    【テスト対応】: tests/test_ledger.py 緑維持 + test_persistent_store.py の verify 系。
+    🔵 信頼性レベル: 要件定義 §2.4 / ledger.py L69-79 と同一ロジック
+    """
+    # 【検証ループ】: GENESIS から prev_hash を連結し index 連番・hash 再計算一致を全件確認 🔵
+    prev_hash = GENESIS_HASH
+    for i, entry in enumerate(entries):
+        if entry.index != i or entry.prev_hash != prev_hash:
+            return False
+        expected = _compute_hash(entry.index, entry.kind, entry.payload, entry.prev_hash)
+        if entry.hash != expected:
+            return False
+        prev_hash = entry.hash
+    return True
 
 
 @dataclass(frozen=True)
@@ -67,13 +87,8 @@ class Ledger:
         return tuple(self._entries)
 
     def verify(self) -> bool:
-        """ハッシュチェーンの整合性を検証する。"""
-        prev_hash = GENESIS_HASH
-        for i, entry in enumerate(self._entries):
-            if entry.index != i or entry.prev_hash != prev_hash:
-                return False
-            expected = _compute_hash(entry.index, entry.kind, entry.payload, entry.prev_hash)
-            if entry.hash != expected:
-                return False
-            prev_hash = entry.hash
-        return True
+        """ハッシュチェーンの整合性を検証する。
+
+        【実装方針】: 検証ロジックは verify_entries へ委譲（単一情報源・挙動不変）🔵
+        """
+        return verify_entries(self._entries)

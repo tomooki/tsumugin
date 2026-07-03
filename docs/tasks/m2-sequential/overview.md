@@ -24,7 +24,7 @@
 
 - [x] [TASK-0011: model 拡張 (Lifecycle/Channel/frame_range)](TASK-0011.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [x] [TASK-0012: store/serialization (phase dict 相互変換)](TASK-0012.md) - 3h (TDD) 🟡 ✅ 完了 (2026-07-03)
-- [ ] [TASK-0013: PersistentLedger (JSONL 追記+検証)](TASK-0013.md) - 3h (TDD) 🔵
+- [x] [TASK-0013: PersistentLedger (JSONL 追記+検証)](TASK-0013.md) - 3h (TDD) 🔵 ✅ 完了 (2026-07-03)
 - [ ] [TASK-0014: PersistentSnapshotStore](TASK-0014.md) - 3h (TDD) 🔵
 - [ ] [TASK-0015: FrameSeries + changepoint 検出](TASK-0015.md) - 4h (TDD) 🔵
 - [ ] [TASK-0016: LifecycleTracker (ヒステリシス)](TASK-0016.md) - 3h (TDD) 🔵
