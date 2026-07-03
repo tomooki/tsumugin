@@ -2,4 +2,6 @@
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from .peaks import Peak, find_peaks
+
+__all__: list[str] = ["Peak", "find_peaks"]
