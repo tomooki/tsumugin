@@ -24,7 +24,7 @@
 
 ## タスク一覧と依存関係
 
-- [ ] [TASK-0001: web extra 追加とパッケージ骨格](TASK-0001.md) - 1h (DIRECT) 🔵
+- [x] [TASK-0001: web extra 追加とパッケージ骨格](TASK-0001.md) - 1h (DIRECT) 🔵 ✅ 完了 (2026-07-03)
 - [ ] [TASK-0002: 観測ピーク検出 find_peaks](TASK-0002.md) - 3h (TDD) 🟡
 - [ ] [TASK-0003: PeakMatcher (スコア/未マッチ)](TASK-0003.md) - 4h (TDD) 🔵
 - [ ] [TASK-0004: 動的枝刈り閾値 dynamic_threshold](TASK-0004.md) - 2h (TDD) 🔵

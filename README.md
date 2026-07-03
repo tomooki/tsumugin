@@ -37,6 +37,14 @@ uv run python -c "import os; from GSASII import GSASIIpath as p; p.InstallGitBin
 uv run pytest -m gsas
 ```
 
+### Web UI (M1 最小版, 任意)
+
+仮説一覧・ランキング閲覧用の read-only Web UI (FastAPI + uvicorn) は optional extra `web` で導入する:
+
+```bash
+uv sync --extra gsas --extra web   # gsas を必ず併用 (プレーン uv sync は gsas 依存が外れる)
+```
+
 ## 使い方 (M0)
 
 ```python
