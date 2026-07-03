@@ -9,6 +9,12 @@ from __future__ import annotations
 from .changepoint import ChangepointConfig, ChangepointSignal, detect_changepoint
 from .lifecycle import LifecycleConfig, LifecycleTracker
 from .series import FrameSeries
+from .thermal import (
+    ThermalBaseline,
+    TransitionEstimate,
+    estimate_transition,
+    fit_thermal_baseline,
+)
 from .trajectory import FrameRecord, Trajectory
 
 __all__ = [
@@ -18,6 +24,10 @@ __all__ = [
     "FrameSeries",
     "LifecycleConfig",
     "LifecycleTracker",
+    "ThermalBaseline",
     "Trajectory",
+    "TransitionEstimate",
     "detect_changepoint",
+    "estimate_transition",
+    "fit_thermal_baseline",
 ]
