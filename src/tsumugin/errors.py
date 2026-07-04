@@ -59,3 +59,22 @@ class MEMUnavailableError(TsumuginError):
     破壊的操作を伴わず「M5 で提供予定」を明示する。既定は本例外送出だが、呼び出し側スキーマ互換の
     プレースホルダ dict 応答へ切替可能 (D9)。
     """
+
+
+class NestedUnavailableError(TsumuginError):
+    """optional extra ``nested`` (dynesty / ultranest) 未導入で nested 実行 API を要求したとき。🔵 REQ-005/EDGE-001
+
+    ``MCPUnavailableError`` 系と対称の「available + 専用例外」パターン。``import tsumugin.nested`` /
+    ``import tsumugin.nested.sampler`` 自体はコア (numpy) のみで成功し、``NestedBackend.score_problem``
+    (実サンプラを起動する経路) の呼び出し時にのみ本例外を送出して extra 導入手順を案内する。
+    laplace evidence・階層的裁定・較正はコア (numpy) のみで動作する。
+    """
+
+
+class OEDUnavailableError(TsumuginError):
+    """optional extra ``oed`` (pyboed) 未導入で獲得関数接続 API を要求したとき。🔵 REQ-036/EDGE-011
+
+    ``NestedUnavailableError`` と対称。PyBOED 獲得関数を用いた高度な情報利得評価 (``acquire`` 接続境界)
+    の呼び出し時にのみ本例外を送出して extra 導入手順を案内する。v1 の提案生成 (``propose_measurements``)
+    は本例外に依存せず外部依存なしで動作する。
+    """
