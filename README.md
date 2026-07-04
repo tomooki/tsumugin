@@ -4,7 +4,8 @@
 多相 Rietveld 精密化・時系列解析を、AI エージェントと人間の介入点を明示的に設計した上で
 自動化することを目指す。設計思想は [docs/tsumugin_spec_v0.3.md](docs/tsumugin_spec_v0.3.md) を参照。
 
-> **状態**: M0 (PoC) + M1 (多仮説木探索) + M2 (シーケンシャル解析) + M3 (operando 解析) 実装済み。
+> **状態**: M0 (PoC) + M1 (多仮説木探索) + M2 (シーケンシャル解析) + M3 (operando 解析)
+> + M4 (中性子 joint / ChemPlausibility / MCP) 実装済み。
 > 単一パターン自動多相精密化の中核 (段階的パラメータ解放・ガードレール・Evidence Engine・追記専用
 > Ledger/Snapshot)、候補相集合からの多仮説木探索 (`tsumugin.search`)・`.gpx` 書き出し
 > (`tsumugin.export`)・read-only Web UI (`tsumugin.webui`) に加え、時系列フレーム列の逐次
@@ -13,7 +14,10 @@
 > (`tsumugin.store` の `PersistentLedger`/`PersistentSnapshotStore`) が、`SimulatedBackend`
 > (GSAS-II 不要) と `GSASIIBackend` (実 Rietveld) の両方で動作する。M3 では電池 operando 向けに
 > echem 同期 (`tsumugin.operando`)・マルチスタート大域最適化 (`tsumugin.multistart`)・
-> 固溶体/二相判別・IC 区間分割・セル固定相/吸収補正 (`tsumugin.absorption`) を追加した。
+> 固溶体/二相判別・IC 区間分割・セル固定相/吸収補正 (`tsumugin.absorption`) を追加した。M4 では
+> X 線 + 中性子のマルチヒストグラム joint 検証精密化 (`tsumugin.joint`)・化学的妥当性による
+> 降格 (`tsumugin.chem`, 候補除外はしない)・AI エージェント連携用の MCP サーバ (`tsumugin.mcp`,
+> SDK 非依存の 8 ツール実処理層 + 遅延 import アダプタ) を追加した。
 
 ## セットアップ
 
@@ -227,7 +231,87 @@ config=MultistartConfig(n_starts=N)).run(...)` は摂動 start を direct refine
 basin クラスタで大域最適を裏取りし、`AbsorptionConfig` / `transmission_factor` は透過配置の
 吸収補正 (A = exp(-μt/cosθ)) を与える。
 
-## アーキテクチャ (M0 + M1 + M2 + M3 実装済み範囲)
+## 使い方 (M4): 中性子 joint / ChemPlausibility / MCP
+
+プライマリ探索 (`HypothesisTreeSearch`) は不変のまま、その生存仮説 (良好解) のみを X 線 +
+中性子の複数ヒストグラムで joint 検証精密化する (`verify_survivors`)。探索段そのものは joint 化
+しない (再実行しない)。続けて化学的妥当性 (`ChemPlausibility`, v1 は大気下の単体アルカリ金属を
+降格する `AlkaliMetalInAirRule`) で確率を **降格** する — スコアは降格のみに使い、低スコアでも
+候補を除外・削除はしない (`rank_with_plausibility`, Dara 教訓)。全操作は 1 本の Ledger に集約:
+
+```python
+import numpy as np
+from tsumugin import (
+    SimulatedBackend, PhaseInstance, LatticeParams, Ledger,
+    HypothesisTreeSearch, JointHistogram, verify_survivors,
+    BICBackend, AlkaliMetalInAirRule, SynthesisContext, rank_with_plausibility,
+)
+from tsumugin.search.clustering import PhaseCandidate
+
+backend = SimulatedBackend(peak_fwhm=0.2)
+two_theta = np.arange(15.0, 60.0, 0.05)
+true_phase = PhaseInstance("A", LatticeParams(5.0, 5.0, 5.0))
+observed = backend.simulate((true_phase,), two_theta)
+
+# プライマリ探索 (探索段は不変) → 生存仮説を得る
+ledger = Ledger()
+search = HypothesisTreeSearch(backend, ledger=ledger)
+result = search.search(two_theta, observed, [
+    PhaseCandidate(phase=true_phase),
+    PhaseCandidate(phase=PhaseInstance("B", LatticeParams(6.0, 6.0, 6.0))),
+])
+
+# 生存仮説を X 線 + 中性子の 2 ヒストで joint 検証 (マルチヒストグラム)
+histograms = (
+    JointHistogram(two_theta=two_theta, intensity=observed, probe="xray"),
+    JointHistogram(two_theta=two_theta, intensity=observed, probe="neutron_cw"),
+)
+verification = verify_survivors(backend, result, histograms, evidence=BICBackend(), ledger=ledger)
+
+# ChemPlausibility で化学的に非妥当な相を降格 (除外はしない・件数不変)
+ranked = rank_with_plausibility(
+    verification.verified, BICBackend(),
+    modules=(AlkaliMetalInAirRule(),), context=SynthesisContext(atmosphere="air"),
+    ledger=ledger,
+)
+print("verified:", [h.id for h in verification.verified], "/ ranked:", [r.hypothesis.id for r in ranked])
+assert ledger.verify()  # joint 昇格・降格を通しても追記専用 Ledger は無傷 (P2/NFR-105)
+```
+
+AI エージェント連携は MCP サーバ (`tsumugin.mcp`) が担う。`AnalysisSession` facade に
+project/backend/selection/ledger 等を束ね、submit / list / compare / accept / revert /
+get_trajectory / export_gpx / run_mem の 8 ツール (SDK 非依存の実処理層) を委譲する。応答は
+すべて素の型 dict で、`accept`/`revert` は最終選択モード (agent/human) を同一適用し、`revert`
+は削除でなく superseded 化 (追記型) に留まる:
+
+```python
+from tsumugin import (
+    AnalysisSession, FinalSelectionEngine, Ledger, SnapshotStore, Project, BICBackend,
+    SimulatedBackend, create_mcp_server,
+)
+from tsumugin.mcp.tools import list_hypotheses, accept_hypothesis, revert
+
+ledger = Ledger()
+session = AnalysisSession(
+    project=Project(id="demo"), backend=SimulatedBackend(),
+    selection=FinalSelectionEngine(mode="agent", ledger=ledger),
+    ledger=ledger, snapshots=SnapshotStore(ledger=ledger),
+    evidence=BICBackend(), search_result=result,  # 上の探索結果を渡す
+)
+accept_hypothesis(session, result.good_cluster_ids[0], by="agent", reason="best fit")
+revert(session, result.good_cluster_ids[0], note="rollback")   # 破壊的削除でなく superseded 化
+assert session.ledger.verify()
+
+# MCP サーバの構築は create_mcp_server(session)。mcp SDK は関数呼び出し時に遅延 import される
+# (コア import は numpy のみ)。SDK 未導入なら MCPUnavailableError で導入手順を案内する。
+```
+
+`create_mcp_server` はトップレベルから import 可能だが、`import tsumugin` 自体は mcp SDK を
+一切引き込まない (コア import は numpy のみ / REQ-403)。SDK は `create_mcp_server(session)` /
+`serve_stdio(session)` の **呼び出し時点** でのみ遅延 import され、未導入なら
+`MCPUnavailableError` に縮退する (`WebUIUnavailableError` と対称)。
+
+## アーキテクチャ (M0 + M1 + M2 + M3 + M4 実装済み範囲)
 
 | モジュール | 役割 | 主な仕様 FR |
 |-----------|------|------------|
@@ -246,5 +330,8 @@ basin クラスタで大域最適を裏取りし、`AbsorptionConfig` / `transmi
 | `tsumugin.multistart` | 摂動マルチスタート大域最適化 (basin クラスタ・発散除外・大域裏取り) | FR-230〜231 |
 | `tsumugin.operando` | echem 同期 + セル固定相 + IC 区間分割 + 固溶体/二相判別 + 結合出力/ヒステリシス | FR-311〜316 |
 | `tsumugin.absorption` | 透過配置の吸収補正 (A = exp(-μt/cosθ)) + `CellConfig` 連携 | REQ-016 |
+| `tsumugin.joint` | X 線+中性子マルチヒストグラム joint 精密化 + 生存仮説の joint 検証 + コントラスト占有率解放推奨 | FR-240〜245 |
+| `tsumugin.chem` | ChemPlausibility 境界 (降格のみ・除外しない) + v1 ルール + スコア合成 + rank 配線 | FR-412 |
+| `tsumugin.mcp` | AI エージェント連携 MCP サーバ (SDK 非依存の 8 ツール実処理層 + 遅延 import アダプタ) | FR-420 |
 
 実装計画は [docs/dev/plans/m0-refinement-core/](docs/dev/plans/m0-refinement-core/) を参照。
