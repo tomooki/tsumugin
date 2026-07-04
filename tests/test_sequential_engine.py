@@ -37,6 +37,9 @@ from tsumugin.sequential.engine import (
     SequentialResult,
 )
 
+# TASK-0031: changepoint 感度較正の設定 (new_peak_min_height_frac / new_peak_persistence)。
+from tsumugin.sequential.changepoint import ChangepointConfig
+
 # ---------------------------------------------------------------------------
 # 共通テストデータ・前提 (モジュールレベルで一度だけ構築し不変共有する)
 # ---------------------------------------------------------------------------
@@ -296,10 +299,17 @@ def test_phase_b_emergence_triggers_changepoint():
     )
 
     # 【結果検証】: 相 B 出現フレームで changepoint が立ち、新規未マッチが理由に含まれる
-    rec10 = result.trajectory.records[10]
-    assert rec10.changepoint is True  # 【確認内容】: warm-up (window=5) 経過後に発火 🔵
-    assert "new_peaks" in rec10.changepoint_reasons  # 【確認内容】: 新規未マッチピークが発火理由 🔵
-    assert 10 in result.search_results  # 【確認内容】: 発火フレームで局所探索が起動し記録される 🔵
+    # 【TASK-0031 較正による期待フレーム 10→11 の最小修正 (理由コメント付き)】:
+    #   changepoint 感度較正 (Issue #3) で new_peak_persistence=2 (連続 M フレーム) を既定導入した。
+    #   相 B は frame10 で初出 (連続=1) のため new_peaks が抑制され、frame10 では採択されず未マッチが
+    #   frame11 まで継続 (連続=2) して発火が frame10→11 へ 1 フレーム遅延する。単発ノイズと即採択される
+    #   真の新相は未マッチ信号上どちらも 1 フレームのみで区別不能なため、持続 M=2 の正しい帰結として
+    #   「真の新相は M フレーム確認後に発火」を受け入れる (requirements.md §前提 / testcases TC-CP-R03
+    #   方針 A / 先例 TASK-0024)。本ケースは「既存テスト無改変 green」への唯一の合意例外。
+    rec11 = result.trajectory.records[11]
+    assert rec11.changepoint is True  # 【確認内容】: 持続 M=2 確認後 (frame11) に発火 🔵
+    assert "new_peaks" in rec11.changepoint_reasons  # 【確認内容】: 新規未マッチピークが発火理由 🔵
+    assert 11 in result.search_results  # 【確認内容】: 発火フレームで局所探索が起動し記録される 🔵
 
 
 def test_local_search_adopts_phase_b_and_continues():
@@ -697,3 +707,349 @@ def test_quantize_history_suppresses_noise_floor_but_keeps_real_change():
     assert q(5.0001) != q(5.0)
     # 丸めは小数第 6 位固定 (round half to even) であることを固定
     assert q(1.2345678) == 1.234568
+
+
+# ---------------------------------------------------------------------------
+# TASK-0031: changepoint 感度較正 (Issue #3 / new_peak_min_height_frac / new_peak_persistence)
+#   未マッチ観測ピークの「位置ビンごと連続出現カウンタ + 強度/持続ゲート」を engine 側に追加し、
+#   単発ノイズ・微小ピークで new_peaks 指標 (→ changepoint → 木探索) が連発しないよう較正する。
+#   参照: docs/implements/m3-operando/TASK-0031/ (requirements §2〜4 / testcases TC-CP-*)。
+#   ゲート未実装のため、以下の新規テストは「単発/非連続でも即発火」する現行挙動に対して失敗する (Red)。
+# ---------------------------------------------------------------------------
+
+# 【未マッチ用 2θ】: 相 A(5.0) ピーク [17.72, 25.17, 30.95, 35.89, 40.3, 44.34] / 相 B(6.0) からも
+#   十分離れたギャップ (最近接 A ピーク 44.34 と 5.66° 離れ >> match_tol 0.15) で、注入バンプが
+#   確実に「どの相でも説明できない未マッチ観測ピーク」として検出されるようにする 🔵
+_INJECT_2THETA = 50.0
+# 【FWHM→σ 変換】: SimulatedBackend と同一のガウス幅換算 (注入バンプを合成ピークと同形にする) 🟡
+_FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+
+
+def _clean_a_series(*, n_frames: int, a: float = 5.0, grid: np.ndarray = GRID) -> FrameSeries:
+    """単一相 A の「クリーン」(相構成不変・完全適合) フレーム列を組む。
+
+    全フレーム同一の相 A 強度を敷き、Rwp/格子がフレーム間で不変 (robust z の窓 MAD=0 縮退) となるため、
+    rwp_jump / lattice_jump は非発火し、changepoint の発火要因を new_peaks 指標へ単離できる 🔵。
+    """
+    if n_frames == 0:
+        return FrameSeries(two_theta=grid, intensities=np.empty((0, grid.size), dtype=float))
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    row = np.asarray(backend.simulate([_phase(a, "A")], grid), dtype=float)
+    intensities = np.tile(row, (n_frames, 1))
+    return FrameSeries(two_theta=grid, intensities=intensities)
+
+
+def _gaussian_bump(
+    grid: np.ndarray, center: float, amplitude: float, *, fwhm: float = 0.2
+) -> np.ndarray:
+    """指定 2θ を中心とする振幅 amplitude のガウスバンプ (未モデルピーク/ノイズの表現)。🟡"""
+    sigma = fwhm * _FWHM_TO_SIGMA
+    return amplitude * np.exp(-0.5 * ((grid - center) / sigma) ** 2)
+
+
+def _inject_peak(
+    series: FrameSeries,
+    *,
+    two_theta: float,
+    frames,
+    height_frac: float,
+    fwhm: float = 0.2,
+) -> FrameSeries:
+    """クリーン列の指定フレームへ「相対高さ height_frac」の未マッチバンプを加算した新列を返す。
+
+    相対高さはフレームのクリーンパターン最大強度 (単一相 A で ~1.0) に対する比。各フレーム独立に
+    加算するため加算順に依らず決定論的 (numpy 加算のみ・乱数なし) 🔵。SimulatedBackend は相から
+    クリーン Ycalc を生成するため、未モデルの「ノイズ/新相ピーク」はこの直接加算で表現する 🟡。
+    """
+    grid = np.asarray(series.two_theta, dtype=float)
+    intensities = np.array(series.intensities, dtype=float, copy=True)
+    for f in frames:
+        base_max = float(intensities[f].max())
+        amplitude = height_frac * base_max
+        intensities[f] = intensities[f] + _gaussian_bump(grid, two_theta, amplitude, fwhm=fwhm)
+    return FrameSeries(
+        two_theta=grid,
+        intensities=intensities,
+        axis_values=series.axis_values,
+        axis_kind=series.axis_kind,
+        channels=series.channels,
+    )
+
+
+# ---- 1. 正常系 (TC-CP-N01〜N03) ----------------------------------------
+
+
+def test_single_frame_noise_does_not_trigger_new_peaks():
+    # 【テスト目的】: 単発ノイズピーク (1 フレーム) で new_peaks が発火しないこと (TC-CP-N01 / TC-206-06 前半)
+    # 【テスト内容】: frame10 のみ 2θ=50 へ相対高さ 0.20 のバンプを注入、候補プール空、既定 config
+    # 【期待される動作】: records[10].changepoint == False、new_peaks 非計上、search_results 空
+    # 🔵 信頼性レベル: TC-206-06 / 要件定義 §4 (単発ノイズ抑制) に依拠
+
+    # 【テストデータ準備】: 単一相 A のクリーン 16 フレーム列に単発バンプを注入 (強度 0.20 は閾値 0.05 超)
+    # 【初期条件設定】: persistence=2 (既定)。抑制要因を「持続不足のみ」に限定するため強度は十分高くする
+    series = _inject_peak(
+        _clean_a_series(n_frames=16), two_theta=_INJECT_2THETA, frames=[10], height_frac=0.20
+    )
+
+    # 【実際の処理実行】: 候補プール空でエンジンを走らせ、単発未マッチの changepoint 判定を観測する
+    result = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証】: 単発では位置ビン連続カウント=1 < M=2 で非計上 → new_peaks 非発火 → 探索非起動
+    records = result.trajectory.records
+    assert records[10].changepoint is False  # 【確認内容】: 連続=1 < M=2 で非発火 🔵
+    assert "new_peaks" not in records[10].changepoint_reasons  # 【確認内容】: new_peaks 非計上 🔵
+    assert 10 not in result.search_results  # 【確認内容】: 単発フレームで木探索が起動しない 🔵
+    assert len(result.search_results) == 0  # 【確認内容】: 探索連発が起きない (Issue #3 較正の実効) 🔵
+
+
+def test_persistent_new_peak_triggers_after_persistence_frames():
+    # 【テスト目的】: 持続する未マッチピークが連続 M=2 フレーム目で new_peaks 発火 (TC-CP-N02 / TC-206-06 後半)
+    # 【テスト内容】: frame10 以降へ 2θ=50 の相対高さ 0.20 バンプを継続注入、候補空 (採択で消えない)
+    # 【期待される動作】: records[10].changepoint == False (連続1)、records[11] == True (連続2) で "new_peaks"
+    # 🔵 信頼性レベル: TC-206-06 / 要件定義 §4 (真の新相検出) に依拠
+
+    # 【テストデータ準備】: frame10..15 に持続バンプ (採択されない未モデルの持続ピークとして観測)
+    # 【初期条件設定】: 候補空で B を採択できず、発火は「持続条件のみ」で決まる
+    series = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=list(range(10, 16)),
+        height_frac=0.20,
+    )
+
+    result = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証】: 発火フレームが b_onset ではなく b_onset+(M-1)=11 になる (持続確認後に発火)
+    records = result.trajectory.records
+    assert records[10].changepoint is False  # 【確認内容】: frame10 は連続=1 で非発火 🔵
+    assert records[11].changepoint is True  # 【確認内容】: frame11 で連続=2 >= M → 発火 🔵
+    assert "new_peaks" in records[11].changepoint_reasons  # 【確認内容】: 発火理由は new_peaks 🔵
+    assert 11 in result.search_results  # 【確認内容】: 発火フレームで木探索が起動し記録される 🔵
+
+
+def test_search_runs_only_on_gated_changepoint_frames():
+    # 【テスト目的】: 較正後も「探索回数 == 発火フレーム数」の計算量制御 (P5) が保たれる (TC-CP-N03)
+    # 【テスト内容】: TC-CP-N02 と同一データで search_results のキー集合が発火フレーム集合に厳密一致
+    # 【期待される動作】: set(search_results) == {i | records[i].changepoint}、単発ノイズでは非起動
+    # 🔵 信頼性レベル: 既存 test_tree_search_runs_only_on_changepoint_frames の不変性 / 要件定義 §3
+
+    # 【テストデータ準備】: 持続バンプ列 (発火は持続確認後フレームに限定される)
+    series = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=list(range(10, 16)),
+        height_frac=0.20,
+    )
+
+    result = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証】: 較正がゲート追加のみで、既存の探索起動契約 (発火フレーム限定) を壊さない
+    records = result.trajectory.records
+    changepoint_frames = {i for i, r in enumerate(records) if r.changepoint}
+    assert set(result.search_results) == changepoint_frames  # 探索キー == 発火フレーム 🔵
+    assert 10 not in result.search_results  # 【確認内容】: 較正後は単発 (連続1) フレームで非起動 🔵
+
+
+# ---- 2. 異常系 (TC-CP-E01〜E03) ----------------------------------------
+
+
+def test_below_intensity_threshold_micro_peak_never_counts():
+    # 【テスト目的】: 強度閾値 (0.05) 未満の微小ピークは持続しても計上しない (TC-CP-E01 / Issue #3 本旨)
+    # 【テスト内容】: frame5 以降すべてへ相対高さ 0.02 (< 0.05) の微小バンプを継続注入、既定 config
+    # 【期待される動作】: 全フレームで changepoint == False、search_results 空 (探索連発しない)
+    # 🔵 信頼性レベル: 要件定義 §3 (強度ゲート) / §4 / Issue #3 背景 に依拠
+
+    # 【テストデータ準備】: ノイズフロア相当の持続微小ピーク (物理的に新相を意味しない微弱反射)
+    # 【初期条件設定】: 強度ゲートが持続ゲートと独立に効くこと (持続していても強度不足なら非計上) を検証
+    series = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=list(range(5, 16)),
+        height_frac=0.02,
+    )
+
+    result = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証】: 微小ピークが持続しても計算量が破綻しない (new_peaks 起因の発火・探索が皆無)
+    records = result.trajectory.records
+    assert all(rec.changepoint is False for rec in records)  # 全フレーム非発火 🔵
+    assert all("new_peaks" not in rec.changepoint_reasons for rec in records)  # 非計上 🔵
+    assert len(result.search_results) == 0  # 【確認内容】: 探索非起動 (安全側縮退・例外化なし) 🔵
+
+
+def test_failed_frame_between_persistent_peaks_is_deterministic():
+    # 【テスト目的】: 持続系列の途中に精密化失敗 (非有限) が挟まっても決定論的に完走する (TC-CP-E02)
+    # 【テスト内容】: 持続バンプ列の frame11 refine を chi2=inf にし、例外なく完走・再実行でビット同一
+    # 【期待される動作】: 例外なし・records[11].refine_failed、warnings 追加、非有限漏洩なし、2 回で ==
+    # 🟡 信頼性レベル: 要件定義 §3 (失敗フレーム扱い=据え置き) / 既存 EDGE-002 挙動 (妥当推測)
+
+    # 【テストデータ準備】: 持続バンプ列 (frame10..15) の frame11 強度に一致する refine のみ失敗させる
+    series = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=list(range(10, 16)),
+        height_frac=0.20,
+    )
+    fail_intensity = np.asarray(series.intensities[11], dtype=float)
+
+    def once() -> SequentialResult:
+        backend = FrameFailBackend(fail_intensity=fail_intensity)
+        return SequentialEngine(backend, candidates=[]).run(series, [_phase(5.0, "A")])
+
+    # 【実際の処理実行】: 失敗フレームで持続カウンタを据え置き、非有限を下流へ漏らさず完走する
+    r1 = once()
+    r2 = once()
+
+    # 【結果検証】: 失敗フレームは None 化して継続、警告が積まれ、2 回実行がビット同一 (決定論)
+    records = r1.trajectory.records
+    assert len(records) == 16  # 【確認内容】: 失敗フレームも 1 行 (行数=フレーム数) 🟡
+    assert records[11].refine_failed is True  # 【確認内容】: frame11 は精密化失敗フラグ 🟡
+    assert len(r1.warnings) >= 1  # 【確認内容】: 失敗フレームの警告が積まれる 🟡
+    for rec in records:
+        # 【非有限漏洩検証】: 全 record の rwp/chi2 は None か有限のみ (inf/nan を漏らさない) 🔵
+        assert rec.rwp is None or math.isfinite(rec.rwp)
+        assert rec.chi2 is None or math.isfinite(rec.chi2)
+    assert r1.trajectory.records == r2.trajectory.records  # 【確認内容】: records がビット同一 🔵
+    assert list(r1.search_results.keys()) == list(r2.search_results.keys())  # 探索キー列一致 🔵
+
+
+def test_flat_pattern_yields_no_unmatched_and_no_trigger():
+    # 【テスト目的】: 観測ピークなし (フラット) では未マッチ 0 で非発火 (TC-CP-E03)
+    # 【テスト内容】: 全フレーム平坦強度 (ピークなし) の 8 フレーム列を較正後エンジンで走らせる
+    # 【期待される動作】: 全フレームで changepoint == False、search_results 空、例外なし
+    # 🔵 信頼性レベル: 既存 _count_unmatched の空縮退 (engine.py L425-427) / 要件定義 §4 (縮退) に依拠
+
+    # 【テストデータ準備】: 測定欠損・信号なしフレームを代表する完全平坦 (全 0) 強度行列
+    # 【初期条件設定】: 位置ビン抽出・カウンタが空でも安全に縮退することを確認する
+    flat = np.zeros((8, GRID.size), dtype=float)
+    series = FrameSeries(two_theta=GRID, intensities=flat)
+
+    result = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証】: 空入力での縮退が較正で壊れない (境界的入力での堅牢性)
+    records = result.trajectory.records
+    assert all(rec.changepoint is False for rec in records)  # 全フレーム非発火 🔵
+    assert len(result.search_results) == 0  # 【確認内容】: 観測ピーク 0 で探索非起動 🔵
+
+
+# ---- 3. 境界値 (TC-CP-B01〜B03 / B06) -----------------------------------
+
+
+def test_persistence_boundary_fires_exactly_at_m_frames():
+    # 【テスト目的】: 連続 M=2 ちょうどで発火 / M-1=1 で非発火 (持続境界の包含規則 >=) (TC-CP-B01)
+    # 【テスト内容】: 持続バンプ列で連続 1 (frame10) は非発火・連続 2 (frame11) は発火を確認
+    # 【期待される動作】: records[10].changepoint == False、records[11].changepoint == True
+    # 🔵 信頼性レベル: 要件定義 §2.3 (>= new_peak_persistence) / TC-206-06 に依拠
+
+    # 【テストデータ準備】: TC-CP-N02 と同一の持続バンプ列 (発火境界を連続カウントで観測)
+    series = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=list(range(10, 16)),
+        height_frac=0.20,
+    )
+
+    result = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証】: 「>= persistence」の包含境界 (連続2 で発火) が実装されていること
+    records = result.trajectory.records
+    assert records[10].changepoint is False  # 【確認内容】: 連続=1 (= M-1) では非発火 🔵
+    assert records[11].changepoint is True  # 【確認内容】: 連続=2 (= M) ちょうどで発火 🔵
+
+
+def test_intensity_threshold_boundary_gates_new_peaks():
+    # 【テスト目的】: 相対高さが強度閾値 (0.05) の直下/直上で計上が切り替わる (TC-CP-B02)
+    # 【テスト内容】: 持続バンプの相対高さを (a) 0.049 (< 0.05) と (b) 0.06 (>= 0.05) の 2 条件で注入
+    # 【期待される動作】: (a) 全フレーム非発火、(b) 持続 2 フレーム目 (frame11) で発火
+    # 🟡 信頼性レベル: 要件定義 §3 (強度ゲート適用点) / find_peaks 閾値規則 (等値扱いは実装依存)
+
+    # 【テストデータ準備 (a)】: 閾値直下 0.049 の持続バンプ (強度不足で計上されない)
+    series_lo = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=list(range(10, 16)),
+        height_frac=0.049,
+    )
+    result_lo = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series_lo, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証 (a)】: 強度閾値未満は持続しても非計上 → 全フレーム非発火
+    assert all(rec.changepoint is False for rec in result_lo.trajectory.records)  # 直下は非発火 🟡
+
+    # 【テストデータ準備 (b)】: 閾値以上 0.06 の持続バンプ (計上され持続 2 フレームで発火)
+    series_hi = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=list(range(10, 16)),
+        height_frac=0.06,
+    )
+    result_hi = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series_hi, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証 (b)】: 強度閾値以上は計上され、持続 M=2 フレーム目で new_peaks 発火
+    records_hi = result_hi.trajectory.records
+    assert records_hi[10].changepoint is False  # 【確認内容】: 連続=1 で非発火 🟡
+    assert records_hi[11].changepoint is True  # 【確認内容】: 強度閾値以上 + 連続=2 で発火 🟡
+
+
+def test_persistence_one_degenerates_to_immediate_trigger():
+    # 【テスト目的】: new_peak_persistence=1 で現行 (持続条件なし) と等価な即発火に縮退する (TC-CP-B03)
+    # 【テスト内容】: 単発バンプ (frame10 のみ) に persistence=1 の config を与え、frame10 で即発火を確認
+    # 【期待される動作】: records[10].changepoint == True かつ "new_peaks" in reasons (連続1 で発火)
+    # 🟡 信頼性レベル: 要件定義 §4 (M=1 縮退) — 妥当推測
+
+    # 【テストデータ準備】: TC-CP-N01 の単発バンプデータ + persistence=1 の changepoint 設定
+    # 【初期条件設定】: 持続条件のオプトアウト (M=1 で旧来の「1 フレームで発火」に一致) を検証
+    series = _inject_peak(
+        _clean_a_series(n_frames=16), two_theta=_INJECT_2THETA, frames=[10], height_frac=0.20
+    )
+    config = SequentialConfig(changepoint=ChangepointConfig(new_peak_persistence=1))
+
+    result = SequentialEngine(
+        SimulatedBackend(peak_fwhm=0.2), candidates=[], config=config
+    ).run(series, [_phase(5.0, "A")])
+
+    # 【結果検証】: M=1 では連続1 で即計上 → 単発でも frame10 で発火 (較正前挙動に一致)
+    rec10 = result.trajectory.records[10]
+    assert rec10.changepoint is True  # 【確認内容】: persistence=1 は連続1 で発火 🟡
+    assert "new_peaks" in rec10.changepoint_reasons  # 【確認内容】: 発火理由は new_peaks 🟡
+
+
+def test_non_consecutive_unmatched_resets_persistence_counter():
+    # 【テスト目的】: 非連続 (途中消失→再出現) でカウンタがリセットされる (TC-CP-B06)
+    # 【テスト内容】: 2θ=50 へ frame10 のみ・frame11 消失・frame12,13 再出現の非連続バンプを注入
+    # 【期待される動作】: frame10/11/12 非発火・frame13 発火 (累積ではなく連続でのみ発火)
+    # 🟡 信頼性レベル: 要件定義 §2.3「連続 M フレーム」/ 設計 D7「連続出現カウント」(連続解釈は妥当推測)
+
+    # 【テストデータ準備】: 単発1回 (10) + 消失 (11) + 連続2 (12,13) の混在で「連続」定義を検証
+    series = _inject_peak(
+        _clean_a_series(n_frames=16),
+        two_theta=_INJECT_2THETA,
+        frames=[10, 12, 13],
+        height_frac=0.20,
+    )
+
+    result = SequentialEngine(SimulatedBackend(peak_fwhm=0.2), candidates=[]).run(
+        series, [_phase(5.0, "A")]
+    )
+
+    # 【結果検証】: 中断でカウンタが 0 復帰し、累積カウントでは発火しない (連続でのみ発火)
+    records = result.trajectory.records
+    assert records[10].changepoint is False  # 【確認内容】: frame10 連続=1 で非発火 🟡
+    assert records[11].changepoint is False  # 【確認内容】: frame11 消失=カウンタ 0 で非発火 🟡
+    assert records[12].changepoint is False  # 【確認内容】: frame12 再出現の連続=1 で非発火 🟡
+    assert records[13].changepoint is True  # 【確認内容】: frame13 連続=2 で発火 🟡

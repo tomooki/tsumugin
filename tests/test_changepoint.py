@@ -345,3 +345,55 @@ def test_changepoint_config_defaults():
     assert cfg.min_new_peaks == 1  # 【確認内容】: 新規ピーク下限の既定は 1 🔵
     with pytest.raises(FrozenInstanceError):
         cfg.window = 3  # type: ignore[misc]  # 【確認内容】: config が frozen で再代入不可 🔵
+
+
+# ---------------------------------------------------------------------------
+# TASK-0031: changepoint 感度較正 (Issue #3) の ChangepointConfig 拡張 (非破壊フィールド追加)。
+#   純関数 detect_changepoint の判定式・シグネチャは不変。新規 2 フィールドを既定値付きで末尾追加する。
+#   フィールド未実装のため以下 2 テストは AttributeError/TypeError で失敗する (Red)。
+# ---------------------------------------------------------------------------
+
+
+def test_changepoint_config_calibration_field_defaults():
+    # 【テスト目的】: ChangepointConfig の新規 2 フィールドの既定値と frozen を確認 (TC-CP-B04)
+    # 【テスト内容】: 引数なし ChangepointConfig() の既定値 (既存 3 + 新規 2) と再代入不可を検証
+    # 【期待される動作】: new_peak_min_height_frac==0.05 / new_peak_persistence==2、既存 3 値も不変
+    # 🔵 信頼性レベル: docs/design/m3-operando/interfaces.py L369-371 / architecture.md D7 に直接依拠
+
+    # 【テストデータ準備】: 引数なしで ChangepointConfig を構築 (既定値変更はリグレッション)
+    cfg = ChangepointConfig()
+
+    # 【結果検証】: 既存 3 既定値 (TC-C-B05 と同一) + 新規 2 既定値が仕様どおりで frozen
+    assert cfg.window == 5  # 【確認内容】: 窓の既定は 5 (既存不変) 🔵
+    assert cfg.z_threshold == pytest.approx(5.0)  # 【確認内容】: z 閾値の既定は 5.0 (既存不変) 🔵
+    assert cfg.min_new_peaks == 1  # 【確認内容】: 新規ピーク下限の既定は 1 (既存不変) 🔵
+    assert cfg.new_peak_min_height_frac == pytest.approx(0.05)  # 【確認内容】: 強度閾値の既定は 0.05 🔵
+    assert cfg.new_peak_persistence == 2  # 【確認内容】: 持続条件の既定は 2 (連続 M フレーム) 🔵
+    with pytest.raises(FrozenInstanceError):
+        cfg.new_peak_persistence = 3  # type: ignore[misc]  # 【確認内容】: 新規フィールドも frozen 🔵
+
+
+def test_changepoint_config_backward_compatible_constructor():
+    # 【テスト目的】: 既存の位置引数/部分キーワード指定が新規フィールド追加後も壊れないこと (TC-CP-R02)
+    # 【テスト内容】: ChangepointConfig(5, 5.0, 1) 等の既存呼び出しと、未指定新規フィールドの既定注入を検証
+    # 【期待される動作】: 既存 3 引数指定で構築でき、未指定の新規 2 フィールドは既定 (0.05 / 2) が入る
+    # 🔵 信頼性レベル: 要件定義 §2.1 (末尾・既定値付き追加) / frozen dataclass の位置引数規則
+
+    # 【テストデータ準備】: 既存の位置引数 3 個指定 (末尾追加なので破壊されない)
+    cfg_pos = ChangepointConfig(5, 5.0, 1)
+
+    # 【結果検証】: 位置引数 3 個で構築でき、新規フィールドは既定値が補完される
+    assert cfg_pos.window == 5  # 【確認内容】: 第 1 位置引数 window 🔵
+    assert cfg_pos.z_threshold == pytest.approx(5.0)  # 【確認内容】: 第 2 位置引数 z_threshold 🔵
+    assert cfg_pos.min_new_peaks == 1  # 【確認内容】: 第 3 位置引数 min_new_peaks 🔵
+    assert cfg_pos.new_peak_min_height_frac == pytest.approx(0.05)  # 未指定は既定 0.05 補完 🔵
+    assert cfg_pos.new_peak_persistence == 2  # 【確認内容】: 未指定は既定 2 補完 🔵
+
+    # 【部分キーワード指定】: 既存フィールドのみのキーワード指定も従来どおり動く
+    assert ChangepointConfig(window=3).window == 3  # 【確認内容】: window のみ指定 🔵
+    assert ChangepointConfig(min_new_peaks=2).min_new_peaks == 2  # 【確認内容】: 下限のみ指定 🔵
+
+    # 【新規フィールドのキーワード上書き】: 新規 2 フィールドも個別に指定できる
+    cfg_new = ChangepointConfig(new_peak_persistence=1, new_peak_min_height_frac=0.1)
+    assert cfg_new.new_peak_persistence == 1  # 【確認内容】: 持続条件を上書き可 🔵
+    assert cfg_new.new_peak_min_height_frac == pytest.approx(0.1)  # 【確認内容】: 強度閾値を上書き可 🔵

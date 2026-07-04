@@ -9,10 +9,10 @@
 from __future__ import annotations
 
 import csv
-import math
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from tsumugin._json import finite_or_none
 from tsumugin.model import PhaseInstance, PhaseLifecycle
 
 __all__ = ["FrameRecord", "Trajectory"]
@@ -97,12 +97,11 @@ class Trajectory:
         :returns: 書き出しに成功した CSV パス (入力 path と同一の str) 🔵
         """
         # 【相 ref の確定】: 全フレームの phase_ref と lifecycles キーの和集合を sorted 昇順で固定 (REQ-402) 🔵
+        #   ヘッダ・行の双方で同一 phase_refs を用い、_sorted_phase_refs の二重計算を避ける 🔵
         phase_refs = self._sorted_phase_refs()
 
-        # 【ヘッダ構築】: フレーム共通列 + 各相の 8 列を明示順で連結 (列順を決定論に固定) 🔵
-        header = list(_FRAME_COMMON_COLUMNS)
-        for ref in phase_refs:
-            header.extend(f"{ref}.{suffix}" for suffix in _PHASE_FIELD_SUFFIXES)
+        # 【ヘッダ構築】: 列順の単一情報源 _header_columns に委譲 (operando 結合出力と共有) 🔵
+        header = self._header_columns(phase_refs)
 
         # 【書き出し】: newline="" / utf-8 で改行・エンコーディング差を排除しバイト同一を担保 (REQ-402) 🔵
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -113,6 +112,42 @@ class Trajectory:
 
         # 【結果返却】: 書き出しパスを str で返す (export_gpx と同一契約) 🔵
         return str(path)
+
+    def header(self) -> list[str]:
+        """CSV ヘッダ (フレーム共通列 + 相ごと 8 列) を決定論順で返す公開 API。
+
+        【機能概要】: ``to_csv`` と同一の列レイアウト (共通列 + 各相 ref の格子/scale/wt_frac/lifecycle) を
+          外部 (operando の結合出力 ``combined_csv`` 等) が私有定数へ触れずに取得できるようにする。
+        【実装方針】: 相 ref は ``_sorted_phase_refs`` の sorted 昇順で固定し、列構築は _header_columns に委譲する。
+        🔵 信頼性レベル: to_csv のヘッダ構築ロジックと同一 (単一情報源化) / Issue #5 の私有横断 import 是正方針。
+        """
+        return self._header_columns(self._sorted_phase_refs())
+
+    def _header_columns(self, phase_refs: list[str]) -> list[str]:
+        """与えた相 ref 順から CSV ヘッダ列 (共通列 + 各相 8 列) を組み立てる (列順の単一情報源)。
+
+        【実装方針】: header() と to_csv が同一の列レイアウトを共有し、かつ to_csv が phase_refs を一度だけ
+          計算して行生成と使い回せるよう、列構築のみを純関数的に切り出す。
+        🔵 信頼性レベル: 旧 to_csv/header のインライン構築と同一。
+        """
+        columns = list(_FRAME_COMMON_COLUMNS)
+        for ref in phase_refs:
+            columns.extend(f"{ref}.{suffix}" for suffix in _PHASE_FIELD_SUFFIXES)
+        return columns
+
+    def rows_by_frame(self) -> dict[int, list[str]]:
+        """frame_index → CSV セル列 (``header()`` と同順) の決定論マップを返す公開 API。
+
+        【機能概要】: 外部結合 (operando ``combined_csv``) が frame_index をキーに trajectory 行を引けるよう、
+          各 ``FrameRecord`` の決定論セル列を frame_index で索引化して返す (非有限/None は空欄化済み)。
+        【実装方針】: 列順は ``header()`` と一致 (同一 ``_sorted_phase_refs`` を用いる)。frame_index は契約上一意。
+        🔵 信頼性レベル: _row_values の決定論写像を再利用 / Issue #5 の私有横断 import 是正方針。
+        """
+        phase_refs = self._sorted_phase_refs()
+        return {
+            record.frame_index: self._row_values(record, phase_refs)
+            for record in self.records
+        }
 
     def _sorted_phase_refs(self) -> list[str]:
         """出力対象の相 ref を phases ∪ lifecycles.keys() の sorted 昇順で返す。
@@ -182,16 +217,12 @@ class Trajectory:
 
 def _num_cell(value: float | int | None) -> str:
     """【機能概要】: 有限な数値は ``str(value)``、None / 非有限 (inf/-inf/NaN) は空文字列を返す。
-    【実装方針】: store/serialization.py の ``_finite_or_none`` と同思想の非有限純化を CSV セル用に局所化する
-    (レイヤ横断 import を避け trajectory.py 内に閉じる)。int/float の元表現を保つため判定後は元値を ``str`` 化する。
+    【実装方針】: 非有限/None 判定は共有葉モジュール ``_json.finite_or_none`` へ委譲し (Issue #5 の単一情報源化)、
+    CSV セル書式は int/float の元表現を保つため判定後に元値を ``str`` 化する (finite_or_none の float 正規化は
+    判定にのみ用い、frame_index は "5"、axis_value は "300.0" を維持する)。
     【テスト対応】: T-E01 (None/inf 空欄)、T-E02 (nan 空欄)、T-E03 (None 空欄)、T-B07 (0.0/負値/極小は保持)。
-    🔵 信頼性レベル: 要件 §3 非有限制約 / 完了条件③ / serialization.py 同名契約に依拠。
+    🔵 信頼性レベル: 要件 §3 非有限制約 / 完了条件③ / _json.finite_or_none 単一実装に依拠。
     """
-    # 【None 判定】: 欠損値 (未定/失敗フレーム) は空欄。falsy な 0.0 を巻き込まないよう `is None` で判定 🔵
-    if value is None:
-        return ""
-    # 【非有限判定】: inf/-inf/NaN を空欄化し文字列としてファイルに漏らさない (M1 教訓) 🔵
-    if not math.isfinite(value):
-        return ""
-    # 【有限値】: 元の int/float 表現を保って str 化 (frame_index は "5"、axis_value は "300.0") 🔵
-    return str(value)
+    # 【判定は単一情報源へ委譲・書式は元値保持】: finite_or_none が None (欠損/非有限) を返せば空欄、
+    #   有限なら元の int/float 表現を保って str 化する (falsy な 0.0 も潰さない) 🔵
+    return "" if finite_or_none(value) is None else str(value)

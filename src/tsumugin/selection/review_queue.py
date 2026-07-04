@@ -13,10 +13,12 @@ from typing import Literal
 
 from tsumugin.store.ledger import Ledger
 
-# 【定数定義】: M2 で利用可能なエスカレーション 4 条件のみを表す型エイリアス (吸収補正は M3 スコープ外) 🔵
-# 【宣言順の意味】: detect_escalations の返り値順序はこの宣言順に固定される (NFR-102 決定論)
+# 【定数定義】: エスカレーション理由の型エイリアス。前 4 条件は M2 の detect_escalations が返す条件、
+#   末尾 "incomparable_evidence" は M3 FR-313 判別 (discrimination) が Σbic 比較不能時に用いる追加理由 🔵
+# 【宣言順の意味】: detect_escalations の返り値順序はこの宣言順に固定される (NFR-102 決定論)。M3 追加分は
+#   detect_escalations が返さないため末尾に付け、既存 4 条件の順序は不変に保つ (後方互換)。
 EscalationReason = Literal[
-    "all_high_r", "unknown_phase", "close_competitor", "guard_escalated"
+    "all_high_r", "unknown_phase", "close_competitor", "guard_escalated", "incomparable_evidence"
 ]
 
 
@@ -30,7 +32,7 @@ class ReviewItem:
     """
 
     item_id: str  # 【追加順連番】: "rq-0000" 形式の一意 ID 🔵
-    reason: EscalationReason  # 【エスカレーション理由】: 4 条件のいずれか 🔵
+    reason: EscalationReason  # 【エスカレーション理由】: EscalationReason の 5 条件のいずれか 🔵
     hypothesis_id: str | None  # 【関連仮説 ID】: 無ければ None 🔵
     frame_index: int | None  # 【関連フレーム index】: 単一パターン解析等では None 🔵
     detail: str  # 【補足説明】: 自然言語 (既定は空文字) 🔵

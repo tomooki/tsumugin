@@ -5,7 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Mapping
 
-ChannelKind = Literal["temperature", "time", "pressure", "custom"]
+# 【kind 拡張】: 既存 4 値の末尾に echem 用 4 値を追加 (Literal 末尾追加で後方互換 / REQ-007/REQ-404) 🔵
+ChannelKind = Literal[
+    "temperature",
+    "time",
+    "pressure",
+    "custom",
+    "voltage",
+    "current",
+    "capacity",
+    "composition",
+]
 
 
 @dataclass(frozen=True)

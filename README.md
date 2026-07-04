@@ -4,14 +4,16 @@
 多相 Rietveld 精密化・時系列解析を、AI エージェントと人間の介入点を明示的に設計した上で
 自動化することを目指す。設計思想は [docs/tsumugin_spec_v0.3.md](docs/tsumugin_spec_v0.3.md) を参照。
 
-> **状態**: M0 (PoC) + M1 (多仮説木探索) + M2 (シーケンシャル解析) 実装済み。単一パターン
-> 自動多相精密化の中核 (段階的パラメータ解放・ガードレール・Evidence Engine・追記専用
+> **状態**: M0 (PoC) + M1 (多仮説木探索) + M2 (シーケンシャル解析) + M3 (operando 解析) 実装済み。
+> 単一パターン自動多相精密化の中核 (段階的パラメータ解放・ガードレール・Evidence Engine・追記専用
 > Ledger/Snapshot)、候補相集合からの多仮説木探索 (`tsumugin.search`)・`.gpx` 書き出し
 > (`tsumugin.export`)・read-only Web UI (`tsumugin.webui`) に加え、時系列フレーム列の逐次
 > 精密化 (`tsumugin.sequential`: changepoint 検出・lifecycle・転移温度・trajectory/CSV)・
 > agent/human 2 モードの最終選択 (`tsumugin.selection`)・JSONL 永続化
 > (`tsumugin.store` の `PersistentLedger`/`PersistentSnapshotStore`) が、`SimulatedBackend`
-> (GSAS-II 不要) と `GSASIIBackend` (実 Rietveld) の両方で動作する。
+> (GSAS-II 不要) と `GSASIIBackend` (実 Rietveld) の両方で動作する。M3 では電池 operando 向けに
+> echem 同期 (`tsumugin.operando`)・マルチスタート大域最適化 (`tsumugin.multistart`)・
+> 固溶体/二相判別・IC 区間分割・セル固定相/吸収補正 (`tsumugin.absorption`) を追加した。
 
 ## セットアップ
 
@@ -160,7 +162,72 @@ JSONL に追記され、別プロセスで再オープンしても `verify()` �
 (onset/midpoint) を推定でき、`FinalSelectionEngine(mode="agent")` で局所探索結果に自動裁定
 (または Review Queue へのエスカレーション) を適用できる。
 
-## アーキテクチャ (M0 + M1 + M2 実装済み範囲)
+## 使い方 (M3): operando 解析
+
+電池 operando 測定の一気通貫。充放電 (echem) CSV を frame 同期して組成 x へ換算し
+(`read_echem_csv`)、セル集電体などのプリセット固定相 (`CELL_PHASE_PRESETS`) を scale のみ解放で
+常駐させたまま逐次精密化し、Evidence (BIC) の区間分割 (`segment_series`) で反応区間へ切り分け、
+各区間を端点マルチスタート込みで固溶体 / 二相反応に判別 (`discriminate_interval`) する。最後に
+相分率・格子の trajectory と echem (V/組成 x) を frame_index で外部結合した CSV を書き出す
+(`combined_csv`)。全操作は 1 本の共有 Ledger に集約され `verify()` できる:
+
+```python
+import numpy as np
+from tsumugin import (
+    SimulatedBackend, PhaseInstance, LatticeParams, FrameSeries, Ledger,
+    SequentialEngine, CELL_PHASE_PRESETS, DiscriminationConfig, MultistartConfig,
+    segment_series, discriminate_interval, read_echem_csv, combined_csv,
+)
+
+backend = SimulatedBackend(peak_fwhm=0.2)
+two_theta = np.arange(15.0, 60.0, 0.05)
+n_frames = 6
+
+# 端成分 α/β の scale を漸移させた二相反応系列に Al 集電体 (固定相) を重畳
+al = CELL_PHASE_PRESETS["Al"].phase.with_updates(scale=0.7)
+rows = []
+for i in range(n_frames):
+    t = i / (n_frames - 1)
+    phases = []
+    if 1.0 - t > 0.0:
+        phases.append(PhaseInstance("alpha", LatticeParams(5.0, 5.0, 5.0), scale=1.0 - t))
+    if t > 0.0:
+        phases.append(PhaseInstance("beta", LatticeParams(5.06, 5.06, 5.06), scale=t))
+    phases.append(al)
+    rows.append(backend.simulate(phases, two_theta))
+series = FrameSeries(two_theta, np.asarray(rows, dtype=float))
+
+fixed = CELL_PHASE_PRESETS["Al"]                       # セル固定相 (scale のみ解放)
+initial = (PhaseInstance("A", LatticeParams(5.0, 5.0, 5.0)),)
+ledger = Ledger()                                      # segment/discriminate を 1 本のチェーンへ集約
+
+# 固定相込み IC 区間分割 → 区間ごとに固溶体/二相を判別 (端点マルチスタート)
+seg = segment_series(backend, series, initial, fixed_phases=(fixed,), ledger=ledger)
+disc = discriminate_interval(
+    backend, series, (0, n_frames - 1), initial,
+    config=DiscriminationConfig(multistart=MultistartConfig(n_starts=2)),
+    fixed_phases=(fixed,), ledger=ledger,
+)
+print("segments:", seg.n_segments, "/ verdict:", disc.verdict)  # verdict ∈ {solid_solution, two_phase, undecided}
+
+# echem CSV を frame 同期 (容量 Q → 組成 x = 0.1·Q) して trajectory と結合出力
+echem = read_echem_csv(
+    "echem.csv",
+    column_map={"frame": "frame", "voltage": "voltage", "capacity": "capacity"},
+    capacity_to_x=(0.1, 0.0),
+)
+trajectory = SequentialEngine(backend).run(series, [initial[0], al]).trajectory
+written = combined_csv(trajectory, echem, "combined.csv")  # wt_frac/格子 + V/組成 x を frame で外部結合
+assert ledger.verify()                                     # 全操作は追記専用 Ledger に記録 (P2/NFR-105)
+```
+
+判別が僅差または両仮説とも高 R のときは自動確定せず `verdict="undecided"` で
+`ReviewQueue` へエスカレーションする (誤自動確定の回避)。`MultistartEngine(backend,
+config=MultistartConfig(n_starts=N)).run(...)` は摂動 start を direct refine → 発散除外 →
+basin クラスタで大域最適を裏取りし、`AbsorptionConfig` / `transmission_factor` は透過配置の
+吸収補正 (A = exp(-μt/cosθ)) を与える。
+
+## アーキテクチャ (M0 + M1 + M2 + M3 実装済み範囲)
 
 | モジュール | 役割 | 主な仕様 FR |
 |-----------|------|------------|
@@ -176,5 +243,8 @@ JSONL に追記され、別プロセスで再オープンしても `verify()` �
 | `tsumugin.sequential` | フレーム列逐次精密化 + changepoint + lifecycle + 転移温度 + trajectory/CSV | REQ-001〜008 |
 | `tsumugin.selection` | 最終選択エンジン (agent/human 2 モード) + エスカレーション + Review Queue | REQ-013〜015 |
 | `tsumugin.store` (persistent) | JSONL 永続化 Ledger / Snapshot (追記専用・再オープン改竄検知) | REQ-010〜012, NFR-105 |
+| `tsumugin.multistart` | 摂動マルチスタート大域最適化 (basin クラスタ・発散除外・大域裏取り) | FR-230〜231 |
+| `tsumugin.operando` | echem 同期 + セル固定相 + IC 区間分割 + 固溶体/二相判別 + 結合出力/ヒステリシス | FR-311〜316 |
+| `tsumugin.absorption` | 透過配置の吸収補正 (A = exp(-μt/cosθ)) + `CellConfig` 連携 | REQ-016 |
 
 実装計画は [docs/dev/plans/m0-refinement-core/](docs/dev/plans/m0-refinement-core/) を参照。

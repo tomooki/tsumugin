@@ -122,7 +122,14 @@ Ni1 Ni 0.0 0.0 0.0 1.0 Uiso 0.01
 
 
 class GSASIIBackend:
-    """RefinementBackend の GSAS-II 実装。"""
+    """RefinementBackend の GSAS-II 実装。
+
+    吸収補正 (absorption) について: v1 では透過平板の実効 μt を独立パラメータとしては
+    精密化せず、吸収による強度歪みを scale (相分率スケール) への畳み込み近似として吸収させる
+    (REQ-020 / architecture.md D8 L101)。実効 μt を 1 パラメータとして陽に精密化する
+    restraint 付き吸収補正は SimulatedBackend (AbsorptionConfig) 側で提供する。GSAS-II 側の
+    厳密な吸収モデル (Sample Parameters の Absorption) 連携は将来タスクで扱う。
+    """
 
     name = "gsasii"
 
