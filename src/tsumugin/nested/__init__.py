@@ -11,10 +11,12 @@ sampler/arbitration が本型基盤に依存する。トップレベル ``tsumug
 from __future__ import annotations
 
 from .base import EvidenceProblem, PriorSpec, ProblemAwareEvidenceBackend
+from .laplace import LaplaceBackend
 from .prior import RestraintSpec, build_prior_from_restraints
 
 __all__ = [
     "EvidenceProblem",
+    "LaplaceBackend",
     "PriorSpec",
     "ProblemAwareEvidenceBackend",
     "RestraintSpec",
