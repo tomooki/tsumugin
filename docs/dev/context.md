@@ -19,6 +19,8 @@ Tsumugin — 粉末回折の多仮説・全自動 Rietveld 解析プラットフ
 | Package Manager | uv 0.9.x | 🔵 |
 | Build Backend | hatchling (src layout) | 🔵 |
 | Rietveld Backend | GSAS-II 2.0 (導入済み: C:\Users\tomoo\G2 ソースツリー + .pth + ~/.GSASII/GSASII-bin バイナリ) | 🔵 |
+| Web UI (read-only) | FastAPI + uvicorn (optional extra `web`, localhost, 同梱静的 HTML) | 🔵 |
+| GUI 最終形 (計画) | FastAPI × React + Tauri (デスクトップ配布)。NiceGUI は不採用。→ [ADR-0001](../design/adr/0001-gui-frontend-stack.md) | 🟡 |
 
 ## Test Framework
 
