@@ -9,10 +9,10 @@
 from __future__ import annotations
 
 import csv
-import math
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from tsumugin._json import finite_or_none
 from tsumugin.model import PhaseInstance, PhaseLifecycle
 
 __all__ = ["FrameRecord", "Trajectory"]
@@ -207,16 +207,12 @@ class Trajectory:
 
 def _num_cell(value: float | int | None) -> str:
     """【機能概要】: 有限な数値は ``str(value)``、None / 非有限 (inf/-inf/NaN) は空文字列を返す。
-    【実装方針】: store/serialization.py の ``_finite_or_none`` と同思想の非有限純化を CSV セル用に局所化する
-    (レイヤ横断 import を避け trajectory.py 内に閉じる)。int/float の元表現を保つため判定後は元値を ``str`` 化する。
+    【実装方針】: 非有限/None 判定は共有葉モジュール ``_json.finite_or_none`` へ委譲し (Issue #5 の単一情報源化)、
+    CSV セル書式は int/float の元表現を保つため判定後に元値を ``str`` 化する (finite_or_none の float 正規化は
+    判定にのみ用い、frame_index は "5"、axis_value は "300.0" を維持する)。
     【テスト対応】: T-E01 (None/inf 空欄)、T-E02 (nan 空欄)、T-E03 (None 空欄)、T-B07 (0.0/負値/極小は保持)。
-    🔵 信頼性レベル: 要件 §3 非有限制約 / 完了条件③ / serialization.py 同名契約に依拠。
+    🔵 信頼性レベル: 要件 §3 非有限制約 / 完了条件③ / _json.finite_or_none 単一実装に依拠。
     """
-    # 【None 判定】: 欠損値 (未定/失敗フレーム) は空欄。falsy な 0.0 を巻き込まないよう `is None` で判定 🔵
-    if value is None:
-        return ""
-    # 【非有限判定】: inf/-inf/NaN を空欄化し文字列としてファイルに漏らさない (M1 教訓) 🔵
-    if not math.isfinite(value):
-        return ""
-    # 【有限値】: 元の int/float 表現を保って str 化 (frame_index は "5"、axis_value は "300.0") 🔵
-    return str(value)
+    # 【判定は単一情報源へ委譲・書式は元値保持】: finite_or_none が None (欠損/非有限) を返せば空欄、
+    #   有限なら元の int/float 表現を保って str 化する (falsy な 0.0 も潰さない) 🔵
+    return "" if finite_or_none(value) is None else str(value)

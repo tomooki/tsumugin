@@ -89,7 +89,10 @@ class DiscriminationResult:
     """
 
     verdict: Literal["solid_solution", "two_phase", "undecided"]  # 【判別】: 3 値のいずれか 🔵
-    delta_evidence: float  # 【ΔBIC】: Σbic_A − Σbic_B (bic は小さいほど良い) 🔵
+    # 【ΔBIC】: Σbic_A − Σbic_B (bic は小さいほど良い)。符号を「暫定優位側」と読めるのは close_competitor
+    #   (僅差) の undecided のみ。incomparable_evidence / all_high_r の undecided では Σbic が異なるフレーム
+    #   集合の和 / 高 R 由来で符号に意味がないため、優位側の指標に用いてはならない 🔵
+    delta_evidence: float
     hypothesis_single: Hypothesis  # 【仮説 A】: 単相 (metrics.multistart 付き) 🔵
     hypothesis_two_phase: Hypothesis  # 【仮説 B】: 端成分 2 相 (metrics.multistart 付き) 🔵
     multistart_single: MultistartResult  # 【A 端点マルチスタート】🔵
@@ -98,9 +101,9 @@ class DiscriminationResult:
     warnings: tuple[str, ...] = ()  # 【警告】: 発散除外/全滅縮退の伝播 (REQ-102/EDGE-002) 🔵
 
 
-@dataclass
+@dataclass(frozen=True)
 class _IntervalOutcome:
-    """区間内 warm-start 逐次 direct refine の内部結果束 (非公開・非 frozen)。
+    """区間内 warm-start 逐次 direct refine の内部結果束 (非公開・frozen)。
 
     【機能概要】: 1 仮説の区間逐次精密化の Σbic・代表 rwp・区間端点の精密化済み相/結果・警告を保持し、
       ``discriminate_interval`` 本体のフェーズ分解を読みやすく保つ。
@@ -182,15 +185,11 @@ def discriminate_interval(
     #   格子固定 B は warm start しない (フレームごとに端成分テンプレートから相分率を独立に精密化する):
     #   scale を warm 継承すると参照バックエンドの早期停止で相分率が累積的に過少収束し Σbic_B が誤って
     #   増大するため、各フレーム独立の相分率推定 (fresh init) を採る (数値安定・より正しい分率推定)。🟡
-    #   端成分 α/β は元は同一活物質相 (同 phase_ref) の複製のため、2 端成分を区別できるよう phase_ref を
-    #   "{ref}#alpha"/"{ref}#beta" へ改名する。SimulatedBackend は phase_ref 未登録相を既定 hkl で扱い
-    #   格子でピーク位置が決まるため数値・決定論に影響せず、ref をキーに相を突き合わせる下流での衝突を防ぐ。🟡
-    alpha = _relabel_endmember(
-        _endpoint_lattice_source(ms_a_start, seq_a.endpoint_phases[start], active_count_a), "alpha"
-    )
-    beta = _relabel_endmember(
-        _endpoint_lattice_source(ms_a_end, seq_a.endpoint_phases[end], active_count_a), "beta"
-    )
+    #   端成分 α/β は phase_ref を継承し共有する (改名しない): 二相反応の端成分は同一結晶構造の 2 格子で、
+    #   phase_ref をキーに hkl/構造を引く backend (SimulatedBackend.hkl_table 等) が両端成分に正しい構造を
+    #   割り当てるには ref 一致が必要。改名すると hkl 引きが既定 hkl へ落ちて Σbic_B が偏り verdict を歪める。🟡
+    alpha = _endpoint_lattice_source(ms_a_start, seq_a.endpoint_phases[start], active_count_a)
+    beta = _endpoint_lattice_source(ms_a_end, seq_a.endpoint_phases[end], active_count_a)
     b_active = alpha + beta
     active_count_b = len(b_active)
     init_b = b_active + fixed_instances
@@ -461,22 +460,6 @@ def _endpoint_lattice_source(
     return tuple(source[:active_count])
 
 
-def _relabel_endmember(
-    phases: tuple[PhaseInstance, ...], suffix: str
-) -> tuple[PhaseInstance, ...]:
-    """端成分相の phase_ref に "#{suffix}" を付し 2 端成分を区別可能にする (格子/scale 等は不変)。
-
-    【機能概要】: 仮説 B の α/β は同一活物質相の複製で phase_ref が同じため、ref をキーに相を突き合わせる
-      下流で 2 端成分が衝突しうる。"{ref}#alpha"/"{ref}#beta" へ改名して区別する。
-    【実装方針】: with_updates で phase_ref のみ差し替え、格子/scale/wt_frac 等は非破壊に保つ。
-      SimulatedBackend は未登録 ref を既定 hkl で扱う (格子でピーク位置が決まる) ため数値・決定論に影響しない。
-    🟡 信頼性レベル: 二相反応の端成分区別 (設計 D4) / PhaseInstance.with_updates 非破壊更新に依拠。
-    """
-    return tuple(
-        phase.with_updates(phase_ref=f"{phase.phase_ref}#{suffix}") for phase in phases
-    )
-
-
 def _decide_verdict(
     delta: float,
     close_threshold: float,
@@ -490,8 +473,10 @@ def _decide_verdict(
 ) -> tuple[Literal["solid_solution", "two_phase", "undecided"], tuple[str, ...], str | None]:
     """ΔBIC と両仮説高 R から verdict・エスカレーション文字列・Queue 通知 reason を決める。
 
-    【実装方針】: (1) 両仮説高 R (EDGE-005) を最優先で判定し「判別なし」= undecided + all_high_r へ縮退、
-      (2) Σbic の比較可能性ガード (有限フレーム数の不一致/皆無 → undecided + incomparable_evidence)、
+    【実装方針】: (1) Σbic の比較可能性ガードを最優先で判定 (有限フレーム集合の不一致/皆無 → undecided +
+      incomparable_evidence)。片仮説が一部フレームで発散し rwp も高い場合を「未知相 (高 R)」でなく
+      「backend 失敗 (比較不能)」として正しくラベルするため both_high_r より先に置く。
+      (2) 両仮説高 R (EDGE-005 / 両仮説が全フレーム有限だが rwp 高) → undecided + all_high_r、
       (3) ΔBIC ≤ −閾値 → solid_solution、(4) ΔBIC ≥ +閾値 → two_phase (いずれも閉境界 >=/<=)、
       (5) |ΔBIC| < 閾値 → 僅差 undecided + close_competitor。verdict Literal は 3 値のみのため両仮説高 R /
       比較不能の「判別しない」は undecided + エスカレーションで表現する (contract 整合)。
@@ -502,16 +487,9 @@ def _decide_verdict(
 
     @returns: (verdict, escalations タプル, Queue 通知 reason または None)。
     """
-    # 【EDGE-005 優先】: 両仮説とも高 R は chi2 差に依らず判別しない (未知相の疑い) 🔵
-    if both_high_r:
-        message = (
-            f"all_high_r: 両仮説の代表 rwp (single={rwp_single:.4g}%, two_phase={rwp_two_phase:.4g}%) が "
-            f"高 R 閾値を超過しました。未知相の疑いがあり判別を確定しません。"
-        )
-        return "undecided", (message,), "all_high_r"
-
-    # 【比較可能性ガード】: 片仮説の backend 失敗で有限フレーム数が食い違う/皆無だと、非有限フレーム除外が
-    #   Σbic を不当に下げて誤確定を招く。Σbic 比較を信頼せず undecided へ縮退しエスカレーションする 🔵
+    # 【比較可能性ガード優先】: 有限フレーム集合が両仮説で食い違う/皆無だと、非有限フレーム除外が Σbic を
+    #   不当に下げて誤確定を招く。両仮説高 R より先に判定し、部分失敗 (集合不一致) を高 R (未知相) と
+    #   取り違えず「backend 失敗 (比較不能)」として正しくラベルする 🔵
     if not comparable:
         message = (
             f"incomparable_evidence: 両仮説の有限フレーム集合が一致しない、またはいずれかが皆無 "
@@ -519,6 +497,14 @@ def _decide_verdict(
             f"信頼できず判別を確定しません (backend の精密化失敗の疑い。除外フレームは warnings 参照)。"
         )
         return "undecided", (message,), "incomparable_evidence"
+
+    # 【EDGE-005】: 両仮説とも全フレーム有限だが rwp が高い = 未知相の疑いで判別しない 🔵
+    if both_high_r:
+        message = (
+            f"all_high_r: 両仮説の代表 rwp (single={rwp_single:.4g}%, two_phase={rwp_two_phase:.4g}%) が "
+            f"高 R 閾値を超過しました。未知相の疑いがあり判別を確定しません。"
+        )
+        return "undecided", (message,), "all_high_r"
 
     # 【明瞭判別】: ΔBIC = Σbic_A − Σbic_B。bic は小さいほど良く、閉境界 (>=/<=) で確定側とする 🔵
     if delta <= -close_threshold:
