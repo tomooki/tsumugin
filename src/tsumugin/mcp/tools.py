@@ -31,7 +31,7 @@ from ..evidence.ic import BICBackend
 from ..evidence.ranking import rank
 from ..export.gpx import export_gpx as _export_gpx
 from ..joint.model import JointHistogram
-from ..joint.verification import verify_survivors
+from ..joint.verification import JointVerificationResult, verify_survivors
 from ..model import PhaseInstance
 from ..model.project import Project
 from ..pipeline import analyze_single_pattern
@@ -66,6 +66,9 @@ class AnalysisSession:
     【非破壊拡張】: ``two_theta``/``intensity`` は interfaces.py の契約末尾へ既定 None で追加した
       観測パターン保持フィールド。``export_gpx`` / joint ``submit_analysis`` が facade 経由で
       パターンをスレッドするための最小追加 (後方互換・P2)。
+    【非破壊拡張 (M5 / TASK-0057)】: ``verification`` は直近の joint 検証結果 (``run_mem`` が対象
+      仮説の ``JointRefinementResult`` を引き当てる元) を保持する末尾・既定 None フィールド。
+      ``two_theta``/``intensity`` と同型の後方互換追加で、既存フィールドは不変 (P2)。
     """
 
     project: Project
@@ -78,6 +81,7 @@ class AnalysisSession:
     trajectory: Trajectory | None = None  # 【get_trajectory 委譲用】 🔵
     two_theta: np.ndarray | None = None  # 【直近観測 2θ 軸 (export_gpx 用)】 🟡
     intensity: np.ndarray | None = None  # 【直近観測強度 (export_gpx 用)】 🟡
+    verification: JointVerificationResult | None = None  # 【run_mem 用 joint 検証結果】 🔵 REQ-034
 
 
 def submit_analysis(
@@ -346,14 +350,17 @@ def export_gpx(
 
 
 def run_mem(session: AnalysisSession, **params: object) -> dict:
-    """MEM 実行の M5 委譲境界。破壊的操作なし。🔵 REQ-101/EDGE-008
+    """MEM 実行の M5 委譲境界。破壊的操作なし。🔵 REQ-033/034/101/104/EDGE-006/008/013
 
-    【委譲】: ``mcp.mem.run_mem_boundary`` へ委譲。既定は ``MEMUnavailableError`` 送出、
-      ``placeholder=True`` で M5 プレースホルダ dict (呼び出し側スキーマ将来互換, D9)。
-    【テスト対応】: test_run_mem_default_raises_mem_unavailable / test_run_mem_default_does_not_mutate_ledger。
-    🔵 信頼性レベル: interfaces.py mcp/tools・mcp/mem 節 / REQ-101 に依拠。
+    【委譲】: ``mcp.mem.run_mem_boundary`` へ **params 透過で委譲する。``mem_backend`` /
+      ``hypothesis_id`` / ``frame_index`` を含む params はそのまま境界へ渡り、``mem_backend``
+      供給時のみ ``build_mem_input``→``mem_backend.run`` の実処理へ入る (M5 実体化)。
+    【後方互換】: ``mem_backend`` 未供給かつ ``placeholder=False`` は従来通り ``MEMUnavailableError``
+      送出、``placeholder=True`` は M4 プレースホルダ dict (D9)。破壊的操作なし (NFR-101)。
+    【テスト対応】: test_run_mem_default_raises_mem_unavailable / test_run_mem_tool_passes_backend_through_params。
+    🔵 信頼性レベル: interfaces.py mcp/tools・mcp/mem 節 / REQ-033/034/101/104 に依拠。
     """
-    # 【委譲】: M5 境界のみ (状態変更・破壊的追記なし) 🔵 REQ-101
+    # 【委譲】: M5 実体化境界へ params 透過 (mem_backend 供給時のみ実処理・破壊的追記なし) 🔵 REQ-034
     return _mem.run_mem_boundary(session, **params)
 
 
