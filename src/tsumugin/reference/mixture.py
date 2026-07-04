@@ -1,0 +1,183 @@
+"""多相同定 — 相ライブラリ候補を既存木探索へ接続する (仕様 §5 FR-110/115)。
+
+単相ランキング (``identify_phases``) を超えて、観測パターンを複数相の混合として同定する。
+参照相のピーク列を ``RefinementBackend`` として供給する ``ReferenceBackend`` アダプタを介し、
+既存の ``HypothesisTreeSearch`` (相組合せ木探索・動的枝刈り・BIC ランキング) を再利用する。
+
+コアは numpy のみ (pymatgen 非依存)。``ReferenceBackend`` は参照ピークをガウシアン描画し
+(``simulate``)、相スケールを重み付き最小二乗でフィットする (``refine``)。chi2/rwp のセマンティクスは
+``SimulatedBackend`` と統一し (weights 既定 = 1/max(y,1)、chi2 = Σ w(yo-yc)²、rwp[%])、BIC 比較の
+一貫性を保つ (CLAUDE.md 不変条件)。
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping, Sequence
+
+import numpy as np
+
+from ..backends.base import RefinementModel, RefinementResult
+from ..model import LatticeParams, PhaseInstance
+from ..search.peaks import Peak
+from ..search.tree import HypothesisTreeSearch, SearchConfig, SearchResult
+from .engine import _DEFAULT_HULL_CUTOFF_EV, filter_references
+from .provider import ReferenceProvider
+
+__all__ = ["ReferenceBackend", "identify_phase_mixtures"]
+
+_FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+# ダミー格子。``ReferenceBackend`` は格子を参照せず peak_map でピークを供給するため、候補
+# ``PhaseInstance`` の必須 lattice フィールドを満たすためだけの器 (値に意味はない)。
+_PLACEHOLDER_LATTICE = LatticeParams(1.0, 1.0, 1.0)
+
+
+def _rwp(weights: np.ndarray, y_obs: np.ndarray, y_calc: np.ndarray) -> float:
+    """重み付き Rwp[%] (``SimulatedBackend._rwp`` と同式・同スケール)。🔵"""
+    num = float(np.sum(weights * (y_obs - y_calc) ** 2))
+    den = float(np.sum(weights * y_obs**2))
+    if den <= 0:
+        return 0.0
+    return 100.0 * math.sqrt(num / den)
+
+
+class ReferenceBackend:
+    """参照相のピーク列を供給する ``RefinementBackend`` アダプタ。🔵 FR-110/115
+
+    ``peak_map`` は ``phase_ref`` → 参照ピーク列。木探索はこの backend の ``simulate`` で候補
+    ピークを生成し、``refine`` で相スケールをフィットして chi2/rwp を得る。格子・座標・ADP は
+    フィットせず、相同定に必要なスケール (相分率の代理) のみを線形最小二乗で決める。
+    """
+
+    name = "reference"
+
+    def __init__(
+        self, peak_map: Mapping[str, Sequence[Peak]], *, peak_fwhm_deg: float = 0.1
+    ) -> None:
+        # phase_ref → ピーク列 (不変タプル化)。未知 phase_ref は空ピーク (寄与なし) に縮退する。
+        self._peak_map: dict[str, tuple[Peak, ...]] = {
+            ref: tuple(peaks) for ref, peaks in peak_map.items()
+        }
+        self._sigma = peak_fwhm_deg * _FWHM_TO_SIGMA
+
+    def _render_unit(self, phase_ref: str, two_theta: np.ndarray) -> np.ndarray:
+        """1 相の参照ピークを単位スケール (相スケール=1) でガウシアン描画する。🔵"""
+        y = np.zeros_like(two_theta)
+        for peak in self._peak_map.get(phase_ref, ()):  # 未知 ref は空 → 寄与なし
+            y += peak.height * np.exp(-0.5 * ((two_theta - peak.position) / self._sigma) ** 2)
+        return y
+
+    def simulate(self, phases: Sequence[PhaseInstance], two_theta: np.ndarray) -> np.ndarray:
+        """相スケールを乗じた参照ピークの重ね合わせを返す (木探索の候補ピーク生成に使う)。🔵"""
+        two_theta = np.asarray(two_theta, dtype=float)
+        y = np.zeros_like(two_theta)
+        for phase in phases:
+            y += phase.scale * self._render_unit(phase.phase_ref, two_theta)
+        return y
+
+    def refine(self, model: RefinementModel, *, max_cycles: int = 20) -> RefinementResult:
+        """相スケールを重み付き線形最小二乗でフィットする (相同定用の簡約精密化)。🔵 FR-110
+
+        各相の単位スケールパターンを基底とし、観測強度への非負線形結合を解く。格子等は
+        フィットしない (探索モードで解放される a/b/c は無視)。chi2/rwp は ``SimulatedBackend``
+        と同一セマンティクスで返し、BIC ランキングの一貫性を保つ。``n_params`` は相数 = 相ごとの
+        スケール数とし、相数増加を BIC が正しくペナルティする (多相の過剰当てはめ抑制)。
+        """
+        two_theta = np.asarray(model.two_theta, dtype=float)
+        y_obs = np.asarray(model.intensity, dtype=float)
+        n_obs = int(y_obs.size)
+        if model.weights is not None:
+            weights = np.asarray(model.weights, dtype=float)
+        else:
+            weights = 1.0 / np.maximum(y_obs, 1.0)  # SimulatedBackend と同一の既定重み 🔵
+        sqrt_w = np.sqrt(weights)
+        phases = model.phases
+        n_phase = len(phases)
+
+        if n_phase == 0:  # 相なしは観測全体が残差 (EDGE 縮退, 例外化しない)
+            chi2 = float(np.sum(weights * y_obs**2))
+            return RefinementResult(
+                phases=phases,
+                chi2=chi2,
+                rwp=_rwp(weights, y_obs, np.zeros_like(y_obs)),
+                n_obs=n_obs,
+                n_params=0,
+                converged=True,
+                n_cycles=1,
+                free_params=model.free_params,
+            )
+
+        # 【基底行列】: 各相の単位スケールパターンを列に持つ (n_obs × n_phase) 🔵
+        basis = np.column_stack(
+            [self._render_unit(phase.phase_ref, two_theta) for phase in phases]
+        )
+        # 【重み付き最小二乗】: min ||√w (y - B s)||。非負スケール制約はクリップで近似する 🟡
+        design = sqrt_w[:, None] * basis
+        target = sqrt_w * y_obs
+        scales, *_ = np.linalg.lstsq(design, target, rcond=None)
+        scales = np.clip(scales, 0.0, None)  # 相分率は非負 (負スケールを 0 へ丸める) 🔵
+
+        y_calc = basis @ scales
+        chi2 = float(np.sum(weights * (y_obs - y_calc) ** 2))
+        rwp = _rwp(weights, y_obs, y_calc)
+        fitted = tuple(
+            phase.with_updates(scale=float(s)) for phase, s in zip(phases, scales)
+        )
+        return RefinementResult(
+            phases=fitted,
+            chi2=chi2,
+            rwp=rwp,
+            n_obs=n_obs,
+            n_params=n_phase,  # 相ごとに 1 スケール → BIC が相数をペナルティ 🔵
+            converged=True,
+            n_cycles=1,
+            free_params=model.free_params,
+        )
+
+
+def identify_phase_mixtures(
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    provider: ReferenceProvider,
+    *,
+    elements: Sequence[str],
+    hull_cutoff_ev: float | None = _DEFAULT_HULL_CUTOFF_EV,
+    config: SearchConfig | None = None,
+    peak_fwhm_deg: float = 0.1,
+) -> SearchResult:
+    """未知パターン + 元素一覧から多相混合を同定する (FR-110/115)。🔵
+
+    供給元の候補相を元素系 + hull でフィルタ (``filter_references``) し、参照ピークを
+    ``ReferenceBackend`` として既存 ``HypothesisTreeSearch`` に載せて相組合せを探索する。
+    返り値は木探索ネイティブの ``SearchResult`` (ランキング済み多相仮説 + 未マッチ集約 + 台帳)。
+
+    Args:
+        two_theta: 2θ 軸 (度)。1 次元・``intensity`` と同長。
+        intensity: 観測強度。1 次元。
+        provider: 相ライブラリ供給元 (``fetch(elements)``)。
+        elements: 含まれ得る元素記号列 (非空)。
+        hull_cutoff_ev: hull フィルタ閾値 (eV/atom)。``None`` で無効化。既定 0.1 (FR-103)。
+        config: 木探索設定 (``max_phases`` 等)。``None`` で既定 ``SearchConfig()``。
+        peak_fwhm_deg: 参照ピーク描画の半値幅 (度)。既定 0.1。
+
+    Returns:
+        ``SearchResult``。候補ゼロ (フィルタ全滅) でも例外化せず空へ縮退する。
+
+    Raises:
+        ValueError: ``elements`` が空のとき。
+    """
+    if len(elements) == 0:
+        raise ValueError("elements は非空の元素記号列である必要があります (相同定の対象元素系)。")
+
+    survivors = filter_references(provider.fetch(elements), elements, hull_cutoff_ev=hull_cutoff_ev)
+
+    # 【候補 + backend 構築】: 各参照相を PhaseInstance 候補に、ピークを peak_map に写す 🔵
+    peak_map = {ref.phase_id: ref.peaks for ref in survivors}
+    candidates = tuple(
+        PhaseInstance(phase_ref=ref.phase_id, lattice=_PLACEHOLDER_LATTICE) for ref in survivors
+    )
+    backend = ReferenceBackend(peak_map, peak_fwhm_deg=peak_fwhm_deg)
+    search = HypothesisTreeSearch(
+        backend, config=config if config is not None else SearchConfig()
+    )
+    return search.search(two_theta, intensity, candidates)

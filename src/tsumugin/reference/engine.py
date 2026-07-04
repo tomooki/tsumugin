@@ -34,6 +34,34 @@ def _passes_hull(phase: ReferencePhase, cutoff_ev: float | None) -> bool:
     return phase.energy_above_hull <= cutoff_ev
 
 
+def filter_references(
+    candidates: Sequence[ReferencePhase],
+    elements: Sequence[str],
+    *,
+    hull_cutoff_ev: float | None = _DEFAULT_HULL_CUTOFF_EV,
+) -> list[ReferencePhase]:
+    """候補相に元素系部分集合フィルタ + hull フィルタ (FR-103) を冪等に適用する。🔵
+
+    単相同定 (``identify_phases``) と多相同定 (``identify_phase_mixtures``) が共有する前処理。
+    構成元素が ``elements`` の部分集合である相のみを残し、hull 閾値超過の相を落とす
+    (``energy_above_hull=None`` の未登録相は保持)。
+
+    Args:
+        candidates: 供給元が返した候補相。
+        elements: 許容元素系 (非空)。
+        hull_cutoff_ev: hull フィルタ閾値 (eV/atom)。``None`` で無効化。
+
+    Returns:
+        フィルタ後の候補相リスト (入力順を保つ)。
+    """
+    allowed = set(elements)
+    return [
+        phase
+        for phase in candidates
+        if set(phase.element_system) <= allowed and _passes_hull(phase, hull_cutoff_ev)
+    ]
+
+
 def identify_phases(
     two_theta: np.ndarray,
     intensity: np.ndarray,
@@ -80,12 +108,7 @@ def identify_phases(
     candidates = provider.fetch(elements)
 
     # 【前処理フィルタ】: 元素系部分集合 + hull を冪等に適用する 🔵 FR-103
-    allowed = set(elements)
-    survivors = [
-        phase
-        for phase in candidates
-        if set(phase.element_system) <= allowed and _passes_hull(phase, hull_cutoff_ev)
-    ]
+    survivors = filter_references(candidates, elements, hull_cutoff_ev=hull_cutoff_ev)
 
     # 【マッチング】: 生存候補ごとに一致率 + 被覆率スコアを求める 🔵 FR-111
     match_results: list[MatchResult] = []

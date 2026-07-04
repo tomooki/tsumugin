@@ -190,10 +190,14 @@ from .oed import (
 # (simulate_reference_peaks / group_equivalent) と MPClient Protocol は mp パッケージ側公開に留める。
 from .mp import MPEntry, MPReferenceProvider, MPRestClient
 from .reference import (
+    CODProvider,
+    ICSDProvider,
     PhaseIdentification,
     PhaseMatch,
     ReferencePhase,
     ReferenceProvider,
+    UserCIFProvider,
+    identify_phase_mixtures,
     identify_phases,
 )
 
@@ -218,6 +222,7 @@ __all__ = [
     "BondPathDensity",
     "BranchComparison",
     "CELL_PHASE_PRESETS",
+    "CODProvider",
     "CalibrationReport",
     "CalibrationSample",
     "CellConfig",
@@ -242,6 +247,7 @@ __all__ = [
     "HistogramWeighting",
     "Hypothesis",
     "HypothesisTreeSearch",
+    "ICSDProvider",
     "JointHistogram",
     "JointRefinementModel",
     "JointRefinementResult",
@@ -321,6 +327,7 @@ __all__ = [
     "TransitionEstimate",
     "TransitionPoint",
     "UnmatchedPeakReport",
+    "UserCIFProvider",
     "XRAY_Z_TABLE",
     "XraylibMuCalculator",
     "acquire",
@@ -345,6 +352,7 @@ __all__ = [
     "fit_thermal_baseline",
     "fixed_free_suffixes",
     "generate_starts",
+    "identify_phase_mixtures",
     "identify_phases",
     "phase_from_dict",
     "phase_to_dict",

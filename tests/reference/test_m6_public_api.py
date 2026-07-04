@@ -10,6 +10,8 @@ import importlib.util
 
 import tsumugin
 from tsumugin import (
+    CODProvider,
+    ICSDProvider,
     MPEntry,
     MPReferenceProvider,
     MPRestClient,
@@ -18,11 +20,15 @@ from tsumugin import (
     PhaseMatch,
     ReferencePhase,
     ReferenceProvider,
+    UserCIFProvider,
+    identify_phase_mixtures,
     identify_phases,
 )
 
 _M6_PROMOTED_SYMBOLS = frozenset(
     {
+        "CODProvider",
+        "ICSDProvider",
         "MPEntry",
         "MPReferenceProvider",
         "MPRestClient",
@@ -31,6 +37,8 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "PhaseMatch",
         "ReferencePhase",
         "ReferenceProvider",
+        "UserCIFProvider",
+        "identify_phase_mixtures",
         "identify_phases",
     }
 )
@@ -61,6 +69,10 @@ def test_m6_reexports_are_same_object():
     assert MPRestClient is tsumugin.mp.MPRestClient
     assert MPEntry is tsumugin.mp.MPEntry
     assert MPUnavailableError is tsumugin.errors.MPUnavailableError
+    assert identify_phase_mixtures is tsumugin.reference.identify_phase_mixtures
+    assert UserCIFProvider is tsumugin.reference.UserCIFProvider
+    assert CODProvider is tsumugin.reference.CODProvider
+    assert ICSDProvider is tsumugin.reference.ICSDProvider
 
 
 def test_m6_dunder_all_names_all_resolvable():

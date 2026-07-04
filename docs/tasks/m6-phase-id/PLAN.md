@@ -35,6 +35,19 @@
 - `mp/provider.py`: `MPReferenceProvider(ReferenceProvider)` — 元素系クエリ + hull + dedup + キャッシュ (FR-105)。
 - extra `mp` 導入、`MPUnavailableError`。
 
-### Phase 3 (実データ検証 + 統合)
-- GSAS-II チュートリアルの実測パターンで end-to-end 検証。
-- 公開 API (`tsumugin.__init__`) / MCP ツール統合。多相組合せは既存 `HypothesisTreeSearch` へ接続。
+### Phase 3 (実データ検証 + 統合) — 完了
+- 公開 API (`tsumugin.__init__`) 統合済み (164 シンボル)。MP ライブ検証 (自己整合) 済み。
+
+### Phase 4 (CIF 供給元 + 多相同定) — 完了
+- `reference/cif.py`: `cif_to_reference_phases` (pymatgen CifParser → 構造 → XRD、複数ブロック対応)。
+- `reference/providers.py`: `UserCIFProvider` (完全実装・キャッシュ・`from_files`)、
+  `CODProvider`/`ICSDProvider` (**導線のみ** — `downloader` シーム注入で有効化、未注入は
+  `NotImplementedError`。ICSD はライセンス要で `api_key` 保持)。
+- `reference/mixture.py`: `ReferenceBackend` (`RefinementBackend`+`simulate`、参照ピークを
+  ガウシアン描画 + スケールを重み付き最小二乗フィット、chi2/rwp は SimulatedBackend と統一) +
+  `identify_phase_mixtures` (既存 `HypothesisTreeSearch` へ接続し多相仮説を返す)。
+- `engine.py`: `filter_references` 共通化 (単相/多相で共有)。
+
+### 残 (M6 further / M-later 候補)
+- COD/ICSD の実 downloader 配線 (ネットワーク取得)。DFT 緩和補正 (FR-104)。
+  パターンキャッシュ永続化 (FR-105 の永続層)。MCP ツール統合。GSAS-II チュートリアル実測検証。
