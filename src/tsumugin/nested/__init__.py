@@ -10,12 +10,21 @@ sampler/arbitration が本型基盤に依存する。トップレベル ``tsumug
 
 from __future__ import annotations
 
+from .arbitration import (
+    ArbitratedHypothesis,
+    ArbitrationConfig,
+    ArbitrationResult,
+    arbitrate,
+)
 from .base import EvidenceProblem, PriorSpec, ProblemAwareEvidenceBackend
 from .laplace import LaplaceBackend
 from .prior import RestraintSpec, build_prior_from_restraints
 from .sampler import NestedBackend, NestedConfig, NestedOutcome
 
 __all__ = [
+    "ArbitratedHypothesis",
+    "ArbitrationConfig",
+    "ArbitrationResult",
     "EvidenceProblem",
     "LaplaceBackend",
     "NestedBackend",
@@ -24,5 +33,6 @@ __all__ = [
     "PriorSpec",
     "ProblemAwareEvidenceBackend",
     "RestraintSpec",
+    "arbitrate",
     "build_prior_from_restraints",
 ]
