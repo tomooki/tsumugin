@@ -15,9 +15,14 @@ import math
 from typing import Any, Mapping
 
 from tsumugin._json import finite_or_none
-from tsumugin.model import LatticeParams, PhaseInstance, PhaseLifecycle
+from tsumugin.model import LatticeParams, PhaseInstance, PhaseLifecycle, TofBankParams
 
-__all__ = ["phase_from_dict", "phase_to_dict"]
+__all__ = [
+    "bank_params_from_dict",
+    "bank_params_to_dict",
+    "phase_from_dict",
+    "phase_to_dict",
+]
 
 
 def _finite_map(mapping: Mapping[str, float]) -> dict[str, float | None]:
@@ -144,4 +149,42 @@ def phase_from_dict(data: Mapping[str, Any]) -> PhaseInstance:
         wt_frac=data.get("wt_frac"),  # 【None 保持】: wt_frac は None が正当値 (B-02) 🟡
         occupancies=dict(data.get("occupancies") or {}),  # 【欠損補完】: 欠落 → {} 🟡
         lifecycle=lifecycle,
+    )
+
+
+def bank_params_to_dict(params: TofBankParams) -> dict[str, Any]:
+    """【機能概要】: TofBankParams を JSON ネイティブ dict へ直列化する (TASK-0036/TC-401-04)。
+    【実装方針】: phase_to_dict と同じく全 float を finite_or_none で純化し、
+    json.dumps(allow_nan=False) 可能な素の dict を返す純関数。
+    🟡 信頼性レベル: interfaces.py bank_params_to_dict / TC-401-04 に依拠。
+
+    Args:
+        params: 直列化する TOF バンク較正パラメータ (frozen dataclass)。
+
+    Returns:
+        difc/difa/zero を持つ素の dict (非有限は None へ純化)。
+    """
+    return {
+        "difc": finite_or_none(params.difc),
+        "difa": finite_or_none(params.difa),  # 【既定明示】: 0.0 も省略せず出力
+        "zero": finite_or_none(params.zero),
+    }
+
+
+def bank_params_from_dict(data: Mapping[str, Any]) -> TofBankParams:
+    """【機能概要】: dict から TofBankParams を復元する (往復対称・欠損は既定値補完, TC-401-04/EDGE-002)。
+    【実装方針】: 明示キー取り出し (data.get) で未知キーを無視 (前方互換) し、欠損 optional キーと
+    非有限で None 化された値は dataclass 既定 (difc=0.0/difa=0.0/zero=0.0) で補完する (後方互換)。
+    🟡 信頼性レベル: interfaces.py bank_params_from_dict / TC-401-04 に依拠。
+
+    Args:
+        data: bank_params_to_dict の出力 (または後続スキーマ) の Mapping。
+
+    Returns:
+        復元された TofBankParams。
+    """
+    return TofBankParams(
+        difc=_value_or_default(data.get("difc"), 0.0),
+        difa=_value_or_default(data.get("difa"), 0.0),
+        zero=_value_or_default(data.get("zero"), 0.0),
     )

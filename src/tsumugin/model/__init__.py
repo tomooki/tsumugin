@@ -6,7 +6,7 @@ from .cell import BeamConfig, CellConfig, CellLayer, MuCalculator, XraylibMuCalc
 from .channel import ExternalChannel
 from .hypothesis import Hypothesis, HypothesisStatus, RefinementMetrics
 from .phase import LatticeParams, PhaseInstance, PhaseLifecycle
-from .project import Dataset, Frame, HistogramRef, Probe, Project
+from .project import Dataset, Frame, HistogramRef, Probe, Project, TofBankParams
 
 __all__ = [
     "BeamConfig",
@@ -25,5 +25,6 @@ __all__ = [
     "Probe",
     "Project",
     "RefinementMetrics",
+    "TofBankParams",
     "XraylibMuCalculator",
 ]
