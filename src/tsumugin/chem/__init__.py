@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .base import ChemPlausibility, PlausibilityResult, SynthesisContext
 from .compose import combine_plausibility
+from .ranking import rank_with_plausibility
 from .rules import AlkaliMetalInAirRule
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "PlausibilityResult",
     "SynthesisContext",
     "combine_plausibility",
+    "rank_with_plausibility",
 ]
