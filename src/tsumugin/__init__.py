@@ -190,6 +190,7 @@ from .oed import (
 # (simulate_reference_peaks / group_equivalent) と MPClient Protocol は mp パッケージ側公開に留める。
 from .mp import MPEntry, MPReferenceProvider, MPRestClient
 from .reference import (
+    CachedReferenceProvider,
     CODProvider,
     ICSDProvider,
     PhaseIdentification,
@@ -223,6 +224,7 @@ __all__ = [
     "BranchComparison",
     "CELL_PHASE_PRESETS",
     "CODProvider",
+    "CachedReferenceProvider",
     "CalibrationReport",
     "CalibrationSample",
     "CellConfig",

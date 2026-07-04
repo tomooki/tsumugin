@@ -6,15 +6,18 @@
 
 from __future__ import annotations
 
+from .cache import CachedReferenceProvider
 from .cif import cif_to_reference_phases
 from .engine import filter_references, identify_phases
 from .mixture import ReferenceBackend, identify_phase_mixtures
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
 from .provider import ReferenceProvider
 from .providers import CODProvider, ICSDProvider, UserCIFProvider
+from .serialization import reference_phase_from_dict, reference_phase_to_dict
 
 __all__: list[str] = [
     "CODProvider",
+    "CachedReferenceProvider",
     "ICSDProvider",
     "PhaseIdentification",
     "PhaseMatch",
@@ -26,4 +29,6 @@ __all__: list[str] = [
     "filter_references",
     "identify_phase_mixtures",
     "identify_phases",
+    "reference_phase_from_dict",
+    "reference_phase_to_dict",
 ]

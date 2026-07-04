@@ -11,6 +11,7 @@ import importlib.util
 import tsumugin
 from tsumugin import (
     CODProvider,
+    CachedReferenceProvider,
     ICSDProvider,
     MPEntry,
     MPReferenceProvider,
@@ -28,6 +29,7 @@ from tsumugin import (
 _M6_PROMOTED_SYMBOLS = frozenset(
     {
         "CODProvider",
+        "CachedReferenceProvider",
         "ICSDProvider",
         "MPEntry",
         "MPReferenceProvider",
@@ -73,6 +75,7 @@ def test_m6_reexports_are_same_object():
     assert UserCIFProvider is tsumugin.reference.UserCIFProvider
     assert CODProvider is tsumugin.reference.CODProvider
     assert ICSDProvider is tsumugin.reference.ICSDProvider
+    assert CachedReferenceProvider is tsumugin.reference.CachedReferenceProvider
 
 
 def test_m6_dunder_all_names_all_resolvable():
