@@ -200,6 +200,7 @@ from .reference import (
     UserCIFProvider,
     identify_phase_mixtures,
     identify_phases,
+    load_gsas_powder,
 )
 
 __version__ = "0.1.0"
@@ -356,6 +357,7 @@ __all__ = [
     "generate_starts",
     "identify_phase_mixtures",
     "identify_phases",
+    "load_gsas_powder",
     "phase_from_dict",
     "phase_to_dict",
     "propose_measurements",

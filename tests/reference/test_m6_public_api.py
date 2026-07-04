@@ -24,6 +24,7 @@ from tsumugin import (
     UserCIFProvider,
     identify_phase_mixtures,
     identify_phases,
+    load_gsas_powder,
 )
 
 _M6_PROMOTED_SYMBOLS = frozenset(
@@ -42,6 +43,7 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "UserCIFProvider",
         "identify_phase_mixtures",
         "identify_phases",
+        "load_gsas_powder",
     }
 )
 
@@ -76,6 +78,7 @@ def test_m6_reexports_are_same_object():
     assert CODProvider is tsumugin.reference.CODProvider
     assert ICSDProvider is tsumugin.reference.ICSDProvider
     assert CachedReferenceProvider is tsumugin.reference.CachedReferenceProvider
+    assert load_gsas_powder is tsumugin.reference.load_gsas_powder
 
 
 def test_m6_dunder_all_names_all_resolvable():
