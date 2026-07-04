@@ -548,6 +548,44 @@ def test_submit_single_finite_or_none_serializable_with_failed_rwp(monkeypatch):
     assert resp["ranked"][0]["rwp"] is None
 
 
+def test_submit_single_finite_or_none_serializable_with_nan_probability(monkeypatch):
+    # 【F1 追補】: 全候補失敗時 softmax は NaN 確率を返す。submit(single) の probability も
+    #   finite_or_none で None 化され allow_nan=False で直列化できること (rwp だけでなく)。
+    import json
+
+    from tsumugin.mcp import tools as t
+
+    nan_ranked = RankedHypothesis(
+        hypothesis=Hypothesis(
+            id="hyp-0000",
+            phases=(_phase(ref="hyp-0000"),),
+            metrics=RefinementMetrics(
+                rwp=float("inf"),
+                gof=float("inf"),
+                chi2=float("inf"),
+                n_obs=100,
+                n_params=5,
+                evidence={"bic": float("inf")},
+            ),
+            status="refined",
+        ),
+        evidence=EvidenceResult(backend="bic", value=float("inf")),
+        probability=float("nan"),
+        close_competitor=False,
+    )
+
+    class _Analysis:
+        ranked = (nan_ranked,)
+
+    monkeypatch.setattr(t, "analyze_single_pattern", lambda *a, **k: _Analysis())
+
+    session = _session()
+    tt, intensity = _grid()
+    resp = submit_analysis(session, tt, intensity, [[_phase()]], reason="fail")
+    json.dumps(resp, allow_nan=False)
+    assert resp["ranked"][0]["probability"] is None
+
+
 def test_accept_unknown_id_returns_error_dict():
     # 【F2】: 未知 id で accept が error dict を返しクラッシュしないこと。
     ranked = [_ranked("hyp-0000", 10.0)]

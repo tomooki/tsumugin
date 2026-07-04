@@ -141,7 +141,9 @@ def submit_analysis(
             "ranked": [
                 {
                     "id": rk.hypothesis.id,
-                    "probability": float(rk.probability),
+                    # 【有限化 (F1)】: 全候補失敗時 softmax は NaN 確率を返す。rwp(inf) 同様に
+                    #   finite_or_none で None 化し json.dumps(allow_nan=False) クラッシュを防ぐ 🔵
+                    "probability": finite_or_none(rk.probability),
                     # 【有限化 (F1)】: 失敗仮説の rwp は inf。json.dumps(allow_nan=False) が
                     #   クラッシュしないよう to_summary と同じ finite_or_none で None 化する 🔵
                     "rwp": (
