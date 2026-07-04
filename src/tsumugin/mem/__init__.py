@@ -15,11 +15,21 @@ from .base import (
     MEMDensityMap,
     MEMResult,
 )
+from .inputgen import (
+    MEMInput,
+    StructureFactor,
+    build_mem_input,
+    extract_structure_factors,
+)
 
 __all__ = [
     "BondPathDensity",
     "DensityCrossSection",
     "MEMBackend",
     "MEMDensityMap",
+    "MEMInput",
     "MEMResult",
+    "StructureFactor",
+    "build_mem_input",
+    "extract_structure_factors",
 ]
