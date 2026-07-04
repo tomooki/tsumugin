@@ -365,6 +365,42 @@ def test_deterministic_bitwise_identical():
     assert v1 == v2
 
 
+def test_shared_metrics_object_no_evidence_crosstalk():
+    """2 仮説が同一 RefinementMetrics オブジェクトを共有しても evidence が誤差し替えされない (LOW-7)。
+
+    id(metrics) キーだと共有相手の evidence が衝突・誤差し替えされる。hypothesis.id ベースなら
+    片方だけ nested 再裁定しても共有相手 (bic のまま) の evidence が壊れない。
+    """
+    # 同一 metrics オブジェクトを 2 仮説で共有する (frozen dataclass 共有は現実に起こり得る)。
+    shared = RefinementMetrics(
+        rwp=5.0, gof=1.2, chi2=103.0, n_obs=1000, n_params=8
+    )
+    h_best = _hyp("h1", chi2=100.0)  # best (別 metrics)
+    h_shared_a = Hypothesis(id="h2", phases=(), metrics=shared)  # close, nested 対象
+    h_shared_b = Hypothesis(id="h3", phases=(), metrics=shared)  # close, 同一 metrics 共有
+    hyps = (h_best, h_shared_a, h_shared_b)
+
+    # h2 のみ nested 対象 (problem 供給)。h3 は problem 欠損で bic のまま。
+    problems = {"h2": _problem("h2")}
+    nested = NestedBackend()
+    result = arbitrate(hyps, problems=problems, nested=nested)
+
+    by = {a.ranked.hypothesis.id: a for a in result.arbitrated}
+    # h2 は nested/laplace で再裁定される。
+    assert by["h2"].adjudicated_by in ("nested", "laplace")
+    # h3 は共有 metrics でも bic のまま (誤差し替えされない)。
+    assert by["h3"].adjudicated_by == "bic"
+    assert by["h3"].ranked.evidence.backend == "bic"
+    # h3 の evidence 値は元の bic 値 (h2 の nested 値で上書きされていない)。
+    from tsumugin.evidence.ic import BICBackend
+
+    bic_val = BICBackend().score(shared).value
+    assert by["h3"].ranked.evidence.value == pytest.approx(bic_val)
+    # 確率は正規化されている。
+    total = sum(a.ranked.probability for a in result.arbitrated)
+    assert abs(total - 1.0) < 1e-9
+
+
 def test_nested_ids_sorted():
     """nested_ids は昇順 (入力順に依らない)。REQ-402。"""
     # 逆順で与えても nested_ids は昇順

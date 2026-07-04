@@ -85,6 +85,46 @@ def test_priorspec_truncated_normal_stays_within_bounds():
     assert spec.transform(1.0) == pytest.approx(1.0, abs=1e-9)
 
 
+def test_priorspec_normal_scale_zero_degrades_to_uniform_no_zerodivision():
+    # MEDIUM-4: scale=0 (sigma=0) は ZeroDivisionError を起こさず uniform 端点補間へ縮退
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="p", kind="normal", loc=3.0, scale=0.0, low=1.0, high=5.0)
+    # 例外を起こさず有限値を返す。
+    for u in (0.0, 0.5, 1.0):
+        v = spec.transform(u)
+        assert math.isfinite(v)
+    # uniform 端点補間 (low..high) へ縮退し単調増加。
+    assert spec.transform(0.0) == pytest.approx(1.0)
+    assert spec.transform(1.0) == pytest.approx(5.0)
+    assert spec.transform(0.2) < spec.transform(0.8)
+
+
+def test_priorspec_normal_scale_negative_degrades_to_uniform_monotonic():
+    # MEDIUM-4: scale<0 は非単調 (逆 CDF 単調減少) を避けて uniform 縮退・単調増加を保つ
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="p", kind="normal", loc=0.0, scale=-1.0, low=2.0, high=8.0)
+    lo = spec.transform(0.2)
+    hi = spec.transform(0.8)
+    assert math.isfinite(lo) and math.isfinite(hi)
+    assert lo < hi  # 単調増加 (縮退で担保)
+
+
+def test_priorspec_truncated_normal_scale_zero_degrades_to_uniform():
+    # MEDIUM-4: truncated_normal も scale<=0 で ZeroDivisionError を起こさず uniform 縮退
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(
+        param_name="p", kind="truncated_normal", low=0.0, high=1.0, loc=0.5, scale=0.0
+    )
+    for u in (0.0, 0.5, 1.0):
+        v = spec.transform(u)
+        assert math.isfinite(v)
+        assert 0.0 <= v <= 1.0
+    assert spec.transform(0.2) < spec.transform(0.8)
+
+
 def test_priorspec_is_frozen():
     from tsumugin.nested.base import PriorSpec
 

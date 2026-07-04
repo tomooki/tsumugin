@@ -119,24 +119,41 @@ class DysnomiaBackend:
             return self._run_in(Path(tmp), binary, mem_input)
 
     def _run_in(self, work: Path, binary: str, mem_input: MEMInput) -> MEMResult:
-        """作業ディレクトリ ``work`` で入力生成 → バイナリ実行 → 密度回収を行う。🔵 REQ-406
+        """作業ディレクトリ ``work`` で入力生成 → バイナリ実行 → 密度回収を行う。🔵 REQ-406/EDGE-006
 
         入力ファイルは契約固定名 (``_INPUT_FILENAME``) で決定論的に書き出す (P2: 入力不改変)。
         Dysnomia を遅延起動し、密度マップ (.grd) を回収して ``MEMResult`` を構成する。
+
+        【実行失敗 / 出力欠落の縮退 (LOW-8/EDGE-006)】: バイナリ解決成功後の実行失敗
+          (``CalledProcessError``) や .grd 未生成 (``FileNotFoundError`` / ``OSError`` /
+          ``ValueError``) は素の例外で漏らさず ``MEMUnavailableError`` へ変換する (未検出縮退と対称)。
+          ``subprocess.run`` は shell=False のリスト形式を維持する (インジェクション回避)。
         """
         input_path = work / _INPUT_FILENAME
         input_path.write_text(self._render_input(mem_input), encoding="utf-8")
 
         # 【遅延起動】: Dysnomia を subprocess で実行する (入力ファイルを引数に取る契約固定)。
-        subprocess.run(
-            [binary, str(input_path)],
-            cwd=str(work),
-            check=True,
-            capture_output=True,
-        )
+        try:
+            subprocess.run(
+                [binary, str(input_path)],
+                cwd=str(work),
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise MEMUnavailableError(
+                f"Dysnomia の実行に失敗しました (returncode={exc.returncode})。"
+                "入力ファイル契約・バイナリ導入状態を確認してください。"
+            ) from exc
 
         density_path = work / _DENSITY_FILENAME
-        density_map = self._collect_density(density_path, mem_input)
+        try:
+            density_map = self._collect_density(density_path, mem_input)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise MEMUnavailableError(
+                f"Dysnomia が密度マップ (.grd) を生成しませんでした ({density_path.name} 欠落/不正)。"
+                "バイナリ導入状態・入出力契約を確認してください。"
+            ) from exc
         return MEMResult(density_map=density_map)
 
     def _collect_density(self, density_path: Path, mem_input: MEMInput) -> MEMDensityMap:

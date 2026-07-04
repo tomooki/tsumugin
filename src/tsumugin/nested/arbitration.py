@@ -14,8 +14,9 @@ evidence を差し替え、統合ランキングを再構成する (確率再計
 ``ArbitrationResult`` は推奨提示に留まる型で、既存 ``FinalSelectionEngine`` の人間操作経路を新設しない。
 
 **確率再計算 (統合ランキング)**: 既存 ``rank`` と同一の softmax(-value/(2T)) を用いる。nested で evidence
-を差し替えた後、対象+非対象を合わせた全仮説の (差し替え後) value で再ソートし確率を再計算する。式を
-``rank`` と一致させるため、id→EvidenceResult の写像を返す擬似 backend で ``rank`` を再実行する。
+を差し替えた後、対象+非対象を合わせた全仮説の (差し替え後) value で再ソートし確率を再計算する。差し替えは
+**hypothesis.id → EvidenceResult** の写像で行い ``_rerank_with_replaced`` が ``rank`` と同一式で確率を
+再計算する (異なる仮説が同一 RefinementMetrics オブジェクトを共有しても写像が衝突しない)。
 
 **決定論 (NFR-102/REQ-402)**: nested 再裁定は仮説 ID 昇順で処理し、``nested_ids`` は昇順で返す。
 
@@ -24,13 +25,14 @@ evidence を差し替え、統合ランキングを再構成する (確率再計
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal, Mapping, Sequence
 
 from ..evidence.base import EvidenceResult
 from ..evidence.ic import BICBackend
 from ..evidence.ranking import RankedHypothesis, rank
-from ..model import Hypothesis, RefinementMetrics
+from ..model import Hypothesis
 from ..store.ledger import Ledger
 from .base import EvidenceProblem
 from .sampler import NestedBackend
@@ -77,21 +79,41 @@ class ArbitrationResult:
     warnings: tuple[str, ...] = ()  # 【打ち切り等の警告伝播】 REQ-101
 
 
-class _PrecomputedBackend:
-    """id(metrics) 由来の写像で precomputed EvidenceResult を返す擬似 backend。
+def _rerank_with_replaced(
+    hypotheses: Sequence[Hypothesis],
+    results_by_hypothesis_id: Mapping[str, EvidenceResult],
+    *,
+    temperature: float,
+    close_threshold: float,
+) -> tuple[RankedHypothesis, ...]:
+    """hypothesis.id → 差し替え後 EvidenceResult の写像で統合ランキングを再構成する。
 
-    統合ランキングの確率再計算を既存 ``rank`` (softmax(-value/(2T))) と一貫させるための橋渡し。
-    各 Hypothesis の ``metrics`` オブジェクトは一意なので id(metrics) をキーに差し替え後の
-    EvidenceResult を引く。``rank`` は ``backend.score(h.metrics)`` を呼ぶため本経路で受ける。
+    確率式は既存 ``evidence.ranking.rank`` と厳密に一致させる (softmax(-value/(2T))・max 減算安定化・
+    close_competitor は best との差 < close_threshold)。``rank`` が ``score(metrics)`` 経由で
+    metrics オブジェクトをキーにするのと異なり、hypothesis.id を直接キーにするため、異なる仮説が
+    同一 ``RefinementMetrics`` オブジェクトを共有しても写像が衝突しない (LOW-7)。決定論維持。
     """
+    scored: list[tuple[Hypothesis, EvidenceResult]] = [
+        (h, results_by_hypothesis_id[h.id]) for h in hypotheses
+    ]
+    scored.sort(key=lambda pair: pair[1].value)
+    best_value = scored[0][1].value
 
-    name = "arbitrated"
+    logits = [-(res.value) / (2.0 * temperature) for _, res in scored]
+    m = max(logits)
+    exps = [math.exp(x - m) for x in logits]
+    denom = sum(exps)
+    probs = [e / denom for e in exps]
 
-    def __init__(self, results_by_metrics_id: Mapping[int, EvidenceResult]) -> None:
-        self._by_id = results_by_metrics_id
-
-    def score(self, metrics: RefinementMetrics) -> EvidenceResult:
-        return self._by_id[id(metrics)]
+    ranked: list[RankedHypothesis] = []
+    for (h, res), p in zip(scored, probs):
+        close = (res.value - best_value) < close_threshold
+        ranked.append(
+            RankedHypothesis(
+                hypothesis=h, evidence=res, probability=p, close_competitor=close
+            )
+        )
+    return tuple(ranked)
 
 
 def arbitrate(
@@ -179,15 +201,15 @@ def arbitrate(
 
     # 【統合ランキング再構成 (確率再計算)】: 対象は差し替え後 evidence、非対象は bic の evidence を用い、
     #   全仮説を差し替え後 value で再ソート + softmax 再計算する (rank と同一式で一貫させる)。
-    results_by_metrics_id: dict[int, EvidenceResult] = {}
+    #   キーは hypothesis.id (metrics オブジェクト共有時の写像衝突を避ける, LOW-7)。
+    results_by_hypothesis_id: dict[str, EvidenceResult] = {}
     for r in primary:
         hid = r.hypothesis.id
-        assert r.hypothesis.metrics is not None  # rank が metrics 必須を保証済
-        results_by_metrics_id[id(r.hypothesis.metrics)] = replaced.get(hid, r.evidence)
+        results_by_hypothesis_id[hid] = replaced.get(hid, r.evidence)
 
-    reranked = rank(
+    reranked = _rerank_with_replaced(
         hypotheses,
-        _PrecomputedBackend(results_by_metrics_id),
+        results_by_hypothesis_id,
         temperature=config.temperature,
         close_threshold=config.close_threshold,
     )

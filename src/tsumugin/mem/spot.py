@@ -54,6 +54,13 @@ def run_mem_spot(
     # 【適用ガード (REQ-031)】: 推奨条件を判定するが実行は止めない・仮説除外もしない (Dara 教訓)。
     report = check_mem_applicability(verification, hypothesis_id)
 
+    # 【未知仮説 ID の fail-loud】: メンバシップ未確認の添字アクセスによる素の KeyError を、
+    #   frame_index 範囲外と同じ明示メッセージの ValueError へ統一する (契約一貫性)。
+    if hypothesis_id not in verification.joint_results:
+        raise ValueError(
+            f"hypothesis_id {hypothesis_id!r} が joint 検証結果に存在しません。"
+        )
+
     # 【MEM 入力生成】: 該当仮説の joint 検証結果から MEM 入力を組む (指定フレームのスポット)。
     joint_result = verification.joint_results[hypothesis_id]
     mem_input = build_mem_input(joint_result, probe, grid_shape=grid_shape)

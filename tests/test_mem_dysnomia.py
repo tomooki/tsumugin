@@ -166,6 +166,59 @@ def test_render_input_does_not_mutate_input():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# (G) 実行失敗 / 出力欠落の縮退 [LOW-8 回帰 / EDGE-006]
+# ---------------------------------------------------------------------------
+
+
+def test_run_converts_called_process_error_to_mem_unavailable(monkeypatch, tmp_path):
+    """バイナリ解決成功後の実行失敗 (CalledProcessError) が MEMUnavailableError へ縮退する。"""
+    import subprocess
+
+    be = DysnomiaBackend(work_dir=str(tmp_path))
+    # バイナリ解決は成功させる。
+    monkeypatch.setattr(DysnomiaBackend, "_resolve_binary", lambda self: "dysnomia")
+
+    def _boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(returncode=1, cmd=args[0] if args else "dysnomia")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    with pytest.raises(MEMUnavailableError):
+        be.run(_mem_input())
+
+
+def test_run_converts_missing_grd_to_mem_unavailable(monkeypatch, tmp_path):
+    """.grd 出力が生成されない (FileNotFoundError) 場合も MEMUnavailableError へ縮退する。"""
+    import subprocess
+
+    be = DysnomiaBackend(work_dir=str(tmp_path))
+    monkeypatch.setattr(DysnomiaBackend, "_resolve_binary", lambda self: "dysnomia")
+    # subprocess.run は成功するが .grd を生成しない (no-op)。
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b"")
+    )
+    with pytest.raises(MEMUnavailableError):
+        be.run(_mem_input())
+
+
+def test_run_execution_failure_does_not_mutate_input(monkeypatch, tmp_path):
+    """実行失敗縮退でも MEMInput を改変しない (P2)。"""
+    import subprocess
+
+    be = DysnomiaBackend(work_dir=str(tmp_path))
+    mi = _mem_input()
+    snapshot = replace(mi)
+    monkeypatch.setattr(DysnomiaBackend, "_resolve_binary", lambda self: "dysnomia")
+
+    def _boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(returncode=2, cmd="dysnomia")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    with pytest.raises(MEMUnavailableError):
+        be.run(mi)
+    assert mi == snapshot
+
+
 @pytest.mark.mem
 def test_real_dysnomia_smoke(tmp_path):
     """実 Dysnomia バイナリで MEM を実行し MEMResult を得る (未導入時 auto-skip)。"""

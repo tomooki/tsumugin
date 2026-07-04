@@ -145,6 +145,37 @@ def test_lower_only_restraint_falls_back_to_default_when_incomplete():
     assert spec.high == pytest.approx(1.0)
 
 
+def test_sigma_zero_restraint_falls_back_to_uniform_no_zerodivision():
+    # MEDIUM-4: sigma=0 は truncated_normal を作らず uniform 既定へ縮退 (ZeroDivisionError 回避)
+    from tsumugin.nested.prior import RestraintSpec, build_prior_from_restraints
+
+    priors = build_prior_from_restraints(
+        frozenset({"global.occ.na"}),
+        [RestraintSpec(param_name="global.occ.na", center=0.5, sigma=0.0)],
+    )
+    spec = priors[0]
+    assert spec.kind == "uniform"
+    # transform が例外を起こさず単調増加を保つ。
+    import math
+
+    for u in (0.0, 0.5, 1.0):
+        assert math.isfinite(spec.transform(u))
+    assert spec.transform(0.2) < spec.transform(0.8)
+
+
+def test_sigma_negative_restraint_falls_back_to_uniform_monotonic():
+    # MEDIUM-4: sigma<0 は逆 CDF 単調減少 (prior 不正) を避けて uniform 既定へ縮退
+    from tsumugin.nested.prior import RestraintSpec, build_prior_from_restraints
+
+    priors = build_prior_from_restraints(
+        frozenset({"phase0.occ.na"}),
+        [RestraintSpec(param_name="phase0.occ.na", center=0.5, sigma=-0.1)],
+    )
+    spec = priors[0]
+    assert spec.kind == "uniform"
+    assert spec.transform(0.2) < spec.transform(0.8)
+
+
 def test_empty_free_params_returns_empty():
     from tsumugin.nested.prior import build_prior_from_restraints
 

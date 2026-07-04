@@ -311,6 +311,38 @@ def test_calibrate_by_backend_deterministic():
 # ------------------------------------------------------------------
 
 
+def test_reliability_diagram_n_bins_zero_raises_value_error():
+    # LOW-5: n_bins=0 は ZeroDivisionError でなく境界契約違反の ValueError を上げる
+    from tsumugin.nested.calibration import CalibrationSample, reliability_diagram
+
+    with pytest.raises(ValueError):
+        reliability_diagram([CalibrationSample(0.5, True)], n_bins=0)
+
+
+def test_expected_calibration_error_n_bins_zero_raises_value_error():
+    # LOW-5: ECE も n_bins=0 で ValueError (fail-loud)
+    from tsumugin.nested.calibration import CalibrationSample, expected_calibration_error
+
+    with pytest.raises(ValueError):
+        expected_calibration_error([CalibrationSample(0.5, True)], n_bins=0)
+
+
+def test_calibration_n_bins_one_is_valid():
+    # LOW-5: n_bins=1 は正常 (単一ビン [0,1))
+    from tsumugin.nested.calibration import (
+        CalibrationSample,
+        expected_calibration_error,
+        reliability_diagram,
+    )
+
+    samples = [CalibrationSample(0.3, True), CalibrationSample(0.7, False)]
+    bins = reliability_diagram(samples, n_bins=1)
+    assert len(bins) == 1
+    assert bins[0].count == 2
+    # ECE も例外なく計算できる。
+    assert expected_calibration_error(samples, n_bins=1) >= 0.0
+
+
 def test_reexport_from_nested_package():
     from tsumugin.nested import (  # noqa: F401
         CalibrationReport,

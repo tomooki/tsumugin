@@ -319,6 +319,29 @@ def test_unknown_hypothesis_id_returns_error_dict():
 # ===========================================================================
 
 
+def test_non_numeric_hist_index_does_not_crash():
+    # LOW-6: hist_index="foo" (非数値) で素の ValueError クラッシュせず既定 (0) 縮退で ok を返す
+    backend = _StubMEMBackend(_mem_result())
+    session = _session(verification=_verification("H1"))
+    resp = mem_module.run_mem_boundary(
+        session, mem_backend=backend, hypothesis_id="H1", hist_index="foo"
+    )
+    # 縮退して正常応答 (他の error dict 経路と非対称なクラッシュを起こさない)。
+    assert resp["status"] == "ok"
+    assert resp["hypothesis_id"] == "H1"
+    json.dumps(resp, allow_nan=False)
+
+
+def test_non_numeric_hist_index_none_does_not_crash():
+    # LOW-6: hist_index=None も既定 0 へ縮退 (int(None) の TypeError を捕捉)
+    backend = _StubMEMBackend(_mem_result())
+    session = _session(verification=_verification("H1"))
+    resp = mem_module.run_mem_boundary(
+        session, mem_backend=backend, hypothesis_id="H1", hist_index=None
+    )
+    assert resp["status"] == "ok"
+
+
 def test_mem_run_is_non_destructive():
     # 【テスト目的】: run_mem 前後で ledger 件数不変・verify() True (子スナップショット追記のみ許容)
     backend = _StubMEMBackend(_mem_result())

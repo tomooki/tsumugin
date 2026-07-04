@@ -12,9 +12,16 @@ MAP 点 + Hessian が渡せる場合に Laplace 近似 evidence を計算する 
   と同一 (符号統一・BIC 比較の一貫性, REQ-002/003)。
 - ``score_problem(problem)``: MAP 点 + Hessian があれば Laplace 近似 evidence を計算する。
     log Z_laplace ≈ logL_map + (k/2) ln(2π) − (1/2) ln|H|
-  (k = パラメータ数, H = 負対数尤度の Hessian)。符号統一で ``value = -log Z_laplace`` を返す。
-  Hessian が特異/取得不能 (map_point/hessian が None・det≤0・非正定値・数値エラー) なら例外化せず
-  ``score(metrics)`` の BIC 近似へフォールバックする (EDGE-005/REQ-002)。
+  (k = パラメータ数 = Hessian 次元 d, H = 負対数尤度の Hessian)。符号統一で
+  ``value = -log Z_laplace`` を返す。Hessian が特異/取得不能 (map_point/hessian が None・det≤0・
+  非正定値・数値エラー) や **次元不整合** (map_point 次元 / len(priors) が Hessian 次元 d と食い違う)
+  なら例外化せず ``score(metrics)`` の BIC 近似へフォールバックする (EDGE-005/REQ-002)。
+
+**数値レビュー補足**: 上記 Laplace evidence 式は事前分布項 ``log p(θ_map)`` を省いた**相対 evidence**
+  である ((k/2)ln(2π) − (1/2)ln|H| + logL_map の形)。仮説間比較では省いた事前項が概ね相殺する前提で、
+  相対順位・確率較正の一貫性を優先する (絶対 evidence が必要な用途では別途事前項を加える)。
+  ``k`` は必ず Hessian 次元 ``d = H.shape[0]`` を用い、(k/2)ln(2π) の次元と ln|H| の次元を厳密に
+  一致させる (len(priors) や map_point 次元との食い違いによる静かなバイアスを避ける)。
 
 **フォールバックの表現 (設計判断)**: ``EvidenceResult`` は M0 定義の ``(backend, value, logz_err)``
 のみで警告フィールドを持たない。後方互換のため本型は変更しない。Laplace は点推定で誤差を持たないため
@@ -86,12 +93,21 @@ class LaplaceBackend:
             h = np.asarray(hessian, dtype=float)
             theta = np.asarray(map_point, dtype=float)
 
-            # パラメータ数 k: priors があれば len(priors)、無ければ map_point 次元
-            k = len(problem.priors) if problem.priors else int(theta.size)
-
             # 正定値判定: 対称固有値がすべて正であること (非正定値・特異は縮退)
             # np.linalg.eigvalsh は対称行列を仮定するため対称化してから評価する。
             h_sym = 0.5 * (h + h.T)
+
+            # パラメータ数 k は必ず Hessian 次元 d を使う ((k/2)ln(2π) と ln|H| の次元を一致させ、
+            # len(priors)/map_point 次元との食い違いによる静かな evidence バイアスを避ける)。
+            # 非正方 Hessian・map_point 次元不整合・len(priors) 不整合は次元不整合として BIC 縮退する。
+            if h_sym.ndim != 2 or h_sym.shape[0] != h_sym.shape[1]:
+                return self.score(problem.metrics)
+            d = int(h_sym.shape[0])
+            if int(theta.size) != d:
+                return self.score(problem.metrics)
+            if problem.priors and len(problem.priors) != d:
+                return self.score(problem.metrics)
+            k = d
             eigvals = np.linalg.eigvalsh(h_sym)
             if not np.all(eigvals > 0.0):
                 return self.score(problem.metrics)

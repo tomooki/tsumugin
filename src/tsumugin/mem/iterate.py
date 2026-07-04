@@ -17,7 +17,7 @@ MEM 密度 → F_calc 更新 → 再精密化 の MPF (Maximum-entropy / Prior /
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
@@ -69,6 +69,20 @@ class MEMRietveldResult:
     cycles: tuple[MEMRietveldCycle, ...]  # 【反復サイクル列 (追記順)】 🔵 REQ-025
     stop_reason: Literal["converged", "max_iter", "diverged", "disabled"]  # 🔵 REQ-026/107
     warnings: tuple[str, ...] = ()  # 【発散等の警告】 🔵 REQ-107
+
+
+def _with_phases(
+    joint_result: JointRefinementResult, phases: tuple[PhaseInstance, ...]
+) -> JointRefinementResult:
+    """joint_result の集約 phases を ``phases`` で差し替えた新 JointRefinementResult を返す。🔵
+
+    MPF サイクル間で再精密化済み ``current_phases`` を MEM 入力へ反映するための非破壊再構成
+    (frozen dataclass の ``replace``)。元の ``joint_result`` / ``aggregate`` / ``parent_phases``
+    は一切改変しない (P2)。``build_mem_input`` は ``aggregate.phases`` から格子を引くため、
+    ここで phases を差し替えるとサイクルごとに MEM 入力が変化する。
+    """
+    new_aggregate = replace(joint_result.aggregate, phases=phases)
+    return replace(joint_result, aggregate=new_aggregate)
 
 
 def _refine_once(
@@ -132,8 +146,11 @@ def run_mem_rietveld(
     prev_min_density: float | None = None
 
     for iteration in range(config.max_iter):
-        # 【MEM 段】: 現 phases 由来の joint 結果から MEM 入力を組み密度を計算する。
-        mem_input = build_mem_input(joint_result, probe)
+        # 【MEM 段 (MPF フィードバック)】: 現 phases (current_phases) を反映した joint 結果を
+        #   再構成して MEM 入力を組む。これによりサイクル間で lattice 等が変化し MEM 入力が変わる
+        #   (決定論・親 joint_result / parent_phases は不変, P2)。
+        cycle_joint_result = _with_phases(joint_result, current_phases)
+        mem_input = build_mem_input(cycle_joint_result, probe)
         mem_result = mem_backend.run(mem_input)
         r_factor = (
             float(mem_result.r_factor) if mem_result.r_factor is not None else 0.0

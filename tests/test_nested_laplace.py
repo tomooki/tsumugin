@@ -296,6 +296,76 @@ def test_determinism_score_problem_bitwise():
     assert repr(a) == repr(b)
 
 
+def test_score_problem_k_equals_hessian_dim_when_priors_mismatch_absent():
+    # MEDIUM-3: priors 空 (len=0) でも k は Hessian 次元 d を使う (map_point 2D と一致)
+    from tsumugin.nested.base import EvidenceProblem
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    hessian = np.diag([2.0, 8.0])  # d=2
+
+    def loglike(theta: np.ndarray) -> float:
+        return -0.5 * float(theta @ hessian @ theta)
+
+    problem = EvidenceProblem(
+        metrics=_metrics(10.0, 2, 100),
+        log_likelihood=loglike,
+        priors=(),  # 空 priors: 旧実装は k=theta.size にフォールバックしていた
+        map_point=np.zeros(2),
+        hessian=hessian,
+    )
+    res = LaplaceBackend().score_problem(problem)
+    # k は Hessian 次元 d=2 を使う (正しい Laplace 値)
+    k = 2
+    sign, logdet = np.linalg.slogdet(hessian)
+    logz = 0.0 + (k / 2.0) * math.log(2.0 * math.pi) - 0.5 * logdet
+    assert res.value == pytest.approx(-logz)
+
+
+def test_score_problem_fallback_priors_len_mismatch_hessian_dim():
+    # MEDIUM-3: len(priors)=3 ・ Hessian 2x2 の次元不整合 → BIC フォールバックへ縮退
+    from tsumugin.nested.base import EvidenceProblem, PriorSpec
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    backend = LaplaceBackend()
+    metrics = _metrics(chi2=14.0, n_params=2, n_obs=110)
+    hessian = np.diag([2.0, 8.0])  # d=2
+
+    problem = EvidenceProblem(
+        metrics=metrics,
+        log_likelihood=lambda t: 0.0,
+        priors=(
+            PriorSpec(param_name="a"),
+            PriorSpec(param_name="b"),
+            PriorSpec(param_name="c"),
+        ),  # len=3 != d=2
+        map_point=np.zeros(2),
+        hessian=hessian,
+    )
+    res = backend.score_problem(problem)
+    # 次元不整合は静かにバイアスせず BIC フォールバック (value == score(metrics).value)
+    assert res.value == pytest.approx(backend.score(metrics).value)
+
+
+def test_score_problem_fallback_map_point_dim_mismatch_hessian_dim():
+    # MEDIUM-3: map_point 3D ・ Hessian 2x2 の不整合 → BIC フォールバック
+    from tsumugin.nested.base import EvidenceProblem, PriorSpec
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    backend = LaplaceBackend()
+    metrics = _metrics(chi2=15.0, n_params=2, n_obs=130)
+    hessian = np.diag([2.0, 8.0])  # d=2
+
+    problem = EvidenceProblem(
+        metrics=metrics,
+        log_likelihood=lambda t: 0.0,
+        priors=(PriorSpec(param_name="a"), PriorSpec(param_name="b")),
+        map_point=np.zeros(3),  # 3D != d=2
+        hessian=hessian,
+    )
+    res = backend.score_problem(problem)
+    assert res.value == pytest.approx(backend.score(metrics).value)
+
+
 def test_reexport_from_nested_package():
     from tsumugin.nested import LaplaceBackend
 

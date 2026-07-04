@@ -122,6 +122,11 @@ class PriorSpec:
         uc = min(max(u, 0.0), 1.0)
         if self.kind == "uniform":
             return self.low + (self.high - self.low) * uc
+        # 【scale<=0 の縮退 (数値堅牢化)】: normal 系は scale で除算/乗算するため scale<=0 は
+        #   ZeroDivisionError (sigma=0) や逆 CDF の単調減少 (sigma<0) を招く。既存の cdf 縮退と
+        #   同方針で uniform 端点補間 [low, high] へ縮退し、単調増加・有限値・決定論を保つ (例外化しない)。
+        if self.scale <= 0.0:
+            return self.low + (self.high - self.low) * uc
         if self.kind == "normal":
             return self.loc + self.scale * _norm_ppf(uc)
         # truncated_normal: [low, high] 切断正規の逆 CDF

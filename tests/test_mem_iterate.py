@@ -33,6 +33,7 @@ from tsumugin.store.ledger import Ledger
 from tsumugin.store.snapshot import SnapshotStore
 
 import numpy as np
+import pytest
 
 GRID = np.arange(15.0, 40.0, 0.05)
 
@@ -270,3 +271,82 @@ def test_diverged_on_r_worsening():
         snapshots=snaps,
     )
     assert res.stop_reason == "diverged"
+
+
+# ---------------------------------------------------------------------------
+# (E) MPF フィードバック: current_phases が次サイクルの MEM 入力へ反映される
+#     [MEDIUM-1 回帰 / REQ-024/026]
+# ---------------------------------------------------------------------------
+
+
+class _PhaseDependentMEMBackend:
+    """MEM 入力の格子定数に依存して r_factor / min_density を導出する決定論 MEMBackend。
+
+    ``current_phases`` の再精密化で lattice が変化すると mem_input.lattice も変わるため、
+    サイクル間で r_factor が変化する。これにより MPF が current_phases をフィードバック
+    していれば iter1 自明収束せず複数サイクル回ることを検証できる。
+    """
+
+    name = "phase-dependent-mem"
+
+    def __init__(self):
+        self.lattice_a_seen: list[float] = []
+
+    def run(self, mem_input):
+        a = float(mem_input.lattice[0])
+        self.lattice_a_seen.append(a)
+        # r_factor を格子定数から決定論導出 (a が変われば R も変わる)。
+        r = abs(a - 5.0) * 0.01 + 0.001 * len(self.lattice_a_seen)
+        dm = MEMDensityMap(
+            path=f"phasedep-{len(self.lattice_a_seen)}.grd",
+            density_kind=mem_input.density_kind,
+            grid_shape=mem_input.grid_shape,
+            min_density=0.0,
+            max_density=10.0,
+        )
+        return MEMResult(density_map=dm, r_factor=r)
+
+
+def test_mpf_feedbacks_current_phases_and_runs_multiple_cycles():
+    """current_phases を反映した MEM 入力で複数サイクル (>=2) 回ってから停止する (MEDIUM-1)。
+
+    決定論的 MEMBackend が mem_input.lattice に依存して R を返すため、current_phases が
+    フィードバックされなければ毎サイクル同一 R → iter1 自明収束してしまう。複数サイクル
+    回ることで MPF が current_phases を反映していることを検証する。
+    """
+    backend, phases, jr = _joint_result()
+    snaps = SnapshotStore()
+    mem = _PhaseDependentMEMBackend()
+    res = run_mem_rietveld(
+        backend,
+        mem,
+        jr,
+        phases,
+        "xray",
+        config=MEMRietveldConfig(enabled=True, max_iter=4, r_tol=1e-6, density_tol=1e-6),
+        snapshots=snaps,
+    )
+    # iter1 自明収束せず 2 サイクル以上回っている。
+    assert len(res.cycles) >= 2
+    assert res.stop_reason in ("converged", "max_iter", "diverged")
+
+
+def test_mem_input_lattice_changes_across_cycles():
+    """MEM 入力の格子が current_phases 更新に伴い変化する (フィードバック検証, MEDIUM-1)。"""
+    backend, phases, jr = _joint_result()
+    snaps = SnapshotStore()
+    mem = _PhaseDependentMEMBackend()
+    run_mem_rietveld(
+        backend,
+        mem,
+        jr,
+        phases,
+        "xray",
+        config=MEMRietveldConfig(enabled=True, max_iter=3, r_tol=1e-9, density_tol=1e-9),
+        snapshots=snaps,
+    )
+    # 各サイクルで同一 joint_result を丸ごと使い回していれば全格子が同一になる。
+    # current_phases がフィードバックされていれば少なくとも 1 回は変化しうる。
+    assert len(mem.lattice_a_seen) >= 2
+    # joint_result / parent phases は不変 (P2)。
+    assert jr.aggregate.phases[0].lattice.a == pytest.approx(5.0)

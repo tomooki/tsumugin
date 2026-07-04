@@ -180,6 +180,24 @@ def test_spot_propagates_guard_warnings_without_exclusion():
         assert len(res.warnings) >= 1
 
 
+def test_spot_unknown_hypothesis_id_raises_value_error():
+    """未知 hypothesis_id は素の KeyError でなく明示メッセージの ValueError を上げる (MEDIUM-2)。
+
+    frame_index 範囲外の ValueError 方針と統一する (fail-loud・非一貫の解消)。
+    """
+    import pytest
+
+    backend, verification = _verification()
+    series = _series()
+    mem = _MockMEMBackend()
+    with pytest.raises(ValueError) as exc:
+        run_mem_spot(backend, mem, series, verification, "NO_SUCH_ID", 0, "xray")
+    # 明示メッセージ (対象 ID を含む) を持つ。
+    assert "NO_SUCH_ID" in str(exc.value)
+    # MEMBackend は呼ばれない (入力生成前に弾く)。
+    assert mem.calls == 0
+
+
 def test_spot_ledger_verify_stays_true():
     backend, verification = _verification()
     series = _series()

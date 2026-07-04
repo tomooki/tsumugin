@@ -78,7 +78,10 @@ def _prior_from_restraint(param_name: str, restraint: "RestraintSpec") -> PriorS
             high=restraint.upper,
         )
 
-    if restraint.center is not None and restraint.sigma is not None:
+    if restraint.center is not None and restraint.sigma is not None and restraint.sigma > 0.0:
+        # 【sigma>0 要求 (数値堅牢化)】: sigma<=0 は truncated_normal の逆 CDF で ZeroDivisionError
+        #   (sigma=0) や単調減少 (sigma<0) を招くため、truncated_normal を作らず種別既定 (uniform)
+        #   へ縮退する (指定境界は下の不完全指定分岐で尊重される)。決定論維持。
         # 切断区間は指定 lower/upper があれば優先、無ければ種別既定区間を用いる
         low = restraint.lower if restraint.lower is not None else default.low
         high = restraint.upper if restraint.upper is not None else default.high

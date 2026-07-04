@@ -79,7 +79,10 @@ def reliability_diagram(
     【ビン割当】: [0,1] を n_bins 等分し floor(p*n_bins) で割り当てる。p=1.0 は最終ビンに含める。
     【決定論】: ビンは下端昇順で返す。空ビンは count=0 で保持し (mean_predicted/observed_frequency
       は定義値 0.0)、ビン順を固定する (REQ-402/NFR-102)。
+    【境界契約 (LOW-5)】: n_bins<1 は分割不能なため ValueError で fail-loud する (ZeroDivisionError 回避)。
     """
+    if n_bins < 1:
+        raise ValueError("n_bins must be >= 1")
     width = 1.0 / n_bins
     sums = [0.0] * n_bins  # ビン内予測確率の総和
     corrects = [0] * n_bins  # ビン内正解数
@@ -118,7 +121,10 @@ def expected_calibration_error(
     """ECE = Σ (count_b / N) · |observed_freq_b − mean_predicted_b| を決定論的に計算する。🔵 REQ-016/017
 
     空サンプルは 0.0 を返す。ビンは reliability_diagram と同一分割を用いる。
+    【境界契約 (LOW-5)】: n_bins<1 は ValueError で fail-loud する (reliability_diagram と統一)。
     """
+    if n_bins < 1:
+        raise ValueError("n_bins must be >= 1")
     n = len(samples)
     if n == 0:
         return 0.0

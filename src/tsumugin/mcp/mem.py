@@ -109,7 +109,12 @@ def run_mem_boundary(
     joint_result = verification.joint_results[target_id]
 
     # 【probe 解決】: session の Frame から密度種別選択用 probe を取り出す (縮退時 "xray") 🔵 REQ-034
-    hist_index = int(params.get("hist_index", 0))  # type: ignore[arg-type]
+    #   【LOW-6】: 非数値 hist_index (例 "foo"/None) は素の ValueError/TypeError を出さず既定 0 へ
+    #   縮退する (他の error dict / _resolve_probe の fail-soft 縮退思想と対称・クラッシュしない)。
+    try:
+        hist_index = int(params.get("hist_index", 0))  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        hist_index = 0
     probe = _resolve_probe(session, frame_index, hist_index)
 
     # 【委譲 (REQ-034/EDGE-013)】: build_mem_input→mem_backend.run。未導入は error dict へ変換 🔵
