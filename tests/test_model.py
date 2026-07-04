@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import pytest
@@ -13,6 +14,7 @@ from tsumugin.model import (
     Hypothesis,
     LatticeParams,
     PhaseInstance,
+    PhaseRef,
     Project,
     RefinementMetrics,
     TofBankParams,
@@ -136,3 +138,86 @@ def test_frame_holds_xray_and_multi_bank_neutron_histograms():
     assert probes == ["xray", "neutron_cw", "neutron_tof", "neutron_tof"]
     banks = [h.bank_id for h in frame.histograms if h.probe == "neutron_tof"]
     assert banks == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# TASK-0037: PhaseRef (相 ID + 組成/元素系ヒント) + 疎結合橋渡し (M4 joint / REQ-020)
+# ---------------------------------------------------------------------------
+
+
+def test_phase_ref_construct_and_defaults():
+    # 【TC-406-07】: PhaseRef(id/formula/element_system) が生成でき既定 formula=None/element_system=() 🔵
+    ref = PhaseRef(id="LiFePO4")
+    assert ref.id == "LiFePO4"
+    assert ref.formula is None
+    assert ref.element_system == ()
+    full = PhaseRef(id="LiFePO4", formula="LiFePO4", element_system=("Fe", "Li", "O", "P"))
+    assert full.formula == "LiFePO4"
+    assert full.element_system == ("Fe", "Li", "O", "P")
+
+
+def test_phase_ref_frozen():
+    # 【TC-406-07】: PhaseRef は frozen dataclass で属性再代入不可 🔵
+    ref = PhaseRef(id="Fe2O3")
+    with pytest.raises(FrozenInstanceError):
+        ref.id = "Fe3O4"  # type: ignore[misc]
+
+
+def test_phase_ref_id_matches_phase_instance_phase_ref():
+    # 【TC-406-07】: PhaseRef.id を PhaseInstance.phase_ref と一致させ id 整合できる 🔵 REQ-020
+    inst = PhaseInstance(phase_ref="Fe2O3", lattice=LatticeParams(5, 5, 5))
+    ref = PhaseRef(id=inst.phase_ref, formula="Fe2O3")
+    assert ref.id == inst.phase_ref
+
+
+def test_phase_ref_from_phase_ref_bridges_str():
+    # 【REQ-020】: from_phase_ref(str, ...) が既存 str phase_ref から PhaseRef を橋渡し生成する 🔵
+    inst = PhaseInstance(phase_ref="LiFePO4", lattice=LatticeParams(5, 5, 5))
+    ref = PhaseRef.from_phase_ref(inst.phase_ref)
+    assert isinstance(ref, PhaseRef)
+    assert ref.id == "LiFePO4"
+    assert ref.formula is None
+    assert ref.element_system == ()
+    enriched = PhaseRef.from_phase_ref(
+        inst.phase_ref, formula="LiFePO4", element_system=("Fe", "Li", "O", "P")
+    )
+    assert enriched.id == "LiFePO4"
+    assert enriched.formula == "LiFePO4"
+    assert enriched.element_system == ("Fe", "Li", "O", "P")
+
+
+def test_phase_instance_has_no_phase_ref_object_field():
+    # 【TC-406-07 / D6】: PhaseInstance は疎結合。phase_ref は str のまま、PhaseRef フィールドを持たない 🔵
+    inst = PhaseInstance(phase_ref="Fe2O3", lattice=LatticeParams(5, 5, 5))
+    assert isinstance(inst.phase_ref, str)
+    field_names = {f.name for f in dataclasses.fields(inst)}
+    assert "phase_ref" in field_names
+    # PhaseRef 型のフィールドが PhaseInstance に混入していないこと (疎結合の別値オブジェクト)
+    assert not any(isinstance(getattr(inst, name), PhaseRef) for name in field_names)
+
+
+# ---------------------------------------------------------------------------
+# TASK-0037: MCPUnavailableError / MEMUnavailableError (TsumuginError 派生)
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_unavailable_error_hierarchy_and_raise():
+    # 【TC-407-07】: MCPUnavailableError が TsumuginError 派生で raise/except できる 🔵 REQ-102
+    from tsumugin.errors import MCPUnavailableError
+
+    assert issubclass(MCPUnavailableError, TsumuginError)
+    with pytest.raises(TsumuginError):
+        raise MCPUnavailableError("mcp extra 未導入")
+    with pytest.raises(MCPUnavailableError):
+        raise MCPUnavailableError("mcp extra 未導入")
+
+
+def test_mem_unavailable_error_hierarchy_and_raise():
+    # 【TC-407-08】: MEMUnavailableError が TsumuginError 派生で raise/except できる 🔵 REQ-101
+    from tsumugin.errors import MEMUnavailableError
+
+    assert issubclass(MEMUnavailableError, TsumuginError)
+    with pytest.raises(TsumuginError):
+        raise MEMUnavailableError("MEM は M5 で提供予定")
+    with pytest.raises(MEMUnavailableError):
+        raise MEMUnavailableError("MEM は M5 で提供予定")

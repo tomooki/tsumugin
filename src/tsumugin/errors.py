@@ -42,3 +42,20 @@ class WebUIUnavailableError(TsumuginError):
     ``serve`` の遅延 import 契約 (D6): ``import tsumugin.webui.app`` 自体は web 未導入でも成功し、
     ``create_app`` / ``serve`` の呼び出し時点でのみ本例外を送出して extra 導入手順を案内する。
     """
+
+
+class MCPUnavailableError(TsumuginError):
+    """optional extra ``mcp`` (mcp SDK) 未導入環境で MCP サーバ起動 API を要求したとき。🔵 REQ-102
+
+    ``WebUIUnavailableError`` と対称。``import tsumugin.mcp.server`` 自体は成功し、
+    ``create_mcp_server`` / ``serve_stdio`` 呼び出し時にのみ本例外を送出して extra 導入を案内する。
+    ツール実処理関数 (``mcp.tools``) は SDK 非依存で本例外に依存せず動作する。
+    """
+
+
+class MEMUnavailableError(TsumuginError):
+    """MEM バックエンド (M5 / FR-601〜606) 未実装のまま ``run_mem`` を要求したとき。🔵 REQ-101
+
+    破壊的操作を伴わず「M5 で提供予定」を明示する。既定は本例外送出だが、呼び出し側スキーマ互換の
+    プレースホルダ dict 応答へ切替可能 (D9)。
+    """
