@@ -97,10 +97,11 @@ class Trajectory:
         :returns: 書き出しに成功した CSV パス (入力 path と同一の str) 🔵
         """
         # 【相 ref の確定】: 全フレームの phase_ref と lifecycles キーの和集合を sorted 昇順で固定 (REQ-402) 🔵
+        #   ヘッダ・行の双方で同一 phase_refs を用い、_sorted_phase_refs の二重計算を避ける 🔵
         phase_refs = self._sorted_phase_refs()
 
-        # 【ヘッダ構築】: 公開 API header() に委譲 (列順の単一情報源化 / operando 結合出力と共有) 🔵
-        header = self.header()
+        # 【ヘッダ構築】: 列順の単一情報源 _header_columns に委譲 (operando 結合出力と共有) 🔵
+        header = self._header_columns(phase_refs)
 
         # 【書き出し】: newline="" / utf-8 で改行・エンコーディング差を排除しバイト同一を担保 (REQ-402) 🔵
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -117,11 +118,20 @@ class Trajectory:
 
         【機能概要】: ``to_csv`` と同一の列レイアウト (共通列 + 各相 ref の格子/scale/wt_frac/lifecycle) を
           外部 (operando の結合出力 ``combined_csv`` 等) が私有定数へ触れずに取得できるようにする。
-        【実装方針】: 相 ref は ``_sorted_phase_refs`` の sorted 昇順で固定し列順を決定論化する。
+        【実装方針】: 相 ref は ``_sorted_phase_refs`` の sorted 昇順で固定し、列構築は _header_columns に委譲する。
         🔵 信頼性レベル: to_csv のヘッダ構築ロジックと同一 (単一情報源化) / Issue #5 の私有横断 import 是正方針。
         """
+        return self._header_columns(self._sorted_phase_refs())
+
+    def _header_columns(self, phase_refs: list[str]) -> list[str]:
+        """与えた相 ref 順から CSV ヘッダ列 (共通列 + 各相 8 列) を組み立てる (列順の単一情報源)。
+
+        【実装方針】: header() と to_csv が同一の列レイアウトを共有し、かつ to_csv が phase_refs を一度だけ
+          計算して行生成と使い回せるよう、列構築のみを純関数的に切り出す。
+        🔵 信頼性レベル: 旧 to_csv/header のインライン構築と同一。
+        """
         columns = list(_FRAME_COMMON_COLUMNS)
-        for ref in self._sorted_phase_refs():
+        for ref in phase_refs:
             columns.extend(f"{ref}.{suffix}" for suffix in _PHASE_FIELD_SUFFIXES)
         return columns
 

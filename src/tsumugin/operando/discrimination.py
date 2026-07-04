@@ -38,6 +38,7 @@ from typing import Literal
 import numpy as np
 
 from ..backends.base import RefinementBackend, RefinementModel, RefinementResult, param_name
+from ..evidence.ic import BICBackend
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
 from ..multistart import MultistartConfig, MultistartEngine, MultistartResult
 from ..selection.review_queue import ReviewQueue
@@ -46,6 +47,10 @@ from ..store.ledger import Ledger
 from .cell_phases import FixedPhaseSpec, fixed_free_suffixes
 
 __all__ = ["DiscriminationConfig", "DiscriminationResult", "discriminate_interval"]
+
+# 【bic 算出源】: 区間 Σbic は各フレーム RefinementResult を RefinementMetrics 化し同一 BICBackend で
+#   評価する (segmentation._frame_bic と同一の単一情報源)。bic 式の重複実装を避けバックエンド間で統一 🔵
+_BIC = BICBackend()
 
 # 【仮説 A の解放 suffix】: 単相 warm-start 逐次 direct refine は scale + 格子 a/b/c を解放する
 #   (逐次エンジンの探索モード相当 / 設計 D4)。A の evidence 用モデル DOF もこの 4 個。🔵
@@ -225,6 +230,12 @@ def discriminate_interval(
     #   や食い違う発散) と、除外フレームの bic 分だけ ΔBIC が偏り誤確定しうる (CLAUDE.md「backend 失敗
     #   =chi2=inf」経路)。有限フレーム集合が両仮説で完全一致し双方非空のときのみ Σbic 比較を信頼する
     #   (件数一致は必要条件であって十分条件ではない / segmentation の全滅=inf と対称)。🔵
+    #   【設計判断 (保守側)】: 単相 A が二相領域フレームで「発散 (chi2=inf)」すると集合不一致で undecided へ
+    #   倒れ、two_phase を取り逃す過保護面がある。ただし発散 (inf) は数値破綻であり「モデル不適合」とは別事象で、
+    #   二相の真のシグナルは A が当該フレームで「高いが有限な chi2」を返す形で現れ、それは Σbic に正しく計上
+    #   されて two_phase 判別に効く。よって発散フレームは自動確定せず人間レビューへ回す保守側が Dara 教訓
+    #   (過剰主張を避ける) に整合する。発散フレームへ有限ペナルティを与える Σbic 化 (交差集合比較) は M-later
+    #   の精緻化候補 (ペナルティ量の仕様確定が要る)。🟡
     comparable = seq_a.finite_frames == seq_b.finite_frames and not a_failed
     verdict, escalations, queue_reason = _decide_verdict(
         delta, config.close_threshold, both_high_r,
@@ -523,19 +534,30 @@ def _decide_verdict(
 def _model_bic(
     result: RefinementResult, active_count: int, model_suffixes: tuple[str, ...]
 ) -> float:
-    """釣り合いモデル DOF で bic (= chi2 + k·ln(max(n_obs,1))) を算出する (BICBackend と同一算法)。
+    """釣り合いモデル DOF で bic を算出する (BICBackend へ委譲し bic 式を単一情報源化)。
 
     【機能概要】: BIC のペナルティ次数 k を、バックエンドが報告する実解放数ではなく設計モデル DOF で数える:
       活物質相は各 ``len(model_suffixes)`` 個、固定相は各 1 個 (scale のみ / fixed_free_suffixes) とする。
+      k を n_params に載せた RefinementMetrics を組み ``BICBackend.score().value`` を返す (式は evidence/ic.py
+      の単一実装、segmentation._frame_bic と同一パターン)。
     【実装方針】: 仮説 A (相あたり scale+格子 3 = 4) と 2 相 B (2 端成分 × (scale,wt) = 4) の複雑度を釣り合わせ、
       ΔBIC = Σbic_A − Σbic_B からペナルティ項を相殺させて判別を適合度 (chi2) ベースにする (設計の意図)。
       wt は参照バックエンドで不活性だが端成分分率という実モデル DOF のため evidence 上は 1 自由度と数える。
+      gof は sequential/engine.py と同式で補完 (BICBackend は使わないが RefinementMetrics 契約を満たす)。
+      有限 chi2 のフレームでのみ呼ばれる (呼び側が非有限を除外)。
     🔵 信頼性レベル: evidence/ic.py BICBackend (BIC = chi2 + k·ln(max(n_obs,1))) / note.md §6-2 に依拠。
     """
     n_fixed = max(len(result.phases) - active_count, 0)
     # 【モデル DOF】: 活物質は model_suffixes 個 / 固定相は scale の 1 個 (fixed_free_suffixes) 🔵
     k = active_count * len(model_suffixes) + n_fixed
-    return float(result.chi2) + k * math.log(max(int(result.n_obs), 1))
+    chi2 = float(result.chi2)
+    dof = max(int(result.n_obs) - k, 1)
+    gof = math.sqrt(chi2 / dof) if math.isfinite(chi2) and chi2 >= 0.0 else float("inf")
+    metrics = RefinementMetrics(
+        rwp=float(result.rwp), gof=gof, chi2=chi2, n_obs=int(result.n_obs), n_params=k
+    )
+    # 【単一情報源】: bic 式は BICBackend にのみ存在させ、ΔBIC 比較の一貫性を担保する 🔵
+    return float(_BIC.score(metrics).value)
 
 
 def _build_endpoint_hypothesis(
