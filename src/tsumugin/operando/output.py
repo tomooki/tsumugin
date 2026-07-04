@@ -18,16 +18,21 @@ from dataclasses import dataclass
 #   共有葉モジュール _json.finite_or_none へ委譲する (TASK-0023 の重複統合と整合 / 完了条件5)。🔵
 from tsumugin._json import finite_or_none
 from tsumugin.operando.echem import EchemData
-from tsumugin.sequential.trajectory import (
-    _FRAME_COMMON_COLUMNS,
-    _PHASE_FIELD_SUFFIXES,
-    _num_cell,
-)
 from tsumugin.sequential.trajectory import Trajectory as _Trajectory
 
 # 【echem 列レイアウト】: CSV に並べる echem フィールドの決定論順 (echem._FIELD_KINDS と同順)。
 # 空 tuple の列は追加しない (echem.to_channels の空縮退と同流儀 / B3)。🔵
 _ECHEM_FIELDS: tuple[str, ...] = ("voltage", "current", "capacity", "composition_x")
+
+
+def _num_cell(value: float | None) -> str:
+    """echem 数値を CSV セルへ変換する (有限は str、None/非有限 inf/NaN は空欄)。
+
+    【実装方針】: 非有限純化は共有 _json.finite_or_none へ委譲し (Issue #5 単一情報源)、trajectory の
+      同名 private 実装へレイヤ横断 import しない。有限判定後は元の int/float 表現を str 化して保つ。
+    🔵 信頼性レベル: trajectory._num_cell と同一セマンティクス / _json.finite_or_none に依拠。
+    """
+    return "" if finite_or_none(value) is None else str(value)
 
 
 @dataclass(frozen=True)
@@ -133,17 +138,10 @@ def combined_csv(trajectory: _Trajectory, echem: EchemData, path: str) -> str:
     @param path: 出力 CSV パス (戻り値と一致)
     @returns: 書き出した CSV パス
     """
-    # 【trajectory 列の確定】: 既存 Trajectory と同一の相 ref 昇順・列順を再利用 (決定論) 🔵
-    phase_refs = trajectory._sorted_phase_refs()
-    traj_header = list(_FRAME_COMMON_COLUMNS)
-    for ref in phase_refs:
-        traj_header.extend(f"{ref}.{suffix}" for suffix in _PHASE_FIELD_SUFFIXES)
-
+    # 【trajectory 列/行の確定】: 公開 API 経由で列順・行値を取得 (私有シンボルへ横断依存しない / Issue #5) 🔵
+    traj_header = trajectory.header()
     # 【trajectory 行の索引化】: frame_index → 決定論セル列 (Trajectory の非有限空欄化を流用) 🔵
-    traj_rows: dict[int, list[str]] = {
-        record.frame_index: trajectory._row_values(record, phase_refs)
-        for record in trajectory.records
-    }
+    traj_rows: dict[int, list[str]] = trajectory.rows_by_frame()
     # 【trajectory 欠損行の空欄テンプレート】: 外部結合で echem のみ存在するフレーム用 🔵
     traj_blank = [""] * len(traj_header)
 

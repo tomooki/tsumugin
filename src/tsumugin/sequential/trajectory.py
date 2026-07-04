@@ -99,10 +99,8 @@ class Trajectory:
         # 【相 ref の確定】: 全フレームの phase_ref と lifecycles キーの和集合を sorted 昇順で固定 (REQ-402) 🔵
         phase_refs = self._sorted_phase_refs()
 
-        # 【ヘッダ構築】: フレーム共通列 + 各相の 8 列を明示順で連結 (列順を決定論に固定) 🔵
-        header = list(_FRAME_COMMON_COLUMNS)
-        for ref in phase_refs:
-            header.extend(f"{ref}.{suffix}" for suffix in _PHASE_FIELD_SUFFIXES)
+        # 【ヘッダ構築】: 公開 API header() に委譲 (列順の単一情報源化 / operando 結合出力と共有) 🔵
+        header = self.header()
 
         # 【書き出し】: newline="" / utf-8 で改行・エンコーディング差を排除しバイト同一を担保 (REQ-402) 🔵
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -113,6 +111,33 @@ class Trajectory:
 
         # 【結果返却】: 書き出しパスを str で返す (export_gpx と同一契約) 🔵
         return str(path)
+
+    def header(self) -> list[str]:
+        """CSV ヘッダ (フレーム共通列 + 相ごと 8 列) を決定論順で返す公開 API。
+
+        【機能概要】: ``to_csv`` と同一の列レイアウト (共通列 + 各相 ref の格子/scale/wt_frac/lifecycle) を
+          外部 (operando の結合出力 ``combined_csv`` 等) が私有定数へ触れずに取得できるようにする。
+        【実装方針】: 相 ref は ``_sorted_phase_refs`` の sorted 昇順で固定し列順を決定論化する。
+        🔵 信頼性レベル: to_csv のヘッダ構築ロジックと同一 (単一情報源化) / Issue #5 の私有横断 import 是正方針。
+        """
+        columns = list(_FRAME_COMMON_COLUMNS)
+        for ref in self._sorted_phase_refs():
+            columns.extend(f"{ref}.{suffix}" for suffix in _PHASE_FIELD_SUFFIXES)
+        return columns
+
+    def rows_by_frame(self) -> dict[int, list[str]]:
+        """frame_index → CSV セル列 (``header()`` と同順) の決定論マップを返す公開 API。
+
+        【機能概要】: 外部結合 (operando ``combined_csv``) が frame_index をキーに trajectory 行を引けるよう、
+          各 ``FrameRecord`` の決定論セル列を frame_index で索引化して返す (非有限/None は空欄化済み)。
+        【実装方針】: 列順は ``header()`` と一致 (同一 ``_sorted_phase_refs`` を用いる)。frame_index は契約上一意。
+        🔵 信頼性レベル: _row_values の決定論写像を再利用 / Issue #5 の私有横断 import 是正方針。
+        """
+        phase_refs = self._sorted_phase_refs()
+        return {
+            record.frame_index: self._row_values(record, phase_refs)
+            for record in self.records
+        }
 
     def _sorted_phase_refs(self) -> list[str]:
         """出力対象の相 ref を phases ∪ lifecycles.keys() の sorted 昇順で返す。
