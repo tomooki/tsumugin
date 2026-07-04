@@ -17,6 +17,14 @@ from .arbitration import (
     arbitrate,
 )
 from .base import EvidenceProblem, PriorSpec, ProblemAwareEvidenceBackend
+from .calibration import (
+    CalibrationReport,
+    CalibrationSample,
+    ReliabilityBin,
+    calibrate_by_backend,
+    expected_calibration_error,
+    reliability_diagram,
+)
 from .laplace import LaplaceBackend
 from .prior import RestraintSpec, build_prior_from_restraints
 from .sampler import NestedBackend, NestedConfig, NestedOutcome
@@ -25,6 +33,8 @@ __all__ = [
     "ArbitratedHypothesis",
     "ArbitrationConfig",
     "ArbitrationResult",
+    "CalibrationReport",
+    "CalibrationSample",
     "EvidenceProblem",
     "LaplaceBackend",
     "NestedBackend",
@@ -32,7 +42,11 @@ __all__ = [
     "NestedOutcome",
     "PriorSpec",
     "ProblemAwareEvidenceBackend",
+    "ReliabilityBin",
     "RestraintSpec",
     "arbitrate",
     "build_prior_from_restraints",
+    "calibrate_by_backend",
+    "expected_calibration_error",
+    "reliability_diagram",
 ]
