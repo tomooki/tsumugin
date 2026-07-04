@@ -6,7 +6,7 @@ mp_api のオブジェクト形状を上位 (provider / 相同定コア) から�
 
 【遅延 import 契約】: ``import tsumugin.mp.client`` はコア (numpy) のみで成功する。``MPRestClient``
   の構築も mp_api を import しない (キー検証のみ)。mp_api を要求するのは ``search`` の呼び出し時点
-  のみで、未導入なら ``MPUnavailableError`` を送出する。API キーは環境変数 ``MATERIALS_PROJECT_AIP``。
+  のみで、未導入なら ``MPUnavailableError`` を送出する。API キーは環境変数 ``MATERIALS_PROJECT_API``。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from ..errors import MPUnavailableError
 
 __all__ = ["MPClient", "MPEntry", "MPRestClient"]
 
-_API_KEY_ENV = "MATERIALS_PROJECT_AIP"
+_API_KEY_ENV = "MATERIALS_PROJECT_API"
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ class MPRestClient:
     """mp-api ``MPRester`` を遅延 import する実クライアント。🔵 FR-101
 
     Args:
-        api_key: MP API キー。None なら環境変数 ``MATERIALS_PROJECT_AIP`` を読む。
+        api_key: MP API キー。None なら環境変数 ``MATERIALS_PROJECT_API`` を読む。
         include_subsystems: True で全部分系 (単体相・下位系を含む) をクエリする。相同定では
             試料が純金属や下位酸化物を含み得るため既定 True。False で完全系のみに限定する。
         _env: 環境変数マッピング (テスト注入用, 既定は ``os.environ``)。
@@ -72,7 +72,7 @@ class MPRestClient:
     ) -> None:
         env = os.environ if _env is None else _env
         raw = api_key if api_key is not None else env.get(_API_KEY_ENV)
-        # .env は "MATERIALS_PROJECT_AIP = key" 形式で前後空白が入り得るため strip 後に検証する。
+        # .env は "MATERIALS_PROJECT_API = key" 形式で前後空白が入り得るため strip 後に検証する。
         # 空白のみのキーを空文字で通過させず、構築時点で分かりやすく失敗させる。
         key = raw.strip() if raw is not None else None
         if not key:

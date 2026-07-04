@@ -81,15 +81,15 @@ def test_mp_rest_client_requires_api_key():
 def test_mp_rest_client_reads_env_key():
     from tsumugin.mp.client import MPRestClient
 
-    client = MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_AIP": "secret"})
+    client = MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_API": "secret"})
     assert client.api_key == "secret"
 
 
 def test_mp_rest_client_strips_env_key_whitespace():
-    # .env は "MATERIALS_PROJECT_AIP = key" 形式で前後空白が入り得る
+    # .env は "MATERIALS_PROJECT_API = key" 形式で前後空白が入り得る
     from tsumugin.mp.client import MPRestClient
 
-    client = MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_AIP": "  secret  "})
+    client = MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_API": "  secret  "})
     assert client.api_key == "secret"
 
 
@@ -121,7 +121,7 @@ def test_mp_rest_client_rejects_whitespace_only_key():
     from tsumugin.mp.client import MPRestClient
 
     with pytest.raises(ValueError):
-        MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_AIP": "   "})
+        MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_API": "   "})
 
 
 def test_doc_to_entry_normalizes_mp_api_doc():

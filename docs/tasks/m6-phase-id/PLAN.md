@@ -19,7 +19,7 @@
     `ReferenceProvider` Protocol + `identify_phases` オーケストレーション。
   - `tsumugin.mp` — Materials Project 境界 (遅延 import: mp-api/pymatgen)。MP クエリ +
     XRD 生成 + StructureMatcher 重複排除 (FR-102) + hull フィルタ (FR-103)。`MPReferenceProvider`。
-- **新 extra `mp`** (pymatgen + mp-api)、新 `MPUnavailableError`、env キー `MATERIALS_PROJECT_AIP`。
+- **新 extra `mp`** (pymatgen + mp-api)、新 `MPUnavailableError`、env キー `MATERIALS_PROJECT_API`。
 
 ## 段階計画 (TDD: Red → Green → Refactor)
 ### Phase 1 (コア・ネットワーク/pymatgen 不要で完全テスト可能) ← 本セッション
@@ -30,7 +30,7 @@
 - Fake provider で 1:1 テスト。決定論 (score 降順・同点 phase_id 昇順)。
 
 ### Phase 2 (MP 境界)
-- `mp/client.py`: `MPRestClient` (遅延 import mp_api.MPRester, `MATERIALS_PROJECT_AIP` 読込) + `MPClient` Protocol。
+- `mp/client.py`: `MPRestClient` (遅延 import mp_api.MPRester, `MATERIALS_PROJECT_API` 読込) + `MPClient` Protocol。
 - `mp/xrd.py`: pymatgen `XRDCalculator` で構造 → `Peak` 列、`StructureMatcher` 重複排除。
 - `mp/provider.py`: `MPReferenceProvider(ReferenceProvider)` — 元素系クエリ + hull + dedup + キャッシュ (FR-105)。
 - extra `mp` 導入、`MPUnavailableError`。

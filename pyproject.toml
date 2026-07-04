@@ -46,7 +46,7 @@ oed = [
 # M6 相同定 (相ライブラリ供給元): Materials Project 取り込み + 実構造 XRD 生成。
 # ``tsumugin.mp`` は本 extra を遅延 import し、未導入時は MPUnavailableError へ縮退する。
 # 相同定コア (``tsumugin.reference.identify_phases``) と ReferenceProvider Protocol は
-# 本 extra に非依存でコア (numpy) のみで動作する。API キーは環境変数 MATERIALS_PROJECT_AIP。
+# 本 extra に非依存でコア (numpy) のみで動作する。API キーは環境変数 MATERIALS_PROJECT_API。
 mp = [
     "pymatgen>=2024.3",
     "mp-api>=0.41",
