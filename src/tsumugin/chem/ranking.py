@@ -61,6 +61,12 @@ def _hypothesis_score(phase_scores: Sequence[float]) -> float:
     (combine_plausibility の module 合成と整合し [0,1] に収まり相数に依存しにくい)。相順は
     入力順で決定論だが幾何平均は順序不変。相が 0 個の仮説は降格なし (s=1.0) とする。
     s_phase=0 が 1 つでもあれば幾何平均も 0 (降格伝播・除外はしない)。
+
+    【compose との対応 (F7)】: 幾何平均 + 0 伝播 + 空→1.0 のロジックは compose.combine_plausibility
+      と同型だが、compose は PlausibilityResult を .source でソート/加重合成する一方、本関数は
+      素の float を等重み合成する (相スコアに一意 source が無く、委譲すると source 衝突・並べ替えで
+      挙動が変わりうる)。決定論・0 伝播・降格のみを厳密維持するため委譲せず、同ロジックは compose
+      と対で維持する。
     """
     if not phase_scores:
         return 1.0
@@ -97,6 +103,10 @@ def rank_with_plausibility(
 
     【BIC 一貫性】: evidence 値 (BIC) 自体は補正しない。RankedHypothesis.evidence は素の値のまま。
     【決定論】: module id 昇順・相順は入力順 (REQ-402)。降格スコアと理由を ledger 記録。
+    【close_competitor の意味 (F6)】: RankedHypothesis.close_competitor は素の evidence 基準
+      (最良仮説との BIC 差 < close_threshold) で rank() が確定させたフラグであり、降格後の
+      probability 降順並びとは独立である。降格再ソートで並び順は変わりうるが close_competitor は
+      再計算しないため、フラグと最終順位は乖離しうる (evidence 基準の僅差性を素のまま保持する)。
     """
     # 【素の rank】: 順位・確率 p・evidence 値・close_competitor を取得 (metrics None は ValueError) 🔵
     plain = rank(

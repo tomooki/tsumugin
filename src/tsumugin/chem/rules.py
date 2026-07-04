@@ -42,7 +42,9 @@ def _elemental_alkali_symbol(phase: PhaseRef) -> str | None:
     # formula が単体判定に使えない場合のみ element_system で補完する。
     # formula が非空 (=何らかの組成が示されている) なら単体でないと判断し降格しない。
     if not formula and len(phase.element_system) == 1:
-        symbol = phase.element_system[0]
+        # 【trim (F10)】: element_system 要素も formula 同様に前後空白を除去してから照合し、
+        #   " Li" のような空白混じり記号でも単体判定を成立させる (照合の一貫性) 🔵
+        symbol = phase.element_system[0].strip()
         if symbol in _ALKALI_METALS:
             return symbol
     return None

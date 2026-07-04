@@ -490,3 +490,141 @@ def test_export_gpx_converts_gsas_unavailable_to_error_dict(monkeypatch):
     result = export_gpx(session, "unused.gpx", "hyp-0000")
     assert result["status"] == "error"
     assert result["error"] == "gsas_unavailable"
+
+
+# ===========================================================================
+# セルフレビュー修正の回帰テスト (F1〜F4)
+# ===========================================================================
+
+
+def _failed_ranked(hyp_id: str) -> RankedHypothesis:
+    """chi2=inf の失敗仮説 (evidence.value=inf / metrics.rwp=inf) を作る。"""
+    metrics = RefinementMetrics(
+        rwp=float("inf"),
+        gof=float("inf"),
+        chi2=float("inf"),
+        n_obs=100,
+        n_params=5,
+        evidence={"bic": float("inf")},
+    )
+    h = Hypothesis(id=hyp_id, phases=(_phase(ref=hyp_id),), metrics=metrics, status="refined")
+    ev = EvidenceResult(backend="bic", value=float("inf"))
+    return RankedHypothesis(hypothesis=h, evidence=ev, probability=0.0, close_competitor=False)
+
+
+def test_compare_hypotheses_finite_or_none_serializable_with_failed_hypothesis():
+    # 【F1】: 失敗仮説 (evidence.value=inf) で compare_hypotheses の応答が
+    #   json.dumps(allow_nan=False) で例外なく直列化でき、該当数値が None であること。
+    import json
+
+    ranked = [_failed_ranked("hyp-0000"), _ranked("hyp-0001", 20.0)]
+    session = _session(ranked=ranked)
+    resp = compare_hypotheses(session, ["hyp-0000", "hyp-0001"])
+    # 直列化がクラッシュしない (allow_nan=False)
+    json.dumps(resp, allow_nan=False)
+    failed_row = next(r for r in resp["compared"] if r["id"] == "hyp-0000")
+    assert failed_row["evidence"]["value"] is None
+
+
+def test_submit_single_finite_or_none_serializable_with_failed_rwp(monkeypatch):
+    # 【F1】: submit(single) が失敗 rwp=inf を None 化し allow_nan=False で直列化できること。
+    import json
+
+    from tsumugin.mcp import tools as t
+
+    class _Analysis:
+        ranked = (_failed_ranked("hyp-0000"),)
+
+    def fake_analyze(two_theta, intensity, candidate_phase_sets, **kwargs):
+        return _Analysis()
+
+    monkeypatch.setattr(t, "analyze_single_pattern", fake_analyze)
+
+    session = _session()
+    tt, intensity = _grid()
+    resp = submit_analysis(session, tt, intensity, [[_phase()]], reason="fail")
+    json.dumps(resp, allow_nan=False)
+    assert resp["mode"] == "single"
+    assert resp["ranked"][0]["rwp"] is None
+
+
+def test_accept_unknown_id_returns_error_dict():
+    # 【F2】: 未知 id で accept が error dict を返しクラッシュしないこと。
+    ranked = [_ranked("hyp-0000", 10.0)]
+    session = _session(mode="agent", ranked=ranked)
+    result = accept_hypothesis(session, "hyp-unknown", by="agent")
+    assert result["status"] == "error"
+    assert result["error"] == "unknown_hypothesis"
+
+
+def test_revert_unknown_id_returns_error_dict():
+    # 【F2】: 未 accept id で revert が error dict を返しクラッシュしないこと。
+    ranked = [_ranked("hyp-0000", 10.0)]
+    session = _session(mode="agent", ranked=ranked)
+    result = revert(session, "hyp-0000", note="never accepted")
+    assert result["status"] == "error"
+    assert result["error"] == "not_accepted"
+
+
+def test_submit_joint_flattens_multiphase_candidate_sets(monkeypatch):
+    # 【F3】: 多相セット ([[A,B],[C]]) の全相が探索候補へ平坦化されて渡ること。
+    from tsumugin.joint.model import JointHistogram
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real_search = t.HypothesisTreeSearch
+
+    class _SpySearch(real_search):  # type: ignore[valid-type,misc]
+        def search(self, two_theta, intensity, candidates, **kwargs):
+            captured["refs"] = [c.phase_ref for c in candidates]
+            return super().search(two_theta, intensity, candidates, **kwargs)
+
+    monkeypatch.setattr(t, "HypothesisTreeSearch", _SpySearch)
+
+    session = _session()
+    tt, intensity = _grid()
+    hists = (JointHistogram(two_theta=tt, intensity=intensity, probe="xray"),)
+    phase_sets = [[_phase(ref="A"), _phase(ref="B")], [_phase(ref="C")]]
+    submit_analysis(session, tt, intensity, phase_sets, histograms=hists, reason="joint")
+    assert captured["refs"] == ["A", "B", "C"]
+
+
+def test_submit_joint_skips_empty_candidate_set_without_indexerror(monkeypatch):
+    # 【F3】: 空セットを含んでもクラッシュ (IndexError) せず、非空相のみ渡ること。
+    from tsumugin.joint.model import JointHistogram
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real_search = t.HypothesisTreeSearch
+
+    class _SpySearch(real_search):  # type: ignore[valid-type,misc]
+        def search(self, two_theta, intensity, candidates, **kwargs):
+            captured["refs"] = [c.phase_ref for c in candidates]
+            return super().search(two_theta, intensity, candidates, **kwargs)
+
+    monkeypatch.setattr(t, "HypothesisTreeSearch", _SpySearch)
+
+    session = _session()
+    tt, intensity = _grid()
+    hists = (JointHistogram(two_theta=tt, intensity=intensity, probe="xray"),)
+    phase_sets = [[], [_phase(ref="A")]]
+    # 空セット先頭でも IndexError にならない
+    submit_analysis(session, tt, intensity, phase_sets, histograms=hists, reason="joint")
+    assert captured["refs"] == ["A"]
+
+
+def test_list_hypotheses_empty_fallback_has_six_keys():
+    # 【F4】: search_result None 時も to_summary と同じ 6 キーが揃うこと。
+    session = _session()  # ranked=None → search_result None
+    result = list_hypotheses(session)
+    assert set(result.keys()) == {
+        "ranked",
+        "unknown_phase_flag",
+        "unmatched_observed",
+        "extra_calculated",
+        "warnings",
+        "n_hypotheses",
+    }
+    assert result["ranked"] == []
+    assert result["unknown_phase_flag"] is False
+    assert result["n_hypotheses"] == 0

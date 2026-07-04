@@ -130,6 +130,14 @@ def test_alkali_metal_in_air_demotes_by_element_system():
     assert rule.score(phase, ctx).score < 1.0
 
 
+def test_alkali_metal_in_air_demotes_with_whitespace_element_system():
+    # 【F10】: element_system 要素も formula 同様に strip してから照合し、" Li" でも降格する。
+    rule = AlkaliMetalInAirRule()
+    phase = PhaseRef(id="li_metal", element_system=(" Li",))
+    ctx = SynthesisContext(atmosphere="air")
+    assert rule.score(phase, ctx).score < 1.0
+
+
 @pytest.mark.parametrize("metal", ["Li", "Na", "K", "Rb", "Cs"])
 def test_alkali_metal_in_air_all_five_metals(metal):
     # 【目的】: Li/Na/K/Rb/Cs すべて大気下単体で降格 (REQ-017) 🔵

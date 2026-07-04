@@ -239,3 +239,35 @@ def test_core_imports_numpy_only():
                 imported_roots.add(node.module.split(".")[0])
     forbidden = {"xraylib", "scipy", "pandas"}
     assert not (imported_roots & forbidden)
+
+
+# ---------------------------------------------------------------------------
+# F8: 散乱長/Z テーブルのキー乖離を固定する回帰テスト
+# ---------------------------------------------------------------------------
+
+
+def test_neutron_b_and_xray_z_tables_have_identical_keys():
+    # 【F8】: _contrast は両テーブルを参照する。キー集合が一致していることを不変条件として固定
+    #   (片方のみ収録の元素があると _both_tables_have で片側 skip され契約が乖離するため)。
+    assert set(NEUTRON_B_TABLE.keys()) == set(XRAY_Z_TABLE.keys())
+
+
+def test_recommend_skips_site_when_element_missing_from_a_table():
+    # 【F8】: 片方のテーブルにしか無い元素対のサイトは KeyError を出さず skip される。
+    #   XRAY_Z_TABLE には有るが NEUTRON_B_TABLE には無い擬似元素を site_elements に与える。
+    from tsumugin.joint import contrast as contrast_mod
+
+    # 実在キー "Fe" と、Z にだけ存在させた擬似元素 "Xx" の対を作る。
+    original_z = dict(XRAY_Z_TABLE)
+    patched_z = dict(original_z)
+    patched_z["Xx"] = 99  # b テーブルには追加しない → 片側欠損
+    contrast_mod.XRAY_Z_TABLE = patched_z  # type: ignore[assignment]
+    try:
+        phase = _phase(occ={"M": 1.0})
+        model = _joint_model(("xray", "neutron_cw"), (phase,))
+        config = ContrastConfig(site_elements={"M": ("Fe", "Xx")})
+        # KeyError を送出せず空推奨 (当該サイト skip) になること。
+        recs = recommend_occupancy_release((phase,), model, config=config)
+        assert recs == ()
+    finally:
+        contrast_mod.XRAY_Z_TABLE = original_z  # type: ignore[assignment]

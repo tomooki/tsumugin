@@ -229,10 +229,35 @@ def _build_aggregate(
 
     - chi2 = Σ (w_k · chi2_k)。失敗ヒストがあれば inf へ伝播。
     - rwp  = 重み付き結合 Rwp。
+
+    【chi2 規約 (F12)】: 集約 chi2 = Σ(w_k·chi2_k) は GSAS 慣行 (ヒスト重み hist_weight を chi2 に
+    加重) に従う。一方 rwp は各ヒスト Rwp を分母正規化した比として結合する (重みで加重した比)。
+    hist_weight は chi2 側に効き、rwp は分母正規化で吸収されるため二者の役割は分離している。
+    **同一 weighting 下では** 全仮説が同じ w_k を共有するため、BIC = chi2 + k·ln(n) の比較は
+    chi2 の順序を保存し、weighting に対して決定論・一貫である (BIC 比較の一貫性)。
     - phases = 共有構造 (±σ はバックエンドが phases に持たせた LatticeParams.sigma を保持)。
     - globals = "hist{k}.rwp"/"hist{k}.scale"/"hist{k}.chi2" (ヒスト別値, REQ-006)。
     - warnings = 失敗ヒスト index を明示 (EDGE-001)。
+
+    【0 ヒストグラム (F11)】: histograms 空 (n_hist==0) は精密化対象が無く、chi2=0/converged=True
+    の「沈黙成功」は誤り。chi2=inf + warning + converged=False の非成功結果へ落とし、ガードレール
+    (chi2 非有限を失敗として扱う下流) に処理させる (staged.py の chi2=inf 非例外化と整合)。
     """
+    # 【0 ヒストグラム防御 (F11)】: 対象無しは成功でなく非成功 (chi2=inf) として扱う 🔵
+    if not per_results:
+        return RefinementResult(
+            phases=phases,
+            chi2=float("inf"),
+            rwp=float("inf"),
+            n_obs=0,
+            n_params=0,
+            converged=False,
+            n_cycles=1,
+            free_params=frozenset(),
+            globals={},
+            warnings=("joint: histograms が空 (n_hist=0)。精密化対象が無く chi2=inf へ落とす",),
+        )
+
     any_failed = bool(failed)
     if any_failed:
         chi2 = float("inf")

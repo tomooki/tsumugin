@@ -23,9 +23,11 @@ from typing import Literal, Mapping, Sequence
 
 import numpy as np
 
+from .._json import finite_or_none
 from ..backends.base import RefinementBackend
 from ..errors import GSASUnavailableError
 from ..evidence.base import EvidenceBackend
+from ..evidence.ic import BICBackend
 from ..evidence.ranking import rank
 from ..export.gpx import export_gpx as _export_gpx
 from ..joint.model import JointHistogram
@@ -101,8 +103,20 @@ def submit_analysis(
 
     if histograms:
         # 【joint 経路】: プライマリパターンで探索 → 生存仮説のみ joint 検証精密化 (FR-245) 🔵
+        # 【候補平坦化 (F3)】: search() はフラットな候補相列を取る。多相セットを ps[0] で
+        #   捨てず全セットの全相を順序保存で平坦化し、phase_ref 重複を除去して渡す。空セットは
+        #   自然に寄与ゼロで skip され IndexError を起こさない (多相 joint 探索の候補欠落を防ぐ) 🔵
+        flat_candidates: list[PhaseInstance] = []
+        seen_refs: set[str] = set()
+        for ps in candidate_phase_sets:
+            for phase in ps:
+                ref = phase.phase_ref
+                if ref in seen_refs:
+                    continue
+                seen_refs.add(ref)
+                flat_candidates.append(phase)
         search = HypothesisTreeSearch(session.backend, evidence=session.evidence)
-        search_result = search.search(two_theta, intensity, [ps[0] for ps in candidate_phase_sets])
+        search_result = search.search(two_theta, intensity, flat_candidates)
         verification = verify_survivors(
             session.backend, search_result, histograms, evidence=session.evidence
         )
@@ -128,8 +142,10 @@ def submit_analysis(
                 {
                     "id": rk.hypothesis.id,
                     "probability": float(rk.probability),
+                    # 【有限化 (F1)】: 失敗仮説の rwp は inf。json.dumps(allow_nan=False) が
+                    #   クラッシュしないよう to_summary と同じ finite_or_none で None 化する 🔵
                     "rwp": (
-                        float(rk.hypothesis.metrics.rwp)
+                        finite_or_none(rk.hypothesis.metrics.rwp)
                         if rk.hypothesis.metrics is not None
                         else None
                     ),
@@ -157,11 +173,21 @@ def list_hypotheses(session: AnalysisSession) -> dict:
 
     【委譲】: ``session.search_result.to_summary()`` の /api/result スキーマ準拠 dict を返す。
       直近の探索結果が無い場合は空一覧 dict を返す (縮退・例外化しない)。
+    【空フォールバック (F4)】: search_result 不在時も to_summary と同じ 6 キー
+      (ranked/unknown_phase_flag/unmatched_observed/extra_calculated/warnings/n_hypotheses)
+      を揃えた縮退 dict を返す (スキーマ整合・下流の KeyError 防止)。
     【テスト対応】: test_list_hypotheses_delegates_to_search_result_summary。
     🔵 信頼性レベル: interfaces.py mcp/tools 節 / tree.py to_summary に依拠。
     """
     if session.search_result is None:
-        return {"ranked": [], "n_hypotheses": 0}
+        return {
+            "ranked": [],
+            "unknown_phase_flag": False,
+            "unmatched_observed": [],
+            "extra_calculated": [],
+            "warnings": [],
+            "n_hypotheses": 0,
+        }
     return session.search_result.to_summary()
 
 
@@ -183,21 +209,20 @@ def compare_hypotheses(session: AnalysisSession, hypothesis_ids: Sequence[str]) 
     ]
     if not hypotheses:
         return {"compared": []}
-    # 【evidence 再ランク】: session 注入 evidence (未指定は tree 側と同じ BIC 既定に委ねる) 🔵
-    backend = session.evidence
-    if backend is None:
-        from ..evidence.ic import BICBackend
-
-        backend = BICBackend()
+    # 【evidence 再ランク (F5)】: session 注入 evidence を単一情報源で既定 BIC へフォールバック
+    #   (既存パターン ``session.evidence or BICBackend()`` に統一・関数内 import を除去) 🔵
+    backend = session.evidence or BICBackend()
     ranked = rank(hypotheses, backend)
     return {
         "compared": [
             {
                 "id": rk.hypothesis.id,
-                "probability": float(rk.probability),
+                # 【有限化 (F1)】: 失敗仮説では probability/evidence.value が非有限になりうる。
+                #   json.dumps(allow_nan=False) クラッシュを防ぐため finite_or_none で None 化 🔵
+                "probability": finite_or_none(rk.probability),
                 "evidence": {
                     "backend": str(rk.evidence.backend),
-                    "value": float(rk.evidence.value),
+                    "value": finite_or_none(rk.evidence.value),
                 },
                 "close_competitor": bool(rk.close_competitor),
             }
@@ -227,6 +252,11 @@ def accept_hypothesis(
     if session.search_result is None:
         return {"status": "error", "error": "no_search_result"}
 
+    # 【未知 id 防御 (F2)】: 未知 id は engine.accept が KeyError を送出し MCP をクラッシュさせる。
+    #   委譲前に探索結果メンバか確認し、未知なら error dict へ変換する (export_gpx/compare と対称) 🔵
+    if hypothesis_id not in session.search_result.hypotheses:
+        return {"status": "error", "error": "unknown_hypothesis"}
+
     # 【委譲】: FinalSelectionEngine.accept が mode を同一適用し accepted 化を記録する 🔵 REQ-023
     accepted = session.selection.accept(session.search_result, hypothesis_id, by=by)
     # 【理由付き記録】: MCP 経由の accept を追記する (selection 側 selection_accept と二重記録) 🔵 REQ-025
@@ -245,6 +275,10 @@ def revert(session: AnalysisSession, hypothesis_id: str, *, note: str = "") -> d
     【テスト対応】: test_revert_supersedes_and_keeps_registry_count / test_revert_records_and_verifies。
     🔵 信頼性レベル: interfaces.py mcp/tools 節 / selection/engine.revert に依拠。
     """
+    # 【未 accept id 防御 (F2)】: engine.revert は未 accept id で KeyError を送出し MCP を
+    #   クラッシュさせる。accept 済みレジストリを確認し、未登録なら error dict へ変換する 🔵
+    if hypothesis_id not in session.selection.accepted:
+        return {"status": "error", "error": "not_accepted"}
     # 【委譲】: superseded 化のみ (追記型・件数不減, P2) 🔵 REQ-024
     superseded = session.selection.revert(hypothesis_id, note=note)
     # 【理由付き記録】: MCP 経由の revert を追記する (追記のみ・削除しない) 🔵 REQ-025

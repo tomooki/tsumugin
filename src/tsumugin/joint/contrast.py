@@ -134,7 +134,10 @@ class ContrastConfig:
     判定対象サイトが無く、常に空推奨を返す。
     """
 
-    contrast_threshold: float = 0.15  # 【|f_norm - b_norm| 閾値】 (D4)
+    # 【|f_norm - b_norm| 閾値】(D4): 正規化差 (f_norm, b_norm ともに [0,1] 近傍) の典型スケールに対し、
+    #   コントラストが有意と言える経験的下限。0.15 は X線/中性子で片方のみ寄与が大きい元素対
+    #   (例 Li/O のように中性子で b 符号差、X線で Z 差が小) を拾える保守値。ベンチで較正予定 (D4)。
+    contrast_threshold: float = 0.15
     site_elements: Mapping[str, tuple[str, str]] = field(default_factory=dict)
 
 
@@ -150,6 +153,15 @@ def _is_joint(model: JointRefinementModel) -> bool:
         return False
     probes = {h.probe for h in histograms}
     return len(probes) >= 2
+
+
+def _both_tables_have(element: str) -> bool:
+    """element が Z / b 両テーブルに収録されているか (F8)。
+
+    ``_contrast`` は ``XRAY_Z_TABLE`` と ``NEUTRON_B_TABLE`` の双方を参照するため、片方のみ
+    収録の元素は判定不能であり、事前確認して KeyError を回避するための不変条件ヘルパ。
+    """
+    return element in XRAY_Z_TABLE and element in NEUTRON_B_TABLE
 
 
 def _contrast(elem_a: str, elem_b: str) -> float:
@@ -202,7 +214,9 @@ def recommend_occupancy_release(
                 continue  # 元素対未供給のサイトは判定対象外
             # 【元素記号昇順で正規化】: (A,B) を昇順へ (REQ-402) 🔵
             elem_a, elem_b = sorted(pair)
-            if elem_a not in XRAY_Z_TABLE or elem_b not in XRAY_Z_TABLE:
+            # 【両テーブル収録確認 (F8)】: _contrast は Z / b 両テーブルを参照するため、どちらか
+            #   一方でも未収録なら判定不能につきスキップし KeyError を回避する 🔵
+            if not _both_tables_have(elem_a) or not _both_tables_have(elem_b):
                 continue  # テーブル未収録元素は判定不能につきスキップ
             contrast = _contrast(elem_a, elem_b)
             # 【閾値判定】: 未満は提案せず・警告なし (REQ-103/EDGE-003) 🔵

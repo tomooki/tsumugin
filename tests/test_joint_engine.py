@@ -322,3 +322,46 @@ def test_refine_joint_gsasii_smoke():
     result = refine_joint(backend, model, max_cycles=1)
     assert isinstance(result, RefinementResult)
     assert result.n_obs > 0
+
+
+# ---------------------------------------------------------------------------
+# F11: 0 ヒストグラムは沈黙成功でなく chi2=inf (非成功) へ落とす
+# ---------------------------------------------------------------------------
+
+
+def test_refine_joint_empty_histograms_returns_non_finite_failure():
+    # 【F11】: histograms 空 (n_hist=0) は chi2=0/converged=True の成功ではなく chi2=inf の
+    #   非成功結果を返し、warning を添えること (ガードレールに失敗として処理させる)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    model = JointRefinementModel(
+        phases=(_phase(),),
+        histograms=(),
+    )
+    result = refine_joint(backend, model)
+    assert not math.isfinite(result.chi2)
+    assert result.converged is False
+    assert result.warnings  # 空 histograms の warning が付く
+
+
+# ---------------------------------------------------------------------------
+# F12: empirical 重み下でも 2 仮説の BIC 比較順位が weighting に対し決定論・一貫
+# ---------------------------------------------------------------------------
+
+
+def test_empirical_weighting_bic_order_is_deterministic_and_consistent():
+    # 【F12】: empirical (w≠1) weighting で 2 仮説を比較しても、集約 chi2 の大小関係が
+    #   weighting に対し決定論・一貫であること (同一 weighting 下で順序保存)。
+    weighting = HistogramWeighting(mode="empirical", empirical_weights={0: 2.0, 1: 0.5})
+
+    # 良い仮説 (真値近い start_a) と悪い仮説 (真値から大きく外す) を同一 weighting で評価。
+    good_model, backend = _two_histogram_model(truth_a=5.03, start_a=5.02)
+    bad_model, _ = _two_histogram_model(truth_a=5.03, start_a=5.30)
+
+    good1 = refine_joint(backend, good_model, weighting=weighting)
+    good2 = refine_joint(backend, good_model, weighting=weighting)
+    bad = refine_joint(backend, bad_model, weighting=weighting)
+
+    # 決定論: 同入力・同 weighting でビット同一 chi2。
+    assert good1.chi2 == good2.chi2
+    # 一貫性: 良い仮説の集約 chi2 は悪い仮説より小さい (weighting 下でも順序保存)。
+    assert good1.chi2 <= bad.chi2
