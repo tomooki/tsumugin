@@ -13,10 +13,14 @@ from __future__ import annotations
 from .base import EvidenceProblem, PriorSpec, ProblemAwareEvidenceBackend
 from .laplace import LaplaceBackend
 from .prior import RestraintSpec, build_prior_from_restraints
+from .sampler import NestedBackend, NestedConfig, NestedOutcome
 
 __all__ = [
     "EvidenceProblem",
     "LaplaceBackend",
+    "NestedBackend",
+    "NestedConfig",
+    "NestedOutcome",
     "PriorSpec",
     "ProblemAwareEvidenceBackend",
     "RestraintSpec",
