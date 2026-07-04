@@ -18,6 +18,7 @@ from .chem import (
 from .errors import (
     MCPUnavailableError,
     MEMUnavailableError,
+    MPUnavailableError,
     NestedUnavailableError,
     OEDUnavailableError,
 )
@@ -184,6 +185,18 @@ from .oed import (
     propose_measurements,
 )
 
+# M6 相同定 (reference コア + Materials Project 境界)。コアは numpy のみ、mp は pymatgen/mp-api を
+# 遅延 import する (import 時点では引き込まない)。相ライブラリ供給元の実処理関数
+# (simulate_reference_peaks / group_equivalent) と MPClient Protocol は mp パッケージ側公開に留める。
+from .mp import MPEntry, MPReferenceProvider, MPRestClient
+from .reference import (
+    PhaseIdentification,
+    PhaseMatch,
+    ReferencePhase,
+    ReferenceProvider,
+    identify_phases,
+)
+
 __version__ = "0.1.0"
 
 # アルファベット昇順を維持する (公開面の一貫性。test_m1〜m5_symbols_in_dunder_all_and_sorted が固定)。
@@ -247,6 +260,10 @@ __all__ = [
     "MEMRietveldConfig",
     "MEMRietveldResult",
     "MEMUnavailableError",
+    "MPEntry",
+    "MPReferenceProvider",
+    "MPRestClient",
+    "MPUnavailableError",
     "MuCalculator",
     "MultistartConfig",
     "MultistartEngine",
@@ -265,14 +282,18 @@ __all__ = [
     "PersistentSnapshotStore",
     "PerturbationSpec",
     "PhaseCandidate",
+    "PhaseIdentification",
     "PhaseInstance",
     "PhaseLifecycle",
+    "PhaseMatch",
     "PhaseRef",
     "PlausibilityResult",
     "PriorSpec",
     "ProblemAwareEvidenceBackend",
     "Project",
     "RankedHypothesis",
+    "ReferencePhase",
+    "ReferenceProvider",
     "RefinementBackend",
     "RefinementMetrics",
     "RefinementModel",
@@ -324,6 +345,7 @@ __all__ = [
     "fit_thermal_baseline",
     "fixed_free_suffixes",
     "generate_starts",
+    "identify_phases",
     "phase_from_dict",
     "phase_to_dict",
     "propose_measurements",

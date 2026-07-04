@@ -85,6 +85,52 @@ def test_mp_rest_client_reads_env_key():
     assert client.api_key == "secret"
 
 
+def test_mp_rest_client_strips_env_key_whitespace():
+    # .env は "MATERIALS_PROJECT_AIP = key" 形式で前後空白が入り得る
+    from tsumugin.mp.client import MPRestClient
+
+    client = MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_AIP": "  secret  "})
+    assert client.api_key == "secret"
+
+
+def test_doc_to_entry_normalizes_mp_api_doc():
+    # mp_api summary doc の形状 (属性アクセス) を MPEntry へ正規化する (ネットワーク不要)
+    import types
+
+    from tsumugin.mp.client import MPEntry, _doc_to_entry
+
+    doc = types.SimpleNamespace(
+        material_id="mp-19017",
+        formula_pretty="LiFePO4",
+        elements=["Li", "Fe", "P", "O"],
+        structure="STRUCT",
+        energy_above_hull=0.0,
+        symmetry=types.SimpleNamespace(symbol="Pnma"),
+    )
+    entry = _doc_to_entry(doc)
+    assert isinstance(entry, MPEntry)
+    assert entry.material_id == "mp-19017"
+    assert entry.formula == "LiFePO4"
+    assert entry.element_system == ("Fe", "Li", "O", "P")  # 昇順に正規化
+    assert entry.structure == "STRUCT"
+    assert entry.energy_above_hull == 0.0
+    assert entry.spacegroup == "Pnma"
+
+
+def test_doc_to_entry_handles_missing_fields():
+    import types
+
+    from tsumugin.mp.client import _doc_to_entry
+
+    doc = types.SimpleNamespace()  # 全フィールド欠落
+    entry = _doc_to_entry(doc)
+    assert entry.material_id == ""
+    assert entry.element_system == ()
+    assert entry.energy_above_hull is None
+    assert entry.spacegroup is None
+    assert entry.structure is None
+
+
 # --- MPReferenceProvider (DI フェイクでコア結線を検証) ---------------------
 
 
@@ -226,3 +272,27 @@ def test_simulate_reference_peaks_deterministic_nacl():
     assert all(isinstance(p, Peak) for p in peaks_1)
     # NaCl (111) 反射は 2θ ≈ 27.3° (Cu Kα) 付近
     assert any(26.0 < p.position < 29.0 for p in peaks_1)
+
+
+@pytest.mark.mp
+def test_group_equivalent_dedups_identical_structures():
+    from pymatgen.core import Lattice, Structure
+
+    from tsumugin.mp.xrd import group_equivalent
+
+    nacl_a = Structure(Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+    nacl_b = Structure(Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+    other = Structure(Lattice.cubic(4.0), ["Fe"], [[0, 0, 0]])
+
+    groups = group_equivalent([nacl_a, nacl_b, other])
+    # index 0,1 (等価 NaCl) が同一グループ、2 (Fe) は単独。代表 (最小 index) 昇順。
+    assert (0, 1) in groups
+    assert (2,) in groups
+    assert len(groups) == 2
+
+
+@pytest.mark.mp
+def test_group_equivalent_empty_is_empty():
+    from tsumugin.mp.xrd import group_equivalent
+
+    assert group_equivalent([]) == ()
