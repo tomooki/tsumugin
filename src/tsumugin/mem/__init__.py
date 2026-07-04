@@ -15,6 +15,7 @@ from .base import (
     MEMDensityMap,
     MEMResult,
 )
+from .dysnomia import DysnomiaBackend
 from .inputgen import (
     MEMInput,
     StructureFactor,
@@ -25,6 +26,7 @@ from .inputgen import (
 __all__ = [
     "BondPathDensity",
     "DensityCrossSection",
+    "DysnomiaBackend",
     "MEMBackend",
     "MEMDensityMap",
     "MEMInput",

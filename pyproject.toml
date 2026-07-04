@@ -48,6 +48,7 @@ markers = [
     "gsas: GSAS-II がインストールされている環境でのみ実行する contract test",
     "mcp: MCP SDK (optional extra mcp) がインストールされている環境でのみ実行する",
     "nested: 外部サンプラ (optional extra nested: dynesty/ultranest) がインストールされている環境でのみ実行する",
+    "mem: MEM 外部バイナリ (Dysnomia) がインストールされている環境でのみ実行する",
 ]
 
 [tool.ruff]
