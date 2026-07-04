@@ -20,6 +20,7 @@ from .model import (
     JointRefinementResult,
     PerHistogramMetrics,
 )
+from .verification import JointVerificationResult, verify_survivors
 from .weights import HistogramWeighting
 
 __all__ = [
@@ -30,9 +31,11 @@ __all__ = [
     "JointHistogram",
     "JointRefinementModel",
     "JointRefinementResult",
+    "JointVerificationResult",
     "OccupancyReleaseRecommendation",
     "PerHistogramMetrics",
     "recommend_occupancy_release",
     "refine_joint",
     "refine_joint_detailed",
+    "verify_survivors",
 ]
