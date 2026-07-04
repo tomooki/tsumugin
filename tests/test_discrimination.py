@@ -161,6 +161,8 @@ class ControlledFakeBackend:
       chi2 は A 優位に振る (通常なら decisive) が、高 R でエスカレーションが優先されることを検証する。
     - diverge_multistart モード: マルチスタート呼び出し (max_cycles==ms_max_cycles) にのみ chi2=inf を
       返し逐次は正常値 (全滅の縮退 / TC-E03)。
+    - fail_single モード: 単相 (仮説 A / n_phases<=1) の全 refine に chi2=inf/rwp=inf を返し、2 相 (仮説 B)
+      は正常値。片仮説の backend 全失敗で有限フレーム数が食い違う縮退を注入する (TC-E05 / 比較可能性ガード)。
     - threshold モード: chi2_single/chi2_two を陽に与え ΔBIC=chi2_single−chi2_two を厳密制御 (TC-BV01)。
 
     n_obs=model.intensity.size / n_params=0 (BIC ペナルティを 0 に固定し ΔBIC=chi2 差へ帰着) を返し、
@@ -205,6 +207,9 @@ class ControlledFakeBackend:
             rwp = 50.0  # 両仮説高 R (>30.0) を強制
         if self.mode == "diverge_multistart" and is_multistart:
             chi2 = float("inf")  # マルチスタート start をすべて発散させる
+            rwp = float("inf")
+        if self.mode == "fail_single" and n_phases <= 1:
+            chi2 = float("inf")  # 仮説 A (単相) の逐次・マルチスタートを全失敗させる
             rwp = float("inf")
 
         return RefinementResult(
@@ -462,6 +467,30 @@ def test_all_multistart_diverged_degrades_with_warning():
     assert result.multistart_single.warnings != ()  # 全滅を示す警告 (MultistartEngine 由来) 🟡
     assert result.warnings != ()  # 【確認内容】: 判別結果へ警告が伝播/包含される 🟡
     assert result.verdict == "solid_solution"  # 逐次 Σbic 比較から通常どおり決まる (元仮説維持) 🟡
+
+
+def test_partial_backend_failure_does_not_confirm_a_verdict():
+    # 【テスト目的】: 片仮説 (A) の backend 全失敗で Σbic 比較が不能になっても誤確定せず undecided + エスカレーション
+    #   へ縮退することを確認 (比較可能性ガード)。
+    # 【テスト内容】: ControlledFakeBackend(fail_single) で単相 (仮説 A) の全 refine に chi2=inf を注入し、
+    #   2 相 (仮説 B) は有限値。A の Σbic は非有限フレーム除外で 0 (最小) に、B は正 → 素朴な ΔBIC は
+    #   A 優位に見えるが、有限フレーム数が食い違う (A=0, B=n) ため判別を確定してはならない。
+    # 【期待される動作】: 例外なし、verdict=="undecided"、escalations に incomparable_evidence、
+    #   queue に incomparable_evidence 通知、delta<0 (素朴 Σbic では A が優位に見えるトラップ)。
+    # 🔵 信頼性レベル: CLAUDE.md「backend 失敗=chi2=inf をガードレールで処理」/ segmentation の全滅=inf 対称に依拠。
+
+    # 【テストデータ準備】: 仮説 A を全失敗・仮説 B は有限 chi2 を返す fail_single フェイク + ReviewQueue
+    backend = ControlledFakeBackend(mode="fail_single", chi2_single=10.0, chi2_two=100.0)
+    queue = ReviewQueue()
+
+    # 【実際の処理実行】: 片仮説の全失敗を例外化せず、Σbic 比較不能として undecided へ縮退
+    result = discriminate_interval(backend, _fake_series(), (0, 3), (PHASE_A0,), queue=queue)
+
+    # 【結果検証】: 誤確定の回避・エスカレーション・Queue 通知・トラップの明示
+    assert result.verdict == "undecided"  # 【確認内容】: 比較不能で verdict を確定しない 🔵
+    assert any("incomparable_evidence" in msg for msg in result.escalations)  # 縮退理由の明示 🔵
+    assert any(item.reason == "incomparable_evidence" for item in queue.unresolved)  # Queue 通知 🔵
+    assert result.delta_evidence < 0  # 【確認内容】: 素朴 Σbic では A 優位に見える (ガードが無ければ誤確定) 🔵
 
 
 def test_invalid_frame_range_raises_value_error():

@@ -196,8 +196,19 @@ def discriminate_interval(
         seq_a.representative_rwp > config.high_r_threshold
         and seq_b.representative_rwp > config.high_r_threshold
     )
+    # 【比較可能性ガード】: bic はフレームあたり chi2 + k·ln(n) >= 0 のため、非有限フレームを Σbic から除外
+    #   するほど和が小さく (= 良く) なる。片仮説の backend 失敗で有限フレーム数が食い違う (または 0) と、
+    #   失敗した仮説が不当に低い Σbic で「優位」に見えて誤確定しうる (CLAUDE.md「backend 失敗=chi2=inf」経路)。
+    #   有限フレーム数が両仮説で一致し双方 >0 のときのみ Σbic 比較を信頼する (segmentation の全滅=inf と対称)。🔵
+    comparable = (
+        seq_a.n_finite > 0 and seq_b.n_finite > 0 and seq_a.n_finite == seq_b.n_finite
+    )
     verdict, escalations, queue_reason = _decide_verdict(
-        delta, config.close_threshold, both_high_r, seq_a.representative_rwp, seq_b.representative_rwp
+        delta, config.close_threshold, both_high_r,
+        seq_a.representative_rwp, seq_b.representative_rwp,
+        comparable=comparable,
+        n_finite_single=seq_a.n_finite,
+        n_finite_two_phase=seq_b.n_finite,
     )
 
     # ---- ReviewQueue 通知 (提供時のみ・ブロックしない) -----------------------------------
@@ -426,16 +437,22 @@ def _decide_verdict(
     both_high_r: bool,
     rwp_single: float,
     rwp_two_phase: float,
+    *,
+    comparable: bool,
+    n_finite_single: int,
+    n_finite_two_phase: int,
 ) -> tuple[Literal["solid_solution", "two_phase", "undecided"], tuple[str, ...], str | None]:
     """ΔBIC と両仮説高 R から verdict・エスカレーション文字列・Queue 通知 reason を決める。
 
     【実装方針】: (1) 両仮説高 R (EDGE-005) を最優先で判定し「判別なし」= undecided + all_high_r へ縮退、
-      (2) ΔBIC ≤ −閾値 → solid_solution、(3) ΔBIC ≥ +閾値 → two_phase (いずれも閉境界 >=/<=)、
-      (4) |ΔBIC| < 閾値 → 僅差 undecided + close_competitor。verdict Literal は 3 値のみのため両仮説高 R
-      の「判別しない」は undecided + エスカレーションで表現する (contract 整合)。
+      (2) Σbic の比較可能性ガード (有限フレーム数の不一致/皆無 → undecided + incomparable_evidence)、
+      (3) ΔBIC ≤ −閾値 → solid_solution、(4) ΔBIC ≥ +閾値 → two_phase (いずれも閉境界 >=/<=)、
+      (5) |ΔBIC| < 閾値 → 僅差 undecided + close_competitor。verdict Literal は 3 値のみのため両仮説高 R /
+      比較不能の「判別しない」は undecided + エスカレーションで表現する (contract 整合)。
     【テスト対応】: TC-N01/N02 (明瞭判別・escalations 空) / TC-E01 (僅差) / TC-E02 (両仮説高 R) /
-      TC-BV01 (閉境界)。
-    🟡 信頼性レベル: note.md §6-1/6-2 (verdict 符号規約・EDGE-005 表現) に依拠。
+      TC-E05 (片仮説の部分/全失敗で Σbic 比較不能) / TC-BV01 (閉境界)。
+    🟡 信頼性レベル: note.md §6-1/6-2 (verdict 符号規約・EDGE-005 表現) に依拠。比較可能性ガードは
+      CLAUDE.md「backend 失敗=chi2=inf」不変条件 + segmentation の全滅=inf 対称から導出 🔵。
 
     @returns: (verdict, escalations タプル, Queue 通知 reason または None)。
     """
@@ -446,6 +463,16 @@ def _decide_verdict(
             f"高 R 閾値を超過しました。未知相の疑いがあり判別を確定しません。"
         )
         return "undecided", (message,), "all_high_r"
+
+    # 【比較可能性ガード】: 片仮説の backend 失敗で有限フレーム数が食い違う/皆無だと、非有限フレーム除外が
+    #   Σbic を不当に下げて誤確定を招く。Σbic 比較を信頼せず undecided へ縮退しエスカレーションする 🔵
+    if not comparable:
+        message = (
+            f"incomparable_evidence: 有限フレーム数が不一致または皆無 "
+            f"(single={n_finite_single}, two_phase={n_finite_two_phase}) のため Σbic 比較が信頼できず "
+            f"判別を確定しません (backend の精密化失敗の疑い)。"
+        )
+        return "undecided", (message,), "incomparable_evidence"
 
     # 【明瞭判別】: ΔBIC = Σbic_A − Σbic_B。bic は小さいほど良く、閉境界 (>=/<=) で確定側とする 🔵
     if delta <= -close_threshold:
