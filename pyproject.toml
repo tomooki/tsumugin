@@ -26,6 +26,23 @@ web = [
 mcp = [
     "mcp>=1.0",
 ]
+# M5 nested sampling (階層的裁定の再裁定バックエンド): dynesty を主とする外部サンプラ。
+# ``nested.sampler`` は本 extra を遅延 import し、未導入時は NestedUnavailableError へ縮退して
+# Laplace evidence へフォールバックする (較正・裁定はコア numpy のみで動作する)。
+nested = [
+    "dynesty>=2.1",
+]
+# M5 MEM (最大エントロピー法) バックエンド: 実ソルバ Dysnomia は外部バイナリで PyPI 非公開のため
+# ここには runtime python 依存のみを置く (現状なし)。Dysnomia 本体は別途バイナリ導入し PATH を通す。
+# ``DysnomiaBackend`` は実行時にバイナリを起動し、未検出時は MEMUnavailableError へ縮退する。
+mem = [
+]
+# M5 OED (最適実験計画) の獲得関数接続: PyBOED (pyboed)。pyboed は PyPI 未公開のため
+# ここには runtime python 依存のみを置く (現状なし)。pyboed 本体は別途 (ソース/私設 index から)
+# 導入する。``oed.pyboed.acquire`` は本 extra を遅延 import し、未導入時は OEDUnavailableError へ
+# 縮退する (v1 の提案生成 propose_measurements は本 extra に非依存でコアのみで動作する)。
+oed = [
+]
 
 [dependency-groups]
 dev = [
@@ -49,6 +66,7 @@ markers = [
     "mcp: MCP SDK (optional extra mcp) がインストールされている環境でのみ実行する",
     "nested: 外部サンプラ (optional extra nested: dynesty/ultranest) がインストールされている環境でのみ実行する",
     "mem: MEM 外部バイナリ (Dysnomia) がインストールされている環境でのみ実行する",
+    "oed: OED 獲得関数 (optional extra oed: pyboed) がインストールされている環境でのみ実行する",
 ]
 
 [tool.ruff]

@@ -1,4 +1,4 @@
-"""Tsumugin — 多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0 + M1 + M2 + M3 + M4)."""
+"""Tsumugin — 多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0 + M1 + M2 + M3 + M4 + M5)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from .chem import (
     combine_plausibility,
     rank_with_plausibility,
 )
-from .errors import MCPUnavailableError, MEMUnavailableError
+from .errors import (
+    MCPUnavailableError,
+    MEMUnavailableError,
+    NestedUnavailableError,
+    OEDUnavailableError,
+)
 from .evidence.ic import AICBackend, BICBackend
 from .evidence.ranking import RankedHypothesis, rank
 from .export import export_gpx
@@ -130,23 +135,78 @@ from .store import (
     phase_to_dict,
 )
 
+# 【M5 公開面統合 (REQ-404 / TASK-0058)】: nested/mem/oed のコア公開シンボル 40 個を is-同一実体で
+# トップレベルへ集約する。実サンプラ (dynesty/ultranest)・実バイナリ (Dysnomia)・pyboed は各境界の
+# 関数内/遅延 import に隔離されているため、この re-export はコア import (numpy のみ) を維持する
+# (NestedBackend/DysnomiaBackend/acquire を載せても extra を引き込まない, REQ-403)。
+from .mem import (
+    BondPathDensity,
+    DensityCrossSection,
+    DysnomiaBackend,
+    MEMApplicabilityReport,
+    MEMBackend,
+    MEMDensityMap,
+    MEMInput,
+    MEMResult,
+    MEMRietveldConfig,
+    MEMRietveldResult,
+    StructureFactor,
+    build_mem_input,
+    check_mem_applicability,
+    extract_structure_factors,
+    run_mem_rietveld,
+    run_mem_spot,
+)
+from .nested import (
+    ArbitratedHypothesis,
+    ArbitrationConfig,
+    ArbitrationResult,
+    CalibrationReport,
+    CalibrationSample,
+    EvidenceProblem,
+    LaplaceBackend,
+    NestedBackend,
+    NestedConfig,
+    NestedOutcome,
+    PriorSpec,
+    ProblemAwareEvidenceBackend,
+    ReliabilityBin,
+    RestraintSpec,
+    arbitrate,
+    build_prior_from_restraints,
+    calibrate_by_backend,
+    expected_calibration_error,
+    reliability_diagram,
+)
+from .oed import (
+    OEDProposal,
+    acquire,
+    propose_measurements,
+)
+
 __version__ = "0.1.0"
 
-# アルファベット昇順を維持する (公開面の一貫性。test_m1/m2/m3/m4_symbols_in_dunder_all_and_sorted が固定)。
-# M4 (joint/chem/mcp/model.PhaseRef/TofBankParams/errors.MCP・MEMUnavailableError) 分は非破壊追記。
-# 既存 M0/M1/M2/M3 公開面は不変 (REQ-404)。
+# アルファベット昇順を維持する (公開面の一貫性。test_m1〜m5_symbols_in_dunder_all_and_sorted が固定)。
+# M5 (nested/mem/oed の 40 シンボル + errors.Nested・OEDUnavailableError) 分は非破壊追記。
+# 既存 M0/M1/M2/M3/M4 公開面 (111 シンボル) は不変 (REQ-404)。合計 151 シンボル。
 __all__ = [
     "AICBackend",
     "AbsorptionConfig",
     "AlkaliMetalInAirRule",
     "AnalysisResult",
     "AnalysisSession",
+    "ArbitratedHypothesis",
+    "ArbitrationConfig",
+    "ArbitrationResult",
     "BICBackend",
     "BasinInfo",
     "BeamConfig",
     "BiologicMprLoader",
+    "BondPathDensity",
     "BranchComparison",
     "CELL_PHASE_PRESETS",
+    "CalibrationReport",
+    "CalibrationSample",
     "CellConfig",
     "CellLayer",
     "ChangepointConfig",
@@ -154,10 +214,13 @@ __all__ = [
     "ChemPlausibility",
     "ContrastConfig",
     "Decision",
+    "DensityCrossSection",
     "DiscriminationConfig",
     "DiscriminationResult",
+    "DysnomiaBackend",
     "EchemData",
     "EchemLoader",
+    "EvidenceProblem",
     "ExternalChannel",
     "FinalSelectionEngine",
     "FixedPhaseSpec",
@@ -170,17 +233,31 @@ __all__ = [
     "JointRefinementModel",
     "JointRefinementResult",
     "JointVerificationResult",
+    "LaplaceBackend",
     "LatticeParams",
     "Ledger",
     "LifecycleConfig",
     "LifecycleTracker",
     "MCPUnavailableError",
+    "MEMApplicabilityReport",
+    "MEMBackend",
+    "MEMDensityMap",
+    "MEMInput",
+    "MEMResult",
+    "MEMRietveldConfig",
+    "MEMRietveldResult",
     "MEMUnavailableError",
     "MuCalculator",
     "MultistartConfig",
     "MultistartEngine",
     "MultistartResult",
     "NEUTRON_B_TABLE",
+    "NestedBackend",
+    "NestedConfig",
+    "NestedOutcome",
+    "NestedUnavailableError",
+    "OEDProposal",
+    "OEDUnavailableError",
     "OccupancyReleaseRecommendation",
     "Peak",
     "PerHistogramMetrics",
@@ -192,6 +269,8 @@ __all__ = [
     "PhaseLifecycle",
     "PhaseRef",
     "PlausibilityResult",
+    "PriorSpec",
+    "ProblemAwareEvidenceBackend",
     "Project",
     "RankedHypothesis",
     "RefinementBackend",
@@ -199,6 +278,8 @@ __all__ = [
     "RefinementModel",
     "RefinementReport",
     "RefinementResult",
+    "ReliabilityBin",
+    "RestraintSpec",
     "ReviewItem",
     "ReviewQueue",
     "SearchConfig",
@@ -211,6 +292,7 @@ __all__ = [
     "SimulatedBackend",
     "SnapshotStore",
     "StagedRefinementEngine",
+    "StructureFactor",
     "SynthesisContext",
     "ThermalBaseline",
     "TofBankParams",
@@ -220,8 +302,14 @@ __all__ = [
     "UnmatchedPeakReport",
     "XRAY_Z_TABLE",
     "XraylibMuCalculator",
+    "acquire",
     "analyze_single_pattern",
+    "arbitrate",
     "branch_differences",
+    "build_mem_input",
+    "build_prior_from_restraints",
+    "calibrate_by_backend",
+    "check_mem_applicability",
     "cluster_basins",
     "combine_plausibility",
     "combined_csv",
@@ -230,18 +318,24 @@ __all__ = [
     "detect_escalations",
     "discriminate_interval",
     "estimate_transition",
+    "expected_calibration_error",
     "export_gpx",
+    "extract_structure_factors",
     "fit_thermal_baseline",
     "fixed_free_suffixes",
     "generate_starts",
     "phase_from_dict",
     "phase_to_dict",
+    "propose_measurements",
     "rank",
     "rank_with_plausibility",
     "read_echem_csv",
     "recommend_occupancy_release",
     "refine_joint",
     "refine_joint_detailed",
+    "reliability_diagram",
+    "run_mem_rietveld",
+    "run_mem_spot",
     "segment_series",
     "split_branches",
     "transition_point",

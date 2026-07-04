@@ -5,7 +5,7 @@
 自動化することを目指す。設計思想は [docs/tsumugin_spec_v0.3.md](docs/tsumugin_spec_v0.3.md) を参照。
 
 > **状態**: M0 (PoC) + M1 (多仮説木探索) + M2 (シーケンシャル解析) + M3 (operando 解析)
-> + M4 (中性子 joint / ChemPlausibility / MCP) 実装済み。
+> + M4 (中性子 joint / ChemPlausibility / MCP) + M5 (nested 裁定 / MEM / OED) 実装済み。
 > 単一パターン自動多相精密化の中核 (段階的パラメータ解放・ガードレール・Evidence Engine・追記専用
 > Ledger/Snapshot)、候補相集合からの多仮説木探索 (`tsumugin.search`)・`.gpx` 書き出し
 > (`tsumugin.export`)・read-only Web UI (`tsumugin.webui`) に加え、時系列フレーム列の逐次
@@ -17,7 +17,11 @@
 > 固溶体/二相判別・IC 区間分割・セル固定相/吸収補正 (`tsumugin.absorption`) を追加した。M4 では
 > X 線 + 中性子のマルチヒストグラム joint 検証精密化 (`tsumugin.joint`)・化学的妥当性による
 > 降格 (`tsumugin.chem`, 候補除外はしない)・AI エージェント連携用の MCP サーバ (`tsumugin.mcp`,
-> SDK 非依存の 8 ツール実処理層 + 遅延 import アダプタ) を追加した。
+> SDK 非依存の 8 ツール実処理層 + 遅延 import アダプタ) を追加した。M5 では僅差競合のみを nested
+> sampling で再裁定する 2 段構え裁定 + 確率較正 (`tsumugin.nested`)・MEM (最大エントロピー法) 密度
+> 解析と MEM-Rietveld 反復 (`tsumugin.mem`)・僅差競合の判別測定を情報利得順に提案する最適実験計画
+> (`tsumugin.oed`, 非破壊・提案のみ) を追加した。nested/MEM/OED の実バックエンド (dynesty /
+> Dysnomia / pyboed) は遅延 import に隔離され、コア import は numpy のみを維持する。
 
 ## セットアップ
 
@@ -311,7 +315,125 @@ assert session.ledger.verify()
 `serve_stdio(session)` の **呼び出し時点** でのみ遅延 import され、未導入なら
 `MCPUnavailableError` に縮退する (`WebUIUnavailableError` と対称)。
 
-## アーキテクチャ (M0 + M1 + M2 + M3 + M4 実装済み範囲)
+## 使い方 (M5): nested 裁定 / MEM 解析 / OED 提案
+
+木探索は bic のまま維持し、その残った **僅差競合** (ΔBIC < 10) のみを nested sampling で
+再裁定する 2 段構え裁定 (`arbitrate`)。裁定後の確率は backend 別に較正できる
+(`calibrate_by_backend`: ECE / reliability diagram)。nested の実サンプラ (`dynesty`) 未導入時は
+`NestedUnavailableError` を経て Laplace evidence へ縮退する (較正・裁定はコア numpy のみで動作):
+
+```python
+import numpy as np
+from tsumugin import (
+    Hypothesis, RefinementMetrics, EvidenceProblem, PriorSpec, Ledger,
+    NestedBackend, CalibrationSample, arbitrate, calibrate_by_backend,
+)
+
+def hyp(hid, chi2):
+    m = RefinementMetrics(rwp=5.0, gof=1.2, chi2=chi2, n_obs=1000, n_params=8)
+    return Hypothesis(id=hid, phases=(), metrics=m)
+
+def problem():
+    priors = (
+        PriorSpec(param_name="phase0.lattice.a", kind="uniform", low=4.0, high=6.0),
+        PriorSpec(param_name="phase0.occ.site", kind="uniform", low=0.0, high=1.0),
+    )
+    m = RefinementMetrics(rwp=5.0, gof=1.2, chi2=100.0, n_obs=1000, n_params=8)
+    return EvidenceProblem(
+        metrics=m, priors=priors,
+        log_likelihood=lambda t: float(-0.5 * np.sum((np.asarray(t) - [5.0, 0.5]) ** 2)),
+    )
+
+ledger = Ledger()
+hyps = (hyp("h1", 100.0), hyp("h2", 103.0), hyp("h3", 200.0))  # h1/h2 は僅差競合
+problems = {h.id: problem() for h in hyps}
+
+# 僅差競合 (ΔBIC<10) のみ nested で再裁定する (未導入は Laplace 縮退)
+result = arbitrate(hyps, problems=problems, nested=NestedBackend(), ledger=ledger)
+print("nested 再裁定対象:", result.nested_ids)  # ('h1', 'h2')
+
+# 裁定後の確率を backend 別に較正 (ECE / reliability diagram)
+samples = [
+    CalibrationSample(a.ranked.probability, a.ranked.hypothesis.id == "h1", backend="nested")
+    for a in result.arbitrated
+]
+reports = calibrate_by_backend(samples)
+assert ledger.verify()  # 裁定を通しても追記専用 Ledger は無傷 (P2/NFR-105)
+```
+
+joint 検証済みの精密化解から MEM (最大エントロピー法) 入力を決定論的に生成し
+(`build_mem_input`: probe に応じ X 線→電子密度 / 中性子→核密度)、MEM-Rietveld 反復
+(`run_mem_rietveld`, 既定オフ) を回す。有効時は各サイクルを **子スナップショット** として追記する
+(親の相/joint 結果は不変・P2)。`MEMBackend` は交換可能な Protocol 境界で、v1 実体は外部バイナリ
+ラッパ `DysnomiaBackend`:
+
+```python
+import numpy as np
+from tsumugin import (
+    SimulatedBackend, PhaseInstance, LatticeParams, JointHistogram, Ledger, SnapshotStore,
+    MEMDensityMap, MEMResult, MEMRietveldConfig, build_mem_input, run_mem_rietveld,
+)
+from tsumugin.joint.engine import refine_joint_detailed
+from tsumugin.joint.model import JointRefinementModel
+
+backend = SimulatedBackend(peak_fwhm=0.2)
+two_theta = np.arange(15.0, 40.0, 0.05)
+phases = (PhaseInstance("A", LatticeParams(5.0, 5.0, 5.0)),)
+y = backend.simulate(phases, two_theta)
+joint_result = refine_joint_detailed(backend, JointRefinementModel(
+    phases=phases,
+    histograms=(JointHistogram(two_theta=two_theta, intensity=y, probe="xray"),),
+    shared_free_params=frozenset({"phase0.scale"}),
+))
+
+# 精密化済み joint 結果から MEM 入力を生成 (probe に応じ電子/核密度を選択)
+mem_input = build_mem_input(joint_result, "xray", grid_shape=(32, 32, 32))
+print("密度種別:", mem_input.density_kind)  # electron
+
+# MEMBackend は Protocol 境界 (v1 実体は DysnomiaBackend)。ここではデモ用の最小モック
+class DemoMEM:
+    name = "demo"
+    def run(self, mi):
+        dm = MEMDensityMap(path="demo.grd", density_kind=mi.density_kind,
+                           grid_shape=mi.grid_shape, min_density=0.0, max_density=10.0)
+        return MEMResult(density_map=dm, r_factor=0.1)
+
+# MEM-Rietveld 反復 (既定オフ)。有効時は各サイクルを子スナップショットとして追記 (親不変)
+snaps, mledger = SnapshotStore(), Ledger()
+mem_res = run_mem_rietveld(
+    backend, DemoMEM(), joint_result, phases, "xray",
+    config=MEMRietveldConfig(enabled=True, max_iter=2), snapshots=snaps, ledger=mledger,
+)
+print("停止理由:", mem_res.stop_reason, "/ サイクル数:", len(mem_res.cycles))
+assert mledger.verify()
+```
+
+裁定後も残った僅差競合は、それを判別するための **追加測定** を情報利得順に提案できる
+(`propose_measurements`: 高統計再測定 / 中性子 joint / 組成分析 / 追加温度点)。提案は **非破壊**
+で、仮説を accepted/rejected 化せず・データを改変せず、ledger には追記記録するのみ (提案のみ)。
+僅差競合が無ければ空提案 (状態変更なし)。PyBOED 獲得関数による高度な情報利得評価は `acquire` の
+遅延 import 境界に隔離され、v1 の提案生成はコアのみで動作する:
+
+```python
+from tsumugin import BICBackend, Ledger, rank, propose_measurements
+from tsumugin.oed import proposals_to_json
+
+ledger = Ledger()
+ranked = rank(hyps, BICBackend())  # 僅差競合フラグ付きランキング (上の hyps を再利用)
+
+# 僅差競合があるときのみ判別測定を情報利得順に提案する (非破壊・提案のみ)
+proposals = propose_measurements(ranked, ledger=ledger)
+for row in proposals_to_json(proposals):
+    print(f"{row['kind']}: gain={row['estimated_information_gain']:.3f}")
+assert ledger.verify()  # 提案は accepted/rejected 化せず ledger 追記のみ (P2)
+```
+
+nested/mem/oed の実バックエンド (dynesty / Dysnomia / pyboed) はいずれも各境界の遅延 import に
+隔離されており、`import tsumugin` はコア (numpy のみ) を維持する。`arbitrate` / `build_mem_input` /
+`propose_measurements` はトップレベルから import できるが、実サンプラ・実バイナリ・pyboed を
+一切引き込まない (REQ-403)。
+
+## アーキテクチャ (M0 + M1 + M2 + M3 + M4 + M5 実装済み範囲)
 
 | モジュール | 役割 | 主な仕様 FR |
 |-----------|------|------------|
@@ -333,5 +455,8 @@ assert session.ledger.verify()
 | `tsumugin.joint` | X 線+中性子マルチヒストグラム joint 精密化 + 生存仮説の joint 検証 + コントラスト占有率解放推奨 | FR-240〜245 |
 | `tsumugin.chem` | ChemPlausibility 境界 (降格のみ・除外しない) + v1 ルール + スコア合成 + rank 配線 | FR-412 |
 | `tsumugin.mcp` | AI エージェント連携 MCP サーバ (SDK 非依存の 8 ツール実処理層 + 遅延 import アダプタ) | FR-420 |
+| `tsumugin.nested` | nested sampling 再裁定 (bic 一次 + 僅差競合のみ再裁定) + Laplace evidence + 事前分布 + 確率較正 | FR-500〜510 |
+| `tsumugin.mem` | MEM (最大エントロピー法) ソルバ境界 (`MEMBackend`) + 適用ガード + 密度出力 + MEM-Rietveld 反復 (子スナップショット) | FR-601〜606 |
+| `tsumugin.oed` | 最適実験計画 (僅差競合の判別測定を情報利得順に提案・非破壊) + PyBOED 獲得関数の遅延 import 境界 | FR-700〜704 |
 
 実装計画は [docs/dev/plans/m0-refinement-core/](docs/dev/plans/m0-refinement-core/) を参照。
