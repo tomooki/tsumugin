@@ -46,6 +46,27 @@ class PhaseLifecycle:
 
 
 @dataclass(frozen=True)
+class PhaseRef:
+    """相 ID + 組成/元素系ヒント (ChemPlausibility.score の第 1 引数)。🟡 REQ-020
+
+    【橋渡し】: 既存 ``PhaseInstance.phase_ref: str`` は不変とし、本型は疎結合の別値オブジェクト。
+    PhaseInstance へのフィールド追加は行わない (D6)。``id`` を ``PhaseInstance.phase_ref`` と
+    一致させることで id 整合する。
+    """
+
+    id: str  # 【相 ID】: PhaseInstance.phase_ref と一致させる 🔵
+    formula: str | None = None  # 【組成式】: 例 "LiFePO4"。不明は None 🟡
+    element_system: tuple[str, ...] = ()  # 【元素系ヒント】: 例 ("Li","Fe","P","O") 🟡
+
+    @staticmethod
+    def from_phase_ref(
+        phase_ref: str, *, formula: str | None = None, element_system: tuple[str, ...] = ()
+    ) -> "PhaseRef":
+        """既存 str ``phase_ref`` から PhaseRef を生成する橋渡し。🟡 REQ-020"""
+        return PhaseRef(id=phase_ref, formula=formula, element_system=element_system)
+
+
+@dataclass(frozen=True)
 class PhaseInstance:
     """1 つの相インスタンス。更新は with_updates による非破壊生成のみ (P2)。"""
 

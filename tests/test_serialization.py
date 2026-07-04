@@ -19,9 +19,14 @@ import json
 import math
 import pytest
 
-from tsumugin.model import LatticeParams, PhaseInstance, PhaseLifecycle
+from tsumugin.model import LatticeParams, PhaseInstance, PhaseLifecycle, TofBankParams
 from tsumugin.store.ledger import _canonical_json
-from tsumugin.store.serialization import phase_from_dict, phase_to_dict
+from tsumugin.store.serialization import (
+    bank_params_from_dict,
+    bank_params_to_dict,
+    phase_from_dict,
+    phase_to_dict,
+)
 
 # ---------------------------------------------------------------------------
 # 1. 正常系テストケース（基本的な動作）
@@ -373,3 +378,65 @@ def test_from_dict_rejects_non_finite_lattice_value():
     d["lattice"]["b"] = math.inf
     with pytest.raises(ValueError, match="lattice.b"):
         phase_from_dict(d)
+
+
+# ---------------------------------------------------------------------------
+# 5. TASK-0036 TofBankParams 往復 (TC-401-04 / EDGE-002)
+# ---------------------------------------------------------------------------
+
+
+def test_bank_params_roundtrip_full():
+    # 【テスト目的】: 全フィールド入り TofBankParams が dict 往復で完全一致することを確認 (TC-401-04)
+    # 【期待される動作】: frozen dataclass の構造的 == で一致する
+    p = TofBankParams(difc=5000.0, difa=1.5, zero=-3.0)
+    restored = bank_params_from_dict(bank_params_to_dict(p))
+    assert restored == p
+
+
+def test_bank_params_to_dict_schema_and_json_safe():
+    # 【テスト目的】: bank_params_to_dict のキー集合と JSON 安全性を確認 (TC-401-04)
+    # 【期待される動作】: difc/difa/zero を持つ素の dict で json.dumps(allow_nan=False) 可能
+    d = bank_params_to_dict(TofBankParams(difc=5000.0))
+    assert set(d) == {"difc", "difa", "zero"}
+    assert d["difc"] == 5000.0
+    assert d["difa"] == 0.0  # 【既定明示】: 既定 difa も省略せず出力
+    assert d["zero"] == 0.0
+    json.dumps(d, allow_nan=False)  # 【確認内容】: 例外なく直列化できる
+
+
+def test_bank_params_from_dict_fills_missing_defaults():
+    # 【テスト目的】: 欠損 optional キー (difa/zero) を既定値補完することを確認 (EDGE-002 欠損補完)
+    # 【期待される動作】: difc のみの dict から difa=0.0/zero=0.0 で復元される
+    restored = bank_params_from_dict({"difc": 5000.0})
+    assert restored == TofBankParams(difc=5000.0)
+    assert restored.difa == 0.0
+    assert restored.zero == 0.0
+
+
+def test_bank_params_from_dict_ignores_unknown_keys():
+    # 【テスト目的】: 未知キーを無視して復元することを確認 (前方互換)
+    restored = bank_params_from_dict({"difc": 5000.0, "difa": 1.0, "zero": 2.0, "future": 99})
+    assert restored == TofBankParams(difc=5000.0, difa=1.0, zero=2.0)
+
+
+def test_bank_params_non_finite_becomes_none_and_json_safe():
+    # 【テスト目的】: 非有限値が None 化され json.dumps(allow_nan=False) が通ることを確認 (M1 教訓踏襲)
+    d = bank_params_to_dict(TofBankParams(difc=math.inf, difa=math.nan, zero=5.0))
+    assert d["difc"] is None
+    assert d["difa"] is None
+    assert d["zero"] == 5.0
+    json.dumps(d, allow_nan=False)
+
+
+def test_bank_params_from_dict_none_difc_fills_default():
+    # 【テスト目的】: 非有限で None 化された difc/difa/zero が既定値補完で復元されることを確認
+    # 【期待される動作】: to_dict が None 化した値も from_dict で既定 (difc=0.0/difa=0.0/zero=0.0) に補完
+    restored = bank_params_from_dict({"difc": None, "difa": None, "zero": None})
+    assert restored == TofBankParams(difc=0.0, difa=0.0, zero=0.0)
+
+
+def test_bank_params_boundary_zero_values_preserved():
+    # 【テスト目的】: 有限 0.0 が純化・欠損補完で誤って潰されず保持されることを確認 (境界値)
+    p = TofBankParams(difc=0.0, difa=0.0, zero=0.0)
+    restored = bank_params_from_dict(bank_params_to_dict(p))
+    assert restored == p

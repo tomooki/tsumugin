@@ -1,15 +1,46 @@
-"""Tsumugin — 多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0 + M1 + M2 + M3)."""
+"""Tsumugin — 多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0 + M1 + M2 + M3 + M4)."""
 
 from __future__ import annotations
 
 # 各サブパッケージ実体からの re-export (サブパッケージ名のアルファベット昇順で配置)。
-# M0/M1/M2/M3 の公開面をトップレベル tsumugin 名前空間へ集約する (別実装でなく is 同一実体 / REQ-404)。
+# M0/M1/M2/M3/M4 の公開面をトップレベル tsumugin 名前空間へ集約する (別実装でなく is 同一実体 / REQ-404)。
 from .absorption import AbsorptionConfig, transmission_factor
 from .backends.base import RefinementBackend, RefinementModel, RefinementResult
 from .backends.simulated import SimulatedBackend
+from .chem import (
+    AlkaliMetalInAirRule,
+    ChemPlausibility,
+    PlausibilityResult,
+    SynthesisContext,
+    combine_plausibility,
+    rank_with_plausibility,
+)
+from .errors import MCPUnavailableError, MEMUnavailableError
 from .evidence.ic import AICBackend, BICBackend
 from .evidence.ranking import RankedHypothesis, rank
 from .export import export_gpx
+
+# 【M4 mcp 遅延 import 契約 (REQ-403)】: create_mcp_server は SDK 非依存で re-export 可能。
+# mcp.server は関数内で mcp SDK を遅延 import するため、この re-export はトップレベルで
+# mcp SDK を引き込まない (コア import が numpy のみを維持 / TC-408-04)。8 ツールは mcp サブ
+# パッケージ側公開のままとし、トップレベル __all__ には AnalysisSession/create_mcp_server のみ載せる。
+from .joint import (
+    NEUTRON_B_TABLE,
+    XRAY_Z_TABLE,
+    ContrastConfig,
+    HistogramWeighting,
+    JointHistogram,
+    JointRefinementModel,
+    JointRefinementResult,
+    JointVerificationResult,
+    OccupancyReleaseRecommendation,
+    PerHistogramMetrics,
+    recommend_occupancy_release,
+    refine_joint,
+    refine_joint_detailed,
+    verify_survivors,
+)
+from .mcp import AnalysisSession, create_mcp_server
 from .model import (
     BeamConfig,
     CellConfig,
@@ -20,8 +51,10 @@ from .model import (
     MuCalculator,
     PhaseInstance,
     PhaseLifecycle,
+    PhaseRef,
     Project,
     RefinementMetrics,
+    TofBankParams,
     XraylibMuCalculator,
 )
 from .multistart import (
@@ -99,12 +132,15 @@ from .store import (
 
 __version__ = "0.1.0"
 
-# アルファベット昇順を維持する (公開面の一貫性。test_m1/m2/m3_symbols_in_dunder_all_and_sorted が固定)。
-# M3 (operando/multistart/absorption/model.cell) 分は非破壊追記。既存 M0/M1/M2 公開面は不変 (REQ-404)。
+# アルファベット昇順を維持する (公開面の一貫性。test_m1/m2/m3/m4_symbols_in_dunder_all_and_sorted が固定)。
+# M4 (joint/chem/mcp/model.PhaseRef/TofBankParams/errors.MCP・MEMUnavailableError) 分は非破壊追記。
+# 既存 M0/M1/M2/M3 公開面は不変 (REQ-404)。
 __all__ = [
     "AICBackend",
     "AbsorptionConfig",
+    "AlkaliMetalInAirRule",
     "AnalysisResult",
+    "AnalysisSession",
     "BICBackend",
     "BasinInfo",
     "BeamConfig",
@@ -115,6 +151,8 @@ __all__ = [
     "CellLayer",
     "ChangepointConfig",
     "ChangepointSignal",
+    "ChemPlausibility",
+    "ContrastConfig",
     "Decision",
     "DiscriminationConfig",
     "DiscriminationResult",
@@ -125,23 +163,35 @@ __all__ = [
     "FixedPhaseSpec",
     "FrameRecord",
     "FrameSeries",
+    "HistogramWeighting",
     "Hypothesis",
     "HypothesisTreeSearch",
+    "JointHistogram",
+    "JointRefinementModel",
+    "JointRefinementResult",
+    "JointVerificationResult",
     "LatticeParams",
     "Ledger",
     "LifecycleConfig",
     "LifecycleTracker",
+    "MCPUnavailableError",
+    "MEMUnavailableError",
     "MuCalculator",
     "MultistartConfig",
     "MultistartEngine",
     "MultistartResult",
+    "NEUTRON_B_TABLE",
+    "OccupancyReleaseRecommendation",
     "Peak",
+    "PerHistogramMetrics",
     "PersistentLedger",
     "PersistentSnapshotStore",
     "PerturbationSpec",
     "PhaseCandidate",
     "PhaseInstance",
     "PhaseLifecycle",
+    "PhaseRef",
+    "PlausibilityResult",
     "Project",
     "RankedHypothesis",
     "RefinementBackend",
@@ -161,16 +211,21 @@ __all__ = [
     "SimulatedBackend",
     "SnapshotStore",
     "StagedRefinementEngine",
+    "SynthesisContext",
     "ThermalBaseline",
+    "TofBankParams",
     "Trajectory",
     "TransitionEstimate",
     "TransitionPoint",
     "UnmatchedPeakReport",
+    "XRAY_Z_TABLE",
     "XraylibMuCalculator",
     "analyze_single_pattern",
     "branch_differences",
     "cluster_basins",
+    "combine_plausibility",
     "combined_csv",
+    "create_mcp_server",
     "detect_changepoint",
     "detect_escalations",
     "discriminate_interval",
@@ -182,9 +237,14 @@ __all__ = [
     "phase_from_dict",
     "phase_to_dict",
     "rank",
+    "rank_with_plausibility",
     "read_echem_csv",
+    "recommend_occupancy_release",
+    "refine_joint",
+    "refine_joint_detailed",
     "segment_series",
     "split_branches",
     "transition_point",
     "transmission_factor",
+    "verify_survivors",
 ]

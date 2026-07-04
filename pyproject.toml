@@ -21,6 +21,11 @@ web = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]
+# M4 MCP サーバ (SDK 依存アダプタ層): 公式 Model Context Protocol Python SDK。
+# ``mcp.server`` は本 extra を遅延 import する。未導入時は MCPUnavailableError へ縮退する。
+mcp = [
+    "mcp>=1.0",
+]
 
 [dependency-groups]
 dev = [
@@ -41,6 +46,7 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "gsas: GSAS-II がインストールされている環境でのみ実行する contract test",
+    "mcp: MCP SDK (optional extra mcp) がインストールされている環境でのみ実行する",
 ]
 
 [tool.ruff]
