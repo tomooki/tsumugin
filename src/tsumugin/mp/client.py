@@ -15,6 +15,7 @@ import importlib.util
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Mapping, Protocol, runtime_checkable
 
 from ..errors import MPUnavailableError
@@ -54,7 +55,8 @@ class MPRestClient:
 
     Args:
         api_key: MP API キー。None なら環境変数 ``MATERIALS_PROJECT_AIP`` を読む。
-        num_elements_only: True で指定元素**のみ**からなる相に限定する (探索元素系の閉包)。
+        include_subsystems: True で全部分系 (単体相・下位系を含む) をクエリする。相同定では
+            試料が純金属や下位酸化物を含み得るため既定 True。False で完全系のみに限定する。
         _env: 環境変数マッピング (テスト注入用, 既定は ``os.environ``)。
 
     Raises:
@@ -65,21 +67,28 @@ class MPRestClient:
         self,
         api_key: str | None = None,
         *,
-        num_elements_only: bool = True,
+        include_subsystems: bool = True,
         _env: Mapping[str, str] | None = None,
     ) -> None:
         env = os.environ if _env is None else _env
-        key = api_key if api_key is not None else env.get(_API_KEY_ENV)
+        raw = api_key if api_key is not None else env.get(_API_KEY_ENV)
+        # .env は "MATERIALS_PROJECT_AIP = key" 形式で前後空白が入り得るため strip 後に検証する。
+        # 空白のみのキーを空文字で通過させず、構築時点で分かりやすく失敗させる。
+        key = raw.strip() if raw is not None else None
         if not key:
             raise ValueError(
                 f"Materials Project API キーがありません。引数 api_key で渡すか、環境変数 "
                 f"{_API_KEY_ENV} を設定してください。"
             )
-        self.api_key: str = key.strip()
-        self._num_elements_only = num_elements_only
+        self.api_key: str = key
+        self._include_subsystems = include_subsystems
 
     def search(self, elements: Sequence[str]) -> tuple[MPEntry, ...]:
         """MP から元素系クエリで相を取得し ``MPEntry`` へ正規化する。🔵 FR-101
+
+        ``include_subsystems=True`` (既定) では全部分系 (単体相・下位系を含む) を 1 コールで
+        クエリする。相同定では試料が純金属や下位酸化物を含み得るため、完全系のみでは
+        候補を取りこぼす (FR-100 相ライブラリの網羅性)。
 
         Raises:
             MPUnavailableError: optional extra ``mp`` (mp-api) 未導入のとき。
@@ -91,7 +100,7 @@ class MPRestClient:
             )
         from mp_api.client import MPRester
 
-        chemsys = "-".join(sorted(elements))
+        chemsys = self._chemsys_query(elements)
         fields = [
             "material_id",
             "formula_pretty",
@@ -101,9 +110,23 @@ class MPRestClient:
             "symmetry",
         ]
         with MPRester(self.api_key) as rester:
-            # ``chemsys`` は「指定元素のみ」の閉包。部分系も要る場合は呼び出し側で複数系を渡す。
             docs = rester.materials.summary.search(chemsys=chemsys, fields=fields)
         return tuple(_doc_to_entry(doc) for doc in docs)
+
+    def _chemsys_query(self, elements: Sequence[str]) -> str | list[str]:
+        """クエリ対象の chemsys を組む。🔵
+
+        ``include_subsystems`` が True なら全非空部分集合の chemsys 文字列リスト (単体〜完全系)、
+        False なら完全系 1 本を返す。要素は昇順・重複排除で決定論的に生成する。
+        """
+        elems = sorted(set(elements))
+        if not self._include_subsystems:
+            return "-".join(elems)
+        systems: list[str] = []
+        for r in range(1, len(elems) + 1):
+            for combo in combinations(elems, r):
+                systems.append("-".join(combo))
+        return systems
 
 
 def _doc_to_entry(doc: object) -> MPEntry:

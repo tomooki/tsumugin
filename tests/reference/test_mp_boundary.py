@@ -93,6 +93,37 @@ def test_mp_rest_client_strips_env_key_whitespace():
     assert client.api_key == "secret"
 
 
+def test_chemsys_query_includes_all_subsystems():
+    # 相同定では単体相・下位系も候補になり得るため全部分系をクエリする (FR-100 網羅性)
+    from tsumugin.mp.client import MPRestClient
+
+    client = MPRestClient(api_key="dummy", include_subsystems=True)
+    systems = client._chemsys_query(["O", "Ti"])
+    assert set(systems) == {"O", "Ti", "O-Ti"}  # 昇順・全非空部分集合
+
+
+def test_chemsys_query_full_system_only_when_disabled():
+    from tsumugin.mp.client import MPRestClient
+
+    client = MPRestClient(api_key="dummy", include_subsystems=False)
+    assert client._chemsys_query(["Ti", "O", "Fe"]) == "Fe-O-Ti"  # 完全系 1 本 (昇順)
+
+
+def test_chemsys_query_dedups_and_sorts_elements():
+    from tsumugin.mp.client import MPRestClient
+
+    client = MPRestClient(api_key="dummy", include_subsystems=True)
+    systems = client._chemsys_query(["Fe", "Fe", "O"])
+    assert set(systems) == {"Fe", "O", "Fe-O"}
+
+
+def test_mp_rest_client_rejects_whitespace_only_key():
+    from tsumugin.mp.client import MPRestClient
+
+    with pytest.raises(ValueError):
+        MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_AIP": "   "})
+
+
 def test_doc_to_entry_normalizes_mp_api_doc():
     # mp_api summary doc の形状 (属性アクセス) を MPEntry へ正規化する (ネットワーク不要)
     import types
