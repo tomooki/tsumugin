@@ -1,11 +1,11 @@
-"""MCP 8 ツールの実処理層 (M4 / REQ-021〜025/101/106/201 / interfaces.py mcp/tools 節)。
+"""MCP ツール実処理層 (M4 8 ツール + M6 相同定 2 ツール = 10 / REQ-021〜025/101/106/201)。
 
-**SDK 非依存**: 本モジュールは MCP SDK を一切 import しない。8 ツールはプレーンな関数として
-M0〜M3 資産へ委譲し、応答は素の型 dict (str/int/float/bool/None/list/dict) のみを返す。MCP
+**SDK 非依存**: 本モジュールは MCP SDK を一切 import しない。各ツールはプレーンな関数として
+M0〜M6 資産へ委譲し、応答は素の型 dict (str/int/float/bool/None/list/dict) のみを返す。MCP
 プロトコル (JSON-RPC) との配線は SDK 依存の薄いアダプタ層 (``mcp.server``, TASK-0045) が担う
-2 層分離 (D7)。
+2 層分離 (D7)。M6 で相同定ツール (``identify_phases`` / ``identify_phase_mixtures``) を追加。
 
-``AnalysisSession`` は 8 ツールが委譲先へアクセスするための不変 facade。interfaces.py の契約
+``AnalysisSession`` は各ツールが委譲先へアクセスするための不変 facade。interfaces.py の契約
 (project/backend/selection/ledger/snapshots/evidence/search_result/trajectory) に加え、観測
 パターン (``two_theta``/``intensity``) を末尾・既定 None で保持する。これは ``export_gpx`` /
 ``submit_analysis`` が単一の観測パターンを facade 経由でスレッドするための非破壊拡張であり、
@@ -35,6 +35,9 @@ from ..joint.verification import JointVerificationResult, verify_survivors
 from ..model import PhaseInstance
 from ..model.project import Project
 from ..pipeline import analyze_single_pattern
+from ..reference.engine import identify_phases as _identify_phases
+from ..reference.mixture import identify_phase_mixtures as _identify_phase_mixtures
+from ..reference.provider import ReferenceProvider
 from ..search.tree import HypothesisTreeSearch, SearchResult
 from ..selection.engine import FinalSelectionEngine
 from ..sequential.trajectory import Trajectory
@@ -49,6 +52,8 @@ __all__ = [
     "compare_hypotheses",
     "export_gpx",
     "get_trajectory",
+    "identify_phase_mixtures",
+    "identify_phases",
     "list_hypotheses",
     "revert",
     "run_mem",
@@ -58,7 +63,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class AnalysisSession:
-    """8 ツールが委譲先へアクセスするための facade (SDK 非依存)。🔵 REQ-022
+    """MCP ツール群が委譲先へアクセスするための facade (SDK 非依存)。🔵 REQ-022
 
     【束ね】: project/backend/evidence/ledger/snapshots/selection と直近の SearchResult・
       Trajectory・観測パターンを保持する不変 facade。MCP プロトコルを一切知らない (2 層分離の
@@ -82,6 +87,9 @@ class AnalysisSession:
     two_theta: np.ndarray | None = None  # 【直近観測 2θ 軸 (export_gpx 用)】 🟡
     intensity: np.ndarray | None = None  # 【直近観測強度 (export_gpx 用)】 🟡
     verification: JointVerificationResult | None = None  # 【run_mem 用 joint 検証結果】 🔵 REQ-034
+    # 【非破壊拡張 (M6)】: 相同定ツール (identify_phases / identify_phase_mixtures) が使う相ライブラリ
+    #   供給元。末尾・既定 None の後方互換追加で、未設定時は当該ツールが error dict を返す (FR-101/110)。
+    reference_provider: ReferenceProvider | None = None
 
 
 def submit_analysis(
@@ -364,7 +372,97 @@ def run_mem(session: AnalysisSession, **params: object) -> dict:
     return _mem.run_mem_boundary(session, **params)
 
 
-# 【ツールレジストリ】: 8 ツール名 → 実処理関数。アダプタ層 (server.py) が配線に使う単一情報源 🔵 REQ-021
+def identify_phases(
+    session: AnalysisSession,
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    elements: Sequence[str],
+    *,
+    hull_cutoff_ev: float | None = 0.1,
+    max_results: int | None = None,
+    reason: str = "",
+) -> dict:
+    """未知パターン + 元素一覧から単相候補をランキング同定する (M6 委譲境界)。🔵 FR-110/117
+
+    【委譲】: ``session.reference_provider`` を供給元に ``reference.identify_phases`` へ委譲する。
+      供給元未設定なら破壊的操作なしで ``{"error": ...}`` を返す。応答は素の型 dict
+      (json.dumps(allow_nan=False) 安全, スコアは finite_or_none で None 化)。
+    【記録】: ``ledger.append("mcp_identify", {..., "reason": reason})``。破壊的操作なし (NFR-101)。
+
+    Raises:
+        なし (供給元未設定は error dict へ縮退)。
+    """
+    provider = session.reference_provider
+    if provider is None:
+        return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    two_theta = np.asarray(two_theta, dtype=float)
+    intensity = np.asarray(intensity, dtype=float)
+    result = _identify_phases(
+        two_theta,
+        intensity,
+        provider,
+        elements=elements,
+        hull_cutoff_ev=hull_cutoff_ev,
+        max_results=max_results,
+    )
+    session.ledger.append(
+        "mcp_identify", {"mode": "single", "n_elements": len(elements), "reason": reason}
+    )
+    return {
+        "mode": "single",
+        "matches": [
+            {
+                "phase_id": m.reference.phase_id,
+                "formula": m.reference.formula,
+                "element_system": list(m.reference.element_system),
+                "score": finite_or_none(m.score),
+                "energy_above_hull": finite_or_none(m.reference.energy_above_hull)
+                if m.reference.energy_above_hull is not None
+                else None,
+            }
+            for m in result.matches
+        ],
+        "unmatched": {
+            "unknown_phase_flag": bool(result.unmatched.unknown_phase_flag),
+            "unmatched_observed": [float(p.position) for p in result.unmatched.unmatched_observed],
+            "extra_calculated": [float(x) for x in result.unmatched.extra_calculated],
+        },
+        "n_observed_peaks": len(result.observed_peaks),
+    }
+
+
+def identify_phase_mixtures(
+    session: AnalysisSession,
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    elements: Sequence[str],
+    *,
+    hull_cutoff_ev: float | None = 0.1,
+    reason: str = "",
+) -> dict:
+    """未知パターン + 元素一覧から多相混合を同定する (M6 委譲境界)。🔵 FR-110/115
+
+    【委譲】: ``session.reference_provider`` を供給元に ``reference.identify_phase_mixtures`` へ
+      委譲し、既存木探索の ``SearchResult`` を ``/api/result`` スキーマ準拠 dict
+      (``to_summary()``) で返す。供給元未設定なら error dict。破壊的操作なし (NFR-101)。
+    """
+    provider = session.reference_provider
+    if provider is None:
+        return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    two_theta = np.asarray(two_theta, dtype=float)
+    intensity = np.asarray(intensity, dtype=float)
+    result = _identify_phase_mixtures(
+        two_theta, intensity, provider, elements=elements, hull_cutoff_ev=hull_cutoff_ev
+    )
+    session.ledger.append(
+        "mcp_identify", {"mode": "mixture", "n_elements": len(elements), "reason": reason}
+    )
+    response = result.to_summary()
+    response["mode"] = "mixture"
+    return response
+
+
+# 【ツールレジストリ】: 10 ツール名 → 実処理関数。アダプタ層 (server.py) が配線に使う単一情報源 🔵 REQ-021
 MCP_TOOLS: Mapping[str, object] = {
     "submit_analysis": submit_analysis,
     "list_hypotheses": list_hypotheses,
@@ -374,4 +472,6 @@ MCP_TOOLS: Mapping[str, object] = {
     "get_trajectory": get_trajectory,
     "export_gpx": export_gpx,
     "run_mem": run_mem,
+    "identify_phases": identify_phases,
+    "identify_phase_mixtures": identify_phase_mixtures,
 }

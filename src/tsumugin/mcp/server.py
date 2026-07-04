@@ -1,8 +1,8 @@
 """MCP サーバ (SDK 依存の薄いアダプタ層 / M4 / REQ-021/102/303/405 / interfaces.py mcp/server 節)。
 
-**2 層分離 (D7)**: 8 ツールの実処理は SDK 非依存の ``mcp.tools`` が担い、本モジュールは MCP
+**2 層分離 (D7)**: MCP ツール群の実処理は SDK 非依存の ``mcp.tools`` が担い、本モジュールは MCP
 プロトコル (JSON-RPC) との配線のみを担う薄いアダプタ層である。``MCP_TOOLS`` を単一情報源として
-低レベル MCP ``Server`` の ``list_tools`` / ``call_tool`` ハンドラへ 8 ツールを配線する。
+低レベル MCP ``Server`` の ``list_tools`` / ``call_tool`` ハンドラへ MCP ツール群を配線する。
 
 **SDK 遅延 import 契約 (WebUIUnavailableError と対称)**: コア依存は numpy のみ (CLAUDE.md /
 REQ-403)。``mcp`` SDK は optional extra ``mcp``。**トップレベルで mcp を import しない**ことで、
@@ -53,19 +53,19 @@ def _require_mcp() -> Any:
 
 
 def create_mcp_server(session: AnalysisSession) -> object:
-    """MCP ``Server`` を構築し ``MCP_TOOLS`` の 8 ツールを実処理関数へ配線して返す。🔵 REQ-021/102
+    """MCP ``Server`` を構築し ``MCP_TOOLS`` の MCP ツール群を実処理関数へ配線して返す。🔵 REQ-021/102
 
     【SDK 遅延 import】: 本関数呼び出し時にのみ mcp SDK を import。未導入なら
       ``MCPUnavailableError`` を送出する (実処理関数 ``mcp.tools`` は SDK 非依存で動作,
       REQ-102/EDGE-009)。
     【配線】: ``MCP_TOOLS`` を単一情報源に、低レベル ``mcp.server.Server`` の ``list_tools`` /
-      ``call_tool`` ハンドラへ 8 ツールを登録する。各ツールは第 1 引数 ``session`` を束縛して
+      ``call_tool`` ハンドラへ MCP ツール群を登録する。各ツールは第 1 引数 ``session`` を束縛して
       呼び出され、素の型 dict 応答を JSON テキストコンテンツとして返す。
     【非破壊】: session を書き換えず、ツール実処理へ委譲するのみ (2 層分離, D7)。
-    🔵 信頼性レベル: シグネチャ・8 ツール配線は interfaces.py mcp/server 節 / REQ-021 に確定。
+    🔵 信頼性レベル: シグネチャ・MCP ツール群配線は interfaces.py mcp/server 節 / REQ-021 に確定。
 
     Args:
-        session: 8 ツールが委譲先へアクセスするための不変 facade (``AnalysisSession``)。
+        session: MCP ツール群が委譲先へアクセスするための不変 facade (``AnalysisSession``)。
 
     Returns:
         構築済みの MCP ``Server`` インスタンス (呼び出し側が任意トランスポートで駆動する)。
