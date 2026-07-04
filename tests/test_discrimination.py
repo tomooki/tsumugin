@@ -224,6 +224,70 @@ class ControlledFakeBackend:
         )
 
 
+class FrameFailFakeBackend:
+    """仮説 A を frame offset ``fail_a``、仮説 B を frame offset ``fail_b`` で発散させる決定論スタブ。
+
+    逐次 direct refine (max_cycles != ms_max_cycles) を仮説種別 (単相=A / 2 相=B) ごとにカウントし、
+    指定 offset 番目のフレームのみ chi2=inf/rwp=inf を返す。端点 (offset 0 と末尾) は成功させ、A/B が
+    「異なる 1 フレーム」で発散する → 有限フレーム件数は同じ (n-1) だが**集合が食い違う**縮退を作る。
+    件数一致だけを見るガードはこれを見逃すため、有限フレーム集合一致を要求する強化ガードの検証に用いる。
+    マルチスタート呼び出し (max_cycles==ms) は常に有限 (端点 basin を作らせ B 初期化を成立させる)。
+    """
+
+    name = "framefail"
+
+    def __init__(
+        self,
+        *,
+        fail_a: int,
+        fail_b: int,
+        chi2_single: float = 10.0,
+        chi2_two: float = 100.0,
+        rwp: float = 1.0,
+        ms_max_cycles: int = 15,
+    ) -> None:
+        self.fail_a = int(fail_a)
+        self.fail_b = int(fail_b)
+        self.chi2_single = float(chi2_single)
+        self.chi2_two = float(chi2_two)
+        self.rwp = float(rwp)
+        self.ms_max_cycles = int(ms_max_cycles)
+        self._seq_a = 0  # 単相逐次 refine の通し番号 (= 区間フレーム offset)
+        self._seq_b = 0  # 2 相逐次 refine の通し番号 (= 区間フレーム offset)
+
+    def simulate(self, phases, two_theta):
+        return np.zeros_like(np.asarray(two_theta, dtype=float))
+
+    def peak_positions(self, phase, two_theta):
+        return []
+
+    def refine(self, model: RefinementModel, *, max_cycles: int = 20) -> RefinementResult:
+        n_phases = len(model.phases)
+        n_obs = int(np.asarray(model.intensity).size)
+        chi2 = self.chi2_single if n_phases <= 1 else self.chi2_two
+        rwp = self.rwp
+        # 【逐次のみ offset 判定】: マルチスタート (max_cycles==ms) は常に有限にして端点 basin を確保
+        if max_cycles != self.ms_max_cycles:
+            if n_phases <= 1:
+                if self._seq_a == self.fail_a:
+                    chi2, rwp = float("inf"), float("inf")
+                self._seq_a += 1
+            else:
+                if self._seq_b == self.fail_b:
+                    chi2, rwp = float("inf"), float("inf")
+                self._seq_b += 1
+        return RefinementResult(
+            phases=model.phases,
+            chi2=chi2,
+            rwp=rwp,
+            n_obs=n_obs,
+            n_params=0,
+            converged=math.isfinite(chi2),
+            n_cycles=1,
+            free_params=frozenset(model.free_params),
+        )
+
+
 # ===========================================================================
 # 1. 正常系テストケース
 # ===========================================================================
@@ -491,6 +555,31 @@ def test_partial_backend_failure_does_not_confirm_a_verdict():
     assert any("incomparable_evidence" in msg for msg in result.escalations)  # 縮退理由の明示 🔵
     assert any(item.reason == "incomparable_evidence" for item in queue.unresolved)  # Queue 通知 🔵
     assert result.delta_evidence < 0  # 【確認内容】: 素朴 Σbic では A 優位に見える (ガードが無ければ誤確定) 🔵
+
+
+def test_disjoint_finite_frames_with_equal_count_are_incomparable():
+    # 【テスト目的】: 両仮説が「異なる 1 フレーム」で発散し有限フレーム件数は同じでも、集合が食い違えば
+    #   Σbic 比較を信頼せず undecided + incomparable_evidence へ縮退することを確認 (集合一致ガード)。
+    # 【テスト内容】: FrameFailFakeBackend で仮説 A を frame1・仮説 B を frame2 で発散させる (区間 0..3)。
+    #   有限集合は A={0,2,3} / B={0,1,3} で件数は 3 で一致するが集合は不一致。件数のみ見るガードは
+    #   誤って verdict を確定 (chi2_single≪chi2_two のため solid_solution) してしまう。
+    # 【期待される動作】: verdict=="undecided"、escalations に incomparable_evidence、warnings に A の frame1・
+    #   B の frame2 除外が両方含まれる (集合が実際に食い違ったことの裏付け)。
+    # 🔵 信頼性レベル: 比較可能性ガードの十分条件化 (件数一致は必要条件に過ぎない) / CLAUDE.md 不変条件に依拠。
+
+    # 【テストデータ準備】: A=frame1 / B=frame2 で発散 (端点 0,3 は成功) する framefail フェイク + Queue
+    backend = FrameFailFakeBackend(fail_a=1, fail_b=2, chi2_single=10.0, chi2_two=100.0)
+    queue = ReviewQueue()
+
+    # 【実際の処理実行】: 件数一致でも集合不一致なら Σbic 比較不能として undecided へ縮退
+    result = discriminate_interval(backend, _fake_series(), (0, 3), (PHASE_A0,), queue=queue)
+
+    # 【結果検証】: 集合不一致の検出・誤確定の回避・除外フレームの裏付け
+    assert result.verdict == "undecided"  # 【確認内容】: 集合不一致で verdict を確定しない 🔵
+    assert any("incomparable_evidence" in msg for msg in result.escalations)  # 縮退理由の明示 🔵
+    assert any(item.reason == "incomparable_evidence" for item in queue.unresolved)  # Queue 通知 🔵
+    assert any("hypothesis_a" in w and "frame 1" in w for w in result.warnings)  # A は frame1 除外 🔵
+    assert any("hypothesis_b" in w and "frame 2" in w for w in result.warnings)  # B は frame2 除外 🔵
 
 
 def test_invalid_frame_range_raises_value_error():

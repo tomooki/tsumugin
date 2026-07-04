@@ -14,7 +14,14 @@ Evidence Engine (bic 一次) で **固溶体 vs 二相反応** を判別する�
 - 固定相 (``FixedPhaseSpec``) は両仮説に常駐・構造固定・scale のみ解放。全操作を ``Ledger`` へ追記する。
 
 決定論 (NFR-102): 乱数・時刻・集合反復順に依存しない。同一入力の 2 回実行で ``DiscriminationResult`` の
-全フィールドがビット同一になる。バックエンド失敗は例外化せず chi2=inf の結果として縮退処理する。
+全フィールドがビット同一になる。バックエンド失敗は例外化せず chi2=inf の結果として縮退処理する。片仮説が
+区間全域で失敗する / 両仮説が異なるフレーム部分集合で Σbic を計上する場合は、比較可能性ガードにより
+``undecided`` + ``incomparable_evidence`` へ縮退して誤確定を防ぐ (Σbic は有限フレームのみの和で、除外が
+多いほど不当に小さくなるため)。
+
+制限 (M3 v1): 仮説 B の evidence 用モデル DOF を仮説 A と釣り合わせる設計 (``_TWO_PHASE_MODEL_SUFFIXES``)
+のため、ΔBIC からペナルティ項が相殺し判別は実質 chi2 差 (適合度差) に帰着する。この釣り合わせは合成ベンチで
+較正した M3 v1 の暫定仕様であり、実データでの妥当性 (端成分 DOF の数え方) は要検証。
 
 🔵 信頼性レベル: 契約は ``docs/design/m3-operando/interfaces.py`` L252-284、設計 D4
   (``docs/design/m3-operando/architecture.md`` L71-76)、``dataflow.md`` FR-313 シーケンス (L53-77)、
@@ -105,7 +112,9 @@ class _IntervalOutcome:
     endpoint_phases: dict[int, tuple[PhaseInstance, ...]]  # 【端点相】: frame -> 精密化済み phases
     endpoint_results: dict[int, RefinementResult]  # 【端点結果】: frame -> RefinementResult
     warnings: tuple[str, ...]  # 【警告】: 非有限フレーム除外の警告
-    n_finite: int  # 【有限数】: Σbic に寄与した有限フレーム数
+    # 【有限フレーム集合】: Σbic に寄与した有限フレーム index の集合。件数だけでなく「どのフレームが有限か」を
+    #   保持し、両仮説が異なるフレーム部分集合で Σbic を計上する非対称比較を検出できるようにする 🔵
+    finite_frames: frozenset[int]
 
 
 def discriminate_interval(
@@ -173,8 +182,15 @@ def discriminate_interval(
     #   格子固定 B は warm start しない (フレームごとに端成分テンプレートから相分率を独立に精密化する):
     #   scale を warm 継承すると参照バックエンドの早期停止で相分率が累積的に過少収束し Σbic_B が誤って
     #   増大するため、各フレーム独立の相分率推定 (fresh init) を採る (数値安定・より正しい分率推定)。🟡
-    alpha = _endpoint_lattice_source(ms_a_start, seq_a.endpoint_phases[start], active_count_a)
-    beta = _endpoint_lattice_source(ms_a_end, seq_a.endpoint_phases[end], active_count_a)
+    #   端成分 α/β は元は同一活物質相 (同 phase_ref) の複製のため、2 端成分を区別できるよう phase_ref を
+    #   "{ref}#alpha"/"{ref}#beta" へ改名する。SimulatedBackend は phase_ref 未登録相を既定 hkl で扱い
+    #   格子でピーク位置が決まるため数値・決定論に影響せず、ref をキーに相を突き合わせる下流での衝突を防ぐ。🟡
+    alpha = _relabel_endmember(
+        _endpoint_lattice_source(ms_a_start, seq_a.endpoint_phases[start], active_count_a), "alpha"
+    )
+    beta = _relabel_endmember(
+        _endpoint_lattice_source(ms_a_end, seq_a.endpoint_phases[end], active_count_a), "beta"
+    )
     b_active = alpha + beta
     active_count_b = len(b_active)
     init_b = b_active + fixed_instances
@@ -186,29 +202,37 @@ def discriminate_interval(
     )
 
     # ---- 仮説 B の区間端点フレームでマルチスタート必須適用 (格子固定を破らない scale のみ) --------
+    #   REQ-004「判別時マルチスタート必須」を両端点で満たすため start/end 両方で適用する。B の端成分格子は
+    #   A 端点で既に固定済みのため、代表として end 端点結果のみ result へ格納する (start 側は必須適用の
+    #   充足が目的で結果は保持しない)。🟡
     _, multistart_two_phase = _endpoint_multistarts(
         engine, two_theta, series, start, end, seq_b.endpoint_phases, _TWO_PHASE_REFINE_SUFFIXES
     )
 
     # ---- 判別: ΔBIC = Σbic_A − Σbic_B と両仮説高 R でエスカレーション判定 --------------------
     delta = seq_a.sum_bic - seq_b.sum_bic
+    # 【全失敗判定】: 有限フレーム皆無 = その仮説は区間全域で精密化に失敗 (高 R とは区別すべき別事象) 🔵
+    a_failed = len(seq_a.finite_frames) == 0
+    b_failed = len(seq_b.finite_frames) == 0
+    # 【両仮説高 R (EDGE-005)】: 両仮説とも「精密化は成立したが rwp が高い」ときのみ未知相を疑う。片仮説でも
+    #   全失敗しているときは高 R でなく backend 失敗として比較可能性ガードで扱う (rwp=inf の誤ラベル回避)。🔵
     both_high_r = (
-        seq_a.representative_rwp > config.high_r_threshold
+        not a_failed and not b_failed
+        and seq_a.representative_rwp > config.high_r_threshold
         and seq_b.representative_rwp > config.high_r_threshold
     )
     # 【比較可能性ガード】: bic はフレームあたり chi2 + k·ln(n) >= 0 のため、非有限フレームを Σbic から除外
-    #   するほど和が小さく (= 良く) なる。片仮説の backend 失敗で有限フレーム数が食い違う (または 0) と、
-    #   失敗した仮説が不当に低い Σbic で「優位」に見えて誤確定しうる (CLAUDE.md「backend 失敗=chi2=inf」経路)。
-    #   有限フレーム数が両仮説で一致し双方 >0 のときのみ Σbic 比較を信頼する (segmentation の全滅=inf と対称)。🔵
-    comparable = (
-        seq_a.n_finite > 0 and seq_b.n_finite > 0 and seq_a.n_finite == seq_b.n_finite
-    )
+    #   するほど和が小さく (= 良く) なる。両仮説が「異なるフレーム部分集合」で Σbic を計上する (片仮説の失敗
+    #   や食い違う発散) と、除外フレームの bic 分だけ ΔBIC が偏り誤確定しうる (CLAUDE.md「backend 失敗
+    #   =chi2=inf」経路)。有限フレーム集合が両仮説で完全一致し双方非空のときのみ Σbic 比較を信頼する
+    #   (件数一致は必要条件であって十分条件ではない / segmentation の全滅=inf と対称)。🔵
+    comparable = seq_a.finite_frames == seq_b.finite_frames and not a_failed
     verdict, escalations, queue_reason = _decide_verdict(
         delta, config.close_threshold, both_high_r,
         seq_a.representative_rwp, seq_b.representative_rwp,
         comparable=comparable,
-        n_finite_single=seq_a.n_finite,
-        n_finite_two_phase=seq_b.n_finite,
+        n_finite_single=len(seq_a.finite_frames),
+        n_finite_two_phase=len(seq_b.finite_frames),
     )
 
     # ---- ReviewQueue 通知 (提供時のみ・ブロックしない) -----------------------------------
@@ -231,8 +255,14 @@ def discriminate_interval(
     )
 
     # ---- ledger 記録 (提供時のみ・全 kind は "discrimination." 前置) --------------------
-    _record(ledger, "discrimination.hypothesis_single", {"sum_bic": seq_a.sum_bic, "n_finite": seq_a.n_finite})
-    _record(ledger, "discrimination.hypothesis_two_phase", {"sum_bic": seq_b.sum_bic, "n_finite": seq_b.n_finite})
+    _record(
+        ledger, "discrimination.hypothesis_single",
+        {"sum_bic": seq_a.sum_bic, "n_finite": len(seq_a.finite_frames)},
+    )
+    _record(
+        ledger, "discrimination.hypothesis_two_phase",
+        {"sum_bic": seq_b.sum_bic, "n_finite": len(seq_b.finite_frames)},
+    )
     _record(ledger, "discrimination.verdict", {"verdict": verdict, "delta_evidence": delta})
     if escalations:
         _record(ledger, "discrimination.escalation", {"reasons": list(escalations)})
@@ -338,7 +368,7 @@ def _refine_interval(
     warnings: list[str] = []
     endpoint_phases: dict[int, tuple[PhaseInstance, ...]] = {}
     endpoint_results: dict[int, RefinementResult] = {}
-    n_finite = 0
+    finite_frames: set[int] = set()
 
     for i in range(start, end + 1):
         intensity = np.asarray(series.intensities[i], dtype=float)
@@ -357,7 +387,7 @@ def _refine_interval(
             rwps.append(float(result.rwp))
             if warm_start:
                 warm = result.phases  # 【warm 更新】: 成功フレームのみ継承 (失敗は据え置き) 🔵
-            n_finite += 1
+            finite_frames.add(i)  # 【有限フレーム記録】: どのフレームが Σbic に寄与したかを集合で保持 🔵
         else:
             # 【非有限縮退】: Σbic に inf を混ぜず警告する (非有限を漏らさない) 🔵
             warnings.append(
@@ -376,7 +406,7 @@ def _refine_interval(
         endpoint_phases=endpoint_phases,
         endpoint_results=endpoint_results,
         warnings=tuple(warnings),
-        n_finite=n_finite,
+        finite_frames=frozenset(finite_frames),
     )
 
 
@@ -431,6 +461,22 @@ def _endpoint_lattice_source(
     return tuple(source[:active_count])
 
 
+def _relabel_endmember(
+    phases: tuple[PhaseInstance, ...], suffix: str
+) -> tuple[PhaseInstance, ...]:
+    """端成分相の phase_ref に "#{suffix}" を付し 2 端成分を区別可能にする (格子/scale 等は不変)。
+
+    【機能概要】: 仮説 B の α/β は同一活物質相の複製で phase_ref が同じため、ref をキーに相を突き合わせる
+      下流で 2 端成分が衝突しうる。"{ref}#alpha"/"{ref}#beta" へ改名して区別する。
+    【実装方針】: with_updates で phase_ref のみ差し替え、格子/scale/wt_frac 等は非破壊に保つ。
+      SimulatedBackend は未登録 ref を既定 hkl で扱う (格子でピーク位置が決まる) ため数値・決定論に影響しない。
+    🟡 信頼性レベル: 二相反応の端成分区別 (設計 D4) / PhaseInstance.with_updates 非破壊更新に依拠。
+    """
+    return tuple(
+        phase.with_updates(phase_ref=f"{phase.phase_ref}#{suffix}") for phase in phases
+    )
+
+
 def _decide_verdict(
     delta: float,
     close_threshold: float,
@@ -468,9 +514,9 @@ def _decide_verdict(
     #   Σbic を不当に下げて誤確定を招く。Σbic 比較を信頼せず undecided へ縮退しエスカレーションする 🔵
     if not comparable:
         message = (
-            f"incomparable_evidence: 有限フレーム数が不一致または皆無 "
-            f"(single={n_finite_single}, two_phase={n_finite_two_phase}) のため Σbic 比較が信頼できず "
-            f"判別を確定しません (backend の精密化失敗の疑い)。"
+            f"incomparable_evidence: 両仮説の有限フレーム集合が一致しない、またはいずれかが皆無 "
+            f"(single_finite={n_finite_single}, two_phase_finite={n_finite_two_phase}) のため Σbic 比較が "
+            f"信頼できず判別を確定しません (backend の精密化失敗の疑い。除外フレームは warnings 参照)。"
         )
         return "undecided", (message,), "incomparable_evidence"
 
