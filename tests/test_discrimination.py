@@ -420,6 +420,25 @@ def test_fixed_phase_preserved_and_does_not_disturb_verdict():
     assert al_phases[0].lattice == al_spec.phase.lattice  # 固定相格子はビット不変 🔵
 
 
+def test_two_phase_endmembers_preserve_active_phase_ref_for_hkl_lookup():
+    # 【テスト目的】: 仮説 B の端成分が初期活物質相の phase_ref を保持することを確認 (改名しない)。
+    # 【テスト内容】: 固溶体系列を判別し、hypothesis_two_phase の活物質端成分 (固定相なし) の phase_ref 集合を検証。
+    # 【期待される動作】: 端成分 phase_ref はすべて初期相の "A" (端成分は同一結晶構造の 2 格子)。
+    # 【背景】: phase_ref を "A#alpha"/"A#beta" 等へ改名すると backend の hkl_table 完全一致引きを外し、
+    #   hkl_table 登録時に仮説 B が既定 hkl へ落ちて Σbic_B が偏り verdict を歪める (回帰防止の構造テスト)。
+    # 🔵 信頼性レベル: SimulatedBackend.hkl_table の完全一致引き / 二相反応端成分の同一構造前提に依拠。
+
+    # 【テストデータ準備】: 固溶体系列 (固定相なし → hypothesis_two_phase.phases は活物質端成分のみ)
+    series = _solid_solution_series(n_frames=8)
+    result = discriminate_interval(
+        SimulatedBackend(peak_fwhm=0.2), series, (0, 7), (PHASE_A0,), config=CONFIG_FAST
+    )
+
+    # 【結果検証】: 端成分 phase_ref が初期相 "A" のまま (改名されていない = hkl 引きの完全一致キーを保つ)
+    b_refs = {phase.phase_ref for phase in result.hypothesis_two_phase.phases}
+    assert b_refs == {"A"}  # 【確認内容】: 2 端成分とも初期 phase_ref を継承・改名なし 🔵
+
+
 def test_ledger_records_and_verifies():
     # 【テスト目的】: ledger 提供時に判別の各操作が追記され、実行後も verify() が True であることを確認
     # 【テスト内容】: Ledger を渡した固溶体判別後にエントリ非空・kind 前置・ハッシュチェーン整合を確認
