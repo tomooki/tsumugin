@@ -31,14 +31,23 @@ def _pyboed_available() -> bool:
     return importlib.util.find_spec("pyboed") is not None
 
 
+def _mp_available() -> bool:
+    """相ライブラリ供給元 (optional extra ``mp``: pymatgen/mp-api) の import 可否を判定する (gsas/mcp と同型)。"""
+    return (
+        importlib.util.find_spec("pymatgen") is not None
+        and importlib.util.find_spec("mp_api") is not None
+    )
+
+
 def pytest_collection_modifyitems(config, items):
-    """未導入環境で `gsas`/`mcp`/`nested`/`mem`/`oed` マーカー付きテストを自動 skip する (同型)。"""
+    """未導入環境で `gsas`/`mcp`/`nested`/`mem`/`oed`/`mp` マーカー付きテストを自動 skip する (同型)。"""
     gsas_ok = gsasii_available()
     mcp_ok = _mcp_available()
     nested_ok = _nested_available()
     mem_ok = _dysnomia_available()
     oed_ok = _pyboed_available()
-    if gsas_ok and mcp_ok and nested_ok and mem_ok and oed_ok:
+    mp_ok = _mp_available()
+    if gsas_ok and mcp_ok and nested_ok and mem_ok and oed_ok and mp_ok:
         return
     skip_gsas = pytest.mark.skip(reason="GSAS-II (GSASIIscriptable) not installed")
     skip_mcp = pytest.mark.skip(reason="mcp SDK (optional extra mcp) not installed")
@@ -51,6 +60,9 @@ def pytest_collection_modifyitems(config, items):
     skip_oed = pytest.mark.skip(
         reason="OED 獲得関数 (optional extra oed: pyboed) not installed"
     )
+    skip_mp = pytest.mark.skip(
+        reason="相ライブラリ供給元 (optional extra mp: pymatgen/mp-api) not installed"
+    )
     for item in items:
         if not gsas_ok and item.get_closest_marker("gsas"):
             item.add_marker(skip_gsas)
@@ -62,3 +74,5 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_mem)
         if not oed_ok and item.get_closest_marker("oed"):
             item.add_marker(skip_oed)
+        if not mp_ok and item.get_closest_marker("mp"):
+            item.add_marker(skip_mp)

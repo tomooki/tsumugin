@@ -43,6 +43,14 @@ mem = [
 # 縮退する (v1 の提案生成 propose_measurements は本 extra に非依存でコアのみで動作する)。
 oed = [
 ]
+# M6 相同定 (相ライブラリ供給元): Materials Project 取り込み + 実構造 XRD 生成。
+# ``tsumugin.mp`` は本 extra を遅延 import し、未導入時は MPUnavailableError へ縮退する。
+# 相同定コア (``tsumugin.reference.identify_phases``) と ReferenceProvider Protocol は
+# 本 extra に非依存でコア (numpy) のみで動作する。API キーは環境変数 MATERIALS_PROJECT_AIP。
+mp = [
+    "pymatgen>=2024.3",
+    "mp-api>=0.41",
+]
 
 [dependency-groups]
 dev = [
@@ -67,6 +75,7 @@ markers = [
     "nested: 外部サンプラ (optional extra nested: dynesty/ultranest) がインストールされている環境でのみ実行する",
     "mem: MEM 外部バイナリ (Dysnomia) がインストールされている環境でのみ実行する",
     "oed: OED 獲得関数 (optional extra oed: pyboed) がインストールされている環境でのみ実行する",
+    "mp: Materials Project 供給元 (optional extra mp: pymatgen/mp-api) がインストールされている環境でのみ実行する",
 ]
 
 [tool.ruff]
