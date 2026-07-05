@@ -1,7 +1,8 @@
 """MCP サブパッケージ (M4 / REQ-021〜025/101/106/201)。
 
 **SDK 非依存**: 本サブパッケージの ``tools`` / ``mem`` は MCP SDK を一切 import しない実処理層。
-8 ツール実処理関数 (プレーン関数・素の dict 応答) と MEM 委譲境界を公開する。
+MCP ツール群の実処理関数 (プレーン関数・素の dict 応答) と MEM 委譲境界を公開する
+(M4 の 8 ツール + M6 相同定 2 ツール = 10)。
 
 **遅延 import 契約 (D7 / TASK-0045)**: SDK 依存のアダプタ層 ``server`` の公開 API
 (``create_mcp_server`` / ``serve_stdio`` / ``serve_local``) も re-export するが、``server``
@@ -21,6 +22,8 @@ from .tools import (
     compare_hypotheses,
     export_gpx,
     get_trajectory,
+    identify_phase_mixtures,
+    identify_phases,
     list_hypotheses,
     revert,
     run_mem,
@@ -35,6 +38,8 @@ __all__ = [
     "create_mcp_server",
     "export_gpx",
     "get_trajectory",
+    "identify_phase_mixtures",
+    "identify_phases",
     "list_hypotheses",
     "revert",
     "run_mem",

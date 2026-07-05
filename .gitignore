@@ -13,5 +13,8 @@ wheels/
 # Secret files
 .env
 
+# Benchmark data (large / licensed; fetched separately — see docs/benchmark/README.md)
+docs/benchmark/testdata/
+
 # Local agent instructions
 CLAUDE.md

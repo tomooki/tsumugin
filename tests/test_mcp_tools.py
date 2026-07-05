@@ -49,11 +49,15 @@ from tsumugin.mcp.tools import (
     compare_hypotheses,
     export_gpx,
     get_trajectory,
+    identify_phase_mixtures,
+    identify_phases,
     list_hypotheses,
     revert,
     run_mem,
     submit_analysis,
 )
+from tsumugin.reference.model import ReferencePhase
+from tsumugin.search.peaks import Peak
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +111,7 @@ def _session(
     ranked: list[RankedHypothesis] | None = None,
     with_pattern: bool = False,
     trajectory: Trajectory | None = None,
+    reference_provider=None,
 ) -> AnalysisSession:
     ledger = Ledger()
     selection = FinalSelectionEngine(mode=mode, ledger=ledger)
@@ -123,7 +128,37 @@ def _session(
         trajectory=trajectory,
         two_theta=tt,
         intensity=intensity,
+        reference_provider=reference_provider,
     )
+
+
+class _FakeRefProvider:
+    """相同定ツール用の in-memory ``ReferenceProvider`` テストダブル。"""
+
+    def __init__(self, phases):
+        self._phases = tuple(phases)
+
+    def fetch(self, elements):
+        return self._phases
+
+
+def _ref_phase(phase_id, positions):
+    return ReferencePhase(
+        phase_id=phase_id,
+        formula="X",
+        element_system=("Fe", "O"),
+        peaks=tuple(Peak(position=p, height=1.0) for p in positions),
+        energy_above_hull=0.0,
+    )
+
+
+def _synthetic_pattern(centers, *, fwhm=0.15):
+    tt = np.arange(15.0, 60.0, 0.02)
+    y = np.zeros_like(tt)
+    sigma = fwhm / 2.3548
+    for c in centers:
+        y += np.exp(-0.5 * ((tt - c) / sigma) ** 2)
+    return tt, y
 
 
 # ===========================================================================
@@ -132,7 +167,7 @@ def _session(
 
 
 def test_eight_tools_registered_in_mcp_tools():
-    # 【テスト目的】: 8 ツール名が MCP_TOOLS に単一情報源として登録される
+    # 【テスト目的】: M4 の 8 ツール + M6 相同定 2 ツール = 10 ツールが MCP_TOOLS に登録される
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -142,8 +177,68 @@ def test_eight_tools_registered_in_mcp_tools():
         "get_trajectory",
         "export_gpx",
         "run_mem",
+        "identify_phases",
+        "identify_phase_mixtures",
     }
     assert set(MCP_TOOLS.keys()) == expected
+
+
+# ===========================================================================
+# M6: 相同定ツール (identify_phases / identify_phase_mixtures)
+# ===========================================================================
+
+
+def test_identify_phases_tool_ranks_and_returns_plain_dict():
+    import json
+
+    prov = _FakeRefProvider([
+        _ref_phase("mp-good", [20.0, 30.0, 40.0]),
+        _ref_phase("mp-poor", [25.0, 55.0]),
+    ])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 30.0, 40.0])
+    out = identify_phases(session, tt, y, ["Fe", "O"])
+    assert out["mode"] == "single"
+    assert out["matches"][0]["phase_id"] == "mp-good"
+    json.dumps(out, allow_nan=False)  # 素の型 dict (JSON 安全)
+
+
+def test_identify_phases_tool_without_provider_returns_error():
+    session = _session()  # reference_provider 未設定
+    tt, y = _synthetic_pattern([20.0])
+    out = identify_phases(session, tt, y, ["Fe", "O"])
+    assert "error" in out
+
+
+def test_identify_phases_tool_records_ledger_reason():
+    prov = _FakeRefProvider([_ref_phase("mp-1", [20.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0])
+    identify_phases(session, tt, y, ["Fe", "O"], reason="agent-run")
+    kinds = [e.kind for e in session.ledger.entries]
+    assert "mcp_identify" in kinds
+
+
+def test_identify_phase_mixtures_tool_returns_summary():
+    import json
+
+    prov = _FakeRefProvider([
+        _ref_phase("mp-A", [20.0, 40.0]),
+        _ref_phase("mp-B", [30.0, 50.0]),
+    ])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0, 30.0, 50.0])
+    out = identify_phase_mixtures(session, tt, y, ["Fe", "O"])
+    assert out["mode"] == "mixture"
+    assert "ranked" in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_identify_phase_mixtures_tool_without_provider_returns_error():
+    session = _session()
+    tt, y = _synthetic_pattern([20.0])
+    out = identify_phase_mixtures(session, tt, y, ["Fe", "O"])
+    assert "error" in out
 
 
 def test_mcp_tools_values_are_the_actual_functions():

@@ -78,3 +78,14 @@ class OEDUnavailableError(TsumuginError):
     の呼び出し時にのみ本例外を送出して extra 導入手順を案内する。v1 の提案生成 (``propose_measurements``)
     は本例外に依存せず外部依存なしで動作する。
     """
+
+
+class MPUnavailableError(TsumuginError):
+    """optional extra ``mp`` (pymatgen / mp-api) 未導入で Materials Project 供給元を要求したとき。🔵 FR-101
+
+    ``NestedUnavailableError`` / ``OEDUnavailableError`` と対称の「available + 専用例外」パターン。
+    ``import tsumugin.mp`` 自体はコア (numpy) のみで成功し、pymatgen / mp_api を引き込まない。
+    実構造の XRD 生成 (``simulate_reference_peaks``) や MP クエリ (``MPRestClient.search``) の
+    呼び出し時にのみ本例外を送出して extra 導入手順を案内する。相同定コア (``identify_phases``) と
+    ``ReferenceProvider`` Protocol はコア (numpy) のみで動作する。
+    """
