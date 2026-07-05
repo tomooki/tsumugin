@@ -1,0 +1,23 @@
+data_garnet
+_cell_length_a 12.190
+_cell_length_b 12.190
+_cell_length_c 12.190
+_cell_angle_alpha 90.0
+_cell_angle_beta 90.0
+_cell_angle_gamma 90.0
+_symmetry_space_group_name_H-M 'I a -3 d'
+_symmetry_Int_Tables_number 230
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_U_iso_or_equiv
+Y1  Y   0.12500 0.00000 0.25000 1.00 0.010
+Fe1 Fe  0.00000 0.00000 0.00000 0.90 0.010
+Al1 Al  0.00000 0.00000 0.00000 0.10 0.010
+Al2 Al  0.37500 0.00000 0.25000 0.90 0.010
+Fe2 Fe  0.37500 0.00000 0.25000 0.10 0.010
+O1  O   -0.02890 0.05670 0.14950 1.00 0.010
