@@ -54,6 +54,7 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "specs": _specs_dict(inp),
         "final_rwp": finite_or_none(result.final_rwp),
         "final_gof": finite_or_none(result.final_gof),
+        "n_obs": result.n_obs,
         "stages": [
             {
                 "label": s.label,
@@ -100,6 +101,7 @@ def _result_from_dict(result: Mapping[str, object]) -> AutoRietveldResult:
         final_gof=float(result.get("final_gof") or 0.0),
         refined_cells=cells,
         validity=validity,
+        n_obs=int(result.get("n_obs") or 0),
     )
 
 

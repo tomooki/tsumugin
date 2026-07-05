@@ -55,7 +55,7 @@ def _model(*refs: str) -> RefinementModel:
     )
 
 
-def _stub_result(rwp: float, gof: float, n_params: int, *, passed: bool = True):
+def _stub_result(rwp: float, gof: float, n_params: int, *, passed: bool = True, n_obs: int = 0):
     return AutoRietveldResult(
         stage_results=(
             StageResult(label="S0", rwp=rwp, gof=gof, n_params=n_params, converged=True),
@@ -64,6 +64,7 @@ def _stub_result(rwp: float, gof: float, n_params: int, *, passed: bool = True):
         final_gof=gof,
         refined_cells={"ph": (9.37, 9.37, 6.89, 90.0, 90.0, 120.0)},
         validity=ValidityReport(passed=passed),
+        n_obs=n_obs,
     )
 
 
@@ -84,6 +85,28 @@ def test_refine_maps_rwp_and_reconstructs_chi2():
     # chi2 = gof^2 * (n_obs - n_params) = 4 * (200 - 10)
     assert abs(res.chi2 - 4.0 * (200 - 10)) < 1e-6
     assert res.n_obs == 200 and res.n_params == 10 and res.converged
+
+
+def test_uses_result_nobs_when_present():
+    # Issue #16: 結果が実観測点数 (n_obs) を持つならそれを dof/n_obs に使う
+    # (レンジ制限で model.intensity 長 200 と異なる 150 を優先)
+    def runner(inp):
+        return _stub_result(rwp=10.0, gof=2.0, n_params=10, n_obs=150)
+
+    be = AutoRietveldBackend(resolver=_resolver, histograms=(_histogram(),), runner=runner)
+    res = be.refine(_model("fap"))  # model.intensity は 200 点
+    assert res.n_obs == 150  # model.intensity 長でなく実 Nobs
+    assert abs(res.chi2 - 4.0 * (150 - 10)) < 1e-6  # dof も実 Nobs 基準
+
+
+def test_falls_back_to_model_intensity_when_nobs_absent():
+    # n_obs=0 (未設定) なら従来どおり model.intensity 長にフォールバック
+    def runner(inp):
+        return _stub_result(rwp=10.0, gof=2.0, n_params=10, n_obs=0)
+
+    be = AutoRietveldBackend(resolver=_resolver, histograms=(_histogram(),), runner=runner)
+    res = be.refine(_model("fap"))
+    assert res.n_obs == 200
 
 
 def test_resolver_is_called_per_phase():

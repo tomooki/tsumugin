@@ -46,3 +46,5 @@ def test_t1_rule_loop_auto_increases_background():
     assert any(s.accepted for s in res.steps), [s.result_rwp for s in res.steps]
     # 非破壊台帳は整合
     assert ledger.verify()
+    # Issue #16: engine が実観測点数を通す (BIC 厳密化)
+    assert res.best.n_obs > 0

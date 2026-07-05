@@ -58,6 +58,18 @@ def _converged(gpx) -> bool:
     return bool(cov.get("Rvals", {}).get("converged", True))
 
 
+def _nobs(gpx) -> int:
+    """精密化に用いた実観測点数 (全ヒストグラム総和) を Covariance の Rvals から取り出す。
+
+    レンジ制限 (two_theta_limits) 適用後の点数を反映する。未取得は 0 (利用側が代替源へ縮退)。
+    """
+    rv = gpx.data["Covariance"]["data"].get("Rvals", {})
+    try:
+        return int(rv.get("Nobs", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _cells_physical(g2phases, min_length: float = 0.5) -> bool:
     """全相の格子長が物理的 (有限かつ min_length 以上) かを判定する。
 
@@ -462,6 +474,7 @@ def run_auto_rietveld(
 
         final_rwp = stage_results[-1].rwp if stage_results else float("inf")
         final_gof = stage_results[-1].gof if stage_results else float("inf")
+        final_nobs = _nobs(gpx) if stage_results else 0
 
         out_gpx = ""
         if keep_gpx is not None:
@@ -476,6 +489,7 @@ def run_auto_rietveld(
         refined_cells=refined_cells,
         validity=validity,
         gpx_path=out_gpx,
+        n_obs=final_nobs,
     )
 
 
