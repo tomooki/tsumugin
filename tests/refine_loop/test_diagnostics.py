@@ -83,12 +83,37 @@ def test_edge_low_snr_proposes_setlimits_unsafe():
     props = propose_next_actions(_result(), [_feat(edge_low_snr=True)])
     sl = [p for p in props if isinstance(p.action, SetLimits)]
     assert sl and not sl[0].safe
+    # H1 回帰: プレースホルダは NaN でなく None (json.dumps allow_nan=False 安全)
+    import json
+
+    from tsumugin.refine_loop.serialization import proposal_to_dict
+
+    assert sl[0].action.low is None and sl[0].action.high is None
+    json.dumps(proposal_to_dict(sl[0]), allow_nan=False)
 
 
 def test_validity_fail_proposes_revise_structure_unsafe():
     props = propose_next_actions(_result(passed=False), [_feat()])
     rs = [p for p in props if isinstance(p.action, ReviseStructure)]
     assert rs and not rs[0].safe
+
+
+def test_revise_structure_target_is_order_independent():
+    # M3 回帰: ReviseStructure の相選択は refined_cells の反復順でなく相名でソート (決定論)
+    r1 = AutoRietveldResult(
+        stage_results=(StageResult(label="S0", rwp=20.0, gof=2.0, n_params=8, converged=True),),
+        final_rwp=20.0, final_gof=2.0,
+        refined_cells={"beta": (1,) * 6, "alpha": (1,) * 6},  # 挿入順 beta→alpha
+        validity=ValidityReport(passed=False),
+    )
+    r2 = AutoRietveldResult(
+        stage_results=r1.stage_results, final_rwp=20.0, final_gof=2.0,
+        refined_cells={"alpha": (1,) * 6, "beta": (1,) * 6},  # 逆順
+        validity=ValidityReport(passed=False),
+    )
+    t1 = [p.action.phase for p in propose_next_actions(r1, [_feat()]) if isinstance(p.action, ReviseStructure)]
+    t2 = [p.action.phase for p in propose_next_actions(r2, [_feat()]) if isinstance(p.action, ReviseStructure)]
+    assert t1 == t2 == ["alpha"]  # 反復順に依らず最小相名
 
 
 def test_clean_fit_yields_no_actionable_proposals():

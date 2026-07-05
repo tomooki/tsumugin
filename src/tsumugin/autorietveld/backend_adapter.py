@@ -9,6 +9,12 @@ chi2 は既存 GSASIIBackend と整合する **weighted-SSR** (= gof²·(n_obs�
 BIC 比較の一貫性を保つ (CLAUDE.md 不変条件「chi2/rwp のセマンティクスはバックエンド間で統一」)。
 精密化失敗は例外でなく **chi2=inf の結果**へ縮退させガードレールに処理させる (同不変条件)。
 
+**既知の制限 (n_obs の源)**: ``AutoRietveldResult`` が観測点数 (Nobs) を露出しないため、chi2/BIC の
+Nobs には ``model.intensity`` の長さを用いる。``two_theta_limits`` によるレンジ制限やマルチ
+ヒストグラム joint では GSAS の実 Nobs (= Σ Nobs_i) と一致しないため、**同一ヒストグラム集合内での
+序列比較には妥当**だが、GSASIIBackend と混在させた絶対値比較・BIC の ln(n) 罰は厳密でない。
+真の Nobs を engine から ``AutoRietveldResult`` へ通す厳密化は M-later (Issue 化候補)。
+
 相の構造ファイル解決は `resolver` (phase_ref→PhaseSpec) に委ね、観測ファイルは `histograms`
 テンプレートで与える (PhaseInstance はファイルパスを持たないため)。GSAS は runner 内で遅延 import。
 

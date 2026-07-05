@@ -106,18 +106,25 @@ class Stop(SafeAction):
 class SetLimits(ModelAction):
     """ヒストグラムのデータ範囲を制限する (③/人間の判断)。
 
+    ``low``/``high`` が ``None`` は「切り位置未定のプレースホルダ提案」(診断が出す候補)。
+    実適用には ③ が具体値を入れる。プレースホルダのまま apply すると ValueError。
+
     :param hist_id: 対象ヒストグラム索引 (0 始まり)
-    :param low: 下限 (2θ / TOF)
-    :param high: 上限
+    :param low: 下限 (2θ / TOF)。未定は None
+    :param high: 上限。未定は None
     """
 
     hist_id: int
-    low: float
-    high: float
+    low: float | None = None
+    high: float | None = None
 
     def apply(self, inp: AnalysisInput) -> AnalysisInput:
         if not (0 <= self.hist_id < len(inp.histograms)):
             raise IndexError(f"hist_id={self.hist_id} が範囲外 (n={len(inp.histograms)})")
+        if self.low is None or self.high is None:
+            raise ValueError(
+                "プレースホルダ SetLimits (low/high=None) は適用不能: ③ が切り位置を決めてから適用する"
+            )
         hists = list(inp.histograms)
         hists[self.hist_id] = dataclasses.replace(
             hists[self.hist_id], two_theta_limits=(self.low, self.high)

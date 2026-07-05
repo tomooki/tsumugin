@@ -35,7 +35,10 @@ Diagnose = Callable[[AutoRietveldResult, AnalysisInput], Sequence[ResidualFeatur
 class RefinementLoopResult:
     """閉ループの結果。
 
-    :param best: 受理された中で最良の結果
+    :param best: 最良の結果 = ベースライン or 受理された候補のうち最小 Rwp。受理候補は
+        validity.passed が保証される (過剰適合ガード) が、**ベースラインが validity 不合格でも
+        改善する safe 手が無ければ best はそのベースライン**になる。validity の修復は構造改訂等の
+        ModelAction が要るため ``open_proposals`` として ③/人間に申し送られる (規則は担わない)。
     :param steps: 反復記録 (採用/棄却)
     :param open_proposals: 未適用の ModelAction 提案 (③/人間への申し送り)
     :param iterations: 実行反復数
@@ -131,6 +134,7 @@ def run_refinement_loop(
         if accepted:
             inp = candidate_inp
             result = candidate
+            # best は受理済み候補 (いずれも _accept で eps 超の改善済み) の生の最小 Rwp を追う。
             if candidate.final_rwp < best.final_rwp:
                 best = candidate
         # 棄却時は inp/result を据え置き (revert)。policy が既試行 Action を再選択しないため終了する。

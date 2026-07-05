@@ -117,6 +117,12 @@ def test_set_limits_out_of_range_hist_id_raises():
         SetLimits(9, 2.5, 32.0).apply(_inp())
 
 
+def test_set_limits_placeholder_none_cannot_apply():
+    # H1 回帰: 切り位置未定 (low/high=None) のプレースホルダ提案は適用不能
+    with pytest.raises(ValueError):
+        SetLimits(0, None, None).apply(_inp())
+
+
 def test_add_phase_with_spec_appends():
     extra = PhaseSpec(structure_path="c.cif", phase_name="extra")
     out = AddPhase(spec=extra).apply(_inp())

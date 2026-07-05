@@ -82,8 +82,8 @@ def create_mcp_server(session: AnalysisSession) -> object:
 
     server: Any = Server("tsumugin")
 
-    # 【ツール記述子】: MCP_TOOLS の 8 名を list_tools で公開する。入力スキーマは緩い object
-    #   (追加プロパティ許容) とし、実処理関数側の引数検証・既定値へ委ねる (D7 2 層分離) 🔵
+    # 【ツール記述子】: MCP_TOOLS の全ツール (M4 8 + M6 2 + M8 3 = 13) を list_tools で公開する。
+    #   入力スキーマは緩い object (追加プロパティ許容) とし、実処理関数側の引数検証・既定値へ委ねる 🔵
     _tool_descriptors = [
         mcp_types.Tool(
             name=name,

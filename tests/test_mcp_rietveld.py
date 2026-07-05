@@ -102,6 +102,23 @@ def test_closed_loop_e2e_with_stub_judge():
     assert result["final_rwp"] <= 18.0
 
 
+def test_auto_rietveld_json_safe_when_cells_non_finite():
+    # H-adapter 回帰: 発散/崩壊で refined_cells に NaN/Inf が出ても finite_or_none で None 化し
+    # json.dumps(allow_nan=False) が通る (計器がクラッシュせず失敗を構造化して返す)
+    def diverged_runner(inp):
+        return AutoRietveldResult(
+            stage_results=(StageResult(label="S0", rwp=99.0, gof=9.0, n_params=3, converged=False),),
+            final_rwp=99.0,
+            final_gof=9.0,
+            refined_cells={"ph": (float("nan"), 9.4, float("inf"), 90.0, 90.0, 90.0)},
+            validity=ValidityReport(passed=False),
+        )
+
+    out = auto_rietveld([_H], [_P], runner=diverged_runner)
+    json.dumps(out, allow_nan=False)  # クラッシュしない
+    assert out["refined_cells"]["ph"][0] is None and out["refined_cells"]["ph"][2] is None
+
+
 def test_refine_with_model_action_setlimits():
     # ModelAction (SetLimits) も refine_with_revisions で適用できる (③ が判断した改訂)
     actions = [{"type": "SetLimits", "hist_id": 0, "low": 2.5, "high": 32.0}]

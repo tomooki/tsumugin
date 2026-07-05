@@ -71,7 +71,13 @@ def action_from_dict(d: Mapping[str, object]) -> AnalysisAction:
     if t == "Stop":
         return Stop(str(d["reason"]))
     if t == "SetLimits":
-        return SetLimits(int(d["hist_id"]), float(d["low"]), float(d["high"]))
+        low = d.get("low")
+        high = d.get("high")
+        return SetLimits(
+            int(d["hist_id"]),
+            float(low) if low is not None else None,
+            float(high) if high is not None else None,
+        )
     if t == "AddPhase":
         spec = d.get("spec")
         return AddPhase(

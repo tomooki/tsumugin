@@ -66,7 +66,9 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
             for s in result.stage_results
         ],
         "refined_cells": {
-            name: [float(x) for x in cell] for name, cell in result.refined_cells.items()
+            # 発散/崩壊した精密化で GSAS が NaN/Inf セルを返しうるため finite_or_none で None 化
+            # (allow_nan=False の json.dumps クラッシュを防ぐ; 他フィールドと同一規律)。
+            name: [finite_or_none(x) for x in cell] for name, cell in result.refined_cells.items()
         },
         "validity": {
             "passed": bool(result.validity.passed),

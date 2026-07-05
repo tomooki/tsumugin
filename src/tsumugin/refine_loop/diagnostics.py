@@ -132,7 +132,7 @@ def propose_next_actions(
         if f.edge_low_snr:
             proposals.append(
                 ActionProposal(
-                    action=SetLimits(f.hist_id, float("nan"), float("nan")),
+                    action=SetLimits(f.hist_id, None, None),  # 切り位置未定のプレースホルダ提案
                     rationale=f"hist{f.hist_id}: 端に低 S/N 領域 → データ範囲制限候補 "
                     f"(切り位置は ③ が判断)",
                     priority=0.5,
@@ -144,7 +144,8 @@ def propose_next_actions(
     # validity fail → 構造改訂 (ModelAction, 提案のみ)。ヒストグラム非依存で 1 度だけ。
     if not result.validity.passed:
         failed = [name for name, ok, _ in result.validity.checks if not ok]
-        target_phase = next(iter(result.refined_cells), "")
+        # 相名でソートして決定論的に選ぶ (Mapping の反復順に依存しない, NFR-102)。
+        target_phase = min(result.refined_cells, default="")
         proposals.append(
             ActionProposal(
                 action=ReviseStructure(target_phase, {}),
