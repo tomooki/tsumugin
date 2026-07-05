@@ -1,0 +1,6 @@
+{
+  "name": "tsumugin",
+  "version": "0.1.0",
+  "description": "多仮説・全自動 Rietveld 解析 (③ agentic 判断層)。MCP 3 ツール (auto_rietveld / propose_next_actions / refine_with_revisions) を Claude が反復駆動し、SafeAction は自律・ModelAction (構造改訂/相追加) はユーザー承認を挟んで閉ループ解析する。",
+  "author": "tsumugin"
+}

@@ -17,6 +17,7 @@ from .model import (
     StageResult,
     ValidityReport,
 )
+from .backend_adapter import AutoRietveldBackend
 from .engine import run_auto_rietveld
 from .multistart import (
     MultistartStart,
@@ -29,6 +30,7 @@ from .recipe import build_recipe
 from .validity import check_validity
 
 __all__ = [
+    "AutoRietveldBackend",
     "AutoRietveldResult",
     "Geometry",
     "HistogramSpec",

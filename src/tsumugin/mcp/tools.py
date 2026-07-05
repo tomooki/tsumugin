@@ -44,6 +44,7 @@ from ..sequential.trajectory import Trajectory
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
 from . import mem as _mem
+from .rietveld_tools import RIETVELD_TOOLS as _RIETVELD_TOOLS
 
 __all__ = [
     "MCP_TOOLS",
@@ -462,7 +463,10 @@ def identify_phase_mixtures(
     return response
 
 
-# 【ツールレジストリ】: 10 ツール名 → 実処理関数。アダプタ層 (server.py) が配線に使う単一情報源 🔵 REQ-021
+# 【ツールレジストリ】: 10 ツール (M4 8 + M6 相同定 2) + M8 実構造 Rietveld 3 = 13 ツール名 →
+#   実処理関数。アダプタ層 (server.py) が配線に使う単一情報源 🔵 REQ-021。
+#   M8 の 3 ツール (auto_rietveld/propose_next_actions/refine_with_revisions) は session を取らない
+#   計器+アクチュエータ (rietveld_tools.py, 閉ループ丸ごとは出さない = ③ が回す, architecture.md §6)。
 MCP_TOOLS: Mapping[str, object] = {
     "submit_analysis": submit_analysis,
     "list_hypotheses": list_hypotheses,
@@ -474,4 +478,5 @@ MCP_TOOLS: Mapping[str, object] = {
     "run_mem": run_mem,
     "identify_phases": identify_phases,
     "identify_phase_mixtures": identify_phase_mixtures,
+    **_RIETVELD_TOOLS,
 }

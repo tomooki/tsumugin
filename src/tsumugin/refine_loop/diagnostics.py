@@ -1,0 +1,195 @@
+"""M8: 残差診断 → ActionProposal (提案のみ・適用しない) + 保守的初期リミット。
+
+フィット結果と残差シグネチャ (`ResidualFeatures`) から次手候補を **決定論・安定順**で提案する。
+規則が実行してよい SafeAction (背景増項/パラメータ解放) と ③ 専用の ModelAction (リミット/相追加/
+構造改訂) を `safe` フラグで区別する。適用は行わない (Dara/OED 教訓, §1)。
+
+`propose_initial_limits` は setup 段階の保守的初期リミット (低 S/N 端を切る) のみを出す。ループ内の
+可変アクションではない (§4.3: 範囲を変えると Rwp 比較不能・切り位置は判断のため)。
+
+信頼性: 🔵 architecture.md §5 の残差シグネチャ→提案表と 1:1。純 numpy (GSAS 非依存)。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Mapping, Sequence
+
+import numpy as np
+
+from tsumugin.autorietveld import AutoRietveldResult
+from .action import (
+    AddPhase,
+    AdjustBackground,
+    AnalysisAction,
+    ReleaseParams,
+    ReviseStructure,
+    SetLimits,
+)
+
+
+@dataclass(frozen=True)
+class ResidualFeatures:
+    """ヒストグラム 1 本の残差シグネチャ (診断入力)。
+
+    :param hist_id: ヒストグラム索引
+    :param low_freq_bg_residual: 低周波系統背景残差の大きさ (正規化, 0=なし)
+    :param fwhm_ratio: obs/calc FWHM 比 (1.0 が理想。ずれは size/mustrain 不足)
+    :param unindexed_peak_frac: 未指数 obs ピーク強度の割合 (相不足の徴候)
+    :param edge_low_snr: 端に低 S/N 領域があるか (リミット候補)
+    :param n_background_coeffs: 現在の背景係数数
+    """
+
+    hist_id: int
+    low_freq_bg_residual: float = 0.0
+    fwhm_ratio: float = 1.0
+    unindexed_peak_frac: float = 0.0
+    edge_low_snr: bool = False
+    n_background_coeffs: int = 6
+
+
+@dataclass(frozen=True)
+class ActionProposal:
+    """次手 1 候補。適用はしない (規則ポリシー / ③ が採否を判断)。
+
+    :param action: 提案する AnalysisAction
+    :param rationale: 提案根拠 (自然言語)
+    :param priority: 優先度 (大きいほど先; 決定論ソートのキー)
+    :param evidence: 数値的根拠 (MCP で ③ に露出)
+    :param safe: 規則が実行してよい安全手か (= action.is_safe)
+    """
+
+    action: AnalysisAction
+    rationale: str
+    priority: float
+    evidence: Mapping[str, object] = field(default_factory=dict)
+    safe: bool = False
+
+
+def propose_next_actions(
+    result: AutoRietveldResult,
+    features: Sequence[ResidualFeatures],
+    *,
+    background_max: int = 12,
+    background_step: int = 3,
+    bg_residual_tol: float = 0.1,
+    fwhm_tol: float = 0.1,
+    unindexed_tol: float = 0.05,
+) -> tuple[ActionProposal, ...]:
+    """残差シグネチャと妥当性から次手候補を決定論・安定順で返す (§5)。
+
+    順序: safe 優先 → 優先度降順 → Action 型名昇順 (NFR-102 決定論)。適用はしない。
+    """
+    proposals: list[ActionProposal] = []
+
+    for f in features:
+        # 低周波系統背景残差 → 背景増項 (SafeAction)
+        if f.low_freq_bg_residual > bg_residual_tol and f.n_background_coeffs < background_max:
+            new_n = min(f.n_background_coeffs + background_step, background_max)
+            proposals.append(
+                ActionProposal(
+                    action=AdjustBackground(new_n),
+                    rationale=f"hist{f.hist_id}: 低周波系統残差 {f.low_freq_bg_residual:.2f} "
+                    f"→ 背景 {f.n_background_coeffs}→{new_n} 項",
+                    priority=float(f.low_freq_bg_residual),
+                    evidence={
+                        "signal": "background",
+                        "low_freq_bg_residual": f.low_freq_bg_residual,
+                        "hist_id": f.hist_id,
+                    },
+                    safe=True,
+                )
+            )
+        # obs/calc FWHM 比の系統ずれ → size/mustrain 解放 (SafeAction)
+        if abs(f.fwhm_ratio - 1.0) > fwhm_tol:
+            proposals.append(
+                ActionProposal(
+                    action=ReleaseParams("size_strain", {"size_strain": True}),
+                    rationale=f"hist{f.hist_id}: obs/calc FWHM 比 {f.fwhm_ratio:.2f} "
+                    f"→ 結晶子サイズ/微小歪みを解放",
+                    priority=float(abs(f.fwhm_ratio - 1.0)),
+                    evidence={"signal": "fwhm", "fwhm_ratio": f.fwhm_ratio, "hist_id": f.hist_id},
+                    safe=True,
+                )
+            )
+        # 未指数 obs ピーク → 相追加 (ModelAction, 提案のみ)
+        if f.unindexed_peak_frac > unindexed_tol:
+            proposals.append(
+                ActionProposal(
+                    action=AddPhase(),
+                    rationale=f"hist{f.hist_id}: 未指数ピーク強度 {f.unindexed_peak_frac:.2f} "
+                    f"→ 相追加候補 (相同定へハンドオフ; ③ が判断)",
+                    priority=float(f.unindexed_peak_frac),
+                    evidence={
+                        "signal": "unindexed",
+                        "unindexed_peak_frac": f.unindexed_peak_frac,
+                        "hist_id": f.hist_id,
+                    },
+                    safe=False,
+                )
+            )
+        # 端の低 S/N → データリミット (ModelAction, 提案のみ; 採否は ③)
+        if f.edge_low_snr:
+            proposals.append(
+                ActionProposal(
+                    action=SetLimits(f.hist_id, None, None),  # 切り位置未定のプレースホルダ提案
+                    rationale=f"hist{f.hist_id}: 端に低 S/N 領域 → データ範囲制限候補 "
+                    f"(切り位置は ③ が判断)",
+                    priority=0.5,
+                    evidence={"signal": "edge_snr", "hist_id": f.hist_id},
+                    safe=False,
+                )
+            )
+
+    # validity fail → 構造改訂 (ModelAction, 提案のみ)。ヒストグラム非依存で 1 度だけ。
+    if not result.validity.passed:
+        failed = [name for name, ok, _ in result.validity.checks if not ok]
+        # 相名でソートして決定論的に選ぶ (Mapping の反復順に依存しない, NFR-102)。
+        target_phase = min(result.refined_cells, default="")
+        proposals.append(
+            ActionProposal(
+                action=ReviseStructure(target_phase, {}),
+                rationale=f"物理妥当性 fail ({', '.join(failed) or '不明'}) "
+                f"→ 構造改訂/制約追加候補 (③ が判断)",
+                priority=1.0,
+                evidence={"signal": "validity", "failed_checks": tuple(failed)},
+                safe=False,
+            )
+        )
+
+    # 決定論・安定順: safe 優先 → 優先度降順 → Action 型名昇順
+    proposals.sort(key=lambda p: (not p.safe, -p.priority, type(p.action).__name__))
+    return tuple(proposals)
+
+
+def propose_initial_limits(
+    hist_ids: Sequence[int],
+    patterns: Mapping[int, tuple[np.ndarray, np.ndarray]],
+    *,
+    snr_factor: float = 3.0,
+) -> dict[int, tuple[float, float]]:
+    """低 S/N 端を切る保守的初期リミットを setup 用に提案する (§4.3)。
+
+    ノイズ床 (下位分位) の `snr_factor` 倍を閾値に、信号がそれを超える x の最小/最大を範囲とする。
+    全域が信号なら全域を返す。切り位置の精密化・微調整は ③/人間 (これは保守的初期値のみ)。
+
+    :param hist_ids: 対象ヒストグラム索引列
+    :param patterns: hist_id → (x, y) 観測パターン
+    :returns: hist_id → (low, high)
+    """
+    limits: dict[int, tuple[float, float]] = {}
+    for hid in hist_ids:
+        x, y = patterns[hid]
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        if x.size == 0:
+            continue
+        noise = float(np.quantile(y, 0.1))
+        threshold = noise * snr_factor if noise > 0 else float(np.median(y))
+        above = y > threshold
+        if not above.any():
+            limits[hid] = (float(x.min()), float(x.max()))
+            continue
+        idx = np.flatnonzero(above)
+        limits[hid] = (float(x[idx[0]]), float(x[idx[-1]]))
+    return limits
