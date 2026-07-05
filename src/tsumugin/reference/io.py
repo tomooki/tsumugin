@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["load_gsas_powder", "parse_gsas_powder"]
+__all__ = ["load_gsas_powder", "load_xy", "parse_gsas_powder", "parse_xy"]
 
 # GSAS CONST の start/step はセンチ度 (×100 度) 単位。
 _CENTIDEG_TO_DEG = 0.01
@@ -75,3 +75,33 @@ def load_gsas_powder(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     return parse_gsas_powder(text)
+
+
+def parse_xy(text: str) -> tuple[np.ndarray, np.ndarray]:
+    """2〜3 列 XY テキスト (``2θ intensity [esd]``) を ``(two_theta, intensity)`` へ変換する。🔵
+
+    ``#`` で始まる行と空行は読み飛ばす (Jana2020 / Topas / 汎用 .xy)。3 列目 (esd) は無視する。
+
+    Raises:
+        ValueError: 有効なデータ行が 1 つも無いとき。
+    """
+    two_theta: list[float] = []
+    intensity: list[float] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            continue
+        two_theta.append(float(parts[0]))
+        intensity.append(float(parts[1]))
+    if not two_theta:
+        raise ValueError("有効な XY データ行が見つかりません (2θ intensity の列が必要)。")
+    return np.asarray(two_theta, dtype=float), np.asarray(intensity, dtype=float)
+
+
+def load_xy(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """2〜3 列 XY ファイルを読み ``(two_theta, intensity)`` を返す (``parse_xy`` 参照)。🔵"""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    return parse_xy(text)

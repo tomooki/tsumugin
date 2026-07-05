@@ -19,11 +19,19 @@ _XRA = _DATA / "PBSO4.XRA"
 _CIF = _DATA / "PbSO4-Wyckoff.cif"
 _HAS_DATA = _XRA.exists() and _CIF.exists()
 
+# Jana2020 Cookbook CandAt (Calcite + Aragonite 二相混合, 簡易シミュレーション X線)
+_JANA = _DATA / "jana"
+_CANDAT_XY = _JANA / "CandAt.xy"
+_CALCITE_CIF = _JANA / "calcite.cif"
+_ARAGONITE_CIF = _JANA / "aragonite_mp-4626.cif"
+_HAS_JANA = _CANDAT_XY.exists() and _CALCITE_CIF.exists() and _ARAGONITE_CIF.exists()
+
 pytestmark = pytest.mark.skipif(
     not _HAS_DATA, reason="GSAS-II tutorial PbSO4 データ未配置 (docs/benchmark/README.md 参照)"
 )
 
 _CU_KA1 = 1.5405
+_JANA_WL = 1.54059
 
 
 def test_load_real_pbso4_pattern():
@@ -117,3 +125,73 @@ def test_identify_phase_mixtures_on_real_pattern_returns_result():
     assert result.ranked  # 単相でも仮説が返る
     top_ids = [p.phase_ref for p in result.ranked[0].hypothesis.phases]
     assert len(top_ids) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Jana2020 Cookbook CandAt — Calcite + Aragonite 二相混合の多相同定
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _HAS_JANA, reason="Jana2020 CandAt データ未配置 (docs/benchmark/README.md 参照)")
+def test_load_candat_xy():
+    from tsumugin.reference.io import load_xy
+
+    two_theta, intensity = load_xy(_CANDAT_XY)
+    assert two_theta.size > 7000
+    assert two_theta[0] == pytest.approx(10.005, abs=0.01)
+    assert intensity.max() > intensity.min() > 0
+
+
+@pytest.mark.mp
+@pytest.mark.skipif(not _HAS_JANA, reason="Jana2020 CandAt データ未配置 (docs/benchmark/README.md 参照)")
+def test_background_subtraction_cleans_simulated_noise():
+    # CandAt 簡易シミュレーションは構造化ベースラインで偽ピークが多数 → 背景減算で激減する
+    from tsumugin.reference import UserCIFProvider, identify_phases
+    from tsumugin.reference.io import load_xy
+
+    two_theta, intensity = load_xy(_CANDAT_XY)
+    provider = UserCIFProvider(
+        [_CALCITE_CIF.read_text(encoding="utf-8")],
+        wavelength_angstrom=_JANA_WL,
+        two_theta_range=(10.0, 120.0),
+    )
+    base = identify_phases(two_theta, intensity, provider, elements=["Ca", "C", "O"])
+    with_bg = identify_phases(
+        two_theta, intensity, provider, elements=["Ca", "C", "O"], subtract_bg=True
+    )
+    # 背景減算で観測ピークが大幅に減る (ノイズ由来の偽ピーク除去)
+    assert len(with_bg.observed_peaks) < 0.5 * len(base.observed_peaks)
+
+
+@pytest.mark.mp
+@pytest.mark.skipif(not _HAS_JANA, reason="Jana2020 CandAt データ未配置 (docs/benchmark/README.md 参照)")
+def test_identify_calcite_aragonite_mixture():
+    # Calcite + Aragonite (CaCO3 の 2 多形) 混合を多相同定で検出する (背景減算必須)
+    from tsumugin.reference import UserCIFProvider, identify_phase_mixtures
+    from tsumugin.reference.io import load_xy
+    from tsumugin.search.tree import SearchConfig
+
+    two_theta, intensity = load_xy(_CANDAT_XY)
+    provider = UserCIFProvider(
+        [_CALCITE_CIF.read_text(encoding="utf-8"), _ARAGONITE_CIF.read_text(encoding="utf-8")],
+        wavelength_angstrom=_JANA_WL,
+        two_theta_range=(10.0, 120.0),
+    )
+    result = identify_phase_mixtures(
+        two_theta,
+        intensity,
+        provider,
+        elements=["Ca", "C", "O"],
+        subtract_bg=True,
+        config=SearchConfig(max_phases=2),
+    )
+    assert result.ranked
+    best = result.ranked[0].hypothesis
+    # 最良仮説は 2 相 (calcite + aragonite) を含み、単相より Rwp が良い
+    assert len(best.phases) == 2
+    refs_in_best = {p.phase_ref for p in best.phases}
+    assert len(refs_in_best) == 2  # 2 つの異なる相 (2 多形)
+    # 2 相仮説が単相仮説より良い (混合を正しく検出)
+    single_hyps = [rk for rk in result.ranked if len(rk.hypothesis.phases) == 1]
+    if single_hyps:
+        assert best.metrics.rwp <= single_hyps[0].hypothesis.metrics.rwp

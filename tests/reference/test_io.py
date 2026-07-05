@@ -103,3 +103,49 @@ def test_load_gsas_powder_reads_file(tmp_path):
     assert isinstance(tt, np.ndarray)
     assert tt.shape == (20,)
     assert inten[0] == pytest.approx(100.0)
+
+
+# --- 2 列 XY 形式 (Jana/汎用) ----------------------------------------------
+
+_SAMPLE_XY = """# radtype 1 dattype 2 pwdmethod 1
+# lambda 1.54059 lpfactor 2
+10.005000 13736.0
+10.020000 13619.0
+10.035000 13800.0
+"""
+
+
+def test_parse_xy_skips_comments_and_reads_columns():
+    from tsumugin.reference.io import parse_xy
+
+    tt, inten = parse_xy(_SAMPLE_XY)
+    assert tt.shape == (3,)
+    assert tt[0] == pytest.approx(10.005)
+    assert tt[-1] == pytest.approx(10.035)
+    assert inten[1] == pytest.approx(13619.0)
+
+
+def test_parse_xy_handles_three_columns_with_esd():
+    from tsumugin.reference.io import parse_xy
+
+    text = "20.0 100.0 10.0\n20.02 121.0 11.0\n"
+    tt, inten = parse_xy(text)
+    assert tt.tolist() == [20.0, 20.02]
+    assert inten.tolist() == [100.0, 121.0]  # 3 列目 (esd) は無視
+
+
+def test_parse_xy_empty_raises():
+    from tsumugin.reference.io import parse_xy
+
+    with pytest.raises(ValueError):
+        parse_xy("# only a comment\n\n")
+
+
+def test_load_xy_reads_file(tmp_path):
+    from tsumugin.reference.io import load_xy
+
+    path = tmp_path / "pattern.xy"
+    path.write_text(_SAMPLE_XY, encoding="utf-8")
+    tt, inten = load_xy(path)
+    assert tt.shape == (3,)
+    assert inten[0] == pytest.approx(13736.0)

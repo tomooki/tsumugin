@@ -204,6 +204,7 @@ from .reference import (
     identify_phase_mixtures,
     identify_phases,
     load_gsas_powder,
+    load_xy,
     subtract_background,
 )
 
@@ -365,6 +366,7 @@ __all__ = [
     "identify_phase_mixtures",
     "identify_phases",
     "load_gsas_powder",
+    "load_xy",
     "phase_from_dict",
     "phase_to_dict",
     "propose_measurements",

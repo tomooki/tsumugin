@@ -51,6 +51,7 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "identify_phase_mixtures",
         "identify_phases",
         "load_gsas_powder",
+        "load_xy",
         "subtract_background",
     }
 )

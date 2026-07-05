@@ -35,6 +35,38 @@ done
   Materials Project の実候補群 (S 同素体・Pb5SO8 等) の中から **PbSO4 (mp-3472) が score ≈ 0.52
   で 1 位**に同定される。
 
+## データ取得: Jana2020 Cookbook CandAt (Calcite + Aragonite 二相混合)
+
+Jana2020 Cookbook の *Example 02.5.2 CandAt* — CaCO3 の 2 多形 (calcite R-3c + aragonite Pnma)
+の混合を JANA2020 で簡易シミュレーションした X線パターン (Cu Kα1, capillary)。**同一組成・異構造の
+多相同定** という難しいケース。
+
+配置 (`docs/benchmark/testdata/jana/`):
+| ファイル | 内容 | 取得元 |
+|---|---|---|
+| `CandAt.xy` | calcite + aragonite 混合パターン (2 列 XY, Cu Kα1, 10–120°, 7333 点) | Jana2020 Cookbook Example 02.5.2 Data.zip |
+| `calcite.cif` | Calcite (CaCO3, R-3c, ICDD PDF-4) | 同上 |
+| `aragonite_mp-4626.cif` | Aragonite (CaCO3, Pnma) | Materials Project mp-4626 (`MPRester().search(["Ca","C","O"])` → CifWriter) |
+
+### 多相同定結果 (2026-07-05)
+
+`identify_phase_mixtures` に `UserCIFProvider([calcite, aragonite])` を渡し **背景減算あり**:
+
+| 仮説 | Rwp |
+|---|---|
+| **calcite + aragonite (2 相)** | **86.0** ← 最良 |
+| calcite (単相) | 88.4 |
+| aragonite (単相) | 97.7 |
+
+**2 相仮説が単相を上回り、calcite + aragonite 混合を正しく検出**。
+
+**背景減算が必須**: CandAt.xy は構造化ベースラインを持ち、無処理では `find_peaks` が 735 本の偽ピークを
+拾い被覆率が希釈される。SNIP 背景減算で 27 本の実ピークに絞られ同定が成立する。
+なお全 MP 候補 (Ca-C-O 系) からの同定は、DFT 緩和格子のピーク位置ずれ (Issue #11) と炭素等の
+無関係相の混入で精度が落ちる → 信頼できる構造 (実験 CIF) に絞るのが有効。
+
+再現: `PYTHONIOENCODING=utf-8 uv run pytest tests/reference/test_realdata.py::test_identify_calcite_aragonite_mixture`
+
 ## 背景減算 + Kα2 モデル化の効果 (2026-07-05)
 
 実データには背景・統計ノイズ・Cu Kα2 二重線が含まれる。`identify_phases` / `identify_phase_mixtures`

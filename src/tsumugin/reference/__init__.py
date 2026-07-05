@@ -10,7 +10,7 @@ from .background import estimate_snip_background, subtract_background
 from .cache import CachedReferenceProvider
 from .cif import cif_to_reference_phases
 from .engine import filter_references, identify_phases
-from .io import load_gsas_powder, parse_gsas_powder
+from .io import load_gsas_powder, load_xy, parse_gsas_powder, parse_xy
 from .kalpha import KAlpha2, add_kalpha2_satellites
 from .mixture import ReferenceBackend, identify_phase_mixtures
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
@@ -36,7 +36,9 @@ __all__: list[str] = [
     "identify_phase_mixtures",
     "identify_phases",
     "load_gsas_powder",
+    "load_xy",
     "parse_gsas_powder",
+    "parse_xy",
     "reference_phase_from_dict",
     "reference_phase_to_dict",
     "subtract_background",
