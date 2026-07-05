@@ -92,38 +92,67 @@ def build_recipe(
         )
     )
 
-    # S1: 格子 + 試料変位 (+ 多相なら相分率和制約, 温度差なら静水圧歪み)
-    s1_flags: dict[str, object] = {"cell": True, "displacement": disp}
-    note_bits = ["格子 + ジオメトリ別試料変位"]
-    if multiphase:
-        s1_flags["phase_fraction_sum"] = True
-        note_bits.append("相分率和=1 制約")
-    if temp_diff:
-        s1_flags["hydrostatic_strain"] = True
-        note_bits.append("温度差の静水圧歪み Dij")
-    stages.append(
-        RefinementStage(label="cell+displacement", flags=s1_flags, note="; ".join(note_bits))
-    )
-
-    # 以降は混合占有の有無で解放順序を切り替える (T1/T2 実測で確立):
-    # - 混合占有あり (中性子 garnet 型): 占有率 → Uiso(等価) → プロファイル → 一般位置座標。
-    #   占有率が散乱長コントラストを介して強く効くため早期に解放する。
-    # - 混合占有なし (ラボ X 線 fluoroapatite 型): プロファイル → 座標 → Uiso。
-    if mixed_occ:
+    if multiphase and not mixed_occ:
+        # 多相 (T4 型: 放射光+TOF 二相) の順序 (実測で確立):
+        # 相分率(和=1)を単独で先に → 格子+変位+プロファイル(+温度差 Dij) → 座標 → Uiso →
+        # size/微小歪みを最後に。相分率を格子と同時に解放すると噛まず、size/歪みを座標より
+        # 先に解放すると座標段階が悪化して revert するため、この順序が有効。
         stages.append(
             RefinementStage(
-                label="occupancy",
-                flags={"occupancy": True},
-                note="混合占有サイトの占有率 (和=1 制約下)",
+                label="phase_fractions",
+                flags={"phase_fraction_sum": True},
+                note="相分率 (各ヒストグラム和=1 制約)",
             )
         )
-        stages.append(uiso_stage)
-        stages.append(profile_stage)
+        cell_flags: dict[str, object] = {
+            "cell": True,
+            "displacement": disp,
+            "profile": ["U", "V", "W"],
+        }
+        cell_note = "格子 + 試料変位 + プロファイル(CW)"
+        if temp_diff:
+            cell_flags["hydrostatic_strain"] = True
+            cell_note += " + 温度差 Dij"
+        stages.append(
+            RefinementStage(label="cell+displacement+profile", flags=cell_flags, note=cell_note)
+        )
         stages.append(coords_stage)
+        stages.append(uiso_stage)
+        stages.append(
+            RefinementStage(
+                label="size_strain",
+                flags={"size_strain": True},
+                note="結晶子サイズ/微小歪み (最後に解放)",
+            )
+        )
     else:
-        stages.append(profile_stage)
-        stages.append(coords_stage)
-        stages.append(uiso_stage)
+        # 単相 (T1/T2/T3): 格子+変位 (温度差なら Dij) を先に張る
+        s1_flags: dict[str, object] = {"cell": True, "displacement": disp}
+        note_bits = ["格子 + ジオメトリ別試料変位"]
+        if temp_diff:
+            s1_flags["hydrostatic_strain"] = True
+            note_bits.append("温度差の静水圧歪み Dij")
+        stages.append(
+            RefinementStage(label="cell+displacement", flags=s1_flags, note="; ".join(note_bits))
+        )
+        # 混合占有の有無で解放順序を切り替える:
+        # - 混合占有あり (中性子 garnet 型): 占有率 → Uiso(等価) → プロファイル → 一般位置座標。
+        # - 混合占有なし (ラボ X 線 fluoroapatite 型): プロファイル → 座標 → Uiso。
+        if mixed_occ:
+            stages.append(
+                RefinementStage(
+                    label="occupancy",
+                    flags={"occupancy": True},
+                    note="混合占有サイトの占有率 (和=1 制約下)",
+                )
+            )
+            stages.append(uiso_stage)
+            stages.append(profile_stage)
+            stages.append(coords_stage)
+        else:
+            stages.append(profile_stage)
+            stages.append(coords_stage)
+            stages.append(uiso_stage)
 
     # ラベルに S番号 を前置
     return tuple(

@@ -92,14 +92,27 @@ result = run_auto_rietveld([hx, hn], [p])
 # 期待: 合計 Rwp ~6.7% (チュートリアル 6.71%)
 ```
 
-### 2.4 多相 (T4 NAC+CaF2 型)
+### 2.4 多相 + TOF (T4 NAC+CaF2 型)
 
 ```python
+# 放射光 (11BM, FXYE) + TOF×2 (POWGEN, .gsa)。データリミットが必須。
+hx = HistogramSpec(data_path="11BM_NAC.fxye", instrument_path="11bm_gsas.prm",
+                   radiation=Radiation.XRAY_SYNCHROTRON, geometry=Geometry.DEBYE_SCHERRER,
+                   data_format="FXYE", two_theta_limits=(2.5, 32.0), temperature=298.0)
+ht1 = HistogramSpec(data_path="PG3_22048.gsa", instrument_path="POWGEN_1066.instprm",
+                    radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
+                    data_format="GSAS", two_theta_limits=(11750.0, 103794.0), temperature=298.0)
+ht2 = HistogramSpec(data_path="PG3_22049.gsa", instrument_path="POWGEN_2665.instprm",
+                    radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER, data_format="GSAS")
 phases = [PhaseSpec(structure_path="NAC.cif", phase_name="NAC"),
           PhaseSpec(structure_path="CaF2.cif", phase_name="CaF2")]
-# 多相では各ヒストグラムで相分率和=1 制約が自動生成される
-result = run_auto_rietveld(histograms, phases)
+# 多相は相分率(和=1)を分離して先に→格子→座標→Uiso→size/歪みを最後、と自動で並べ替わる。
+result = run_auto_rietveld([hx, ht1, ht2], phases)
+# 期待: Rwp ~13% (48% 平坦から収束)。TOF プロファイル初期化の手動調整で更に改善余地 (→tutorial 6.83%)
 ```
+
+**重要**: `two_theta_limits` は各ヒストグラムの実効レンジ (放射光/CW は 2θ 度、TOF は TOF μs)。
+低d/高角のノイズ領域を除外しないと平坦化する。範囲はデータのピーク可視域から決める。
 
 ## 3. 自動段階解放レシピ (エージェントが理解すべきアルゴリズム)
 
@@ -134,7 +147,16 @@ result = run_auto_rietveld(histograms, phases)
    で希釈 (T3 で 8.4%)。X線/放射光限定にすると 6.7% (純中性子時のみ中性子に張る)。
 7. **温度差は Dij で吸収**: joint で測定温度が異なる場合、格子を共有したまま per-histogram の
    静水圧歪み Dij を解放して実効格子差を吸収する。
-8. **TOF プロファイル**: TOF は U,V,W でなく sig-1,sig-2,X,Y を解放する (difC/Zero は既定固定)。
+8. **TOF は装置プロファイルを精密化しない**: TOF (sig/alpha/beta) はキャリブレーション依存の
+   ため解放せず、ピーク形状は最後の size/微小歪みで処理する (difC/Zero は固定)。
+9. **データリミットが TOF/放射光多相では必須**: ノイズ領域 (放射光の高角、TOF の低d端) を
+   `two_theta_limits` で除外しないと最小二乗がノイズに支配され**平坦化** (nvar が凍結し格子以降が
+   噛まない)。T4 では 11BM を 2.5–32°、TOF 22048 を d≈0.52Å 以上に制限して 48% 平坦 → 収束。
+10. **多相 (二相以上) は解放順序が単相と異なる**: 相分率 (各ヒストグラム和=1) を格子と**分離して
+    先に**解放し、size/微小歪みを**最後**に解放する。相分率を格子と同時に解放すると噛まず、
+    size/歪みを座標より先に張ると座標段階が悪化して revert する (T4 実測)。
+11. **size/微小歪みは低分解能 CW 中性子のみ除外**: 多ヒストグラムでは低分解能 CW 中性子 (D1a 等)
+    を外し、X線/放射光・**TOF (高分解能)** に張る。TOF は試料ピーク幅情報を持つため必須 (T4)。
 
 ## 5. 結果の読み方と合否判定
 

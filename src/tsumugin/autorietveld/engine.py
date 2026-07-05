@@ -74,13 +74,11 @@ def _cells_physical(g2phases, min_length: float = 0.5) -> bool:
 
 
 def _profile_keys(radiation: Radiation) -> list[str]:
-    """放射源に応じたプロファイル係数キー。
+    """CW (X 線/中性子) の Gaussian プロファイル係数キー U,V,W。
 
-    CW (X 線/中性子) は Gaussian U,V,W。TOF は指数畳み込み + Gaussian の
-    sig-1, sig-2 と Lorentzian X, Y を解放する (difC/Zero 等の較正項は既定で固定)。
+    TOF は本段階では精密化しない (呼び出し側で TOF をスキップ)。TOF の装置プロファイル
+    (sig/alpha/beta) はキャリブレーション依存で、ピーク形状は size/mustrain で処理する。
     """
-    if radiation.is_tof:
-        return ["sig-1", "sig-2", "X", "Y"]
     return ["U", "V", "W"]
 
 
@@ -159,13 +157,21 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
     if "profile" in flags:
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            # TOF の装置プロファイル (sig/alpha/beta) はキャリブレーション依存のため精密化しない。
+            # TOF のピーク形状は最後の size/mustrain (HAP) で処理する (チュートリアル T4 準拠)。
+            if rad.is_tof:
+                continue
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
     if "size_strain" in flags:
-        # サイズ/微小歪みは高分解能の X 線/放射光ヒストグラムに優先して張る。X 線が無い
-        # (純中性子 CW) 場合のみ中性子に張る。joint で低分解能中性子にも張ると過剰母数化して
-        # フィットを希釈する (T3 実測: X 線限定で 8.4%→6.7%)。
-        xray = [h for h, r in zip(hists, radiations) if not r.is_neutron]
-        targets = xray if xray else list(hists)
+        # サイズ/微小歪みは分解能の低い CW 中性子 (例 D1a) を多ヒストグラム時に除外し、
+        # X 線/放射光・TOF (高分解能) に張る。理由: 低分解能 CW 中性子の幅は器械分解能に
+        # 支配され試料由来の情報が乏しく、joint で張ると過剰母数化してフィットを希釈する
+        # (T3 実測: X線+CW中性子で CW 中性子を外すと 8.4%→6.7%)。一方 TOF POWGEN は高分解能で
+        # 試料ピーク幅情報を持つため張る (T4)。単一 or 全て CW 中性子なら全ヒストグラムに張る (T2)。
+        non_lowres = [
+            h for h, r in zip(hists, radiations) if r is not Radiation.NEUTRON_CW
+        ]
+        targets = non_lowres if (non_lowres and len(hists) > 1) else list(hists)
         for ph in phases:
             ph.set_HAP_refinements(
                 {
