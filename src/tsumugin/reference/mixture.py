@@ -21,7 +21,13 @@ from ..backends.base import RefinementModel, RefinementResult
 from ..model import LatticeParams, PhaseInstance
 from ..search.peaks import Peak
 from ..search.tree import HypothesisTreeSearch, SearchConfig, SearchResult
-from .engine import _DEFAULT_HULL_CUTOFF_EV, filter_references
+from .engine import (
+    _DEFAULT_HULL_CUTOFF_EV,
+    augment_kalpha2,
+    filter_references,
+    preprocess_intensity,
+)
+from .kalpha import KAlpha2
 from .provider import ReferenceProvider
 
 __all__ = ["ReferenceBackend", "identify_phase_mixtures"]
@@ -144,6 +150,9 @@ def identify_phase_mixtures(
     hull_cutoff_ev: float | None = _DEFAULT_HULL_CUTOFF_EV,
     config: SearchConfig | None = None,
     peak_fwhm_deg: float = 0.1,
+    subtract_bg: bool = False,
+    bg_max_window: int = 50,
+    kalpha2: KAlpha2 | None = None,
 ) -> SearchResult:
     """未知パターン + 元素一覧から多相混合を同定する (FR-110/115)。🔵
 
@@ -159,6 +168,9 @@ def identify_phase_mixtures(
         hull_cutoff_ev: hull フィルタ閾値 (eV/atom)。``None`` で無効化。既定 0.1 (FR-103)。
         config: 木探索設定 (``max_phases`` 等)。``None`` で既定 ``SearchConfig()``。
         peak_fwhm_deg: 参照ピーク描画の半値幅 (度)。既定 0.1。
+        subtract_bg: True で観測強度に SNIP 背景減算を前処理適用する (実測データの精度向上)。
+        bg_max_window: SNIP の最大クリップ窓幅 (点数)。``subtract_bg`` 時のみ有効。
+        kalpha2: 参照ピークに付加する Kα2 サテライト設定。``None`` で無効 (単色近似)。
 
     Returns:
         ``SearchResult``。候補ゼロ (フィルタ全滅) でも例外化せず空へ縮退する。
@@ -169,7 +181,15 @@ def identify_phase_mixtures(
     if len(elements) == 0:
         raise ValueError("elements は非空の元素記号列である必要があります (相同定の対象元素系)。")
 
+    # 【背景減算】: 実測背景を SNIP で除く (オプション)。木探索の refine も背景減算後を当てる 🔵
+    intensity = preprocess_intensity(
+        intensity, subtract_bg=subtract_bg, bg_max_window=bg_max_window
+    )
+
     survivors = filter_references(provider.fetch(elements), elements, hull_cutoff_ev=hull_cutoff_ev)
+    # 【Kα2 サテライト】: 実測二重線に参照を整合させる (オプション) 🔵 FR-105
+    if kalpha2 is not None:
+        survivors = augment_kalpha2(survivors, kalpha2)
 
     # 【候補 + backend 構築】: 各参照相を PhaseInstance 候補に、ピークを peak_map に写す 🔵
     peak_map = {ref.phase_id: ref.peaks for ref in survivors}

@@ -21,10 +21,14 @@ from tsumugin import (
     PhaseMatch,
     ReferencePhase,
     ReferenceProvider,
+    KAlpha2,
     UserCIFProvider,
+    add_kalpha2_satellites,
+    estimate_snip_background,
     identify_phase_mixtures,
     identify_phases,
     load_gsas_powder,
+    subtract_background,
 )
 
 _M6_PROMOTED_SYMBOLS = frozenset(
@@ -41,9 +45,13 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "ReferencePhase",
         "ReferenceProvider",
         "UserCIFProvider",
+        "KAlpha2",
+        "add_kalpha2_satellites",
+        "estimate_snip_background",
         "identify_phase_mixtures",
         "identify_phases",
         "load_gsas_powder",
+        "subtract_background",
     }
 )
 
@@ -79,6 +87,10 @@ def test_m6_reexports_are_same_object():
     assert ICSDProvider is tsumugin.reference.ICSDProvider
     assert CachedReferenceProvider is tsumugin.reference.CachedReferenceProvider
     assert load_gsas_powder is tsumugin.reference.load_gsas_powder
+    assert subtract_background is tsumugin.reference.subtract_background
+    assert estimate_snip_background is tsumugin.reference.estimate_snip_background
+    assert KAlpha2 is tsumugin.reference.KAlpha2
+    assert add_kalpha2_satellites is tsumugin.reference.add_kalpha2_satellites
 
 
 def test_m6_dunder_all_names_all_resolvable():

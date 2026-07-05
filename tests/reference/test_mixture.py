@@ -228,6 +228,20 @@ def test_empty_elements_raises():
         identify_phase_mixtures(tt, y, prov, elements=[])
 
 
+def test_mixtures_accepts_preprocessing_options():
+    # subtract_bg + kalpha2 を渡しても SearchResult を返す (前処理配線の疎通)
+    from tsumugin.reference.kalpha import KAlpha2
+
+    tt, y = _pattern([(20.0, 1.0), (40.0, 1.0)])
+    y = y + 30.0  # 一定背景を足す
+    prov = FakeProvider([_ref("mp-A", [20.0, 40.0])])
+    result = identify_phase_mixtures(
+        tt, y, prov, elements=["Fe", "O"], subtract_bg=True, kalpha2=KAlpha2()
+    )
+    assert isinstance(result, SearchResult)
+    assert result.ranked  # 背景減算後も相が同定される
+
+
 def test_max_phases_config_respected():
     tt, y = _pattern([(20.0, 1.0), (30.0, 1.0), (40.0, 1.0)])
     prov = FakeProvider([

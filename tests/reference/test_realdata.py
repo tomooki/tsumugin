@@ -60,6 +60,50 @@ def test_identify_pbso4_from_real_cuka_pattern():
 
 
 @pytest.mark.mp
+def test_kalpha2_resolves_unknown_phase_flag_on_real_data():
+    # Kα2 サテライトモデルが実測 PbSO4 の二重線を説明し、単相サンプルの未知相誤検出を解消する
+    from tsumugin.reference import KAlpha2, UserCIFProvider, identify_phases
+    from tsumugin.reference.io import load_gsas_powder
+
+    two_theta, intensity = load_gsas_powder(_XRA)
+    provider = UserCIFProvider(
+        [_CIF.read_text(encoding="utf-8")],
+        wavelength_angstrom=_CU_KA1,
+        two_theta_range=(10.0, 160.0),
+    )
+    base = identify_phases(two_theta, intensity, provider, elements=["Pb", "S", "O"])
+    with_ka2 = identify_phases(
+        two_theta, intensity, provider, elements=["Pb", "S", "O"], kalpha2=KAlpha2()
+    )
+    # baseline は Kα2 二重線を説明できず未マッチ観測が残る
+    assert len(base.unmatched.unmatched_observed) > 0
+    assert base.unmatched.unknown_phase_flag is True
+    # Kα2 モデルで未マッチが減り、単相サンプルの未知相フラグが解消する
+    assert len(with_ka2.unmatched.unmatched_observed) < len(base.unmatched.unmatched_observed)
+    assert with_ka2.unmatched.unknown_phase_flag is False
+
+
+@pytest.mark.mp
+def test_background_subtraction_reduces_spurious_peaks_on_real_data():
+    from tsumugin.reference import UserCIFProvider, identify_phases
+    from tsumugin.reference.io import load_gsas_powder
+
+    two_theta, intensity = load_gsas_powder(_XRA)
+    provider = UserCIFProvider(
+        [_CIF.read_text(encoding="utf-8")],
+        wavelength_angstrom=_CU_KA1,
+        two_theta_range=(10.0, 160.0),
+    )
+    base = identify_phases(two_theta, intensity, provider, elements=["Pb", "S", "O"])
+    with_bg = identify_phases(
+        two_theta, intensity, provider, elements=["Pb", "S", "O"], subtract_bg=True
+    )
+    # 背景減算で背景に乗った弱い偽ピークが減り、最良マッチは PbSO4 のまま
+    assert len(with_bg.observed_peaks) <= len(base.observed_peaks)
+    assert with_bg.matches[0].reference.formula == "PbSO4"
+
+
+@pytest.mark.mp
 def test_identify_phase_mixtures_on_real_pattern_returns_result():
     from tsumugin.reference import UserCIFProvider, identify_phase_mixtures
     from tsumugin.reference.io import load_gsas_powder

@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+from .background import estimate_snip_background, subtract_background
 from .cache import CachedReferenceProvider
 from .cif import cif_to_reference_phases
 from .engine import filter_references, identify_phases
 from .io import load_gsas_powder, parse_gsas_powder
+from .kalpha import KAlpha2, add_kalpha2_satellites
 from .mixture import ReferenceBackend, identify_phase_mixtures
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
 from .provider import ReferenceProvider
@@ -20,13 +22,16 @@ __all__: list[str] = [
     "CODProvider",
     "CachedReferenceProvider",
     "ICSDProvider",
+    "KAlpha2",
     "PhaseIdentification",
     "PhaseMatch",
     "ReferenceBackend",
     "ReferencePhase",
     "ReferenceProvider",
     "UserCIFProvider",
+    "add_kalpha2_satellites",
     "cif_to_reference_phases",
+    "estimate_snip_background",
     "filter_references",
     "identify_phase_mixtures",
     "identify_phases",
@@ -34,4 +39,5 @@ __all__: list[str] = [
     "parse_gsas_powder",
     "reference_phase_from_dict",
     "reference_phase_to_dict",
+    "subtract_background",
 ]

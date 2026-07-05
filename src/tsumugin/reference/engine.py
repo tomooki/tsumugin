@@ -13,16 +13,38 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 import numpy as np
 
 from ..search.matcher import MatchResult, match_score, unmatched_peaks
 from ..search.peaks import find_peaks
+from .background import subtract_background
+from .kalpha import KAlpha2, add_kalpha2_satellites
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
 from .provider import ReferenceProvider
 
 # hull フィルタ既定閾値。FR-103: 100 meV/atom = 0.1 eV/atom。
 _DEFAULT_HULL_CUTOFF_EV = 0.1
+
+
+def augment_kalpha2(
+    candidates: Sequence[ReferencePhase], config: KAlpha2
+) -> list[ReferencePhase]:
+    """各候補相のピークに Kα2 サテライトを付加した新リストを返す (非破壊)。🔵 FR-105
+
+    単相/多相同定が共有する前処理。実測の Kα1/Kα2 二重線に参照ピークを整合させる。
+    """
+    return [replace(c, peaks=add_kalpha2_satellites(c.peaks, config)) for c in candidates]
+
+
+def preprocess_intensity(
+    intensity: np.ndarray, *, subtract_bg: bool, bg_max_window: int
+) -> np.ndarray:
+    """観測強度の前処理 (背景減算)。``subtract_bg=False`` なら素通し。🔵"""
+    if not subtract_bg:
+        return np.asarray(intensity, dtype=float)
+    return subtract_background(intensity, max_window=bg_max_window)
 
 
 def _passes_hull(phase: ReferencePhase, cutoff_ev: float | None) -> bool:
@@ -73,12 +95,15 @@ def identify_phases(
     match_tol_deg: float = 0.15,
     max_results: int | None = None,
     high_r_threshold: float | None = None,
+    subtract_bg: bool = False,
+    bg_max_window: int = 50,
+    kalpha2: KAlpha2 | None = None,
 ) -> PhaseIdentification:
     """未知パターン + 元素一覧から候補相を同定する (FR-110/117)。🔵
 
-    【処理フロー】: 観測ピーク検出 → 供給元から候補相取得 → 元素系 + hull フィルタ →
-      候補ごとに ``match_score`` → score 降順 (同点 phase_id 昇順) にランキング →
-      全生存候補の説明力から未知相レポートを構築。``max_results`` は表示件数のみ絞り、
+    【処理フロー】: (背景減算) → 観測ピーク検出 → 供給元から候補相取得 → 元素系 + hull フィルタ →
+      (Kα2 サテライト付加) → 候補ごとに ``match_score`` → score 降順 (同点 phase_id 昇順) に
+      ランキング → 全生存候補の説明力から未知相レポートを構築。``max_results`` は表示件数のみ絞り、
       未知相判定は絞り込み前の全生存候補で行う (説明力の隠蔽をしない)。
 
     Args:
@@ -91,6 +116,9 @@ def identify_phases(
         match_tol_deg: ピーク一致許容差 (度)。既定 0.15。
         max_results: 返すマッチ件数の上限。``None`` で無制限。
         high_r_threshold: 全候補の最大 score がこの値未満なら未知相フラグを強制 (REQ-106)。``None`` で無効。
+        subtract_bg: True で観測強度に SNIP 背景減算を前処理適用する (実測データの精度向上)。
+        bg_max_window: SNIP の最大クリップ窓幅 (点数)。``subtract_bg`` 時のみ有効。
+        kalpha2: 参照ピークに付加する Kα2 サテライト設定。``None`` で無効 (単色近似)。
 
     Returns:
         ``PhaseIdentification`` (ランキング済みマッチ + 未知相レポート + 観測ピーク)。
@@ -101,6 +129,11 @@ def identify_phases(
     if len(elements) == 0:
         raise ValueError("elements は非空の元素記号列である必要があります (相同定の対象元素系)。")
 
+    # 【背景減算】: 実測の遅変化背景を SNIP で除く (オプション、実データ精度向上) 🔵
+    intensity = preprocess_intensity(
+        intensity, subtract_bg=subtract_bg, bg_max_window=bg_max_window
+    )
+
     # 【観測ピーク検出】: 局所極大 + 高さ閾値。全ゼロ等は空タプルへ縮退 (EDGE-003) 🔵
     observed = find_peaks(two_theta, intensity, min_height_frac=min_peak_height_frac)
 
@@ -109,6 +142,10 @@ def identify_phases(
 
     # 【前処理フィルタ】: 元素系部分集合 + hull を冪等に適用する 🔵 FR-103
     survivors = filter_references(candidates, elements, hull_cutoff_ev=hull_cutoff_ev)
+
+    # 【Kα2 サテライト】: 実測の二重線に整合させ未マッチ低減 (オプション) 🔵 FR-105
+    if kalpha2 is not None:
+        survivors = augment_kalpha2(survivors, kalpha2)
 
     # 【マッチング】: 生存候補ごとに一致率 + 被覆率スコアを求める 🔵 FR-111
     match_results: list[MatchResult] = []
