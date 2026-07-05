@@ -256,6 +256,42 @@ def test_prefilter_top_k_limits_candidates():
     assert all_ids == {"mp-good"}  # 上位 1 = good のみが探索対象
 
 
+def test_dynamic_prefilter_keeps_multiple_good_phases():
+    # 動的閾値は良い相を件数に依らず残す (固定 top-k=1 のように切らない)
+    tt, y = _pattern([(20.0, 1.0), (30.0, 1.0), (40.0, 1.0), (50.0, 1.0), (60.0, 1.0)])
+    good = [
+        _ref("mp-g1", [20.0, 40.0]),
+        _ref("mp-g2", [30.0, 50.0]),
+        _ref("mp-g3", [60.0]),
+    ]
+    junk = [_ref(f"mp-j{i}", [12.0 + i, 15.0 + i]) for i in range(6)]  # 無関係
+    prov = FakeProvider(good + junk)
+    result = identify_phase_mixtures(
+        tt, y, prov, elements=["Fe", "O"], prefilter_dynamic=True,
+        config=SearchConfig(max_phases=3),
+    )
+    all_ids = {p.phase_ref for rk in result.ranked for p in rk.hypothesis.phases}
+    # 良い相が複数残り無関係相は除かれる
+    assert "mp-g1" in all_ids and "mp-g2" in all_ids
+    assert not any(j.phase_id in all_ids for j in junk)
+
+
+def test_align_then_prune_rescues_offset_phase():
+    # DFT ズレ相当のオフセットがある正解相を、整合してから絞ることで落とさない
+    tt, y = _pattern([(20.0, 1.0), (40.0, 1.0), (30.0, 1.0), (50.0, 1.0)])
+    # 正解 A,B は 0.3° ずれ (未整合スコアは低い)。junk は観測外
+    a = _ref("mp-A", [20.3, 40.3])
+    b = _ref("mp-B", [30.3, 50.3])
+    junk = [_ref(f"mp-j{i}", [13.0 + i, 16.0 + i]) for i in range(5)]
+    prov = FakeProvider([a, b] + junk)
+    result = identify_phase_mixtures(
+        tt, y, prov, elements=["Fe", "O"], refine_lattice=True, prefilter_dynamic=True,
+        strain_penalty=5.0, config=SearchConfig(max_phases=2),
+    )
+    top_ids = {p.phase_ref for p in result.ranked[0].hypothesis.phases}
+    assert top_ids == {"mp-A", "mp-B"}  # ずれた正解が整合で救われ 2 相同定
+
+
 def test_refine_lattice_absorbs_offset_in_mixture():
     # refine_lattice: DFT 格子ズレ相当の位置オフセットを吸収して混合を検出する
     from tsumugin.reference.rietveld import align_peaks  # noqa: F401 (整合ロジックの存在確認)

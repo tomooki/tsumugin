@@ -103,13 +103,26 @@ Phase A (格子精密化) ──┬─→ Phase B (単相事前精密化)
 |---|---|---|
 | A | ✅ 格子ズレ吸収 (等方歪み ε + ゼロシフト z, Pawley-lite) | `reference.rietveld.align_peaks` / `LatticeAlignment` |
 | B | ✅ 単相事前格子整合 | `identify_phases(refine_lattice=True, max_strain=)` |
-| C | ✅ 多相ノードの格子整合 (事前フィルタ後に整合し junk 混入回避) | `identify_phase_mixtures(refine_lattice=True)` |
+| C | ✅ 多相ノードの格子整合 + 絞り込み再設計 (下記) | `identify_phase_mixtures(refine_lattice=True, prefilter_dynamic=True, strain_penalty=)` |
 | D | ✅ 格子シフト ΔU をランキング反映 (`PhaseMatch.strain` / `strain_penalty`)。missing 駆動展開・順序制約は既存木探索が機能的に相当し据置 | `identify_phases(strain_penalty=)` |
 | E | ✅ 組成グルーピング (同組成多形を集約) | `reference.group_by_composition` / `PhaseMatchGroup` |
 
 Dara スコアも公開コード (CederGroupHub/dara) 準拠に厳密化 (2 閾値分類・min 寄与・係数)。
 実検証: 実測 CandAt を **元素 (Ca,C,O) のみ**で全 MP 候補から calcite+aragonite 同定 (格子整合で
 aragonite の単相スコア 0.047→0.314)。full 異方 Rietveld (GSAS-II, 原子/プロファイル) は将来拡張。
+
+### 絞り込み (prefilter) の再設計 — 正解を落とさない (Dara 準拠)
+初期実装は「整合前の生スコアで固定 top-k」だったが、DFT 格子ズレで正解相のスコアが沈み top-k から
+落ちる欠陥があった (Dara との比較で判明)。Dara は各相を格子精密化 (単相 refine) してからスコアし、
+**動的閾値** (`find_optimal_score_threshold`: スコア分布パーセンタイルの2階微分が最大 = 変曲点) で
+良/悪を分け、件数に依らず良い相を残す。これに合わせて再設計:
+- **整合してからスコアで絞る** (`refine_lattice` を絞り込み前に適用)。DFT ズレを吸収し正解を落とさない。
+- **junk 抑制はスコア側**: Dara 木戦略の係数 (extra −1.0 / missing −0.01) + 格子シフト罰 `strain_penalty`
+  (Dara FoM の ΔU)。少ピーク junk が整合で偽マッチしても extra 罰と大きな歪みで沈む。
+- **固定 top-k → 動的閾値** (`reference.threshold.inflection_threshold`, numpy)。`prefilter_top_k` は
+  安全上限として併用可。相数の弱ペナルティは既存 BIC (`n_params`=相数) が担う。
+- 実検証 (全 MP CandAt): 旧「整合なし top-k」は炭素へ誤同定、新「整合+動的閾値+strain罰」は
+  calcite+aragonite を正しく同定。
 
 ## 実装方針 (numpy コア維持)
 格子精密化は当面 **numpy のみの Pawley-lite** (等方歪み ε + ゼロシフト z、必要なら hkl ベースの

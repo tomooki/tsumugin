@@ -63,6 +63,7 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "group_by_composition",
         "identify_phase_mixtures",
         "identify_phases",
+        "inflection_threshold",
         "load_gsas_powder",
         "load_xy",
         "subtract_background",

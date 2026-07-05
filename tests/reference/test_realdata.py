@@ -260,8 +260,10 @@ def test_element_only_multiphase_from_full_mp_candidates():
         _CachedProvider(),
         elements=["Ca", "C", "O"],
         hull_cutoff_ev=0.15,
-        subtract_bg=True,       # 簡易シミュレーションの構造化背景を除去
-        prefilter_top_k=8,      # Dara スコアで無関係相 (炭素等) を除外
+        subtract_bg=True,           # 簡易シミュレーションの構造化背景を除去
+        refine_lattice=True,        # DFT 格子ズレを吸収してから絞り込む (正解を落とさない)
+        prefilter_dynamic=True,     # 動的閾値 (変曲点) で良い相を件数に依らず残す
+        strain_penalty=5.0,         # 大きな格子調整を要した無関係相を下げる (Dara FoM)
         config=SearchConfig(max_phases=2),
     )
     assert result.ranked

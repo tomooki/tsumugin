@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 import numpy as np
 
@@ -23,14 +24,20 @@ from ..search.peaks import Peak, find_peaks
 from ..search.tree import HypothesisTreeSearch, SearchConfig, SearchResult
 from .engine import (
     _DEFAULT_HULL_CUTOFF_EV,
-    align_references,
     augment_kalpha2,
     filter_references,
     preprocess_intensity,
 )
 from .kalpha import KAlpha2
 from .provider import ReferenceProvider
+from .rietveld import align_peaks
 from .scoring import dara_peak_score
+from .threshold import inflection_threshold
+
+# 絞り込みスコアの係数 (Dara の木戦略準拠): extra を強く罰し (−1.0)、missing は弱く (−0.01)。
+# missing ピークは他相が説明し得るため罰を弱め、無関係相の予測する余剰 extra ピークを強く罰する。
+_PRUNE_EXTRA_WEIGHT = 1.0
+_PRUNE_MISSING_WEIGHT = 0.01
 
 __all__ = ["ReferenceBackend", "identify_phase_mixtures"]
 
@@ -156,9 +163,11 @@ def identify_phase_mixtures(
     bg_max_window: int = 50,
     kalpha2: KAlpha2 | None = None,
     prefilter_top_k: int | None = None,
+    prefilter_dynamic: bool = False,
     match_tol_deg: float = 0.15,
     refine_lattice: bool = False,
     max_strain: float = 0.01,
+    strain_penalty: float = 0.0,
 ) -> SearchResult:
     """未知パターン + 元素一覧から多相混合を同定する (FR-110/115)。🔵
 
@@ -177,12 +186,17 @@ def identify_phase_mixtures(
         subtract_bg: True で観測強度に SNIP 背景減算を前処理適用する (実測データの精度向上)。
         bg_max_window: SNIP の最大クリップ窓幅 (点数)。``subtract_bg`` 時のみ有効。
         kalpha2: 参照ピークに付加する Kα2 サテライト設定。``None`` で無効 (単色近似)。
-        prefilter_top_k: Dara スコア (式1) で候補を事前ランクし上位 k 相のみ木探索へ渡す。
-            ``None`` で無効 (全候補)。候補が多い元素系 (全 MP 取得) で無関係相を除き高速化する。
-        match_tol_deg: Dara 事前スコアのピーク一致許容差 (度)。``prefilter_top_k`` 時のみ有効。
-        refine_lattice: True で各候補の計算ピークを観測へ格子整合してから木探索/事前フィルタに使う
-            (DFT 緩和格子のピーク位置ずれを吸収, Phase A/C)。
+        prefilter_top_k: 絞り込みの安全上限。実効スコア上位 k 相のみ木探索へ渡す。``None`` で無制限。
+            ``prefilter_dynamic`` と併用可 (動的閾値通過後にさらに上限を掛ける)。
+        prefilter_dynamic: True で動的閾値 (スコア分布の変曲点, Dara 準拠) を適用し、良い相を件数に
+            依らず残す (固定 top-k より正解を落としにくい)。閾値通過相のみ木探索へ渡す。
+        match_tol_deg: 絞り込みスコアのピーク一致許容差 (度)。
+        refine_lattice: True で各候補の計算ピークを観測へ格子整合してから絞り込み/木探索に使う
+            (DFT 緩和格子のピーク位置ずれを吸収, Phase A/C)。整合してからスコアするので正解を落とさず、
+            junk は強い extra 罰 + ``strain_penalty`` で沈む。
         max_strain: ``refine_lattice`` 時の等方歪み上限 (既定 0.01 = 1%)。
+        strain_penalty: 絞り込みスコアで格子シフトを罰す係数 (Dara FoM の ΔU)。実効スコア =
+            score − strain_penalty·|strain|。大きな整合を要した無関係相を下げる。既定 0。
 
     Returns:
         ``SearchResult``。候補ゼロ (フィルタ全滅) でも例外化せず空へ縮退する。
@@ -203,25 +217,44 @@ def identify_phase_mixtures(
     if kalpha2 is not None:
         survivors = augment_kalpha2(survivors, kalpha2)
 
-    # 【Dara 事前フィルタ】: ピークマッチスコアで候補を絞り木探索コストを抑える (Fei et al. 2026) 🔵
-    #   Dara の「精密化前にピークマッチで有望相を選ぶ」に対応。無関係相 (extra 罰で低スコア) を除く。
-    #   格子整合の前に生スコアで絞る: 少ピーク junk が整合で偽マッチし正解を押し出すのを防ぐ 🔵
-    if prefilter_top_k is not None and len(survivors) > prefilter_top_k:
+    # 【整合 → 絞り込み】: Dara 準拠。各候補を観測へ格子整合してから (DFT ズレ吸収) Dara スコアで
+    #   評価し、動的閾値 (変曲点) + 安全 top-k で絞る。整合後にスコアするので正解を落とさず、junk は
+    #   強い extra 罰 + 格子シフト罰 (strain_penalty) で沈むため偽マッチしても残らない (Fei et al. 2026)。
+    pruning = prefilter_dynamic or prefilter_top_k is not None
+    if refine_lattice or pruning:
         observed = find_peaks(two_theta, intensity)
-        ranked = sorted(
-            survivors,
-            key=lambda r: (
-                -dara_peak_score(r.peaks, observed, tol_deg=match_tol_deg).score,
-                r.phase_id,
-            ),
-        )
-        survivors = ranked[:prefilter_top_k]
+        evaluated: list[tuple] = []  # (整合済 ref, 実効スコア)
+        for ref in survivors:
+            if refine_lattice:
+                al = align_peaks(ref.peaks, observed, max_strain=max_strain)
+                ref = replace(ref, peaks=al.aligned_peaks)  # noqa: PLW2901 整合済ピークを下流へ
+                strain = abs(al.strain)
+            else:
+                strain = 0.0
+            ds = dara_peak_score(
+                ref.peaks,
+                observed,
+                tol_deg=match_tol_deg,
+                w_extra=_PRUNE_EXTRA_WEIGHT,
+                w_missing=_PRUNE_MISSING_WEIGHT,
+            )
+            evaluated.append((ref, ds.score - strain_penalty * strain))
 
-    # 【格子整合】: 事前フィルタ通過の候補のみ観測へ格子整合 (Phase A/C)。木探索は整合済ピークで
-    #   Rwp を評価し DFT 格子ズレを吸収する。整合を絞り込み後にすることで junk の混入を防ぐ 🔵
-    if refine_lattice:
-        observed = find_peaks(two_theta, intensity)
-        survivors = align_references(survivors, observed, max_strain=max_strain)
+        if pruning:
+            if prefilter_dynamic:
+                threshold = inflection_threshold([e for _, e in evaluated])
+                kept = [(r, e) for r, e in evaluated if e >= threshold]
+                # 【安全網】: 変曲点で全滅した場合は最良 1 相を残す (相同定を空にしない) 🔵
+                if not kept and evaluated:
+                    kept = sorted(evaluated, key=lambda t: (-t[1], t[0].phase_id))[:1]
+            else:
+                kept = list(evaluated)
+            # 【安全上限】: top-k 指定時は実効スコア降順で上位のみ (動的閾値と併用可) 🔵
+            if prefilter_top_k is not None and len(kept) > prefilter_top_k:
+                kept = sorted(kept, key=lambda t: (-t[1], t[0].phase_id))[:prefilter_top_k]
+            survivors = [r for r, _ in kept]
+        else:
+            survivors = [r for r, _ in evaluated]
 
     # 【候補 + backend 構築】: 各参照相を PhaseInstance 候補に、ピークを peak_map に写す 🔵
     peak_map = {ref.phase_id: ref.peaks for ref in survivors}

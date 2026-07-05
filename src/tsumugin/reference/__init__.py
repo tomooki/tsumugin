@@ -20,6 +20,7 @@ from .providers import CODProvider, ICSDProvider, UserCIFProvider
 from .rietveld import LatticeAlignment, align_peaks
 from .scoring import DaraScore, dara_peak_score
 from .serialization import reference_phase_from_dict, reference_phase_to_dict
+from .threshold import inflection_threshold
 
 __all__: list[str] = [
     "CODProvider",
@@ -44,6 +45,7 @@ __all__: list[str] = [
     "group_by_composition",
     "identify_phase_mixtures",
     "identify_phases",
+    "inflection_threshold",
     "load_gsas_powder",
     "load_xy",
     "parse_gsas_powder",
