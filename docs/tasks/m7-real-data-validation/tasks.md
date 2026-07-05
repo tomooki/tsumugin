@@ -3,6 +3,10 @@
 各タスクは TDD (Red→Green→Refactor)。GSAS-II 依存は `@pytest.mark.gsas`。
 タスク毎に 1 コミット (テスト green)。
 
+**進捗 (2026-07-05)**: Phase A–C 完了 (T1/T2/T3 いずれもチュートリアル同等以上を自動達成)。
+Phase D はインフラ (FXYE ローダー・多相相分率制約・TOF プロファイルキー・格子崩壊ガード) 完了、
+T4 の TOF Rwp 収束は M-later。Phase E (洗練・AGENT_PLAYBOOK・完了記録) 完了。
+
 ## Phase A — 実構造 Rietveld コア + T1 検証
 
 - **TASK-0701** `autorietveld.model`: 入力/出力 frozen dataclass 群 + Radiation/Geometry Enum。
