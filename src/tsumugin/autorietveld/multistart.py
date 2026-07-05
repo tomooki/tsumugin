@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
@@ -34,8 +35,9 @@ class MultistartStart:
 class RietveldMultistartResult:
     """マルチスタート大域最適確認の結果。
 
-    :param best: 最良 (valid かつ最小 final_rwp) の AutoRietveldResult。全滅時は最小 Rwp。
-    :param best_index: best を与えた開始点 index。
+    :param best: 最良 (valid かつ最小 final_rwp) の AutoRietveldResult。valid が無ければ最小 Rwp。
+        全開始点が実行失敗 (例外) の場合は None (best_index=-1)。
+    :param best_index: best を与えた開始点 index。全滅時は -1。
     :param starts: 全開始点 (摂動と結果)。
     :param n_starts: 実行開始点数。
     :param n_diverged: 発散 (final_rwp 非有限) で除外した開始点数。
@@ -44,7 +46,7 @@ class RietveldMultistartResult:
     :param warnings: 縮退・全滅などの警告。
     """
 
-    best: AutoRietveldResult
+    best: AutoRietveldResult | None
     best_index: int
     starts: tuple[MultistartStart, ...]
     n_starts: int
@@ -55,19 +57,14 @@ class RietveldMultistartResult:
 
 
 def _grid_scales(n_starts: int, lattice_frac: float) -> list[float]:
-    """[1-frac, 1+frac] を n_starts 点で等分割した等方倍率列 (決定論)。
+    """1.0 を中心に ±lattice_frac へ対称に配した等方倍率列 (決定論)。
 
-    先頭は必ず 1.0 (無摂動 = 与えられた初期構造) を含める。n_starts==1 なら [1.0]。
+    ``t = -1 + 2i/(n-1)`` を用いるため両側を均等に探索する (M4: 偶数 n でも非対称/重複が出ない)。
+    **奇数 n は中心 t=0 を持ち無摂動 1.0 を正確に含む** (整数演算で 1.0 が厳密)。n_starts==1 なら [1.0]。
     """
     if n_starts <= 1:
         return [1.0]
-    lo, hi = 1.0 - lattice_frac, 1.0 + lattice_frac
-    step = (hi - lo) / (n_starts - 1)
-    grid = [lo + i * step for i in range(n_starts)]
-    # 無摂動 1.0 を必ず含める (最も近い格子点を 1.0 に置換)
-    j = min(range(n_starts), key=lambda i: abs(grid[i] - 1.0))
-    grid[j] = 1.0
-    return grid
+    return [1.0 + lattice_frac * (-1.0 + 2.0 * i / (n_starts - 1)) for i in range(n_starts)]
 
 
 def generate_cell_scales(
@@ -75,7 +72,8 @@ def generate_cell_scales(
 ) -> tuple[dict[str, tuple[float, float, float]], ...]:
     """決定論的に n_starts 個の初期格子摂動 (相名→等方倍率 (f,f,f)) を生成する。
 
-    全相に同一の等方倍率を与える (格子スケールの局所解確認)。無摂動 1.0 を必ず 1 点含む。
+    全相に同一の等方倍率を与える (格子スケールの局所解確認)。1.0 を中心に ±lattice_frac へ対称配置。
+    奇数 n_starts では中心に無摂動 1.0 を含む (偶数は両側対称・中心なし)。
     """
     scales = _grid_scales(config.n_starts, config.spec.lattice_frac)
     starts: list[dict[str, tuple[float, float, float]]] = []
@@ -116,20 +114,23 @@ def cluster_rietveld_basins(
 
 
 def _is_valid(result: AutoRietveldResult) -> bool:
-    import math
-
     return math.isfinite(result.final_rwp) and result.validity.passed
 
 
 def select_best(
     starts: Sequence[MultistartStart],
-) -> tuple[int, AutoRietveldResult]:
-    """valid かつ最小 final_rwp の (index, result)。valid が無ければ最小 Rwp を返す。"""
+) -> tuple[int, AutoRietveldResult | None]:
+    """valid かつ最小 final_rwp の (index, result)。valid が無ければ最小 Rwp。
+
+    実行済み開始点が 1 つも無い (全て result=None) 場合は (-1, None) を返す (M5: crash 回避)。
+    """
     executed = [s for s in starts if s.result is not None]
+    if not executed:
+        return -1, None
     valid = [s for s in executed if _is_valid(s.result)]  # type: ignore[arg-type]
     pool = valid if valid else executed
     best = min(pool, key=lambda s: s.result.final_rwp)  # type: ignore[union-attr]
-    return best.index, best.result  # type: ignore[return-value]
+    return best.index, best.result
 
 
 def summarize_multistart(
@@ -162,8 +163,6 @@ def summarize_multistart(
 
 
 def _is_valid_or_finite(result: AutoRietveldResult) -> bool:
-    import math
-
     return math.isfinite(result.final_rwp)
 
 

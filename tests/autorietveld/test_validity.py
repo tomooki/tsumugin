@@ -32,10 +32,18 @@ def test_lattice_out_of_tolerance_fails():
 
 def test_negative_uiso_fails():
     kw = _good_kwargs()
-    kw["uiso"] = {"fap": [0.006, -0.001, 0.004]}
+    kw["uiso"] = {"fap": [0.006, -0.001, 0.004]}  # 明確に負 (< -uiso_neg_tol)
     rep = check_validity(**kw)
     assert not rep.passed
     assert any("uiso" in name and not ok for name, ok, _ in rep.checks)
+
+
+def test_fixed_zero_and_tiny_negative_uiso_pass():
+    # L9 回帰: 未精密化で 0 の Uiso / 数値ノイズの微小負 (>= -uiso_neg_tol) は許容
+    kw = _good_kwargs()
+    kw["uiso"] = {"fap": [0.0, -5e-5, 0.006]}
+    rep = check_validity(**kw)
+    assert rep.passed, [c for c in rep.checks if not c[1]]
 
 
 def test_uiso_above_max_fails():

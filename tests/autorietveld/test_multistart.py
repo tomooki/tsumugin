@@ -54,6 +54,19 @@ def test_single_start_is_unperturbed():
     assert scales == ({"ph": (1.0, 1.0, 1.0)},)
 
 
+def test_grid_is_symmetric_and_explores_both_sides():
+    # M4 回帰: 偶数 n でも両側 (1-frac, 1+frac) を対称に探索する (下側の取りこぼしなし)
+    cfg = MultistartConfig(n_starts=2, spec=PerturbationSpec(lattice_frac=0.02))
+    scales = generate_cell_scales(["ph"], cfg)
+    fs = sorted(v["ph"][0] for v in scales)
+    assert fs[0] == pytest.approx(0.98) and fs[-1] == pytest.approx(1.02)
+    # 中心対称: 各点 f に対し 2-f も存在
+    cfg4 = MultistartConfig(n_starts=4, spec=PerturbationSpec(lattice_frac=0.02))
+    vals = [v["ph"][0] for v in generate_cell_scales(["ph"], cfg4)]
+    for f in vals:
+        assert any(abs((2.0 - f) - g) < 1e-9 for g in vals)
+
+
 # ---- ベイスン分類 ----
 
 def test_cluster_basins_single_when_all_agree():
@@ -110,6 +123,20 @@ def test_summarize_warns_when_multiple_basins():
     assert not res.is_global_corroborated
     assert res.n_basins == 2
     assert any("ベイスン" in w for w in res.warnings)
+
+
+def test_summarize_all_failed_returns_none_best_without_crash():
+    # M5 回帰: 全開始点が実行失敗 (result=None) でも crash せず best=None を返す
+    starts = (
+        MultistartStart(0, {"ph": (1.0, 1.0, 1.0)}, None),
+        MultistartStart(1, {"ph": (1.02, 1.02, 1.02)}, None),
+    )
+    res = summarize_multistart(starts, MultistartConfig(n_starts=2))
+    assert res.best is None
+    assert res.best_index == -1
+    assert res.n_starts == 0
+    assert not res.is_global_corroborated
+    assert any("実行された開始点" in w for w in res.warnings)
 
 
 def test_summarize_counts_diverged():

@@ -254,6 +254,20 @@ def _extract_state(phases):
     return refined_cells, uiso, occ
 
 
+def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
+    """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。"""
+    if not g2hists:
+        return []
+    hist = g2hists[0]
+    fractions: list[float] = []
+    for ph in g2phases:
+        try:
+            fractions.append(float(ph.getHAPvalues(hist)["Scale"][0]))
+        except Exception:
+            continue
+    return fractions
+
+
 def _perturb_initial_cell(ph, scale: tuple[float, float, float]) -> None:
     """相の初期格子 a/b/c を scale 倍に摂動し体積を再計算する (マルチスタート用)。
 
@@ -358,7 +372,10 @@ def run_auto_rietveld(
         gpx.data["Controls"]["data"]["max cyc"] = max_cyc
 
         stage_results: list[StageResult] = []
+        # 「直前の受理状態」の指標を明示追跡する (復帰時に nvar/gof を正しく巻き戻すため, H1)。
         prev_rwp = float("inf")
+        prev_gof = float("inf")
+        prev_nvar = 0
         atom_flag_maps: list[dict[str, str]] = [{} for _ in g2phases]
 
         for stage in stages:
@@ -384,22 +401,24 @@ def run_auto_rietveld(
                 )
 
             reverted = False
-            # 悪化 (または inf) なら直前スナップショットへ revert して継続 (REQ-105)
+            # 悪化 (または inf) なら直前スナップショット (この段階適用前の状態) へ revert して継続
+            # (REQ-105/FR-202)。snap は各段階の冒頭で必ず取得済みなので、初段失敗でも
+            # 「精密化前の健全なプロジェクト」へ戻せる (H2: prev_rwp==inf でも復帰する)。
             if not math.isfinite(rwp) or rwp > prev_rwp + worsen_eps:
-                if prev_rwp < float("inf"):
-                    shutil.copyfile(snap, gpx_path)
-                    gpx = g2sc.G2Project(gpxfile=str(gpx_path))
-                    g2hists = gpx.histograms()
-                    g2phases = gpx.phases()
-                    phase_infos = [
-                        _phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)
-                    ]
-                    gpx.data["Controls"]["data"]["max cyc"] = max_cyc
-                    reverted = True
-                    atom_flag_maps = prev_atom_flag_maps
-                    rwp, gof = prev_rwp, stage_results[-1].gof if stage_results else float("inf")
+                shutil.copyfile(snap, gpx_path)
+                gpx = g2sc.G2Project(gpxfile=str(gpx_path))
+                g2hists = gpx.histograms()
+                g2phases = gpx.phases()
+                phase_infos = [
+                    _phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)
+                ]
+                gpx.data["Controls"]["data"]["max cyc"] = max_cyc
+                reverted = True
+                atom_flag_maps = prev_atom_flag_maps
+                # 復帰後の指標は「直前の受理状態」を反映する (H1: nvar も巻き戻す)。
+                rwp, gof, nvar = prev_rwp, prev_gof, prev_nvar
             else:
-                prev_rwp = rwp
+                prev_rwp, prev_gof, prev_nvar = rwp, gof, nvar
 
             stage_results.append(
                 StageResult(
@@ -425,7 +444,9 @@ def run_auto_rietveld(
 
         # --- 妥当性判定 ---
         refined_cells, uiso, occ = _extract_state(g2phases)
-        phase_fractions = None  # 多相は Phase D で phase_fraction 抽出
+        # 多相なら先頭ヒストグラムの相分率 (HAP Scale) を抽出し 和=1 制約の充足を検査する (M6)。
+        # 制約は各ヒストグラムで同一 (和=1) のため代表として先頭を採る。単相は None (検査省略)。
+        phase_fractions = _extract_phase_fractions(g2phases, g2hists) if len(g2phases) > 1 else None
         validity = check_validity(
             refined_cells=refined_cells,
             reference_cells=reference_cells,

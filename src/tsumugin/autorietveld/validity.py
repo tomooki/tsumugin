@@ -27,6 +27,7 @@ def check_validity(
     converged: bool = True,
     lattice_tol_pct: float = 0.5,
     uiso_max: float = 0.1,
+    uiso_neg_tol: float = 1e-4,
     constraint_tol: float = 2e-2,
 ) -> ValidityReport:
     """精密化結果の物理的妥当性を判定する。
@@ -39,6 +40,7 @@ def check_validity(
     :param converged: 精密化が収束したか
     :param lattice_tol_pct: 格子定数の許容ずれ (%)
     :param uiso_max: Uiso の物理的上限 (Å²)
+    :param uiso_neg_tol: Uiso の許容下限 (負側)。0 近傍・数値ノイズの微小負を許容 (既定 1e-4)
     :param constraint_tol: 制約 (相分率和) の許容誤差
     :returns: ValidityReport (passed / 項目別チェック / 警告)
     """
@@ -64,12 +66,14 @@ def check_validity(
                 )
             )
 
-    # --- Uiso ∈ (0, uiso_max] ---
+    # --- Uiso ∈ [-uiso_neg_tol, uiso_max] ---
+    # 未精密化で CIF 値 0 のまま/精密化の数値ノイズで僅かに負の Uiso は物理的に許容する (L9)。
+    # 明確に負 (< -uiso_neg_tol, 過剰適合) や上限超過のみを非物理として弾く。
     for name, values in uiso.items():
         for i, u in enumerate(values):
-            ok = (u > 0.0) and (u <= uiso_max)
+            ok = (u >= -uiso_neg_tol) and (u <= uiso_max)
             checks.append(
-                (f"uiso_{name}_{i}", ok, f"Uiso={u:.5f} (要 0<U<={uiso_max})")
+                (f"uiso_{name}_{i}", ok, f"Uiso={u:.5f} (要 -{uiso_neg_tol}<=U<={uiso_max})")
             )
 
     # --- 占有率 ∈ [0, 1] ---
