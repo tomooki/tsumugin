@@ -17,6 +17,7 @@ from .model import (
     StageResult,
     ValidityReport,
 )
+from .engine import run_auto_rietveld
 from .recipe import build_recipe
 from .validity import check_validity
 
@@ -31,4 +32,5 @@ __all__ = [
     "ValidityReport",
     "build_recipe",
     "check_validity",
+    "run_auto_rietveld",
 ]

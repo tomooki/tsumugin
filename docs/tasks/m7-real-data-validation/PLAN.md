@@ -2,6 +2,23 @@
 
 作成: 2026-07-05 / ブランチ: `milestone/m7-real-data-validation`
 
+## 完了記録 (2026-07-05)
+
+新モジュール `tsumugin.autorietveld` (model/recipe/validity/engine) を TDD で実装し、実データで検証:
+
+| 例 | tsumugin 自動 | チュートリアル | 判定 |
+|---|---|---|---|
+| T1 fluoroapatite (単相ラボX線) | **Rwp 9.83% / GOF 1.76** | 10.38% / 3.44 | ✅ 上回る |
+| T2 garnet (単相CW中性子, Fe/Al 混合占有) | **Rwp 4.33% / GOF 1.63** | 5.18% / 3.79 | ✅ 上回る |
+| T3 PbSO4 (X線+中性子 joint) | **Rwp 6.66% / GOF 2.25** | 6.71% / 2.27 | ✅ 一致 |
+| T4 NAC+CaF2 (TOF+放射光 多相) | インフラ検証済 (両相ロード+相分率制約+物理格子) | 6.83% | ⚠️ Rwp 到達 M-later |
+
+- **成果物1** (改良アルゴリズム): `autorietveld` — 適応段階解放レシピ + 物理妥当性ゲート + 制約
+  自動生成 + revert/崩壊ガード。§4 の教訓を実装に反映。
+- **成果物2** (指示書): `AGENT_PLAYBOOK.md`。
+- T4 の TOF Rwp 収束 (データ範囲=TOF 単位 Limits + TOF プロファイル初期化) は M-later。
+- 実装記録: `docs/{spec,design,tasks}/m7-real-data-validation/`。
+
 ## 1. 目的
 
 単相・多相の粉末 XRD / ND 自動解析を **GSAS-II 公式チュートリアルの実データ**で検証し、
