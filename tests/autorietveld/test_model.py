@@ -43,7 +43,7 @@ def test_histogram_spec_is_frozen_and_holds_paths():
 
 def test_phase_spec_defaults():
     p = PhaseSpec(structure_path="a/FAP.EXP", phase_name="fap", format_hint="EXP")
-    assert p.mixed_occupancy_sites == ()
+    assert p.mixed_occupancy_groups == ()
     assert p.temperature is None
 
 

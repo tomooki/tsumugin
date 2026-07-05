@@ -64,19 +64,59 @@ def _profile_keys(radiation: Radiation) -> list[str]:
     return ["U", "V", "W"]
 
 
-def _apply_stage(gpx, hists, phases, radiations, stage: RefinementStage, atom_flags: str) -> str:
+def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
+    """相の原子メタ情報 (一般位置ラベル・全ラベル・混合占有ラベル) を収集する。
+
+    座標精密化は一般位置 (site symmetry '1') の原子のみに限定する (特殊位置の座標解放は
+    セル発散を招く, T2 実測)。混合占有ラベルは占有率解放の対象。
+    """
+    atoms = ph.data["Atoms"]
+    cx, ct, cs, cia = ph.data["General"]["AtomPtrs"]
+    labels = [row[ct - 1] for row in atoms]
+    general = [row[ct - 1] for row in atoms if str(row[cs]).strip() == "1"]
+    mixed = {lab for grp in spec.mixed_occupancy_groups for lab in grp}
+    return {"labels": labels, "general": general, "mixed": mixed}
+
+
+def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
+    """段階フラグに応じて per-atom フラグ (X/U/F) の集合を更新する。変化があれば True。
+
+    - coords: 一般位置原子に "X"
+    - uiso: 全原子に "U"
+    - occupancy: 混合占有原子に "F"
+    """
+    changed = False
+
+    def add(label: str, ch: str) -> None:
+        nonlocal changed
+        cur = flag_map.get(label, "")
+        if ch not in cur:
+            flag_map[label] = "".join(c for c in "XUF" if c in cur + ch)
+            changed = True
+
+    if "coords" in stage_flags:
+        for lab in info["general"]:
+            add(lab, "X")
+    if "uiso" in stage_flags:
+        for lab in info["labels"]:
+            add(lab, "U")
+    if "occupancy" in stage_flags:
+        for lab in info["mixed"]:
+            add(lab, "F")
+    return changed
+
+
+def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, stage):
     """段階の宣言的フラグを GSAS-II 精密化フラグへ翻訳して適用する (enable のみ)。
 
     revert は .gpx スナップショット復元で行うため、ここでは有効化だけを担う。
-    原子フラグ (X/U/F) は GSAS-II が「置換」セマンティクスのため、既解放分を含む和集合を
-    毎回設定して累積させる (例: coords 後に uiso なら "XU")。累積後のフラグ文字列を返す。
+    原子フラグは GSAS-II が「置換」セマンティクスのため、per-atom の累積マップを毎回設定する。
     """
     flags = stage.flags
     if "background" in flags:
         n = int(flags["background"].get("coeffs", 6))  # type: ignore[union-attr]
         gpx.set_refinement({"set": {"Background": {"no. coeffs": n, "refine": True}}})
     # scale: GSAS-II はヒストグラムスケールを既定で精密化するため単相では no-op。
-    # 多相の相分率 (HAP Scale) は phase_fraction_sum 制約側で扱う (Phase D)。
     if "cell" in flags:
         for ph in phases:
             ph.set_refinements({"Cell": True})
@@ -97,19 +137,35 @@ def _apply_stage(gpx, hists, phases, radiations, stage: RefinementStage, atom_fl
                     "Mustrain": {"type": "isotropic", "refine": True},
                 }
             )
-    # 原子フラグは和集合で累積 (X→coords, U→uiso, F→occupancy)。順序は GSAS 表記 XUF。
-    new_flags = atom_flags
-    if "coords" in flags and "X" not in new_flags:
-        new_flags += "X"
-    if "uiso" in flags and "U" not in new_flags:
-        new_flags += "U"
-    if "occupancy" in flags and "F" not in new_flags:
-        new_flags += "F"
-    if new_flags != atom_flags:
-        ordered = "".join(c for c in "XUF" if c in new_flags)
-        for ph in phases:
-            ph.set_refinements({"Atoms": {"all": ordered}})
-    return new_flags
+    # 原子フラグ (per-atom, 累積)
+    for ph, info, fmap in zip(phases, phase_infos, atom_flag_maps):
+        if _update_atom_flags(fmap, info, flags):
+            active = {lab: fl for lab, fl in fmap.items() if fl}
+            if active:
+                ph.set_refinements({"Atoms": active})
+
+
+def _setup_constraints(gpx, g2phases, specs) -> None:
+    """混合占有グループごとに占有率和=1 制約と Uiso 等価制約を登録する (REQ-102)。
+
+    占有率和=1 (add_EqnConstr) がないと占有率解放が発散し、Uiso 等価 (add_EquivConstr) が
+    ないと少数占有原子の Uiso が発散する (T2 実測)。
+    """
+    for ph, spec in zip(g2phases, specs):
+        if not spec.mixed_occupancy_groups:
+            continue
+        atoms = ph.data["Atoms"]
+        ct = ph.data["General"]["AtomPtrs"][1]
+        label_to_idx = {row[ct - 1]: i for i, row in enumerate(atoms)}
+        pid = ph.id
+        for group in spec.mixed_occupancy_groups:
+            idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
+            if len(idxs) < 2:
+                continue
+            fracs = [f"{pid}::Afrac:{i}" for i in idxs]
+            uisos = [f"{pid}::AUiso:{i}" for i in idxs]
+            gpx.add_EqnConstr(1.0, fracs, [1.0] * len(fracs))
+            gpx.add_EquivConstr(uisos)
 
 
 def _extract_state(phases):
@@ -145,7 +201,7 @@ def run_auto_rietveld(
     recipe: Sequence[RefinementStage] | None = None,
     reference_cells: dict[str, tuple[float, ...]] | None = None,
     ledger: Ledger | None = None,
-    max_cyc: int = 8,
+    max_cyc: int = 12,
     worsen_eps: float = 1e-6,
     keep_gpx: str | None = None,
 ) -> AutoRietveldResult:
@@ -193,6 +249,10 @@ def run_auto_rietveld(
             )
             g2phases.append(ph)
 
+        # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価) ---
+        _setup_constraints(gpx, g2phases, phases)
+        phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
+
         # 参照格子 (未指定なら初期格子)
         if reference_cells is None:
             reference_cells = {
@@ -214,16 +274,16 @@ def run_auto_rietveld(
 
         stage_results: list[StageResult] = []
         prev_rwp = float("inf")
-        atom_flags = ""
+        atom_flag_maps: list[dict[str, str]] = [{} for _ in g2phases]
 
         for stage in stages:
             snap = tmp_path / "snap.gpx"
             gpx.save()
             shutil.copyfile(gpx_path, snap)
-            prev_atom_flags = atom_flags
+            prev_atom_flag_maps = [dict(m) for m in atom_flag_maps]
             try:
-                atom_flags = _apply_stage(
-                    gpx, g2hists, g2phases, radiations, stage, atom_flags
+                _apply_stage(
+                    gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage
                 )
                 gpx.do_refinements([{}])
                 rwp, gof, nvar = _rvals(gpx)
@@ -243,9 +303,12 @@ def run_auto_rietveld(
                     gpx = g2sc.G2Project(gpxfile=str(gpx_path))
                     g2hists = gpx.histograms()
                     g2phases = gpx.phases()
+                    phase_infos = [
+                        _phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)
+                    ]
                     gpx.data["Controls"]["data"]["max cyc"] = max_cyc
                     reverted = True
-                    atom_flags = prev_atom_flags
+                    atom_flag_maps = prev_atom_flag_maps
                     rwp, gof = prev_rwp, stage_results[-1].gof if stage_results else float("inf")
             else:
                 prev_rwp = rwp

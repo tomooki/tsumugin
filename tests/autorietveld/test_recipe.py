@@ -57,12 +57,26 @@ def test_mixed_occupancy_adds_occupancy_stage():
         PhaseSpec(
             structure_path="g.cif",
             phase_name="garnet",
-            mixed_occupancy_sites=("Fe2", "Al3"),
+            mixed_occupancy_groups=(("Fe1", "Al1"), ("Al2", "Fe2")),
         ),
     )
     stages = build_recipe([_NEUTRON_DS], phases)
     occ = _find(stages, "occupancy")
     assert occ, "混合占有相では占有率段階が追加される"
+
+
+def test_mixed_occupancy_refines_occupancy_before_profile():
+    """中性子混合占有では占有率をプロファイルより先に解放する (散乱長コントラスト)。"""
+    phases = (
+        PhaseSpec(
+            structure_path="g.cif",
+            phase_name="garnet",
+            mixed_occupancy_groups=(("Fe1", "Al1"),),
+        ),
+    )
+    stages = build_recipe([_NEUTRON_DS], phases)
+    labels = [k for s in stages for k in ("occupancy", "profile") if k in s.flags]
+    assert labels.index("occupancy") < labels.index("profile")
 
 
 def test_single_occupancy_omits_occupancy_stage():

@@ -65,16 +65,28 @@ def build_recipe(
         raise ValueError("phases が空です")
 
     multiphase = len(phases) > 1
-    mixed_occ = any(p.mixed_occupancy_sites for p in phases)
+    mixed_occ = any(p.mixed_occupancy_groups for p in phases)
     temp_diff = _has_temperature_difference(histograms)
     disp = _displacement_map(histograms)
+
+    profile_stage = RefinementStage(
+        label="profile+size_strain",
+        flags={"profile": ["U", "V", "W"], "size_strain": True},
+        note="プロファイル係数 + 結晶子サイズ/微小歪み",
+    )
+    coords_stage = RefinementStage(
+        label="coords", flags={"coords": True}, note="一般位置の原子座標 X"
+    )
+    uiso_stage = RefinementStage(
+        label="uiso", flags={"uiso": True}, note="等方温度因子 Uiso (混合占有は等価制約下)"
+    )
 
     stages: list[RefinementStage] = []
 
     # S0: 相分率スケール + 背景 (全チュートリアル共通の起点)
     stages.append(
         RefinementStage(
-            label="S0 scale+background",
+            label="scale+background",
             flags={"scale": True, "background": {"coeffs": background_coeffs}},
             note="起点: スケールと背景のみ",
         )
@@ -90,36 +102,31 @@ def build_recipe(
         s1_flags["hydrostatic_strain"] = True
         note_bits.append("温度差の静水圧歪み Dij")
     stages.append(
-        RefinementStage(label="S1 cell+displacement", flags=s1_flags, note="; ".join(note_bits))
+        RefinementStage(label="cell+displacement", flags=s1_flags, note="; ".join(note_bits))
     )
 
-    # S2: プロファイル UVW + サイズ/微小歪み
-    stages.append(
-        RefinementStage(
-            label="S2 profile+size_strain",
-            flags={"profile": ["U", "V", "W"], "size_strain": True},
-            note="プロファイル係数 + 結晶子サイズ/微小歪み",
-        )
-    )
-
-    # S3: 原子座標
-    stages.append(
-        RefinementStage(label="S3 coords", flags={"coords": True}, note="原子座標 X")
-    )
-
-    # S4: 等方温度因子
-    stages.append(
-        RefinementStage(label="S4 uiso", flags={"uiso": True}, note="等方温度因子 Uiso")
-    )
-
-    # S5: 混合占有サイトの占有率 (制約下, 該当相があるときのみ)
+    # 以降は混合占有の有無で解放順序を切り替える (T1/T2 実測で確立):
+    # - 混合占有あり (中性子 garnet 型): 占有率 → Uiso(等価) → プロファイル → 一般位置座標。
+    #   占有率が散乱長コントラストを介して強く効くため早期に解放する。
+    # - 混合占有なし (ラボ X 線 fluoroapatite 型): プロファイル → 座標 → Uiso。
     if mixed_occ:
         stages.append(
             RefinementStage(
-                label="S5 occupancy",
+                label="occupancy",
                 flags={"occupancy": True},
-                note="混合占有サイトの占有率 (等価/和制約下)",
+                note="混合占有サイトの占有率 (和=1 制約下)",
             )
         )
+        stages.append(uiso_stage)
+        stages.append(profile_stage)
+        stages.append(coords_stage)
+    else:
+        stages.append(profile_stage)
+        stages.append(coords_stage)
+        stages.append(uiso_stage)
 
-    return tuple(stages)
+    # ラベルに S番号 を前置
+    return tuple(
+        RefinementStage(label=f"S{i} {s.label}", flags=s.flags, note=s.note)
+        for i, s in enumerate(stages)
+    )

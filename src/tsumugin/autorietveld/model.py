@@ -69,14 +69,15 @@ class PhaseSpec:
     :param structure_path: 構造ファイル (CIF / GSAS .EXP)
     :param phase_name: プロジェクト内の相名
     :param format_hint: GSAS-II importer ヒント ("CIF"/"EXP")
-    :param mixed_occupancy_sites: 占有率制約対象のサイトラベル群 (例 ("Fe2","Al3"))
+    :param mixed_occupancy_groups: 混合占有サイトを共有する原子ラベルの組の列。
+        例: (("Fe1","Al1"), ("Al2","Fe2")) — 各組で占有率和=1 制約と Uiso 等価制約を張る
     :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
     """
 
     structure_path: str
     phase_name: str
     format_hint: str = "CIF"
-    mixed_occupancy_sites: tuple[str, ...] = ()
+    mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
     temperature: float | None = None
 
 
