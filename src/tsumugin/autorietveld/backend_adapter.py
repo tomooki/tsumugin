@@ -11,8 +11,9 @@ BIC 比較の一貫性を保つ (CLAUDE.md 不変条件「chi2/rwp のセマン�
 
 **n_obs の源 (Issue #16 で厳密化)**: ``AutoRietveldResult.n_obs`` (engine が GSAS Rvals の Nobs から
 設定、レンジ制限・joint 総和を反映) を優先して chi2/BIC の Nobs に用いる。未設定 (0; スタブ等) の
-場合のみ ``model.intensity`` 長へフォールバックする。これにより GSAS 駆動経路では GSASIIBackend と
-Nobs セマンティクスが一致する。
+場合のみ ``model.intensity`` 長へフォールバックする。GSAS 駆動経路ではレンジマスク後の実観測点数を
+使うため dof がより正確になる (GSASIIBackend は全配列長 x.size を用いるので、レンジ制限が無ければ
+両者は一致し、制限ありでは本アダプタの方が厳密)。
 
 相の構造ファイル解決は `resolver` (phase_ref→PhaseSpec) に委ね、観測ファイルは `histograms`
 テンプレートで与える (PhaseInstance はファイルパスを持たないため)。GSAS は runner 内で遅延 import。
