@@ -116,10 +116,17 @@ axes, bc = pseudo_variable_series(result, "phase", lambda c: c[1] / c[2])
 
 ## 8. 再現ベンチマーク
 
-`tests/insitu/test_engine_gsas.py` (`@pytest.mark.gsas`, CaTeO3 は MP キー gate) が実データの
-合格基準を検証する。データは `docs/benchmark/testdata/m9/`。
+`tests/insitu/test_engine_gsas.py` (`@pytest.mark.gsas`) が実データの合格基準を検証する。
+データは `docs/benchmark/testdata/m9/`。
 
 | 例 | tsumugin 自動 | チュートリアル |
 |---|---|---|
+| T-cyc CaTeO3 alpha (frame0, 実験室X線 XRDML) | **Rwp 13.4% / GOF 1.44** | wRp ~9.4% |
 | T-seq CuCr₂O₄+CuO (17 フレーム, 放射光, 新相なし) | (検証中) | wRp 13–17% |
-| T-cyc CaTeO3 alpha→delta (14 フレーム, 実験室X線, delta 自動同定) | (検証中) | wRp ~8.7–9.5% |
+| T-cyc 全 14 フレーム + delta 自動同定 | (MP キー gate) | wRp ~8.7–9.5% |
+
+**実験室 X 線 in situ の Rwp 収束で確立した設定** (CaTeO3 で 70%→13% 収束):
+1. **Jana→CIF は標準セッティング** (`docs/benchmark/testdata/m9/jana_to_cif.py`)。非標準設定は GSAS 拒否。
+2. **HighScore 処理 XRDML は Kα1 単色** instprm を使う (Kα2 除去済; Kα2 satellite が最大の系統残差)。
+3. **背景 24 項** (`make_gsas_runner(background_coeffs=24)`; 実験室 X 線は背景複雑)。
+4. **X 線は Lorentzian X,Y + Zero を追加解放** (recipe が自動; U,V,W のみでは 43% 止まり)。

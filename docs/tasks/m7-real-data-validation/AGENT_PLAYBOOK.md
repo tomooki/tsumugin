@@ -157,6 +157,13 @@ result = run_auto_rietveld([hx, ht1, ht2], phases)
     size/歪みを座標より先に張ると座標段階が悪化して revert する (T4 実測)。
 11. **size/微小歪みは低分解能 CW 中性子のみ除外**: 多ヒストグラムでは低分解能 CW 中性子 (D1a 等)
     を外し、X線/放射光・**TOF (高分解能)** に張る。TOF は試料ピーク幅情報を持つため必須 (T4)。
+12. **X 線は Lorentzian (X,Y) + Zero が必須** (M9 CaTeO3 実測): 実験室/放射光 X 線は Lorentzian 成分が
+    支配的で、U,V,W (Gaussian) のみでは実測ピーク形状に合わず高止まりする (43% 止まり)。recipe は
+    X 線データに対し U,V,W の後で **X,Y,Zero を別段階 (`profile_lorentzian`, revert ガード) で解放**する
+    (同段階に混ぜると悪化時 U,V,W ごと revert され T3/T4 が回帰するため分離)。中性子/TOF はスキップ。
+13. **実験室 X 線は背景項を多く** (M9): 背景が複雑で 6 項では不足。`make_gsas_runner(background_coeffs=24)`
+    等で 20+ 項にする (CaTeO3 で 6→24 が Rwp を大きく下げた)。**Kα2 除去済データ (HighScore 等) は Kα1
+    単色 instprm** を使う (Kα2 satellite の phantom が最大の系統残差)。
 
 ## 5. 結果の読み方と合否判定
 

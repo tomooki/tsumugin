@@ -9,7 +9,8 @@ GSAS-II チュートリアル T1–T4 の手順を一般化した普遍段階列
 - ``scale``: True — 相分率スケールの解放
 - ``cell``: True — 全相の単位胞
 - ``displacement``: {hist_index: [GSAS Sample Parameters キー]} — ジオメトリ別試料変位
-- ``profile``: ["U","V","W"] — プロファイル係数
+- ``profile``: ["U","V","W"] — Gaussian プロファイル係数
+- ``profile_lorentzian``: True — X 線 Lorentzian X,Y + Zero の追加解放 (別段階, revert ガード)
 - ``size_strain``: True — 結晶子サイズ + 微小歪み (HAP)
 - ``coords``: True — 原子座標 X
 - ``uiso``: True — 等方温度因子 U
@@ -67,12 +68,21 @@ def build_recipe(
     multiphase = len(phases) > 1
     mixed_occ = any(p.mixed_occupancy_groups for p in phases)
     temp_diff = _has_temperature_difference(histograms)
+    has_xray = any(not h.radiation.is_neutron for h in histograms)
     disp = _displacement_map(histograms)
 
     profile_stage = RefinementStage(
         label="profile+size_strain",
         flags={"profile": ["U", "V", "W"], "size_strain": True},
         note="プロファイル係数 + 結晶子サイズ/微小歪み",
+    )
+    # X 線は Lorentzian (X,Y) + Zero を別段階で追加解放する (実験室/放射光は Lorentzian 支配的;
+    # U,V,W のみでは実測ピーク形状に合わず高止まり — CaTeO3 実測 43%→13%)。悪化時は本段階ごと
+    # revert され U,V,W は保持 (T3/T4 非回帰)。中性子/TOF は engine 側でスキップ。
+    lorentzian_stage = RefinementStage(
+        label="profile_lorentzian",
+        flags={"profile_lorentzian": True},
+        note="X 線 Lorentzian X,Y + Zero (別段階, revert ガード)",
     )
     coords_stage = RefinementStage(
         label="coords", flags={"coords": True}, note="一般位置の原子座標 X"
@@ -153,6 +163,10 @@ def build_recipe(
             stages.append(profile_stage)
             stages.append(coords_stage)
             stages.append(uiso_stage)
+
+    # X 線は Lorentzian (X,Y) + Zero を最終段で追加解放 (revert ガード; 中性子/TOF のみなら不要)
+    if has_xray:
+        stages.append(lorentzian_stage)
 
     # ラベルに S番号 を前置
     return tuple(

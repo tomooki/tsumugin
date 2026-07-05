@@ -294,19 +294,22 @@ def make_gsas_runner(
     geometry: object,
     two_theta_limits: tuple[float, float] | None = None,
     max_cyc: int = 12,
+    background_coeffs: int = 6,
 ) -> Runner:
     """放射源/ジオメトリ/装置を指定して FrameSpec→run_auto_rietveld の runner を作る (実運用の推奨 API)。
 
     XRDML フレームは numpy ローダーで XYE に自己変換して GSAS に渡す (optional 依存 xmltodict 不要)。
     ``instrument_path`` はパス、またはフレーム→パスの関数 (フレーム毎に instprm が異なる系列に対応)。
     放射光 (CuCr₂O₄) は radiation=XRAY_SYNCHROTRON/geometry=DEBYE_SCHERRER で、実験室 X 線 (CaTeO3) は
-    XRAY_LAB/BRAGG_BRENTANO で作る。
+    XRAY_LAB/BRAGG_BRENTANO で作る。``background_coeffs`` は Chebyshev 背景項数 (実験室 X 線は背景が
+    複雑で 6 では不足、24 前後を推奨; CaTeO3 実測で 6→24 が Rwp を大きく下げた)。
     """
     import os
     import tempfile
 
     from ..autorietveld.engine import run_auto_rietveld
     from ..autorietveld.model import HistogramSpec
+    from ..autorietveld.recipe import build_recipe
 
     def runner(
         frame: FrameSpec, phases: Sequence[PhaseSpec], initial_cells: "dict[str, Cell] | None"
@@ -328,8 +331,9 @@ def make_gsas_runner(
                 two_theta_limits=limits,
                 temperature=frame.axis_value,
             )
+            recipe = build_recipe([hist], list(phases), background_coeffs=background_coeffs)
             return run_auto_rietveld(
-                [hist], list(phases), max_cyc=max_cyc,
+                [hist], list(phases), recipe=recipe, max_cyc=max_cyc,
                 initial_cells=dict(initial_cells) if initial_cells else None,
             )
 

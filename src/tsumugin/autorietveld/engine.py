@@ -88,8 +88,10 @@ def _cells_physical(g2phases, min_length: float = 0.5) -> bool:
 def _profile_keys(radiation: Radiation) -> list[str]:
     """CW (X 線/中性子) の Gaussian プロファイル係数キー U,V,W。
 
-    TOF は本段階では精密化しない (呼び出し側で TOF をスキップ)。TOF の装置プロファイル
-    (sig/alpha/beta) はキャリブレーション依存で、ピーク形状は size/mustrain で処理する。
+    Lorentzian (X,Y) + Zero は別段階 (recipe の "profile_lorentzian") で revert ガード付きで追加する
+    (同段階に混ぜると悪化時に U,V,W ごと revert され T3/T4 が回帰するため分離)。TOF は本段階では
+    精密化しない (呼び出し側でスキップ)。TOF の装置プロファイル (sig/alpha/beta) はキャリブレーション
+    依存で、ピーク形状は size/mustrain で処理する。
     """
     return ["U", "V", "W"]
 
@@ -174,6 +176,15 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
             if rad.is_tof:
                 continue
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
+    if "profile_lorentzian" in flags:
+        # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード付き)。実験室/放射光
+        # X 線は Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。
+        # 悪化する場合は本段階ごと revert され U,V,W は保持される (T3/T4 非回帰)。TOF は除外。
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if rad.is_tof or rad.is_neutron:
+                continue
+            hist.set_refinements({"Instrument Parameters": ["X", "Y", "Zero"]})
     if "size_strain" in flags:
         # サイズ/微小歪みは分解能の低い CW 中性子 (例 D1a) を多ヒストグラム時に除外し、
         # X 線/放射光・TOF (高分解能) に張る。理由: 低分解能 CW 中性子の幅は器械分解能に

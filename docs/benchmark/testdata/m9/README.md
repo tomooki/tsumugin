@@ -15,9 +15,11 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
 
 同梱 (リポジトリには全 14 フレームでなく代表 2 フレームのみ):
 - `NB-LM01MO_030.XRDML` (alpha 単相域), `NB-LM01MO_180.XRDML` (alpha+delta 共存域)
-- `alpha_CaTeO3_H2O.cif`: Jana `.m40/.m50` から変換した初期相 (P1 展開・水素略・X 線)。**注意**: P1
-  展開のため対称拘束が緩い。tutorial 相当には真の空間群 CIF が望ましい (改善余地)。
-- `delta_CaTeO3.cif`: delta 無水相 (自動同定のローカル代替/正解確認用。primary は MP 自動同定)。
+- `alpha_CaTeO3_H2O.cif` / `delta_CaTeO3.cif`: Jana `.m40/.m50` から `jana_to_cif.py` で変換した
+  **標準セッティング CIF** (alpha=Pna2₁ #33 / delta=Pca2₁ #29, 厳密な Jana 原子, 水素略)。
+- `cateo3_CuKa.instprm`: Cu **Kα1 単色** instprm (HighScore 処理で Kα2 除去済; W≈30 で実測ピーク幅
+  ~0.056° に整合)。
+- `jana_to_cif.py`: Jana→CIF 変換スクリプト (対称操作 comma 区切り + 標準設定変換の教訓を実装)。
 - 全 14 フレームは元 `Data.zip` (`Example 02.6_ CaTeO3 cyclic/Data.zip`) から取得。
 
 ## cucr2o4/ — GSAS-II "Parametric sequential fitting" (CuCr₂O₄+CuO, 新相なし)
@@ -30,13 +32,20 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
 - 同梱: `CuCr2O4.cif`, `CuO.cif`, `OH_00.prm` (装置), `OH_00.fxye` (先頭フレーム)。残り 16 フレーム
   (`OH_04`〜`OH_53.fxye`) は上記 `SeqTut.zip` から取得。
 
-## 検証状況 (honest status)
+## 検証状況
 
-- **配線 (end-to-end)**: CaTeO3 2 フレームの逐次実行を確認済 — GSAS 駆動・ウォームスタート格子伝播・
-  XRDML→XYE 自己変換 (GSAS の optional xmltodict 不要)・ledger `verify()` True。
-- **Rwp 収束**: 現状 frame0 Rwp ~70% (tutorial ~9%)。主因は (i) 初期相 CIF の P1 展開 (真の空間群未指定)、
-  (ii) 装置プロファイル (INST_XRY.PRM は fluoroapatite 由来で本回折計と不一致)、(iii) 背景項数/低角
-  リミット。M7 が T1–T4 で示した通り、各データセットの Rwp 収束は装置/背景/リミットの反復調整を要する
-  (`tests/insitu/test_engine_gsas.py` の目標帯を段階的に締める)。
-- **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジンの制御ロジック・MCP は
-  GSAS/MP 非依存に決定論テストで green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。
+- **配線 (end-to-end)**: CaTeO3 2 フレーム逐次を確認済 — GSAS 駆動・ウォームスタート格子伝播・
+  XRDML→XYE 自己変換 (GSAS optional xmltodict 不要)・ledger `verify()` True (`tests/insitu/test_engine_gsas.py`)。
+- **Rwp 収束**: **frame0 Rwp 13.4% / GOF 1.44** を M9 エンジンで自動達成 (LeBail 到達可能 12.7%,
+  チュートリアル 9.4%)。70%→13% への収束で判明した鍵 (M7 T1–T4 同様の反復調整):
+  1. **Jana→CIF 変換バグ**: 対称操作を space 区切りで渡すと全原子が (x,0,0) に潰れる → comma 区切りに。
+  2. **標準セッティング**: Jana 非標準設定 (P2₁cn) を GSAS が拒否 → `get_conventional_standard_structure`
+     で標準化 (原子改変なし)。P1 展開では格子が精密化されない。
+  3. **Kα2 除去データ**: HighScore 処理で Kα2 が除かれており、instprm を **Kα1 単色**にする
+     (I(L2)/I(L1)→0 が精密化で判明; Kα2 satellite の phantom が最大の系統残差)。
+  4. **背景 24 項** (実験室 X 線は背景が複雑; 既定 6 では不足)。
+  5. **X,Y (Lorentzian) + Zero プロファイル解放** (U,V,W のみでは 43%; +X,Y,Zero で 19%→13%)。
+     → M7 `_profile_keys` を X 線で U,V,W,X,Y,Zero に拡張 (revert ガードで M7 T1–T4 は非回帰)。
+  残差 13→9.4% は preferred orientation (テクスチャ) + 水素 (X 線で微小) の未モデル分。
+- **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
+  決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。
