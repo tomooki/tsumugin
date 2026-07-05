@@ -31,6 +31,14 @@ from .diagnostics import (
     propose_initial_limits,
     propose_next_actions,
 )
+from .orchestrator import RefinementLoopResult, run_refinement_loop
+from .policy import (
+    AnalysisPolicy,
+    AnalysisState,
+    AnalysisStep,
+    PolicyBudget,
+    RuleBasedPolicy,
+)
 
 __all__ = [
     "ActionProposal",
@@ -38,15 +46,22 @@ __all__ = [
     "AdjustBackground",
     "AnalysisAction",
     "AnalysisInput",
+    "AnalysisPolicy",
+    "AnalysisState",
+    "AnalysisStep",
     "ModelAction",
+    "PolicyBudget",
+    "RefinementLoopResult",
     "ReleaseParams",
     "RemovePhase",
     "ResidualFeatures",
     "ReviseStructure",
+    "RuleBasedPolicy",
     "SafeAction",
     "SetLimits",
     "SetMixedOccupancy",
     "Stop",
     "propose_initial_limits",
     "propose_next_actions",
+    "run_refinement_loop",
 ]
