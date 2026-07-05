@@ -307,4 +307,8 @@ histograms/phases ──▶ MCP│  auto_rietveld ──▶ 構造化結果 (Rwp
 ## 13. スコープ外 (M-later)
 
 - 実 LLM 判断者の自動評価・プロンプト最適化。原子位置の大域探索・空間群決定は `ReviseStructure` の
-  入力として外部ソルバに委譲。multi-start 並列。Codex 向けネイティブ操作層。
+  入力として外部ソルバに委譲。Codex 向けネイティブ操作層。
+- **マルチスタート大域最適確認 (シーケンシャル) は実装済み** (`autorietveld.run_multistart_rietveld`,
+  Issue #13): 初期格子摂動の複数開始点→ベイスン一致で `is_global_corroborated`。**並列**
+  オーケストレーションと原子座標摂動軸のみ M-later。agentic ループは開始点ごとに multistart を
+  呼ぶか、`is_global_corroborated=False` を「収束先分岐」の提案根拠に使える。
