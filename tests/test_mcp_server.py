@@ -226,14 +226,15 @@ def test_create_mcp_server_returns_server_object():
 def test_create_mcp_server_wires_all_eight_tools():
     # 【テスト目的】: create_mcp_server が MCP_TOOLS の全ツールを配線する 🔵 REQ-021
     # 【テスト内容】: SDK の list_tools 相当を通じ全ツール名が登録されていることを確認
-    # 【期待される動作】: MCP_TOOLS の全名 (M4 の 8 + M6 相同定 2 = 10) が漏れなく Server へ配線される
+    # 【期待される動作】: MCP_TOOLS の全名が漏れなく Server へ配線される
     from tsumugin.mcp.tools import MCP_TOOLS
 
     server = create_mcp_server(_session())
     # 低レベル SDK: list_tools ハンドラを request_handlers 経由で駆動し登録ツール名を収集する。
     tools = _collect_tool_names(server)
     assert set(tools) == set(MCP_TOOLS)  # 【検証項目】: 全ツール配線 🔵
-    assert len(MCP_TOOLS) == 13  # 【検証項目】: ツール総数 13 (M4 8 + M6 2 + M8 実構造 3) 🔵
+    # 【検証項目】: ツール総数 16 (M4 8 + M6 2 + M8 実構造 3 + M9 in situ 逐次 3) 🔵
+    assert len(MCP_TOOLS) == 16
 
 
 def _collect_tool_names(server: object) -> list[str]:

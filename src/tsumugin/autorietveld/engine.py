@@ -266,6 +266,25 @@ def _extract_state(phases):
     return refined_cells, uiso, occ
 
 
+def _phase_fraction_map(g2phases, g2hists) -> dict[str, float]:
+    """相名→相分率 (先頭ヒストグラムの HAP Scale, 和=1 正規化) を返す (M9 逐次解析用)。
+
+    単相は {name: 1.0}。多相は HAP Scale を抽出し総和で正規化する (和=1 制約下では概ね規格化済み)。
+    抽出失敗の相は 0.0 を入れる。名前重複時は後勝ち (相名は一意想定)。
+    """
+    if not g2phases:
+        return {}
+    if len(g2phases) == 1:
+        return {g2phases[0].name: 1.0}
+    fracs = _extract_phase_fractions(g2phases, g2hists)  # g2phases 順に整列
+    total = sum(f for f in fracs if math.isfinite(f) and f > 0)
+    out: dict[str, float] = {}
+    for ph, f in zip(g2phases, fracs):
+        val = float(f) if math.isfinite(f) else 0.0
+        out[ph.name] = (val / total) if total > 0 else 0.0
+    return out
+
+
 def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
     """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。
 
@@ -282,6 +301,25 @@ def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
         except Exception:
             fractions.append(float("nan"))
     return fractions
+
+
+def _set_initial_cell(ph, cell: tuple[float, ...]) -> None:
+    """相の初期格子を絶対値 cell=(a,b,c[,α,β,γ]) に設定し体積を再計算する (ウォームスタート用)。
+
+    add_phase 直後・精密化前に呼ぶ。逐次 (sequential) 精密化で直前フレームの精密化格子を次フレームの
+    初期値として引き継ぐのに用いる。角度は与えられなければ現在値を保つ。``initial_cell_scale``
+    (相対摂動) と排他: こちらは絶対セルを与える。
+    """
+    from GSASII import GSASIIlattice as G2lat
+
+    cur = ph.data["General"]["Cell"]
+    a, b, c = float(cell[0]), float(cell[1]), float(cell[2])
+    alpha = float(cell[3]) if len(cell) > 3 else float(cur[4])
+    beta = float(cell[4]) if len(cell) > 4 else float(cur[5])
+    gamma = float(cell[5]) if len(cell) > 5 else float(cur[6])
+    new = [a, b, c, alpha, beta, gamma]
+    ph.data["General"]["Cell"][1:7] = new
+    ph.data["General"]["Cell"][7] = G2lat.calc_V(G2lat.cell2A(new))
 
 
 def _perturb_initial_cell(ph, scale: tuple[float, float, float]) -> None:
@@ -310,6 +348,7 @@ def run_auto_rietveld(
     worsen_eps: float = 1e-6,
     keep_gpx: str | None = None,
     initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
+    initial_cells: dict[str, tuple[float, ...]] | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -323,6 +362,9 @@ def run_auto_rietveld(
     :param keep_gpx: 最終 .gpx をこのパスへ保存 (None なら破棄)
     :param initial_cell_scale: 相名→(fa,fb,fc) の初期格子摂動倍率 (マルチスタート用, None で無摂動)。
         **参照格子は摂動前の初期値を採用**する (妥当性判定を摂動でずらさないため)。
+    :param initial_cells: 相名→(a,b,c[,α,β,γ]) の絶対初期格子 (逐次精密化のウォームスタート用,
+        None で CIF 既定)。直前フレームの精密化格子を次フレームの初期値に引き継ぐのに用いる。
+        ``initial_cell_scale`` と併用時は本絶対セルを先に適用し、その上に摂動倍率を掛ける。
     :returns: AutoRietveldResult
     """
     g2sc = _g2sc()
@@ -373,6 +415,13 @@ def run_auto_rietveld(
                 )
                 for ph in g2phases
             }
+
+        # --- 初期格子ウォームスタート (逐次精密化, 任意): 絶対セルを先に適用 ---
+        if initial_cells:
+            for ph in g2phases:
+                cell = initial_cells.get(ph.name)
+                if cell is not None:
+                    _set_initial_cell(ph, cell)
 
         # --- 初期格子摂動 (マルチスタート, 任意) ---
         if initial_cell_scale:
@@ -475,6 +524,7 @@ def run_auto_rietveld(
         final_rwp = stage_results[-1].rwp if stage_results else float("inf")
         final_gof = stage_results[-1].gof if stage_results else float("inf")
         final_nobs = _nobs(gpx) if stage_results else 0
+        phase_fractions = _phase_fraction_map(g2phases, g2hists)
 
         out_gpx = ""
         if keep_gpx is not None:
@@ -490,6 +540,7 @@ def run_auto_rietveld(
         validity=validity,
         gpx_path=out_gpx,
         n_obs=final_nobs,
+        phase_fractions=phase_fractions,
     )
 
 
@@ -499,4 +550,5 @@ def _data_fmthint(h: HistogramSpec) -> str:
         "GSAS": "GSAS",
         "FXYE": "GSAS",  # .fxye も GSAS powder importer が読む
         "XYE": "xye",
+        "XRDML": "Panalytical",  # Panalytical xrdml (xml) importer (実験室 X 線 in situ)
     }.get(h.data_format, "GSAS")

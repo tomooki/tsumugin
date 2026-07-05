@@ -187,3 +187,6 @@ class AutoRietveldResult:
     # 【観測点数】: 精密化に用いた実観測点数 (全ヒストグラム総和, レンジ制限反映)。chi2/BIC の
     #   dof・n 罰に用いる。末尾・既定 0 で後方互換 (0=未設定; 利用側は代替源へフォールバック) 🔵 Issue #16
     n_obs: int = 0
+    # 【相分率】: 相名→相分率 (先頭ヒストグラムの HAP Scale 和=1 正規化)。単相は {name: 1.0}。
+    #   逐次解析 (M9) が新相の有意性判定・転移推定に用いる。末尾・既定空 dict で後方互換 🔵 M9
+    phase_fractions: Mapping[str, float] = field(default_factory=dict)
