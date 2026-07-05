@@ -58,9 +58,29 @@ def _converged(gpx) -> bool:
     return bool(cov.get("Rvals", {}).get("converged", True))
 
 
+def _cells_physical(g2phases, min_length: float = 0.5) -> bool:
+    """全相の格子長が物理的 (有限かつ min_length 以上) かを判定する。
+
+    多相・高分解能データではプロファイル/サイズ解放時に格子が 0 へ崩壊する発散が起こり得る。
+    崩壊した段階は「悪化」とみなして revert させるためのガード。
+    """
+    for ph in g2phases:
+        cell = ph.get_cell()
+        for key in ("length_a", "length_b", "length_c"):
+            v = float(cell[key])
+            if not math.isfinite(v) or v < min_length:
+                return False
+    return True
+
+
 def _profile_keys(radiation: Radiation) -> list[str]:
-    """放射源に応じたプロファイル係数キー。CW/lab は U,V,W。"""
-    # TOF は sig-1,sig-2,X,Y 等だが Phase D で個別対応。既定は CW の UVW。
+    """放射源に応じたプロファイル係数キー。
+
+    CW (X 線/中性子) は Gaussian U,V,W。TOF は指数畳み込み + Gaussian の
+    sig-1, sig-2 と Lorentzian X, Y を解放する (difC/Zero 等の較正項は既定で固定)。
+    """
+    if radiation.is_tof:
+        return ["sig-1", "sig-2", "X", "Y"]
     return ["U", "V", "W"]
 
 
@@ -159,6 +179,10 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
         # 格子は共有したまま各ヒストグラムに独立の実効格子ずれを許す。
         for ph in phases:
             ph.set_HAP_refinements({"HStrain": True})
+    if "phase_fraction_sum" in flags:
+        # 多相の相分率 (HAP Scale) を全ヒストグラムで解放する。和=1 制約は _setup_constraints で登録済み。
+        for ph in phases:
+            ph.set_HAP_refinements({"Scale": True}, histograms=list(hists))
     # 原子フラグ (per-atom, 累積)
     for ph, info, fmap in zip(phases, phase_infos, atom_flag_maps):
         if _update_atom_flags(fmap, info, flags):
@@ -167,12 +191,13 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
                 ph.set_refinements({"Atoms": active})
 
 
-def _setup_constraints(gpx, g2phases, specs) -> None:
-    """混合占有グループごとに占有率和=1 制約と Uiso 等価制約を登録する (REQ-102)。
+def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
+    """占有率和=1・Uiso 等価 (混合占有) と相分率和=1 (多相) の制約を登録する (REQ-102/104)。
 
     占有率和=1 (add_EqnConstr) がないと占有率解放が発散し、Uiso 等価 (add_EquivConstr) が
-    ないと少数占有原子の Uiso が発散する (T2 実測)。
+    ないと少数占有原子の Uiso が発散する (T2 実測)。多相では各ヒストグラムで相分率和=1 を課す。
     """
+    # 混合占有: 占有率和=1 + Uiso 等価
     for ph, spec in zip(g2phases, specs):
         if not spec.mixed_occupancy_groups:
             continue
@@ -188,6 +213,13 @@ def _setup_constraints(gpx, g2phases, specs) -> None:
             uisos = [f"{pid}::AUiso:{i}" for i in idxs]
             gpx.add_EqnConstr(1.0, fracs, [1.0] * len(fracs))
             gpx.add_EquivConstr(uisos)
+
+    # 多相: 各ヒストグラムで相分率 (HAP Scale) 和 = 1 (REQ-104)
+    if len(g2phases) > 1:
+        for hist in g2hists:
+            hid = hist.id
+            scales = [f"{ph.id}:{hid}:Scale" for ph in g2phases]
+            gpx.add_EqnConstr(1.0, scales, [1.0] * len(scales))
 
 
 def _extract_state(phases):
@@ -271,8 +303,8 @@ def run_auto_rietveld(
             )
             g2phases.append(ph)
 
-        # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価) ---
-        _setup_constraints(gpx, g2phases, phases)
+        # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
+        _setup_constraints(gpx, g2phases, g2hists, phases)
         phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
 
         # 参照格子 (未指定なら初期格子)
@@ -310,6 +342,9 @@ def run_auto_rietveld(
                 gpx.do_refinements([{}])
                 rwp, gof, nvar = _rvals(gpx)
                 converged = _converged(gpx)
+                # 格子崩壊 (0 近傍/非有限) は発散とみなし inf 化 → revert (物理妥当性ガード)
+                if not _cells_physical(g2phases):
+                    rwp, gof, converged = float("inf"), float("inf"), False
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
                 rwp, gof, nvar, converged = float("inf"), float("inf"), 0, False
                 ledger.append(

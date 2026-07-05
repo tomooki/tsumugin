@@ -14,7 +14,14 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["load_gsas_powder", "load_xy", "parse_gsas_powder", "parse_xy"]
+__all__ = [
+    "load_fxye",
+    "load_gsas_powder",
+    "load_xy",
+    "parse_fxye",
+    "parse_gsas_powder",
+    "parse_xy",
+]
 
 # GSAS CONST の start/step はセンチ度 (×100 度) 単位。
 _CENTIDEG_TO_DEG = 0.01
@@ -105,3 +112,41 @@ def load_xy(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """2〜3 列 XY ファイルを読み ``(two_theta, intensity)`` を返す (``parse_xy`` 参照)。🔵"""
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     return parse_xy(text)
+
+
+def parse_fxye(text: str) -> tuple[np.ndarray, np.ndarray]:
+    """GSAS FXYE テキスト (``X Y ESD`` 3 列) を ``(two_theta[deg], intensity)`` へ変換する。🔵
+
+    FXYE (例 APS 11BM の ``.fxye``) は X をセンチ度 (2θ×100) で持つ。タイトル行 (先頭)・``#``
+    コメント行・空行を読み飛ばし、数値 3 列の行のみを採る。ESD (第 3 列) は相同定では無視する。
+    GSAS-II の add_powder_histogram が読むのと同じ X=センチ度 規約に従う。
+
+    Raises:
+        ValueError: 有効な数値データ行が 1 つも無いとき。
+    """
+    two_theta: list[float] = []
+    intensity: list[float] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            continue
+        try:
+            x = float(parts[0])
+            y = float(parts[1])
+        except ValueError:
+            # タイトル行など非数値行は読み飛ばす
+            continue
+        two_theta.append(x * _CENTIDEG_TO_DEG)
+        intensity.append(y)
+    if not two_theta:
+        raise ValueError("有効な FXYE データ行が見つかりません (X Y [ESD] の数値列が必要)。")
+    return np.asarray(two_theta, dtype=float), np.asarray(intensity, dtype=float)
+
+
+def load_fxye(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """GSAS FXYE ファイルを読み ``(two_theta[deg], intensity)`` を返す (``parse_fxye`` 参照)。🔵"""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    return parse_fxye(text)

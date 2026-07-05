@@ -149,3 +149,36 @@ def test_load_xy_reads_file(tmp_path):
     tt, inten = load_xy(path)
     assert tt.shape == (3,)
     assert inten[0] == pytest.approx(13736.0)
+
+
+def test_parse_fxye_converts_centidegrees_to_degrees():
+    from tsumugin.reference.io import parse_fxye
+
+    # FXYE: X はセンチ度 (2θ×100), 3 列 X Y ESD。先頭タイトル行 + # コメント + 数値行
+    text = (
+        "NAC /nov12/11bmb_1804\n"
+        "# Run no. = 1804\n"
+        "   500.0   239.933   16.08\n"
+        "   500.1   244.123   16.18\n"
+        "   500.2   224.020   15.60\n"
+    )
+    tt, inten = parse_fxye(text)
+    assert tt.tolist() == pytest.approx([5.0, 5.001, 5.002])
+    assert inten.tolist() == pytest.approx([239.933, 244.123, 224.020])  # ESD 無視
+
+
+def test_parse_fxye_empty_raises():
+    from tsumugin.reference.io import parse_fxye
+
+    with pytest.raises(ValueError):
+        parse_fxye("title only\n# comment\n\n")
+
+
+def test_load_fxye_reads_file(tmp_path):
+    from tsumugin.reference.io import load_fxye
+
+    path = tmp_path / "p.fxye"
+    path.write_text("TITLE\n# c\n1000.0 50.0 7.0\n1001.0 55.0 7.4\n", encoding="utf-8")
+    tt, inten = load_fxye(path)
+    assert tt.tolist() == pytest.approx([10.0, 10.01])
+    assert inten[1] == pytest.approx(55.0)
