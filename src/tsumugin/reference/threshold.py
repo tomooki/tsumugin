@@ -43,13 +43,16 @@ def inflection_threshold(scores: Sequence[float], *, tolerance: float = 0.01) ->
     if arr.size == 1:
         return float(arr[0]) - tolerance
 
-    # 【パーセンタイル曲線】: 0..100 パーセンタイルを取り分布形状を正規化する 🔵
+    # 【パーセンタイル曲線】: 0..100 パーセンタイル (常に 101 点) を取り分布形状を正規化する 🔵
     pct = np.percentile(arr, np.arange(0, 101))
     pct = _smooth5(pct)
-    if pct.size < 3:
-        return float(pct.min()) - tolerance
 
-    # 【変曲点】: 2階微分が最大 = スコアが最も急に変化する位置を境界とする 🔵
+    # 【変曲点】: 2階微分 (99 点) が最大 = スコアが最も急に良→悪へ変わる位置。
+    #   ``np.diff(pct, n=2)[k]`` は ``pct[k+1]`` 中心の曲率なので、変曲点 (膝) の percentile index は
+    #   ``idx+1``。ここでは ``pct[idx]`` (膝の 1 つ下) を採る: Dara 公開実装
+    #   (find_optimal_score_threshold: ``score_percentile[argmax(second_derivative)]``) と一致し、かつ
+    #   閾値をわずかに低め=包摂的にして境界付近の正解相を落とさない (過剰包摂の junk は木探索の
+    #   Rwp/BIC + 強 extra 罰が落とす)。``-tolerance`` でさらに包摂側へ寄せる。🔵
     second_derivative = np.diff(pct, n=2)
     idx = int(np.argmax(second_derivative))
     return float(pct[idx]) - tolerance

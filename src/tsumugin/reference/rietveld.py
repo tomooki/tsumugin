@@ -143,6 +143,9 @@ def align_peaks(
         d_zero = (a00 * b1 - a01 * b0) / det
         new_strain = max(-max_strain, min(max_strain, strain + d_eps))
         new_zero = max(-max_zero_shift, min(max_zero_shift, zero + d_zero))
+        # 【収束判定】: クランプ後の実変化で早期停止する。境界に張り付いた場合は更新量が
+        #   丸められ、収束扱いで抜けるか iterations 上限まで回る。いずれも決定論的で ε,z は
+        #   ±上限に有界なため出力は安定 (最適収束でない可能性のみ、正しさに影響しない)。🔵
         if abs(new_strain - strain) < 1e-7 and abs(new_zero - zero) < 1e-5:
             strain, zero = new_strain, new_zero
             break
