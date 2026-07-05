@@ -19,7 +19,7 @@ import numpy as np
 
 from ..backends.base import RefinementModel, RefinementResult
 from ..model import LatticeParams, PhaseInstance
-from ..search.peaks import Peak
+from ..search.peaks import Peak, find_peaks
 from ..search.tree import HypothesisTreeSearch, SearchConfig, SearchResult
 from .engine import (
     _DEFAULT_HULL_CUTOFF_EV,
@@ -29,6 +29,7 @@ from .engine import (
 )
 from .kalpha import KAlpha2
 from .provider import ReferenceProvider
+from .scoring import dara_peak_score
 
 __all__ = ["ReferenceBackend", "identify_phase_mixtures"]
 
@@ -153,6 +154,8 @@ def identify_phase_mixtures(
     subtract_bg: bool = False,
     bg_max_window: int = 50,
     kalpha2: KAlpha2 | None = None,
+    prefilter_top_k: int | None = None,
+    match_tol_deg: float = 0.15,
 ) -> SearchResult:
     """未知パターン + 元素一覧から多相混合を同定する (FR-110/115)。🔵
 
@@ -171,6 +174,9 @@ def identify_phase_mixtures(
         subtract_bg: True で観測強度に SNIP 背景減算を前処理適用する (実測データの精度向上)。
         bg_max_window: SNIP の最大クリップ窓幅 (点数)。``subtract_bg`` 時のみ有効。
         kalpha2: 参照ピークに付加する Kα2 サテライト設定。``None`` で無効 (単色近似)。
+        prefilter_top_k: Dara スコア (式1) で候補を事前ランクし上位 k 相のみ木探索へ渡す。
+            ``None`` で無効 (全候補)。候補が多い元素系 (全 MP 取得) で無関係相を除き高速化する。
+        match_tol_deg: Dara 事前スコアのピーク一致許容差 (度)。``prefilter_top_k`` 時のみ有効。
 
     Returns:
         ``SearchResult``。候補ゼロ (フィルタ全滅) でも例外化せず空へ縮退する。
@@ -190,6 +196,19 @@ def identify_phase_mixtures(
     # 【Kα2 サテライト】: 実測二重線に参照を整合させる (オプション) 🔵 FR-105
     if kalpha2 is not None:
         survivors = augment_kalpha2(survivors, kalpha2)
+
+    # 【Dara 事前フィルタ】: ピークマッチスコアで候補を絞り木探索コストを抑える (Fei et al. 2026) 🔵
+    #   Dara の「精密化前にピークマッチで有望相を選ぶ」に対応。無関係相 (extra 罰で低スコア) を除く。
+    if prefilter_top_k is not None and len(survivors) > prefilter_top_k:
+        observed = find_peaks(two_theta, intensity)
+        ranked = sorted(
+            survivors,
+            key=lambda r: (
+                -dara_peak_score(r.peaks, observed, tol_deg=match_tol_deg).score,
+                r.phase_id,
+            ),
+        )
+        survivors = ranked[:prefilter_top_k]
 
     # 【候補 + backend 構築】: 各参照相を PhaseInstance 候補に、ピークを peak_map に写す 🔵
     peak_map = {ref.phase_id: ref.peaks for ref in survivors}

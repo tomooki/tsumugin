@@ -242,6 +242,20 @@ def test_mixtures_accepts_preprocessing_options():
     assert result.ranked  # 背景減算後も相が同定される
 
 
+def test_prefilter_top_k_limits_candidates():
+    # Dara 事前フィルタ: 多数候補から上位 k のみ木探索へ。無関係相は除かれる
+    tt, y = _pattern([(20.0, 1.0), (40.0, 1.0)])
+    good = _ref("mp-good", [20.0, 40.0])
+    junk1 = _ref("mp-junk1", [55.0, 58.0])
+    junk2 = _ref("mp-junk2", [12.0, 15.0])
+    prov = FakeProvider([junk1, good, junk2])
+    result = identify_phase_mixtures(
+        tt, y, prov, elements=["Fe", "O"], prefilter_top_k=1
+    )
+    all_ids = {p.phase_ref for rk in result.ranked for p in rk.hypothesis.phases}
+    assert all_ids == {"mp-good"}  # 上位 1 = good のみが探索対象
+
+
 def test_max_phases_config_respected():
     tt, y = _pattern([(20.0, 1.0), (30.0, 1.0), (40.0, 1.0)])
     prov = FakeProvider([

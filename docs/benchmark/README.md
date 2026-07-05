@@ -50,22 +50,44 @@ Jana2020 Cookbook の *Example 02.5.2 CandAt* — CaCO3 の 2 多形 (calcite R-
 
 ### 多相同定結果 (2026-07-05)
 
-`identify_phase_mixtures` に `UserCIFProvider([calcite, aragonite])` を渡し **背景減算あり**:
+**元素情報 (Ca, C, O) のみから全 MP 候補 (169 相) を経て calcite + aragonite を同定**
+(Dara スコア + Dara 事前フィルタ + 背景減算):
 
 | 仮説 | Rwp |
 |---|---|
-| **calcite + aragonite (2 相)** | **86.0** ← 最良 |
-| calcite (単相) | 88.4 |
+| **calcite (R-3c) + aragonite (Pnma) — 2 相** | **94.4** ← 最良 |
+| calcite (単相) | 96.6 |
 | aragonite (単相) | 97.7 |
 
-**2 相仮説が単相を上回り、calcite + aragonite 混合を正しく検出**。
+169 相の全 MP 候補を Dara スコア上位 8 相に絞る (`prefilter_top_k=8`) ことで炭素・シュウ酸塩等の
+無関係相を除外し、木探索が 2 多形混合を正しく組み上げる。**信頼構造 (実験 CIF) に絞らなくても、
+元素情報だけから多相同定が成立する** (キャッシュ済み MP 候補でのオフライン再現テストあり)。
 
 **背景減算が必須**: CandAt.xy は構造化ベースラインを持ち、無処理では `find_peaks` が 735 本の偽ピークを
-拾い被覆率が希釈される。SNIP 背景減算で 27 本の実ピークに絞られ同定が成立する。
-なお全 MP 候補 (Ca-C-O 系) からの同定は、DFT 緩和格子のピーク位置ずれ (Issue #11) と炭素等の
-無関係相の混入で精度が落ちる → 信頼できる構造 (実験 CIF) に絞るのが有効。
+拾い被覆率が希釈される。SNIP 背景減算で 27 本の実ピークに絞られ同定が成立する。Rwp が高いのは
+MP の DFT 緩和格子とのピーク位置ずれ (Issue #11) が残るため (ランキングは正しい)。
 
-再現: `PYTHONIOENCODING=utf-8 uv run pytest tests/reference/test_realdata.py::test_identify_calcite_aragonite_mixture`
+再現: `pytest tests/reference/test_realdata.py::test_element_only_multiphase_from_full_mp_candidates`
+(キャッシュ利用でネットワーク/pymatgen 不要)
+
+## Dara 式ピークマッチングスコア (2026-07-05)
+
+Fei et al. *"Dara: Automated Multiple-Hypothesis Phase Identification"* (Chem. Mater. 2026,
+38, 1364) の式(1) を実装 (`reference.scoring.dara_peak_score`)、`identify_phases` の既定スコアに採用:
+
+`Score = (I_matched + I_wrong_intensity − 0.1·I_missing − 0.5·I_extra) / I_exp`
+
+旧 `match_score` (候補ピーク数で正規化 → peak-rich 相を希釈) と異なり、**実測強度で正規化**して
+候補のピーク数では罰せず、余剰計算ピーク (extra) のみ強く罰する (−0.5)。これで peak-rich な
+正解相が不利になる問題が解消し、**判別マージンが大幅改善**:
+
+| 実測 PbSO4 全 MP Pb-S-O | 1 位 | 2 位以降との差 |
+|---|---|---|
+| 旧 coverage | PbSO4 ✓ | +0.010 (S 同素体が僅差) |
+| **Dara (式1)** | **PbSO4 ✓** | **+0.36** (誤相は extra 罰で負スコア) |
+
+Dara スコアは間違った相 (硫黄・PbS 等) が予測する未観測ピークを extra として強く罰するため、
+正解相に明確なリードを与える。多相同定の候補事前フィルタ (`prefilter_top_k`) にも使う。
 
 ## 背景減算 + Kα2 モデル化の効果 (2026-07-05)
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import Literal
 
 import numpy as np
 
@@ -22,6 +23,7 @@ from ..search.peaks import find_peaks
 from .background import subtract_background
 from .kalpha import KAlpha2, add_kalpha2_satellites
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
+from .scoring import dara_peak_score
 from .provider import ReferenceProvider
 
 # hull フィルタ既定閾値。FR-103: 100 meV/atom = 0.1 eV/atom。
@@ -98,6 +100,7 @@ def identify_phases(
     subtract_bg: bool = False,
     bg_max_window: int = 50,
     kalpha2: KAlpha2 | None = None,
+    scoring: Literal["dara", "coverage"] = "dara",
 ) -> PhaseIdentification:
     """未知パターン + 元素一覧から候補相を同定する (FR-110/117)。🔵
 
@@ -119,6 +122,9 @@ def identify_phases(
         subtract_bg: True で観測強度に SNIP 背景減算を前処理適用する (実測データの精度向上)。
         bg_max_window: SNIP の最大クリップ窓幅 (点数)。``subtract_bg`` 時のみ有効。
         kalpha2: 参照ピークに付加する Kα2 サテライト設定。``None`` で無効 (単色近似)。
+        scoring: マッチスコア方式。``"dara"`` (既定, Fei et al. 2026 式1: 実測強度正規化 +
+            extra 罰。peak-rich 相を希釈しない) / ``"coverage"`` (旧 ``match_score``: 一致率と
+            被覆率の等重み平均)。
 
     Returns:
         ``PhaseIdentification`` (ランキング済みマッチ + 未知相レポート + 観測ピーク)。
@@ -147,18 +153,35 @@ def identify_phases(
     if kalpha2 is not None:
         survivors = augment_kalpha2(survivors, kalpha2)
 
-    # 【マッチング】: 生存候補ごとに一致率 + 被覆率スコアを求める 🔵 FR-111
+    # 【マッチング】: 生存候補ごとにスコアを求める (dara: 式1 / coverage: 旧 match_score) 🔵 FR-111
     match_results: list[MatchResult] = []
     matches: list[PhaseMatch] = []
     for i, phase in enumerate(survivors):
-        result = match_score(phase.peaks, observed, tol_deg=match_tol_deg, candidate_index=i)
-        match_results.append(result)
+        if scoring == "dara":
+            ds = dara_peak_score(phase.peaks, observed, tol_deg=match_tol_deg)
+            score = ds.score
+            matched_observed = ds.matched_observed
+            extra_calculated = ds.extra_calculated
+        else:
+            mr = match_score(phase.peaks, observed, tol_deg=match_tol_deg, candidate_index=i)
+            score = mr.score
+            matched_observed = mr.matched_observed
+            extra_calculated = mr.unmatched_candidate
+        # 未知相レポート (unmatched_peaks) 用に MatchResult 互換へ写す (方式に依らず統一) 🔵
+        match_results.append(
+            MatchResult(
+                candidate_index=i,
+                score=score,
+                matched_observed=matched_observed,
+                unmatched_candidate=extra_calculated,
+            )
+        )
         matches.append(
             PhaseMatch(
                 reference=phase,
-                score=result.score,
-                matched_observed=result.matched_observed,
-                extra_calculated=result.unmatched_candidate,
+                score=score,
+                matched_observed=matched_observed,
+                extra_calculated=extra_calculated,
             )
         )
 

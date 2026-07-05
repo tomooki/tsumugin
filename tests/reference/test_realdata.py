@@ -26,6 +26,10 @@ _CALCITE_CIF = _JANA / "calcite.cif"
 _ARAGONITE_CIF = _JANA / "aragonite_mp-4626.cif"
 _HAS_JANA = _CANDAT_XY.exists() and _CALCITE_CIF.exists() and _ARAGONITE_CIF.exists()
 
+# 全 MP Ca-C-O 候補 (169 相) を FR-105 キャッシュに保存したもの (element-only 同定の再現用)
+_MP_CACHE = _JANA / "mpcache" / "CuKa1_CandAt__C-Ca-O.json"
+_HAS_MP_CACHE = _CANDAT_XY.exists() and _MP_CACHE.exists()
+
 pytestmark = pytest.mark.skipif(
     not _HAS_DATA, reason="GSAS-II tutorial PbSO4 データ未配置 (docs/benchmark/README.md 参照)"
 )
@@ -195,3 +199,43 @@ def test_identify_calcite_aragonite_mixture():
     single_hyps = [rk for rk in result.ranked if len(rk.hypothesis.phases) == 1]
     if single_hyps:
         assert best.metrics.rwp <= single_hyps[0].hypothesis.metrics.rwp
+
+
+@pytest.mark.skipif(not _HAS_MP_CACHE, reason="MP Ca-C-O キャッシュ未配置 (docs/benchmark/README.md 参照)")
+def test_element_only_multiphase_from_full_mp_candidates():
+    # 本題: Ca,C,O の元素情報のみから、全 MP 候補 (169 相) を経て calcite+aragonite を同定する。
+    # キャッシュ済み実データ利用でネットワーク/pymatgen 不要のオフライン再現テスト。
+    import json
+
+    from tsumugin.reference import identify_phase_mixtures, reference_phase_from_dict
+    from tsumugin.reference.io import load_xy
+    from tsumugin.search.tree import SearchConfig
+
+    two_theta, intensity = load_xy(_CANDAT_XY)
+    data = json.loads(_MP_CACHE.read_text(encoding="utf-8"))
+    refs = tuple(reference_phase_from_dict(d) for d in data["phases"])
+    assert len(refs) > 100  # 全 MP Ca-C-O 候補
+
+    class _CachedProvider:
+        def fetch(self, elements):
+            return refs
+
+    lookup = {r.phase_id: r for r in refs}
+    result = identify_phase_mixtures(
+        two_theta,
+        intensity,
+        _CachedProvider(),
+        elements=["Ca", "C", "O"],
+        hull_cutoff_ev=0.15,
+        subtract_bg=True,       # 簡易シミュレーションの構造化背景を除去
+        prefilter_top_k=8,      # Dara スコアで無関係相 (炭素等) を除外
+        config=SearchConfig(max_phases=2),
+    )
+    assert result.ranked
+    best = result.ranked[0].hypothesis
+    # 最良仮説は 2 相で、両方 CaCO3 (calcite R-3c + aragonite Pnma)
+    assert len(best.phases) == 2
+    formulas = {lookup[p.phase_ref].formula for p in best.phases}
+    spacegroups = {lookup[p.phase_ref].spacegroup for p in best.phases}
+    assert formulas == {"CaCO3"}
+    assert spacegroups == {"R-3c", "Pnma"}  # calcite + aragonite の 2 多形
