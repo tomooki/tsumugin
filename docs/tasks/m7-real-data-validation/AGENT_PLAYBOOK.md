@@ -189,3 +189,52 @@ result = run_auto_rietveld([hx, ht1, ht2], phases)
 | T2 garnet (単相CW中性子+混合占有) | Rwp 4.33% / GOF 1.63 | 5.18% / 3.79 |
 | T3 PbSO4 (X線+中性子 joint) | Rwp 6.66% / GOF 2.25 | 6.71% / 2.27 |
 | T4 NAC+CaF2 (TOF+放射光 多相) | (Phase D 検証中) | 6.83% |
+
+---
+
+## 8. M8: MCP 3 ツール閉ループ (agentic 判断層)
+
+M8 で「フィット結果を観測し次手を判断して再実行する」閉ループを 3 層に分離した
+(`docs/design/m8-agentic-loop/architecture.md`)。エージェント (③ = Claude Code/Codex) は
+**MCP 3 ツール**を反復駆動して解析を進める。ライブラリは LLM を呼び返さない (二重反転回避)。
+
+### 8.1 閉ループの回し方
+
+1. `auto_rietveld(histograms, phases, background_coeffs=6)` — spec を実行し構造化結果を得る
+   (段階別/最終 Rwp・格子・validity・**spec ハンドル** = stateless echo)。
+2. 結果 (Rwp 停滞・validity 項目・未指数ピーク等) と残差シグネチャから
+   `propose_next_actions(result, features)` を呼び `ActionProposal[]` を得る (各提案に `safe` フラグ)。
+3. **次手を自ら判断する**:
+   - `safe=True` (SafeAction: 背景増項・パラメータ追加解放) は自明に採用してよい。
+   - `safe=False` (ModelAction: リミット・相追加削除・構造改訂・混合占有割当) は**エージェントが
+     判断**し、構造変更・相追加は**ユーザー承認**を挟む (§8.3 権限境界)。
+4. 採った改訂を `refine_with_revisions(histograms, phases, actions, background_coeffs)` に渡して
+   再実行し、`specs` ハンドルを次反復へ持ち回る。
+5. 目標 Rwp 到達 / 改善停滞 / 予算上限で終了。
+
+### 8.2 headless/CI 経路 (規則のみで回す)
+
+構造判断が不要な範囲は `run_refinement_loop(histograms, phases, policy=RuleBasedPolicy())` で
+決定論的に自律収束できる。SafeAction のみ自律適用し、ModelAction 提案は `open_proposals` に
+申し送られる (③/人間へ)。受理基準は **Rwp 改善 ∧ validity 維持** (過剰適合ガード)。
+種固定でビット同一・ledger `verify()` True (NFR-102/105)。
+
+### 8.3 権限境界 (規則が担える範囲 — architecture.md §4.5)
+
+| 判断 | 規則 (headless/RuleBasedPolicy) | ③ (Claude/人間) |
+|---|---|---|
+| 背景増項・パラメータ追加解放・停止 | ✅ 自律実行 (Rwp∧validity で自己検証) | 監督・上書き可 |
+| 保守的初期リミット (`propose_initial_limits`) | 🟡 setup で提案+既定適用 | 採否・微調整 |
+| mustrain/size の解放 | ✅ 解放して LSQ に探させる | 極端に鋭い相の初期値投入 |
+| データリミット精密化・相追加/削除・混合占有割当 | ❌ 提案のみ (`safe=False`) | ✅ 判断・実行 |
+| 構造改訂 (空間群/原子/原点)・事前知識 (R5) | ❌ | ✅ 判断・実行 |
+
+**なぜ規則が構造判断をしないか**: 残差からは原因が一意に決まらない (同じ残差が複数原因と両立)。
+規則は「間違えても revert される」安全・自己検証可・パラメトリックな手に厳格限定する。
+
+### 8.4 Action の適用 (純変換)
+
+各 `AnalysisAction` は `apply(AnalysisInput) -> AnalysisInput` の純変換で、spec を書き換える:
+`SetLimits` は `two_theta_limits` を、`AddPhase(spec=...)` は相追加を、`ReviseStructure(phase,
+{"structure_path": edited})` は ③ が編集した CIF への差し替えを表す。JSON 往復は
+`refine_loop.serialization` (`action_to_dict`/`action_from_dict`)。

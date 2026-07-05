@@ -54,13 +54,17 @@ M7 の T4 収束改善で私 (Claude) が手動で行った判断 — 「48%平�
 
 ## 4. フェーズ
 
-| Phase | 内容 | 検証 |
-|---|---|---|
-| A | Action(safe/unsafe 型分け) + 診断 (`propose_next_actions`/`propose_initial_limits`) | 純テスト (残差→提案, safe フラグ) |
-| B | `RuleBasedPolicy`(SafeAction のみ) + `run_refinement_loop` + 受理基準(Rwp∧validity) | T1/T4 の背景増項を規則で自動化。T4 は保守リミット+規則で自律収束 (gsas) |
-| C | 薄い MCP 3 ツール + spec JSON 化 | 決定論スタブ判断者で閉ループ e2e |
-| D | 実構造配線 (`AutoRietveldBackend` + search/evidence/chem/oed 接続) | 実構造多仮説 e2e (gsas) |
-| E | ③ Claude Code plugin (skill/command) + AGENT_PLAYBOOK に閉ループ・権限境界節 | 構造改訂を要する新規例を ③ で検証 |
+| Phase | 内容 | 検証 | 状況 |
+|---|---|---|---|
+| A | Action(safe/unsafe 型分け) + 診断 (`propose_next_actions`/`propose_initial_limits`) | 純テスト (残差→提案, safe フラグ) | ✅ 実装済 (`refine_loop/action.py`,`diagnostics.py`) |
+| B | `RuleBasedPolicy`(SafeAction のみ) + `run_refinement_loop` + 受理基準(Rwp∧validity) | T1/T4 の背景増項を規則で自動化。T4 は保守リミット+規則で自律収束 (gsas) | ✅ 実装済 (`policy.py`,`orchestrator.py`; T1 gsas 回帰: 過少背景3→自律増項でRwp≤12%) |
+| C | 薄い MCP 3 ツール + spec JSON 化 | 決定論スタブ判断者で閉ループ e2e | ✅ 実装済 (`mcp/rietveld_tools.py`; MCP_TOOLS 10→13; spec to_dict/from_dict) |
+| D | 実構造配線 (`AutoRietveldBackend` + search/evidence/chem/oed 接続) | 実構造多仮説 e2e (gsas) | ✅ 実装済 (`autorietveld/backend_adapter.py`; Protocol 適合+BIC ランキング。chem/oed 接続は Protocol 経由で既存資産が利用可) |
+| E | ③ Claude Code plugin (skill/command) + AGENT_PLAYBOOK に閉ループ・権限境界節 | 構造改訂を要する新規例を ③ で検証 | ✅ 実装済 (`plugins/tsumugin/`; AGENT_PLAYBOOK §8; 契約テスト) |
+
+**M-later**: T4 の規則ループ完全自律収束は残差配列を用いた richer diagnose (FWHM 比/未指数ピーク)
+が要 (現状の既定 diagnose は結果ベースの背景増項ヒューリスティクス)。実 LLM 判断者の自動評価、
+実構造多仮説の gsas e2e は別 Issue。
 
 ## 5. 設計上の要点 (詳細は architecture.md)
 
