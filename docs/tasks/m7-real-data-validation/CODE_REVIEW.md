@@ -24,8 +24,19 @@
 | L10 | LOW | 占有率を全原子抽出し厳格に [0,1] 判定 (規約差で >1 の恐れ) | 標準 CIF では誤検出なし (レビュアーも "no action" 判定)。混合占有は和=1 制約で担保 |
 | L11 | LOW | io.py の 2 つの FXYE 経路 (engine=GSAS importer / parse_fxye=numpy) | レビュアーが「io.py に問題なし」と確認。centidegree 変換も正しい |
 
+## 再レビュー (修正ループ)
+
+修正後の差分を再度敵対的レビュー。Fix 1-3 は正しいと確認。ただし **M6 修正が新規の潜在不具合を導入**:
+
+| # | 重大度 | 箇所 | 内容 | 修正 |
+|---|---|---|---|---|
+| R1 | LOW-MED | engine `_extract_phase_fractions` | 相分率抽出失敗を `continue` で捨て長さが縮み、check_validity の和検査が黙って skip → 偽 valid | 失敗相は `NaN` を入れ**長さを相数に保つ** (NaN で和検査が fail)。回帰テスト追加 |
+
+再々レビュー相当の確認: R1 修正は局所的で、NaN → `check_validity` の `abs(nan-1)<=tol` が False → 明示 fail。
+これ以上の新規指摘なし → **修正ループ収束**。
+
 ## 検証
 
-- 純ロジックテスト green + 回帰テスト追加 (M4 対称グリッド / M5 全失敗 None / L9 Uiso 許容)。
+- 純ロジックテスト green + 回帰テスト追加 (M4 対称グリッド / M5 全失敗 None / L9 Uiso 許容 / R1 NaN 相分率)。
 - 実データ gsas テスト (T1–T4 + multistart T1) で修正後も回帰なしを確認。
-- 修正後の最新差分で再レビューし新規指摘が出ないことを確認 (修正ループ)。
+- 全 1254 tests green (0 failed)。修正ループ収束。

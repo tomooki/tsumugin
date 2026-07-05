@@ -255,7 +255,11 @@ def _extract_state(phases):
 
 
 def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
-    """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。"""
+    """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。
+
+    抽出失敗の相は NaN を入れて**長さを相数に保つ** (欠落で continue すると len が縮み、
+    check_validity の和=1 検査が黙って skip され偽 valid になるため)。NaN があれば和検査は fail する。
+    """
     if not g2hists:
         return []
     hist = g2hists[0]
@@ -264,7 +268,7 @@ def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
         try:
             fractions.append(float(ph.getHAPvalues(hist)["Scale"][0]))
         except Exception:
-            continue
+            fractions.append(float("nan"))
     return fractions
 
 

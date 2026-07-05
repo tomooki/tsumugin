@@ -82,6 +82,15 @@ def test_phase_fraction_sum_constraint():
     assert any("fraction" in name and not ok for name, ok, _ in rep2.checks)
 
 
+def test_phase_fraction_with_nan_fails_not_skipped():
+    # 部分抽出 (相分率の一部が NaN) は和検査を skip せず fail させる (再レビュー指摘)
+    kw = _good_kwargs()
+    kw["phase_fractions"] = [0.6, float("nan")]  # 2 相分の長さは保つが 1 相が NaN
+    rep = check_validity(**kw)
+    assert not rep.passed
+    assert any("fraction" in name and not ok for name, ok, _ in rep.checks)
+
+
 def test_non_converged_produces_warning_but_not_hard_fail():
     kw = _good_kwargs()
     kw["converged"] = False
