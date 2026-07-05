@@ -15,7 +15,7 @@
 
 | 層 | 実体 | 責務 | 判断者 |
 |---|---|---|---|
-| ① 決定論コア (ライブラリ, numpy) | `autorietveld` + `agentic` (規則部) | R1 実行 / R2 診断 / R4 適用 / **限定的な R3 (規則)** | 規則 (headless/CI/cron) |
+| ① 決定論コア (ライブラリ, numpy) | `autorietveld` + `refine_loop` (規則部) | R1 実行 / R2 診断 / R4 適用 / **限定的な R3 (規則)** | 規則 (headless/CI/cron) |
 | ② MCP = 計器＋アクチュエータ | `mcp.tools` に薄い 3 ツール | R1/R2/R4 を **構造化して露出** | — (返すだけ) |
 | ③ ハーネス/プラグイン = agentic 判断 | Claude Code plugin (skill/command) | **R3 開放的判断 / R5 構造改訂・事前知識** | Claude Code 本体 / 人間 |
 
@@ -37,11 +37,11 @@
 ## 2. モジュール / 成果物構成
 
 ```
-tsumugin/agentic/            # ① 決定論コアの判断ループ
+tsumugin/refine_loop/        # ① 決定論コアの判断ループ ("agentic" は capability/③ に限定)
 ├── action.py               # AnalysisAction 群 (frozen, safe/unsafe を型で区別)
 ├── diagnostics.py          # propose_next_actions + propose_initial_limits (R2)
 ├── policy.py               # AnalysisPolicy Protocol + RuleBasedPolicy (安全部分集合のみ)
-└── orchestrator.py         # run_agentic_analysis (観測→規則判断→適用→再実行, headless)
+└── orchestrator.py         # run_refinement_loop (観測→規則判断→適用→再実行, headless)
 
 tsumugin/autorietveld/
 └── backend_adapter.py      # AutoRietveldBackend (RefinementBackend Protocol) — 要素4
@@ -102,13 +102,13 @@ class AnalysisPolicy(Protocol):
 - **AI 判断者 (③)**: `AnalysisPolicy` を Claude Code が担う。ライブラリは AgentPolicy→LLM の
   外呼びを **持たない**（0 節の反転回避）。③ は MCP 3 ツール (要素3) を反復駆動して同じ役割を果たす。
 
-### 3.3 run_agentic_analysis (orchestrator.py) — headless/決定論ループ
+### 3.3 run_refinement_loop (orchestrator.py) — headless/決定論ループ
 
 ```python
-def run_agentic_analysis(
+def run_refinement_loop(
     histograms, phases, *, policy: AnalysisPolicy = RuleBasedPolicy(),
     ledger=None, max_iterations=8, target_rwp=None, seed=0,
-) -> AgenticResult:
+) -> RefinementLoopResult:
     ...
 ```
 
@@ -118,7 +118,7 @@ def run_agentic_analysis(
 3. `action = policy.decide(AnalysisState(...))`
 4. `Stop` で終了。SafeAction なら `apply` して再実行し、**受理基準 (Rwp 改善 ∧ validity 維持)** を
    満たさなければ棄却して履歴に記録（可逆）。
-- 返り値 `AgenticResult`: 最良 `AutoRietveldResult` + `steps`(反復履歴) + `open_proposals`
+- 返り値 `RefinementLoopResult`: 最良 `AutoRietveldResult` + `steps`(反復履歴) + `open_proposals`
   (未適用の ModelAction 提案 = ③/人間への申し送り) + `ledger`。
 - **再現性**: RuleBasedPolicy + 種固定でビット同一 (NFR-102)。
 
@@ -212,7 +212,7 @@ MCP_TOOLS に **3 ツールのみ**追加（ループ丸ごとの `agentic_analy
   **自ら次手を判断** (SafeAction は自明、ModelAction=構造改訂は Claude/ユーザーが決定)→
   `refine_with_revisions`→反復。反転なし。ユーザー承認 (構造変更) は Claude Code UI で自然に挟める。
 - 非破壊/認可境界は既存 MCP と同一 (accept/revert は既存ツール)。
-- **オプション**: headless 用に `run_agentic_analysis(policy=rule)` を呼ぶ薄いツールは追加可能だが、
+- **オプション**: headless 用に `run_refinement_loop(policy=rule)` を呼ぶ薄いツールは追加可能だが、
   それは「規則ループを回す」ものであり LLM を呼び返さない (§0 の反転を作らない)。
 
 ---
@@ -239,7 +239,7 @@ class AutoRietveldBackend:  # backends.base.RefinementBackend を満たす
 - **evidence**: 実構造 refine 群の BIC/softmax でランキング。
 - **chem**: 実構造候補の化学的妥当性で降格 (除外せず)。
 - **oed** `propose_measurements`: 僅差競合時に次の**測定**を提案。M8 の `AnalysisAction` (=解析内の
-  次手) とは別軸 (=次の実験) として `AgenticResult`/③ に併記。
+  次手) とは別軸 (=次の実験) として `RefinementLoopResult`/③ に併記。
 - **search** `HypothesisTreeSearch`: 実構造で相の追加/削除を木探索として実行。③ の `AddPhase`/
   `RemovePhase` 判断はこの木探索 1 手に対応づく (相の探索と相内適応を実構造上で統合)。
 
@@ -272,7 +272,7 @@ histograms/phases ──▶ MCP│  auto_rietveld ──▶ 構造化結果 (Rwp
                          │        │                    │  Claude が次手決定 (構造改訂は user 承認) │
                          │  refine_with_revisions ◀────┘                                        │
                          └──────────────────────────────────────────────────────────────────────┘
-   headless/CI 経路:  run_agentic_analysis(policy=RuleBasedPolicy) ── SafeAction のみ自律・ModelAction は open_proposals へ
+   headless/CI 経路:  run_refinement_loop(policy=RuleBasedPolicy) ── SafeAction のみ自律・ModelAction は open_proposals へ
    共通核: run_auto_rietveld (要素4 backend 可) / propose_next_actions / apply(action) / ledger+snapshot
 ```
 
@@ -287,7 +287,7 @@ histograms/phases ──▶ MCP│  auto_rietveld ──▶ 構造化結果 (Rwp
 - **Phase A — Action + 診断**: `action.py`(safe/unsafe 型分け) + `propose_next_actions` +
   `propose_initial_limits`。純 numpy テスト (残差→提案、safe フラグ)。
 - **Phase B — 規則ポリシー + オーケストレータ**: `RuleBasedPolicy`(SafeAction のみ) +
-  `run_agentic_analysis` + 受理基準 (Rwp∧validity)。T1/T4 の背景増項を規則で自動化して検証。
+  `run_refinement_loop` + 受理基準 (Rwp∧validity)。T1/T4 の背景増項を規則で自動化して検証。
   **T4 は保守的初期リミット + 規則ループで自律収束、最適化残は open_proposals に出す**。
 - **Phase C — 薄い MCP (要素3)**: `auto_rietveld`/`propose_next_actions`/`refine_with_revisions`
   + spec の to_dict/from_dict。決定論スタブで e2e。
@@ -301,7 +301,7 @@ histograms/phases ──▶ MCP│  auto_rietveld ──▶ 構造化結果 (Rwp
   権限境界 (規則が ModelAction を実行しないこと) を明示テスト。
 - 実構造ループ: `@pytest.mark.gsas`。T4 を規則ポリシー+保守リミットで収束させる回帰。
 - MCP 3 ツール: 決定論スタブ判断者 (固定 Action 列) で e2e 再現。
-- 再現性: 同一種・同一規則ポリシーで `AgenticResult` ビット同一・ledger `verify()` True。
+- 再現性: 同一種・同一規則ポリシーで `RefinementLoopResult` ビット同一・ledger `verify()` True。
 - ③ プラグイン: skill 手順の乾式レビュー + MCP 契約テスト (実 LLM は手動)。
 
 ## 13. スコープ外 (M-later)

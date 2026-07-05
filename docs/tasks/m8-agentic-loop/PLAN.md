@@ -18,12 +18,12 @@ M7 の T4 収束改善で私 (Claude) が手動で行った判断 — 「48%平�
 
 | 層 | 実体 | 責務 | 判断者 |
 |---|---|---|---|
-| ① 決定論コア | `autorietveld` + `agentic`(規則部) | 実行/診断/適用 + **限定的な規則判断** | 規則 (headless/CI) |
+| ① 決定論コア | `autorietveld` + `refine_loop`(規則部) | 実行/診断/適用 + **限定的な規則判断** | 規則 (headless/CI) |
 | ② MCP | 薄い 3 ツール | 判断入力を**構造化して露出** | — |
 | ③ ハーネス/プラグイン | Claude Code plugin | **開放的判断・構造改訂・事前知識** | Claude/人間 |
 
 要素 (M7 評価の 4 Gap を 3 層へ):
-1. **判断層** — 決定論ループ (`run_agentic_analysis`) + `RuleBasedPolicy` (**安全部分集合のみ**)。
+1. **判断層** — 決定論ループ (`run_refinement_loop`) + `RuleBasedPolicy` (**安全部分集合のみ**)。
    AI 判断は ③ に委譲 (AgentPolicy→LLM 外呼びは持たない)。
 2. **提案出力** — `propose_next_actions` (残差診断→`ActionProposal`, safe/unsafe を型分け)。
 3. **MCP 露出 (薄い)** — `auto_rietveld` / `propose_next_actions` / `refine_with_revisions` の
@@ -49,7 +49,7 @@ M7 の T4 収束改善で私 (Claude) が手動で行った判断 — 「48%平�
 - **規則ポリシーで T4 を自律収束**: M7 で手動判断した背景増項/リミット/解放順を、ループが
   `propose_next_actions` → `RuleBasedPolicy` で自動選択して収束させる。
 - **Claude 判断者で構造改訂を要する例を解く**: `ReviseStructure`/`AddPhase` を含む、事前知識・
-  構造モデル変更が必要な新規実データ例を、MCP + `AgentPolicy` の閉ループで解析。
+  構造モデル変更が必要な新規実データ例を、MCP 3 ツール + ③ (Claude Code plugin) の閉ループで解析。
 - 不変条件 (P2/NFR-102/NFR-105/numpy-only コア) を維持。
 
 ## 4. フェーズ
@@ -57,7 +57,7 @@ M7 の T4 収束改善で私 (Claude) が手動で行った判断 — 「48%平�
 | Phase | 内容 | 検証 |
 |---|---|---|
 | A | Action(safe/unsafe 型分け) + 診断 (`propose_next_actions`/`propose_initial_limits`) | 純テスト (残差→提案, safe フラグ) |
-| B | `RuleBasedPolicy`(SafeAction のみ) + `run_agentic_analysis` + 受理基準(Rwp∧validity) | T1/T4 の背景増項を規則で自動化。T4 は保守リミット+規則で自律収束 (gsas) |
+| B | `RuleBasedPolicy`(SafeAction のみ) + `run_refinement_loop` + 受理基準(Rwp∧validity) | T1/T4 の背景増項を規則で自動化。T4 は保守リミット+規則で自律収束 (gsas) |
 | C | 薄い MCP 3 ツール + spec JSON 化 | 決定論スタブ判断者で閉ループ e2e |
 | D | 実構造配線 (`AutoRietveldBackend` + search/evidence/chem/oed 接続) | 実構造多仮説 e2e (gsas) |
 | E | ③ Claude Code plugin (skill/command) + AGENT_PLAYBOOK に閉ループ・権限境界節 | 構造改訂を要する新規例を ③ で検証 |
