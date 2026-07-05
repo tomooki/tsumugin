@@ -65,17 +65,28 @@ def _profile_keys(radiation: Radiation) -> list[str]:
 
 
 def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
-    """相の原子メタ情報 (一般位置ラベル・全ラベル・混合占有ラベル) を収集する。
+    """相の原子メタ情報 (座標可変ラベル・全ラベル・混合占有ラベル) を収集する。
 
-    座標精密化は一般位置 (site symmetry '1') の原子のみに限定する (特殊位置の座標解放は
-    セル発散を招く, T2 実測)。混合占有ラベルは占有率解放の対象。
+    座標精密化は自由座標を 1 つ以上持つ原子のみに限定する。対称性で完全に固定された特殊位置
+    (例 garnet 16a/24d, 自由座標 0) の座標解放はセル発散を招く (T2 実測)。一方 Pnma 4c のような
+    部分特殊位置 (自由座標 x,z) は精密化する。判定は GSAS-II の GetCSxinel(site symmetry) で行う。
     """
+    from GSASII import GSASIIspc as G2spc
+
     atoms = ph.data["Atoms"]
     cx, ct, cs, cia = ph.data["General"]["AtomPtrs"]
     labels = [row[ct - 1] for row in atoms]
-    general = [row[ct - 1] for row in atoms if str(row[cs]).strip() == "1"]
+    coord_atoms = []
+    for row in atoms:
+        try:
+            free = G2spc.GetCSxinel(row[cs])[0]
+            has_free = any(free)
+        except Exception:
+            has_free = str(row[cs]).strip() == "1"
+        if has_free:
+            coord_atoms.append(row[ct - 1])
     mixed = {lab for grp in spec.mixed_occupancy_groups for lab in grp}
-    return {"labels": labels, "general": general, "mixed": mixed}
+    return {"labels": labels, "coord_atoms": coord_atoms, "mixed": mixed}
 
 
 def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
@@ -95,7 +106,7 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
             changed = True
 
     if "coords" in stage_flags:
-        for lab in info["general"]:
+        for lab in info["coord_atoms"]:
             add(lab, "X")
     if "uiso" in stage_flags:
         for lab in info["labels"]:
@@ -130,13 +141,24 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
     if "size_strain" in flags:
+        # サイズ/微小歪みは高分解能の X 線/放射光ヒストグラムに優先して張る。X 線が無い
+        # (純中性子 CW) 場合のみ中性子に張る。joint で低分解能中性子にも張ると過剰母数化して
+        # フィットを希釈する (T3 実測: X 線限定で 8.4%→6.7%)。
+        xray = [h for h, r in zip(hists, radiations) if not r.is_neutron]
+        targets = xray if xray else list(hists)
         for ph in phases:
             ph.set_HAP_refinements(
                 {
                     "Size": {"type": "isotropic", "refine": True},
                     "Mustrain": {"type": "isotropic", "refine": True},
-                }
+                },
+                histograms=targets,
             )
+    if "hydrostatic_strain" in flags:
+        # ヒストグラム間の温度差を per-histogram の静水圧歪み Dij で吸収する (REQ-103)。
+        # 格子は共有したまま各ヒストグラムに独立の実効格子ずれを許す。
+        for ph in phases:
+            ph.set_HAP_refinements({"HStrain": True})
     # 原子フラグ (per-atom, 累積)
     for ph, info, fmap in zip(phases, phase_infos, atom_flag_maps):
         if _update_atom_flags(fmap, info, flags):
