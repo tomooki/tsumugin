@@ -105,8 +105,16 @@ def create_mcp_server(session: AnalysisSession) -> object:
         if fn is None:
             raise ValueError(f"unknown tool: {name}")
         kwargs = dict(arguments or {})
-        # 【第 1 引数束縛】: 全ツールは (session, **kwargs) 形。素の型 dict 応答を得る 🔵
-        result = fn(session, **kwargs)  # type: ignore[operator]
+        # 【第 1 引数束縛】: session-facade 型ツール (M4/M6) は (session, **kwargs) 形で session を
+        #   束縛する。M8 の実構造 Rietveld ツール (rietveld_tools) は session を取らない計器+
+        #   アクチュエータのため kwargs のみで呼ぶ。第 1 引数名で判別する (architecture.md §6) 🔵
+        import inspect
+
+        params = list(inspect.signature(fn).parameters)  # type: ignore[arg-type]
+        if params and params[0] == "session":
+            result = fn(session, **kwargs)  # type: ignore[operator]
+        else:
+            result = fn(**kwargs)  # type: ignore[operator]
         # 【応答整形】: 素の型 dict を JSON テキストコンテンツで返す (SDK が転送) 🔵
         return [mcp_types.TextContent(type="text", text=json.dumps(result, allow_nan=False))]
 

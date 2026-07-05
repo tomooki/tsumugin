@@ -61,6 +61,36 @@ class HistogramSpec:
     two_theta_limits: tuple[float, float] | None = None
     temperature: float | None = None
 
+    def to_dict(self) -> dict[str, object]:
+        """MCP JSON 露出用に素の型 dict へ写像する (Enum→値文字列, tuple→list)。"""
+        return {
+            "data_path": self.data_path,
+            "instrument_path": self.instrument_path,
+            "radiation": self.radiation.value,
+            "geometry": self.geometry.value,
+            "data_format": self.data_format,
+            "bank": self.bank,
+            "two_theta_limits": list(self.two_theta_limits)
+            if self.two_theta_limits is not None
+            else None,
+            "temperature": self.temperature,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "HistogramSpec":
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
+        limits = d.get("two_theta_limits")
+        return cls(
+            data_path=str(d["data_path"]),
+            instrument_path=str(d["instrument_path"]),
+            radiation=Radiation(d["radiation"]),
+            geometry=Geometry(d["geometry"]),
+            data_format=str(d.get("data_format", "GSAS")),
+            bank=d.get("bank"),  # type: ignore[arg-type]
+            two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
+            temperature=d.get("temperature"),  # type: ignore[arg-type]
+        )
+
 
 @dataclass(frozen=True)
 class PhaseSpec:
@@ -79,6 +109,28 @@ class PhaseSpec:
     format_hint: str = "CIF"
     mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
     temperature: float | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """MCP JSON 露出用に素の型 dict へ写像する (tuple 組→list of list)。"""
+        return {
+            "structure_path": self.structure_path,
+            "phase_name": self.phase_name,
+            "format_hint": self.format_hint,
+            "mixed_occupancy_groups": [list(g) for g in self.mixed_occupancy_groups],
+            "temperature": self.temperature,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "PhaseSpec":
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
+        groups = d.get("mixed_occupancy_groups") or ()
+        return cls(
+            structure_path=str(d["structure_path"]),
+            phase_name=str(d["phase_name"]),
+            format_hint=str(d.get("format_hint", "CIF")),
+            mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
+            temperature=d.get("temperature"),  # type: ignore[arg-type]
+        )
 
 
 @dataclass(frozen=True)
