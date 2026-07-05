@@ -50,7 +50,7 @@ def build_recipe(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
     *,
-    background_coeffs: int = 3,
+    background_coeffs: int = 6,
 ) -> tuple[RefinementStage, ...]:
     """普遍段階列 + アダプタから段階解放レシピを生成する。
 
