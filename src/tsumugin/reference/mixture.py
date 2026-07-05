@@ -23,6 +23,7 @@ from ..search.peaks import Peak, find_peaks
 from ..search.tree import HypothesisTreeSearch, SearchConfig, SearchResult
 from .engine import (
     _DEFAULT_HULL_CUTOFF_EV,
+    align_references,
     augment_kalpha2,
     filter_references,
     preprocess_intensity,
@@ -156,6 +157,8 @@ def identify_phase_mixtures(
     kalpha2: KAlpha2 | None = None,
     prefilter_top_k: int | None = None,
     match_tol_deg: float = 0.15,
+    refine_lattice: bool = False,
+    max_strain: float = 0.01,
 ) -> SearchResult:
     """未知パターン + 元素一覧から多相混合を同定する (FR-110/115)。🔵
 
@@ -177,6 +180,9 @@ def identify_phase_mixtures(
         prefilter_top_k: Dara スコア (式1) で候補を事前ランクし上位 k 相のみ木探索へ渡す。
             ``None`` で無効 (全候補)。候補が多い元素系 (全 MP 取得) で無関係相を除き高速化する。
         match_tol_deg: Dara 事前スコアのピーク一致許容差 (度)。``prefilter_top_k`` 時のみ有効。
+        refine_lattice: True で各候補の計算ピークを観測へ格子整合してから木探索/事前フィルタに使う
+            (DFT 緩和格子のピーク位置ずれを吸収, Phase A/C)。
+        max_strain: ``refine_lattice`` 時の等方歪み上限 (既定 0.01 = 1%)。
 
     Returns:
         ``SearchResult``。候補ゼロ (フィルタ全滅) でも例外化せず空へ縮退する。
@@ -199,6 +205,7 @@ def identify_phase_mixtures(
 
     # 【Dara 事前フィルタ】: ピークマッチスコアで候補を絞り木探索コストを抑える (Fei et al. 2026) 🔵
     #   Dara の「精密化前にピークマッチで有望相を選ぶ」に対応。無関係相 (extra 罰で低スコア) を除く。
+    #   格子整合の前に生スコアで絞る: 少ピーク junk が整合で偽マッチし正解を押し出すのを防ぐ 🔵
     if prefilter_top_k is not None and len(survivors) > prefilter_top_k:
         observed = find_peaks(two_theta, intensity)
         ranked = sorted(
@@ -209,6 +216,12 @@ def identify_phase_mixtures(
             ),
         )
         survivors = ranked[:prefilter_top_k]
+
+    # 【格子整合】: 事前フィルタ通過の候補のみ観測へ格子整合 (Phase A/C)。木探索は整合済ピークで
+    #   Rwp を評価し DFT 格子ズレを吸収する。整合を絞り込み後にすることで junk の混入を防ぐ 🔵
+    if refine_lattice:
+        observed = find_peaks(two_theta, intensity)
+        survivors = align_references(survivors, observed, max_strain=max_strain)
 
     # 【候補 + backend 構築】: 各参照相を PhaseInstance 候補に、ピークを peak_map に写す 🔵
     peak_map = {ref.phase_id: ref.peaks for ref in survivors}

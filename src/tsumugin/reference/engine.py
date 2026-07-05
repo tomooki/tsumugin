@@ -41,6 +41,23 @@ def augment_kalpha2(
     return [replace(c, peaks=add_kalpha2_satellites(c.peaks, config)) for c in candidates]
 
 
+def align_references(
+    candidates: Sequence[ReferencePhase],
+    observed: Sequence,
+    *,
+    max_strain: float = 0.01,
+) -> list[ReferencePhase]:
+    """各候補相の計算ピークを観測へ格子整合した新リストを返す (非破壊)。🔵 Phase A/C
+
+    単相/多相同定が共有する前処理。DFT 緩和格子のピーク位置ずれを等方歪み+ゼロシフトで吸収する。
+    整合は各相を観測ピーク全体に対して 1 回だけ行う (歪みは相と試料の関係で組合せに依らない)。
+    """
+    return [
+        replace(c, peaks=align_peaks(c.peaks, observed, max_strain=max_strain).aligned_peaks)
+        for c in candidates
+    ]
+
+
 def preprocess_intensity(
     intensity: np.ndarray, *, subtract_bg: bool, bg_max_window: int
 ) -> np.ndarray:

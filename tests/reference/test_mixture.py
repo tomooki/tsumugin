@@ -256,6 +256,24 @@ def test_prefilter_top_k_limits_candidates():
     assert all_ids == {"mp-good"}  # 上位 1 = good のみが探索対象
 
 
+def test_refine_lattice_absorbs_offset_in_mixture():
+    # refine_lattice: DFT 格子ズレ相当の位置オフセットを吸収して混合を検出する
+    from tsumugin.reference.rietveld import align_peaks  # noqa: F401 (整合ロジックの存在確認)
+
+    # A(20,40), B(30,50) の混合。参照は 0.3° ずれた位置 (格子ズレ相当)
+    tt, y = _pattern([(20.0, 1.0), (40.0, 1.0), (30.0, 1.0), (50.0, 1.0)])
+    a = _ref("mp-A", [20.3, 40.3])   # +0.3° ずれ
+    b = _ref("mp-B", [30.3, 50.3])
+    prov = FakeProvider([a, b])
+    # 整合なし: 0.3° ずれで木探索のマッチ許容 (0.15) を外れ検出が不安定
+    with_align = identify_phase_mixtures(
+        tt, y, prov, elements=["Fe", "O"], refine_lattice=True,
+        config=SearchConfig(max_phases=2),
+    )
+    top_ids = {p.phase_ref for p in with_align.ranked[0].hypothesis.phases}
+    assert top_ids == {"mp-A", "mp-B"}  # 格子整合で両相を同定
+
+
 def test_max_phases_config_respected():
     tt, y = _pattern([(20.0, 1.0), (30.0, 1.0), (40.0, 1.0)])
     prov = FakeProvider([
