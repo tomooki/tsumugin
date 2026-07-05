@@ -18,6 +18,13 @@ from .model import (
     ValidityReport,
 )
 from .engine import run_auto_rietveld
+from .multistart import (
+    MultistartStart,
+    RietveldMultistartResult,
+    generate_cell_scales,
+    run_multistart_rietveld,
+    summarize_multistart,
+)
 from .recipe import build_recipe
 from .validity import check_validity
 
@@ -25,12 +32,17 @@ __all__ = [
     "AutoRietveldResult",
     "Geometry",
     "HistogramSpec",
+    "MultistartStart",
     "PhaseSpec",
     "Radiation",
     "RefinementStage",
+    "RietveldMultistartResult",
     "StageResult",
     "ValidityReport",
     "build_recipe",
     "check_validity",
+    "generate_cell_scales",
     "run_auto_rietveld",
+    "run_multistart_rietveld",
+    "summarize_multistart",
 ]

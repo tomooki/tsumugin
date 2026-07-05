@@ -254,6 +254,21 @@ def _extract_state(phases):
     return refined_cells, uiso, occ
 
 
+def _perturb_initial_cell(ph, scale: tuple[float, float, float]) -> None:
+    """相の初期格子 a/b/c を scale 倍に摂動し体積を再計算する (マルチスタート用)。
+
+    add_phase 直後・精密化前に呼ぶ。GSAS-II の Cell 配列 [refine, a, b, c, α, β, γ, V] の
+    長さ 3 成分を掛け、体積を cell2A→calc_V で整合させる (get_cell に反映される)。
+    """
+    from GSASII import GSASIIlattice as G2lat
+
+    cell = ph.data["General"]["Cell"]
+    a, b, c = float(cell[1]) * scale[0], float(cell[2]) * scale[1], float(cell[3]) * scale[2]
+    new = [a, b, c, float(cell[4]), float(cell[5]), float(cell[6])]
+    ph.data["General"]["Cell"][1:7] = new
+    ph.data["General"]["Cell"][7] = G2lat.calc_V(G2lat.cell2A(new))
+
+
 def run_auto_rietveld(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
@@ -264,6 +279,7 @@ def run_auto_rietveld(
     max_cyc: int = 12,
     worsen_eps: float = 1e-6,
     keep_gpx: str | None = None,
+    initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -275,6 +291,8 @@ def run_auto_rietveld(
     :param max_cyc: 各段階の最大精密化サイクル
     :param worsen_eps: Rwp 悪化とみなす閾値
     :param keep_gpx: 最終 .gpx をこのパスへ保存 (None なら破棄)
+    :param initial_cell_scale: 相名→(fa,fb,fc) の初期格子摂動倍率 (マルチスタート用, None で無摂動)。
+        **参照格子は摂動前の初期値を採用**する (妥当性判定を摂動でずらさないため)。
     :returns: AutoRietveldResult
     """
     g2sc = _g2sc()
@@ -309,11 +327,7 @@ def run_auto_rietveld(
             )
             g2phases.append(ph)
 
-        # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
-        _setup_constraints(gpx, g2phases, g2hists, phases)
-        phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
-
-        # 参照格子 (未指定なら初期格子)
+        # --- 参照格子 (摂動前の初期格子) を先に確保 ---
         if reference_cells is None:
             reference_cells = {
                 ph.name: tuple(
@@ -329,6 +343,17 @@ def run_auto_rietveld(
                 )
                 for ph in g2phases
             }
+
+        # --- 初期格子摂動 (マルチスタート, 任意) ---
+        if initial_cell_scale:
+            for ph in g2phases:
+                scale = initial_cell_scale.get(ph.name)
+                if scale is not None:
+                    _perturb_initial_cell(ph, scale)
+
+        # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
+        _setup_constraints(gpx, g2phases, g2hists, phases)
+        phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
 
         gpx.data["Controls"]["data"]["max cyc"] = max_cyc
 
