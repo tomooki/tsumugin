@@ -45,8 +45,8 @@ def test_missing_peaks_penalized_weakly():
     calc = _peaks((20.0, 100.0))
     r = dara_peak_score(calc, obs)
     assert r.i_missing == pytest.approx(100.0)
-    # score = (100 - 0.1*100)/200 = 0.45
-    assert r.score == pytest.approx(0.45, abs=1e-6)
+    # score = (100 - 0.05*100)/200 = 0.475 (Dara 既定 missing 係数 -0.05)
+    assert r.score == pytest.approx(0.475, abs=1e-6)
 
 
 def test_extra_peaks_penalized_strongly():
@@ -98,16 +98,27 @@ def test_extra_coefficient_exceeds_missing_coefficient():
     assert drop_missing >= 0.0
 
 
-def test_wrong_intensity_not_penalized():
+def test_moderate_intensity_diff_is_wrong_intensity():
     from tsumugin.reference.scoring import dara_peak_score
 
-    # 位置一致だが強度が大きく違う (factor>5) → wrong-intensity (罰なし・重み 1.0)
+    # 位置一致で強度が中程度に違う (2〜5x) → wrong-intensity (正の重み 1.0, missing にしない)
+    obs = _peaks((20.0, 100.0), (30.0, 100.0))
+    calc = _peaks((20.0, 100.0), (30.0, 30.0))  # 30° は約 3x 差
+    r = dara_peak_score(calc, obs)
+    assert r.i_wrong_intensity > 0.0
+    assert r.i_missing == pytest.approx(0.0)  # 解消されず missing にならない
+
+
+def test_extreme_intensity_diff_dissolves_to_missing_and_extra():
+    from tsumugin.reference.scoring import dara_peak_score
+
+    # 位置一致でも強度比が >5x なら説明不能としてペア解消 (obs→missing, calc→extra)
     obs = _peaks((20.0, 100.0), (30.0, 100.0))
     calc = _peaks((20.0, 100.0), (30.0, 1.0))  # 30° は 100x 差
     r = dara_peak_score(calc, obs)
-    assert r.i_wrong_intensity > 0.0
-    # matched(20) + wrong(30) = 200, missing=0。extra なし → score ≈ 1.0
-    assert r.score == pytest.approx(1.0, abs=1e-6)
+    assert r.i_missing > 0.0   # 30° 観測は missing 化
+    assert r.i_extra > 0.0     # 30° 計算は extra 化
+    assert r.score < 0.6       # 罰されてスコア低下
 
 
 def test_peak_rich_phase_not_diluted_by_count():

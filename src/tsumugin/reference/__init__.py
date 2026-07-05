@@ -16,6 +16,7 @@ from .mixture import ReferenceBackend, identify_phase_mixtures
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
 from .provider import ReferenceProvider
 from .providers import CODProvider, ICSDProvider, UserCIFProvider
+from .rietveld import LatticeAlignment, align_peaks
 from .scoring import DaraScore, dara_peak_score
 from .serialization import reference_phase_from_dict, reference_phase_to_dict
 
@@ -25,6 +26,7 @@ __all__: list[str] = [
     "DaraScore",
     "ICSDProvider",
     "KAlpha2",
+    "LatticeAlignment",
     "PhaseIdentification",
     "PhaseMatch",
     "ReferenceBackend",
@@ -32,6 +34,7 @@ __all__: list[str] = [
     "ReferenceProvider",
     "UserCIFProvider",
     "add_kalpha2_satellites",
+    "align_peaks",
     "cif_to_reference_phases",
     "dara_peak_score",
     "estimate_snip_background",

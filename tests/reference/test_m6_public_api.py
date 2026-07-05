@@ -23,8 +23,10 @@ from tsumugin import (
     ReferencePhase,
     ReferenceProvider,
     KAlpha2,
+    LatticeAlignment,
     UserCIFProvider,
     add_kalpha2_satellites,
+    align_peaks,
     dara_peak_score,
     estimate_snip_background,
     identify_phase_mixtures,
@@ -50,7 +52,9 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "ReferenceProvider",
         "UserCIFProvider",
         "KAlpha2",
+        "LatticeAlignment",
         "add_kalpha2_satellites",
+        "align_peaks",
         "dara_peak_score",
         "estimate_snip_background",
         "identify_phase_mixtures",
@@ -94,6 +98,8 @@ def test_m6_reexports_are_same_object():
     assert CachedReferenceProvider is tsumugin.reference.CachedReferenceProvider
     assert DaraScore is tsumugin.reference.DaraScore
     assert dara_peak_score is tsumugin.reference.dara_peak_score
+    assert align_peaks is tsumugin.reference.align_peaks
+    assert LatticeAlignment is tsumugin.reference.LatticeAlignment
     assert load_xy is tsumugin.reference.load_xy
     assert load_gsas_powder is tsumugin.reference.load_gsas_powder
     assert subtract_background is tsumugin.reference.subtract_background

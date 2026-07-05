@@ -23,6 +23,7 @@ from ..search.peaks import find_peaks
 from .background import subtract_background
 from .kalpha import KAlpha2, add_kalpha2_satellites
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
+from .rietveld import align_peaks
 from .scoring import dara_peak_score
 from .provider import ReferenceProvider
 
@@ -101,6 +102,8 @@ def identify_phases(
     bg_max_window: int = 50,
     kalpha2: KAlpha2 | None = None,
     scoring: Literal["dara", "coverage"] = "dara",
+    refine_lattice: bool = False,
+    max_strain: float = 0.01,
 ) -> PhaseIdentification:
     """未知パターン + 元素一覧から候補相を同定する (FR-110/117)。🔵
 
@@ -125,6 +128,9 @@ def identify_phases(
         scoring: マッチスコア方式。``"dara"`` (既定, Fei et al. 2026 式1: 実測強度正規化 +
             extra 罰。peak-rich 相を希釈しない) / ``"coverage"`` (旧 ``match_score``: 一致率と
             被覆率の等重み平均)。
+        refine_lattice: True で各候補の計算ピークを等方格子歪み+ゼロシフトで観測へ整合してから
+            スコアする (DFT 緩和格子のピーク位置ずれを吸収, Phase A)。
+        max_strain: ``refine_lattice`` 時の等方歪み上限 (既定 0.01 = 1%, Dara 準拠)。
 
     Returns:
         ``PhaseIdentification`` (ランキング済みマッチ + 未知相レポート + 観測ピーク)。
@@ -157,13 +163,19 @@ def identify_phases(
     match_results: list[MatchResult] = []
     matches: list[PhaseMatch] = []
     for i, phase in enumerate(survivors):
+        # 【格子整合】: DFT 格子ズレを吸収するため計算ピークを観測へ整合してからスコアする 🔵 Phase A
+        calc_peaks = (
+            align_peaks(phase.peaks, observed, max_strain=max_strain).aligned_peaks
+            if refine_lattice
+            else phase.peaks
+        )
         if scoring == "dara":
-            ds = dara_peak_score(phase.peaks, observed, tol_deg=match_tol_deg)
+            ds = dara_peak_score(calc_peaks, observed, tol_deg=match_tol_deg)
             score = ds.score
             matched_observed = ds.matched_observed
             extra_calculated = ds.extra_calculated
         else:
-            mr = match_score(phase.peaks, observed, tol_deg=match_tol_deg, candidate_index=i)
+            mr = match_score(calc_peaks, observed, tol_deg=match_tol_deg, candidate_index=i)
             score = mr.score
             matched_observed = mr.matched_observed
             extra_calculated = mr.unmatched_candidate
