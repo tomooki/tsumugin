@@ -33,6 +33,7 @@ _ACTIONS = [
     ReleaseParams("size_strain", {"size_strain": True}),
     Stop("done"),
     SetLimits(0, 2.5, 32.0),
+    SetLimits(0, None, None),  # H1: 切り位置未定プレースホルダの None 往復
     AddPhase(spec=PhaseSpec(structure_path="c.cif", phase_name="extra")),
     AddPhase(element_hint=("Ca", "F")),
     RemovePhase("caf2"),
