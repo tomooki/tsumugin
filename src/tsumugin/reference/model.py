@@ -35,9 +35,12 @@ class PhaseMatch:
     """1 参照相の観測パターンへのマッチ結果。🔵 FR-111/114"""
 
     reference: ReferencePhase  # マッチ対象の参照相 🔵
-    score: float  # [0,1]。``match_score`` の一致率 + 被覆率の等重み平均 🔵
+    score: float  # マッチスコア (dara: 式1 / coverage: 一致率+被覆率)。降順ランキングキー 🔵
     matched_observed: tuple[int, ...]  # マッチした観測ピーク index (昇順) 🔵
     extra_calculated: tuple[float, ...]  # 観測に無い計算ピーク位置 (昇順) 🔵 FR-117
+    # 【非破壊拡張 (Phase D)】: 格子整合で適用した等方歪み ε (d→d(1+ε))。``refine_lattice`` 時のみ
+    #   非零。大きいほど参照格子と試料格子の乖離が大きく低信頼 (Dara FoM の ΔU に対応)。末尾・既定 0.0。
+    strain: float = 0.0
 
 
 @dataclass(frozen=True)

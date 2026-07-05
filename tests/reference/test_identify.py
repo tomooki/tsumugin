@@ -232,3 +232,38 @@ def test_empty_elements_raises():
     prov = FakeProvider([])
     with pytest.raises(ValueError):
         identify_phases(tt, inten, prov, elements=[])
+
+
+# --- Phase A/B/D: 格子整合と strain -----------------------------------------
+
+
+def test_refine_lattice_absorbs_offset_single_phase():
+    # 参照が 0.25° ずれても格子整合でスコアが改善する
+    tt, inten = _gaussian_pattern([20.0, 30.0, 40.0])
+    shifted = _ref("mp-shift", peaks=[(20.25, 1.0), (30.25, 1.0), (40.25, 1.0)], elements=["Fe", "O"])
+    prov = FakeProvider([shifted])
+    base = identify_phases(tt, inten, prov, elements=["Fe", "O"], match_tol_deg=0.15)
+    aligned = identify_phases(tt, inten, prov, elements=["Fe", "O"], match_tol_deg=0.15,
+                              refine_lattice=True)
+    assert aligned.matches[0].score > base.matches[0].score
+    # 整合で strain (または zero) が適用され位置が動いている
+    assert aligned.matches[0].strain != 0.0 or aligned.matches[0].score > 0.5
+
+
+def test_strain_zero_without_refine():
+    tt, inten = _gaussian_pattern([20.0, 30.0])
+    prov = FakeProvider([_ref("mp-1", peaks=[(20.0, 1.0), (30.0, 1.0)], elements=["Fe", "O"])])
+    result = identify_phases(tt, inten, prov, elements=["Fe", "O"])
+    assert result.matches[0].strain == 0.0
+
+
+def test_strain_penalty_downranks_large_shift():
+    # 同じスコアなら格子シフトが小さい相を優先する (Dara FoM ΔU)
+    tt, inten = _gaussian_pattern([20.0, 30.0, 40.0])
+    # near: ほぼ一致 (小 strain)、far: 0.35° ずれ (整合に大 strain を要する)
+    near = _ref("mp-near", peaks=[(20.0, 1.0), (30.0, 1.0), (40.0, 1.0)], elements=["Fe", "O"])
+    far = _ref("mp-far", peaks=[(20.35, 1.0), (30.35, 1.0), (40.35, 1.0)], elements=["Fe", "O"])
+    prov = FakeProvider([near, far])
+    result = identify_phases(tt, inten, prov, elements=["Fe", "O"], refine_lattice=True,
+                             strain_penalty=50.0)
+    assert result.matches[0].reference.phase_id == "mp-near"

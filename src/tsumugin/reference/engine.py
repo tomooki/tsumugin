@@ -121,6 +121,7 @@ def identify_phases(
     scoring: Literal["dara", "coverage"] = "dara",
     refine_lattice: bool = False,
     max_strain: float = 0.01,
+    strain_penalty: float = 0.0,
 ) -> PhaseIdentification:
     """未知パターン + 元素一覧から候補相を同定する (FR-110/117)。🔵
 
@@ -148,6 +149,8 @@ def identify_phases(
         refine_lattice: True で各候補の計算ピークを等方格子歪み+ゼロシフトで観測へ整合してから
             スコアする (DFT 緩和格子のピーク位置ずれを吸収, Phase A)。
         max_strain: ``refine_lattice`` 時の等方歪み上限 (既定 0.01 = 1%, Dara 準拠)。
+        strain_penalty: ランキングで格子シフトを罰する係数 (Dara FoM の ΔU に対応)。実効スコア =
+            ``score − strain_penalty·|strain|``。大きな格子調整を要した相を下げる。既定 0 (無効)。
 
     Returns:
         ``PhaseIdentification`` (ランキング済みマッチ + 未知相レポート + 観測ピーク)。
@@ -181,11 +184,13 @@ def identify_phases(
     matches: list[PhaseMatch] = []
     for i, phase in enumerate(survivors):
         # 【格子整合】: DFT 格子ズレを吸収するため計算ピークを観測へ整合してからスコアする 🔵 Phase A
-        calc_peaks = (
-            align_peaks(phase.peaks, observed, max_strain=max_strain).aligned_peaks
-            if refine_lattice
-            else phase.peaks
-        )
+        strain = 0.0
+        if refine_lattice:
+            alignment = align_peaks(phase.peaks, observed, max_strain=max_strain)
+            calc_peaks = alignment.aligned_peaks
+            strain = alignment.strain
+        else:
+            calc_peaks = phase.peaks
         if scoring == "dara":
             ds = dara_peak_score(calc_peaks, observed, tol_deg=match_tol_deg)
             score = ds.score
@@ -211,11 +216,15 @@ def identify_phases(
                 score=score,
                 matched_observed=matched_observed,
                 extra_calculated=extra_calculated,
+                strain=strain,
             )
         )
 
-    # 【決定論ランキング】: score 降順・同点は phase_id 昇順で安定化 🔵 NFR-102
-    matches.sort(key=lambda m: (-m.score, m.reference.phase_id))
+    # 【決定論ランキング】: 実効スコア (score − strain_penalty·|strain|) 降順・同点 phase_id 昇順 🔵
+    #   strain_penalty>0 で大きな格子シフトを要した相を下げる (Dara FoM ΔU)。既定 0 で純 score。
+    matches.sort(
+        key=lambda m: (-(m.score - strain_penalty * abs(m.strain)), m.reference.phase_id)
+    )
 
     # 【未知相レポート】: 全生存候補の説明力で未マッチ観測・extra・未知相フラグを構築 🔵 FR-117
     #   max_results による表示絞り込みの前に計算し、説明力の隠蔽を避ける。
