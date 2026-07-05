@@ -85,20 +85,36 @@ Powder XRD"*, Chem. Mater. 2026, 38, 1364–1376.
 ### Phase E — 結果表現
 - 組成グルーピング (agglomerative)。曖昧性 (同点競合) の明示レポート強化。
 
-### Phase F — DFT 経験補正 (Issue #11, 補完)
-- 精密化前の経験的格子補正 (汎関数別スケール) で収束を安定化。Phase A/C の格子精密化と相補。
-
 ## 4. 優先度と依存
 
 ```
-Phase A (実構造 Rietveld) ──┬─→ Phase B (単相事前精密化)
-                            └─→ Phase C (多相ノード評価) ──→ Phase D → E
-Phase F は A/C と並行可 (収束補助)
+Phase A (格子精密化) ──┬─→ Phase B (単相事前精密化)
+                       └─→ Phase C (多相ノード評価) ──→ Phase D → E
 ```
 
-- **最優先 = Phase A + C**: ユーザー指摘の「格子ズレを吸収する Rietveld」を実現する中核。
+- **最優先 = Phase A + C**: ユーザー指摘の「格子ズレを吸収する精密化」を実現する中核。
 - Phase B は単相同定の頑健化 (peak matching を DFT 耐性に)。
-- D/E は精度・可読性の仕上げ。F は収束補助。
+- D/E は精度・可読性の仕上げ。
+- (DFT 経験補正は不要と判断し対象外。格子精密化が格子ズレを直接吸収するため。Issue #11 クローズ)
+
+## 実装状況 (2026-07-05 A–E 完了)
+
+| Phase | 実装 | モジュール / API |
+|---|---|---|
+| A | ✅ 格子ズレ吸収 (等方歪み ε + ゼロシフト z, Pawley-lite) | `reference.rietveld.align_peaks` / `LatticeAlignment` |
+| B | ✅ 単相事前格子整合 | `identify_phases(refine_lattice=True, max_strain=)` |
+| C | ✅ 多相ノードの格子整合 (事前フィルタ後に整合し junk 混入回避) | `identify_phase_mixtures(refine_lattice=True)` |
+| D | ✅ 格子シフト ΔU をランキング反映 (`PhaseMatch.strain` / `strain_penalty`)。missing 駆動展開・順序制約は既存木探索が機能的に相当し据置 | `identify_phases(strain_penalty=)` |
+| E | ✅ 組成グルーピング (同組成多形を集約) | `reference.group_by_composition` / `PhaseMatchGroup` |
+
+Dara スコアも公開コード (CederGroupHub/dara) 準拠に厳密化 (2 閾値分類・min 寄与・係数)。
+実検証: 実測 CandAt を **元素 (Ca,C,O) のみ**で全 MP 候補から calcite+aragonite 同定 (格子整合で
+aragonite の単相スコア 0.047→0.314)。full 異方 Rietveld (GSAS-II, 原子/プロファイル) は将来拡張。
+
+## 実装方針 (numpy コア維持)
+格子精密化は当面 **numpy のみの Pawley-lite** (等方歪み ε + ゼロシフト z、必要なら hkl ベースの
+異方歪みへ拡張) で実装し、コア (identify のピークマッチ経路) を numpy 依存に保つ。full 異方
+Rietveld (GSAS-II, 原子/プロファイル精密化) は将来の重い拡張として境界を空けておく。
 
 ## 5. リスク / 論点
 - **GSAS-II 統合コスト**: 実 CIF の投入・格子拘束付き精密化の実装と決定論確保。既存バックエンドの

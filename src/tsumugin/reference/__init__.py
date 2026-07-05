@@ -10,6 +10,7 @@ from .background import estimate_snip_background, subtract_background
 from .cache import CachedReferenceProvider
 from .cif import cif_to_reference_phases
 from .engine import filter_references, identify_phases
+from .grouping import PhaseMatchGroup, group_by_composition
 from .io import load_gsas_powder, load_xy, parse_gsas_powder, parse_xy
 from .kalpha import KAlpha2, add_kalpha2_satellites
 from .mixture import ReferenceBackend, identify_phase_mixtures
@@ -29,6 +30,7 @@ __all__: list[str] = [
     "LatticeAlignment",
     "PhaseIdentification",
     "PhaseMatch",
+    "PhaseMatchGroup",
     "ReferenceBackend",
     "ReferencePhase",
     "ReferenceProvider",
@@ -39,6 +41,7 @@ __all__: list[str] = [
     "dara_peak_score",
     "estimate_snip_background",
     "filter_references",
+    "group_by_composition",
     "identify_phase_mixtures",
     "identify_phases",
     "load_gsas_powder",

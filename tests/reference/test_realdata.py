@@ -203,6 +203,38 @@ def test_identify_calcite_aragonite_mixture():
 
 
 @pytest.mark.skipif(not _HAS_MP_CACHE, reason="MP Ca-C-O キャッシュ未配置 (docs/benchmark/README.md 参照)")
+def test_compositional_grouping_on_real_candidates():
+    # Phase E: 全 MP Ca-C-O 候補の同定結果を組成でまとめると CaCO3 多形が 1 グループに集約される
+    import json
+
+    from tsumugin.reference import (
+        group_by_composition,
+        identify_phases,
+        reference_phase_from_dict,
+    )
+    from tsumugin.reference.io import load_xy
+
+    two_theta, intensity = load_xy(_CANDAT_XY)
+    data = json.loads(_MP_CACHE.read_text(encoding="utf-8"))
+    refs = tuple(reference_phase_from_dict(d) for d in data["phases"])
+
+    class _P:
+        def fetch(self, elements):
+            return refs
+
+    result = identify_phases(
+        two_theta, intensity, _P(), elements=["Ca", "C", "O"],
+        hull_cutoff_ev=0.15, subtract_bg=True, refine_lattice=True, max_results=20,
+    )
+    groups = group_by_composition(result.matches)
+    # 最良グループは CaCO3 で、複数の多形 (calcite/aragonite 等) をメンバーに含む
+    assert groups[0].formula == "CaCO3"
+    assert len(groups[0].members) >= 2
+    sgs = {m.reference.spacegroup for m in groups[0].members}
+    assert {"R-3c", "Pnma"} <= sgs  # calcite + aragonite が同組成グループに
+
+
+@pytest.mark.skipif(not _HAS_MP_CACHE, reason="MP Ca-C-O キャッシュ未配置 (docs/benchmark/README.md 参照)")
 def test_element_only_multiphase_from_full_mp_candidates():
     # 本題: Ca,C,O の元素情報のみから、全 MP 候補 (169 相) を経て calcite+aragonite を同定する。
     # キャッシュ済み実データ利用でネットワーク/pymatgen 不要のオフライン再現テスト。

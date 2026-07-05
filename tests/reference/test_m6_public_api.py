@@ -20,6 +20,7 @@ from tsumugin import (
     MPUnavailableError,
     PhaseIdentification,
     PhaseMatch,
+    PhaseMatchGroup,
     ReferencePhase,
     ReferenceProvider,
     KAlpha2,
@@ -29,6 +30,7 @@ from tsumugin import (
     align_peaks,
     dara_peak_score,
     estimate_snip_background,
+    group_by_composition,
     identify_phase_mixtures,
     identify_phases,
     load_gsas_powder,
@@ -48,6 +50,7 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "MPUnavailableError",
         "PhaseIdentification",
         "PhaseMatch",
+        "PhaseMatchGroup",
         "ReferencePhase",
         "ReferenceProvider",
         "UserCIFProvider",
@@ -57,6 +60,7 @@ _M6_PROMOTED_SYMBOLS = frozenset(
         "align_peaks",
         "dara_peak_score",
         "estimate_snip_background",
+        "group_by_composition",
         "identify_phase_mixtures",
         "identify_phases",
         "load_gsas_powder",
@@ -100,6 +104,8 @@ def test_m6_reexports_are_same_object():
     assert dara_peak_score is tsumugin.reference.dara_peak_score
     assert align_peaks is tsumugin.reference.align_peaks
     assert LatticeAlignment is tsumugin.reference.LatticeAlignment
+    assert group_by_composition is tsumugin.reference.group_by_composition
+    assert PhaseMatchGroup is tsumugin.reference.PhaseMatchGroup
     assert load_xy is tsumugin.reference.load_xy
     assert load_gsas_powder is tsumugin.reference.load_gsas_powder
     assert subtract_background is tsumugin.reference.subtract_background
