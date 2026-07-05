@@ -66,7 +66,7 @@ def run_sequential_rietveld(
     runner: Runner | None = None,
     phase_finder: PhaseFinder | None = None,
     ledger: Ledger | None = None,
-    workdir: str = ".",
+    workdir: str | None = None,
 ) -> SequentialRietveldResult:
     """温度/時間系列を逐次に実構造 Rietveld 精密化する (ウォームスタート + 自動相追加)。
 
@@ -76,11 +76,25 @@ def run_sequential_rietveld(
     :param runner: (frame, phases, initial_cells)->AutoRietveldResult。None なら GSAS 駆動
     :param phase_finder: 新相探索器。None かつ phase_id 有効なら既定 (MP identify+物質化) を用いる
     :param ledger: 追記台帳 (None なら内部生成)
-    :param workdir: 相同定で物質化する CIF の書き出し先
+    :param workdir: 相同定で物質化する CIF の書き出し先。None なら永続 tempdir を作る
+        (CWD を汚さず、採用相の structure_path がセッション中生存する)。相同定を行うフレームで
+        初めて必要になった時点で遅延生成する
     :returns: SequentialRietveldResult
     """
+    import tempfile
+
     config = config or SequentialConfig()
     ledger = ledger if ledger is not None else Ledger()
+    # 物質化 CIF の出力先: 指定なしなら永続 tempdir を遅延生成 (CWD 汚染回避, M2)。
+    _workdir_holder: dict[str, str] = {}
+
+    def _resolve_workdir() -> str:
+        if workdir is not None:
+            return workdir
+        if "path" not in _workdir_holder:
+            _workdir_holder["path"] = tempfile.mkdtemp(prefix="tsumugin-insitu-")
+        return _workdir_holder["path"]
+
     if runner is None:
         runner = _default_gsas_runner(config)
     pid = config.phase_id
@@ -103,6 +117,9 @@ def run_sequential_rietveld(
     lattice_history: list[dict[str, float]] = []
     prev_cells: dict[str, Cell] | None = None
     min_rwp = float("inf")
+    # 直近に rwp_jump トリガで探索を実行した際の基準 min_rwp。同一水準での無駄な再探索
+    # (既定 finder は MP ネットワーク往復) を避ける (M1)。changepoint 発火は毎回許可する。
+    last_search_min_rwp: float | None = None
 
     ledger.append("m9_seq_start", {"n_frames": n, "initial_phases": [p.phase_name for p in phases]})
 
@@ -124,15 +141,24 @@ def run_sequential_rietveld(
         appended_this_frame: PhaseAppearance | None = None
         if phase_finder is not None and pid is not None and pid.enabled and rwp < float("inf"):
             rwp_jump = min_rwp < float("inf") and rwp > min_rwp * pid.trigger_rwp_ratio
-            if signal.triggered or rwp_jump:
-                result, appended_this_frame = _try_add_phase(
+            # rwp_jump は「同一 min_rwp 水準で一度探索済みなら再探索しない」(M1)。changepoint は毎回許可。
+            jump_new = rwp_jump and last_search_min_rwp != min_rwp
+            if signal.triggered or jump_new:
+                if rwp_jump:
+                    last_search_min_rwp = min_rwp
+                result, appended_this_frame, warn = _try_add_phase(
                     frame, phases, known_formulas, result, rwp, pid, phase_finder,
-                    runner, workdir, i, ledger,
+                    runner, _resolve_workdir(), i, ledger,
                 )
+                if warn:
+                    warnings.append(warn)
                 if appended_this_frame is not None:
                     appearances.append(appended_this_frame)
                     rwp = float(result.final_rwp)
                     cells = {name: _cell6(c) for name, c in result.refined_cells.items()}
+                    # 採用後は代表相の格子履歴も更新 (rwp_history と対称, M3)
+                    _rc = cells.get(rep, (0.0, 0.0, 0.0, 90.0, 90.0, 90.0))
+                    lattice_history[-1] = {"a": _rc[0], "b": _rc[1], "c": _rc[2]}
                     rwp_history[-1] = rwp  # 採用後の Rwp で履歴を更新
 
         min_rwp = min(min_rwp, rwp)
@@ -187,18 +213,20 @@ def run_sequential_rietveld(
 def _try_add_phase(
     frame, phases, known_formulas, base_result, base_rwp, pid, phase_finder, runner,
     workdir, frame_idx, ledger,
-) -> "tuple[AutoRietveldResult, PhaseAppearance | None]":
+) -> "tuple[AutoRietveldResult, PhaseAppearance | None, str | None]":
     """新相候補を同定・追加して再精密化し、受理基準を満たせば採用する (可逆・提案≠適用)。
 
     受理基準 (§1 過剰適合ガード): (1) 新相の相分率 > frac_min ∧ (2) Rwp が rwp_eps 超改善 ∧
     (3) validity.passed 維持。満たさなければ base_result のまま (相追加せず) 返す。
+
+    :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
     """
     exclude = [p.phase_name for p in phases] + list(known_formulas)
     try:
         candidates = phase_finder(frame, list(pid.elements), exclude, workdir)
     except Exception as exc:
         ledger.append("m9_phaseid_error", {"frame": frame_idx, "error": repr(exc)[:200]})
-        return base_result, None
+        return base_result, None, f"frame {frame_idx}: 相同定に失敗 ({type(exc).__name__})"
 
     # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
     base_cells = {name: _cell6(c) for name, c in base_result.refined_cells.items()}
@@ -234,8 +262,12 @@ def _try_add_phase(
                 rwp_before=base_rwp,
                 rwp_after=trial_rwp,
                 evidence=meta,
-            )
-    return base_result, None
+            ), None
+    # 候補はあったが受理基準を満たさず / 候補ゼロ (相同定不発)。
+    warn = None
+    if not candidates:
+        warn = f"frame {frame_idx}: 変化点だが新相候補なし (未指数ピークが残存の可能性)"
+    return base_result, None, warn
 
 
 def _xrdml_to_xye(src_path: str, dst_path: str) -> None:

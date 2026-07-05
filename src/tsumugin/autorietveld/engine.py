@@ -399,22 +399,32 @@ def run_auto_rietveld(
             )
             g2phases.append(ph)
 
-        # --- 参照格子 (摂動前の初期格子) を先に確保 ---
+        # --- 参照格子 (妥当性判定の基準) を先に確保 ---
+        # 既定は各相の CIF 初期格子。ただしウォームスタート (initial_cells) を与えた相は、その
+        # **前フレームの精密化格子**を参照にする (逐次精密化 M9): 高温系列では格子が熱膨張で CIF
+        # 室温値から系統的にずれるため、CIF 基準だと後半フレームが必ず妥当性 fail し、格子ドリフトを
+        # 理由に転移フレームの新相を誤棄却する。フレーム間ドリフト基準なら滑らかな系列は各段小さく
+        # 妥当、真の急変 (転移) のみ検出できる。新規追加相 (initial_cells になし) は CIF 基準のまま。
         if reference_cells is None:
-            reference_cells = {
-                ph.name: tuple(
+            reference_cells = {}
+            for ph in g2phases:
+                cif_cell = tuple(
                     float(ph.get_cell()[k])
                     for k in (
-                        "length_a",
-                        "length_b",
-                        "length_c",
-                        "angle_alpha",
-                        "angle_beta",
-                        "angle_gamma",
+                        "length_a", "length_b", "length_c",
+                        "angle_alpha", "angle_beta", "angle_gamma",
                     )
                 )
-                for ph in g2phases
-            }
+                seed = initial_cells.get(ph.name) if initial_cells else None
+                if seed is not None:
+                    reference_cells[ph.name] = (
+                        float(seed[0]), float(seed[1]), float(seed[2]),
+                        float(seed[3]) if len(seed) > 3 else cif_cell[3],
+                        float(seed[4]) if len(seed) > 4 else cif_cell[4],
+                        float(seed[5]) if len(seed) > 5 else cif_cell[5],
+                    )
+                else:
+                    reference_cells[ph.name] = cif_cell
 
         # --- 初期格子ウォームスタート (逐次精密化, 任意): 絶対セルを先に適用 ---
         if initial_cells:

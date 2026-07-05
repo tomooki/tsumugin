@@ -148,7 +148,7 @@ def test_auto_add_phase_rejected_when_not_improving():
 
 
 def test_accepted_phase_formula_excluded_next_frames():
-    """採用した新相の組成式が以降フレームの finder exclude に入り再同定されない。"""
+    """採用した新相の組成式が以降フレームの finder exclude に入り再同定されない (既知相除外)。"""
     alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
     delta = PhaseSpec(structure_path="delta.cif", phase_name="new_delta")
     excludes_seen = []
@@ -156,25 +156,30 @@ def test_accepted_phase_formula_excluded_next_frames():
     def runner(frame, phases, initial_cells):
         names = [p.phase_name for p in phases]
         if "new_delta" in names:
-            # 二相でも Rwp は 18 に留まる (22→18 改善で採用されるが、なお min×1.25 超で再トリガする)。
-            return _result(18.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
-                                  "new_delta": (13.3, 6.5, 8.1, 90, 90, 90)},
+            # 二相は通常 7 (良好) だが axis>=380 で第 2 の事変 (22) → 再探索トリガ (min_rwp 更新後)。
+            rwp = 22.0 if frame.axis_value >= 380 else 7.0
+            return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_delta": (13.3, 6.5, 8.1, 90, 90, 90)},
                            {"alpha": 0.6, "new_delta": 0.4})
-        # フレーム 0,1 良好 (9.0)、2 以降は単相だとジャンプ (22.0)
+        # 単相: 0,1 良好 (9.0)、frame2 (340) でジャンプ (22.0)
         rwp = 9.0 if frame.axis_value < 340 else 22.0
         return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
     def finder(frame, elements, exclude, workdir):
         excludes_seen.append((frame.axis_value, tuple(exclude)))
+        # delta 候補を返すが、既に除外されていれば identify 側で弾かれる想定。ここでは呼ばれた
+        # exclude を記録するのが目的。formula が exclude 済みなら空を返して再追加を防ぐ。
+        if "CaTeO3" in exclude:
+            return []
         return [(delta, {"source": "materials_project", "formula": "CaTeO3", "dara_score": 0.5})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.02)
-    res = run_sequential_rietveld(_frames(5), [alpha], runner=runner, phase_finder=finder,
+    res = run_sequential_rietveld(_frames(6), [alpha], runner=runner, phase_finder=finder,
                                   config=SequentialConfig(phase_id=pid))
-    assert len(res.appearances) == 1  # delta は 1 回だけ採用
-    # delta 採用後 (frame>=3) の finder 呼び出しでは exclude に採用相の formula "CaTeO3" が入る
-    later = [ex for axis, ex in excludes_seen if axis >= 360.0]
-    assert later, "採用後フレームで finder が呼ばれていない"
+    assert len(res.appearances) == 1  # delta は 1 回だけ採用 (再探索では除外され再追加なし)
+    # 採用後 (axis 380) の再探索で exclude に採用相 formula "CaTeO3" が入る
+    later = [ex for axis, ex in excludes_seen if axis >= 380.0]
+    assert later, "採用後フレームで finder が再度呼ばれていない"
     assert all("CaTeO3" in ex for ex in later)
 
 

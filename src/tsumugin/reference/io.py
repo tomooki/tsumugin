@@ -168,6 +168,10 @@ def parse_xrdml(text: str) -> tuple[np.ndarray, np.ndarray]:
     2θ 軸は start→end を計数点数 N で等分した線形軸として復元する (CaTeO3 cyclic 等の実験室 X 線
     高温 in situ データの供給に用いる)。Omega など他軸の positions は無視し 2Theta のみを採る。
 
+    **対応範囲 (v1)**: 単一走査・線形 2Theta 軸 (start/end)・第 1 ``<intensities>`` ブロック。
+    複数走査/バッチや非線形 (``<listPositions>`` 列挙軸)・可変 ``commonCountingTime`` は先頭優先で
+    最初の 1 件のみを採る (X'Pert/Empyrean の単一走査を想定)。将来拡張点。
+
     Args:
         text: XRDML の全文。
 
