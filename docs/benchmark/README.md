@@ -1,4 +1,4 @@
-# 相同定ベンチマーク (実測データ検証)
+# 実測データベンチマーク (相同定 M6 + 自動 Rietveld 検証 M7)
 
 M6 相同定パイプラインを **実測** 粉末回折データで検証する。データファイルは容量とライセンスの
 都合で gitignore 対象 (`docs/benchmark/testdata/`)。取得すると `tests/reference/test_realdata.py`
@@ -130,3 +130,32 @@ Kα2 モデルで 7 本の未マッチ観測 (= Kα2 二重線の片割れ) が�
   Rachinger 補正 (観測側 Kα2 除去) や peak-count 正規化した類似度は将来の改善項目。
 
 再現: `PYTHONIOENCODING=utf-8 uv run pytest tests/reference/test_realdata.py -m mp`
+
+## データ取得: M7 GSAS-II チュートリアル (Rietveld refinement セクション T1–T4)
+
+M7 (自動 Rietveld 解析の実データ検証) の対象データ。出典は GSAS-II 公式チュートリアル
+リポジトリ (https://github.com/AdvancedPhotonSource/GSAS-II-tutorials)。目標値・合格基準・
+レシピは `docs/tasks/m7-real-data-validation/PLAN.md` §2/§4。
+
+```bash
+BASE="https://raw.githubusercontent.com/AdvancedPhotonSource/GSAS-II-tutorials/main"
+D=docs/benchmark/testdata/m7
+mkdir -p $D/labdata $D/cwneutron $D/cwcombined $D/tofcw
+for f in FAP.XRA INST_XRY.PRM FAP.EXP; do curl -sfSL -o "$D/labdata/$f" "$BASE/LabData/data/$f"; done
+for f in garnet.raw inst_d1a.prm; do curl -sfSL -o "$D/cwneutron/$f" "$BASE/CWNeutron/data/$f"; done
+for f in PBSO4.XRA PBSO4.CWN INST_XRY.PRM inst_d1a.prm; do curl -sfSL -o "$D/cwcombined/$f" "$BASE/CWCombined/data/$f"; done
+TOF="TOF-CW%20Joint%20Refinement/data"
+for f in 11BM_NAC.fxye 11bm_gsas.prm PG3_22048.gsa PG3_22049.gsa POWGEN_1066.instprm \
+         POWGEN_2665.instprm NAC.cif CaF2.cif NAC-2015A.EXP; do
+  curl -sfSL -o "$D/tofcw/$f" "$BASE/$TOF/$f"; done
+```
+
+| ディレクトリ | Tutorial | 内容 | チュートリアル最終値 |
+|---|---|---|---|
+| `m7/labdata/` | LabData | fluoroapatite 実験室 X 線 CuKα (GSAS STD) + PRM + EXP | Rwp 10.38% / GOF 3.44 |
+| `m7/cwneutron/` | CWNeutron | Y-Fe garnet CW 中性子 D1a λ=1.909Å + PRM | Rwp 5.18% / GOF 3.79 |
+| `m7/cwcombined/` | CWCombined | PbSO4 X 線 + CW 中性子 joint + 両 PRM | 合計 wR 6.71% / GOF 2.27 |
+| `m7/tofcw/` | TOF-CW Joint | NAC+CaF2: 11BM (.fxye) + POWGEN TOF×2 (.gsa) + instprm×3 + CIF×2 + EXP | Rw 6.83% (75 params) |
+
+- PbSO4 の CIF は既存 `testdata/PbSO4-Wyckoff.cif` を使用。
+- fluoroapatite / garnet の CIF は Phase A/B で MP または COD から取得して固定する。
