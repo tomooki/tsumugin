@@ -9,11 +9,11 @@ chi2 は既存 GSASIIBackend と整合する **weighted-SSR** (= gof²·(n_obs�
 BIC 比較の一貫性を保つ (CLAUDE.md 不変条件「chi2/rwp のセマンティクスはバックエンド間で統一」)。
 精密化失敗は例外でなく **chi2=inf の結果**へ縮退させガードレールに処理させる (同不変条件)。
 
-**既知の制限 (n_obs の源)**: ``AutoRietveldResult`` が観測点数 (Nobs) を露出しないため、chi2/BIC の
-Nobs には ``model.intensity`` の長さを用いる。``two_theta_limits`` によるレンジ制限やマルチ
-ヒストグラム joint では GSAS の実 Nobs (= Σ Nobs_i) と一致しないため、**同一ヒストグラム集合内での
-序列比較には妥当**だが、GSASIIBackend と混在させた絶対値比較・BIC の ln(n) 罰は厳密でない。
-真の Nobs を engine から ``AutoRietveldResult`` へ通す厳密化は M-later (Issue 化候補)。
+**n_obs の源 (Issue #16 で厳密化)**: ``AutoRietveldResult.n_obs`` (engine が GSAS Rvals の Nobs から
+設定、レンジ制限・joint 総和を反映) を優先して chi2/BIC の Nobs に用いる。未設定 (0; スタブ等) の
+場合のみ ``model.intensity`` 長へフォールバックする。GSAS 駆動経路ではレンジマスク後の実観測点数を
+使うため dof がより正確になる (GSASIIBackend は全配列長 x.size を用いるので、レンジ制限が無ければ
+両者は一致し、制限ありでは本アダプタの方が厳密)。
 
 相の構造ファイル解決は `resolver` (phase_ref→PhaseSpec) に委ね、観測ファイルは `histograms`
 テンプレートで与える (PhaseInstance はファイルパスを持たないため)。GSAS は runner 内で遅延 import。
@@ -80,15 +80,18 @@ class AutoRietveldBackend:
             )
 
         n_params = result.stage_results[-1].n_params if result.stage_results else 0
+        # 実観測点数を優先 (Issue #16: レンジ制限/joint での BIC 厳密化)。未設定 (0) なら
+        # model.intensity 長へフォールバック。
+        effective_nobs = result.n_obs if result.n_obs > 0 else n_obs
         # weighted-SSR 再構成: reduced χ² = gof² ⇒ SSR = gof²·(n_obs − n_params) (GSASIIBackend 整合)
-        dof = max(n_obs - n_params, 1)
+        dof = max(effective_nobs - n_params, 1)
         chi2 = float(result.final_gof) ** 2 * dof
         converged = bool(result.stage_results[-1].converged) if result.stage_results else False
         return RefinementResult(
             phases=model.phases,
             chi2=chi2,
             rwp=float(result.final_rwp),
-            n_obs=n_obs,
+            n_obs=effective_nobs,
             n_params=n_params,
             converged=converged,
             n_cycles=len(result.stage_results),

@@ -184,3 +184,6 @@ class AutoRietveldResult:
     refined_cells: Mapping[str, tuple[float, float, float, float, float, float]]
     validity: ValidityReport
     gpx_path: str = ""
+    # 【観測点数】: 精密化に用いた実観測点数 (全ヒストグラム総和, レンジ制限反映)。chi2/BIC の
+    #   dof・n 罰に用いる。末尾・既定 0 で後方互換 (0=未設定; 利用側は代替源へフォールバック) 🔵 Issue #16
+    n_obs: int = 0
