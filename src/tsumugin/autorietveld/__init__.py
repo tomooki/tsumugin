@@ -17,6 +17,8 @@ from .model import (
     StageResult,
     ValidityReport,
 )
+from .recipe import build_recipe
+from .validity import check_validity
 
 __all__ = [
     "AutoRietveldResult",
@@ -27,4 +29,6 @@ __all__ = [
     "RefinementStage",
     "StageResult",
     "ValidityReport",
+    "build_recipe",
+    "check_validity",
 ]
