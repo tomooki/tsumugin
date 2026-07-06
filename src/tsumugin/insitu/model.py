@@ -85,6 +85,10 @@ class PhaseIdConfig:
         (③ 化学ガード)。相転移は骨格元素を保存するため、元素部分集合の単純相 (元素 Ca・O₂・CaO 等) が
         少数相パターンに偶然マッチし上位化するのを防ぐ (実測: Ca-Te-O 三元限定で delta が frame90 #33→#1)。
         既定 True。副生成物 (二元分解相等) を許すなら False。
+    :param snr_trigger: 残差 S/N トリガの閾値 (2相目追加判定)。既存相 fit の残差に、計数統計ノイズを
+        超える未説明ピーク (S/N ≥ 本値) があれば新相探索を発火する。恣意的な Rwp 比でなくノイズ基準で
+        「本物の未説明反射」を検出する (F 検定同型)。既定 8.0 (0 で無効)。ノイズは平滑化後 ~3-4σ に
+        達し得るため 8 程度が妥当。GSAS 残差が無い runner (テストスタブ等) では無効化される。
     """
 
     elements: tuple[str, ...] = ()
@@ -100,6 +104,7 @@ class PhaseIdConfig:
     min_rwp_gain: float = 0.01
     require_validity: bool = False
     require_full_element_system: bool = True
+    snr_trigger: float = 8.0
 
     @property
     def enabled(self) -> bool:

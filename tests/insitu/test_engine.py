@@ -18,7 +18,12 @@ from tsumugin.insitu.model import FrameSpec, PhaseIdConfig, SequentialConfig
 from tsumugin.store.ledger import Ledger
 
 
-def _result(rwp, cells, fracs, *, valid=True, gof=1.0):
+def _result(rwp, cells, fracs, *, valid=True, gof=1.0, residual=None):
+    kw = {}
+    if residual is not None:
+        tt, ri, sg = residual
+        kw = dict(residual_two_theta=tuple(tt), residual_intensity=tuple(ri),
+                  residual_sigma=tuple(sg))
     return AutoRietveldResult(
         stage_results=(),
         final_rwp=rwp,
@@ -26,6 +31,7 @@ def _result(rwp, cells, fracs, *, valid=True, gof=1.0):
         refined_cells=cells,
         validity=ValidityReport(passed=valid),
         phase_fractions=fracs,
+        **kw,
     )
 
 
@@ -146,6 +152,44 @@ def test_refined_cell_flows_into_appearance_evidence():
     )
     assert len(res.appearances) == 1
     assert res.appearances[0].evidence["refined_cell"] == aniso
+
+
+def test_snr_trigger_fires_on_significant_residual():
+    """残差 S/N トリガ: Rwp ジャンプがなくても、残差に有意な未説明ピークがあれば新相探索を発火する。"""
+    import numpy as np
+
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    tt = np.linspace(12.0, 70.0, 2000)
+    sigma = np.full(tt.size, 10.0)
+    # 有意な未説明ピーク (S/N ~20) を持つ残差 (Rwp は一定=ジャンプなし)
+    resid_peak = 400.0 * np.exp(-0.5 * ((tt - 40.0) / 0.15) ** 2)
+    flat_resid = np.zeros(tt.size)
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            # delta 追加で残差平坦化 + Rwp 改善
+            return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4},
+                           residual=(tt, flat_resid, sigma))
+        # 単相: Rwp は一定 (12.0) だが残差に未説明ピーク → S/N トリガ
+        return _result(12.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0},
+                       residual=(tt, resid_peak, sigma))
+
+    calls = {"finder": 0}
+
+    def finder(frame, elements, exclude, workdir):
+        calls["finder"] += 1
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    # trigger_rwp_ratio を大きくして Rwp ジャンプは無効化 → S/N トリガのみで発火することを見る
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01,
+                        trigger_rwp_ratio=100.0, snr_trigger=8.0)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid, changepoint_window=99))
+    assert calls["finder"] > 0  # S/N トリガで探索が発火した
+    assert len(res.appearances) == 1  # delta 受理
 
 
 def test_accept_new_phase_despite_old_phase_validity_fail():

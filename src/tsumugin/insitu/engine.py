@@ -29,6 +29,7 @@ from .model import (
     SequentialConfig,
     SequentialRietveldResult,
 )
+from .residual import residual_significance
 
 # runner: (frame, phases, initial_cells) -> AutoRietveldResult
 Runner = Callable[
@@ -138,14 +139,22 @@ def run_sequential_rietveld(
         lattice_history.append({"a": rep_cell[0], "b": rep_cell[1], "c": rep_cell[2]})
         signal = detect_changepoint(rwp_history, lattice_history, 0, config=cp_config)
 
-        # --- 新相自動同定 (トリガ: 変化点 or Rwp 相対ジャンプ) ---
+        # --- 新相自動同定 (トリガ: 残差 S/N or 変化点 or Rwp 相対ジャンプ) ---
         appended_this_frame: PhaseAppearance | None = None
         if phase_finder is not None and pid is not None and pid.enabled and rwp < float("inf"):
             rwp_jump = min_rwp < float("inf") and rwp > min_rwp * pid.trigger_rwp_ratio
+            # 【残差 S/N トリガ (2相目追加判定)】: 既存相 fit の残差に、計数統計ノイズを超える未説明
+            #   ピーク (S/N > 閾値) があれば未同定相の証拠。恣意的 Rwp 比でなくノイズ基準で判定する。
+            snr_trigger = False
+            if pid.snr_trigger > 0 and result.residual_two_theta:
+                _sig = residual_significance(
+                    result.residual_two_theta, result.residual_intensity, result.residual_sigma
+                )
+                snr_trigger = _sig.warrants_new_phase(pid.snr_trigger)
             # 前回探索時の Rwp から 5% 超動いたら再探索 (相の成長=Rwp 上昇を捉える)。同一水準の
             # 連続再探索 (MP スパム) は抑える (M1)。changepoint は毎回許可。
             moved = last_search_rwp is None or abs(rwp - last_search_rwp) > 0.05 * max(rwp, 1.0)
-            if signal.triggered or (rwp_jump and moved):
+            if signal.triggered or snr_trigger or (rwp_jump and moved):
                 if rwp_jump or signal.triggered:
                     last_search_rwp = rwp
                 result, appended_this_frame, warn = _try_add_phase(
