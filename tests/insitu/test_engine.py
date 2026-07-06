@@ -154,6 +154,82 @@ def test_refined_cell_flows_into_appearance_evidence():
     assert res.appearances[0].evidence["refined_cell"] == aniso
 
 
+def test_backward_propagation_captures_onset():
+    """(2) 逆方向伝播: 順方向で支配フレームに採用した新相を、良いセルで前フレームへ逆伝播し onset を捕捉。
+
+    delta は frame3 で順方向採用 (支配)。逆伝播で frame2/1 も delta 有意+Rwp改善→採用、frame0 は不在で停止。
+    onset が frame3→frame1 に前進する。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    delta_cell = (13.3, 6.5, 8.1, 90, 90, 90)
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        has_delta = "new_CaTeO3" in [p.phase_name for p in phases]
+        if has_delta:
+            # frame(axis)ごとに delta 分率/Rwp を変える (逆伝播の停止点を作る)
+            table = {
+                360.0: (0.40, 8.0),   # frame3 順方向採用 (支配)
+                340.0: (0.30, 7.0),   # frame2 逆伝播 → 採用
+                320.0: (0.20, 8.0),   # frame1 逆伝播 → 採用 (base 9.0 より改善)
+                300.0: (0.00, 9.6),   # frame0 逆伝播 → 不在/改善なし → 停止 (onset=frame1)
+            }
+            frac, rwp = table.get(frame.axis_value, (0.3, 8.0))
+            return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90), "new_CaTeO3": delta_cell},
+                           {"alpha": 1 - frac, "new_CaTeO3": frac})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 3 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(
+        _frames(4), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid, backward_propagation=True),
+    )
+    # delta が frame1/2/3 に存在し、frame0 には無い (onset=frame1)
+    by_axis = {f.axis_value: f for f in res.frames}
+    assert "new_CaTeO3" in by_axis[320.0].phase_names  # frame1 逆伝播で捕捉
+    assert "new_CaTeO3" in by_axis[340.0].phase_names  # frame2 逆伝播で捕捉
+    assert "new_CaTeO3" not in by_axis[300.0].phase_names  # frame0 不在 (停止)
+    # appearance の onset が前進
+    ap = next(a for a in res.appearances if a.phase_name == "new_CaTeO3")
+    assert ap.frame_index == 1
+    assert ap.evidence.get("backward_onset") is True
+
+
+def test_backward_propagation_disabled_keeps_forward_onset():
+    """backward_propagation=False なら順方向の onset のまま (逆伝播しない)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(8.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 3 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05)
+    res = run_sequential_rietveld(
+        _frames(4), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid, backward_propagation=False),
+    )
+    ap = next(a for a in res.appearances if a.phase_name == "new_CaTeO3")
+    assert ap.frame_index == 3  # 逆伝播なし → 順方向 onset のまま
+    by_axis = {f.axis_value: f for f in res.frames}
+    assert "new_CaTeO3" not in by_axis[320.0].phase_names  # frame1 は逆伝播されない
+
+
 def test_snr_trigger_fires_on_significant_residual():
     """残差 S/N トリガ: Rwp ジャンプがなくても、残差に有意な未説明ピークがあれば新相探索を発火する。"""
     import numpy as np

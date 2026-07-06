@@ -209,6 +209,12 @@ def run_sequential_rietveld(
         if not refine_failed and cells:
             prev_cells = {**(prev_cells or {}), **cells}
 
+    # --- 逆方向伝播 (operando 逆方向解析): 確立した新相を前フレームへ逆伝播し onset を精密化 ---
+    if config.backward_propagation and pid is not None and pid.enabled and appearances:
+        frame_results, appearances = _backward_propagate(
+            frames, n, frame_results, appearances, phases, pid, runner, ledger,
+        )
+
     all_phase_names = tuple(p.phase_name for p in phases)
     ledger.append("m9_seq_done", {"phases": list(all_phase_names), "appearances": len(appearances)})
 
@@ -219,6 +225,98 @@ def run_sequential_rietveld(
         warnings=tuple(warnings),
         ledger=ledger,
     )
+
+
+def _best_established_cell(
+    frame_results: "list[FrameRietveldResult]", phase_name: str, from_frame: int
+) -> "Cell | None":
+    """from_frame 以降で phase_name の相分率が最大のフレームの精密化格子を返す (確立セル)。
+
+    支配フレーム (分率最大) ほど新相のセル/プロファイルが良く決まるため、そのセルを逆伝播の初期値にする。
+    """
+    best_frac = -1.0
+    best_cell: "Cell | None" = None
+    for j in range(from_frame, len(frame_results)):
+        fr = frame_results[j]
+        if fr.refine_failed:
+            continue
+        frac = float(fr.phase_fractions.get(phase_name, 0.0))
+        cell = fr.refined_cells.get(phase_name)
+        if cell is not None and frac > best_frac:
+            best_frac = frac
+            best_cell = cell
+    return best_cell
+
+
+def _backward_propagate(
+    frames, n, frame_results, appearances, all_phases, pid, runner, ledger,
+):
+    """順方向で確立した新相を前フレームへ逆伝播し onset を精密化する (operando 逆方向解析)。
+
+    各 appearance (相 P, 採用フレーム k) について、k 以降で最も支配的なフレームの**確立セル**を初期値に、
+    k-1, k-2, ... を P 追加で再 fit する。P の相分率が有意 (>frac_min) かつ Rwp 改善なら P を前フレームに
+    採用し (onset を前へ)、そうでなければ onset 発見として停止する。順方向で prealign がセルを誤整合し・
+    弱信号で相分率が入らなかった onset を、**良いセルで「当てる」**ことで捕捉する。
+    """
+    name_to_spec = {p.phase_name: p for p in all_phases}
+    updated = list(frame_results)
+    new_appearances = list(appearances)
+
+    for idx, ap in enumerate(appearances):
+        spec = name_to_spec.get(ap.phase_name)
+        if spec is None:
+            continue
+        k = ap.frame_index
+        est_cell = _best_established_cell(updated, ap.phase_name, from_frame=k)
+        if est_cell is None:
+            continue
+        onset = k
+        for j in range(k - 1, -1, -1):
+            fr = updated[j]
+            if ap.phase_name in fr.phase_names or fr.refine_failed:
+                continue
+            existing = [name_to_spec[nm] for nm in fr.phase_names if nm in name_to_spec]
+            if not existing:
+                continue
+            trial_phases = tuple(existing + [spec])
+            warm: dict[str, Cell] = {
+                nm: fr.refined_cells[nm] for nm in fr.phase_names if nm in fr.refined_cells
+            }
+            warm[ap.phase_name] = est_cell
+            res = runner(frames[j], trial_phases, warm)
+            new_frac = float(res.phase_fractions.get(ap.phase_name, 0.0))
+            base_rwp = fr.rwp
+            accepted = (
+                (res.final_rwp < float("inf"))
+                and new_frac > pid.frac_min
+                and float(res.final_rwp) < base_rwp - 1e-9
+            )
+            ledger.append(
+                "m9_backward_trial",
+                {"frame": j, "phase": ap.phase_name, "rwp_before": base_rwp,
+                 "rwp_after": float(res.final_rwp), "fraction": new_frac, "accepted": bool(accepted)},
+            )
+            if not accepted:
+                break  # onset 発見 (これ以上前に P はない)
+            cells = {name: _cell6(c) for name, c in res.refined_cells.items()}
+            names = tuple(fr.phase_names) + (ap.phase_name,)
+            updated[j] = FrameRietveldResult(
+                frame_index=j, axis_value=fr.axis_value, data_path=fr.data_path,
+                rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
+                phase_fractions=_fractions_of(res, names), phase_names=names,
+                changepoint=fr.changepoint, changepoint_reasons=fr.changepoint_reasons,
+                validity_passed=res.validity.passed, refine_failed=False,
+            )
+            onset = j
+        if onset < k:
+            # onset を前へ更新 (逆伝播で捕捉した最も早いフレーム)
+            new_appearances[idx] = PhaseAppearance(
+                phase_name=ap.phase_name, frame_index=onset, axis_value=frames[onset].axis_value,
+                structure_path=ap.structure_path, source=ap.source,
+                rwp_before=updated[onset].rwp, rwp_after=updated[onset].rwp,
+                evidence={**dict(ap.evidence), "backward_onset": True, "forward_frame": k},
+            )
+    return updated, tuple(new_appearances)
 
 
 def _accept_new_phase(trial, new_name, base_rwp, trial_rwp, new_frac, pid) -> bool:
