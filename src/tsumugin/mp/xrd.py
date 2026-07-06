@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from ..errors import MPUnavailableError
 from ..search.peaks import Peak
 
-__all__ = ["group_equivalent", "simulate_reference_peaks"]
+__all__ = ["group_equivalent", "simulate_reference_peaks", "structure_cell_and_system"]
 
 # Cu Kα1 波長 (Å)。粉末 XRD の既定線源。
 _DEFAULT_WAVELENGTH_ANGSTROM = 1.5406
@@ -60,10 +60,54 @@ def simulate_reference_peaks(
 
     calc = XRDCalculator(wavelength=wavelength_angstrom)
     pattern = calc.get_pattern(structure, scaled=scaled, two_theta_range=two_theta_range)
-    # pattern.x = 2θ 配列, pattern.y = 相対強度。XRDCalculator は既に 2θ 昇順で返す。
+    # pattern.x = 2θ 配列, pattern.y = 相対強度, pattern.hkls = 反射指数。2θ 昇順で返る。
+    # hkl は異方格子整合 (Issue #20 hybrid) に使う。多重反射は代表 (先頭) の hkl を採る。
     return tuple(
-        Peak(position=float(x), height=float(y)) for x, y in zip(pattern.x, pattern.y)
+        Peak(position=float(x), height=float(y), hkl=_first_hkl(hkl_entry))
+        for x, y, hkl_entry in zip(pattern.x, pattern.y, pattern.hkls)
     )
+
+
+def _first_hkl(hkl_entry: object) -> tuple[int, int, int] | None:
+    """XRDCalculator の hkls エントリ (list[dict{'hkl':(h,k,l)}]) から代表 hkl を取り出す。"""
+    if isinstance(hkl_entry, (list, tuple)) and hkl_entry:
+        first = hkl_entry[0]
+        raw = first["hkl"] if isinstance(first, dict) and "hkl" in first else first
+        try:
+            return (int(round(raw[0])), int(round(raw[1])), int(round(raw[2])))
+        except (TypeError, ValueError, IndexError):
+            return None
+    return None
+
+
+def structure_cell_and_system(
+    structure: object,
+) -> tuple[tuple[float, float, float, float, float, float], str]:
+    """pymatgen 構造から格子定数 (a,b,c,α,β,γ) と結晶系名を返す (異方格子整合の初期値)。
+
+    trigonal はセル角で hexagonal / rhombohedral セッティングに振り分ける (異方ソルバの拘束に整合)。
+
+    Raises:
+        MPUnavailableError: pymatgen 未導入のとき。
+        Exception: ``structure`` が pymatgen ``Structure`` でない (テストのフェイク等) とき
+            — 呼び出し側 (provider) が捕捉して格子情報なしに縮退する。
+    """
+    _require_pymatgen()
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+    latt = structure.lattice  # type: ignore[attr-defined]
+    cell = (
+        float(latt.a), float(latt.b), float(latt.c),
+        float(latt.alpha), float(latt.beta), float(latt.gamma),
+    )
+    system = SpacegroupAnalyzer(structure).get_crystal_system()  # type: ignore[arg-type]
+    if system == "trigonal":
+        # 菱面体セッティング (a≈b≈c, α≈β≈γ≠90) か六方セッティング (γ≈120) か
+        if abs(latt.a - latt.b) < 1e-3 and abs(latt.b - latt.c) < 1e-3 and abs(latt.alpha - 90.0) > 1.0:
+            system = "rhombohedral"
+        else:
+            system = "hexagonal"
+    return cell, system
 
 
 def group_equivalent(structures: Sequence[object]) -> tuple[tuple[int, ...], ...]:

@@ -69,6 +69,50 @@ def test_reference_phase_roundtrip_none_energy_and_spacegroup():
     assert reference_phase_from_dict(reference_phase_to_dict(ref)) == ref
 
 
+def test_reference_phase_roundtrip_with_hkl_and_cell():
+    """Issue #20 hybrid: Peak.hkl + ReferencePhase.cell/crystal_system がラウンドトリップする。"""
+    import json
+
+    from tsumugin.reference.serialization import (
+        reference_phase_from_dict,
+        reference_phase_to_dict,
+    )
+
+    ref = ReferencePhase(
+        phase_id="mp-delta",
+        formula="CaTeO3",
+        element_system=("Ca", "O", "Te"),
+        peaks=(Peak(20.0, 100.0, hkl=(1, 0, 1)), Peak(30.5, 55.2, hkl=(0, 2, 0))),
+        spacegroup="Pca2_1",
+        energy_above_hull=0.0,
+        cell=(8.17, 6.53, 13.32, 90.0, 90.0, 90.0),
+        crystal_system="orthorhombic",
+    )
+    d = reference_phase_to_dict(ref)
+    json.dumps(d, allow_nan=False)  # json 安全
+    restored = reference_phase_from_dict(d)
+    assert restored == ref
+    assert restored.peaks[0].hkl == (1, 0, 1)
+    assert restored.cell == (8.17, 6.53, 13.32, 90.0, 90.0, 90.0)
+    assert restored.crystal_system == "orthorhombic"
+
+
+def test_reference_phase_roundtrip_mixed_hkl_presence():
+    """一部ピークだけ hkl を持つ (観測混在) 場合も欠落を保持してラウンドトリップ。"""
+    from tsumugin.reference.serialization import (
+        reference_phase_from_dict,
+        reference_phase_to_dict,
+    )
+
+    ref = ReferencePhase(
+        phase_id="x", formula="X", element_system=("X",),
+        peaks=(Peak(10.0, 5.0, hkl=(1, 0, 0)), Peak(20.0, 3.0, hkl=None)),
+    )
+    restored = reference_phase_from_dict(reference_phase_to_dict(ref))
+    assert restored == ref
+    assert restored.peaks[1].hkl is None
+
+
 def test_to_dict_is_json_serializable():
     import json
 

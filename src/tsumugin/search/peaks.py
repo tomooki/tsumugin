@@ -19,6 +19,9 @@ class Peak:
 
     position: float  # 2θ 位置 (度) 🔵
     height: float  # ピーク位置の観測強度 🔵
+    # 計算ピークの Miller 指数 (h,k,l)。観測ピークや hkl 不明の供給元では None。異方格子整合
+    # (Issue #20 hybrid: reference の top-K 異方 re-score) が使う。末尾・既定 None で後方互換。
+    hkl: tuple[int, int, int] | None = None
 
 
 def find_peaks(

@@ -70,6 +70,12 @@ class PhaseIdConfig:
     :param trigger_rwp_ratio: 相同定を試みる Rwp 相対ジャンプ閾値。現フレーム Rwp が
         (系列内最小 Rwp × 本比) を超えたら (変化点発火に加えて) 新相探索を試みる。短系列で変化点窓の
         warm-up 前でも新相出現を捉えるための頑健トリガ (採否は受理基準が担保)。
+    :param refine_new_phase_cell: 新相の**異方的**格子を 異方セルプリアラインで補正するか (Issue #20)。
+        MP(DFT)構造は格子が軸別にずれ (CaTeO3 delta で c +3.4%)、等方 strain では吸収できず Rietveld
+        収束半径外で追えない。True で物質化 CIF を観測へ整合させた異方セルに置換してから精密化に渡す。
+    :param wavelength: プリアラインの線源波長 (Å)。既定 Cu Kα1。放射光/中性子系列では実波長を指定。
+    :param rerank_top_k: >0 で相同定の上位 K 候補を異方格子整合で再スコアする (Issue #20 hybrid)。
+        等方整合が DFT の軸別誤差で正解相を top_k から落とすのを防ぐ。既定 5 (0 で無効)。
     """
 
     elements: tuple[str, ...] = ()
@@ -79,6 +85,9 @@ class PhaseIdConfig:
     hull_cutoff_ev: float | None = 0.1
     subtract_bg: bool = True
     trigger_rwp_ratio: float = 1.25
+    refine_new_phase_cell: bool = True
+    wavelength: float = 1.5406
+    rerank_top_k: int = 5
 
     @property
     def enabled(self) -> bool:

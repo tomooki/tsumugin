@@ -120,6 +120,34 @@ def test_auto_add_phase_accepted_on_rwp_jump():
     assert set(res.frames[2].phase_names) == {"alpha", "new_CaTeO3"}
 
 
+def test_refined_cell_flows_into_appearance_evidence():
+    """finder が meta に refined_cell (異方セル) を載せると PhaseAppearance.evidence に伝わる。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    aniso = [6.53, 8.17, 13.32, 90.0, 90.0, 90.0]
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.7, "new_CaTeO3": 0.3})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "materials_project", "dara_score": 0.5, "refined_cell": aniso})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.02)
+    res = run_sequential_rietveld(
+        _frames(3), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid),
+    )
+    assert len(res.appearances) == 1
+    assert res.appearances[0].evidence["refined_cell"] == aniso
+
+
 def test_auto_add_phase_rejected_when_not_improving():
     """新相を試しても Rwp が改善しなければ棄却し相集合は不変 (可逆・過剰適合ガード)。"""
     alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")

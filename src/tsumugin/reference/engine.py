@@ -23,7 +23,7 @@ from ..search.peaks import find_peaks
 from .background import subtract_background
 from .kalpha import KAlpha2, add_kalpha2_satellites
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
-from .rietveld import align_peaks
+from .rietveld import align_peaks, align_peaks_anisotropic
 from .scoring import dara_peak_score
 from .provider import ReferenceProvider
 
@@ -122,6 +122,8 @@ def identify_phases(
     refine_lattice: bool = False,
     max_strain: float = 0.01,
     strain_penalty: float = 0.0,
+    rerank_top_k: int = 0,
+    rerank_wavelength: float = 1.5406,
 ) -> PhaseIdentification:
     """未知パターン + 元素一覧から候補相を同定する (FR-110/117)。🔵
 
@@ -151,6 +153,15 @@ def identify_phases(
         max_strain: ``refine_lattice`` 時の等方歪み上限 (既定 0.01 = 1%, Dara 準拠)。
         strain_penalty: ランキングで格子シフトを罰する係数 (Dara FoM の ΔU に対応)。実効スコア =
             ``score − strain_penalty·|strain|``。大きな格子調整を要した相を下げる。既定 0 (無効)。
+        rerank_top_k: >0 で**上位 K 候補のみ異方格子整合で再スコア**する (Issue #20 hybrid)。等方
+            ``refine_lattice`` は 1 自由度で DFT の**軸別**格子誤差を吸収できず正解相のスコアを負に落とす
+            ことがある。上位 K に限り軸別 (``align_peaks_anisotropic``) で再整合→再スコアし、識別マージンを
+            上げる (実測: alpha/delta で margin +0.09→+1.14)。全候補でなく top-K に限るのは過剰整合による
+            偽陽性と計算コストを抑えるため。格子情報 (cell/crystal_system/hkl) を持たない相はスキップ。
+            再スコアは**昇格専用** (異方スコアが等方を上回る時のみ差し替え) で不当降格を防ぐ。強度正規化の
+            ``dara`` 向け設計 (``coverage`` は候補ピーク数正規化のため異方整合で分母が変わり得る; 昇格専用
+            ガードで実害は限定だが dara 推奨)。
+        rerank_wavelength: 異方再スコアの線源波長 (Å, hkl↔2θ 変換用)。既定 Cu Kα1。
 
     Returns:
         ``PhaseIdentification`` (ランキング済みマッチ + 未知相レポート + 観測ピーク)。
@@ -222,12 +233,25 @@ def identify_phases(
 
     # 【決定論ランキング】: 実効スコア (score − strain_penalty·|strain|) 降順・同点 phase_id 昇順 🔵
     #   strain_penalty>0 で大きな格子シフトを要した相を下げる (Dara FoM ΔU)。既定 0 で純 score。
-    matches.sort(
-        key=lambda m: (-(m.score - strain_penalty * abs(m.strain)), m.reference.phase_id)
-    )
+    def _effective(m: PhaseMatch) -> tuple[float, str]:
+        return (-(m.score - strain_penalty * abs(m.strain)), m.reference.phase_id)
+
+    matches.sort(key=_effective)
+
+    # 【異方 re-score (Issue #20 hybrid)】: 上位 K のみ軸別格子整合で再スコアし再ランキングする 🔵
+    if rerank_top_k > 0 and observed:
+        matches = _rerank_anisotropic(
+            matches, tuple(observed), top_k=rerank_top_k, scoring=scoring,
+            match_tol_deg=match_tol_deg, wavelength=rerank_wavelength, kalpha2=kalpha2,
+        )
+        matches.sort(key=_effective)
 
     # 【未知相レポート】: 全生存候補の説明力で未マッチ観測・extra・未知相フラグを構築 🔵 FR-117
     #   max_results による表示絞り込みの前に計算し、説明力の隠蔽を避ける。
+    # 【意図的な基底の分離 (rerank 時)】: high_r は re-score 後の matches スコアで判定する (異方 re-score
+    #   で強マッチが得られたら未知相フラグを立てない = 正しい向き)。一方 unmatched レポートは等方
+    #   match_results (どの観測ピークが説明されたか) に基づく — re-score で説明が増えても保守的に据え置き、
+    #   未知相ピークを過小報告しない安全側。両者は基底が異なるが各々の目的に対し妥当。
     high_r = bool(
         high_r_threshold is not None
         and matches
@@ -244,3 +268,60 @@ def identify_phases(
         unmatched=report,
         observed_peaks=tuple(observed),
     )
+
+
+def _rerank_anisotropic(
+    matches: list[PhaseMatch],
+    observed: tuple,
+    *,
+    top_k: int,
+    scoring: str,
+    match_tol_deg: float,
+    wavelength: float,
+    kalpha2: KAlpha2 | None = None,
+) -> list[PhaseMatch]:
+    """上位 top_k マッチを異方格子整合で再スコアした新リストを返す (Issue #20 hybrid)。
+
+    各上位候補を ``align_peaks_anisotropic`` で軸別に観測へ整合 → 同じスコア方式で再評価する。
+    格子情報/hkl 不足・未改善の候補は等方スコアのまま残す (align が None)。top_k を超える候補は無変更。
+    再ソートは呼び出し側が行う。
+
+    2 つの整合性ガード (code-review 対策):
+    - **Kα2 基底の統一**: 等方スコアは Kα1+Kα2 サテライト付き ``phase.peaks`` で計算されるのに対し、整合
+      ピークは hkl 付き Kα1 のみ (サテライトは hkl 無しで align 時に落ちる)。``kalpha2`` があれば整合セルの
+      Kα1 に同じ Kα2 モデルを再付加し、re-score を等方と同じ基底に揃える。
+    - **単調 promote**: 異方整合は位置 FoM の改善のみ保証し dara/coverage スコアの改善は保証しない。悪化時に
+      head を不当降格させ tail (未 re-score) に不公平に負けるのを防ぐため、**異方スコアが等方を上回る候補
+      のみ差し替える** (re-score は昇格専用; 正解相を top-K に押し上げる本来の目的に一致)。
+    """
+    rng = (min(p.position for p in observed), max(p.position for p in observed))
+    rr = min(top_k, len(matches))
+    head: list[PhaseMatch] = []
+    for m in matches[:rr]:
+        al = align_peaks_anisotropic(
+            m.reference, observed, wavelength=wavelength, two_theta_range=rng
+        )
+        if al is None:
+            head.append(m)
+            continue
+        # 等方と同じ Kα2 基底へ揃える (整合セルの Kα1 にサテライト再付加)
+        aligned = al.aligned_peaks
+        if kalpha2 is not None:
+            aligned = add_kalpha2_satellites(aligned, kalpha2)
+        if scoring == "dara":
+            ds = dara_peak_score(aligned, observed, tol_deg=match_tol_deg)
+            candidate = PhaseMatch(
+                reference=m.reference, score=ds.score,
+                matched_observed=ds.matched_observed,
+                extra_calculated=ds.extra_calculated, strain=al.strain,
+            )
+        else:
+            mr = match_score(aligned, observed, tol_deg=match_tol_deg, candidate_index=0)
+            candidate = PhaseMatch(
+                reference=m.reference, score=mr.score,
+                matched_observed=mr.matched_observed,
+                extra_calculated=mr.unmatched_candidate, strain=al.strain,
+            )
+        # 単調 promote: 異方スコアが等方を上回る時のみ採用 (悪化は等方のまま維持)
+        head.append(candidate if candidate.score > m.score else m)
+    return head + list(matches[rr:])

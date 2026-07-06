@@ -14,13 +14,14 @@ from collections.abc import Callable, Sequence
 
 from ..reference.model import ReferencePhase
 from .client import MPClient, MPEntry
-from .xrd import group_equivalent, simulate_reference_peaks
+from .xrd import group_equivalent, simulate_reference_peaks, structure_cell_and_system
 
 __all__ = ["MPReferenceProvider"]
 
-# 型エイリアス: 構造 → ピーク列 / 構造列 → 等価グループ index。
+# 型エイリアス: 構造 → ピーク列 / 構造列 → 等価グループ index / 構造 → (格子, 結晶系)。
 SimulateFn = Callable[..., Sequence]
 GroupFn = Callable[[Sequence[object]], Sequence[Sequence[int]]]
+StructureMetaFn = Callable[[object], "tuple[tuple[float, ...], str]"]
 
 
 class MPReferenceProvider:
@@ -33,6 +34,8 @@ class MPReferenceProvider:
         deduplicate: True で ``StructureMatcher`` により等価構造を重複排除する (FR-102)。
         simulate: 構造 → ピーク列 (テスト注入用, 既定 ``simulate_reference_peaks``)。
         group: 構造列 → 等価グループ (テスト注入用, 既定 ``group_equivalent``)。
+        structure_meta: 構造 → (格子, 結晶系) (異方格子整合用, 既定 ``structure_cell_and_system``)。
+            抽出に失敗した相 (フェイク構造・pymatgen 無し) は格子情報なしに縮退する (異方 re-score をスキップ)。
     """
 
     def __init__(
@@ -44,6 +47,7 @@ class MPReferenceProvider:
         deduplicate: bool = True,
         simulate: SimulateFn = simulate_reference_peaks,
         group: GroupFn = group_equivalent,
+        structure_meta: StructureMetaFn = structure_cell_and_system,
     ) -> None:
         self._client = client
         self._wavelength = wavelength_angstrom
@@ -51,6 +55,7 @@ class MPReferenceProvider:
         self._deduplicate = deduplicate
         self._simulate = simulate
         self._group = group
+        self._structure_meta = structure_meta
 
     def fetch(self, elements: Sequence[str]) -> tuple[ReferencePhase, ...]:
         """MP から候補相を取得し ``ReferencePhase`` へ変換する。🔵 FR-101/102/105
@@ -72,6 +77,14 @@ class MPReferenceProvider:
                     two_theta_range=self._two_theta_range,
                 )
             )
+            # 異方格子整合 (Issue #20 hybrid) 用の格子情報。抽出失敗 (フェイク構造/pymatgen 無し) は
+            # None に縮退し、当該相は等方スコアのみ (異方 re-score をスキップ; 提案≠適用の安全側)。
+            cell: tuple[float, ...] | None
+            crystal_system: str | None
+            try:
+                cell, crystal_system = self._structure_meta(entry.structure)
+            except Exception:
+                cell, crystal_system = None, None
             refs.append(
                 ReferencePhase(
                     phase_id=entry.material_id,
@@ -80,6 +93,8 @@ class MPReferenceProvider:
                     peaks=peaks,
                     spacegroup=entry.spacegroup,
                     energy_above_hull=entry.energy_above_hull,
+                    cell=cell,  # type: ignore[arg-type]
+                    crystal_system=crystal_system,
                 )
             )
         return tuple(refs)

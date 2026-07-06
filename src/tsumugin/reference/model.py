@@ -25,9 +25,13 @@ class ReferencePhase:
     phase_id: str  # 相 ID (例 "mp-19017")。ランキング同点時の決定論的タイブレークキー 🔵
     formula: str  # 組成式 (例 "LiFePO4") 🔵
     element_system: tuple[str, ...]  # 構成元素 (昇順を想定)。元素系フィルタの単位 🔵
-    peaks: tuple[Peak, ...]  # シミュレートピーク列 (2θ + 相対強度)。位置昇順を想定 🔵
+    peaks: tuple[Peak, ...]  # シミュレートピーク列 (2θ + 相対強度 + 任意 hkl)。位置昇順を想定 🔵
     spacegroup: str | None = None  # 空間群記号。不明は None 🟡
     energy_above_hull: float | None = None  # hull 上エネルギー (eV/atom)。None=未登録/保持 🔵
+    # 異方格子整合 (Issue #20 hybrid: top-K 異方 re-score) 用の格子情報。供給元が構造を持つ場合のみ
+    # 非 None。cell=(a,b,c,α,β,γ)・crystal_system=結晶系名。hkl 付き peaks とセットで異方補正に使う。
+    cell: tuple[float, float, float, float, float, float] | None = None
+    crystal_system: str | None = None
 
 
 @dataclass(frozen=True)

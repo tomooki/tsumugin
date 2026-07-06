@@ -16,7 +16,12 @@ from dataclasses import dataclass
 
 from ..search.peaks import Peak
 
-__all__ = ["LatticeAlignment", "align_peaks"]
+__all__ = [
+    "LatticeAlignment",
+    "align_peaks",
+    "AnisotropicAlignment",
+    "align_peaks_anisotropic",
+]
 
 
 @dataclass(frozen=True)
@@ -163,3 +168,81 @@ def align_peaks(
     else:
         rms = 0.0
     return LatticeAlignment(strain, zero, aligned, n_matched, rms)
+
+
+# ============================================================================
+# 異方格子整合 (Issue #20 hybrid: 相同定 top-K の異方 re-score)
+# ============================================================================
+
+# 参照相の型 (循環 import を避け構造的に受ける): cell/crystal_system + hkl 付き peaks を持つもの。
+
+
+@dataclass(frozen=True)
+class AnisotropicAlignment:
+    """異方格子整合の結果 (等方 ``LatticeAlignment`` の軸別版)。🔵 Issue #20 hybrid"""
+
+    aligned_peaks: tuple[Peak, ...]  # 精密化セルで再計算した計算ピーク (位置整合・hkl 保持) 🔵
+    cell: tuple[float, float, float, float, float, float]  # 精密化した異方セル 🔵
+    strain: float  # 最大軸相対変化 max(|a'/a−1|,|b'/b−1|,|c'/c−1|)。ランキング減点用 🔵
+    n_used: int  # フィットに使った反射数 🔵
+
+
+def align_peaks_anisotropic(
+    phase: object,
+    observed_peaks: Sequence[Peak],
+    *,
+    wavelength: float = 1.5406,
+    two_theta_range: tuple[float, float] | None = None,
+) -> AnisotropicAlignment | None:
+    """参照相 (cell + crystal_system + hkl 付き peaks) を観測へ**軸別**に整合させる (Issue #20 hybrid)。
+
+    等方 ``align_peaks`` (ε 1 自由度) では吸収できない DFT の異方格子誤差 (軸ごとに数 %) を、逆格子
+    計量テンソル線形解 + FoM グリッド (``autorietveld.lattice``, numpy) で補正し、精密化セルで計算ピークを
+    再計算して返す。相同定の top-K 候補を異方再スコアするための整合器。GSAS/pymatgen 非依存
+    (lattice は遅延 import; hkl とセルさえあれば numpy のみ)。
+
+    :param phase: ``cell``/``crystal_system`` と hkl 付き ``peaks`` を持つ参照相 (``ReferencePhase``)
+    :param observed_peaks: 観測ピーク列
+    :param wavelength: 線源波長 (Å)
+    :param two_theta_range: 評価 2θ 範囲 (None なら観測ピークの min/max)
+    :returns: ``AnisotropicAlignment``。格子情報/hkl 不足・観測不足・未改善なら ``None`` (等方版へ縮退)
+    """
+    cell = getattr(phase, "cell", None)
+    crystal_system = getattr(phase, "crystal_system", None)
+    peaks = getattr(phase, "peaks", ())
+    if cell is None or crystal_system is None or not observed_peaks:
+        return None
+    indexed = [p for p in peaks if p.hkl is not None]
+    if len(indexed) < 3:
+        return None
+
+    hkls = [p.hkl for p in indexed]
+    intensities = [p.height for p in indexed]
+    obs_pos = [p.position for p in observed_peaks]
+    obs_ht = [p.height for p in observed_peaks]
+    rng = two_theta_range or (min(obs_pos), max(obs_pos))
+
+    # 異方セル精密化は numpy コア (lattice) に委譲。遅延 import で循環依存/コア import 汚染を避ける。
+    from ..autorietveld.lattice import refine_cell_from_indexed_peaks, two_theta_of_hkls
+
+    sol = refine_cell_from_indexed_peaks(
+        cell, crystal_system, hkls, intensities, obs_pos, obs_ht,
+        wavelength=wavelength, two_theta_range=rng,
+    )
+    if sol is None:  # 改善せず (安全側): 等方版のまま
+        return None
+
+    # 精密化セルで計算ピーク位置を再計算 (強度・hkl は保持)
+    tth = two_theta_of_hkls(sol.cell, hkls, wavelength)
+    aligned = tuple(
+        Peak(position=float(tth[k]), height=float(intensities[k]), hkl=tuple(hkls[k]))
+        for k in range(len(hkls))
+        if math.isfinite(float(tth[k]))
+    )
+    a0, b0, c0 = float(cell[0]), float(cell[1]), float(cell[2])
+    strain = max(
+        abs(sol.cell[0] / a0 - 1.0), abs(sol.cell[1] / b0 - 1.0), abs(sol.cell[2] / c0 - 1.0)
+    )
+    return AnisotropicAlignment(
+        aligned_peaks=aligned, cell=sol.cell, strain=float(strain), n_used=sol.n_used
+    )

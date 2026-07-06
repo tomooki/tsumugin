@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Callable, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 
@@ -28,18 +28,29 @@ from ..autorietveld.model import PhaseSpec
 from ..reference.engine import identify_phases
 from ..reference.provider import ReferenceProvider
 
+# 絶対格子 (a, b, c, α, β, γ)
+Cell6 = tuple[float, float, float, float, float, float]
+# 物質化 CIF パス → 精密化済み絶対格子 (or None)。異方セル補正の注入点 (Issue #20)。
+CellRefiner = Callable[[str], "Cell6 | None"]
+
 
 @runtime_checkable
 class PhaseMaterializer(Protocol):
     """相 ID から精密化可能な構造ファイル (CIF) を物質化する境界。"""
 
     def materialize(
-        self, phase_id: str, elements: Sequence[str], out_path: str, strain: float = 0.0
+        self,
+        phase_id: str,
+        elements: Sequence[str],
+        out_path: str,
+        strain: float = 0.0,
+        cell: Cell6 | None = None,
     ) -> str:
         """相 ID の実構造を out_path (CIF ファイルパス) に書き出しそのパスを返す。取得不能なら例外。
 
-        strain!=0 なら格子を等方的に (1+strain) 倍して書き出す (DFT (MP) 構造の格子過大評価を実測へ
-        補正; 相同定の格子整合 (align_peaks) が求めた歪みを物質化構造に適用する)。
+        cell を与えると格子を**その絶対値 (a,b,c,α,β,γ) に置換**して書き出す (異方的な DFT 格子誤差を
+        異方セルプリアラインで補正した格子を反映; Issue #20)。cell=None かつ strain!=0 なら格子を等方
+        (1+strain) 倍する (M6 align_peaks 由来の等方補正)。cell は strain に優先する。
         """
         ...
 
@@ -54,6 +65,8 @@ class IdentifiedPhase:
     score: float
     strain: float
     source: str
+    # 異方セルプリアラインで精密化した絶対格子 (異方補正を適用した場合のみ非 None, Issue #20)。
+    refined_cell: Cell6 | None = None
 
 
 def _sanitize(name: str) -> str:
@@ -61,15 +74,26 @@ def _sanitize(name: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_") else "_" for c in name) or "phase"
 
 
-def structure_to_cif(structure: object, path: str | Path, strain: float = 0.0) -> str:
+def structure_to_cif(
+    structure: object, path: str | Path, strain: float = 0.0, cell: Cell6 | None = None
+) -> str:
     """pymatgen ``Structure`` を CIF に書き出す (遅延 import)。書き出し先パスを返す。
 
-    strain!=0 なら書き出し前に格子を等方 (1+strain) 倍する (DFT 格子過大評価の補正)。元構造は不変
-    (copy に適用)。
+    cell を与えると格子を**その絶対値に置換**して書き出す (分率座標は保持; 異方的 DFT 格子誤差を
+    異方セルプリアラインで補正した格子を反映)。cell=None かつ strain!=0 なら格子を等方 (1+strain) 倍
+    する。cell は strain に優先する。元構造は不変 (copy/新 Structure に適用)。
     """
     from pymatgen.io.cif import CifWriter
 
-    if strain:
+    if cell is not None:
+        from pymatgen.core import Lattice, Structure
+
+        structure = Structure(
+            Lattice.from_parameters(*(float(x) for x in cell)),
+            structure.species,  # type: ignore[attr-defined]
+            structure.frac_coords,  # type: ignore[attr-defined]
+        )
+    elif strain:
         structure = structure.copy()  # type: ignore[attr-defined]
         structure.apply_strain(float(strain))  # type: ignore[attr-defined]
     CifWriter(structure).write_file(str(path))
@@ -93,6 +117,9 @@ def identify_new_phases(
     max_strain: float = 0.05,
     kalpha2: object | None = None,
     name_prefix: str = "phase",
+    cell_refiner: CellRefiner | None = None,
+    rerank_top_k: int = 0,
+    rerank_wavelength: float = 1.5406,
 ) -> tuple[IdentifiedPhase, ...]:
     """パターンから新相を同定し上位 top_k を CIF に物質化して返す。
 
@@ -116,6 +143,14 @@ def identify_new_phases(
         ため既定 0.05 (M6 の 0.01 では吸収できず物質化構造が実測とずれ Rietveld が収束しない)。
         求めた歪みは物質化 CIF の格子にも適用する (materialize の strain)。
     :param name_prefix: 生成する相名/CIF 名の接頭辞
+    :param cell_refiner: 物質化 CIF パス→精密化絶対格子 (or None) の異方セル補正器 (Issue #20)。
+        与えると等方 strain で物質化した後、この補正器で**異方セル**を求め、非 None なら CIF を
+        その絶対格子で再物質化する (DFT の異方的格子誤差を吸収; M6 等方 strain の上位互換)。
+        補正器が None を返す/例外を投げると等方 strain 版のまま (安全側フォールバック)。
+    :param rerank_top_k: >0 で相同定の上位 K 候補を**異方格子整合で再スコア**する (Issue #20 hybrid)。
+        等方整合が DFT の軸別格子誤差で正解相を過小評価し top_k から落とすのを防ぐ (供給元が
+        cell/crystal_system/hkl を持つ相のみ; MP 供給元は対応済)。
+    :param rerank_wavelength: 異方再スコアの線源波長 (Å)
     :returns: 物質化した IdentifiedPhase の列 (スコア降順・最大 top_k)
     """
     ident = identify_phases(
@@ -128,6 +163,8 @@ def identify_new_phases(
         refine_lattice=refine_lattice,
         max_strain=max_strain,
         kalpha2=kalpha2,  # type: ignore[arg-type]
+        rerank_top_k=rerank_top_k,
+        rerank_wavelength=rerank_wavelength,
     )
 
     excl_forms = {f.lower() for f in exclude_formulas}
@@ -143,10 +180,25 @@ def identify_new_phases(
         cif_name = f"{_sanitize(name_prefix)}_{_sanitize(ref.phase_id)}.cif"
         cif_path = str(workpath / cif_name)
         try:
-            # align_peaks が求めた歪みを物質化構造に適用し DFT 格子過大評価を実測へ補正する。
+            # align_peaks が求めた等方歪みを物質化構造に適用し DFT 格子過大評価を実測へ (粗) 補正する。
             materializer.materialize(ref.phase_id, list(elements), cif_path, strain=float(match.strain))
         except Exception:
             continue  # 物質化失敗は飛ばして次点へ (提案≠適用の安全側)
+        # 異方セル補正 (Issue #20): 等方 strain で潰しきれない DFT の軸別誤差を 異方セルプリアラインで
+        # 求め、非 None なら CIF をその絶対格子で再物質化する。失敗/None は等方版のまま (安全側)。
+        refined_cell: Cell6 | None = None
+        if cell_refiner is not None:
+            try:
+                refined_cell = cell_refiner(cif_path)
+            except Exception:
+                refined_cell = None
+            if refined_cell is not None:
+                try:
+                    materializer.materialize(
+                        ref.phase_id, list(elements), cif_path, cell=refined_cell
+                    )
+                except Exception:
+                    refined_cell = None  # 再物質化失敗は等方版を維持
         phase_name = f"{_sanitize(name_prefix)}_{_sanitize(ref.formula)}"
         out.append(
             IdentifiedPhase(
@@ -158,6 +210,7 @@ def identify_new_phases(
                 score=float(match.score),
                 strain=float(match.strain),
                 source="materials_project",
+                refined_cell=refined_cell,
             )
         )
         if len(out) >= top_k:
@@ -197,7 +250,12 @@ class MPMaterializer:
         return self._cache[phase_id]
 
     def materialize(
-        self, phase_id: str, elements: Sequence[str], out_path: str, strain: float = 0.0
+        self,
+        phase_id: str,
+        elements: Sequence[str],
+        out_path: str,
+        strain: float = 0.0,
+        cell: Cell6 | None = None,
     ) -> str:
         structure = self._lookup(phase_id, elements)
-        return structure_to_cif(structure, out_path, strain=strain)
+        return structure_to_cif(structure, out_path, strain=strain, cell=cell)
