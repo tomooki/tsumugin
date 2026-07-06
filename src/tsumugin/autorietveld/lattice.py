@@ -1,0 +1,318 @@
+"""異方的格子精密化の numpy コア (Issue #20 / 逆格子計量テンソル最小二乗)。
+
+Materials Project 等の DFT 緩和構造は格子定数が実測から**異方的に**ずれる (CaTeO3 delta:
+a,b は <1% だが c 軸だけ +3.4% 過大)。等方歪み ε (reference.rietveld.align_peaks) はこの異方
+誤差を吸収できず、Rietveld のセル精密化は 3.4% を超えるズレを収束半径外で追えない (Issue #20 診断)。
+
+本モジュールは**指数付き反射 (hkl) + 観測 d 間隔**から格子を直接解く決定論ソルバを提供する。
+鍵は 1/d² が逆格子計量テンソル G* の成分に**線形**であること:
+
+    1/d² = h·G*·hᵀ = h²·G11 + k²·G22 + l²·G33 + 2hk·G12 + 2hl·G13 + 2kl·G23
+
+これを結晶系の対称拘束 (立方=1 / 正方・六方=2 / 直方=3 / 単斜=4 / 三斜=6 自由度) 下で重み付き
+最小二乗で解けば、初期値に依らず (線形なので局所解に嵌らず) 異方誤差をまとめて補正できる。
+外れ値 (誤指数付けした反射) はロバスト再重み付けで除去する。
+
+構造因子と分離した位置合わせという点で GSAS-II の LeBail/Pawley と同系だが、こちらは numpy のみ・
+指数付きピークがあれば即解ける。pymatgen XRDCalculator は各ピークに hkl を返すため、参照 (DFT)
+構造の計算反射を観測ピークへマッチすれば hkl が得られる (pawley.py が配線)。
+
+信頼性: 🔵 結晶学の標準 (計量テンソル)。Issue #20 の「異方整列 (hkl 線形解)」を頑健化。
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+import numpy as np
+
+__all__ = [
+    "Cell6",
+    "LatticeSolution",
+    "reciprocal_metric_from_cell",
+    "cell_from_reciprocal_metric",
+    "solve_cell_from_dspacings",
+    "refine_cell_robust",
+]
+
+# (a, b, c, α, β, γ) — 角度は度
+Cell6 = tuple[float, float, float, float, float, float]
+
+# 計量成分ベクトルの並び: [M11, M22, M33, M12, M13, M23]
+_COMP_ORDER = ("11", "22", "33", "12", "13", "23")
+
+
+@dataclass(frozen=True)
+class LatticeSolution:
+    """異方格子精密化の結果。🔵 Issue #20"""
+
+    cell: Cell6  # 精密化した直接格子 (a,b,c,α,β,γ) 🔵
+    crystal_system: str  # 適用した対称拘束 🔵
+    n_used: int  # フィットに使った反射数 (外れ値除外後) 🔵
+    rms_inv_d2: float  # 1/d² 残差の RMS (Å⁻²) 🔵
+    rejected: tuple[int, ...]  # 外れ値として除外した反射の元 index (昇順) 🔵
+
+
+def _metric_from_components(comp: np.ndarray) -> np.ndarray:
+    """成分ベクトル [M11,M22,M33,M12,M13,M23] を対称 3x3 計量行列へ。"""
+    m11, m22, m33, m12, m13, m23 = (float(x) for x in comp)
+    return np.array(
+        [[m11, m12, m13], [m12, m22, m23], [m13, m23, m33]], dtype=float
+    )
+
+
+def _cell_from_metric(metric: np.ndarray) -> Cell6:
+    """計量行列 M から格子定数を復元する (直接計量なら直接格子, 逆計量なら逆格子)。
+
+    a=√M11, cosα=M23/(bc) 等。数値誤差で cos が ±1 を僅かに超えても acos が定義されるようクリップ。
+    """
+    a = math.sqrt(max(metric[0, 0], 1e-30))
+    b = math.sqrt(max(metric[1, 1], 1e-30))
+    c = math.sqrt(max(metric[2, 2], 1e-30))
+    cos_alpha = _clip_cos(metric[1, 2] / (b * c))
+    cos_beta = _clip_cos(metric[0, 2] / (a * c))
+    cos_gamma = _clip_cos(metric[0, 1] / (a * b))
+    return (
+        a,
+        b,
+        c,
+        math.degrees(math.acos(cos_alpha)),
+        math.degrees(math.acos(cos_beta)),
+        math.degrees(math.acos(cos_gamma)),
+    )
+
+
+def _clip_cos(x: float) -> float:
+    return max(-1.0, min(1.0, float(x)))
+
+
+def reciprocal_metric_from_cell(cell: Cell6) -> np.ndarray:
+    """直接格子 (a,b,c,α,β,γ) から逆格子計量テンソル G* (3x3) を返す。
+
+    直接計量 G を組み、G* = G⁻¹ を返す。1/d² = h·G*·hᵀ の係数行列に一致する。
+    """
+    a, b, c, alpha, beta, gamma = (float(x) for x in cell)
+    ca = math.cos(math.radians(alpha))
+    cb = math.cos(math.radians(beta))
+    cg = math.cos(math.radians(gamma))
+    g = np.array(
+        [
+            [a * a, a * b * cg, a * c * cb],
+            [a * b * cg, b * b, b * c * ca],
+            [a * c * cb, b * c * ca, c * c],
+        ],
+        dtype=float,
+    )
+    return np.linalg.inv(g)
+
+
+def cell_from_reciprocal_metric(g_star: np.ndarray) -> Cell6:
+    """逆格子計量テンソル G* (3x3) から直接格子 (a,b,c,α,β,γ) を復元する。"""
+    direct = np.linalg.inv(np.asarray(g_star, dtype=float))
+    return _cell_from_metric(direct)
+
+
+def _design_row(hkl: Sequence[float]) -> np.ndarray:
+    """反射 hkl の 1/d² を成分 [G11,G22,G33,G12,G13,G23] に写す係数行 [h²,k²,l²,2hk,2hl,2kl]。"""
+    h, k, ll = float(hkl[0]), float(hkl[1]), float(hkl[2])
+    return np.array([h * h, k * k, ll * ll, 2 * h * k, 2 * h * ll, 2 * k * ll], dtype=float)
+
+
+def _system_basis(crystal_system: str) -> np.ndarray:
+    """結晶系の対称拘束を表す基底行列 B (6×k)。成分 g_full = B @ p (p は自由パラメータ)。
+
+    立方(1)/正方(2)/六方・三方h(2)/菱面体・三方r(2)/直方(3)/単斜b(4)/三斜(6)。未知系は三斜に縮退。
+    順序は _COMP_ORDER = [11,22,33,12,13,23]。
+    """
+    s = crystal_system.strip().lower()
+    if s == "cubic":
+        # G11=G22=G33=p, 非対角 0
+        b = np.zeros((6, 1))
+        b[0, 0] = b[1, 0] = b[2, 0] = 1.0
+        return b
+    if s == "tetragonal":
+        # G11=G22=p0, G33=p1
+        b = np.zeros((6, 2))
+        b[0, 0] = b[1, 0] = 1.0
+        b[2, 1] = 1.0
+        return b
+    if s in ("hexagonal", "trigonal", "trigonal_h"):
+        # 六方 (γ=120°): G11=G22=p0, G33=p1, G12=0.5·p0 (逆格子 γ*=60°)
+        b = np.zeros((6, 2))
+        b[0, 0] = b[1, 0] = 1.0
+        b[2, 1] = 1.0
+        b[3, 0] = 0.5
+        return b
+    if s in ("rhombohedral", "trigonal_r"):
+        # 菱面体 (a=b=c, α=β=γ): G11=G22=G33=p0, G12=G13=G23=p1
+        b = np.zeros((6, 2))
+        b[0, 0] = b[1, 0] = b[2, 0] = 1.0
+        b[3, 1] = b[4, 1] = b[5, 1] = 1.0
+        return b
+    if s == "orthorhombic":
+        # G11,G22,G33 自由, 非対角 0
+        b = np.zeros((6, 3))
+        b[0, 0] = b[1, 1] = b[2, 2] = 1.0
+        return b
+    if s == "monoclinic":
+        # b 軸ユニーク (β 自由, α=γ=90°): G11,G22,G33,G13 自由, G12=G23=0
+        b = np.zeros((6, 4))
+        b[0, 0] = b[1, 1] = b[2, 2] = 1.0
+        b[4, 3] = 1.0  # G13
+        return b
+    # triclinic / 既定: 全 6 成分自由
+    return np.eye(6)
+
+
+def _solve_components(
+    hkls: Sequence[Sequence[float]],
+    inv_d2: np.ndarray,
+    weights: np.ndarray,
+    crystal_system: str,
+) -> np.ndarray | None:
+    """重み付き線形最小二乗で成分ベクトル g_full (6,) を解く。退化時 None。"""
+    basis = _system_basis(crystal_system)
+    design = np.array([_design_row(h) for h in hkls], dtype=float)  # (N,6)
+    a_red = design @ basis  # (N,k)
+    w = np.sqrt(np.clip(weights, 0.0, None))
+    aw = a_red * w[:, None]
+    qw = inv_d2 * w
+    if aw.shape[0] < aw.shape[1]:
+        return None  # 反射数 < 自由度: 解不能
+    try:
+        p, *_ = np.linalg.lstsq(aw, qw, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    return basis @ p
+
+
+def solve_cell_from_dspacings(
+    hkls: Sequence[Sequence[float]],
+    d_obs: Sequence[float],
+    *,
+    crystal_system: str = "triclinic",
+    weights: Sequence[float] | None = None,
+    initial_cell: Cell6 | None = None,
+) -> Cell6:
+    """指数付き反射 (hkl) と観測 d から格子を 1 回の線形最小二乗で解く。
+
+    :param hkls: 反射指数の列 [(h,k,l), ...]
+    :param d_obs: 対応する観測 d 間隔 (Å, >0)
+    :param crystal_system: 対称拘束 (cubic/tetragonal/hexagonal/rhombohedral/orthorhombic/
+        monoclinic/triclinic)。未知は triclinic
+    :param weights: 各反射の重み (None なら等重み)。強度を渡すと強反射を重視できる
+    :param initial_cell: 解が退化 (反射不足/特異) した際に返すフォールバック格子
+    :returns: 精密化した直接格子 (a,b,c,α,β,γ)。退化時は initial_cell (なければ ValueError)
+    """
+    d = np.asarray(d_obs, dtype=float)
+    if len(hkls) != d.size:
+        raise ValueError("hkls と d_obs は同長でなければならない。")
+    good = d > 1e-9
+    hkl_list = [hkls[i] for i in range(len(hkls)) if good[i]]
+    inv_d2 = 1.0 / (d[good] ** 2)
+    w = (
+        np.ones(inv_d2.size)
+        if weights is None
+        else np.asarray([weights[i] for i in range(len(weights)) if good[i]], dtype=float)
+    )
+    g_full = _solve_components(hkl_list, inv_d2, w, crystal_system)
+    if g_full is None:
+        if initial_cell is not None:
+            return initial_cell
+        raise ValueError("格子を解くための反射が不足しています。")
+    try:
+        return cell_from_reciprocal_metric(_metric_from_components(g_full))
+    except (np.linalg.LinAlgError, ValueError):
+        if initial_cell is not None:
+            return initial_cell
+        raise
+
+
+def refine_cell_robust(
+    hkls: Sequence[Sequence[float]],
+    d_obs: Sequence[float],
+    *,
+    crystal_system: str = "triclinic",
+    weights: Sequence[float] | None = None,
+    iterations: int = 3,
+    reject_sigma: float = 3.0,
+    initial_cell: Cell6 | None = None,
+) -> LatticeSolution:
+    """外れ値 (誤指数付け) を反復再重み付けで除去しつつ異方格子を精密化する。
+
+    手順: 全反射で解く → 1/d² 残差を計算 → |残差| > reject_sigma·(残差 MAD 換算 σ) の反射を除外
+    → 残りで再解 → 収束 (除外集合が不変) or iterations 上限で停止。全て決定論的。
+
+    :param iterations: 再重み付けの最大反復数
+    :param reject_sigma: 外れ値棄却の閾値 (残差 σ 倍)。小さいほど厳しい
+    :returns: LatticeSolution (最終格子 + 使用反射数 + 残差 RMS + 除外 index)
+    """
+    d = np.asarray(d_obs, dtype=float)
+    if len(hkls) != d.size:
+        raise ValueError("hkls と d_obs は同長でなければならない。")
+    base_w = np.ones(d.size) if weights is None else np.asarray(weights, dtype=float)
+    valid = d > 1e-9
+    idx_all = np.flatnonzero(valid)
+    inv_d2_all = np.zeros(d.size)
+    inv_d2_all[valid] = 1.0 / (d[valid] ** 2)
+
+    active = set(int(i) for i in idx_all)
+    cell = initial_cell or (1.0, 1.0, 1.0, 90.0, 90.0, 90.0)
+    rms = 0.0
+    for _ in range(max(1, iterations)):
+        act = sorted(active)
+        if len(act) < _system_basis(crystal_system).shape[1]:
+            break
+        sub_hkls = [hkls[i] for i in act]
+        sub_inv = inv_d2_all[act]
+        sub_w = base_w[act]
+        g_full = _solve_components(sub_hkls, sub_inv, sub_w, crystal_system)
+        if g_full is None:
+            break
+        try:
+            cell = cell_from_reciprocal_metric(_metric_from_components(g_full))
+        except (np.linalg.LinAlgError, ValueError):
+            break
+        # 全有効反射の残差で外れ値を再評価する
+        g_star = _metric_from_components(g_full)
+        resid = np.array(
+            [inv_d2_all[i] - float(_design_row(hkls[i]) @ _sym_vec(g_star)) for i in idx_all]
+        )
+        rms = float(np.sqrt(np.mean(resid**2))) if resid.size else 0.0
+        # MAD ベースの頑健 σ (中央値絶対偏差 × 1.4826)
+        med = float(np.median(resid))
+        mad = float(np.median(np.abs(resid - med)))
+        sigma = mad * 1.4826
+        if sigma <= 1e-15:
+            break  # 残差がほぼ均一 = 外れ値なし
+        keep = {
+            int(idx_all[j])
+            for j in range(idx_all.size)
+            if abs(resid[j] - med) <= reject_sigma * sigma
+        }
+        if keep == active or len(keep) < _system_basis(crystal_system).shape[1]:
+            active = keep if keep else active
+            break
+        active = keep
+
+    rejected = tuple(sorted(set(int(i) for i in idx_all) - active))
+    return LatticeSolution(
+        cell=cell,
+        crystal_system=crystal_system.strip().lower(),
+        n_used=len(active),
+        rms_inv_d2=rms,
+        rejected=rejected,
+    )
+
+
+def _sym_vec(g_star: np.ndarray) -> np.ndarray:
+    """対称 3x3 G* を成分ベクトル [G11,G22,G33,G12,G13,G23] に戻す (残差評価用)。"""
+    return np.array(
+        [
+            g_star[0, 0], g_star[1, 1], g_star[2, 2],
+            g_star[0, 1], g_star[0, 2], g_star[1, 2],
+        ],
+        dtype=float,
+    )
