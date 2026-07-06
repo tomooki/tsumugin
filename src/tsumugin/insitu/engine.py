@@ -409,17 +409,37 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
 
         provider, materializer = _ensure()
         two_theta, intensity = load_pattern(frame.data_path, frame.data_format)
+
+        # 異方セル補正器 (Issue #20): 物質化 CIF を観測へ整合させた**異方セル**に置換する numpy
+        # プリアライン。GSAS 非依存 (後段の run_auto_rietveld が Cell 段でさらに研磨する)。
+        cell_refiner = None
+        if pid.refine_new_phase_cell:
+            from ..autorietveld.pawley import prealign_cell_from_structure
+
+            tt_range = frame.two_theta_limits or (
+                float(two_theta.min()), float(two_theta.max())
+            )
+
+            def cell_refiner(cif_path: str):  # noqa: F811 (条件付き定義)
+                sol = prealign_cell_from_structure(
+                    cif_path, two_theta, intensity,
+                    wavelength=pid.wavelength, two_theta_range=tt_range,
+                    subtract_bg=pid.subtract_bg,
+                )
+                return sol.cell if sol is not None else None
+
         found = identify_new_phases(
             two_theta, intensity, elements=list(elements), provider=provider,
             materializer=materializer, workdir=workdir, exclude_formulas=list(exclude_formulas),
             top_k=pid.top_k, hull_cutoff_ev=pid.hull_cutoff_ev, subtract_bg=pid.subtract_bg,
-            name_prefix="new",
+            name_prefix="new", cell_refiner=cell_refiner,
         )
         return [
             (
                 ip.phase_spec,
                 {"source": ip.source, "phase_id": ip.phase_id, "formula": ip.formula,
-                 "dara_score": ip.score, "strain": ip.strain},
+                 "dara_score": ip.score, "strain": ip.strain,
+                 "refined_cell": list(ip.refined_cell) if ip.refined_cell else None},
             )
             for ip in found
         ]

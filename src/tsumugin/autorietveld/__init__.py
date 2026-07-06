@@ -19,12 +19,24 @@ from .model import (
 )
 from .backend_adapter import AutoRietveldBackend
 from .engine import run_auto_rietveld
+from .lattice import (
+    LatticeSolution,
+    cell_from_reciprocal_metric,
+    reciprocal_metric_from_cell,
+    refine_cell_robust,
+    solve_cell_from_dspacings,
+)
 from .multistart import (
     MultistartStart,
     RietveldMultistartResult,
     generate_cell_scales,
     run_multistart_rietveld,
     summarize_multistart,
+)
+from .pawley import (
+    PawleyCellResult,
+    prealign_cell_from_structure,
+    refine_cell_pawley,
 )
 from .recipe import build_recipe
 from .validity import check_validity
@@ -34,7 +46,9 @@ __all__ = [
     "AutoRietveldResult",
     "Geometry",
     "HistogramSpec",
+    "LatticeSolution",
     "MultistartStart",
+    "PawleyCellResult",
     "PhaseSpec",
     "Radiation",
     "RefinementStage",
@@ -42,9 +56,15 @@ __all__ = [
     "StageResult",
     "ValidityReport",
     "build_recipe",
+    "cell_from_reciprocal_metric",
     "check_validity",
     "generate_cell_scales",
+    "prealign_cell_from_structure",
+    "reciprocal_metric_from_cell",
+    "refine_cell_pawley",
+    "refine_cell_robust",
     "run_auto_rietveld",
     "run_multistart_rietveld",
+    "solve_cell_from_dspacings",
     "summarize_multistart",
 ]

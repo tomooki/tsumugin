@@ -10,8 +10,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from tsumugin.insitu.phaseid import IdentifiedPhase, identify_new_phases
+from tsumugin.insitu.phaseid import IdentifiedPhase, identify_new_phases, structure_to_cif
 from tsumugin.reference.model import ReferencePhase
 from tsumugin.search.peaks import Peak
 
@@ -31,15 +32,20 @@ class FakeMaterializer:
         self.fail_ids = set(fail_ids)
         self.calls: list[str] = []
         self.strains: list[float] = []
+        self.cells: list[object] = []  # materialize に渡った cell (None or 6-tuple)
 
     def materialize(
-        self, phase_id: str, elements: Sequence[str], out_path: str, strain: float = 0.0
+        self, phase_id: str, elements: Sequence[str], out_path: str,
+        strain: float = 0.0, cell=None,
     ) -> str:
         self.calls.append(phase_id)
         self.strains.append(strain)
+        self.cells.append(cell)
         if phase_id in self.fail_ids:
             raise ValueError(f"no structure for {phase_id}")
-        Path(out_path).write_text(f"# dummy CIF for {phase_id} strain={strain}\n", encoding="utf-8")
+        Path(out_path).write_text(
+            f"# dummy CIF for {phase_id} strain={strain} cell={cell}\n", encoding="utf-8"
+        )
         return out_path
 
 
@@ -103,6 +109,61 @@ def test_nonzero_strain_propagates_to_materialize(tmp_path):
     assert out[0].strain == mat.strains[0]
 
 
+def test_cell_refiner_rematerializes_with_anisotropic_cell(tmp_path):
+    """cell_refiner が異方セルを返すと、そのセルで CIF を再物質化し refined_cell に記録する。"""
+    tt, inten = _pattern([20.0, 30.0])
+    prov = FakeProvider([_ref("mp-delta", "CaTeO3", [(20.0, 1.0), (30.0, 0.8)], ["Ca", "Te", "O"])])
+    mat = FakeMaterializer()
+    aniso = (6.53, 8.17, 13.32, 90.0, 90.0, 90.0)
+
+    def refiner(cif_path: str):
+        assert Path(cif_path).exists()  # 等方版が先に書き出されている
+        return aniso
+
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=False, cell_refiner=refiner,
+    )
+    assert len(out) == 1
+    assert out[0].refined_cell == aniso
+    # materialize が 2 回 (等方 strain → 異方 cell) 呼ばれ、2 回目に cell が渡る。
+    assert mat.calls == ["mp-delta", "mp-delta"]
+    assert mat.cells[0] is None
+    assert mat.cells[1] == aniso
+
+
+def test_cell_refiner_none_keeps_isotropic(tmp_path):
+    """cell_refiner が None を返すと再物質化せず等方版を維持する (refined_cell=None)。"""
+    tt, inten = _pattern([20.0, 30.0])
+    prov = FakeProvider([_ref("mp-delta", "CaTeO3", [(20.0, 1.0), (30.0, 0.8)], ["Ca", "Te", "O"])])
+    mat = FakeMaterializer()
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=False,
+        cell_refiner=lambda _p: None,
+    )
+    assert out[0].refined_cell is None
+    assert mat.calls == ["mp-delta"]  # 再物質化なし
+
+
+def test_cell_refiner_exception_is_safe(tmp_path):
+    """cell_refiner が例外を投げても等方版で継続する (提案≠適用の安全側)。"""
+    tt, inten = _pattern([20.0, 30.0])
+    prov = FakeProvider([_ref("mp-delta", "CaTeO3", [(20.0, 1.0), (30.0, 0.8)], ["Ca", "Te", "O"])])
+    mat = FakeMaterializer()
+
+    def boom(_p: str):
+        raise RuntimeError("pawley failed")
+
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=False, cell_refiner=boom,
+    )
+    assert len(out) == 1
+    assert out[0].refined_cell is None
+    assert mat.calls == ["mp-delta"]
+
+
 def test_excludes_known_phase_by_formula(tmp_path):
     # alpha (既知) と delta (新相) が両方候補にある。alpha を除外して delta を選ぶ。
     tt, inten = _pattern([20.0, 30.0, 25.0])
@@ -159,3 +220,24 @@ def test_empty_when_no_candidates(tmp_path):
         workdir=str(tmp_path / "n.cif"), subtract_bg=False, refine_lattice=False,
     )
     assert out == ()
+
+
+@pytest.mark.mp
+def test_structure_to_cif_cell_override_replaces_lattice(tmp_path):
+    """structure_to_cif(cell=) は格子を絶対値に置換し (分率座標保持)、strain より優先する。"""
+    from pymatgen.core import Lattice, Structure
+    from pymatgen.io.cif import CifWriter  # noqa: F401 (import 経路の健全性)
+
+    orig = Structure(
+        Lattice.from_parameters(5.0, 6.0, 7.0, 90.0, 90.0, 90.0),
+        ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]],
+    )
+    target = (6.53, 8.17, 13.32, 90.0, 90.0, 90.0)
+    out = structure_to_cif(orig, str(tmp_path / "c.cif"), strain=0.02, cell=target)
+    written = Structure.from_file(out)
+    lat = written.lattice
+    assert abs(lat.a - 6.53) < 1e-3 and abs(lat.b - 8.17) < 1e-3 and abs(lat.c - 13.32) < 1e-3
+    # 分率座標は保持 (Cl は 0.5,0.5,0.5 のまま)
+    assert np.allclose(sorted(written.frac_coords[:, 0]), [0.0, 0.5], atol=1e-6)
+    # 元構造は不変
+    assert abs(orig.lattice.a - 5.0) < 1e-9
