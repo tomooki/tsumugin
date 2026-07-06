@@ -177,14 +177,23 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
                 continue
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
     if "profile_lorentzian" in flags:
-        # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード付き)。実験室/放射光
-        # X 線は Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。
-        # 悪化する場合は本段階ごと revert され U,V,W は保持される (T3/T4 非回帰)。TOF は除外。
+        # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード)。実験室/放射光 X 線は
+        # Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。悪化時は
+        # 本段階ごと revert され U,V,W は保持される (T3/T4 非回帰)。TOF/中性子は除外。
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
             if rad.is_tof or rad.is_neutron:
                 continue
             hist.set_refinements({"Instrument Parameters": ["X", "Y", "Zero"]})
+    if "profile_asymmetry" in flags:
+        # 軸発散非対称 (SH/L) を X 線に別段階で追加解放する (分割擬フォークト相当の経験的ピーク形状;
+        # 物理解釈を要さない)。低角の非対称に効くが常には改善しないため X,Y,Zero とは分け、悪化時は
+        # 本段階のみ revert する (X,Y,Zero を保持)。TOF/中性子は除外。
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if rad.is_tof or rad.is_neutron:
+                continue
+            hist.set_refinements({"Instrument Parameters": ["SH/L"]})
     if "size_strain" in flags:
         # サイズ/微小歪みは分解能の低い CW 中性子 (例 D1a) を多ヒストグラム時に除外し、
         # X 線/放射光・TOF (高分解能) に張る。理由: 低分解能 CW 中性子の幅は器械分解能に

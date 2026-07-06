@@ -156,8 +156,8 @@ def test_accepted_phase_formula_excluded_next_frames():
     def runner(frame, phases, initial_cells):
         names = [p.phase_name for p in phases]
         if "new_delta" in names:
-            # 二相は通常 7 (良好) だが axis>=380 で第 2 の事変 (22) → 再探索トリガ (min_rwp 更新後)。
-            rwp = 22.0 if frame.axis_value >= 380 else 7.0
+            # 二相の Rwp は軸とともに上昇 (相がさらに成長=Rwp が動くと再探索がかかる)。
+            rwp = 7.0 + 0.1 * (frame.axis_value - 340)
             return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
                                  "new_delta": (13.3, 6.5, 8.1, 90, 90, 90)},
                            {"alpha": 0.6, "new_delta": 0.4})
@@ -167,8 +167,7 @@ def test_accepted_phase_formula_excluded_next_frames():
 
     def finder(frame, elements, exclude, workdir):
         excludes_seen.append((frame.axis_value, tuple(exclude)))
-        # delta 候補を返すが、既に除外されていれば identify 側で弾かれる想定。ここでは呼ばれた
-        # exclude を記録するのが目的。formula が exclude 済みなら空を返して再追加を防ぐ。
+        # formula が exclude 済みなら空を返す (再追加を防ぐ = 既知相除外の効果)。
         if "CaTeO3" in exclude:
             return []
         return [(delta, {"source": "materials_project", "formula": "CaTeO3", "dara_score": 0.5})]
@@ -177,8 +176,8 @@ def test_accepted_phase_formula_excluded_next_frames():
     res = run_sequential_rietveld(_frames(6), [alpha], runner=runner, phase_finder=finder,
                                   config=SequentialConfig(phase_id=pid))
     assert len(res.appearances) == 1  # delta は 1 回だけ採用 (再探索では除外され再追加なし)
-    # 採用後 (axis 380) の再探索で exclude に採用相 formula "CaTeO3" が入る
-    later = [ex for axis, ex in excludes_seen if axis >= 380.0]
+    # 採用後 (axis>340) の再探索で exclude に採用相 formula "CaTeO3" が入る
+    later = [ex for axis, ex in excludes_seen if axis > 340.0]
     assert later, "採用後フレームで finder が再度呼ばれていない"
     assert all("CaTeO3" in ex for ex in later)
 

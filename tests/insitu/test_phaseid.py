@@ -30,12 +30,16 @@ class FakeMaterializer:
     def __init__(self, *, fail_ids: Sequence[str] = ()) -> None:
         self.fail_ids = set(fail_ids)
         self.calls: list[str] = []
+        self.strains: list[float] = []
 
-    def materialize(self, phase_id: str, elements: Sequence[str], out_path: str) -> str:
+    def materialize(
+        self, phase_id: str, elements: Sequence[str], out_path: str, strain: float = 0.0
+    ) -> str:
         self.calls.append(phase_id)
+        self.strains.append(strain)
         if phase_id in self.fail_ids:
             raise ValueError(f"no structure for {phase_id}")
-        Path(out_path).write_text(f"# dummy CIF for {phase_id}\n", encoding="utf-8")
+        Path(out_path).write_text(f"# dummy CIF for {phase_id} strain={strain}\n", encoding="utf-8")
         return out_path
 
 

@@ -84,6 +84,13 @@ def build_recipe(
         flags={"profile_lorentzian": True},
         note="X 線 Lorentzian X,Y + Zero (別段階, revert ガード)",
     )
+    # 軸発散非対称 SH/L (分割擬フォークト相当の経験的ピーク形状)。X,Y,Zero とは別段階にし常に
+    # 改善する訳ではないため悪化時は本段のみ revert (CaTeO3 frame0 で X,Y,Zero と同段だと 13.4→16.3 に劣化)。
+    asymmetry_stage = RefinementStage(
+        label="profile_asymmetry",
+        flags={"profile_asymmetry": True},
+        note="X 線 軸発散非対称 SH/L (別段階, revert ガード)",
+    )
     coords_stage = RefinementStage(
         label="coords", flags={"coords": True}, note="一般位置の原子座標 X"
     )
@@ -164,9 +171,11 @@ def build_recipe(
             stages.append(coords_stage)
             stages.append(uiso_stage)
 
-    # X 線は Lorentzian (X,Y) + Zero を最終段で追加解放 (revert ガード; 中性子/TOF のみなら不要)
+    # X 線は Lorentzian (X,Y) + Zero → 非対称 (SH/L) を最終段で追加解放 (各 revert ガード;
+    # 中性子/TOF のみなら不要)
     if has_xray:
         stages.append(lorentzian_stage)
+        stages.append(asymmetry_stage)
 
     # ラベルに S番号 を前置
     return tuple(

@@ -43,9 +43,21 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
      で標準化 (原子改変なし)。P1 展開では格子が精密化されない。
   3. **Kα2 除去データ**: HighScore 処理で Kα2 が除かれており、instprm を **Kα1 単色**にする
      (I(L2)/I(L1)→0 が精密化で判明; Kα2 satellite の phantom が最大の系統残差)。
-  4. **背景 24 項** (実験室 X 線は背景が複雑; 既定 6 では不足)。
-  5. **X,Y (Lorentzian) + Zero プロファイル解放** (U,V,W のみでは 43%; +X,Y,Zero で 19%→13%)。
-     → M7 `_profile_keys` を X 線で U,V,W,X,Y,Zero に拡張 (revert ガードで M7 T1–T4 は非回帰)。
-  残差 13→9.4% は preferred orientation (テクスチャ) + 水素 (X 線で微小) の未モデル分。
+  4. **背景 24 項** (`make_gsas_runner(background_coeffs=24)`; 実験室 X 線は背景が複雑, 既定 6 では不足)。
+  5. **X 線プロファイルを別段階で追加解放** (U,V,W のみでは 43%): recipe に `profile_lorentzian`
+     (X,Y + Zero) と `profile_asymmetry` (SH/L, 分割擬フォークト相当の非対称) を X 線限定で追加。
+     **U,V,W と同段階に混ぜず各 revert ガードで分離**する (混ぜると悪化時 whole-stage revert で
+     M7 T3/T4 が回帰・CaTeO3 frame0 も 13.4→16.3 に劣化した)。
+  残差 12.6→9.4% は preferred orientation (テクスチャ) + 水素 (X 線で微小) の未モデル分。
+- **全 14 フレーム逐次 + delta 自動同定 (MATERIALS_PROJECT_API)**: **end-to-end 動作を確認**。
+  frame0 12.57% (GOF 1.36)。系列は昇温で alpha (含水) が**実サンプルとして進行的に脱水**し alpha 単相
+  Rwp が上昇 (frame060 単独でも 23.7%, frame120 57%)。転移域で **MP から CaTeO3 (delta) を自動同定・
+  物質化・追加**し相集合が `(alpha, delta)` に成長 (ledger verify True)。エンジン改善: (a) **相の成長で
+  Rwp が動いたら再探索** (単調上昇する転移相を捉える), (b) **top_k 候補を全試行し最良 Rietveld フィット
+  を採用** (Dara 首位が最良構造とは限らない; MP に CaTeO3 は 8 多形), (c) **DFT 格子過大評価を align_peaks
+  の歪みで物質化構造に補正** (`materialize(strain=)`, max_strain 0.01→0.05; MP の DFT セルは実測より
+  ~3% 大)。**限界 (honest)**: MP の CaTeO3 は DFT 構造で、セル補正後も原子位置が実測 delta とずれ転移域
+  Rwp ~46% 止まり (実測 Jana delta CIF なら 25.6%; チュートリアル 9%)。相の**同定**は正しく機能するが、
+  DFT 参照構造の Rietveld 精度限界が転移域に出る (エンジンでなく参照データの限界)。
 - **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
   決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。

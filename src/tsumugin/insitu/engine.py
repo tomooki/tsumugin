@@ -117,9 +117,10 @@ def run_sequential_rietveld(
     lattice_history: list[dict[str, float]] = []
     prev_cells: dict[str, Cell] | None = None
     min_rwp = float("inf")
-    # 直近に rwp_jump トリガで探索を実行した際の基準 min_rwp。同一水準での無駄な再探索
-    # (既定 finder は MP ネットワーク往復) を避ける (M1)。changepoint 発火は毎回許可する。
-    last_search_min_rwp: float | None = None
+    # 直近に rwp_jump トリガで探索を実行した際の Rwp。同一水準での無駄な再探索 (既定 finder は MP
+    # ネットワーク往復) を避けつつ、**未追加相が成長すると Rwp が動く**ため前回探索から有意に動いたら
+    # 再探索する (M1: 単調上昇する転移で相を捉えるのに必須)。changepoint 発火は毎回許可する。
+    last_search_rwp: float | None = None
 
     ledger.append("m9_seq_start", {"n_frames": n, "initial_phases": [p.phase_name for p in phases]})
 
@@ -141,11 +142,12 @@ def run_sequential_rietveld(
         appended_this_frame: PhaseAppearance | None = None
         if phase_finder is not None and pid is not None and pid.enabled and rwp < float("inf"):
             rwp_jump = min_rwp < float("inf") and rwp > min_rwp * pid.trigger_rwp_ratio
-            # rwp_jump は「同一 min_rwp 水準で一度探索済みなら再探索しない」(M1)。changepoint は毎回許可。
-            jump_new = rwp_jump and last_search_min_rwp != min_rwp
-            if signal.triggered or jump_new:
-                if rwp_jump:
-                    last_search_min_rwp = min_rwp
+            # 前回探索時の Rwp から 5% 超動いたら再探索 (相の成長=Rwp 上昇を捉える)。同一水準の
+            # 連続再探索 (MP スパム) は抑える (M1)。changepoint は毎回許可。
+            moved = last_search_rwp is None or abs(rwp - last_search_rwp) > 0.05 * max(rwp, 1.0)
+            if signal.triggered or (rwp_jump and moved):
+                if rwp_jump or signal.triggered:
+                    last_search_rwp = rwp
                 result, appended_this_frame, warn = _try_add_phase(
                     frame, phases, known_formulas, result, rwp, pid, phase_finder,
                     runner, _resolve_workdir(), i, ledger,
@@ -214,10 +216,12 @@ def _try_add_phase(
     frame, phases, known_formulas, base_result, base_rwp, pid, phase_finder, runner,
     workdir, frame_idx, ledger,
 ) -> "tuple[AutoRietveldResult, PhaseAppearance | None, str | None]":
-    """新相候補を同定・追加して再精密化し、受理基準を満たせば採用する (可逆・提案≠適用)。
+    """新相候補を同定・追加して再精密化し、受理基準を満たす**最良候補**を採用する (可逆・提案≠適用)。
 
     受理基準 (§1 過剰適合ガード): (1) 新相の相分率 > frac_min ∧ (2) Rwp が rwp_eps 超改善 ∧
-    (3) validity.passed 維持。満たさなければ base_result のまま (相追加せず) 返す。
+    (3) validity.passed 維持。**複数候補 (top_k) を全て試し、受理基準を満たす中で最小 Rwp のものを採る**
+    (Dara スコア上位が必ずしも最良の Rietveld フィットではないため; 例 CaTeO3 は MP に 8 多形あり
+    Dara 首位が構造ミスマッチ)。満たすものが無ければ base_result のまま返す。
 
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
     """
@@ -230,39 +234,44 @@ def _try_add_phase(
 
     # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
     base_cells = {name: _cell6(c) for name, c in base_result.refined_cells.items()}
+    best: "tuple[AutoRietveldResult, PhaseSpec, dict] | None" = None
     for cand_spec, meta in candidates:
         trial_phases = tuple(list(phases) + [cand_spec])
         trial = runner(frame, trial_phases, base_cells)
         trial_rwp = float(trial.final_rwp)
         new_frac = float(trial.phase_fractions.get(cand_spec.phase_name, 0.0))
-        improved = trial_rwp < base_rwp - pid.rwp_eps
-        significant = new_frac > pid.frac_min
-        valid = trial.validity.passed
+        accepted = (trial_rwp < base_rwp - pid.rwp_eps) and (new_frac > pid.frac_min) and trial.validity.passed
         ledger.append(
             "m9_phaseid_trial",
             {
                 "frame": frame_idx, "candidate": cand_spec.phase_name,
+                "phase_id": str(meta.get("phase_id", "")),
                 "rwp_before": base_rwp, "rwp_after": trial_rwp,
-                "fraction": new_frac, "accepted": bool(improved and significant and valid),
+                "fraction": new_frac, "accepted": bool(accepted),
             },
         )
-        if improved and significant and valid:
-            phases.append(cand_spec)
-            # 採用相の組成式を既知相に記録し、以降のフレームで同相を再同定しないようにする
-            # (finder への exclude は formula キー; 相名は MP formula と一致しないため formula で除外)。
-            cand_formula = str(meta.get("formula", ""))
-            if cand_formula:
-                known_formulas.append(cand_formula)
-            return trial, PhaseAppearance(
-                phase_name=cand_spec.phase_name,
-                frame_index=frame_idx,
-                axis_value=frame.axis_value,
-                structure_path=cand_spec.structure_path,
-                source=str(meta.get("source", "materials_project")),
-                rwp_before=base_rwp,
-                rwp_after=trial_rwp,
-                evidence=meta,
-            ), None
+        # 受理基準を満たす中で最小 Rwp の候補を保持する (Dara 順でなく Rietveld フィットで選ぶ)。
+        if accepted and (best is None or trial_rwp < float(best[0].final_rwp)):
+            best = (trial, cand_spec, meta)
+
+    if best is not None:
+        trial, cand_spec, meta = best
+        phases.append(cand_spec)
+        # 採用相の組成式を既知相に記録し、以降のフレームで同相を再同定しないようにする
+        # (finder への exclude は formula キー; 相名は MP formula と一致しないため formula で除外)。
+        cand_formula = str(meta.get("formula", ""))
+        if cand_formula:
+            known_formulas.append(cand_formula)
+        return trial, PhaseAppearance(
+            phase_name=cand_spec.phase_name,
+            frame_index=frame_idx,
+            axis_value=frame.axis_value,
+            structure_path=cand_spec.structure_path,
+            source=str(meta.get("source", "materials_project")),
+            rwp_before=base_rwp,
+            rwp_after=float(trial.final_rwp),
+            evidence=meta,
+        ), None
     # 候補はあったが受理基準を満たさず / 候補ゼロ (相同定不発)。
     warn = None
     if not candidates:
@@ -376,16 +385,22 @@ def _infer_instrument(frame: FrameSpec) -> str:
 def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
     """既定の新相探索器 (MP identify + 物質化, 遅延 import)。"""
 
+    from ..mp.client import MPRestClient
+    from ..mp.provider import MPReferenceProvider
+    from .phaseid import MPMaterializer
+
+    # provider と materializer で単一 MP client を共有 (キーは環境変数 MATERIALS_PROJECT_API)。
+    client = MPRestClient()
+    provider = MPReferenceProvider(client)
+    materializer = MPMaterializer(client)
+
     def finder(
         frame: FrameSpec, elements: Sequence[str], exclude_formulas: Sequence[str], workdir: str
     ) -> "Sequence[tuple[PhaseSpec, dict]]":
-        from ..mp.provider import MPReferenceProvider
         from ..reference.io import load_pattern
-        from .phaseid import MPMaterializer, identify_new_phases
+        from .phaseid import identify_new_phases
 
         two_theta, intensity = load_pattern(frame.data_path, frame.data_format)
-        provider = MPReferenceProvider()
-        materializer = MPMaterializer()
         found = identify_new_phases(
             two_theta, intensity, elements=list(elements), provider=provider,
             materializer=materializer, workdir=workdir, exclude_formulas=list(exclude_formulas),
