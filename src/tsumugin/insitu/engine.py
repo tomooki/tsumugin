@@ -141,7 +141,11 @@ def run_sequential_rietveld(
 
         # --- 新相自動同定 (トリガ: 残差 S/N or 変化点 or Rwp 相対ジャンプ) ---
         appended_this_frame: PhaseAppearance | None = None
-        if phase_finder is not None and pid is not None and pid.enabled and rwp < float("inf"):
+        _cap_reached = pid is not None and pid.max_new_phases > 0 and len(appearances) >= pid.max_new_phases
+        if (
+            phase_finder is not None and pid is not None and pid.enabled
+            and rwp < float("inf") and not _cap_reached
+        ):
             rwp_jump = min_rwp < float("inf") and rwp > min_rwp * pid.trigger_rwp_ratio
             # 【残差 S/N トリガ (2相目追加判定)】: 既存相 fit の残差に、計数統計ノイズを超える未説明
             #   ピーク (S/N > 閾値) があれば未同定相の証拠。恣意的 Rwp 比でなくノイズ基準で判定する。

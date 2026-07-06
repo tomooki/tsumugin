@@ -201,6 +201,42 @@ def test_backward_propagation_captures_onset():
     assert ap.evidence.get("backward_onset") is True
 
 
+def test_max_new_phases_caps_phase_search():
+    """max_new_phases=1: 1 相追加後は探索を打ち切る (無駄な相探索の抑制)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    other = PhaseSpec(structure_path="other.cif", phase_name="new_CaTe2O7")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        names = [p.phase_name for p in phases]
+        if len(names) > 1:  # 追加相ありは常に改善 (受理される)
+            frac = {n: (0.4 if n.startswith("new_") else 0.6) for n in names}
+            cells = {n: (13.3, 6.5, 8.1, 90, 90, 90) if n.startswith("new_")
+                     else (14.8, 6.8, 8.0, 90, 90, 90) for n in names}
+            return _result(8.0, cells, frac)
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 1 else 25.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    finder_calls = {"n": 0}
+
+    def finder(frame, elements, exclude, workdir):
+        finder_calls["n"] += 1
+        cand = other if "new_CaTeO3" in exclude else delta
+        return [(cand, {"source": "mp", "formula": cand.phase_name})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05, max_new_phases=1)
+    res = run_sequential_rietveld(
+        _frames(4), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid, backward_propagation=False),
+    )
+    # 1 相 (delta) のみ採用、2 相目 (CaTe2O7) は上限で探索されない
+    assert len(res.appearances) == 1
+    assert res.appearances[0].phase_name == "new_CaTeO3"
+    assert "new_CaTe2O7" not in res.phase_names
+
+
 def test_backward_propagation_disabled_keeps_forward_onset():
     """backward_propagation=False なら順方向の onset のまま (逆伝播しない)。"""
     alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")

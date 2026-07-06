@@ -89,6 +89,9 @@ class PhaseIdConfig:
         超える未説明ピーク (S/N ≥ 本値) があれば新相探索を発火する。恣意的な Rwp 比でなくノイズ基準で
         「本物の未説明反射」を検出する (F 検定同型)。既定 8.0 (0 で無効)。ノイズは平滑化後 ~3-4σ に
         達し得るため 8 程度が妥当。GSAS 残差が無い runner (テストスタブ等) では無効化される。
+    :param max_new_phases: 系列全体で追加する新相数の上限 (0 で無制限)。想定相数が既知のとき
+        (例 alpha→delta の 2 相系で delta 1 相のみ) に設定すると、採用後の無駄な相探索 (残差が新相の
+        セル未補正で高止まり → 別ターナリを次々試行) を打ち切り高速化する。
     """
 
     elements: tuple[str, ...] = ()
@@ -105,6 +108,7 @@ class PhaseIdConfig:
     require_validity: bool = False
     require_full_element_system: bool = True
     snr_trigger: float = 8.0
+    max_new_phases: int = 0
 
     @property
     def enabled(self) -> bool:
