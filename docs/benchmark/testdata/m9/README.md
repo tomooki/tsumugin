@@ -59,18 +59,21 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
   ~3% 大)。**未完 (honest, 切り分け済の結論)**: 転移域〜delta 域の Rwp が高い。証拠に基づく正確な内訳:
   - **パイプライン + 良い構造は near-tutorial**: **実測 Jana delta で clean delta フレーム (frame420
     単相) Rwp 13.48%** (チュートリアル ~9%)。frame0 alpha 12.57%。→ M9 の配線・レシピ・装置設定は正しい。
-  - **律速は MP(DFT)構造の異方的な格子誤差** (→ **[Issue #20](https://github.com/tomooki/tsumugin/issues/20)**):
-    同 frame420 で MP delta (mp-1195263) は 44%。切り分けで **mp-1195263 と Jana delta は同一多形
+  - **律速だった MP(DFT)構造の異方的な格子誤差** (→ **[Issue #20](https://github.com/tomooki/tsumugin/issues/20)
+    — 解決済**): 同 frame420 で MP delta (mp-1195263) は 44%。切り分けで **mp-1195263 と Jana delta は同一多形
     (Pca2₁ #29, 40 原子, StructureMatcher fit=True, 原子 RMS 0.28 Å)** と判明し、**MP 座標 + 正しい格子で
     Rwp 13.28%**(=座標は Rietveld で合う)。真因は **c 軸だけ +3.4% 過大**な DFT 異方格子誤差で、
-    Rietveld のセル精密化の収束半径(~2%)を超え **c が全く動かない**(revert 緩和でも [.., 13.778] のまま)。
-    観測ピークからの**異方整列は有効**(c 13.778→13.380, 44%→27.58%)だが頑健な指数付けが非自明
-    (素朴な反復は誤収束)。→ **Pawley 精密化ベースの頑健な異方格子精密化 = Issue #20** が本命。
-    等方歪み補正 (`materialize(strain=)`) は異方誤差に不適で本 Issue で置換予定。
+    Rietveld のセル精密化の収束半径(~2%)を超え c が動かなかった。**Issue #20 で解決**:
+    `autorietveld.lattice` (逆格子計量テンソル最小二乗の異方セルソルバ) + `autorietveld.pawley`
+    (`prealign_cell_from_structure`: **per-axis スケールの有界 FoM グリッドで大域ベイスンを先に特定→線形
+    精密化**する 2 段で、Issue が「非自明」とした頑健指数付け [素朴反復の誤収束] を回避)。`insitu.phaseid` の
+    `cell_refiner` (`PhaseIdConfig.refine_new_phase_cell` 既定 ON) で物質化 CIF を異方セルに置換。等方歪み補正
+    (`materialize(strain=)`) の上位互換。**検証**: alpha を delta と同じ誤差プロファイル (a+0.4% b+0.8% c+3.4%)
+    で摂動し実測 frame030 から真セルへ回復 (c 誤差 0.50→0.01 Å)。
   - **転移フレーム (frame270) は追加で難しい**: 実測 Jana delta でも ~30% (frame quality + 98%delta/
     2%alpha 混合)。clean frame (420) の 13.48% とは別要因。
-  - **即効の代替**: **実測 delta 構造 (同梱 `delta_CaTeO3.cif`) をローカル参照供給元にする** (or COD/ICSD
-    [[Issue #10]]) と DFT 問題を回避し clean フレーム 13% 級。**同定・単一フレーム収束 (frame0/frame420
-    とも ~13%)・逐次配線は達成済**。転移域 tutorial 級は Issue #20 (Pawley)。
+  - **代替**: 実測 delta 構造 (同梱 `delta_CaTeO3.cif`) をローカル参照供給元にすれば DFT 問題を回避し
+    clean フレーム 13% 級 (COD/ICSD は [Issue #10])。**同定・単一フレーム収束 (frame0/frame420 とも ~13%)・
+    逐次配線・異方セル補正 (Issue #20) は達成済**。残る tutorial 級 (~9%) との差は preferred orientation + 水素の未モデル分。
 - **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
   決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。
