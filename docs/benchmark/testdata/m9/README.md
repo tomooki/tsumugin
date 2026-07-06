@@ -56,8 +56,14 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
   Rwp が動いたら再探索** (単調上昇する転移相を捉える), (b) **top_k 候補を全試行し最良 Rietveld フィット
   を採用** (Dara 首位が最良構造とは限らない; MP に CaTeO3 は 8 多形), (c) **DFT 格子過大評価を align_peaks
   の歪みで物質化構造に補正** (`materialize(strain=)`, max_strain 0.01→0.05; MP の DFT セルは実測より
-  ~3% 大)。**限界 (honest)**: MP の CaTeO3 は DFT 構造で、セル補正後も原子位置が実測 delta とずれ転移域
-  Rwp ~46% 止まり (実測 Jana delta CIF なら 25.6%; チュートリアル 9%)。相の**同定**は正しく機能するが、
-  DFT 参照構造の Rietveld 精度限界が転移域に出る (エンジンでなく参照データの限界)。
+  ~3% 大)。**未完 (honest, 当初の誤診を訂正)**: 転移域 (frame150–300, alpha+delta 2 相・ブロードピーク)
+  の Rwp が ~25–46% で高い。当初「MP の DFT 構造の精度限界」と誤記したが、切り分けると **mp-1195263 と
+  実測 Jana delta は同一多形 (Pca2₁ #29, 40 原子)** で、**座標精密化は実際に効いている** (coords/Uiso が
+  各数% Rwp を下げる = Rietveld は位置を合わせている)。真因は**精密化の収束問題**: `cell+displacement`
+  段階が revert し**格子が精密化されない** (転移域ブロードピークで格子勾配が浅く不安定)。**実測 Jana delta
+  でも同レシピで frame270 単相 ~30% 止まり** (チュートリアルは転移域でも wRp ~9%)。すなわち MP/同定でなく
+  **転移域 2 相レシピの収束不足**が両構造に共通の限界。残作業: 格子段階の安定化 (プロファイル収束後に単独
+  精密化・revert 緩和)・alpha の水素追加・preferred orientation。相の**同定と単一フレーム収束
+  (frame0 12.6%) は達成済**。
 - **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
   決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。
