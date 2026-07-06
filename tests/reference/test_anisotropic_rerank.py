@@ -141,6 +141,37 @@ def test_rerank_deterministic():
     assert [m.score for m in r1.matches] == [m.score for m in r2.matches]
 
 
+def test_rerank_is_monotone_promote():
+    """異方 re-score は昇格専用: どの候補もスコアが等方から下がらない (code-review 対策)。"""
+    observed_tt, observed_int = _pattern_from_peaks(_peaks_at(_TRUE))
+    prov = _FakeProvider([_ref_phase("mp-delta", _DFT),
+                          _ref_phase("mp-wrong", (5.0, 7.0, 11.0, 90.0, 90.0, 90.0))])
+    common = dict(provider=prov, elements=["Ca", "Te", "O"], hull_cutoff_ev=None,
+                  scoring="dara", refine_lattice=True, max_strain=0.05)
+    iso = {m.reference.phase_id: m.score
+           for m in identify_phases(observed_tt, observed_int, **common).matches}
+    hyb = {m.reference.phase_id: m.score
+           for m in identify_phases(observed_tt, observed_int, rerank_top_k=2,
+                                    rerank_wavelength=_WL, **common).matches}
+    for pid in iso:
+        assert hyb[pid] >= iso[pid] - 1e-12, f"{pid} demoted: {iso[pid]}->{hyb[pid]}"
+
+
+def test_rerank_with_kalpha2_still_promotes_correct_phase():
+    """Kα2 サテライト付きでも異方 re-score は基底を揃えて正解相を首位化する (code-review 対策)。"""
+    from tsumugin.reference.kalpha import KAlpha2
+
+    observed_tt, observed_int = _pattern_from_peaks(_peaks_at(_TRUE))
+    prov = _FakeProvider([_ref_phase("mp-delta", _DFT),
+                          _ref_phase("mp-wrong", (5.0, 7.0, 11.0, 90.0, 90.0, 90.0))])
+    hyb = identify_phases(
+        observed_tt, observed_int, provider=prov, elements=["Ca", "Te", "O"],
+        hull_cutoff_ev=None, scoring="dara", refine_lattice=True, max_strain=0.05,
+        kalpha2=KAlpha2(), rerank_top_k=2, rerank_wavelength=_WL,
+    )
+    assert hyb.matches[0].reference.phase_id == "mp-delta"
+
+
 def test_rerank_zero_is_noop():
     """rerank_top_k=0 (既定) は従来 (等方のみ) と同一結果 (後方互換)。"""
     observed_tt, observed_int = _pattern_from_peaks(_peaks_at(_TRUE))
