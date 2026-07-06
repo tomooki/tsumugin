@@ -78,6 +78,29 @@ def test_materializes_top_phase(tmp_path):
     assert out[0].phase_spec.structure_path.endswith(".cif")
     assert Path(out[0].phase_spec.structure_path).exists()
     assert mat.calls == ["mp-delta"]
+    # refine_lattice=False なら歪みは 0 で materialize に渡る (strain 伝播経路の下限固定)。
+    assert mat.strains == [0.0]
+
+
+def test_nonzero_strain_propagates_to_materialize(tmp_path):
+    """refine_lattice=True で候補ピークが観測とずれると align_peaks が非零歪みを求め、
+    それが materialize(strain=) へ伝播する (DFT 格子ズレ補正の経路)。"""
+    # 観測ピークは 20/30/40。候補は +0.3° ほど高角側にずれて登録 (=格子がやや小さい)。
+    tt, inten = _pattern([20.0, 30.0, 40.0], heights=[1.0, 0.9, 0.7])
+    prov = FakeProvider([
+        _ref("mp-x", "CaTeO3", [(20.3, 1.0), (30.35, 0.9), (40.4, 0.7)], ["Ca", "Te", "O"])
+    ])
+    mat = FakeMaterializer()
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path / "x.cif"), subtract_bg=False, refine_lattice=True, max_strain=0.05,
+    )
+    assert len(out) == 1
+    assert len(mat.strains) == 1
+    # 非零の歪みが求まり materialize に渡ったこと (符号は align 次第、絶対値 > 0)。
+    assert abs(mat.strains[0]) > 1e-4
+    # IdentifiedPhase.strain と materialize に渡した値が一致すること。
+    assert out[0].strain == mat.strains[0]
 
 
 def test_excludes_known_phase_by_formula(tmp_path):

@@ -383,16 +383,23 @@ def _infer_instrument(frame: FrameSpec) -> str:
 
 
 def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
-    """既定の新相探索器 (MP identify + 物質化, 遅延 import)。"""
+    """既定の新相探索器 (MP identify + 物質化, 遅延 import)。
 
-    from ..mp.client import MPRestClient
-    from ..mp.provider import MPReferenceProvider
-    from .phaseid import MPMaterializer
+    MP client は**初回探索時に遅延生成**する (変化点が一度も発火しない系列で、MATERIALS_PROJECT_API
+    未設定でも run を先頭で中断させないため)。provider と materializer は単一 client を共有する。
+    """
+    box: dict[str, object] = {}
 
-    # provider と materializer で単一 MP client を共有 (キーは環境変数 MATERIALS_PROJECT_API)。
-    client = MPRestClient()
-    provider = MPReferenceProvider(client)
-    materializer = MPMaterializer(client)
+    def _ensure() -> tuple[object, object]:
+        if "provider" not in box:
+            from ..mp.client import MPRestClient
+            from ..mp.provider import MPReferenceProvider
+            from .phaseid import MPMaterializer
+
+            client = MPRestClient()  # キーは環境変数 MATERIALS_PROJECT_API
+            box["provider"] = MPReferenceProvider(client)
+            box["materializer"] = MPMaterializer(client)
+        return box["provider"], box["materializer"]
 
     def finder(
         frame: FrameSpec, elements: Sequence[str], exclude_formulas: Sequence[str], workdir: str
@@ -400,6 +407,7 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
         from ..reference.io import load_pattern
         from .phaseid import identify_new_phases
 
+        provider, materializer = _ensure()
         two_theta, intensity = load_pattern(frame.data_path, frame.data_format)
         found = identify_new_phases(
             two_theta, intensity, elements=list(elements), provider=provider,
