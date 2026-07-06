@@ -120,6 +120,7 @@ def identify_new_phases(
     cell_refiner: CellRefiner | None = None,
     rerank_top_k: int = 0,
     rerank_wavelength: float = 1.5406,
+    require_full_element_system: bool = True,
 ) -> tuple[IdentifiedPhase, ...]:
     """パターンから新相を同定し上位 top_k を CIF に物質化して返す。
 
@@ -151,6 +152,9 @@ def identify_new_phases(
         等方整合が DFT の軸別格子誤差で正解相を過小評価し top_k から落とすのを防ぐ (供給元が
         cell/crystal_system/hkl を持つ相のみ; MP 供給元は対応済)。
     :param rerank_wavelength: 異方再スコアの線源波長 (Å)
+    :param require_full_element_system: True で新相候補を**全元素系 (elements すべてを含む) 相**に限定する
+        (③ 化学ガード)。相転移は骨格元素を保存するため、元素部分集合の単純相 (元素 Ca・O₂・CaO 等) が
+        少数相パターンに偶然マッチして上位化するのを防ぐ (実測: Ca-Te-O 三元限定で delta が #33→#1)。
     :returns: 物質化した IdentifiedPhase の列 (スコア降順・最大 top_k)
     """
     ident = identify_phases(
@@ -165,6 +169,7 @@ def identify_new_phases(
         kalpha2=kalpha2,  # type: ignore[arg-type]
         rerank_top_k=rerank_top_k,
         rerank_wavelength=rerank_wavelength,
+        require_elements=list(elements) if require_full_element_system else None,
     )
 
     excl_forms = {f.lower() for f in exclude_formulas}

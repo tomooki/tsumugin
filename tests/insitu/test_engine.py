@@ -148,6 +148,86 @@ def test_refined_cell_flows_into_appearance_evidence():
     assert res.appearances[0].evidence["refined_cell"] == aniso
 
 
+def test_accept_new_phase_despite_old_phase_validity_fail():
+    """③ 受理閾値: 旧相ドリフトで trial.validity=False でも、新相の Rwp 改善+分率+セル健全なら受理。
+
+    転移域で alpha のセルが急変し全相 validity が fail するが、それで delta を巻き添え棄却しない。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            # delta 追加で Rwp 改善するが validity は False (旧相 alpha のドリフト)
+            return _result(24.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                  "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4}, valid=False)
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
+                       {"alpha": 1.0}, valid=False)
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "materials_project", "formula": "CaTeO3", "dara_score": 0.01})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid))
+    assert len(res.appearances) == 1  # delta 受理 (旧相 validity fail に巻き添えされない)
+    assert res.appearances[0].phase_name == "new_CaTeO3"
+
+
+def test_require_validity_restores_strict_rejection():
+    """require_validity=True なら従来通り trial.validity=False で棄却 (後方互換の厳格モード)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(24.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                  "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4}, valid=False)
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
+                       {"alpha": 1.0}, valid=True)
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, require_validity=True)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid))
+    assert res.appearances == ()  # validity fail で棄却
+
+
+def test_reject_new_phase_when_rwp_gain_below_threshold():
+    """相対 Rwp 改善が min_rwp_gain 未満なら棄却 (過剰適合ガード)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    junk = PhaseSpec(structure_path="junk.cif", phase_name="new_junk")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_junk" in [p.phase_name for p in phases]:
+            # 分率・セルは OK だが Rwp がほぼ下がらない (0.3% < 1%)
+            return _result(29.91, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                   "new_junk": (5.0, 5.0, 5.0, 90, 90, 90)},
+                           {"alpha": 0.6, "new_junk": 0.4})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        return [(junk, {"source": "mp", "formula": "JUNK"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid))
+    assert res.appearances == ()  # Rwp 改善不足で棄却
+
+
 def test_auto_add_phase_rejected_when_not_improving():
     """新相を試しても Rwp が改善しなければ棄却し相集合は不変 (可逆・過剰適合ガード)。"""
     alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")

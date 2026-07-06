@@ -212,16 +212,39 @@ def run_sequential_rietveld(
     )
 
 
+def _accept_new_phase(trial, new_name, base_rwp, trial_rwp, new_frac, pid) -> bool:
+    """新相受理判定 (③ 受理閾値): 相対 Rwp 改善 ∧ 分率 ∧ 新相セル健全 ∧ (任意) 全相妥当性。
+
+    転移域では旧相 (alpha) のセルが急変し全相 validity が fail するが、それは新相 (delta) 追加の
+    是非とは独立。そこで既定では**新相セルの非崩壊のみ**を必須ガードにし (require_validity=False)、
+    Rwp の相対改善 + 有意分率で採否する。junk は Rwp が下がらず弾かれる (物理ベースの判定)。
+    """
+    rwp_gain = (base_rwp - trial_rwp) / base_rwp if base_rwp > 0 else 0.0
+    new_cell = trial.refined_cells.get(new_name)
+    new_cell_ok = new_cell is not None and min(
+        float(new_cell[0]), float(new_cell[1]), float(new_cell[2])
+    ) > 1.0
+    validity_ok = trial.validity.passed if pid.require_validity else True
+    return (
+        rwp_gain > pid.min_rwp_gain
+        and new_frac > pid.frac_min
+        and new_cell_ok
+        and validity_ok
+    )
+
+
 def _try_add_phase(
     frame, phases, known_formulas, base_result, base_rwp, pid, phase_finder, runner,
     workdir, frame_idx, ledger,
 ) -> "tuple[AutoRietveldResult, PhaseAppearance | None, str | None]":
     """新相候補を同定・追加して再精密化し、受理基準を満たす**最良候補**を採用する (可逆・提案≠適用)。
 
-    受理基準 (§1 過剰適合ガード): (1) 新相の相分率 > frac_min ∧ (2) Rwp が rwp_eps 超改善 ∧
-    (3) validity.passed 維持。**複数候補 (top_k) を全て試し、受理基準を満たす中で最小 Rwp のものを採る**
-    (Dara スコア上位が必ずしも最良の Rietveld フィットではないため; 例 CaTeO3 は MP に 8 多形あり
-    Dara 首位が構造ミスマッチ)。満たすものが無ければ base_result のまま返す。
+    受理基準 (③ 受理閾値, 過剰適合ガード): (1) 新相の相分率 > frac_min ∧ (2) Rwp が**相対**で
+    min_rwp_gain 超改善 ∧ (3) 新相セルが健全 (非崩壊) ∧ (4) require_validity 時のみ全相妥当性。
+    **旧相ドリフトの妥当性 fail で新相を巻き添え棄却しない** (転移域では旧相 alpha のセルが急変し
+    valid=False になるが、それは delta 追加の是非とは無関係; 実データで frame 150 の delta 受理を確認)。
+    junk 候補は Rwp が下がらず (frame 90 の O₂: Rwp 悪化) 弾かれる。**複数候補 (top_k) を全て試し、
+    受理基準を満たす中で最小 Rwp のものを採る** (Dara 順でなく Rietveld フィットで選ぶ)。
 
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
     """
@@ -240,7 +263,7 @@ def _try_add_phase(
         trial = runner(frame, trial_phases, base_cells)
         trial_rwp = float(trial.final_rwp)
         new_frac = float(trial.phase_fractions.get(cand_spec.phase_name, 0.0))
-        accepted = (trial_rwp < base_rwp - pid.rwp_eps) and (new_frac > pid.frac_min) and trial.validity.passed
+        accepted = _accept_new_phase(trial, cand_spec.phase_name, base_rwp, trial_rwp, new_frac, pid)
         ledger.append(
             "m9_phaseid_trial",
             {
@@ -434,6 +457,7 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
             top_k=pid.top_k, hull_cutoff_ev=pid.hull_cutoff_ev, subtract_bg=pid.subtract_bg,
             name_prefix="new", cell_refiner=cell_refiner,
             rerank_top_k=pid.rerank_top_k, rerank_wavelength=pid.wavelength,
+            require_full_element_system=pid.require_full_element_system,
         )
         return [
             (

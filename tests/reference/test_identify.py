@@ -267,3 +267,21 @@ def test_strain_penalty_downranks_large_shift():
     result = identify_phases(tt, inten, prov, elements=["Fe", "O"], refine_lattice=True,
                              strain_penalty=50.0)
     assert result.matches[0].reference.phase_id == "mp-near"
+
+
+def test_require_elements_chemistry_guard():
+    """③ 化学ガード: require_elements で全元素を含む相のみ残す (部分集合の単純相を除外)。"""
+    tt, inten = _gaussian_pattern([20.0, 25.0, 30.0])
+    prov = FakeProvider([
+        _ref("mp-ca", peaks=[(20.0, 1.0)], elements=["Ca"], formula="Ca"),
+        _ref("mp-o2", peaks=[(30.0, 1.0)], elements=["O"], formula="O2"),
+        _ref("mp-delta", peaks=[(20.0, 1.0), (25.0, 0.8), (30.0, 0.6)],
+             elements=["Ca", "Te", "O"], formula="CaTeO3"),
+    ])
+    # ガードなし: 部分集合相も候補に入る
+    r_off = identify_phases(tt, inten, prov, elements=["Ca", "Te", "O"], hull_cutoff_ev=None)
+    assert {m.reference.phase_id for m in r_off.matches} == {"mp-ca", "mp-o2", "mp-delta"}
+    # ガードあり: Ca-Te-O 全系を持つ相のみ
+    r_on = identify_phases(tt, inten, prov, elements=["Ca", "Te", "O"], hull_cutoff_ev=None,
+                           require_elements=["Ca", "Te", "O"])
+    assert [m.reference.phase_id for m in r_on.matches] == ["mp-delta"]

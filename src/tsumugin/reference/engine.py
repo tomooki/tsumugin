@@ -124,6 +124,7 @@ def identify_phases(
     strain_penalty: float = 0.0,
     rerank_top_k: int = 0,
     rerank_wavelength: float = 1.5406,
+    require_elements: Sequence[str] | None = None,
 ) -> PhaseIdentification:
     """未知パターン + 元素一覧から候補相を同定する (FR-110/117)。🔵
 
@@ -185,6 +186,13 @@ def identify_phases(
 
     # 【前処理フィルタ】: 元素系部分集合 + hull を冪等に適用する 🔵 FR-103
     survivors = filter_references(candidates, elements, hull_cutoff_ev=hull_cutoff_ev)
+
+    # 【化学ガード (③ operando 新相同定)】: require_elements を与えると、その全元素を含む相のみ残す。
+    #   相転移は骨格元素を保存するため、少数相の残差に対し**元素部分集合の単純相 (元素 Ca・O₂・CaO 等)**
+    #   が偶然マッチして上位化するのを防ぐ (実測: Ca-Te-O 三元限定で delta が frame90 で #33→#1)。
+    if require_elements:
+        req = set(require_elements)
+        survivors = tuple(s for s in survivors if req <= set(s.element_system))
 
     # 【Kα2 サテライト】: 実測の二重線に整合させ未マッチ低減 (オプション) 🔵 FR-105
     if kalpha2 is not None:

@@ -190,3 +190,8 @@ class AutoRietveldResult:
     # 【相分率】: 相名→相分率 (先頭ヒストグラムの HAP Scale 和=1 正規化)。単相は {name: 1.0}。
     #   逐次解析 (M9) が新相の有意性判定・転移推定に用いる。末尾・既定空 dict で後方互換 🔵 M9
     phase_fractions: Mapping[str, float] = field(default_factory=dict)
+    # 【残差パターン】: 先頭ヒストグラムの (2θ, Yobs−Ycalc)。精密化レンジ内のみ。既存相で説明できない
+    #   未モデル強度 = 未同定の少数相の寄与。逐次解析の**残差ベース相同定** (生パターンだと少数相が
+    #   多数相の元素部分集合相に負けるのを回避) に用いる。末尾・既定空で後方互換 🔵 残差反復 ID
+    residual_two_theta: tuple[float, ...] = ()
+    residual_intensity: tuple[float, ...] = ()

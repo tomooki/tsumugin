@@ -76,6 +76,15 @@ class PhaseIdConfig:
     :param wavelength: プリアラインの線源波長 (Å)。既定 Cu Kα1。放射光/中性子系列では実波長を指定。
     :param rerank_top_k: >0 で相同定の上位 K 候補を異方格子整合で再スコアする (Issue #20 hybrid)。
         等方整合が DFT の軸別誤差で正解相を top_k から落とすのを防ぐ。既定 5 (0 で無効)。
+    :param min_rwp_gain: 新相受理に要する**相対** Rwp 改善 (0.01=1%)。転移域では旧相単独 fit が
+        既に高 Rwp のため絶対差でなく相対改善で判定する。junk 候補は Rwp が下がらず (or 悪化) 弾かれる。
+    :param require_validity: 受理に全相の物理妥当性 (`check_validity`) を要求するか。転移域では旧相
+        (alpha) のセルが急変して妥当性 fail し**新相 delta を巻き添えで弾く**ため既定 False。代わりに
+        新相セルの健全性 (軸長 >1Å = 非崩壊) のみを必須ガードにする (③ 受理閾値, 実データで確認)。
+    :param require_full_element_system: 新相候補を**全元素系 (elements すべてを含む) 相**に限定するか
+        (③ 化学ガード)。相転移は骨格元素を保存するため、元素部分集合の単純相 (元素 Ca・O₂・CaO 等) が
+        少数相パターンに偶然マッチし上位化するのを防ぐ (実測: Ca-Te-O 三元限定で delta が frame90 #33→#1)。
+        既定 True。副生成物 (二元分解相等) を許すなら False。
     """
 
     elements: tuple[str, ...] = ()
@@ -88,6 +97,9 @@ class PhaseIdConfig:
     refine_new_phase_cell: bool = True
     wavelength: float = 1.5406
     rerank_top_k: int = 5
+    min_rwp_gain: float = 0.01
+    require_validity: bool = False
+    require_full_element_system: bool = True
 
     @property
     def enabled(self) -> bool:
