@@ -87,8 +87,11 @@ class PhaseIdConfig:
         既定 True。副生成物 (二元分解相等) を許すなら False。
     :param snr_trigger: 残差 S/N トリガの閾値 (2相目追加判定)。既存相 fit の残差に、計数統計ノイズを
         超える未説明ピーク (S/N ≥ 本値) があれば新相探索を発火する。恣意的な Rwp 比でなくノイズ基準で
-        「本物の未説明反射」を検出する (F 検定同型)。既定 8.0 (0 で無効)。ノイズは平滑化後 ~3-4σ に
-        達し得るため 8 程度が妥当。GSAS 残差が無い runner (テストスタブ等) では無効化される。
+        「本物の未説明反射」を検出する (F 検定同型)。既定 20.0 (0 で無効)。**注意: この閾値は既知相の
+        モデル品質に依存しデータセット固有** — 実測 CaTeO3 で純 alpha (新相なし) の残差でも profile/選択
+        配向/水素の未モデル分で ~17σ のピークが出るため、8 では常時発火する。純 alpha 17σ vs delta 萌芽
+        35σ の間の 20 に校正。理想的には well-fit 基準フレームの残差 S/N 比 or エージェント/人間が設定する
+        (3 層の判断層)。GSAS 残差が無い runner (テストスタブ等) では無効化される。
     :param max_new_phases: 系列全体で追加する新相数の上限 (0 で無制限)。**通常は不要** — S/N トリガの
         moved 抑制 (空振り後は残差が動くまで再探索しない) が無駄試行を自己抑制するため。想定相数が厳密に
         既知で、かつ探索を確実に打ち切りたい場合のみのオプション escape hatch。
@@ -107,7 +110,7 @@ class PhaseIdConfig:
     min_rwp_gain: float = 0.01
     require_validity: bool = False
     require_full_element_system: bool = True
-    snr_trigger: float = 8.0
+    snr_trigger: float = 20.0
     max_new_phases: int = 0
 
     @property
