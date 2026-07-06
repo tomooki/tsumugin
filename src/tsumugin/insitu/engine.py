@@ -414,7 +414,7 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
         # プリアライン。GSAS 非依存 (後段の run_auto_rietveld が Cell 段でさらに研磨する)。
         cell_refiner = None
         if pid.refine_new_phase_cell:
-            from ..autorietveld.pawley import prealign_cell_from_structure
+            from ..autorietveld.cell_refine import prealign_cell_from_structure
 
             tt_range = frame.two_theta_limits or (
                 float(two_theta.min()), float(two_theta.max())

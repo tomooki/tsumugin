@@ -66,7 +66,7 @@ def test_phaseid_config_enabled():
     assert PhaseIdConfig(elements=("Ca", "Te", "O")).enabled
 
 
-def test_phaseid_config_pawley_defaults():
+def test_phaseid_config_cell_refine_defaults():
     """Issue #20: 新相の異方セル補正は既定 ON、波長は Cu Kα1 既定、異方 re-score top-5 既定。"""
     pid = PhaseIdConfig()
     assert pid.refine_new_phase_cell is True

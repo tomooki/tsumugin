@@ -1,10 +1,10 @@
-"""LeBail/Pawley 異方セル精密化 (autorietveld.pawley) のテスト (Issue #20)。
+"""異方単位格子精密化 (autorietveld.cell_refine) のテスト (Issue #20)。
 
 - import はコア (numpy) のみ (GSAS/pymatgen を引き込まない): 遅延 import 契約。
 - `_first_hkl` の純ロジック (numpy 非依存)。
 - `prealign_cell_from_structure` (pymatgen 必要, @pytest.mark.mp): 異方的に c を +3.4% ずらした
   参照構造から、真構造の観測ピークへ整合させて c を復元する (Issue #20 の核心を合成で検証)。
-- `refine_cell_pawley` の GSAS LeBail 経路は @pytest.mark.gsas (実データ検証は engine テスト側)。
+- `refine_structure_cell` の GSAS セル研磨経路は @pytest.mark.gsas (実データ検証は engine テスト側)。
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tsumugin.autorietveld.pawley import (
-    PawleyCellResult,
+from tsumugin.autorietveld.cell_refine import (
+    CellRefinementResult,
     _first_hkl,
     prealign_cell_from_structure,
-    refine_cell_pawley,
+    refine_structure_cell,
 )
 
 _DELTA_CIF = Path("docs/benchmark/testdata/m9/cateo3/delta_CaTeO3.cif")
@@ -38,8 +38,8 @@ def test_first_hkl_rejects_empty():
         _first_hkl([])
 
 
-def test_pawley_result_dataclass_defaults():
-    r = PawleyCellResult(
+def test_cell_refinement_result_defaults():
+    r = CellRefinementResult(
         cell=(1, 2, 3, 90, 90, 90), rwp=float("inf"), converged=False,
         method="none", n_matched=0,
     )
@@ -118,8 +118,8 @@ def test_prealign_returns_none_on_no_peaks():
     assert sol is None
 
 
-def test_refine_cell_pawley_is_callable():
-    assert callable(refine_cell_pawley)
+def test_refine_structure_cell_is_callable():
+    assert callable(refine_structure_cell)
 
 
 _ALPHA_CIF = Path("docs/benchmark/testdata/m9/cateo3/alpha_CaTeO3_H2O.cif")
@@ -133,7 +133,7 @@ _INSTR = Path("docs/benchmark/testdata/m9/cateo3/cateo3_CuKa.instprm")
     not (_ALPHA_CIF.exists() and _FRAME.exists() and _INSTR.exists()),
     reason="CaTeO3 検証データ未配置",
 )
-def test_refine_cell_pawley_recovers_mp_like_anisotropic_error_on_real_data():
+def test_refine_structure_cell_recovers_mp_like_anisotropic_error_on_real_data():
     """MP-DFT 相当の異方誤差 (a+0.4%, b+0.8%, c+3.4%) を実測 frame030 で真セルへ回復する。
 
     Issue #20 の受理基準の忠実な代理: alpha を delta と同じ誤差プロファイルで摂動し、実データから
@@ -166,7 +166,7 @@ def test_refine_cell_pawley_recovers_mp_like_anisotropic_error_on_real_data():
             for x, y, e in zip(tt, inten, esd):
                 fh.write(f"{x:.6f} {y:.4f} {e:.4f}\n")
 
-        res = refine_cell_pawley(
+        res = refine_structure_cell(
             pcif, xye, str(_INSTR), data_format="XYE", two_theta_limits=(12.0, 70.0),
             background_coeffs=24, max_cyc=15,
             prealign_two_theta=tt, prealign_intensity=inten,

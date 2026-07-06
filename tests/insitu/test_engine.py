@@ -121,7 +121,7 @@ def test_auto_add_phase_accepted_on_rwp_jump():
 
 
 def test_refined_cell_flows_into_appearance_evidence():
-    """finder が meta に refined_cell (Pawley 異方セル) を載せると PhaseAppearance.evidence に伝わる。"""
+    """finder が meta に refined_cell (異方セル) を載せると PhaseAppearance.evidence に伝わる。"""
     alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
     delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
     aniso = [6.53, 8.17, 13.32, 90.0, 90.0, 90.0]

@@ -35,10 +35,10 @@ from .multistart import (
     run_multistart_rietveld,
     summarize_multistart,
 )
-from .pawley import (
-    PawleyCellResult,
+from .cell_refine import (
+    CellRefinementResult,
     prealign_cell_from_structure,
-    refine_cell_pawley,
+    refine_structure_cell,
 )
 from .recipe import build_recipe
 from .validity import check_validity
@@ -50,7 +50,7 @@ __all__ = [
     "HistogramSpec",
     "LatticeSolution",
     "MultistartStart",
-    "PawleyCellResult",
+    "CellRefinementResult",
     "PhaseSpec",
     "Radiation",
     "RefinementStage",
@@ -64,7 +64,7 @@ __all__ = [
     "prealign_cell_from_structure",
     "reciprocal_metric_from_cell",
     "refine_cell_from_indexed_peaks",
-    "refine_cell_pawley",
+    "refine_structure_cell",
     "refine_cell_robust",
     "run_auto_rietveld",
     "run_multistart_rietveld",

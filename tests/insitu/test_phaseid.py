@@ -153,7 +153,7 @@ def test_cell_refiner_exception_is_safe(tmp_path):
     mat = FakeMaterializer()
 
     def boom(_p: str):
-        raise RuntimeError("pawley failed")
+        raise RuntimeError("cell refine failed")
 
     out = identify_new_phases(
         tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,

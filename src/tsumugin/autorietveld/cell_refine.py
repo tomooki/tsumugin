@@ -1,21 +1,25 @@
-"""LeBail/Pawley 異方セル精密化 (Issue #20 — DFT 格子過大評価の頑健補正)。
+"""異方単位格子精密化 — DFT 参照構造のセルを実測データへ合わせる (Issue #20)。
 
 Materials Project の DFT 緩和構造は格子が実測から**異方的に**ずれ (CaTeO3 delta: c 軸 +3.4%)、
 そのままでは転移域の Rietveld が収束しない (Rwp 44%)。等方歪みでは異方誤差を吸収できず、full
 Rietveld のセル精密化は収束半径 (~2%) を超えるズレを追えない。本モジュールは 2 段でこれを補正する:
 
 1. **numpy プリアライン** (`prealign_cell_from_structure`): pymatgen XRDCalculator で参照構造の計算
-   反射 (hkl + 強度) を得て観測ピークへマッチし、`lattice.refine_cell_robust` で異方セルを直接解く
-   (構造因子と分離した位置合わせ; 初期値に依らず大きな異方誤差も 1 手で補正)。GSAS 不要。
-2. **GSAS LeBail 研磨** (`refine_cell_pawley`): プリアライン格子を初期値に、GSAS-II の LeBail 強度
-   抽出下でセルを精密化する (構造因子を反復抽出で分離するため Rietveld より収束半径が広い)。
+   反射 (hkl + 強度) を得て観測ピークへマッチし、`lattice.refine_cell_from_indexed_peaks` で**指数付き
+   ピーク位置から単位格子を最小二乗精密化**する (逆格子計量テンソル線形解 + 大域 FoM グリッド; 初期値に
+   依らず大きな異方誤差も補正)。GSAS 不要。
+2. **GSAS セル研磨** (`refine_structure_cell`): プリアライン格子を初期値に、GSAS-II で背景→セルを段階
+   精密化する (通常の構造因子ありセル精密化; プリアラインが収束半径内へ入れるので安定な平坦解で足りる)。
+
+**命名注記**: これは Pawley/Le Bail 法**ではない**。Pawley/Le Bail は構造因子を使わず反射強度を独立変数と
+して抽出する全パターンフィットだが、本モジュールは (a) 反射強度は DFT 構造から計算した固定値を重みに
+使うのみ (精密化しない)、(b) GSAS 段も構造因子ありの通常セル精密化 (LeBail は抽出強度とセルの強相関で
+計量テンソルが発散するため不採用)。実態は**位置ベースの単位格子精密化 (peak-position cell refinement)**。
 
 得られた異方セルを物質化 CIF に書き戻す (phaseid が配線) ことで、転移域 delta を実測級 Rwp へ導く。
+コアの数値は numpy (`lattice`)。pymatgen (プリアライン) と GSAS-II (研磨) は各関数内で遅延 import する。
 
-コアの数値は numpy (`lattice`)。pymatgen (プリアライン) と GSAS-II (LeBail) は各関数内で遅延 import
-する (コア import は numpy のみ)。
-
-信頼性: 🔵 Issue #20 診断 (プリアライン単発 44%→27.58% を検証済) + LeBail の広収束半径。
+信頼性: 🔵 Issue #20 診断 (プリアライン MP-like 摂動で c 0.50→0.01 Å 回復を実測検証)。
 """
 
 from __future__ import annotations
@@ -31,24 +35,24 @@ import numpy as np
 from .lattice import Cell6, LatticeSolution
 
 __all__ = [
-    "PawleyCellResult",
+    "CellRefinementResult",
     "prealign_cell_from_structure",
-    "refine_cell_pawley",
+    "refine_structure_cell",
 ]
 
 _DEFAULT_WAVELENGTH = 1.5406  # Cu Kα1 (Å)
 
 
 @dataclass(frozen=True)
-class PawleyCellResult:
-    """LeBail/Pawley セル精密化の結果。🔵 Issue #20"""
+class CellRefinementResult:
+    """異方単位格子精密化の結果 (プリアライン + 任意の GSAS セル研磨)。🔵 Issue #20"""
 
     cell: Cell6  # 精密化した直接格子 (a,b,c,α,β,γ) 🔵
-    rwp: float  # LeBail 精密化後の Rwp (%)。GSAS 未使用 (プリアラインのみ) は inf 🔵
+    rwp: float  # GSAS セル研磨後の Rwp (%)。研磨なし (プリアラインのみ) は inf 🔵
     converged: bool  # GSAS 精密化が収束したか 🔵
-    method: str  # "prealign" / "prealign+lebail" / "lebail" / "none" 🔵
+    method: str  # "prealign" / "prealign+cell" / "cell" / "none" 🔵
     n_matched: int  # プリアラインでマッチした反射数 (0=プリアラインなし) 🔵
-    prealign_cell: Cell6 | None = None  # プリアライン段の格子 (LeBail 前) 🔵
+    prealign_cell: Cell6 | None = None  # プリアライン段の格子 (GSAS 研磨前) 🔵
 
 
 def _crystal_system_of(structure: object) -> str:
@@ -189,7 +193,7 @@ def _cells_finite(ph, min_length: float = 0.5) -> bool:
     return True
 
 
-def refine_cell_pawley(
+def refine_structure_cell(
     structure_path: str,
     data_path: str,
     instrument_path: str,
@@ -204,7 +208,7 @@ def refine_cell_pawley(
     wavelength: float = _DEFAULT_WAVELENGTH,
     initial_cell: Cell6 | None = None,
     gsas_polish: bool = True,
-) -> PawleyCellResult:
+) -> CellRefinementResult:
     """DFT 参照構造のセルを実測データへ精密化する (numpy プリアライン → GSAS 段階セル研磨)。
 
     観測ピークを与えれば (``prealign_two_theta``/``prealign_intensity``) まず numpy プリアラインで
@@ -228,7 +232,7 @@ def refine_cell_pawley(
     :param wavelength: プリアラインの線源波長 (Å)
     :param initial_cell: 初期格子 (None なら CIF 既定 or プリアライン結果)
     :param gsas_polish: GSAS 段階セル研磨を行うか (False なら numpy プリアライン格子をそのまま返す)
-    :returns: PawleyCellResult (格子崩壊/悪化時はプリアライン格子へ revert)
+    :returns: CellRefinementResult (格子崩壊/悪化時はプリアライン格子へ revert)
     """
     # --- 段 0: numpy プリアライン (任意) ---
     prealign_cell: Cell6 | None = None
@@ -248,7 +252,7 @@ def refine_cell_pawley(
     if not gsas_polish:
         cell = seed_cell or _cif_cell(structure_path)
         method = "prealign" if prealign_cell is not None else "none"
-        return PawleyCellResult(
+        return CellRefinementResult(
             cell=cell, rwp=float("inf"), converged=False, method=method,
             n_matched=n_matched, prealign_cell=prealign_cell,
         )
@@ -260,15 +264,15 @@ def refine_cell_pawley(
     except Exception:
         pass
 
-    with tempfile.TemporaryDirectory(prefix="tsumugin-pawley-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="tsumugin-cellrefine-") as tmp:
         tmp_path = Path(tmp)
-        gpx_path = tmp_path / "pawley.gpx"
+        gpx_path = tmp_path / "cellrefine.gpx"
         gpx = G2sc.G2Project(newgpx=str(gpx_path))
         fmthint = {"XYE": "xye", "FXYE": "GSAS", "GSAS": "GSAS"}.get(data_format.upper(), "xye")
         hist = gpx.add_powder_histogram(data_path, instrument_path, fmthint=fmthint)
         if two_theta_limits is not None:
             hist.set_refinements({"Limits": list(two_theta_limits)})
-        ph = gpx.add_phase(structure_path, phasename="pawley", histograms=[hist], fmthint="CIF")
+        ph = gpx.add_phase(structure_path, phasename="cellref", histograms=[hist], fmthint="CIF")
         if seed_cell is not None:
             _set_cell(ph, seed_cell)
         gpx.data["Controls"]["data"]["max cyc"] = max_cyc
@@ -306,7 +310,7 @@ def refine_cell_pawley(
             rwp, converged = float("inf"), False
 
     final_cell = refined if _cell_ok(refined) else (prealign_cell or start_cell)
-    return PawleyCellResult(
+    return CellRefinementResult(
         cell=final_cell,
         rwp=rwp,
         converged=converged,

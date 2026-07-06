@@ -49,7 +49,7 @@ class PhaseMaterializer(Protocol):
         """相 ID の実構造を out_path (CIF ファイルパス) に書き出しそのパスを返す。取得不能なら例外。
 
         cell を与えると格子を**その絶対値 (a,b,c,α,β,γ) に置換**して書き出す (異方的な DFT 格子誤差を
-        Pawley プリアラインで補正した格子を反映; Issue #20)。cell=None かつ strain!=0 なら格子を等方
+        異方セルプリアラインで補正した格子を反映; Issue #20)。cell=None かつ strain!=0 なら格子を等方
         (1+strain) 倍する (M6 align_peaks 由来の等方補正)。cell は strain に優先する。
         """
         ...
@@ -65,7 +65,7 @@ class IdentifiedPhase:
     score: float
     strain: float
     source: str
-    # Pawley プリアラインで精密化した絶対格子 (異方補正を適用した場合のみ非 None, Issue #20)。
+    # 異方セルプリアラインで精密化した絶対格子 (異方補正を適用した場合のみ非 None, Issue #20)。
     refined_cell: Cell6 | None = None
 
 
@@ -80,7 +80,7 @@ def structure_to_cif(
     """pymatgen ``Structure`` を CIF に書き出す (遅延 import)。書き出し先パスを返す。
 
     cell を与えると格子を**その絶対値に置換**して書き出す (分率座標は保持; 異方的 DFT 格子誤差を
-    Pawley プリアラインで補正した格子を反映)。cell=None かつ strain!=0 なら格子を等方 (1+strain) 倍
+    異方セルプリアラインで補正した格子を反映)。cell=None かつ strain!=0 なら格子を等方 (1+strain) 倍
     する。cell は strain に優先する。元構造は不変 (copy/新 Structure に適用)。
     """
     from pymatgen.io.cif import CifWriter
@@ -184,7 +184,7 @@ def identify_new_phases(
             materializer.materialize(ref.phase_id, list(elements), cif_path, strain=float(match.strain))
         except Exception:
             continue  # 物質化失敗は飛ばして次点へ (提案≠適用の安全側)
-        # 異方セル補正 (Issue #20): 等方 strain で潰しきれない DFT の軸別誤差を Pawley プリアラインで
+        # 異方セル補正 (Issue #20): 等方 strain で潰しきれない DFT の軸別誤差を 異方セルプリアラインで
         # 求め、非 None なら CIF をその絶対格子で再物質化する。失敗/None は等方版のまま (安全側)。
         refined_cell: Cell6 | None = None
         if cell_refiner is not None:
