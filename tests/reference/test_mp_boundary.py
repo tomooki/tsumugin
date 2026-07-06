@@ -227,6 +227,52 @@ def test_provider_fetch_builds_reference_phases():
     assert client.calls == [("Fe", "O")]
 
 
+def test_provider_populates_cell_and_crystal_system_via_injected_meta():
+    """Issue #20 hybrid: structure_meta を注入すると cell/crystal_system が ReferencePhase に載る。"""
+    from tsumugin.mp import MPReferenceProvider
+
+    client = _FakeClient([_entry("mp-1", elements=["Fe", "O"], struct_tag="a")])
+
+    def fake_meta(structure):
+        return (5.0, 6.0, 7.0, 90.0, 90.0, 90.0), "orthorhombic"
+
+    prov = MPReferenceProvider(
+        client, simulate=_fake_simulate_factory(), deduplicate=False, structure_meta=fake_meta
+    )
+    ref = prov.fetch(["Fe", "O"])[0]
+    assert ref.cell == (5.0, 6.0, 7.0, 90.0, 90.0, 90.0)
+    assert ref.crystal_system == "orthorhombic"
+
+
+def test_provider_degrades_when_structure_meta_fails():
+    """フェイク構造/pymatgen 無しで structure_meta が例外を投げても cell/crystal_system=None で継続。"""
+    from tsumugin.mp import MPReferenceProvider
+
+    client = _FakeClient([_entry("mp-1", elements=["Fe", "O"], struct_tag="a")])
+
+    def boom(structure):
+        raise ValueError("not a pymatgen structure")
+
+    prov = MPReferenceProvider(
+        client, simulate=_fake_simulate_factory(), deduplicate=False, structure_meta=boom
+    )
+    ref = prov.fetch(["Fe", "O"])[0]
+    assert ref.cell is None
+    assert ref.crystal_system is None
+    # ピーク等の他フィールドは通常通り
+    assert ref.peaks == (Peak(20.0, 100.0), Peak(30.0, 50.0))
+
+
+def test_provider_default_meta_degrades_on_fake_structure():
+    """既定 structure_meta (pymatgen) はフェイク文字列構造では失敗し None に縮退する (回帰なし)。"""
+    from tsumugin.mp import MPReferenceProvider
+
+    client = _FakeClient([_entry("mp-1", elements=["Fe", "O"], struct_tag="a")])
+    prov = MPReferenceProvider(client, simulate=_fake_simulate_factory(), deduplicate=False)
+    ref = prov.fetch(["Fe", "O"])[0]
+    assert ref.cell is None and ref.crystal_system is None
+
+
 def test_provider_deduplicates_via_injected_group():
     # FR-102: 等価構造グループの代表 (最小 index) のみ残す。fake group で pymatgen 非依存に検証。
     from tsumugin.mp import MPReferenceProvider
@@ -303,6 +349,20 @@ def test_simulate_reference_peaks_deterministic_nacl():
     assert all(isinstance(p, Peak) for p in peaks_1)
     # NaCl (111) 反射は 2θ ≈ 27.3° (Cu Kα) 付近
     assert any(26.0 < p.position < 29.0 for p in peaks_1)
+    # Issue #20 hybrid: 各ピークに hkl が付く (異方整合の入力)
+    assert all(p.hkl is not None and len(p.hkl) == 3 for p in peaks_1)
+
+
+@pytest.mark.mp
+def test_structure_cell_and_system_nacl():
+    from pymatgen.core import Lattice, Structure
+
+    from tsumugin.mp.xrd import structure_cell_and_system
+
+    structure = Structure(Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+    cell, system = structure_cell_and_system(structure)
+    assert system == "cubic"
+    assert abs(cell[0] - 5.64) < 1e-6 and abs(cell[3] - 90.0) < 1e-6
 
 
 @pytest.mark.mp
