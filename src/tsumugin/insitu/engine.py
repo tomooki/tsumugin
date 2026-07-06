@@ -155,12 +155,13 @@ def run_sequential_rietveld(
                     result.residual_two_theta, result.residual_intensity, result.residual_sigma
                 )
                 snr_trigger = _sig.warrants_new_phase(pid.snr_trigger)
-            # 前回探索時の Rwp から 5% 超動いたら再探索 (相の成長=Rwp 上昇を捉える)。同一水準の
-            # 連続再探索 (MP スパム) は抑える (M1)。changepoint は毎回許可。
+            # 【空振り抑制 (moved ガード)】: 前回探索から Rwp が 5% 超動いた時のみ再探索する。相が
+            #   採用されれば Rwp が動き→次の探索を許可、空振り (採用なし) なら Rwp 不変→再探索しない。
+            #   これで S/N トリガが**自己抑制的**になり (新相の mis-fit で残差 S/N が高止まりしても無駄試行を
+            #   繰り返さない)、恣意的な max_new_phases キャップは不要になる。changepoint は毎回許可。
             moved = last_search_rwp is None or abs(rwp - last_search_rwp) > 0.05 * max(rwp, 1.0)
-            if signal.triggered or snr_trigger or (rwp_jump and moved):
-                if rwp_jump or signal.triggered:
-                    last_search_rwp = rwp
+            if signal.triggered or ((snr_trigger or rwp_jump) and moved):
+                last_search_rwp = rwp
                 result, appended_this_frame, warn = _try_add_phase(
                     frame, phases, known_formulas, result, rwp, pid, phase_finder,
                     runner, _resolve_workdir(), i, ledger,
