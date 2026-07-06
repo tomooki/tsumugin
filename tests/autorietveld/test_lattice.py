@@ -128,6 +128,26 @@ def test_insufficient_reflections_raises_without_fallback():
         solve_cell_from_dspacings([(1, 0, 0)], [6.5], crystal_system="orthorhombic")
 
 
+def test_rank_deficient_reflections_fall_back():
+    """全反射 l=0 だと G33 (c 軸) が拘束されずランク落ち → initial_cell へフォールバック (LOW-2)。"""
+    true_cell = (6.527, 8.171, 13.322, 90.0, 90.0, 90.0)
+    # l=0 のみの反射列 (c 軸を決められない)
+    hkls_l0 = [(1, 0, 0), (0, 1, 0), (1, 1, 0), (2, 0, 0), (0, 2, 0), (2, 1, 0)]
+    d = [_d_of(true_cell, h) for h in hkls_l0]
+    dft_cell = (6.551, 8.235, 13.778, 90.0, 90.0, 90.0)
+    got = solve_cell_from_dspacings(
+        hkls_l0, d, crystal_system="orthorhombic", initial_cell=dft_cell
+    )
+    assert got == dft_cell  # 退化 → フォールバック (退化 c を捏造しない)
+
+
+def test_rank_deficient_raises_without_fallback():
+    hkls_l0 = [(1, 0, 0), (0, 1, 0), (1, 1, 0), (2, 0, 0)]
+    d = [_d_of((6.5, 8.1, 13.3, 90, 90, 90), h) for h in hkls_l0]
+    with pytest.raises(ValueError):
+        solve_cell_from_dspacings(hkls_l0, d, crystal_system="orthorhombic")
+
+
 def test_robust_rejects_outlier_reflection():
     """1 本だけ誤指数付け (d を大きく外す) した反射を棄却して真格子を復元する。"""
     true_cell = (6.527, 8.171, 13.322, 90.0, 90.0, 90.0)

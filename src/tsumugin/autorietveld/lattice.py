@@ -182,10 +182,27 @@ def _solve_components(
     if aw.shape[0] < aw.shape[1]:
         return None  # 反射数 < 自由度: 解不能
     try:
-        p, *_ = np.linalg.lstsq(aw, qw, rcond=None)
+        p, _res, rank, _sv = np.linalg.lstsq(aw, qw, rcond=None)
     except np.linalg.LinAlgError:
         return None
+    # ランク落ち (例: 全反射 l=0 で G33 が拘束されない) は least-norm 解が退化軸を返すため
+    # 解なし扱いにする (呼び出し側が initial_cell へフォールバック)。
+    if int(rank) < aw.shape[1]:
+        return None
     return basis @ p
+
+
+def _cell_plausible(cell: Cell6) -> bool:
+    """格子が物理的に妥当か (有限・軸長 (0.1,1000)Å・角度 (1,179)°) を判定する。
+
+    近特異な計量から復元した退化セル (巨大/微小軸・0/180° 角) を弾き、呼び出し側の
+    フォールバックに委ねる (LOW-2 対策)。
+    """
+    if not all(math.isfinite(v) for v in cell):
+        return False
+    if not all(0.1 < cell[i] < 1000.0 for i in (0, 1, 2)):
+        return False
+    return all(1.0 < cell[i] < 179.0 for i in (3, 4, 5))
 
 
 def solve_cell_from_dspacings(
@@ -218,16 +235,18 @@ def solve_cell_from_dspacings(
         else np.asarray([weights[i] for i in range(len(weights)) if good[i]], dtype=float)
     )
     g_full = _solve_components(hkl_list, inv_d2, w, crystal_system)
-    if g_full is None:
+    cell: Cell6 | None = None
+    if g_full is not None:
+        try:
+            cell = cell_from_reciprocal_metric(_metric_from_components(g_full))
+        except (np.linalg.LinAlgError, ValueError):
+            cell = None
+    # 退化 (反射不足/ランク落ち/近特異による非物理セル) は initial_cell へフォールバック (LOW-2)。
+    if cell is None or not _cell_plausible(cell):
         if initial_cell is not None:
             return initial_cell
-        raise ValueError("格子を解くための反射が不足しています。")
-    try:
-        return cell_from_reciprocal_metric(_metric_from_components(g_full))
-    except (np.linalg.LinAlgError, ValueError):
-        if initial_cell is not None:
-            return initial_cell
-        raise
+        raise ValueError("格子を解けません (反射不足/ランク落ち/退化)。")
+    return cell
 
 
 def refine_cell_robust(
@@ -272,9 +291,12 @@ def refine_cell_robust(
         if g_full is None:
             break
         try:
-            cell = cell_from_reciprocal_metric(_metric_from_components(g_full))
+            candidate = cell_from_reciprocal_metric(_metric_from_components(g_full))
         except (np.linalg.LinAlgError, ValueError):
             break
+        if not _cell_plausible(candidate):  # 近特異で退化したら直前セルを保持 (LOW-2)
+            break
+        cell = candidate
         # 全有効反射の残差で外れ値を再評価する
         g_star = _metric_from_components(g_full)
         resid = np.array(

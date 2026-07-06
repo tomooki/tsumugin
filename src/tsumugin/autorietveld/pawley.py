@@ -177,19 +177,21 @@ def prealign_cell_from_structure(
         current_cell = sol.cell
 
     # --- seed と精密化結果のうち FoM が良い方を採る (精密化が誤って悪化するのを防ぐ) ---
+    # 返す診断 (n_used/rms) は**採用したセル**に対応させる (LOW-2 対策): seed 採用時は
+    # グリッドで整合した反射数 (len(hkls_grid))、線形解採用時はその n_used/rms を用いる。
     seed_fom = _match_fom(seed_cell, hkls_grid, wavelength, obs_pos, obs_ht, two_theta_range)
     refined_fom = _match_fom(current_cell, hkls_grid, wavelength, obs_pos, obs_ht, two_theta_range)
     if refined_fom <= seed_fom:
-        best_cell, best_fom = current_cell, refined_fom
+        best_cell, best_fom, best_n, best_rms = current_cell, refined_fom, n_used, rms
     else:
-        best_cell, best_fom = seed_cell, seed_fom
+        best_cell, best_fom, best_n, best_rms = seed_cell, seed_fom, len(hkls_grid), 0.0
 
     # FoM ガード: DFT セルより改善しなければ補正を諦める (安全側)
     if best_fom > dft_fom:
         return None
     return LatticeSolution(
         cell=best_cell, crystal_system=crystal_system.strip().lower(),
-        n_used=n_used, rms_inv_d2=rms, rejected=(),
+        n_used=best_n, rms_inv_d2=best_rms, rejected=(),
     )
 
 
@@ -228,13 +230,15 @@ def _match_fom(cell, hkls, wavelength, obs_pos, obs_ht, tth_range) -> float:
 
 def _grid_search_scale(
     cell0: Cell6, hkls, weights, wavelength, obs_pos, obs_ht, crystal_system, tth_range,
-    *, span_lo: float = 0.955, span_hi: float = 1.012, step: float = 0.004,
+    *, span_lo: float = 0.95, span_hi: float = 1.05, step: float = 0.006,
 ) -> Cell6:
     """per-axis スケール倍率の有界グリッドで FoM 最小のセルを探す (大域ベイスン特定)。
 
-    DFT 格子誤差は数 % 有界 (過大評価が主で ~+3–4%, 稀に過小) なので探索域は [−4.5%, +1.2%] 程度で足りる。
-    結晶系で自由スケール軸を減らす (立方/菱面体=1軸, 正方/六方=2軸, それ以外=3軸)。角度は DFT 値を保持し
-    段2 の線形解に委ねる。
+    DFT 格子誤差は数 % 有界 (過大評価が主だが過小もあり) なので探索域は対称 ±5% で足りる。ステップは
+    粗く (0.6%) 取り、残差は段2 の線形解が sub-0.01 Å まで詰める (粗グリッド + 線形研磨が最も費用対効果が
+    高い; 実測ベンチで 100% 成功・~0.2s)。**目的関数 (FoM) が安価な numpy 計算のため、多峰でも網羅グリッド
+    が Bayes 最適化 (TPE) より頑健かつ高速** (Optuna 比較: grid 100% vs TPE 97%, Issue #20 検討)。結晶系で
+    自由スケール軸を減らす (立方/菱面体=1軸, 正方/六方=2軸, それ以外=3軸)。角度は DFT 値を保持し段2 に委ねる。
     """
     s = crystal_system.strip().lower()
     grid = np.arange(span_lo, span_hi + 1e-9, step)
@@ -445,7 +449,9 @@ def refine_cell_pawley(
                 refined = seed_cell or start_cell
                 rwp = bg_rwp
         except Exception:
-            refined = prealign_cell or start_cell
+            # 例外時は seed (initial_cell or プリアライン) を優先し start_cell へ縮退 (LOW-3, 非例外の
+            # 悪化ブランチと整合)。
+            refined = seed_cell or start_cell
             rwp, converged = float("inf"), False
 
     final_cell = refined if _cell_ok(refined) else (prealign_cell or start_cell)
