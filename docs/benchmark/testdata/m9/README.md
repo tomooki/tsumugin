@@ -59,18 +59,18 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
   ~3% 大)。**未完 (honest, 切り分け済の結論)**: 転移域〜delta 域の Rwp が高い。証拠に基づく正確な内訳:
   - **パイプライン + 良い構造は near-tutorial**: **実測 Jana delta で clean delta フレーム (frame420
     単相) Rwp 13.48%** (チュートリアル ~9%)。frame0 alpha 12.57%。→ M9 の配線・レシピ・装置設定は正しい。
-  - **MP の DFT 構造が Rietveld モデルとして不良**: **同じ frame420 で MP delta (mp-1195263) は 49%**
-    (Jana 13.48% の 3.6 倍悪い)。mp-1195263 と Jana delta は**同一多形 (Pca2₁ #29, 40 原子)** だが、
-    DFT 緩和の**原子位置が実測から離れており、座標精密化 (局所 LSQ) が実測位置へ戻れず局所解に捕まる**
-    (39–49% で停滞)。セル/歪み補正・best-candidate 選択でも越えられない。→ **MP 自動同定の精度限界は
-    DFT 参照構造の Rietveld 適性**にある (同定=相の特定は正しい)。
+  - **律速は MP(DFT)構造の異方的な格子誤差** (→ **[Issue #20](https://github.com/tomooki/tsumugin/issues/20)**):
+    同 frame420 で MP delta (mp-1195263) は 44%。切り分けで **mp-1195263 と Jana delta は同一多形
+    (Pca2₁ #29, 40 原子, StructureMatcher fit=True, 原子 RMS 0.28 Å)** と判明し、**MP 座標 + 正しい格子で
+    Rwp 13.28%**(=座標は Rietveld で合う)。真因は **c 軸だけ +3.4% 過大**な DFT 異方格子誤差で、
+    Rietveld のセル精密化の収束半径(~2%)を超え **c が全く動かない**(revert 緩和でも [.., 13.778] のまま)。
+    観測ピークからの**異方整列は有効**(c 13.778→13.380, 44%→27.58%)だが頑健な指数付けが非自明
+    (素朴な反復は誤収束)。→ **Pawley 精密化ベースの頑健な異方格子精密化 = Issue #20** が本命。
+    等方歪み補正 (`materialize(strain=)`) は異方誤差に不適で本 Issue で置換予定。
   - **転移フレーム (frame270) は追加で難しい**: 実測 Jana delta でも ~30% (frame quality + 98%delta/
     2%alpha 混合)。clean frame (420) の 13.48% とは別要因。
-  - **3 修正 (cell revert) を実行した結果**: プロファイル先行 + 格子単独段階で `cell+displacement` の
-    revert は解消 (Fix1/3)、revert 緩和は無効 (Fix2, 局所解のため) — だが **cell は律速でなく、原子座標の
-    局所解が律速**のため Rwp は動かず。cell 段階の revert は本質的問題でなかった。
-  - **tutorial 級の全系列への道**: **実測 delta 構造 (同梱 `delta_CaTeO3.cif`) をローカル参照供給元に
-    する** (or COD/ICSD [[Issue #10]])。MP の DFT 構造でなく実測構造を使えば clean フレーム 13% 級・
-    転移域も大幅改善。**同定と単一フレーム収束 (frame0/frame420 とも ~13%) は達成済**。
+  - **即効の代替**: **実測 delta 構造 (同梱 `delta_CaTeO3.cif`) をローカル参照供給元にする** (or COD/ICSD
+    [[Issue #10]]) と DFT 問題を回避し clean フレーム 13% 級。**同定・単一フレーム収束 (frame0/frame420
+    とも ~13%)・逐次配線は達成済**。転移域 tutorial 級は Issue #20 (Pawley)。
 - **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
   決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。
