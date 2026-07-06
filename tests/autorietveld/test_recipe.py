@@ -124,3 +124,41 @@ def test_recipe_stages_are_nonempty_and_labeled():
     stages = build_recipe([_XRAY_BB], _SINGLE_PHASE)
     assert len(stages) >= 5
     assert all(s.label for s in stages)
+
+
+# ---- M9: X 線プロファイル追加段階 (profile_lorentzian / profile_asymmetry) ----
+
+
+def test_xray_recipe_appends_lorentzian_then_asymmetry_last():
+    """X 線レシピは末尾に profile_lorentzian → profile_asymmetry を X 線限定で追加する。"""
+    stages = build_recipe([_XRAY_BB], _SINGLE_PHASE)
+    assert _find(stages, "profile_lorentzian")
+    assert _find(stages, "profile_asymmetry")
+    # 最後の 2 段が Lorentzian → asymmetry の順であること
+    assert "profile_lorentzian" in stages[-2].flags
+    assert "profile_asymmetry" in stages[-1].flags
+
+
+def test_neutron_only_recipe_has_no_xray_profile_stages():
+    """中性子のみ (CW) のレシピには X 線プロファイル追加段階を入れない。"""
+    stages = build_recipe([_NEUTRON_DS], _SINGLE_PHASE)
+    assert not _find(stages, "profile_lorentzian")
+    assert not _find(stages, "profile_asymmetry")
+
+
+def test_tof_only_recipe_has_no_xray_profile_stages():
+    """TOF 中性子のみのレシピにも X 線プロファイル追加段階を入れない。"""
+    tof = HistogramSpec(
+        data_path="p.gsa", instrument_path="i.instprm",
+        radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
+    )
+    stages = build_recipe([tof], _SINGLE_PHASE)
+    assert not _find(stages, "profile_lorentzian")
+    assert not _find(stages, "profile_asymmetry")
+
+
+def test_mixed_xray_neutron_recipe_appends_xray_stages_once():
+    """X 線 + 中性子 joint では X 線プロファイル追加段階を 1 度だけ末尾に付ける。"""
+    stages = build_recipe([_XRAY_BB, _NEUTRON_DS], _SINGLE_PHASE)
+    assert len(_find(stages, "profile_lorentzian")) == 1
+    assert len(_find(stages, "profile_asymmetry")) == 1

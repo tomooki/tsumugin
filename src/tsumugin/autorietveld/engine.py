@@ -88,8 +88,10 @@ def _cells_physical(g2phases, min_length: float = 0.5) -> bool:
 def _profile_keys(radiation: Radiation) -> list[str]:
     """CW (X 線/中性子) の Gaussian プロファイル係数キー U,V,W。
 
-    TOF は本段階では精密化しない (呼び出し側で TOF をスキップ)。TOF の装置プロファイル
-    (sig/alpha/beta) はキャリブレーション依存で、ピーク形状は size/mustrain で処理する。
+    Lorentzian (X,Y) + Zero は別段階 (recipe の "profile_lorentzian") で revert ガード付きで追加する
+    (同段階に混ぜると悪化時に U,V,W ごと revert され T3/T4 が回帰するため分離)。TOF は本段階では
+    精密化しない (呼び出し側でスキップ)。TOF の装置プロファイル (sig/alpha/beta) はキャリブレーション
+    依存で、ピーク形状は size/mustrain で処理する。
     """
     return ["U", "V", "W"]
 
@@ -174,6 +176,24 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
             if rad.is_tof:
                 continue
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
+    if "profile_lorentzian" in flags:
+        # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード)。実験室/放射光 X 線は
+        # Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。悪化時は
+        # 本段階ごと revert され U,V,W は保持される (T3/T4 非回帰)。TOF/中性子は除外。
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if rad.is_tof or rad.is_neutron:
+                continue
+            hist.set_refinements({"Instrument Parameters": ["X", "Y", "Zero"]})
+    if "profile_asymmetry" in flags:
+        # 軸発散非対称 (SH/L) を X 線に別段階で追加解放する (分割擬フォークト相当の経験的ピーク形状;
+        # 物理解釈を要さない)。低角の非対称に効くが常には改善しないため X,Y,Zero とは分け、悪化時は
+        # 本段階のみ revert する (X,Y,Zero を保持)。TOF/中性子は除外。
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if rad.is_tof or rad.is_neutron:
+                continue
+            hist.set_refinements({"Instrument Parameters": ["SH/L"]})
     if "size_strain" in flags:
         # サイズ/微小歪みは分解能の低い CW 中性子 (例 D1a) を多ヒストグラム時に除外し、
         # X 線/放射光・TOF (高分解能) に張る。理由: 低分解能 CW 中性子の幅は器械分解能に
@@ -266,6 +286,25 @@ def _extract_state(phases):
     return refined_cells, uiso, occ
 
 
+def _phase_fraction_map(g2phases, g2hists) -> dict[str, float]:
+    """相名→相分率 (先頭ヒストグラムの HAP Scale, 和=1 正規化) を返す (M9 逐次解析用)。
+
+    単相は {name: 1.0}。多相は HAP Scale を抽出し総和で正規化する (和=1 制約下では概ね規格化済み)。
+    抽出失敗の相は 0.0 を入れる。名前重複時は後勝ち (相名は一意想定)。
+    """
+    if not g2phases:
+        return {}
+    if len(g2phases) == 1:
+        return {g2phases[0].name: 1.0}
+    fracs = _extract_phase_fractions(g2phases, g2hists)  # g2phases 順に整列
+    total = sum(f for f in fracs if math.isfinite(f) and f > 0)
+    out: dict[str, float] = {}
+    for ph, f in zip(g2phases, fracs):
+        val = float(f) if math.isfinite(f) else 0.0
+        out[ph.name] = (val / total) if total > 0 else 0.0
+    return out
+
+
 def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
     """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。
 
@@ -282,6 +321,25 @@ def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
         except Exception:
             fractions.append(float("nan"))
     return fractions
+
+
+def _set_initial_cell(ph, cell: tuple[float, ...]) -> None:
+    """相の初期格子を絶対値 cell=(a,b,c[,α,β,γ]) に設定し体積を再計算する (ウォームスタート用)。
+
+    add_phase 直後・精密化前に呼ぶ。逐次 (sequential) 精密化で直前フレームの精密化格子を次フレームの
+    初期値として引き継ぐのに用いる。角度は与えられなければ現在値を保つ。``initial_cell_scale``
+    (相対摂動) と排他: こちらは絶対セルを与える。
+    """
+    from GSASII import GSASIIlattice as G2lat
+
+    cur = ph.data["General"]["Cell"]
+    a, b, c = float(cell[0]), float(cell[1]), float(cell[2])
+    alpha = float(cell[3]) if len(cell) > 3 else float(cur[4])
+    beta = float(cell[4]) if len(cell) > 4 else float(cur[5])
+    gamma = float(cell[5]) if len(cell) > 5 else float(cur[6])
+    new = [a, b, c, alpha, beta, gamma]
+    ph.data["General"]["Cell"][1:7] = new
+    ph.data["General"]["Cell"][7] = G2lat.calc_V(G2lat.cell2A(new))
 
 
 def _perturb_initial_cell(ph, scale: tuple[float, float, float]) -> None:
@@ -310,6 +368,7 @@ def run_auto_rietveld(
     worsen_eps: float = 1e-6,
     keep_gpx: str | None = None,
     initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
+    initial_cells: dict[str, tuple[float, ...]] | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -323,6 +382,9 @@ def run_auto_rietveld(
     :param keep_gpx: 最終 .gpx をこのパスへ保存 (None なら破棄)
     :param initial_cell_scale: 相名→(fa,fb,fc) の初期格子摂動倍率 (マルチスタート用, None で無摂動)。
         **参照格子は摂動前の初期値を採用**する (妥当性判定を摂動でずらさないため)。
+    :param initial_cells: 相名→(a,b,c[,α,β,γ]) の絶対初期格子 (逐次精密化のウォームスタート用,
+        None で CIF 既定)。直前フレームの精密化格子を次フレームの初期値に引き継ぐのに用いる。
+        ``initial_cell_scale`` と併用時は本絶対セルを先に適用し、その上に摂動倍率を掛ける。
     :returns: AutoRietveldResult
     """
     g2sc = _g2sc()
@@ -357,22 +419,39 @@ def run_auto_rietveld(
             )
             g2phases.append(ph)
 
-        # --- 参照格子 (摂動前の初期格子) を先に確保 ---
+        # --- 参照格子 (妥当性判定の基準) を先に確保 ---
+        # 既定は各相の CIF 初期格子。ただしウォームスタート (initial_cells) を与えた相は、その
+        # **前フレームの精密化格子**を参照にする (逐次精密化 M9): 高温系列では格子が熱膨張で CIF
+        # 室温値から系統的にずれるため、CIF 基準だと後半フレームが必ず妥当性 fail し、格子ドリフトを
+        # 理由に転移フレームの新相を誤棄却する。フレーム間ドリフト基準なら滑らかな系列は各段小さく
+        # 妥当、真の急変 (転移) のみ検出できる。新規追加相 (initial_cells になし) は CIF 基準のまま。
         if reference_cells is None:
-            reference_cells = {
-                ph.name: tuple(
+            reference_cells = {}
+            for ph in g2phases:
+                cif_cell = tuple(
                     float(ph.get_cell()[k])
                     for k in (
-                        "length_a",
-                        "length_b",
-                        "length_c",
-                        "angle_alpha",
-                        "angle_beta",
-                        "angle_gamma",
+                        "length_a", "length_b", "length_c",
+                        "angle_alpha", "angle_beta", "angle_gamma",
                     )
                 )
-                for ph in g2phases
-            }
+                seed = initial_cells.get(ph.name) if initial_cells else None
+                if seed is not None:
+                    reference_cells[ph.name] = (
+                        float(seed[0]), float(seed[1]), float(seed[2]),
+                        float(seed[3]) if len(seed) > 3 else cif_cell[3],
+                        float(seed[4]) if len(seed) > 4 else cif_cell[4],
+                        float(seed[5]) if len(seed) > 5 else cif_cell[5],
+                    )
+                else:
+                    reference_cells[ph.name] = cif_cell
+
+        # --- 初期格子ウォームスタート (逐次精密化, 任意): 絶対セルを先に適用 ---
+        if initial_cells:
+            for ph in g2phases:
+                cell = initial_cells.get(ph.name)
+                if cell is not None:
+                    _set_initial_cell(ph, cell)
 
         # --- 初期格子摂動 (マルチスタート, 任意) ---
         if initial_cell_scale:
@@ -475,6 +554,7 @@ def run_auto_rietveld(
         final_rwp = stage_results[-1].rwp if stage_results else float("inf")
         final_gof = stage_results[-1].gof if stage_results else float("inf")
         final_nobs = _nobs(gpx) if stage_results else 0
+        phase_fractions = _phase_fraction_map(g2phases, g2hists)
 
         out_gpx = ""
         if keep_gpx is not None:
@@ -490,6 +570,7 @@ def run_auto_rietveld(
         validity=validity,
         gpx_path=out_gpx,
         n_obs=final_nobs,
+        phase_fractions=phase_fractions,
     )
 
 
@@ -499,4 +580,5 @@ def _data_fmthint(h: HistogramSpec) -> str:
         "GSAS": "GSAS",
         "FXYE": "GSAS",  # .fxye も GSAS powder importer が読む
         "XYE": "xye",
+        "XRDML": "Panalytical",  # Panalytical xrdml (xml) importer (実験室 X 線 in situ)
     }.get(h.data_format, "GSAS")

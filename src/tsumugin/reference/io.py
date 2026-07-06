@@ -17,9 +17,12 @@ import numpy as np
 __all__ = [
     "load_fxye",
     "load_gsas_powder",
+    "load_pattern",
+    "load_xrdml",
     "load_xy",
     "parse_fxye",
     "parse_gsas_powder",
+    "parse_xrdml",
     "parse_xy",
 ]
 
@@ -150,3 +153,100 @@ def load_fxye(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """GSAS FXYE ファイルを読み ``(two_theta[deg], intensity)`` を返す (``parse_fxye`` 参照)。🔵"""
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     return parse_fxye(text)
+
+
+def _xrdml_localname(tag: str) -> str:
+    """XML タグから名前空間 (``{uri}local``) を剥がしローカル名だけ返す。"""
+    return tag.rsplit("}", 1)[-1]
+
+
+def parse_xrdml(text: str) -> tuple[np.ndarray, np.ndarray]:
+    """Panalytical XRDML (X'Pert/Empyrean) を ``(two_theta[deg], intensity)`` へ変換する。🔵
+
+    XRDML は名前空間付き XML で、``<dataPoints>`` 内に走査軸 (``<positions axis="2Theta">``
+    の ``startPosition``/``endPosition``) と ``<intensities>`` (空白区切りの計数列) を持つ。
+    2θ 軸は start→end を計数点数 N で等分した線形軸として復元する (CaTeO3 cyclic 等の実験室 X 線
+    高温 in situ データの供給に用いる)。Omega など他軸の positions は無視し 2Theta のみを採る。
+
+    **対応範囲 (v1)**: 単一走査・線形 2Theta 軸 (start/end)・第 1 ``<intensities>`` ブロック。
+    複数走査/バッチや非線形 (``<listPositions>`` 列挙軸)・可変 ``commonCountingTime`` は先頭優先で
+    最初の 1 件のみを採る (X'Pert/Empyrean の単一走査を想定)。将来拡張点。
+
+    Args:
+        text: XRDML の全文。
+
+    Returns:
+        ``(two_theta, intensity)`` の float 配列 (長さ N, two_theta は度・昇順)。
+
+    Raises:
+        ValueError: 2Theta の positions か intensities が見つからない / 計数点が 0 のとき。
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise ValueError(f"XRDML の XML 解析に失敗しました: {exc}") from exc
+
+    # intensities (空白区切りの計数列) を最初の 1 個採る。
+    intensity_vals: list[float] | None = None
+    start_2t: float | None = None
+    end_2t: float | None = None
+    for elem in root.iter():
+        name = _xrdml_localname(elem.tag)
+        if name == "intensities" and intensity_vals is None and elem.text:
+            intensity_vals = [float(tok) for tok in elem.text.split()]
+        elif name == "positions" and elem.get("axis") == "2Theta" and start_2t is None:
+            for child in elem:
+                cname = _xrdml_localname(child.tag)
+                if cname == "startPosition" and child.text is not None:
+                    start_2t = float(child.text)
+                elif cname == "endPosition" and child.text is not None:
+                    end_2t = float(child.text)
+
+    if intensity_vals is None or not intensity_vals:
+        raise ValueError("XRDML に intensities (計数列) が見つかりません。")
+    if start_2t is None or end_2t is None:
+        raise ValueError('XRDML に 2Theta の positions (startPosition/endPosition) が見つかりません。')
+
+    n = len(intensity_vals)
+    intensity = np.asarray(intensity_vals, dtype=float)
+    # 【2θ 軸】: N=1 は縮退のため start のみ。N>=2 は start→end の等分 (endを含む線形) 🔵
+    if n == 1:
+        two_theta = np.asarray([start_2t], dtype=float)
+    else:
+        two_theta = np.linspace(start_2t, end_2t, n, dtype=float)
+    return two_theta, intensity
+
+
+def load_xrdml(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Panalytical XRDML ファイルを読み ``(two_theta[deg], intensity)`` を返す (``parse_xrdml`` 参照)。🔵"""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    return parse_xrdml(text)
+
+
+# データ形式名 → ローダー (M9 逐次解析の相同定入力を形式非依存に読むディスパッチャ)。
+_LOADERS = {
+    "XRDML": load_xrdml,
+    "FXYE": load_fxye,
+    "GSAS": load_gsas_powder,
+    "XYE": load_xy,
+    "XY": load_xy,
+}
+
+
+def load_pattern(path: str | Path, data_format: str) -> tuple[np.ndarray, np.ndarray]:
+    """データ形式名に応じてローダーを選び ``(two_theta[deg], intensity)`` を返す。🔵
+
+    ``data_format`` は ``FrameSpec.data_format`` / ``HistogramSpec.data_format`` と同じ語彙
+    ("XRDML"/"FXYE"/"GSAS"/"XYE"/"XY", 大文字小文字非依存)。相同定 (numpy) への観測パターン供給に用いる。
+
+    Raises:
+        ValueError: 未対応の data_format のとき。
+    """
+    loader = _LOADERS.get(data_format.upper())
+    if loader is None:
+        raise ValueError(
+            f"未対応のデータ形式です: {data_format!r} (対応: {sorted(_LOADERS)})"
+        )
+    return loader(path)

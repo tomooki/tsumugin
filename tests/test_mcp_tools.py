@@ -167,7 +167,7 @@ def _synthetic_pattern(centers, *, fwhm=0.15):
 
 
 def test_eight_tools_registered_in_mcp_tools():
-    # 【テスト目的】: M4 の 8 ツール + M6 相同定 2 + M8 実構造 Rietveld 3 = 13 ツールが登録される
+    # 【テスト目的】: M4 の 8 + M6 相同定 2 + M8 実構造 Rietveld 3 + M9 in situ 逐次 3 = 16 ツールが登録される
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -182,6 +182,9 @@ def test_eight_tools_registered_in_mcp_tools():
         "auto_rietveld",
         "propose_next_actions",
         "refine_with_revisions",
+        "sequential_rietveld",
+        "identify_and_add_phase",
+        "parametric_fit",
     }
     assert set(MCP_TOOLS.keys()) == expected
 

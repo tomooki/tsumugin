@@ -182,3 +182,79 @@ def test_load_fxye_reads_file(tmp_path):
     tt, inten = load_fxye(path)
     assert tt.tolist() == pytest.approx([10.0, 10.01])
     assert inten[1] == pytest.approx(55.0)
+
+
+# ============================ Panalytical XRDML (M9) ============================
+
+# 【最小 XRDML】: 2Theta 軸 start=10, end=10.06 (4 点 → step 0.02), Omega 軸も混在させ
+#   2Theta を正しく選ぶことを検証する。intensities は 4 値。
+_SAMPLE_XRDML = """<?xml version="1.0" encoding="UTF-8"?>
+<xrdMeasurements xmlns="http://www.xrdml.com/XRDMeasurement/1.5" status="Completed">
+  <xrdMeasurement measurementType="Scan" sampleMode="Reflection">
+    <usedWavelength intended="K-Alpha 1">
+      <kAlpha1 unit="Angstrom">1.540598</kAlpha1>
+    </usedWavelength>
+    <scan appendNumber="0" mode="Pre-set time" scanAxis="Gonio" status="Completed">
+      <dataPoints>
+        <positions axis="2Theta" unit="deg">
+          <startPosition>10.000</startPosition>
+          <endPosition>10.060</endPosition>
+        </positions>
+        <positions axis="Omega" unit="deg">
+          <startPosition>5.000</startPosition>
+          <endPosition>5.030</endPosition>
+        </positions>
+        <commonCountingTime unit="seconds">198.0</commonCountingTime>
+        <intensities unit="counts">292 275 279 274</intensities>
+      </dataPoints>
+    </scan>
+  </xrdMeasurement>
+</xrdMeasurements>
+"""
+
+
+def test_parse_xrdml_axis_and_shape():
+    from tsumugin.reference.io import parse_xrdml
+
+    tt, inten = parse_xrdml(_SAMPLE_XRDML)
+    assert tt.shape == (4,)
+    assert inten.shape == (4,)
+    # 2Theta 軸を選ぶ (Omega の 5.0 ではない)。4 点なので step = 0.06/3 = 0.02
+    assert tt[0] == pytest.approx(10.000)
+    assert tt[1] == pytest.approx(10.020)
+    assert tt[-1] == pytest.approx(10.060)
+
+
+def test_parse_xrdml_intensities():
+    from tsumugin.reference.io import parse_xrdml
+
+    _, inten = parse_xrdml(_SAMPLE_XRDML)
+    assert inten.tolist() == pytest.approx([292.0, 275.0, 279.0, 274.0])
+
+
+def test_parse_xrdml_missing_intensities_raises():
+    from tsumugin.reference.io import parse_xrdml
+
+    text = _SAMPLE_XRDML.replace(
+        "<intensities unit=\"counts\">292 275 279 274</intensities>", ""
+    )
+    with pytest.raises(ValueError):
+        parse_xrdml(text)
+
+
+def test_parse_xrdml_missing_2theta_positions_raises():
+    from tsumugin.reference.io import parse_xrdml
+
+    text = _SAMPLE_XRDML.replace('axis="2Theta"', 'axis="Omega2"')
+    with pytest.raises(ValueError):
+        parse_xrdml(text)
+
+
+def test_load_xrdml_reads_file(tmp_path):
+    from tsumugin.reference.io import load_xrdml
+
+    path = tmp_path / "p.xrdml"
+    path.write_text(_SAMPLE_XRDML, encoding="utf-8")
+    tt, inten = load_xrdml(path)
+    assert tt.shape == (4,)
+    assert inten[0] == pytest.approx(292.0)
