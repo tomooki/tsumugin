@@ -23,7 +23,7 @@ from ..search.peaks import find_peaks
 from .background import subtract_background
 from .kalpha import KAlpha2, add_kalpha2_satellites
 from .model import PhaseIdentification, PhaseMatch, ReferencePhase
-from .rietveld import align_peaks
+from .rietveld import align_peaks, align_peaks_anisotropic
 from .scoring import dara_peak_score
 from .provider import ReferenceProvider
 
@@ -122,6 +122,8 @@ def identify_phases(
     refine_lattice: bool = False,
     max_strain: float = 0.01,
     strain_penalty: float = 0.0,
+    rerank_top_k: int = 0,
+    rerank_wavelength: float = 1.5406,
 ) -> PhaseIdentification:
     """未知パターン + 元素一覧から候補相を同定する (FR-110/117)。🔵
 
@@ -151,6 +153,12 @@ def identify_phases(
         max_strain: ``refine_lattice`` 時の等方歪み上限 (既定 0.01 = 1%, Dara 準拠)。
         strain_penalty: ランキングで格子シフトを罰する係数 (Dara FoM の ΔU に対応)。実効スコア =
             ``score − strain_penalty·|strain|``。大きな格子調整を要した相を下げる。既定 0 (無効)。
+        rerank_top_k: >0 で**上位 K 候補のみ異方格子整合で再スコア**する (Issue #20 hybrid)。等方
+            ``refine_lattice`` は 1 自由度で DFT の**軸別**格子誤差を吸収できず正解相のスコアを負に落とす
+            ことがある。上位 K に限り軸別 (``align_peaks_anisotropic``) で再整合→再スコアし、識別マージンを
+            上げる (実測: alpha/delta で margin +0.09→+1.14)。全候補でなく top-K に限るのは過剰整合による
+            偽陽性と計算コストを抑えるため。格子情報 (cell/crystal_system/hkl) を持たない相はスキップ。
+        rerank_wavelength: 異方再スコアの線源波長 (Å, hkl↔2θ 変換用)。既定 Cu Kα1。
 
     Returns:
         ``PhaseIdentification`` (ランキング済みマッチ + 未知相レポート + 観測ピーク)。
@@ -222,9 +230,18 @@ def identify_phases(
 
     # 【決定論ランキング】: 実効スコア (score − strain_penalty·|strain|) 降順・同点 phase_id 昇順 🔵
     #   strain_penalty>0 で大きな格子シフトを要した相を下げる (Dara FoM ΔU)。既定 0 で純 score。
-    matches.sort(
-        key=lambda m: (-(m.score - strain_penalty * abs(m.strain)), m.reference.phase_id)
-    )
+    def _effective(m: PhaseMatch) -> tuple[float, str]:
+        return (-(m.score - strain_penalty * abs(m.strain)), m.reference.phase_id)
+
+    matches.sort(key=_effective)
+
+    # 【異方 re-score (Issue #20 hybrid)】: 上位 K のみ軸別格子整合で再スコアし再ランキングする 🔵
+    if rerank_top_k > 0 and observed:
+        matches = _rerank_anisotropic(
+            matches, tuple(observed), top_k=rerank_top_k, scoring=scoring,
+            match_tol_deg=match_tol_deg, wavelength=rerank_wavelength,
+        )
+        matches.sort(key=_effective)
 
     # 【未知相レポート】: 全生存候補の説明力で未マッチ観測・extra・未知相フラグを構築 🔵 FR-117
     #   max_results による表示絞り込みの前に計算し、説明力の隠蔽を避ける。
@@ -244,3 +261,49 @@ def identify_phases(
         unmatched=report,
         observed_peaks=tuple(observed),
     )
+
+
+def _rerank_anisotropic(
+    matches: list[PhaseMatch],
+    observed: tuple,
+    *,
+    top_k: int,
+    scoring: str,
+    match_tol_deg: float,
+    wavelength: float,
+) -> list[PhaseMatch]:
+    """上位 top_k マッチを異方格子整合で再スコアした新リストを返す (Issue #20 hybrid)。
+
+    各上位候補を ``align_peaks_anisotropic`` で軸別に観測へ整合 → 同じスコア方式で再評価し、score と
+    strain (異方=最大軸相対変化) を差し替える。格子情報/hkl 不足・未改善の候補は等方スコアのまま残す
+    (align が None)。top_k を超える候補は無変更。再ソートは呼び出し側が行う。
+    """
+    rng = (min(p.position for p in observed), max(p.position for p in observed))
+    rr = min(top_k, len(matches))
+    head: list[PhaseMatch] = []
+    for m in matches[:rr]:
+        al = align_peaks_anisotropic(
+            m.reference, observed, wavelength=wavelength, two_theta_range=rng
+        )
+        if al is None:
+            head.append(m)
+            continue
+        if scoring == "dara":
+            ds = dara_peak_score(al.aligned_peaks, observed, tol_deg=match_tol_deg)
+            head.append(
+                PhaseMatch(
+                    reference=m.reference, score=ds.score,
+                    matched_observed=ds.matched_observed,
+                    extra_calculated=ds.extra_calculated, strain=al.strain,
+                )
+            )
+        else:
+            mr = match_score(al.aligned_peaks, observed, tol_deg=match_tol_deg, candidate_index=0)
+            head.append(
+                PhaseMatch(
+                    reference=m.reference, score=mr.score,
+                    matched_observed=mr.matched_observed,
+                    extra_calculated=mr.unmatched_candidate, strain=al.strain,
+                )
+            )
+    return head + list(matches[rr:])
