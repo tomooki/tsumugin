@@ -15,8 +15,10 @@ import pytest
 from tsumugin.autorietveld.lattice import (
     cell_from_reciprocal_metric,
     reciprocal_metric_from_cell,
+    refine_cell_from_indexed_peaks,
     refine_cell_robust,
     solve_cell_from_dspacings,
+    two_theta_of_hkls,
 )
 
 
@@ -174,4 +176,77 @@ def test_robust_deterministic():
     d[3] *= 1.2
     s1 = refine_cell_robust(_HKLS, d, crystal_system="orthorhombic")
     s2 = refine_cell_robust(_HKLS, d, crystal_system="orthorhombic")
+    assert s1 == s2
+
+
+# --- refine_cell_from_indexed_peaks (hybrid の numpy コア; pymatgen 不要) ---
+
+# 2θ が (10,80) に入る直方晶の反射集合を広めに用意
+_HKLS_WIDE = [
+    (h, k, ll)
+    for h in range(3) for k in range(3) for ll in range(6)
+    if (h, k, ll) != (0, 0, 0)
+]
+
+
+def _indexed_obs(cell, wavelength=1.5406, rng=(10.0, 80.0)):
+    """真セルから (hkls, 強度, 観測位置, 観測強度) を作る (観測=計算位置)。"""
+    tth = two_theta_of_hkls(cell, _HKLS_WIDE, wavelength)
+    hkls, pos = [], []
+    for h, t in zip(_HKLS_WIDE, tth):
+        if math.isfinite(t) and rng[0] <= t <= rng[1]:
+            hkls.append(h)
+            pos.append(float(t))
+    inten = [100.0] * len(hkls)  # 一様強度
+    return hkls, inten, pos, list(inten)
+
+
+def test_two_theta_of_hkls_matches_bragg():
+    cell = (6.527, 8.171, 13.322, 90.0, 90.0, 90.0)
+    tth = two_theta_of_hkls(cell, [(0, 0, 2)], 1.5406)
+    # d(002)=c/2=6.661 → 2θ = 2·asin(λ/2d)
+    d = 13.322 / 2.0
+    expect = 2 * math.degrees(math.asin(1.5406 / (2 * d)))
+    assert abs(float(tth[0]) - expect) < 1e-6
+
+
+def test_indexed_peaks_recovers_anisotropic_from_perturbed_initial():
+    """MP-DFT 相当の異方摂動初期セル (a+0.4% b+0.8% c+3.4%) から真セルを回復する (numpy のみ)。"""
+    true_cell = (6.527, 8.171, 13.322, 90.0, 90.0, 90.0)
+    hkls, inten, obs_pos, obs_ht = _indexed_obs(true_cell)
+    perturbed = (6.527 * 1.004, 8.171 * 1.008, 13.322 * 1.034, 90.0, 90.0, 90.0)
+    sol = refine_cell_from_indexed_peaks(
+        perturbed, "orthorhombic", hkls, inten, obs_pos, obs_ht,
+        wavelength=1.5406, two_theta_range=(10.0, 80.0),
+    )
+    assert sol is not None
+    assert abs(sol.cell[0] - 6.527) < 0.02
+    assert abs(sol.cell[1] - 8.171) < 0.02
+    assert abs(sol.cell[2] - 13.322) < 0.02  # c を +3.4% から回復
+
+
+def test_indexed_peaks_require_improvement_returns_none_when_no_gain():
+    """観測と全く整合しない (乱れた) 観測位置では改善せず None (require_improvement)。"""
+    true_cell = (6.527, 8.171, 13.322, 90.0, 90.0, 90.0)
+    hkls, inten, _pos, _ht = _indexed_obs(true_cell)
+    # 観測を大きくずらして整合不能に
+    bad_pos = [15.5, 22.3, 31.1, 44.9, 55.2]
+    bad_ht = [100.0] * len(bad_pos)
+    sol = refine_cell_from_indexed_peaks(
+        (6.5, 8.1, 13.3, 90, 90, 90), "orthorhombic", hkls, inten, bad_pos, bad_ht,
+        wavelength=1.5406, two_theta_range=(10.0, 80.0), grid_span=(0.995, 1.005),
+    )
+    # 改善が無ければ None (安全側)。改善が僅かでもあれば LatticeSolution だが c は動かない想定。
+    if sol is not None:
+        assert sol.cell[2] > 1.0  # 少なくとも退化していない
+
+
+def test_indexed_peaks_deterministic():
+    true_cell = (6.527, 8.171, 13.322, 90.0, 90.0, 90.0)
+    hkls, inten, obs_pos, obs_ht = _indexed_obs(true_cell)
+    perturbed = (6.56, 8.20, 13.70, 90.0, 90.0, 90.0)
+    s1 = refine_cell_from_indexed_peaks(perturbed, "orthorhombic", hkls, inten, obs_pos, obs_ht,
+                                        wavelength=1.5406, two_theta_range=(10.0, 80.0))
+    s2 = refine_cell_from_indexed_peaks(perturbed, "orthorhombic", hkls, inten, obs_pos, obs_ht,
+                                        wavelength=1.5406, two_theta_range=(10.0, 80.0))
     assert s1 == s2

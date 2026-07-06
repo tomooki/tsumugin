@@ -35,6 +35,8 @@ __all__ = [
     "cell_from_reciprocal_metric",
     "solve_cell_from_dspacings",
     "refine_cell_robust",
+    "two_theta_of_hkls",
+    "refine_cell_from_indexed_peaks",
 ]
 
 # (a, b, c, α, β, γ) — 角度は度
@@ -337,4 +339,212 @@ def _sym_vec(g_star: np.ndarray) -> np.ndarray:
             g_star[0, 1], g_star[0, 2], g_star[1, 2],
         ],
         dtype=float,
+    )
+
+
+# ============================================================================
+# 指数付きピークからの異方セル精密化 (grid + linear, numpy のみ; pawley/reference が共用)
+# ============================================================================
+
+
+def two_theta_of_hkls(
+    cell: Cell6, hkls: Sequence[Sequence[float]], wavelength: float
+) -> np.ndarray:
+    """格子 cell の各 hkl の 2θ (度) を逆格子計量から解析計算する (範囲外/回折不能は NaN)。
+
+    Bragg: sinθ = λ·√(1/d²)/2、1/d² = h·G*·hᵀ。構造 (pymatgen) を再生成せず hkl とセルだけで
+    計算できるため、セルを変えながらの探索/整合が numpy のみで高速に回る。
+    """
+    g_star = reciprocal_metric_from_cell(cell)
+    h = np.asarray(hkls, dtype=float)
+    if h.size == 0:
+        return np.zeros(0)
+    inv_d2 = np.clip(np.einsum("ij,jk,ik->i", h, g_star, h), 1e-12, None)
+    s = wavelength * np.sqrt(inv_d2) / 2.0  # sinθ
+    tth = np.full(h.shape[0], np.nan)
+    ok = s < 1.0
+    tth[ok] = 2.0 * np.degrees(np.arcsin(s[ok]))
+    return tth
+
+
+def _peak_match_fom(
+    cell: Cell6, hkls, wavelength, obs_pos: np.ndarray, obs_ht: np.ndarray, tth_range
+) -> float:
+    """観測ピークと計算ピーク位置の整合度 FoM (小さいほど良い)。
+
+    各観測ピークを最寄りの計算ピークへ割り当て、距離 (上限 1°) を観測強度で重み付き平均する。
+    hkl 本数はセルスケールに不変なので、スケール間で公平に比較できる。
+    """
+    tth = two_theta_of_hkls(cell, hkls, wavelength)
+    lo, hi = tth_range
+    good = np.isfinite(tth) & (tth >= lo) & (tth <= hi)
+    if int(good.sum()) < 3:
+        return 1e9
+    tc = tth[good]
+    dist = np.abs(obs_pos[:, None] - tc[None, :]).min(axis=1)
+    denom = float(obs_ht.sum())
+    if denom <= 0.0:
+        return 1e9
+    return float(np.sum(obs_ht * np.minimum(dist, 1.0)) / denom)
+
+
+def _grid_search_scale(
+    cell0: Cell6, hkls, wavelength, obs_pos, obs_ht, crystal_system, tth_range,
+    *, span_lo: float = 0.95, span_hi: float = 1.05, step: float = 0.006,
+) -> Cell6:
+    """per-axis スケール倍率の有界グリッドで FoM 最小のセルを探す (大域ベイスン特定)。
+
+    DFT 格子誤差は数 % 有界なので探索域は対称 ±5% で足りる。ステップは粗く取り、残差は後段の線形解が
+    詰める (粗グリッド + 線形研磨が最も費用対効果が高い)。目的関数 (FoM) が安価な numpy 計算のため、
+    多峰でも網羅グリッドが Bayes 最適化 (TPE) より頑健かつ高速 (Issue #20 実測比較で確認)。結晶系で
+    自由スケール軸を減らす (立方/菱面体=1軸, 正方/六方=2軸, それ以外=3軸)。角度は保持し線形解に委ねる。
+    """
+    s = crystal_system.strip().lower()
+    grid = np.arange(span_lo, span_hi + 1e-9, step)
+    a0, b0, c0, al, be, ga = cell0
+
+    def combos():
+        if s in ("cubic", "rhombohedral", "trigonal_r"):
+            for g in grid:
+                yield g, g, g
+        elif s in ("tetragonal", "hexagonal", "trigonal", "trigonal_h"):
+            for gab in grid:
+                for gc in grid:
+                    yield gab, gab, gc
+        else:
+            for sa in grid:
+                for sb in grid:
+                    for sc in grid:
+                        yield sa, sb, sc
+
+    best_fom = math.inf
+    best = cell0
+    for sa, sb, sc in combos():
+        cell = (a0 * sa, b0 * sb, c0 * sc, al, be, ga)
+        f = _peak_match_fom(cell, hkls, wavelength, obs_pos, obs_ht, tth_range)
+        if f < best_fom:
+            best_fom = f
+            best = cell
+    return best
+
+
+def _match_indexed(
+    cell: Cell6, hkls, intensities, wavelength, obs_pos: np.ndarray, tol_deg: float
+) -> list[tuple[tuple[int, int, int], float, float]]:
+    """hkl 付き計算ピークを観測ピークへ貪欲 1:1 マッチし (hkl, 観測 d, 強度) 列を返す (強度降順に確保)。"""
+    tth = two_theta_of_hkls(cell, hkls, wavelength)
+    order = sorted(range(len(hkls)), key=lambda i: -float(intensities[i]))
+    used = np.zeros(obs_pos.size, dtype=bool)
+    out: list[tuple[tuple[int, int, int], float, float]] = []
+    for i in order:
+        if not math.isfinite(float(tth[i])):
+            continue
+        diffs = np.abs(obs_pos - tth[i])
+        diffs[used] = np.inf
+        j = int(np.argmin(diffs))
+        if not np.isfinite(diffs[j]) or diffs[j] > tol_deg:
+            continue
+        used[j] = True
+        theta = math.radians(float(obs_pos[j]) / 2.0)
+        if theta <= 0.0:
+            continue
+        d = wavelength / (2.0 * math.sin(theta))
+        hkl = tuple(int(round(x)) for x in hkls[i])
+        out.append((hkl, d, float(intensities[i])))  # type: ignore[arg-type]
+    return out
+
+
+def _cell_shift(c1: Cell6, c2: Cell6) -> float:
+    """2 格子の a,b,c の最大絶対差 (Å) を返す (収束/暴走判定用)。"""
+    return max(abs(c1[0] - c2[0]), abs(c1[1] - c2[1]), abs(c1[2] - c2[2]))
+
+
+def refine_cell_from_indexed_peaks(
+    initial_cell: Cell6,
+    crystal_system: str,
+    hkls: Sequence[Sequence[float]],
+    intensities: Sequence[float],
+    observed_positions: Sequence[float],
+    observed_heights: Sequence[float],
+    *,
+    wavelength: float,
+    two_theta_range: tuple[float, float],
+    min_intensity_frac: float = 0.05,
+    match_tol_deg: float = 1.5,
+    reject_sigma: float = 3.0,
+    iterations: int = 12,
+    grid_span: tuple[float, float] = (0.95, 1.05),
+    grid_step: float = 0.006,
+    require_improvement: bool = True,
+) -> LatticeSolution | None:
+    """指数付き計算ピーク (hkl+強度) を観測ピークへ整合させ異方セルを解く (numpy のみ・構造不要)。
+
+    2 段: (1) per-axis スケールの有界 FoM グリッドで大域ベイスンを特定 → (2) その大域セルから最近傍
+    マッチ + `refine_cell_robust` で線形精密化。計算ピーク 2θ は hkl とセルから解析計算するため pymatgen
+    不要で、既知の hkl があれば相同定側 (reference) でも DFT 格子誤差を異方補正できる (Issue #20 hybrid)。
+
+    :param initial_cell: 参照 (DFT) 格子 (a,b,c,α,β,γ)。探索の基準
+    :param crystal_system: 対称拘束 (cubic/tetragonal/hexagonal/orthorhombic/monoclinic/triclinic 等)
+    :param hkls: 計算反射の指数列
+    :param intensities: 各反射の相対強度 (重み。弱反射は誤マッチ抑制で除外)
+    :param observed_positions: 観測ピーク 2θ (度)
+    :param observed_heights: 観測ピーク強度
+    :param wavelength: 線源波長 (Å)
+    :param two_theta_range: 反射を評価する 2θ 範囲
+    :param require_improvement: True で FoM が initial_cell より改善しなければ None を返す (安全側)
+    :returns: LatticeSolution。データ不足/未改善なら None
+    """
+    hkl_list = [tuple(float(x) for x in h) for h in hkls]
+    inten = np.asarray(intensities, dtype=float)
+    if inten.size == 0:
+        return None
+    thresh = min_intensity_frac * float(inten.max())
+    strong = [i for i in range(len(hkl_list)) if inten[i] >= thresh]
+    if len(strong) < 3:
+        return None
+    H = [hkl_list[i] for i in strong]
+    W = inten[strong]
+    obs_pos = np.asarray(observed_positions, dtype=float)
+    obs_ht = np.asarray(observed_heights, dtype=float)
+    if obs_pos.size < 3:
+        return None
+
+    # 段1: FoM グリッドで大域ベイスン
+    seed = _grid_search_scale(
+        initial_cell, H, wavelength, obs_pos, obs_ht, crystal_system, two_theta_range,
+        span_lo=grid_span[0], span_hi=grid_span[1], step=grid_step,
+    )
+    init_fom = _peak_match_fom(initial_cell, H, wavelength, obs_pos, obs_ht, two_theta_range)
+
+    # 段2: seed から線形精密化 (解析マッチ, pymatgen 不要)
+    cur = seed
+    n_used = len(H)
+    rms = 0.0
+    for it in range(max(1, iterations)):
+        tol = max(0.6, match_tol_deg * (0.85 ** it))
+        matched = _match_indexed(cur, H, W, wavelength, obs_pos, tol)
+        if len(matched) < 3:
+            break
+        sol = refine_cell_robust(
+            [m[0] for m in matched], [m[1] for m in matched], crystal_system=crystal_system,
+            weights=[m[2] for m in matched], reject_sigma=reject_sigma, initial_cell=cur,
+        )
+        n_used, rms = sol.n_used, sol.rms_inv_d2
+        if _cell_shift(cur, sol.cell) < 1e-4:
+            cur = sol.cell
+            break
+        cur = sol.cell
+
+    seed_fom = _peak_match_fom(seed, H, wavelength, obs_pos, obs_ht, two_theta_range)
+    refined_fom = _peak_match_fom(cur, H, wavelength, obs_pos, obs_ht, two_theta_range)
+    if refined_fom <= seed_fom:
+        best_cell, best_fom, best_n, best_rms = cur, refined_fom, n_used, rms
+    else:
+        best_cell, best_fom, best_n, best_rms = seed, seed_fom, len(H), 0.0
+
+    if require_improvement and best_fom > init_fom:
+        return None
+    return LatticeSolution(
+        cell=best_cell, crystal_system=crystal_system.strip().lower(),
+        n_used=best_n, rms_inv_d2=best_rms, rejected=(),
     )

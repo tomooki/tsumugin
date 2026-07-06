@@ -23,8 +23,10 @@ from .lattice import (
     LatticeSolution,
     cell_from_reciprocal_metric,
     reciprocal_metric_from_cell,
+    refine_cell_from_indexed_peaks,
     refine_cell_robust,
     solve_cell_from_dspacings,
+    two_theta_of_hkls,
 )
 from .multistart import (
     MultistartStart,
@@ -61,10 +63,12 @@ __all__ = [
     "generate_cell_scales",
     "prealign_cell_from_structure",
     "reciprocal_metric_from_cell",
+    "refine_cell_from_indexed_peaks",
     "refine_cell_pawley",
     "refine_cell_robust",
     "run_auto_rietveld",
     "run_multistart_rietveld",
     "solve_cell_from_dspacings",
     "summarize_multistart",
+    "two_theta_of_hkls",
 ]
