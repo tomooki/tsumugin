@@ -216,7 +216,7 @@ def run_sequential_rietveld(
 
     # --- 逆方向伝播 (operando 逆方向解析): 確立した新相を前フレームへ逆伝播し onset を精密化 ---
     if config.backward_propagation and pid is not None and pid.enabled and appearances:
-        frame_results, appearances = _backward_propagate(
+        frame_results, appearances = _consolidate_phase_cells(
             frames, n, frame_results, appearances, phases, pid, runner, ledger,
         )
 
@@ -253,15 +253,33 @@ def _best_established_cell(
     return best_cell
 
 
-def _backward_propagate(
+def _rebuild_frame(res, fr, names) -> "FrameRietveldResult":
+    """再精密化結果 res で FrameRietveldResult を作り直す (元 fr のメタは保持)。"""
+    cells = {name: _cell6(c) for name, c in res.refined_cells.items()}
+    return FrameRietveldResult(
+        frame_index=fr.frame_index, axis_value=fr.axis_value, data_path=fr.data_path,
+        rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
+        phase_fractions=_fractions_of(res, tuple(names)), phase_names=tuple(names),
+        changepoint=fr.changepoint, changepoint_reasons=fr.changepoint_reasons,
+        validity_passed=res.validity.passed, refine_failed=False,
+    )
+
+
+def _consolidate_phase_cells(
     frames, n, frame_results, appearances, all_phases, pid, runner, ledger,
 ):
-    """順方向で確立した新相を前フレームへ逆伝播し onset を精密化する (operando 逆方向解析)。
+    """確立した新相の**globally-best セル**で全フレームを再精密化し、onset を逆伝播で捕捉する。
 
-    各 appearance (相 P, 採用フレーム k) について、k 以降で最も支配的なフレームの**確立セル**を初期値に、
-    k-1, k-2, ... を P 追加で再 fit する。P の相分率が有意 (>frac_min) かつ Rwp 改善なら P を前フレームに
-    採用し (onset を前へ)、そうでなければ onset 発見として停止する。順方向で prealign がセルを誤整合し・
-    弱信号で相分率が入らなかった onset を、**良いセルで「当てる」**ことで捕捉する。
+    実測診断: 少数相 (delta) は onset 域では prealign がセルを誤整合し (支配相 alpha のピークにロック)、
+    誤セルを warm-start 前進させると Rietveld が異方誤差を飛び越えられず Rwp 高止まり → 偽相を誘発する。
+    prealign が正しいセル (誤差 <0.05Å) を返すのは**相が支配的なフレーム**のみ。そこで各新相 P について:
+
+    1. **前方再精密化**: P が最も支配的なフレームの確立セルを初期値に、P を含む全フレーム (k..n-1) を
+       再 fit し Rwp 改善なら差し替える (onset 域の誤セル poison を除去)。
+    2. **逆方向 onset**: その良いセルを初期値に k-1, k-2, ... を P 追加で再 fit、相分率有意 + Rwp 改善なら
+       採用し onset を前へ、外れたら停止。
+
+    「支配時に良いセルを確立 → 全フレームへ配る」ことで少数 onset のセル誤整合を回避する。
     """
     name_to_spec = {p.phase_name: p for p in all_phases}
     updated = list(frame_results)
@@ -275,6 +293,25 @@ def _backward_propagate(
         est_cell = _best_established_cell(updated, ap.phase_name, from_frame=k)
         if est_cell is None:
             continue
+        # 1) 前方再精密化: P を含む k..n-1 を globally-best セルで再 fit (onset 域の誤セル poison 除去)
+        for j in range(k, n):
+            fr = updated[j]
+            if ap.phase_name not in fr.phase_names or fr.refine_failed:
+                continue
+            phases_j = tuple(name_to_spec[nm] for nm in fr.phase_names if nm in name_to_spec)
+            warm = {nm: fr.refined_cells[nm] for nm in fr.phase_names if nm in fr.refined_cells}
+            warm[ap.phase_name] = est_cell
+            res = runner(frames[j], phases_j, warm)
+            if res.final_rwp < float("inf") and float(res.final_rwp) < fr.rwp - 1e-9:
+                updated[j] = _rebuild_frame(res, fr, fr.phase_names)
+                ledger.append(
+                    "m9_consolidate_forward",
+                    {"frame": j, "phase": ap.phase_name, "rwp_before": fr.rwp,
+                     "rwp_after": float(res.final_rwp)},
+                )
+        # 前方再精密化でセルが更新された可能性 → 良いセルを取り直す
+        est_cell = _best_established_cell(updated, ap.phase_name, from_frame=k) or est_cell
+        # 2) 逆方向 onset: pre-onset フレームに P を良いセルで追加
         onset = k
         for j in range(k - 1, -1, -1):
             fr = updated[j]
@@ -303,15 +340,8 @@ def _backward_propagate(
             )
             if not accepted:
                 break  # onset 発見 (これ以上前に P はない)
-            cells = {name: _cell6(c) for name, c in res.refined_cells.items()}
             names = tuple(fr.phase_names) + (ap.phase_name,)
-            updated[j] = FrameRietveldResult(
-                frame_index=j, axis_value=fr.axis_value, data_path=fr.data_path,
-                rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
-                phase_fractions=_fractions_of(res, names), phase_names=names,
-                changepoint=fr.changepoint, changepoint_reasons=fr.changepoint_reasons,
-                validity_passed=res.validity.passed, refine_failed=False,
-            )
+            updated[j] = _rebuild_frame(res, fr, names)
             onset = j
         if onset < k:
             # onset を前へ更新 (逆伝播で捕捉した最も早いフレーム)

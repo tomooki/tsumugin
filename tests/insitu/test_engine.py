@@ -237,6 +237,53 @@ def test_max_new_phases_caps_phase_search():
     assert "new_CaTe2O7" not in res.phase_names
 
 
+def test_consolidation_rerefines_poisoned_forward_frames():
+    """globally-best セルで前方フレームを再精密化: 少数 onset の誤セル (高 Rwp) を良いセルで下げる。
+
+    delta は onset (少数, 誤セル, Rwp 25) で受理され誤セルが前進 → 支配フレーム (axis 400) で良いセルに
+    確立。consolidation が支配フレームの良いセルを onset 域の poison フレームへ配り Rwp を 25→10 に下げる。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    GOOD = (13.3, 6.5, 8.1, 90, 90, 90)
+    BAD = (14.0, 6.9, 8.5, 90, 90, 90)
+    ALPHA_C = (14.8, 6.8, 8.0, 90, 90, 90)
+
+    def runner(frame, phases, initial_cells):
+        ax = frame.axis_value
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            dcell = (initial_cells or {}).get("new_CaTeO3")
+            warm_good = dcell is not None and abs(dcell[0] - 13.3) < 0.05
+            if ax == 400.0:  # 支配フレーム: 良いセルに確立 (最大分率)
+                return _result(8.0, {"alpha": ALPHA_C, "new_CaTeO3": GOOD},
+                               {"alpha": 0.4, "new_CaTeO3": 0.6})
+            if warm_good:  # 良いセルで再精密化 (consolidation) → Rwp 低
+                return _result(10.0, {"alpha": ALPHA_C, "new_CaTeO3": GOOD},
+                               {"alpha": 0.7, "new_CaTeO3": 0.3})
+            # 少数 + 誤セル (forward warm-start): alpha 単相 (30) より改善するが高止まり
+            return _result(25.0, {"alpha": ALPHA_C, "new_CaTeO3": BAD},
+                           {"alpha": 0.8, "new_CaTeO3": 0.2})
+        # alpha 単相: Rwp は delta 成長で上昇 (300/320=9, 以降=30)
+        rwp = {300.0: 9.0, 320.0: 9.0}.get(ax, 30.0)
+        return _result(rwp, {"alpha": ALPHA_C}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        # 採用後 (CaTeO3 が exclude) は再探索しない (既知相の再同定防止)
+        if "CaTeO3" in exclude or "new_CaTeO3" in exclude:
+            return []
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=300.0 + i * 20.0) for i in range(9)]
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(frames, [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid, backward_propagation=True))
+    minority = [f for f in res.frames if "new_CaTeO3" in f.phase_names and f.axis_value != 400.0]
+    assert minority, "delta を含む少数フレームが無い"
+    # consolidation で onset 域 poison (誤セル BAD, Rwp 25) が良いセル (a≈13.3) + Rwp≤10 に更新される
+    assert all(f.refined_cells["new_CaTeO3"][0] == pytest.approx(13.3) for f in minority)
+    assert all(f.rwp <= 10.0 + 1e-9 for f in minority)
+
+
 def test_backward_propagation_disabled_keeps_forward_onset():
     """backward_propagation=False なら順方向の onset のまま (逆伝播しない)。"""
     alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")

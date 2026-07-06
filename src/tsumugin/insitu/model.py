@@ -127,10 +127,11 @@ class SequentialConfig:
     :param max_frames: 先頭から解析するフレーム上限 (None なら全部, デバッグ/検証短縮用)
     :param changepoint_window: 変化点検出のローリング窓 (sequential.changepoint と整合)
     :param phase_id: 新相自動同定設定 (None/無効なら相追加しない)
-    :param backward_propagation: 順方向で確立した新相を前フレームへ逆伝播して onset を精密化するか
-        (operando 逆方向解析)。転移域では新相が少数のうちは prealign がセルを誤整合し・弱信号で相分率が
-        入らず順方向では onset を取れない (実測)。支配フレームで確立した**良いセルを初期値に**前フレームを
-        再 fit すれば、既知相を「当てる」形で onset を捕捉できる。既定 True。
+    :param backward_propagation: 新相の**globally-best セルで全フレームを再精密化**し onset を逆伝播で
+        捕捉するか (operando セル整合)。転移域では少数相のうちは prealign がセルを誤整合し (支配相のピークに
+        ロック)、誤セルを warm-start 前進させると Rwp 高止まり→偽相を誘発する (実測)。prealign が正しい
+        セルを返すのは相が支配的なフレームのみ。そこで支配フレームで確立した良いセルで (1) P を含む全
+        フレームを再 fit (onset 域の誤セル poison 除去) + (2) 前フレームへ逆伝播して onset を捕捉する。既定 True。
     """
 
     warm_start: bool = True
