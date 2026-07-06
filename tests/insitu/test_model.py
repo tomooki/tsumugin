@@ -67,10 +67,11 @@ def test_phaseid_config_enabled():
 
 
 def test_phaseid_config_pawley_defaults():
-    """Issue #20: 新相の異方セル補正は既定 ON、波長は Cu Kα1 既定。"""
+    """Issue #20: 新相の異方セル補正は既定 ON、波長は Cu Kα1 既定、異方 re-score top-5 既定。"""
     pid = PhaseIdConfig()
     assert pid.refine_new_phase_cell is True
     assert abs(pid.wavelength - 1.5406) < 1e-9
+    assert pid.rerank_top_k == 5
 
 
 def test_axis_values():

@@ -118,6 +118,8 @@ def identify_new_phases(
     kalpha2: object | None = None,
     name_prefix: str = "phase",
     cell_refiner: CellRefiner | None = None,
+    rerank_top_k: int = 0,
+    rerank_wavelength: float = 1.5406,
 ) -> tuple[IdentifiedPhase, ...]:
     """パターンから新相を同定し上位 top_k を CIF に物質化して返す。
 
@@ -145,6 +147,10 @@ def identify_new_phases(
         与えると等方 strain で物質化した後、この補正器で**異方セル**を求め、非 None なら CIF を
         その絶対格子で再物質化する (DFT の異方的格子誤差を吸収; M6 等方 strain の上位互換)。
         補正器が None を返す/例外を投げると等方 strain 版のまま (安全側フォールバック)。
+    :param rerank_top_k: >0 で相同定の上位 K 候補を**異方格子整合で再スコア**する (Issue #20 hybrid)。
+        等方整合が DFT の軸別格子誤差で正解相を過小評価し top_k から落とすのを防ぐ (供給元が
+        cell/crystal_system/hkl を持つ相のみ; MP 供給元は対応済)。
+    :param rerank_wavelength: 異方再スコアの線源波長 (Å)
     :returns: 物質化した IdentifiedPhase の列 (スコア降順・最大 top_k)
     """
     ident = identify_phases(
@@ -157,6 +163,8 @@ def identify_new_phases(
         refine_lattice=refine_lattice,
         max_strain=max_strain,
         kalpha2=kalpha2,  # type: ignore[arg-type]
+        rerank_top_k=rerank_top_k,
+        rerank_wavelength=rerank_wavelength,
     )
 
     excl_forms = {f.lower() for f in exclude_formulas}

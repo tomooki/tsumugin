@@ -74,6 +74,8 @@ class PhaseIdConfig:
         MP(DFT)構造は格子が軸別にずれ (CaTeO3 delta で c +3.4%)、等方 strain では吸収できず Rietveld
         収束半径外で追えない。True で物質化 CIF を観測へ整合させた異方セルに置換してから精密化に渡す。
     :param wavelength: プリアラインの線源波長 (Å)。既定 Cu Kα1。放射光/中性子系列では実波長を指定。
+    :param rerank_top_k: >0 で相同定の上位 K 候補を異方格子整合で再スコアする (Issue #20 hybrid)。
+        等方整合が DFT の軸別誤差で正解相を top_k から落とすのを防ぐ。既定 5 (0 で無効)。
     """
 
     elements: tuple[str, ...] = ()
@@ -85,6 +87,7 @@ class PhaseIdConfig:
     trigger_rwp_ratio: float = 1.25
     refine_new_phase_cell: bool = True
     wavelength: float = 1.5406
+    rerank_top_k: int = 5
 
     @property
     def enabled(self) -> bool:

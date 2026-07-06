@@ -433,6 +433,7 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
             materializer=materializer, workdir=workdir, exclude_formulas=list(exclude_formulas),
             top_k=pid.top_k, hull_cutoff_ev=pid.hull_cutoff_ev, subtract_bg=pid.subtract_bg,
             name_prefix="new", cell_refiner=cell_refiner,
+            rerank_top_k=pid.rerank_top_k, rerank_wavelength=pid.wavelength,
         )
         return [
             (
