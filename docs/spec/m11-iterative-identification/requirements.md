@@ -1,7 +1,7 @@
 # M11 逐次減算同定 (単相/多相の統一エントリ) 要件定義 (EARS)
 
-対象: `tsumugin.reference.iterative` (新規: `identify_pattern`) + `reference.significance` (`insitu.residual`
-昇格) + 非負スケール joint フィット + `chem` 降格 prior 配線。仕様 (正) `docs/tsumugin_spec_v0.3.md`
+対象: `tsumugin.reference.iterative` (新規: `identify_pattern` + `refine_polymorphs` + 注入 `RietveldRefiner`) +
+`reference.significance` (`insitu.residual` 昇格) + 非負スケール joint フィット。仕様 (正) `docs/tsumugin_spec_v0.3.md`
 **FR-118 (1〜7)**。既存 `identify_phases` (rerank/化学) ・`identify_phase_mixtures` ・`residual_significance`
 ・`ReferenceBackend` プロファイル合成・`group_by_composition` を再利用。
 
@@ -21,7 +21,8 @@
 - 研究者として、**相数を指定せず**パターンと元素だけを渡せば、単相でも多相でも同じ関数で相集合を同定してほしい。
 - 少数相 (5–20%) も、主相を減算した後の残差で**検出限界を下げて**同定してほしい。
 - 元素部分集合の偶然マッチ (graphite 等) を、恣意的な除外でなく**残差で説明できないから**という物理根拠で排除してほしい。
-- 同組成多形 (calcite vs aragonite) の厳密判別は、探索でなく**実 Rietveld へ委譲**する旗を立ててほしい。
+- 同組成多形 (calcite vs aragonite) の厳密判別は、探索で無理なら**相同定が実 Rietveld を呼んで確定**してほしい
+  (別工程に投げ返さない)。
 
 ## 2. 機能要件 (EARS)
 
@@ -43,13 +44,18 @@
 - **REQ-1107** システムは、周回で受理候補が 0 (全棄却) なら停止せねばならない。
 - **REQ-1108** システムは、既説明ピークしか持たない候補 (元素部分集合の decoy 等) を、joint 再フィットで
   スケール≈0 → `eps_gain` 未達により**自然棄却**せねばならない (hard 除外でない)。
-- **REQ-1109** システムは化学妥当性を `chem` の**降格 prior** としてスコアに合成せねばならず、候補を除外しては
-  ならない (Dara 教訓, P2)。全元素系 hard ガードは operando 限定の opt-in とする。
+- **REQ-1109** システムは、**化学的妥当性をコアの相同定に含めてはならない**。化学判断は第3層 (エージェント/
+  人間) の責務とし、必要時のみ呼び出し側が opt-in の全元素系 hard ガード (`require_elements`) をパラメータで
+  与える。コアの既定挙動 (提案・受理) は化学に依存しない (decoy 棄却は残差支持のみで成立する)。
 
-### 2.3 多形と委譲 (FR-118-5)
-- **REQ-1110** システムは、受理相の同組成競合を `group_by_composition` で代替候補として保持せねばならない。
-- **REQ-1111** システムは、受理相集合に僅差の同組成多形 (score 差 < `polymorph_margin`) が含まれるとき、
-  **「実 Rietveld で確定せよ」**のエスカレーション旗を出力に立てねばならない (pseudo-R では多形判別不可)。
+### 2.3 多形判別 = 相同定の責務 (FR-118-5)
+- **REQ-1110** システムは、受理相の同組成競合を `group_by_composition` で集約し、**注入された実 Rietveld
+  精密化 backend** (`refiner`, 任意) に渡して多形を裁定できねばならない。`refiner` 未注入時は集約のみ返す。
+- **REQ-1111** システムは、`refiner` 注入時、多形/僅差候補 (同組成 score 差 < `polymorph_margin`) に対し実
+  Rietveld を相同定内で実行し、**真の Rwp/bic が最良の多形を受理相に採る**べきである (ピーク探索の pseudo-R
+  では多形判別不可のため)。深段の適用条件 (僅差時のみ / 常時) は `IdentifyConfig` で設定可能とする。
+- **REQ-1111b** システムは、`refiner` の実行 (試行構造・Rwp・採否) を ledger に追記し、Rietveld 失敗は
+  chi2=inf 相当に変換してピーク空間段の結果へ安全にフォールバックせねばならない (提案≠適用・崩壊耐性)。
 
 ### 2.4 operando 一本化・非破壊・決定論 (FR-118-6/7)
 - **REQ-1112** `insitu.phaseid.identify_new_phases` は `identify_pattern(known_phases=現行相集合)` に委譲でき、
@@ -68,10 +74,13 @@
 
 ## 4. スコープ外 (M-later)
 
-- 多形の厳密判別 (実 Rietveld へ委譲, FR-200/M7)。
-- プロファイル形状の精密化 (本 M11 は固定 FWHM 合成; 形状最適化は Rietveld 側)。
+- 化学的妥当性のコア組込み (**第3層に分離**; opt-in `require_elements` のみ呼び出し側が渡す)。
+- プロファイル形状の精密化 (高速段は固定 FWHM 合成; 形状最適化は深段 Rietveld / M7 側)。
 - ピーク重なりが激しい系の deconvolution 高度化 (初版は非負スケール LSQ)。
 - `identify_phase_mixtures` の廃止 (本 M11 は**受理集合+代替の小プールでの組合せ検証**用途に再配置し残す)。
+
+**スコープ内 (方針変更)**: 多形の厳密判別は本 M11 の責務 (注入 `refiner` の実 Rietveld 深段, FR-118-5)。
+「Rietveld へ委譲」から「相同定が Rietveld を呼んで確定」へ変更。
 
 ## 5. 受け入れ基準 (検証データ)
 

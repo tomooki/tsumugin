@@ -9,7 +9,7 @@
 
 ```
 T1 significance 昇格 ─┐
-T2 scale.py ──────────┼─ T3 iterative 骨格 ── T4 受理/棄却 ── T5 chem+多形 ── T6 operando シム ── T7 実データ ── T8 review/PR
+T2 scale.py ──────────┼─ T3 iterative 骨格 ── T4 受理/棄却 ── T5 多形 Rietveld 深段 ── T6 operando シム ── T7 実データ ── T8 review/PR
 ```
 
 ## タスク
@@ -41,11 +41,14 @@ T2 scale.py ──────────┼─ T3 iterative 骨格 ── T4 �
   全棄却で停止、ledger verify。
 - **AC**: decoy 棄却が hard 除外なしに成立 (AC-1 の核)。
 
-### T5 — chem 降格 prior + 多形委譲旗 (FR-118-4/5)
-- **成果**: `chem.ChemPlausibility` を提案スコアに減点合成 (除外しない) + `group_by_composition` で多形集約 +
-  僅差同組成の `escalate_to_rietveld` 旗。
-- **テスト**: 部分集合単純相が prior で下がるが残差要求時は受理され得る、多形2つで escalate 旗が立つ。
-- **AC**: Dara 教訓遵守 (候補除外なし)。
+### T5 — 多形 Rietveld 深段 (FR-118-5)
+- **成果**: `RietveldRefiner` 注入型 + `refine_polymorphs(groups, refiner, ...)` — `group_by_composition` で
+  同組成集約し、`refiner` 注入かつ (僅差 or `always_refine`) のとき各多形を実 Rietveld で裁定、真 Rwp/bic 最良を
+  受理相に採る。Rietveld 失敗は chi2=inf でピーク空間段へ fallback。試行/採否を ledger 追記。
+  **化学はコアから除外** — 提案の `require_elements` は opt-in (既定 None) のみ残す (第3層)。
+- **テスト** (stub refiner): 僅差多形 A/B で refiner が B を真 Rwp 最良として採る、refiner 未注入は集約のみ、
+  refiner 失敗で高速段結果に fallback、`require_elements` opt-in で部分集合相を絞る/既定は絞らない。
+- **AC**: 多形裁定が相同定内で完結 (委譲しない)。コア既定は化学非依存。
 
 ### T6 — operando シム一本化 (FR-118-6)
 - **成果**: `insitu.phaseid.identify_new_phases` を `identify_pattern(known_phases=現行相集合)` 委譲へ
@@ -53,11 +56,12 @@ T2 scale.py ──────────┼─ T3 iterative 骨格 ── T4 �
 - **テスト**: 既存 insitu phaseid テスト非回帰 + known_phases 起点の逐次同定が動く。
 - **AC**: M9/M10 の insitu テスト green。
 
-### T7 — 実データ検証 (`@pytest.mark.mp`, AC-1/2/3)
-- **成果**: CandAt × MP 全候補で calcite+aragonite 受理・graphite 棄却、PbSO4 で k=1 停止、minority_probe で
-  検出限界低下を測るスクリプト + gated テスト。snr_stop を PbSO4 で校正。
-- **テスト**: gated (受理相集合・graphite 不在・単相 k=1・検出限界)。
-- **AC**: AC-1/2/3 達成。`scratchpad/bench_mp_full.py` の graphite 混入が解消。
+### T7 — 実データ検証 (`@pytest.mark.mp` / `@pytest.mark.gsas`, AC-1/2/3)
+- **成果**: CandAt × MP 全候補で (高速段) calcite + CaCO3 多形受理・graphite 棄却、(深段 refiner=GSAS) で
+  **calcite + aragonite を真 Rwp で確定**、PbSO4 で k=1 停止、minority_probe で検出限界低下を測るスクリプト +
+  gated テスト。snr_stop を PbSO4 で校正。
+- **テスト**: gated (高速段=受理相集合・graphite 不在・単相 k=1・検出限界; 深段=aragonite が多形裁定で選ばれる)。
+- **AC**: AC-1/2/3 達成。`scratchpad/bench_mp_full.py` の graphite 混入が解消 + 多形が Rietveld で確定。
 
 ### T8 — `/code-review` ループ → PR
 - **成果**: 差分 code-review、MEDIUM/LOW 修正、CLAUDE.md (アーキ表 + M11 現状) 更新、PR 作成。
