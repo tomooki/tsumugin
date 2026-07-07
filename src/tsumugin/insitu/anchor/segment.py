@@ -58,6 +58,7 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
         phase_fractions=fracs, phase_names=tuple(phase_names),
         validity_passed=res.validity.passed,
         refine_failed=not (float(res.final_rwp) < float("inf")),
+        n_obs=int(getattr(res, "n_obs", 0)),
     )
 
 

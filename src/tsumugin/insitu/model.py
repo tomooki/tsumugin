@@ -158,6 +158,7 @@ class FrameRietveldResult:
     :param changepoint_reasons: 発火した指標名 (rwp_jump/lattice_jump/new_peaks)
     :param validity_passed: 物理妥当性ゲート合格か
     :param refine_failed: 精密化が失敗 (inf 変換) したフレームか
+    :param n_obs: 精密化に使った観測点数 (bic 算出用, M10)。既定 0 で後方互換 (bic 未使用時は不要)
     """
 
     frame_index: int
@@ -172,6 +173,7 @@ class FrameRietveldResult:
     changepoint_reasons: tuple[str, ...] = ()
     validity_passed: bool = True
     refine_failed: bool = False
+    n_obs: int = 0
 
 
 @dataclass(frozen=True)
