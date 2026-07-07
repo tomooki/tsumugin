@@ -64,10 +64,12 @@ def _refine_anchor(
     """段階 B: フレーム i を specs で実構造 Rietveld し Anchor 値を組む。"""
     res = runner(frame, specs, None)
     cells: dict[str, Cell] = {k: tuple(v) for k, v in res.refined_cells.items()}  # type: ignore[misc]
+    fracs = {k: float(v) for k, v in res.phase_fractions.items()}
     return Anchor(
         frame_index=i, axis_value=frame.axis_value, phase_specs=tuple(specs),
         refined_cells=cells, rwp=float(res.final_rwp), gof=float(res.final_gof),
-        confidence=float(confidence), validity_passed=res.validity.passed, fallback=fallback,
+        phase_fractions=fracs, confidence=float(confidence), validity_passed=res.validity.passed,
+        n_obs=int(getattr(res, "n_obs", 0)), fallback=fallback,
     )
 
 

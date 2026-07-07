@@ -70,8 +70,10 @@ class Anchor:
     :param refined_cells: 相名→精密化格子 (warm-start 初期値)
     :param rwp: 段階 B Rietveld の Rwp
     :param gof: 段階 B Rietveld の GOF
+    :param phase_fractions: 相名→相分率 (段階 B 結果; 出力フレーム組立用)
     :param confidence: 段階 A 合成信頼度
     :param validity_passed: 物理妥当性ゲート合格か
+    :param n_obs: 段階 B の観測点数 (bic 用)
     :param fallback: fallback アンカー (確定 0 個時の最小 Rwp フレーム) か
     """
 
@@ -81,8 +83,10 @@ class Anchor:
     refined_cells: Mapping[str, Cell]
     rwp: float
     gof: float
+    phase_fractions: Mapping[str, float] = field(default_factory=dict)
     confidence: float = 0.0
     validity_passed: bool = True
+    n_obs: int = 0
     fallback: bool = False
 
     @property

@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
+from .engine import run_anchored_sequential
+from .extract import anchor_confidence, extract_anchors
 from .model import Anchor, AnchorConfig, CrossoverChoice, Segment, SegmentPass
+from .segment import build_segments, refine_segment_backward, refine_segment_forward
+from .select import assemble_path, frame_bic, select_crossover
 
 __all__ = [
     "Anchor",
@@ -15,4 +19,13 @@ __all__ = [
     "CrossoverChoice",
     "Segment",
     "SegmentPass",
+    "anchor_confidence",
+    "assemble_path",
+    "build_segments",
+    "extract_anchors",
+    "frame_bic",
+    "refine_segment_backward",
+    "refine_segment_forward",
+    "run_anchored_sequential",
+    "select_crossover",
 ]
