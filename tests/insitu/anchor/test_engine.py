@@ -1,0 +1,125 @@
+"""M10 anchor/engine.py — run_anchored_sequential のエンドツーエンドテスト (stub runner, numpy)。
+
+アンカー抽出→双方向区間→bic crossover→組立→ledger の統合。決定論・単相縮退・onset 記録を検証する。
+"""
+
+from __future__ import annotations
+
+from tsumugin.autorietveld.model import AutoRietveldResult, PhaseSpec, ValidityReport
+from tsumugin.insitu.anchor import run_anchored_sequential
+from tsumugin.insitu.anchor.model import AnchorConfig
+from tsumugin.insitu.model import FrameSpec, SequentialRietveldResult
+
+ALPHA = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+DELTA = PhaseSpec(structure_path="delta.cif", phase_name="new_delta")
+
+
+def _res(rwp, cells, fracs, *, gof=1.0, valid=True, n_obs=2000):
+    return AutoRietveldResult(stage_results=(), final_rwp=rwp, final_gof=gof, refined_cells=cells,
+                              validity=ValidityReport(passed=valid), phase_fractions=fracs,
+                              n_obs=n_obs)
+
+
+def _frames(n):
+    return [FrameSpec(data_path=f"f{i}.xye", axis_value=float(300 + i * 30)) for i in range(n)]
+
+
+def _idx(frame):
+    return int((frame.axis_value - 300) / 30)
+
+
+def test_single_phase_series_degenerates_to_anchors():
+    """単相系列: 全フレーム高信頼 → 全アンカー、内側なし → M9 相当 (各 1 回精密化)。"""
+    def identifier(frame):
+        return (0.9, (ALPHA,))
+
+    def runner(frame, phases, cells):
+        return _res(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    res = run_anchored_sequential(_frames(4), [ALPHA], runner=runner, identifier=identifier)
+    assert isinstance(res, SequentialRietveldResult)
+    assert len(res.frames) == 4
+    assert res.phase_names == ("alpha",)
+    assert res.appearances == ()
+    assert all(f.rwp == 9.0 and not f.refine_failed for f in res.frames)
+
+
+def test_identifier_none_is_m9_forward_pass():
+    """相同定無効 → frame0 単一アンカー + 末尾端点前方パスで全フレーム被覆。"""
+    def runner(frame, phases, cells):
+        return _res(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    res = run_anchored_sequential(_frames(3), [ALPHA], runner=runner, identifier=None)
+    assert len(res.frames) == 3
+    assert all(not f.refine_failed for f in res.frames)
+    assert any("fallback_anchor" in w for w in res.warnings)
+
+
+def test_transition_crossover_locates_onset():
+    """alpha 単相域 (0,1) と delta 支配域 (4,5) がアンカー、転移 (2,3) を双方向で詰め onset 確定。
+
+    後方 (alpha+delta) は転移フレームでも Rwp が僅かに低いが、bic は delta が真に効くフレームのみ
+    後方採用 → onset が物理的な転移点になる。
+    """
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0,
+                       base_params=30, per_phase_params=12)
+    # frame0,1: alpha 高信頼; frame4,5: alpha+delta 高信頼; frame2,3: 低信頼 (転移)
+    conf = {0: 0.9, 1: 0.9, 2: 0.2, 3: 0.2, 4: 0.85, 5: 0.9}
+    specs = {0: (ALPHA,), 1: (ALPHA,), 2: (ALPHA,), 3: (ALPHA,),
+             4: (ALPHA, DELTA), 5: (ALPHA, DELTA)}
+
+    def identifier(frame):
+        i = _idx(frame)
+        return (conf[i], specs[i])
+
+    def runner(frame, phases, cells):
+        i = _idx(frame)
+        names = [p.phase_name for p in phases]
+        if names == ["alpha"]:
+            # alpha 単相: 転移後 (i>=3) は破綻
+            gof = 1.0 if i <= 2 else 3.0
+            rwp = 9.0 if i <= 2 else 30.0
+            return _res(rwp, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0}, gof=gof)
+        # alpha+delta: delta 分率は i で増加、転移前 (i<=2) は僅少
+        dfrac = {0: 0.01, 1: 0.02, 2: 0.05, 3: 0.30, 4: 0.55, 5: 0.75}.get(i, 0.3)
+        gof = 1.4 if i <= 2 else 1.0  # 転移前は 2 相でも大して良くならない
+        return _res(9.5 if i <= 2 else 9.0,
+                    {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in names},
+                    {"alpha": 1 - dfrac, "new_delta": dfrac}, gof=gof)
+
+    res = run_anchored_sequential(_frames(6), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    assert len(res.frames) == 6
+    # delta が appearance として記録される
+    ap = [a for a in res.appearances if a.phase_name == "new_delta"]
+    assert ap, "delta の appearance が無い"
+    onset = ap[0].frame_index
+    assert 2 <= onset <= 4, f"onset={onset} が転移域外"
+    # delta 分率が単調非減少 (物理的な転移)
+    _, dvals = res.fraction_series("new_delta")
+    assert dvals == tuple(sorted(dvals))
+    # ledger 追記 + verify
+    assert res.ledger is not None and res.ledger.verify()
+
+
+def test_deterministic_bit_identical():
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0)
+
+    def identifier(frame):
+        i = _idx(frame)
+        return ((0.9 if i in (0, 3) else 0.2), (ALPHA,) if i < 2 else (ALPHA, DELTA))
+
+    def runner(frame, phases, cells):
+        names = [p.phase_name for p in phases]
+        return _res(9.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in names},
+                    {names[0]: 1.0} if len(names) == 1 else {"alpha": 0.5, "new_delta": 0.5})
+
+    a = run_anchored_sequential(_frames(4), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    b = run_anchored_sequential(_frames(4), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    assert [f.rwp for f in a.frames] == [f.rwp for f in b.frames]
+    assert [f.phase_names for f in a.frames] == [f.phase_names for f in b.frames]
+    assert [ap.frame_index for ap in a.appearances] == [ap.frame_index for ap in b.appearances]
+
+
+def test_empty_frames_returns_empty():
+    res = run_anchored_sequential([], [ALPHA], runner=lambda *a: None, identifier=None)
+    assert res.frames == ()

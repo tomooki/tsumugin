@@ -30,8 +30,10 @@ from .parametric import (
     transition_from_fractions,
 )
 from .phaseid import IdentifiedPhase, identify_new_phases
+from .anchor import AnchorConfig, run_anchored_sequential
 
 __all__ = [
+    "AnchorConfig",
     "Cell",
     "FrameRietveldResult",
     "FrameSpec",
@@ -46,6 +48,7 @@ __all__ = [
     "lattice_baseline",
     "make_gsas_runner",
     "pseudo_variable_series",
+    "run_anchored_sequential",
     "run_sequential_rietveld",
     "transition_from_fractions",
 ]

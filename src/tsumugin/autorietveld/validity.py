@@ -98,3 +98,108 @@ def check_validity(
 
     passed = all(ok for _, ok, _ in checks)
     return ValidityReport(passed=passed, checks=tuple(checks), warnings=tuple(warnings))
+
+
+def _element_radius(specie) -> float:
+    """元素の代表半径 (Å)。共有結合半径→原子半径→既定 1.0 の順で取得 (pymatgen)。"""
+    el = getattr(specie, "element", specie)
+    for attr in ("atomic_radius_calculated", "atomic_radius"):
+        r = getattr(el, attr, None)
+        if r is not None:
+            try:
+                return float(r)
+            except (TypeError, ValueError):
+                pass
+    return 1.0
+
+
+def check_bond_validity(
+    structure_path: str,
+    refined_cell: Sequence[float] | None = None,
+    *,
+    bond_tol_lo: float = 0.7,
+    bond_tol_hi: float = 1.3,
+    expected_coordination: Mapping[str, tuple[int, int]] | None = None,
+) -> ValidityReport:
+    """精密化構造の**最近接結合距離**と (任意) **配位数**の物理妥当性を判定する (FR-335)。
+
+    誤構造が偶然 Rwp に合う場合を、原子間距離・配位で棄却するための追加ゲート。最近接原子対の距離が
+    元素半径和の `bond_tol_lo`〜`bond_tol_hi` 倍に収まるか (下限割れ=セル崩壊・上限超え=過膨張) を検査。
+    `expected_coordination` 指定時は pymatgen `CrystalNN` で元素別配位数の範囲も検査する。
+
+    pymatgen 不在・構造読込失敗は **passed=True + 警告** に縮退する (gate, クラッシュさせない; REQ-1013)。
+
+    :param structure_path: 構造ファイル (CIF)
+    :param refined_cell: 精密化格子 (a,b,c,α,β,γ)。指定時は構造の格子をこれに置換して検査
+    :param bond_tol_lo: 最近接距離の許容下限倍率 (半径和に対する)
+    :param bond_tol_hi: 最近接距離の許容上限倍率
+    :param expected_coordination: 元素記号 → (配位数下限, 上限)。None なら配位数検査を省略
+    """
+    try:
+        from pymatgen.core import Lattice, Structure
+    except Exception:
+        return ValidityReport(
+            passed=True, checks=(),
+            warnings=("pymatgen 不在: 結合距離/配位数チェックを skip",),
+        )
+    try:
+        structure = Structure.from_file(structure_path)
+    except Exception as exc:  # noqa: BLE001 — 読込失敗は非致命 skip
+        return ValidityReport(
+            passed=True, checks=(), warnings=(f"構造読込失敗 skip: {exc}",),
+        )
+
+    if refined_cell is not None and len(refined_cell) >= 6:
+        lat = Lattice.from_parameters(*(float(x) for x in refined_cell[:6]))
+        structure = Structure(lat, structure.species, structure.frac_coords)
+
+    checks: list[tuple[str, bool, str]] = []
+    warnings: list[str] = []
+
+    # --- 最近接結合距離 (PBC 最小像; distance_matrix は周期境界を考慮) ---
+    n = len(structure)
+    if n >= 2:
+        dm = structure.distance_matrix
+        min_ratio = float("inf")
+        worst = (0.0, 0.0)
+        for i in range(n):
+            ri = _element_radius(structure[i].specie)
+            for j in range(i + 1, n):
+                d = float(dm[i][j])
+                expected = ri + _element_radius(structure[j].specie)
+                if expected <= 0.0:
+                    continue
+                ratio = d / expected
+                if ratio < min_ratio:
+                    min_ratio = ratio
+                    worst = (d, expected)
+        if min_ratio < float("inf"):
+            ok = bond_tol_lo <= min_ratio <= bond_tol_hi
+            checks.append((
+                "min_bond_distance", ok,
+                f"最近接 {worst[0]:.3f}Å / 半径和 {worst[1]:.3f}Å = {min_ratio:.3f} "
+                f"(要 {bond_tol_lo}<=r<={bond_tol_hi})",
+            ))
+
+    # --- 配位数 (任意, CrystalNN) ---
+    if expected_coordination:
+        try:
+            from pymatgen.analysis.local_env import CrystalNN
+
+            nn = CrystalNN()
+            for i, site in enumerate(structure):
+                sym = site.specie.symbol
+                rng = expected_coordination.get(sym)
+                if rng is None:
+                    continue
+                cn = nn.get_cn(structure, i)
+                ok = rng[0] <= cn <= rng[1]
+                checks.append((
+                    f"coordination_{sym}_{i}", ok,
+                    f"CN={cn} (要 {rng[0]}<=CN<={rng[1]})",
+                ))
+        except Exception as exc:  # noqa: BLE001 — CrystalNN 失敗は非致命 skip
+            warnings.append(f"配位数解析 skip: {exc}")
+
+    passed = all(ok for _, ok, _ in checks)
+    return ValidityReport(passed=passed, checks=tuple(checks), warnings=tuple(warnings))
