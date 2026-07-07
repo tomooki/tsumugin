@@ -117,7 +117,7 @@ def test_rerank_improves_correct_phase_score():
         provider=prov, elements=["Ca", "Te", "O"], hull_cutoff_ev=None,
         scoring="dara", refine_lattice=True, max_strain=0.05,
     )
-    iso = identify_phases(observed_tt, observed_int, **common)
+    iso = identify_phases(observed_tt, observed_int, rerank_top_k=0, **common)  # 明示 off (等方)
     hyb = identify_phases(observed_tt, observed_int, rerank_top_k=2, rerank_wavelength=_WL, **common)
 
     iso_delta = next(m for m in iso.matches if m.reference.phase_id == "mp-delta")
@@ -172,12 +172,17 @@ def test_rerank_with_kalpha2_still_promotes_correct_phase():
     assert hyb.matches[0].reference.phase_id == "mp-delta"
 
 
-def test_rerank_zero_is_noop():
-    """rerank_top_k=0 (既定) は従来 (等方のみ) と同一結果 (後方互換)。"""
+def test_rerank_default_on_promotes_off_explicit():
+    """既定 (rerank_top_k=5, 層1 デフォルト) は異方再スコアで昇格。rerank_top_k=0 は明示 off で等方スコア。
+
+    hybrid re-score をデフォルト on にしたため (副作用なし: 昇格専用 + cell/hkl 無しはスキップ)、
+    DFT 誤差 (_DFT cell) の正解相は既定で異方再スコアされ、明示 off より高スコアになる。
+    """
     observed_tt, observed_int = _pattern_from_peaks(_peaks_at(_TRUE))
     prov = _FakeProvider([_ref_phase("mp-delta", _DFT)])
     kw = dict(provider=prov, elements=["Ca", "Te", "O"], hull_cutoff_ev=None,
               refine_lattice=True, max_strain=0.05)
-    base = identify_phases(observed_tt, observed_int, **kw)
-    rk0 = identify_phases(observed_tt, observed_int, rerank_top_k=0, **kw)
-    assert [m.score for m in base.matches] == [m.score for m in rk0.matches]
+    off = identify_phases(observed_tt, observed_int, rerank_top_k=0, **kw)  # 明示 off (等方)
+    default_on = identify_phases(observed_tt, observed_int, **kw)  # 既定 5 (異方)
+    # 昇格専用: 既定は off 以上、かつ DFT 誤差相なので厳密に改善
+    assert default_on.matches[0].score > off.matches[0].score

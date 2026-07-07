@@ -15,6 +15,7 @@ GSAS 駆動は既定 runner (`_default_gsas_runner`) 内の `run_auto_rietveld` 
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Sequence
 
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
@@ -354,25 +355,48 @@ def _consolidate_phase_cells(
     return updated, tuple(new_appearances)
 
 
-def _accept_new_phase(trial, new_name, base_rwp, trial_rwp, new_frac, pid) -> bool:
-    """新相受理判定 (③ 受理閾値): 相対 Rwp 改善 ∧ 分率 ∧ 新相セル健全 ∧ (任意) 全相妥当性。
+def _model_bic(gof: float, n_obs: int, n_phases: int, base_params: int, per_phase: int) -> float:
+    """モデルの bic = chi2 + n_params·ln(n_obs)。chi2≈gof²·(n_obs−n_params)。
 
-    転移域では旧相 (alpha) のセルが急変し全相 validity が fail するが、それは新相 (delta) 追加の
-    是非とは独立。そこで既定では**新相セルの非崩壊のみ**を必須ガードにし (require_validity=False)、
-    Rwp の相対改善 + 有意分率で採否する。junk は Rwp が下がらず弾かれる (物理ベースの判定)。
+    n_params = base_params + per_phase·相数。anchor/select・operando `_frame_bic` と同式 (単一情報源)。
+    gof 非有限は inf。n_obs=0 (未設定) は penalty=0 に縮退 (bic≈chi2, テストスタブ互換)。
     """
-    rwp_gain = (base_rwp - trial_rwp) / base_rwp if base_rwp > 0 else 0.0
+    if not math.isfinite(gof):
+        return float("inf")
+    no = max(int(n_obs), 1)
+    p = base_params + per_phase * max(int(n_phases), 1)
+    dof = max(no - p, 1)
+    return gof * gof * dof + p * math.log(no)
+
+
+def _accept_new_phase(trial, new_name, base_rwp, trial_rwp, new_frac, pid, base_result=None) -> bool:
+    """新相受理判定 (③ 受理閾値): 分率 ∧ 新相セル健全 ∧ (任意) 妥当性 ∧ スコア改善 (bic or 相対 Rwp)。
+
+    共通ガード: (1) 新相分率 > frac_min、(2) 新相セル非崩壊、(3) require_validity 時のみ全相妥当性。
+    転移域では旧相のセル急変で全相 validity が fail するが新相追加の是非とは独立なので既定では課さない。
+
+    スコア基準 (Issue #23 層1): **bic_acceptance (既定)** なら base(N相) vs trial(N+1相) を bic で比較し
+    ``trial_bic < base_bic`` で採用。Rwp はパラメータ増で単調減少し余分な相が常に「改善」に見えるため、
+    bic のパラメータ罰で本当に説明力がある相のみ採る。base_result 不在時は相対 Rwp にフォールバック。
+    """
     new_cell = trial.refined_cells.get(new_name)
     new_cell_ok = new_cell is not None and min(
         float(new_cell[0]), float(new_cell[1]), float(new_cell[2])
     ) > 1.0
     validity_ok = trial.validity.passed if pid.require_validity else True
-    return (
-        rwp_gain > pid.min_rwp_gain
-        and new_frac > pid.frac_min
-        and new_cell_ok
-        and validity_ok
-    )
+    if not (new_frac > pid.frac_min and new_cell_ok and validity_ok):
+        return False
+
+    if pid.bic_acceptance and base_result is not None:
+        n_base = max(len(base_result.phase_fractions), len(base_result.refined_cells), 1)
+        base_bic = _model_bic(base_result.final_gof, base_result.n_obs, n_base,
+                              pid.bic_base_params, pid.bic_per_phase_params)
+        trial_bic = _model_bic(trial.final_gof, trial.n_obs, n_base + 1,
+                               pid.bic_base_params, pid.bic_per_phase_params)
+        return trial_bic < base_bic - 1e-9
+
+    rwp_gain = (base_rwp - trial_rwp) / base_rwp if base_rwp > 0 else 0.0
+    return rwp_gain > pid.min_rwp_gain
 
 
 def _try_add_phase(
@@ -405,7 +429,8 @@ def _try_add_phase(
         trial = runner(frame, trial_phases, base_cells)
         trial_rwp = float(trial.final_rwp)
         new_frac = float(trial.phase_fractions.get(cand_spec.phase_name, 0.0))
-        accepted = _accept_new_phase(trial, cand_spec.phase_name, base_rwp, trial_rwp, new_frac, pid)
+        accepted = _accept_new_phase(trial, cand_spec.phase_name, base_rwp, trial_rwp,
+                                     new_frac, pid, base_result)
         ledger.append(
             "m9_phaseid_trial",
             {

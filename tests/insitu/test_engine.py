@@ -18,7 +18,7 @@ from tsumugin.insitu.model import FrameSpec, PhaseIdConfig, SequentialConfig
 from tsumugin.store.ledger import Ledger
 
 
-def _result(rwp, cells, fracs, *, valid=True, gof=1.0, residual=None):
+def _result(rwp, cells, fracs, *, valid=True, gof=1.0, residual=None, n_obs=0):
     kw = {}
     if residual is not None:
         tt, ri, sg = residual
@@ -31,6 +31,7 @@ def _result(rwp, cells, fracs, *, valid=True, gof=1.0, residual=None):
         refined_cells=cells,
         validity=ValidityReport(passed=valid),
         phase_fractions=fracs,
+        n_obs=n_obs,
         **kw,
     )
 
@@ -404,6 +405,41 @@ def test_require_validity_restores_strict_rejection():
     res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
                                   config=SequentialConfig(phase_id=pid))
     assert res.appearances == ()  # validity fail で棄却
+
+
+def test_bic_acceptance_opt_in_accepts_real_phase():
+    """bic_acceptance=True (opt-in): 実相 (大きな gof 改善) を bic で採用する。"""
+    from tsumugin.insitu.engine import _accept_new_phase
+
+    base = _result(40.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0},
+                   gof=4.0, n_obs=2000)
+    trial = _result(33.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                           "new_delta": (13.3, 6.5, 8.1, 90, 90, 90)},
+                    {"alpha": 0.9, "new_delta": 0.1}, gof=3.3, n_obs=2000)
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), bic_acceptance=True, frac_min=0.03)
+    assert _accept_new_phase(trial, "new_delta", 40.0, 33.0, 0.1, pid, base) is True
+
+
+def test_bic_acceptance_permissive_vs_min_rwp_gain():
+    """ベンチマーク知見: 大 n_obs では bic は min_rwp_gain より寛容 (罰が chi2 スケールに対し微小)。
+
+    0.3% しか Rwp が下がらない相を、min_rwp_gain=1% は棄却するが bic は採用する (罰 91 << chi2 改善 213)。
+    → forward-pass の既定は相対 Rwp (過剰適合ガード)、bic は opt-in。
+    """
+    from tsumugin.insitu.engine import _accept_new_phase
+
+    base = _result(30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0},
+                   gof=3.0, n_obs=2000)
+    trial = _result(29.91, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                            "new_junk": (5.0, 5.0, 5.0, 90, 90, 90)},
+                    {"alpha": 0.6, "new_junk": 0.4}, gof=2.991, n_obs=2000)
+    rwp_pid = PhaseIdConfig(elements=("Ca", "Te", "O"), bic_acceptance=False,
+                            min_rwp_gain=0.01, frac_min=0.03)
+    bic_pid = PhaseIdConfig(elements=("Ca", "Te", "O"), bic_acceptance=True, frac_min=0.03)
+    # 相対 Rwp (既定): 0.3% < 1% で棄却
+    assert _accept_new_phase(trial, "new_junk", 30.0, 29.91, 0.4, rwp_pid, base) is False
+    # bic (opt-in): 罰より chi2 改善が大きく採用 (寛容 = forward-pass の既定にしない理由)
+    assert _accept_new_phase(trial, "new_junk", 30.0, 29.91, 0.4, bic_pid, base) is True
 
 
 def test_reject_new_phase_when_rwp_gain_below_threshold():
