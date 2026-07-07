@@ -119,12 +119,11 @@ def run_anchored_sequential(
 
     # frame 順に組み立て (欠測は失敗フレーム)
     frame_results = tuple(
-        assembled.get(i) if assembled.get(i) is not None else _failed_frame(frames[i], i)
-        for i in range(n)
+        assembled[i] if i in assembled else _failed_frame(frames[i], i) for i in range(n)
     )
 
     # 新相 appearances: 最終経路で非 base 相が初めて現れるフレーム (crossover onset を優先)
-    appearances = _collect_appearances(frame_results, anchors, base_names, onsets, cfg)
+    appearances = _collect_appearances(frame_results, anchors, base_names, onsets)
 
     all_names: list[str] = []
     for fr in frame_results:
@@ -145,7 +144,7 @@ def run_anchored_sequential(
 
 def _collect_appearances(
     frame_results: "tuple[FrameRietveldResult, ...]", anchors: "tuple[Anchor, ...]",
-    base_names: "frozenset[str]", onsets: "dict[str, int]", cfg: AnchorConfig,
+    base_names: "frozenset[str]", onsets: "dict[str, int]",
 ) -> "list[PhaseAppearance]":
     """非 base 相ごとに、最終経路で初めて有意分率で現れるフレームを onset として記録する。"""
     appearances: list[PhaseAppearance] = []
