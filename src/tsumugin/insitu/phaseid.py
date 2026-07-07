@@ -118,7 +118,7 @@ def identify_new_phases(
     kalpha2: object | None = None,
     name_prefix: str = "phase",
     cell_refiner: CellRefiner | None = None,
-    rerank_top_k: int = 0,
+    rerank_top_k: int = 5,
     rerank_wavelength: float = 1.5406,
     require_full_element_system: bool = True,
 ) -> tuple[IdentifiedPhase, ...]:
