@@ -492,9 +492,11 @@ def refine_polymorphs(
                     improved = True
     if not changed:
         return tuple(accepted), False
+    # swap した相 (r != a.reference) は別格子ゆえ旧 strain は無意味 → 0 リセット。未 swap は保持。
     new_accepted = tuple(
         AcceptedPhase(
-            reference=r, scale=a.scale, score=a.score, source="iterative+rietveld", strain=a.strain
+            reference=r, scale=a.scale, score=a.score, source="iterative+rietveld",
+            strain=a.strain if r.phase_id == a.reference.phase_id else 0.0,
         )
         for r, a in zip(best_refs, accepted)
     )
