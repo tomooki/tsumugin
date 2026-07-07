@@ -58,13 +58,15 @@ def _ref(phase_id, formula, peaks, elements, ehull=0.0):
     )
 
 
-def _pattern(centers, heights=None, fwhm=0.2):
+def _pattern(centers, heights=None, fwhm=0.2, counts=1500.0):
+    """合成パターン。M11 委譲後の identify_pattern は計数統計 σ に対する残差 S/N で停止するため、
+    現実的なカウント数 (`counts`) にスケールして相ピークが S/N 閾値を超えるようにする。"""
     tt = np.arange(15.0, 60.0, 0.02)
     inten = np.zeros_like(tt)
     hs = heights or [1.0] * len(centers)
     sigma = fwhm / 2.3548
     for c, h in zip(centers, hs):
-        inten += h * np.exp(-0.5 * ((tt - c) / sigma) ** 2)
+        inten += counts * h * np.exp(-0.5 * ((tt - c) / sigma) ** 2)
     return tt, inten
 
 
@@ -89,13 +91,17 @@ def test_materializes_top_phase(tmp_path):
 
 
 def test_nonzero_strain_propagates_to_materialize(tmp_path):
-    """refine_lattice=True で候補ピークが観測とずれると align_peaks が非零歪みを求め、
-    それが materialize(strain=) へ伝播する (DFT 格子ズレ補正の経路)。"""
-    # 観測ピークは 20/30/40。候補は +0.3° ほど高角側にずれて登録 (=格子がやや小さい)。
-    tt, inten = _pattern([20.0, 30.0, 40.0], heights=[1.0, 0.9, 0.7])
-    prov = FakeProvider([
-        _ref("mp-x", "CaTeO3", [(20.3, 1.0), (30.35, 0.9), (40.4, 0.7)], ["Ca", "Te", "O"])
-    ])
+    """refine_lattice=True で候補ピークが観測から系統的にずれると refine_lattice が非零歪みを求め、
+    それが materialize(strain=) へ伝播する (DFT 格子ズレ補正の経路)。
+
+    M11 委譲後の減算整合は多ピーク (_MIN_ALIGN_MATCHES=8) で活性化するため、観測を真位置、候補相を
+    一律 +1% 高角シフト (等方格子ズレ相当) にした 9 ピーク相で検証する。
+    """
+    true_pos = [18.0, 21.0, 24.0, 28.0, 32.0, 36.0, 41.0, 46.0, 52.0]
+    heights = [1.0, 0.9, 0.8, 1.0, 0.7, 0.9, 0.6, 0.8, 0.7]
+    tt, inten = _pattern(true_pos, heights=heights)  # 観測は真位置
+    shifted = [(p * 1.010, h) for p, h in zip(true_pos, heights)]  # 候補は一律 +1% 高角
+    prov = FakeProvider([_ref("mp-x", "CaTeO3", shifted, ["Ca", "Te", "O"])])
     mat = FakeMaterializer()
     out = identify_new_phases(
         tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
@@ -230,11 +236,16 @@ def test_excludes_by_phase_id(tmp_path):
 
 
 def test_skips_materialization_failure_takes_next(tmp_path):
-    # mp-a (最良) は物質化失敗 → mp-b を採る
-    tt, inten = _pattern([20.0, 30.0, 40.0])
+    # mp-a (最強・先に受理) は物質化失敗 → 次の受理相 mp-b を採る。
+    # M11 委譲後は残差支持で受理された相のみが物質化対象なので、両相が実際にパターンに存在する必要が
+    # ある (旧: 素の identify_phases ランキング上位から順に。新: 受理集合から順に)。mp-a/mp-b は
+    # 別ピーク群を持つ独立の相として両方存在させる。
+    tt, inten = _pattern(
+        [20.0, 30.0, 40.0, 25.0, 35.0, 45.0], heights=[1.0, 1.0, 1.0, 0.7, 0.7, 0.7]
+    )
     prov = FakeProvider([
         _ref("mp-a", "AAA", [(20.0, 1.0), (30.0, 1.0), (40.0, 1.0)], ["Ca", "Te", "O"]),
-        _ref("mp-b", "BBB", [(20.0, 1.0), (30.0, 1.0)], ["Ca", "Te", "O"]),
+        _ref("mp-b", "BBB", [(25.0, 1.0), (35.0, 1.0), (45.0, 1.0)], ["Ca", "Te", "O"]),
     ])
     mat = FakeMaterializer(fail_ids=["mp-a"])
     out = identify_new_phases(
@@ -244,6 +255,30 @@ def test_skips_materialization_failure_takes_next(tmp_path):
     assert len(out) == 1
     assert out[0].phase_id == "mp-b"
     assert mat.calls == ["mp-a", "mp-b"]  # a を試し失敗、b で成功
+
+
+def test_known_phases_warmstart_materializes_only_new(tmp_path):
+    """known_phases=[alpha] 起点なら alpha を先に減算し、新相 delta のみ物質化する (operando 一本化)。
+
+    alpha は受理集合には残るが known_phases なので物質化から除外され、delta だけが CIF 化される。
+    """
+    # alpha (既知, 3 強ピーク) + delta (新相, 別ピーク群) が混在するフレーム。
+    tt, inten = _pattern(
+        [18.0, 28.0, 38.0, 23.0, 33.0, 43.0], heights=[1.0, 1.0, 1.0, 0.8, 0.8, 0.8]
+    )
+    alpha = _ref("mp-alpha", "CaH2O4Te", [(18.0, 1.0), (28.0, 1.0), (38.0, 1.0)],
+                 ["Ca", "H", "Te", "O"])
+    delta = _ref("mp-delta", "CaTeO3", [(23.0, 1.0), (33.0, 1.0), (43.0, 1.0)], ["Ca", "Te", "O"])
+    prov = FakeProvider([alpha, delta])
+    mat = FakeMaterializer()
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "H", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=False, top_k=5,
+        require_full_element_system=False, known_phases=[alpha],
+    )
+    ids = [p.phase_id for p in out]
+    assert ids == ["mp-delta"]  # alpha は known_phases として物質化除外、delta のみ新相
+    assert mat.calls == ["mp-delta"]  # 既知 alpha は再物質化されない
 
 
 def test_empty_when_no_candidates(tmp_path):

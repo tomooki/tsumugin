@@ -18,14 +18,15 @@ M6 の `reference.identify_phases` は候補相をランキングするが、`au
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol, Sequence, runtime_checkable
 
 import numpy as np
 
 from ..autorietveld.model import PhaseSpec
-from ..reference.engine import identify_phases
+from ..reference.iterative import IdentifyConfig, identify_pattern
+from ..reference.model import ReferencePhase
 from ..reference.provider import ReferenceProvider
 
 # 絶対格子 (a, b, c, α, β, γ)
@@ -121,23 +122,29 @@ def identify_new_phases(
     rerank_top_k: int = 5,
     rerank_wavelength: float = 1.5406,
     require_full_element_system: bool = True,
+    known_phases: Sequence[ReferencePhase] = (),
+    cfg: IdentifyConfig | None = None,
 ) -> tuple[IdentifiedPhase, ...]:
-    """パターンから新相を同定し上位 top_k を CIF に物質化して返す。
+    """パターンから新相を同定し上位 top_k を CIF に物質化して返す (M11 で `identify_pattern` 委譲)。
 
-    既知相 (`exclude_formulas` / `exclude_phase_ids`) はランキングから除外する (系列途中の
-    新相出現で「既知の alpha ではない相 = delta」を選ぶため)。物質化に失敗した候補は飛ばして
-    次点を採る。1 つも物質化できなければ空タプル。
+    **同定は M11 逐次減算同定 `reference.identify_pattern` に一本化** (FR-118-6)。静的同定は
+    `known_phases=()` 起点、operando 逐次同定は現行相集合を `known_phases=` に渡す (同一プリミティブ)。
+    残差支持による受理 (joint 非負スケール) と S/N 停止で、素の identify_phases ランキングより偽陽性を
+    抑えつつ少数相を拾う。既知相 (`exclude_formulas` / `exclude_phase_ids` / `known_phases`) は受理集合
+    から除外する (系列途中の新相出現で「既知の alpha ではない相 = delta」を選ぶため)。物質化 →
+    PhaseSpec の配線 (材料化・異方セル補正・失敗フォールバック) は M9 のまま温存する。物質化に失敗した
+    相は飛ばして次の受理相を採る。1 つも物質化できなければ空タプル。
 
     :param two_theta: 観測 2θ (度, 昇順)
     :param intensity: 観測強度 (残差 or 生パターン)
     :param elements: 相同定に許す元素系
-    :param provider: 候補相供給元 (既定 MP)。identify_phases に渡す
+    :param provider: 候補相供給元 (既定 MP)。identify_pattern に渡す
     :param materializer: phase_id→CIF 物質化器 (既定 MP)
     :param workdir: CIF 書き出し先ディレクトリ
     :param exclude_formulas: 除外する組成式 (既知相)
     :param exclude_phase_ids: 除外する相 ID (既知相)
-    :param top_k: 物質化する上位候補数
-    :param hull_cutoff_ev: MP 安定性フィルタ
+    :param top_k: 物質化する上位受理相数
+    :param hull_cutoff_ev: MP 安定性フィルタ (identify_pattern 経由で identify_phases へ)
     :param subtract_bg: 背景減算 (SNIP) してから同定するか
     :param refine_lattice: 格子精密化 (DFT 格子ズレ吸収) を有効にするか
     :param max_strain: 格子整合で許す等方歪みの上限。**DFT (MP) 構造は実測より格子が ~1–3% 大きい**
@@ -155,40 +162,61 @@ def identify_new_phases(
     :param require_full_element_system: True で新相候補を**全元素系 (elements すべてを含む) 相**に限定する
         (③ 化学ガード)。相転移は骨格元素を保存するため、元素部分集合の単純相 (元素 Ca・O₂・CaO 等) が
         少数相パターンに偶然マッチして上位化するのを防ぐ (実測: Ca-Te-O 三元限定で delta が #33→#1)。
-    :returns: 物質化した IdentifiedPhase の列 (スコア降順・最大 top_k)
+        `identify_pattern` の `require_elements` (opt-in hard ガード) に写像する。
+    :param known_phases: operando 現行相集合 (`ReferencePhase` 列)。`identify_pattern` の warm-start
+        起点として先に残差から減算され、受理集合には残るが物質化からは除外される (既知相の再物質化回避)。
+        既定 () で静的同定 (空集合起点)。M9 の呼び出し側は文字列 `exclude_*` のみを渡すため通常は空。
+    :param cfg: 逐次同定の詳細設定 (snr_stop/eps_gain/try_k 等の第1/2層パラメータ)。個別引数
+        (subtract_bg/refine_lattice/max_strain/hull_cutoff_ev/kalpha2/rerank_*/require_*) は本 cfg を
+        `replace` で上書きするため、cfg 側で指定しても個別引数が優先される。None なら既定 IdentifyConfig。
+    :returns: 物質化した IdentifiedPhase の列 (受理順・最大 top_k)
     """
-    ident = identify_phases(
-        np.asarray(two_theta, dtype=float),
-        np.asarray(intensity, dtype=float),
-        provider,
-        elements=list(elements),
-        hull_cutoff_ev=hull_cutoff_ev,
+    base = cfg if cfg is not None else IdentifyConfig()
+    cfg = replace(
+        base,
         subtract_bg=subtract_bg,
         refine_lattice=refine_lattice,
         max_strain=max_strain,
-        kalpha2=kalpha2,  # type: ignore[arg-type]
+        hull_cutoff_ev=hull_cutoff_ev,
+        kalpha2=kalpha2,
         rerank_top_k=rerank_top_k,
         rerank_wavelength=rerank_wavelength,
         require_elements=list(elements) if require_full_element_system else None,
     )
+    result = identify_pattern(
+        np.asarray(two_theta, dtype=float),
+        np.asarray(intensity, dtype=float),
+        provider,
+        elements=list(elements),
+        known_phases=known_phases,
+        cfg=cfg,
+    )
 
     excl_forms = {f.lower() for f in exclude_formulas}
     excl_ids = set(exclude_phase_ids)
+    known_ids = {r.phase_id for r in known_phases}
     workpath = Path(workdir)
     workpath.mkdir(parents=True, exist_ok=True)
 
     out: list[IdentifiedPhase] = []
-    for match in ident.matches:  # score 降順・phase_id 昇順 (identify_phases 保証)
-        ref = match.reference
-        if ref.phase_id in excl_ids or ref.formula.lower() in excl_forms:
+    for accepted in result.accepted:  # 受理順 (残差支持で採った順 = 概ね強度降順)
+        ref = accepted.reference
+        # 既知相 (文字列除外 / known_phases 起点) は物質化しない。新相のみ CIF 化する。
+        if (
+            ref.phase_id in excl_ids
+            or ref.phase_id in known_ids
+            or ref.formula.lower() in excl_forms
+        ):
             continue
         cif_name = f"{_sanitize(name_prefix)}_{_sanitize(ref.phase_id)}.cif"
         cif_path = str(workpath / cif_name)
         try:
-            # align_peaks が求めた等方歪みを物質化構造に適用し DFT 格子過大評価を実測へ (粗) 補正する。
-            materializer.materialize(ref.phase_id, list(elements), cif_path, strain=float(match.strain))
+            # 提案時 refine_lattice が求めた等方歪みを物質化構造に適用し DFT 格子過大評価を実測へ補正する。
+            materializer.materialize(
+                ref.phase_id, list(elements), cif_path, strain=float(accepted.strain)
+            )
         except Exception:
-            continue  # 物質化失敗は飛ばして次点へ (提案≠適用の安全側)
+            continue  # 物質化失敗は飛ばして次の受理相へ (提案≠適用の安全側)
         # 異方セル補正 (Issue #20): 等方 strain で潰しきれない DFT の軸別誤差を 異方セルプリアラインで
         # 求め、非 None なら CIF をその絶対格子で再物質化する。失敗/None は等方版のまま (安全側)。
         refined_cell: Cell6 | None = None
@@ -212,8 +240,8 @@ def identify_new_phases(
                 ),
                 phase_id=ref.phase_id,
                 formula=ref.formula,
-                score=float(match.score),
-                strain=float(match.strain),
+                score=float(accepted.score),
+                strain=float(accepted.strain),
                 source="materials_project",
                 refined_cell=refined_cell,
             )

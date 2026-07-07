@@ -122,3 +122,34 @@ def test_deterministic():
     r2 = identify_pattern(_TT, obs, _Prov([A, B]), elements=["Ca", "C", "O"], cfg=CFG)
     assert r1.phase_ids == r2.phase_ids
     assert [a.scale for a in r1.accepted] == [a.scale for a in r2.accepted]
+
+
+# 多ピーク相 (≥8): 減算時の格子整合 (_MIN_ALIGN_MATCHES=8) を活性化させ、系統的格子ずれの
+# 吸収 (異方/等方整合) を実データ同様に働かせる。strain 伝播テストに使う。
+_M_TRUE = [18.0, 22.0, 26.0, 31.0, 36.0, 41.0, 47.0, 53.0, 60.0]
+M = _phase("mp-M", _M_TRUE, formula="M")
+
+
+def test_accepted_strain_zero_without_refine():
+    """refine_lattice=False では受理相の strain は 0 (格子整合しないので歪みなし)。"""
+    obs = _observed((M, 2.0))
+    cfg = IdentifyConfig(snr_stop=8.0, refine_lattice=False, rerank_top_k=0)
+    res = identify_pattern(_TT, obs, _Prov([M, B]), elements=["Ca", "C", "O"], cfg=cfg)
+    assert res.phase_ids == ("mp-M",)
+    assert res.accepted[0].strain == 0.0
+
+
+def test_accepted_carries_nonzero_strain_with_refine():
+    """候補ピークが観測より系統的にずれると refine_lattice が非零 strain を求め AcceptedPhase に載る。
+
+    観測は真位置 M。供給する候補相のピークを一律 (1+ε) 倍で高角側へずらす (=格子がやや小さい系統ズレ)。
+    ≥8 ピークで減算整合 (_MIN_ALIGN_MATCHES) が活性化し整合版が joint fit で採用され、提案時
+    (identify_phases refine_lattice) が求めた非零 strain が受理相へ伝播する。
+    """
+    shifted_pos = [p * 1.010 for p in _M_TRUE]  # 一律 +1.0% 高角シフト (等方歪み相当)
+    shifted = _phase("mp-M", shifted_pos, formula="M")
+    obs = _observed((M, 2.0))  # 観測は真位置 (M)
+    cfg = IdentifyConfig(snr_stop=8.0, refine_lattice=True, max_strain=0.05, rerank_top_k=0)
+    res = identify_pattern(_TT, obs, _Prov([shifted, B]), elements=["Ca", "C", "O"], cfg=cfg)
+    assert res.phase_ids == ("mp-M",)
+    assert abs(res.accepted[0].strain) > 1e-4

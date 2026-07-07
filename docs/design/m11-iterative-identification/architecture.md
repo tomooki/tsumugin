@@ -194,8 +194,16 @@ IterativeIdentification (accepted, residual, groups, refined, ledger)
 
 ## 13. 未完 (follow-up)
 
-- **T6 operando 一本化**: `insitu.phaseid.identify_new_phases` → `identify_pattern(known_phases=)` 委譲。
-  `identify_pattern` の known_phases 起点同定は実装・テスト済 (`test_known_phases_start`) だが、insitu.phaseid
-  の実配線は M9/M10 テストの回帰リスクがあるため段階移行 (別 PR) とする。
+- **T6 operando 一本化 (Issue #28, 実装済)**: `insitu.phaseid.identify_new_phases` を
+  `identify_pattern(known_phases=, cfg=)` 委譲へ移行。素の `identify_phases` ランキングを**残差支持の
+  受理 (joint 非負スケール) + S/N 停止**に置換し、静的同定=`known_phases=()` 起点・operando 逐次同定=
+  現行相集合起点で同一プリミティブに統一した。物質化 → PhaseSpec の配線 (材料化・異方セル補正 Issue #20・
+  失敗フォールバック・strain 伝播) は M9 のまま温存。実配線に伴い (1) `AcceptedPhase` へ `strain` を追加
+  (`PhaseMatch.strain` 由来、materialize の格子補正に転送)、(2) `IdentifyConfig` へ `max_strain`/
+  `hull_cutoff_ev`/`kalpha2`/`rerank_wavelength` を追加し内部 `identify_phases` 呼び出しへ転送、(3)
+  `identify_new_phases` に optional `known_phases`/`cfg` を追加 (後方互換)。M9/M10 insitu テストは
+  非回帰 (受理は残差支持ゲートを通るため、単体テストは現実的カウント数 + ≥8 ピーク整合の合成へ更新)。
+  engine.py の operando 経路は文字列 `exclude_formulas` を渡す既存配線のまま (identify-all-then-exclude);
+  PhaseSpec→ReferencePhase 逆変換を要する known_phases 実注入は M-later。
 - **MP キャッシュの cell 付き再生成**: 現キャッシュは Issue #18 前スキーマで cell なし → 異方経路が gated
   テストで no-op。cell 付き再取得で恒久強化可 (`scratchpad/t7_live_aniso.py` 参照)。
