@@ -75,5 +75,23 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
   - **代替**: 実測 delta 構造 (同梱 `delta_CaTeO3.cif`) をローカル参照供給元にすれば DFT 問題を回避し
     clean フレーム 13% 級 (COD/ICSD は [Issue #10])。**同定・単一フレーム収束 (frame0/frame420 とも ~13%)・
     逐次配線・異方セル補正 (Issue #20) は達成済**。残る tutorial 級 (~9%) との差は preferred orientation + 水素の未モデル分。
+- **operando warm-start (Issue #28 T6-B) の実 MP+GSAS A/B 検証 (2 フレーム, MATERIALS_PROJECT_API)**:
+  frame030 (alpha 単相) + frame180 (alpha+delta 共存) を逐次実 GSAS 精密化し、frame180 で **MP から
+  delta (mp-1195263, CaTeO3) を自動同定・物質化・追加**。`PhaseIdConfig.warm_start_known_phases` で
+  現行相 alpha を精密化格子付き `ReferencePhase` に変換し `identify_pattern(known_phases=)` へ渡して
+  **先に残差から減算**してから新相を探す (identify-all-then-exclude の格上げ)。同一設定で A/B 比較:
+
+  | | frame0 (alpha) | frame1 (共存): Rwp / GOF / delta 分率 / validity | delta ID |
+  |---|---|---|---|
+  | A static (`warm_start_known_phases=False`) | 12.57% | 33.57% / 3.66 / 0.392 / False | mp-1195263 ✓ |
+  | **B warm-start** (既定 True) | 12.57% | 33.45% / 3.62 / **0.468** / **True** | mp-1195263 ✓ |
+
+  両者とも delta を MP から自動同定・採用 (ledger verify True)。**warm-start B は delta 分率が真値
+  (~50/50 共存) に近く (0.468 vs 0.392)・物理妥当性 pass (True vs False)・Rwp/GOF も僅かに良い** — 「現
+  フレーム精密化格子で先に減算 → 残差がクリーン → 少数相の定量が改善」という設計主張と整合。frame1 の
+  絶対 Rwp ~33% は転移共存フレーム固有の難しさ (preferred orientation + 水素 + 混合相; 上記 frame270 と
+  同種) で A/B 共通・パイプライン欠陥ではない。**再現**: `scratchpad/cateo3_full_mp_gsas.py [--static]`
+  (MP キーは `.env` から読込, GSAS 実行)。全 14 フレームでの効果測定 (弱 minority 域での検出感度向上)
+  は全フレーム配置後の次段。
 - **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
   決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。
