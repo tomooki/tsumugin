@@ -105,6 +105,13 @@ class PhaseIdConfig:
         原理的判定が要る時のみ本フラグを True。frac/セル/妥当性ガードは両方式で共通。
     :param bic_base_params: bic の非相パラメータ数 (背景/プロファイル/ゼロ等)。
     :param bic_per_phase_params: bic の 1 相あたりパラメータ数 (scale+格子+プロファイル概算)。
+    :param warm_start_known_phases: 新相探索で現行相集合を `identify_pattern(known_phases=)` に渡し
+        **先に残差から減算**してから新相を探すか (operando 一本化 B)。現行相を精密化格子付き
+        `ReferencePhase` に変換 (`phasespec_to_reference`) して finder へ渡す。CIF 素の (DFT/物質化時)
+        格子でなく現フレームの精密化格子で減算するため残差がクリーンになり、少数新相の検出感度が上がる
+        (M11 の「減算前ピーク整合」の operando 版)。変換不能 (pymatgen 不在 / CIF 読込失敗 / スタブ
+        finder の擬似パス) は空集合へ縮退し、静的同定 (identify-all-then-exclude) に安全フォールバック
+        する。既定 True。カスタム finder はこの引数を無視してよい (後方互換の既定 ())。
     """
 
     elements: tuple[str, ...] = ()
@@ -125,6 +132,7 @@ class PhaseIdConfig:
     bic_acceptance: bool = False
     bic_base_params: int = 30
     bic_per_phase_params: int = 12
+    warm_start_known_phases: bool = True
 
     @property
     def enabled(self) -> bool:

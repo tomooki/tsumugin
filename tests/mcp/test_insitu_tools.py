@@ -62,7 +62,7 @@ def test_sequential_rietveld_reports_appearance():
         n["i"] += 1
         return _result(9.0 if i < 2 else 22.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(delta, {"source": "materials_project", "dara_score": 0.5})]
 
     out = sequential_rietveld(

@@ -194,8 +194,25 @@ IterativeIdentification (accepted, residual, groups, refined, ledger)
 
 ## 13. 未完 (follow-up)
 
-- **T6 operando 一本化**: `insitu.phaseid.identify_new_phases` → `identify_pattern(known_phases=)` 委譲。
-  `identify_pattern` の known_phases 起点同定は実装・テスト済 (`test_known_phases_start`) だが、insitu.phaseid
-  の実配線は M9/M10 テストの回帰リスクがあるため段階移行 (別 PR) とする。
+- **T6 operando 一本化 (Issue #28, 実装済)**: `insitu.phaseid.identify_new_phases` を
+  `identify_pattern(known_phases=, cfg=)` 委譲へ移行。素の `identify_phases` ランキングを**残差支持の
+  受理 (joint 非負スケール) + S/N 停止**に置換し、静的同定=`known_phases=()` 起点・operando 逐次同定=
+  現行相集合起点で同一プリミティブに統一した。物質化 → PhaseSpec の配線 (材料化・異方セル補正 Issue #20・
+  失敗フォールバック・strain 伝播) は M9 のまま温存。実配線に伴い (1) `AcceptedPhase` へ `strain` を追加
+  (`PhaseMatch.strain` 由来、materialize の格子補正に転送)、(2) `IdentifyConfig` へ `max_strain`/
+  `hull_cutoff_ev`/`kalpha2`/`rerank_wavelength` を追加し内部 `identify_phases` 呼び出しへ転送、(3)
+  `identify_new_phases` に optional `known_phases`/`cfg` を追加 (後方互換)。M9/M10 insitu テストは
+  非回帰 (受理は残差支持ゲートを通るため、単体テストは現実的カウント数 + ≥8 ピーク整合の合成へ更新)。
+- **T6-B operando warm-start 実注入 (実装済)**: engine.py の新相探索を identify-all-then-exclude から
+  **現行相集合の known_phases 先減算**へ格上げ。`insitu.phaseid.phasespec_to_reference` (CIF →
+  pymatgen → `mp.xrd.simulate_reference_peaks`、`refined_cell` で**現フレームの精密化格子へ置換**して
+  ピーク生成; 遅延 import・失敗時 None) で現行相を `ReferencePhase` に変換し、`PhaseFinder` プロトコルへ
+  `known_phases` 引数を追加、`_try_add_phase` が精密化格子付きで注入する。CIF 素の DFT 格子でなく現
+  フレーム実測格子で減算するため残差がクリーンになり少数新相の検出感度が上がる (M11「減算前ピーク整合」
+  の operando 版)。`PhaseIdConfig.warm_start_known_phases` (既定 True) で制御。変換不能 (pymatgen 不在 /
+  CIF 読込失敗 / スタブ finder 擬似パス) は空集合へ縮退し**静的同定 (identify-all-then-exclude) に安全
+  フォールバック** (提案≠適用・純テスト非回帰)。numpy コア import は pymatgen 非依存を維持 (engine top
+  で phaseid を import するが phasespec_to_reference 内で遅延 import)。gated 実データ (CaTeO3 全 14 フレーム)
+  の warm-start 効果検証は MP キー要 (次段)。
 - **MP キャッシュの cell 付き再生成**: 現キャッシュは Issue #18 前スキーマで cell なし → 異方経路が gated
   テストで no-op。cell 付き再取得で恒久強化可 (`scratchpad/t7_live_aniso.py` 参照)。

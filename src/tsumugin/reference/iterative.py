@@ -84,7 +84,11 @@ class IdentifyConfig:
     subtract_bg: bool = True     # SNIP 背景減算
     bg_max_window: int = 50
     refine_lattice: bool = True  # 提案時の等方格子整合
+    max_strain: float = 0.01     # 提案時 (identify_phases) の等方格子整合の歪み上限 (Dara 準拠 1%)
+    hull_cutoff_ev: float | None = 0.1  # 提案時の MP 安定性フィルタ (identify_phases へ転送)
+    kalpha2: object | None = None  # 提案時の Kα2 サテライト設定 (identify_phases へ転送; None=単色)
     rerank_top_k: int = 5        # 提案時の異方 rerank (層1 既定)
+    rerank_wavelength: float = 1.5406  # 提案時の異方 rerank 線源波長 (Å, 既定 Cu Kα1)
     require_elements: Sequence[str] | None = None  # opt-in 全元素系 hard ガード (第3層; 既定なし)
     always_refine: bool = False  # 深段 Rietveld を常時適用 (既定は僅差多形時のみ)
     polymorph_margin: float = 0.05  # 同組成 score 差がこれ未満なら深段裁定対象
@@ -102,6 +106,9 @@ class AcceptedPhase:
     scale: float
     score: float
     source: str = "iterative"
+    # 提案時に refine_lattice が求めた等方格子歪み ε (PhaseMatch.strain 由来)。物質化の格子補正に使う
+    # (operando 一本化で `insitu.phaseid` が materialize(strain=) へ渡す)。既定 0.0 (known_phases も 0)。
+    strain: float = 0.0
 
     @property
     def phase_id(self) -> str:
@@ -324,6 +331,8 @@ def identify_pattern(
 
     accepted_refs: list[ReferencePhase] = list(known_phases)
     accepted_scores: list[float] = [0.0] * len(accepted_refs)
+    # known_phases は既知格子 (これから精密化する初期値) なので提案 strain を持たない → 0.0。
+    accepted_strains: list[float] = [0.0] * len(accepted_refs)
     accepted_ids: set[str] = {r.phase_id for r in accepted_refs}
     # known_phases はまだ残差が無いため、生パターンの観測ピークへ整合する (以降はループ内で残差へ整合)。
     # 各 known phase は逐次 (これまで積んだ peaklists に対し) ss 最小の版 (生/整合) を選んで積む。
@@ -343,7 +352,10 @@ def identify_pattern(
 
         ident = identify_phases(
             tt, resid, provider, elements=elements, subtract_bg=False,
-            refine_lattice=cfg.refine_lattice, rerank_top_k=cfg.rerank_top_k,
+            hull_cutoff_ev=cfg.hull_cutoff_ev,
+            refine_lattice=cfg.refine_lattice, max_strain=cfg.max_strain,
+            kalpha2=cfg.kalpha2,  # type: ignore[arg-type]
+            rerank_top_k=cfg.rerank_top_k, rerank_wavelength=cfg.rerank_wavelength,
             require_elements=cfg.require_elements,
         )
         # 残差の観測ピーク: 減算モデル合成の整合先 (identify_phases が既に計算済のものを再利用)。
@@ -375,14 +387,17 @@ def identify_pattern(
         peaklists.append(cand_peaks)
         accepted_ids.add(cand.phase_id)
         accepted_scores.append(float(match.score))
+        accepted_strains.append(float(match.strain))
         ss_prev, model = ss2, model2
         iterations.append(IterationRecord(k, cand.phase_id, gain, float(s2[-1]), sig.max_snr))
 
     # 最終 joint フィットで全相スケールを確定
     s_final, model_final, _rf, _ss = _fit(tt, obs, peaklists, fwhm)
     accepted = tuple(
-        AcceptedPhase(reference=r, scale=float(sc), score=float(scr))
-        for r, sc, scr in zip(accepted_refs, _scales(s_final, len(accepted_refs)), accepted_scores)
+        AcceptedPhase(reference=r, scale=float(sc), score=float(scr), strain=float(st))
+        for r, sc, scr, st in zip(
+            accepted_refs, _scales(s_final, len(accepted_refs)), accepted_scores, accepted_strains
+        )
     )
 
     refined = False
@@ -477,8 +492,12 @@ def refine_polymorphs(
                     improved = True
     if not changed:
         return tuple(accepted), False
+    # swap した相 (r != a.reference) は別格子ゆえ旧 strain は無意味 → 0 リセット。未 swap は保持。
     new_accepted = tuple(
-        AcceptedPhase(reference=r, scale=a.scale, score=a.score, source="iterative+rietveld")
+        AcceptedPhase(
+            reference=r, scale=a.scale, score=a.score, source="iterative+rietveld",
+            strain=a.strain if r.phase_id == a.reference.phase_id else 0.0,
+        )
         for r, a in zip(best_refs, accepted)
     )
     return new_accepted, True
@@ -524,7 +543,9 @@ def _refine_and_remodel(tt, obs, accepted, seen_matches, refiner, cfg, ledger, f
     )
     # スケールを再フィット値で更新
     rescaled = tuple(
-        AcceptedPhase(reference=a.reference, scale=float(sc), score=a.score, source=a.source)
+        AcceptedPhase(
+            reference=a.reference, scale=float(sc), score=a.score, source=a.source, strain=a.strain
+        )
         for a, sc in zip(new_accepted, _scales(s, len(new_accepted)))
     )
     return rescaled, True, model

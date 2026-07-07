@@ -19,6 +19,7 @@ import math
 from typing import Callable, Sequence
 
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
+from ..reference.model import ReferencePhase
 from ..sequential.changepoint import ChangepointConfig, detect_changepoint
 from ..store.ledger import Ledger
 from .model import (
@@ -30,15 +31,17 @@ from .model import (
     SequentialConfig,
     SequentialRietveldResult,
 )
+from .phaseid import phasespec_to_reference
 from .residual import residual_significance
 
 # runner: (frame, phases, initial_cells) -> AutoRietveldResult
 Runner = Callable[
     [FrameSpec, Sequence[PhaseSpec], "dict[str, Cell] | None"], AutoRietveldResult
 ]
-# phase_finder: (frame, elements, exclude_formulas, workdir) -> tuple[PhaseSpec, meta] 列
+# phase_finder: (frame, elements, exclude_formulas, workdir, known_phases) -> tuple[PhaseSpec, meta] 列
+# known_phases: 現行相集合の ReferencePhase 列 (operando warm-start; identify_pattern の残差先減算用)。
 PhaseFinder = Callable[
-    [FrameSpec, Sequence[str], Sequence[str], str],
+    [FrameSpec, Sequence[str], Sequence[str], str, Sequence[ReferencePhase]],
     "Sequence[tuple[PhaseSpec, dict]]",
 ]
 
@@ -415,14 +418,27 @@ def _try_add_phase(
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
     """
     exclude = [p.phase_name for p in phases] + list(known_formulas)
+    # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
+    base_cells = {name: _cell6(c) for name, c in base_result.refined_cells.items()}
+
+    # 【operando warm-start (一本化 B)】: 現行相を精密化格子付き ReferencePhase に変換し finder へ渡す。
+    #   identify_pattern が known_phases として先に残差から減算 → 少数新相を clean な残差で探せる。
+    #   変換不能 (pymatgen 不在 / CIF 読込不可 / スタブ finder の擬似パス) は None を除き空集合へ縮退
+    #   する (静的同定=identify-all-then-exclude に安全フォールバック; 提案≠適用・非回帰)。
+    known_refs: list[ReferencePhase] = []
+    if pid.warm_start_known_phases:
+        for p in phases:
+            ref = phasespec_to_reference(
+                p, refined_cell=base_cells.get(p.phase_name), wavelength=pid.wavelength
+            )
+            if ref is not None:
+                known_refs.append(ref)
+
     try:
-        candidates = phase_finder(frame, list(pid.elements), exclude, workdir)
+        candidates = phase_finder(frame, list(pid.elements), exclude, workdir, known_refs)
     except Exception as exc:
         ledger.append("m9_phaseid_error", {"frame": frame_idx, "error": repr(exc)[:200]})
         return base_result, None, f"frame {frame_idx}: 相同定に失敗 ({type(exc).__name__})"
-
-    # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
-    base_cells = {name: _cell6(c) for name, c in base_result.refined_cells.items()}
     best: "tuple[AutoRietveldResult, PhaseSpec, dict] | None" = None
     for cand_spec, meta in candidates:
         trial_phases = tuple(list(phases) + [cand_spec])
@@ -592,7 +608,8 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
         return box["provider"], box["materializer"]
 
     def finder(
-        frame: FrameSpec, elements: Sequence[str], exclude_formulas: Sequence[str], workdir: str
+        frame: FrameSpec, elements: Sequence[str], exclude_formulas: Sequence[str], workdir: str,
+        known_phases: Sequence[ReferencePhase] = (),
     ) -> "Sequence[tuple[PhaseSpec, dict]]":
         from ..reference.io import load_pattern
         from .phaseid import identify_new_phases
@@ -625,6 +642,7 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
             name_prefix="new", cell_refiner=cell_refiner,
             rerank_top_k=pid.rerank_top_k, rerank_wavelength=pid.wavelength,
             require_full_element_system=pid.require_full_element_system,
+            known_phases=known_phases,  # operando warm-start (一本化 B): 現行相を先に残差減算
         )
         return [
             (
