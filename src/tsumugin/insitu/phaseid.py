@@ -101,6 +101,57 @@ def structure_to_cif(
     return str(path)
 
 
+def phasespec_to_reference(
+    phase_spec: PhaseSpec,
+    *,
+    refined_cell: Cell6 | None = None,
+    wavelength: float = 1.5406,
+    two_theta_range: tuple[float, float] = (10.0, 90.0),
+) -> ReferencePhase | None:
+    """現行相 `PhaseSpec` (CIF) を warm-start 用 `ReferencePhase` (ピーク列付) へ変換する (operando 一本化 B)。
+
+    operando の逐次同定で現行相集合を `identify_pattern(known_phases=)` に渡し**先に残差から減算**する
+    ため、CIF を pymatgen で読み XRD ピークを生成する (`mp.xrd.simulate_reference_peaks`)。`refined_cell`
+    を与えると格子をその**精密化格子**へ置換してから生成する — CIF 素の (DFT/物質化時) 格子より現フレーム
+    の実測に近く、減算残差がクリーンになり少数新相の検出感度が上がる (M11 の「減算前ピーク整合」の operando 版)。
+
+    `phase_id`/`formula` に相名 (`phase_spec.phase_name`) を使い、シム `identify_new_phases` の `known_ids`
+    (相名) 除外と整合させる。**pymatgen 不在・CIF 読込失敗・ピーク生成失敗は例外を握って None を返す**
+    (安全側フォールバック = warm-start せず静的同定に縮退; 提案≠適用)。決定論 (乱数なし)。
+
+    :param phase_spec: 現行相 (CIF パスを持つ)
+    :param refined_cell: 現フレームの精密化格子 (a,b,c,α,β,γ)。None なら CIF 素の格子を使う
+    :param wavelength: XRD 生成の線源波長 (Å)。放射光/中性子系列では実波長を指定
+    :param two_theta_range: XRD 生成の 2θ 範囲 (度)
+    :returns: ピーク列付き ReferencePhase、または変換不能時 None
+    """
+    try:
+        from pymatgen.core import Lattice, Structure
+
+        from ..mp.xrd import simulate_reference_peaks
+
+        structure = Structure.from_file(phase_spec.structure_path)
+        if refined_cell is not None:
+            structure = Structure(
+                Lattice.from_parameters(*(float(x) for x in refined_cell)),
+                structure.species,
+                structure.frac_coords,
+            )
+        peaks = simulate_reference_peaks(
+            structure, wavelength_angstrom=wavelength, two_theta_range=two_theta_range
+        )
+        composition = structure.composition
+        return ReferencePhase(
+            phase_id=phase_spec.phase_name,
+            formula=composition.reduced_formula,
+            element_system=tuple(sorted(str(e) for e in composition.elements)),
+            peaks=peaks,
+            energy_above_hull=None,
+        )
+    except Exception:
+        return None  # pymatgen 不在 / 読込失敗 / 生成失敗 → warm-start せず静的同定へ縮退 (安全側)
+
+
 def identify_new_phases(
     two_theta: np.ndarray,
     intensity: np.ndarray,

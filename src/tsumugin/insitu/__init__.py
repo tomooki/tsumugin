@@ -29,7 +29,7 @@ from .parametric import (
     pseudo_variable_series,
     transition_from_fractions,
 )
-from .phaseid import IdentifiedPhase, identify_new_phases
+from .phaseid import IdentifiedPhase, identify_new_phases, phasespec_to_reference
 from .anchor import AnchorConfig, run_anchored_sequential
 
 __all__ = [
@@ -47,6 +47,7 @@ __all__ = [
     "identify_new_phases",
     "lattice_baseline",
     "make_gsas_runner",
+    "phasespec_to_reference",
     "pseudo_variable_series",
     "run_anchored_sequential",
     "run_sequential_rietveld",

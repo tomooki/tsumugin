@@ -12,7 +12,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tsumugin.insitu.phaseid import IdentifiedPhase, identify_new_phases, structure_to_cif
+from tsumugin.autorietveld.model import PhaseSpec
+from tsumugin.insitu.phaseid import (
+    IdentifiedPhase,
+    identify_new_phases,
+    phasespec_to_reference,
+    structure_to_cif,
+)
 from tsumugin.reference.model import ReferencePhase
 from tsumugin.search.peaks import Peak
 
@@ -290,6 +296,42 @@ def test_empty_when_no_candidates(tmp_path):
         workdir=str(tmp_path / "n.cif"), subtract_bg=False, refine_lattice=False,
     )
     assert out == ()
+
+
+def test_phasespec_to_reference_none_on_unreadable_cif(tmp_path):
+    """CIF が読めない (存在しない/不正) 場合は None を返す (warm-start せず静的同定へ縮退, 安全側)。"""
+    spec = PhaseSpec(structure_path=str(tmp_path / "missing.cif"), phase_name="alpha",
+                     format_hint="CIF")
+    assert phasespec_to_reference(spec, wavelength=1.5406) is None
+
+
+@pytest.mark.mp
+def test_phasespec_to_reference_converts_and_overrides_cell(tmp_path):
+    """実 CIF を ReferencePhase (ピーク列付) へ変換。refined_cell 指定で格子置換されピークが移動する。"""
+    from pymatgen.core import Lattice, Structure
+
+    orig = Structure(
+        Lattice.from_parameters(5.64, 5.64, 5.64, 90.0, 90.0, 90.0),
+        ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]],
+    )
+    cif_path = str(tmp_path / "nacl.cif")
+    structure_to_cif(orig, cif_path)
+    spec = PhaseSpec(structure_path=cif_path, phase_name="NaCl_phase", format_hint="CIF")
+
+    ref = phasespec_to_reference(spec, wavelength=1.5406)
+    assert ref is not None
+    assert ref.phase_id == "NaCl_phase"  # 相名を phase_id に (known_ids 除外と整合)
+    assert ref.formula == "NaCl"
+    assert ref.element_system == ("Cl", "Na")
+    assert len(ref.peaks) > 0
+    first_pos = ref.peaks[0].position
+
+    # 格子を縮小 (5.64→5.53) すると d が縮み全ピークが高角側へ動く。
+    ref2 = phasespec_to_reference(
+        spec, refined_cell=(5.53, 5.53, 5.53, 90.0, 90.0, 90.0), wavelength=1.5406
+    )
+    assert ref2 is not None
+    assert ref2.peaks[0].position > first_pos  # 格子縮小 → 高角シフト
 
 
 @pytest.mark.mp

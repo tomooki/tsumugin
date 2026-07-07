@@ -107,7 +107,7 @@ def test_auto_add_phase_accepted_on_rwp_jump():
         rwp = 9.0 if i < 2 else 20.0
         return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         assert "alpha" in exclude
         return [(delta, {"source": "materials_project", "dara_score": 0.5})]
 
@@ -143,7 +143,7 @@ def test_refined_cell_flows_into_appearance_evidence():
         call["n"] += 1
         return _result(9.0 if i < 2 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(delta, {"source": "materials_project", "dara_score": 0.5, "refined_cell": aniso})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.02)
@@ -183,7 +183,7 @@ def test_backward_propagation_captures_onset():
         call["n"] += 1
         return _result(9.0 if i < 3 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(delta, {"source": "mp", "formula": "CaTeO3"})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05, min_rwp_gain=0.01)
@@ -222,7 +222,7 @@ def test_max_new_phases_caps_phase_search():
 
     finder_calls = {"n": 0}
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         finder_calls["n"] += 1
         cand = other if "new_CaTeO3" in exclude else delta
         return [(cand, {"source": "mp", "formula": cand.phase_name})]
@@ -268,7 +268,7 @@ def test_consolidation_rerefines_poisoned_forward_frames():
         rwp = {300.0: 9.0, 320.0: 9.0}.get(ax, 30.0)
         return _result(rwp, {"alpha": ALPHA_C}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         # 採用後 (CaTeO3 が exclude) は再探索しない (既知相の再同定防止)
         if "CaTeO3" in exclude or "new_CaTeO3" in exclude:
             return []
@@ -300,7 +300,7 @@ def test_backward_propagation_disabled_keeps_forward_onset():
         call["n"] += 1
         return _result(9.0 if i < 3 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(delta, {"source": "mp", "formula": "CaTeO3"})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05)
@@ -339,7 +339,7 @@ def test_snr_trigger_fires_on_significant_residual():
 
     calls = {"finder": 0}
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         calls["finder"] += 1
         return [(delta, {"source": "mp", "formula": "CaTeO3"})]
 
@@ -350,6 +350,104 @@ def test_snr_trigger_fires_on_significant_residual():
                                   config=SequentialConfig(phase_id=pid, changepoint_window=99))
     assert calls["finder"] > 0  # S/N トリガで探索が発火した
     assert len(res.appearances) == 1  # delta 受理
+
+
+def _snr_trigger_setup():
+    """S/N トリガで finder を確実に発火させる runner/frames/pid を作る (warm-start 配線テスト共通)。"""
+    import numpy as np
+
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    tt = np.linspace(12.0, 70.0, 2000)
+    sigma = np.full(tt.size, 10.0)
+    resid_peak = 400.0 * np.exp(-0.5 * ((tt - 40.0) / 0.15) ** 2)
+    flat = np.zeros(tt.size)
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4}, residual=(tt, flat, sigma))
+        return _result(12.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0},
+                       residual=(tt, resid_peak, sigma))
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01,
+                        trigger_rwp_ratio=100.0, snr_trigger=8.0)
+    return alpha, delta, runner, pid
+
+
+def test_warm_start_passes_converted_known_phases_to_finder(monkeypatch):
+    """warm_start: 現行相が phasespec_to_reference で変換され finder の known_phases に届く (一本化 B 配線)。"""
+    from tsumugin.reference.model import ReferencePhase
+    from tsumugin.search.peaks import Peak
+
+    alpha, delta, runner, pid = _snr_trigger_setup()
+    fake_ref = ReferencePhase(phase_id="alpha", formula="CaH2O4Te",
+                              element_system=("Ca", "H", "O", "Te"),
+                              peaks=(Peak(position=20.0, height=100.0),), energy_above_hull=None)
+    seen_cells: dict[str, object] = {}
+
+    def fake_convert(phase_spec, *, refined_cell=None, wavelength=1.5406, **_):
+        seen_cells["cell"] = refined_cell  # base_result の精密化格子が渡ること
+        return fake_ref if phase_spec.phase_name == "alpha" else None
+
+    monkeypatch.setattr("tsumugin.insitu.engine.phasespec_to_reference", fake_convert)
+
+    received: dict[str, object] = {}
+
+    def finder(frame, elements, exclude, workdir, known_phases=()):
+        received["known"] = list(known_phases)
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                            config=SequentialConfig(phase_id=pid, changepoint_window=99))
+    assert received["known"] == [fake_ref]  # 変換された現行相が finder へ届いた
+    # 精密化格子 (14.8,...) が変換器へ渡ったこと (CIF 素でなく現フレーム格子で減算)
+    assert seen_cells["cell"] == (14.8, 6.8, 8.0, 90.0, 90.0, 90.0)
+
+
+def test_warm_start_disabled_passes_empty_known_phases(monkeypatch):
+    """warm_start_known_phases=False なら変換せず known_phases=() を渡す (静的同定へ縮退)。"""
+    alpha, delta, runner, pid = _snr_trigger_setup()
+    pid = replace_pid(pid, warm_start_known_phases=False)
+
+    def boom(*a, **k):  # 呼ばれてはいけない
+        raise AssertionError("phasespec_to_reference は warm_start 無効時に呼ばれない")
+
+    monkeypatch.setattr("tsumugin.insitu.engine.phasespec_to_reference", boom)
+    received: dict[str, object] = {}
+
+    def finder(frame, elements, exclude, workdir, known_phases=()):
+        received["known"] = list(known_phases)
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                            config=SequentialConfig(phase_id=pid, changepoint_window=99))
+    assert received["known"] == []
+
+
+def test_warm_start_unconvertible_phase_falls_back_to_empty(monkeypatch):
+    """変換不能 (None) な現行相は除かれ known_phases=() へ縮退する (安全側フォールバック・非回帰)。"""
+    alpha, delta, runner, pid = _snr_trigger_setup()
+    monkeypatch.setattr(
+        "tsumugin.insitu.engine.phasespec_to_reference", lambda *a, **k: None
+    )
+    received: dict[str, object] = {}
+
+    def finder(frame, elements, exclude, workdir, known_phases=()):
+        received["known"] = list(known_phases)
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid, changepoint_window=99))
+    assert received["known"] == []  # 変換不能は空集合へ縮退
+    assert len(res.appearances) == 1  # 静的同定として delta は受理される (非回帰)
+
+
+def replace_pid(pid, **changes):
+    from dataclasses import replace
+
+    return replace(pid, **changes)
 
 
 def test_accept_new_phase_despite_old_phase_validity_fail():
@@ -372,7 +470,7 @@ def test_accept_new_phase_despite_old_phase_validity_fail():
         return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
                        {"alpha": 1.0}, valid=False)
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(delta, {"source": "materials_project", "formula": "CaTeO3", "dara_score": 0.01})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01)
@@ -398,7 +496,7 @@ def test_require_validity_restores_strict_rejection():
         return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
                        {"alpha": 1.0}, valid=True)
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(delta, {"source": "mp", "formula": "CaTeO3"})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, require_validity=True)
@@ -458,7 +556,7 @@ def test_reject_new_phase_when_rwp_gain_below_threshold():
         call["n"] += 1
         return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(junk, {"source": "mp", "formula": "JUNK"})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01)
@@ -481,7 +579,7 @@ def test_auto_add_phase_rejected_when_not_improving():
         rwp = 9.0 if frame.axis_value < 340 else 20.0
         return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         return [(junk, {"source": "mp"})]
 
     pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.02)
@@ -512,7 +610,7 @@ def test_accepted_phase_formula_excluded_next_frames():
         rwp = 9.0 if frame.axis_value < 340 else 22.0
         return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
-    def finder(frame, elements, exclude, workdir):
+    def finder(frame, elements, exclude, workdir, known_phases=()):
         excludes_seen.append((frame.axis_value, tuple(exclude)))
         # formula が exclude 済みなら空を返す (再追加を防ぐ = 既知相除外の効果)。
         if "CaTeO3" in exclude:
