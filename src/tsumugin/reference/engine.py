@@ -122,7 +122,7 @@ def identify_phases(
     refine_lattice: bool = False,
     max_strain: float = 0.01,
     strain_penalty: float = 0.0,
-    rerank_top_k: int = 0,
+    rerank_top_k: int = 5,
     rerank_wavelength: float = 1.5406,
     require_elements: Sequence[str] | None = None,
 ) -> PhaseIdentification:
@@ -154,11 +154,14 @@ def identify_phases(
         max_strain: ``refine_lattice`` 時の等方歪み上限 (既定 0.01 = 1%, Dara 準拠)。
         strain_penalty: ランキングで格子シフトを罰する係数 (Dara FoM の ΔU に対応)。実効スコア =
             ``score − strain_penalty·|strain|``。大きな格子調整を要した相を下げる。既定 0 (無効)。
-        rerank_top_k: >0 で**上位 K 候補のみ異方格子整合で再スコア**する (Issue #20 hybrid)。等方
-            ``refine_lattice`` は 1 自由度で DFT の**軸別**格子誤差を吸収できず正解相のスコアを負に落とす
-            ことがある。上位 K に限り軸別 (``align_peaks_anisotropic``) で再整合→再スコアし、識別マージンを
-            上げる (実測: alpha/delta で margin +0.09→+1.14)。全候補でなく top-K に限るのは過剰整合による
-            偽陽性と計算コストを抑えるため。格子情報 (cell/crystal_system/hkl) を持たない相はスキップ。
+        rerank_top_k: >0 で**上位 K 候補のみ異方格子整合で再スコア**する (Issue #20 hybrid)。**既定 5 で
+            オン** (層1 デフォルト機構) — 昇格専用ガード + cell/hkl 無しはスキップのため副作用がなく、
+            清浄合成データ検証で DFT 誤差 (c+3%) の正解相を**等方 −0.08 (棄却域) → 異方 +0.31** に救出できる
+            (0 で無効化可)。等方 ``refine_lattice`` は 1 自由度で DFT の**軸別**格子誤差を吸収できず正解相の
+            スコアを負に落とすことがある。上位 K に限り軸別 (``align_peaks_anisotropic``) で再整合→再スコアし、
+            識別マージンを上げる (実測: alpha/delta で margin +0.09→+1.14)。全候補でなく top-K に限るのは
+            過剰整合による偽陽性と計算コストを抑えるため。格子情報 (cell/crystal_system/hkl) を持たない相は
+            スキップ (供給元が cell を持たない場合は no-op)。
             再スコアは**昇格専用** (異方スコアが等方を上回る時のみ差し替え) で不当降格を防ぐ。強度正規化の
             ``dara`` 向け設計 (``coverage`` は候補ピーク数正規化のため異方整合で分母が変わり得る; 昇格専用
             ガードで実害は限定だが dara 推奨)。
