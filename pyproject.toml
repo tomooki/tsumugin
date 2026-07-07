@@ -68,7 +68,11 @@ packages = ["src/tsumugin"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# import-mode=importlib: 同名 basename のテストファイル (tests/test_model.py と
+# tests/insitu/anchor/test_model.py 等) を sys.path/__init__.py に依存せず一意な
+# モジュール名で import する。prepend 既定では basename 衝突で collection が中断する
+# (Issue #31)。importlib は sys.path を汚さないため src レイアウトとも相性が良い。
+addopts = "-q --import-mode=importlib"
 markers = [
     "gsas: GSAS-II がインストールされている環境でのみ実行する contract test",
     "mcp: MCP SDK (optional extra mcp) がインストールされている環境でのみ実行する",

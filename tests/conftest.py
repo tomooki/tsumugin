@@ -3,9 +3,27 @@ from __future__ import annotations
 import importlib.util
 import shutil
 
+import numpy as np
 import pytest
 
 from tsumugin.backends.gsasii import gsasii_available
+
+
+@pytest.fixture(autouse=True)
+def _restore_numpy_errstate():
+    """各テスト後に numpy のグローバル errstate を復元し、テスト間リークを断つ (Issue #31)。
+
+    pymatgen/spglib 等の一部依存は import/呼び出し時に ``np.seterr`` 相当でグローバルな
+    浮動小数点エラーハンドリングを ``raise`` に切り替えることがある。これが残ると、以降の
+    (従来 invalid float 演算を黙認していた) テストが ``FloatingPointError`` を送出して
+    実行順依存の偽 fail を起こす。テスト毎に保存・復元することで一括実行 (`uv run pytest`)
+    の分離を保証する。
+    """
+    saved = np.geterr()
+    try:
+        yield
+    finally:
+        np.seterr(**saved)
 
 
 def _mcp_available() -> bool:
