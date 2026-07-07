@@ -52,7 +52,7 @@ class IdentifyConfig:
     """逐次減算同定の設定 (第1/2層の決定論パラメータのみ; 第3層の判断は含まない)。"""
 
     max_phases: int = 5          # 反復上限 (安全網; 実際は snr_stop が停止を決める)
-    snr_stop: float = 8.0        # 残差 S/N がこの未満で停止 (全て説明済)
+    snr_stop: float = 5.0        # 残差 S/N がこの未満で停止 (5σ = 結晶学の標準検出閾値)
     eps_gain: float = 0.02       # 受理に要する未説明強度の相対減少 (過剰適合ガード)
     scale_min: float = 1e-3      # 受理に要する候補の最小スケール (decoy=0 を弾く)
     try_k: int = 3               # 各周で試す提案候補数
@@ -242,13 +242,9 @@ def refine_polymorphs(
     """
     base_refs = [a.reference for a in accepted]
     groups = group_by_composition(tuple(seen_matches))
-    best_refs = list(base_refs)
-    try:
-        best_rwp = float(refiner(best_refs))
-    except Exception:
-        best_rwp = float("inf")
-    changed = False
-    for i, a in enumerate(accepted):
+    # 各相の同組成代替候補 (score 差 < polymorph_margin) を前計算 (決定論順・重複 id 除去)
+    alts_by_i: list[list[ReferencePhase]] = []
+    for a in accepted:
         alts = [
             m.reference
             for g in groups if g.formula == a.formula
@@ -256,26 +252,42 @@ def refine_polymorphs(
             if m.reference.phase_id != a.phase_id
             and abs(float(m.score) - float(a.score)) < cfg.polymorph_margin
         ]
-        # 重複 phase_id を除く (決定論順)
         seen_ids: set[str] = set()
-        alts = [r for r in alts if not (r.phase_id in seen_ids or seen_ids.add(r.phase_id))]
-        if not alts and not cfg.always_refine:
-            continue
-        for alt in alts:
-            trial = list(best_refs)
-            trial[i] = alt
-            try:
-                rwp = float(refiner(trial))
-            except Exception:
-                rwp = float("inf")
-            ledger.append("m11_refine", {
-                "swap_from": best_refs[i].phase_id, "swap_to": alt.phase_id,
-                "rwp": rwp, "base_rwp": best_rwp, "accepted": bool(rwp < best_rwp - 1e-9),
-            })
-            if rwp < best_rwp - 1e-9:
-                best_rwp = rwp
-                best_refs[i] = alt
-                changed = True
+        alts_by_i.append([r for r in alts if not (r.phase_id in seen_ids or seen_ids.add(r.phase_id))])
+
+    best_refs = list(base_refs)
+
+    def _rwp(refs) -> float:
+        try:
+            return float(refiner(refs))
+        except Exception:
+            return float("inf")
+
+    best_rwp = _rwp(best_refs)
+    changed = False
+    # 【固定点反復】: ある相の swap 判定は他相の暫定選択に依存する (flaky refiner や相互作用)。
+    #   1 パスでは順序依存で取りこぼすため、改善が無くなるまで繰り返す (best_rwp 単調減で必ず停止)。
+    improved = True
+    while improved:
+        improved = False
+        for i in range(len(accepted)):
+            if not alts_by_i[i] and not cfg.always_refine:
+                continue
+            for alt in alts_by_i[i]:
+                if best_refs[i].phase_id == alt.phase_id:
+                    continue
+                trial = list(best_refs)
+                trial[i] = alt
+                rwp = _rwp(trial)
+                ledger.append("m11_refine", {
+                    "swap_from": best_refs[i].phase_id, "swap_to": alt.phase_id,
+                    "rwp": rwp, "base_rwp": best_rwp, "accepted": bool(rwp < best_rwp - 1e-9),
+                })
+                if rwp < best_rwp - 1e-9:
+                    best_rwp = rwp
+                    best_refs[i] = alt
+                    changed = True
+                    improved = True
     if not changed:
         return tuple(accepted), False
     new_accepted = tuple(
