@@ -174,3 +174,28 @@ IterativeIdentification (accepted, residual, groups, refined, ledger)
 
 **スコープ内 (方針変更)**: 多形の厳密判別は本 M11 の責務 (注入 `refiner` による実 Rietveld 深段)。以前の
 「Rietveld へ委譲」設計から「相同定が Rietveld を呼んで確定」へ変更。
+
+## 12. 実装知見 (実データ検証, E1-E4 改善ループ)
+
+並列 Sonnet サブエージェント + Opus 分析の改善ループ (`scratchpad/m11_experiment_log.md`) で確定した実データ知見:
+
+- **減算前ピーク整合が実データ多相回復の鍵 (E1, 実装済)**: `_peaklist` が生の参照ピークを使うと、MP 参照の
+  DFT 格子/位置誤差がそのまま減算残差に位置ミスマッチ (~560σ) として残り次相検出を汚染する。受理判定・
+  最終減算の両方で候補を**現残差へ格子整合** (`_candidate_peaklists`: 異方 `align_peaks_anisotropic` 優先・
+  cell 不足時等方) してからプロファイル合成する。整合は少数ピークでノイズ過剰適合し得るため生版と整合版を
+  実 joint fit の ss で選択 (`_best_peaklist_and_fit`, 事前閾値でなく実測適合)。FWHM 自動推定 (`auto_fwhm`)
+  併用。**CandAt で calcite+aragonite 両回復**。異方経路は cell 付き候補 (live MP) で活性化 (キャッシュは
+  cell なしで等方のみ)。
+- **元素部分集合の偽陽性は fast tier で棄却不能 (E3/E4 で確認)**: Ca 金属等は (1) 少数ピークが最強反射に
+  偶然一致し gain 最大、(2) 固有ピークも持つため「固有新ピーク」ゲート (E3) も通過、(3) dara 順受理 (E4) も
+  効かず合成テストを壊す。**これは設計境界通り** — element-subset FP は**深段 refiner (構造因子で該当強度を
+  出せないと判明) or 層3 化学ガード (opt-in `require_elements`)** の担当。fast tier = 正解相回復 + 明白 decoy
+  (graphite・部分集合のみ相) 棄却まで。「fast tier で偽陽性ゼロ」を求めるのは 2 段構え設計と矛盾する。
+
+## 13. 未完 (follow-up)
+
+- **T6 operando 一本化**: `insitu.phaseid.identify_new_phases` → `identify_pattern(known_phases=)` 委譲。
+  `identify_pattern` の known_phases 起点同定は実装・テスト済 (`test_known_phases_start`) だが、insitu.phaseid
+  の実配線は M9/M10 テストの回帰リスクがあるため段階移行 (別 PR) とする。
+- **MP キャッシュの cell 付き再生成**: 現キャッシュは Issue #18 前スキーマで cell なし → 異方経路が gated
+  テストで no-op。cell 付き再取得で恒久強化可 (`scratchpad/t7_live_aniso.py` 参照)。
