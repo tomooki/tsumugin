@@ -176,10 +176,45 @@ def test_excludes_known_phase_by_formula(tmp_path):
         tt, inten, elements=["Ca", "H", "Te", "O"], provider=prov, materializer=mat,
         workdir=str(tmp_path / "new.cif"), exclude_formulas=["CaH2O4Te"],
         subtract_bg=False, refine_lattice=False, top_k=2,
+        require_full_element_system=False,  # 本テストは formula 除外の検証 (化学ガードは別テスト)
     )
     ids = [p.phase_id for p in out]
     assert "mp-alpha" not in ids
     assert "mp-delta" in ids
+
+
+def test_chemistry_guard_excludes_element_subset_phases(tmp_path):
+    """③ 化学ガード: require_full_element_system=True は全元素系を含まない部分集合相を除外する。
+
+    観測に元素 Ca (単純相) が偶然マッチしても、Ca-Te-O 全系を持つ CaTeO3 のみ残す (junk 除去)。
+    """
+    tt, inten = _pattern([20.0, 30.0, 25.0])
+    prov = FakeProvider([
+        _ref("mp-ca", "Ca", [(20.0, 1.0)], ["Ca"]),            # 元素 Ca (部分集合 junk)
+        _ref("mp-o2", "O2", [(30.0, 1.0)], ["O"]),             # O2 (部分集合 junk)
+        _ref("mp-delta", "CaTeO3", [(20.0, 1.0), (25.0, 0.8), (30.0, 0.6)], ["Ca", "Te", "O"]),
+    ])
+    mat = FakeMaterializer()
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=False, top_k=5,
+        require_full_element_system=True,
+    )
+    ids = [p.phase_id for p in out]
+    assert ids == ["mp-delta"]  # junk (Ca, O2) は化学ガードで除外、delta のみ
+
+
+def test_chemistry_guard_off_keeps_subsets(tmp_path):
+    """require_full_element_system=False なら従来通り部分集合相も候補に残る (後方互換)。"""
+    tt, inten = _pattern([20.0, 30.0])
+    prov = FakeProvider([_ref("mp-ca", "Ca", [(20.0, 1.0), (30.0, 0.9)], ["Ca"])])
+    mat = FakeMaterializer()
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=False,
+        require_full_element_system=False,
+    )
+    assert [p.phase_id for p in out] == ["mp-ca"]  # ガード off で Ca が残る
 
 
 def test_excludes_by_phase_id(tmp_path):

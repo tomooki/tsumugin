@@ -555,6 +555,7 @@ def run_auto_rietveld(
         final_gof = stage_results[-1].gof if stage_results else float("inf")
         final_nobs = _nobs(gpx) if stage_results else 0
         phase_fractions = _phase_fraction_map(g2phases, g2hists)
+        resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
         out_gpx = ""
         if keep_gpx is not None:
@@ -571,7 +572,43 @@ def run_auto_rietveld(
         gpx_path=out_gpx,
         n_obs=final_nobs,
         phase_fractions=phase_fractions,
+        residual_two_theta=resid_tt,
+        residual_intensity=resid_int,
+        residual_sigma=resid_sig,
     )
+
+
+def _extract_residual(
+    g2hists, histograms
+) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
+    """先頭ヒストグラムの (2θ, Yobs−Ycalc, σ) を精密化レンジ内で返す (残差 S/N 判定用)。
+
+    GSAS の getdata('Residual')=obs−calc、getdata('yweight')=1/σ² (計数統計の重み)。σ=1/√weight。
+    レンジ外は calc=0 で残差=obs の偽ピークになるため two_theta_limits でマスクする。取得不能
+    (getdata 失敗) は空タプルに縮退。numpy 不使用。
+    """
+    if not g2hists:
+        return (), (), ()
+    try:
+        h0 = g2hists[0]
+        xs = list(h0.getdata("x"))
+        resid = list(h0.getdata("Residual"))
+        weights = list(h0.getdata("yweight"))
+    except Exception:
+        return (), (), ()
+    lim = histograms[0].two_theta_limits if histograms else None
+    out_x: list[float] = []
+    out_r: list[float] = []
+    out_s: list[float] = []
+    for xi, ri, wi in zip(xs, resid, weights):
+        fx = float(xi)
+        if lim is not None and not (lim[0] <= fx <= lim[1]):
+            continue
+        out_x.append(fx)
+        out_r.append(float(ri))
+        fw = float(wi)
+        out_s.append((1.0 / math.sqrt(fw)) if fw > 0 else float("inf"))
+    return tuple(out_x), tuple(out_r), tuple(out_s)
 
 
 def _data_fmthint(h: HistogramSpec) -> str:

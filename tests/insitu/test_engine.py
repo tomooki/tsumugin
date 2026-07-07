@@ -18,7 +18,12 @@ from tsumugin.insitu.model import FrameSpec, PhaseIdConfig, SequentialConfig
 from tsumugin.store.ledger import Ledger
 
 
-def _result(rwp, cells, fracs, *, valid=True, gof=1.0):
+def _result(rwp, cells, fracs, *, valid=True, gof=1.0, residual=None):
+    kw = {}
+    if residual is not None:
+        tt, ri, sg = residual
+        kw = dict(residual_two_theta=tuple(tt), residual_intensity=tuple(ri),
+                  residual_sigma=tuple(sg))
     return AutoRietveldResult(
         stage_results=(),
         final_rwp=rwp,
@@ -26,6 +31,7 @@ def _result(rwp, cells, fracs, *, valid=True, gof=1.0):
         refined_cells=cells,
         validity=ValidityReport(passed=valid),
         phase_fractions=fracs,
+        **kw,
     )
 
 
@@ -146,6 +152,283 @@ def test_refined_cell_flows_into_appearance_evidence():
     )
     assert len(res.appearances) == 1
     assert res.appearances[0].evidence["refined_cell"] == aniso
+
+
+def test_backward_propagation_captures_onset():
+    """(2) 逆方向伝播: 順方向で支配フレームに採用した新相を、良いセルで前フレームへ逆伝播し onset を捕捉。
+
+    delta は frame3 で順方向採用 (支配)。逆伝播で frame2/1 も delta 有意+Rwp改善→採用、frame0 は不在で停止。
+    onset が frame3→frame1 に前進する。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    delta_cell = (13.3, 6.5, 8.1, 90, 90, 90)
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        has_delta = "new_CaTeO3" in [p.phase_name for p in phases]
+        if has_delta:
+            # frame(axis)ごとに delta 分率/Rwp を変える (逆伝播の停止点を作る)
+            table = {
+                360.0: (0.40, 8.0),   # frame3 順方向採用 (支配)
+                340.0: (0.30, 7.0),   # frame2 逆伝播 → 採用
+                320.0: (0.20, 8.0),   # frame1 逆伝播 → 採用 (base 9.0 より改善)
+                300.0: (0.00, 9.6),   # frame0 逆伝播 → 不在/改善なし → 停止 (onset=frame1)
+            }
+            frac, rwp = table.get(frame.axis_value, (0.3, 8.0))
+            return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90), "new_CaTeO3": delta_cell},
+                           {"alpha": 1 - frac, "new_CaTeO3": frac})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 3 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(
+        _frames(4), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid, backward_propagation=True),
+    )
+    # delta が frame1/2/3 に存在し、frame0 には無い (onset=frame1)
+    by_axis = {f.axis_value: f for f in res.frames}
+    assert "new_CaTeO3" in by_axis[320.0].phase_names  # frame1 逆伝播で捕捉
+    assert "new_CaTeO3" in by_axis[340.0].phase_names  # frame2 逆伝播で捕捉
+    assert "new_CaTeO3" not in by_axis[300.0].phase_names  # frame0 不在 (停止)
+    # appearance の onset が前進
+    ap = next(a for a in res.appearances if a.phase_name == "new_CaTeO3")
+    assert ap.frame_index == 1
+    assert ap.evidence.get("backward_onset") is True
+
+
+def test_max_new_phases_caps_phase_search():
+    """max_new_phases=1: 1 相追加後は探索を打ち切る (無駄な相探索の抑制)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    other = PhaseSpec(structure_path="other.cif", phase_name="new_CaTe2O7")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        names = [p.phase_name for p in phases]
+        if len(names) > 1:  # 追加相ありは常に改善 (受理される)
+            frac = {n: (0.4 if n.startswith("new_") else 0.6) for n in names}
+            cells = {n: (13.3, 6.5, 8.1, 90, 90, 90) if n.startswith("new_")
+                     else (14.8, 6.8, 8.0, 90, 90, 90) for n in names}
+            return _result(8.0, cells, frac)
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 1 else 25.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    finder_calls = {"n": 0}
+
+    def finder(frame, elements, exclude, workdir):
+        finder_calls["n"] += 1
+        cand = other if "new_CaTeO3" in exclude else delta
+        return [(cand, {"source": "mp", "formula": cand.phase_name})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05, max_new_phases=1)
+    res = run_sequential_rietveld(
+        _frames(4), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid, backward_propagation=False),
+    )
+    # 1 相 (delta) のみ採用、2 相目 (CaTe2O7) は上限で探索されない
+    assert len(res.appearances) == 1
+    assert res.appearances[0].phase_name == "new_CaTeO3"
+    assert "new_CaTe2O7" not in res.phase_names
+
+
+def test_consolidation_rerefines_poisoned_forward_frames():
+    """globally-best セルで前方フレームを再精密化: 少数 onset の誤セル (高 Rwp) を良いセルで下げる。
+
+    delta は onset (少数, 誤セル, Rwp 25) で受理され誤セルが前進 → 支配フレーム (axis 400) で良いセルに
+    確立。consolidation が支配フレームの良いセルを onset 域の poison フレームへ配り Rwp を 25→10 に下げる。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    GOOD = (13.3, 6.5, 8.1, 90, 90, 90)
+    BAD = (14.0, 6.9, 8.5, 90, 90, 90)
+    ALPHA_C = (14.8, 6.8, 8.0, 90, 90, 90)
+
+    def runner(frame, phases, initial_cells):
+        ax = frame.axis_value
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            dcell = (initial_cells or {}).get("new_CaTeO3")
+            warm_good = dcell is not None and abs(dcell[0] - 13.3) < 0.05
+            if ax == 400.0:  # 支配フレーム: 良いセルに確立 (最大分率)
+                return _result(8.0, {"alpha": ALPHA_C, "new_CaTeO3": GOOD},
+                               {"alpha": 0.4, "new_CaTeO3": 0.6})
+            if warm_good:  # 良いセルで再精密化 (consolidation) → Rwp 低
+                return _result(10.0, {"alpha": ALPHA_C, "new_CaTeO3": GOOD},
+                               {"alpha": 0.7, "new_CaTeO3": 0.3})
+            # 少数 + 誤セル (forward warm-start): alpha 単相 (30) より改善するが高止まり
+            return _result(25.0, {"alpha": ALPHA_C, "new_CaTeO3": BAD},
+                           {"alpha": 0.8, "new_CaTeO3": 0.2})
+        # alpha 単相: Rwp は delta 成長で上昇 (300/320=9, 以降=30)
+        rwp = {300.0: 9.0, 320.0: 9.0}.get(ax, 30.0)
+        return _result(rwp, {"alpha": ALPHA_C}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        # 採用後 (CaTeO3 が exclude) は再探索しない (既知相の再同定防止)
+        if "CaTeO3" in exclude or "new_CaTeO3" in exclude:
+            return []
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=300.0 + i * 20.0) for i in range(9)]
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(frames, [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid, backward_propagation=True))
+    minority = [f for f in res.frames if "new_CaTeO3" in f.phase_names and f.axis_value != 400.0]
+    assert minority, "delta を含む少数フレームが無い"
+    # consolidation で onset 域 poison (誤セル BAD, Rwp 25) が良いセル (a≈13.3) + Rwp≤10 に更新される
+    assert all(f.refined_cells["new_CaTeO3"][0] == pytest.approx(13.3) for f in minority)
+    assert all(f.rwp <= 10.0 + 1e-9 for f in minority)
+
+
+def test_backward_propagation_disabled_keeps_forward_onset():
+    """backward_propagation=False なら順方向の onset のまま (逆伝播しない)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(8.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 3 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.05)
+    res = run_sequential_rietveld(
+        _frames(4), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid, backward_propagation=False),
+    )
+    ap = next(a for a in res.appearances if a.phase_name == "new_CaTeO3")
+    assert ap.frame_index == 3  # 逆伝播なし → 順方向 onset のまま
+    by_axis = {f.axis_value: f for f in res.frames}
+    assert "new_CaTeO3" not in by_axis[320.0].phase_names  # frame1 は逆伝播されない
+
+
+def test_snr_trigger_fires_on_significant_residual():
+    """残差 S/N トリガ: Rwp ジャンプがなくても、残差に有意な未説明ピークがあれば新相探索を発火する。"""
+    import numpy as np
+
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    tt = np.linspace(12.0, 70.0, 2000)
+    sigma = np.full(tt.size, 10.0)
+    # 有意な未説明ピーク (S/N ~20) を持つ残差 (Rwp は一定=ジャンプなし)
+    resid_peak = 400.0 * np.exp(-0.5 * ((tt - 40.0) / 0.15) ** 2)
+    flat_resid = np.zeros(tt.size)
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            # delta 追加で残差平坦化 + Rwp 改善
+            return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4},
+                           residual=(tt, flat_resid, sigma))
+        # 単相: Rwp は一定 (12.0) だが残差に未説明ピーク → S/N トリガ
+        return _result(12.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0},
+                       residual=(tt, resid_peak, sigma))
+
+    calls = {"finder": 0}
+
+    def finder(frame, elements, exclude, workdir):
+        calls["finder"] += 1
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    # trigger_rwp_ratio を大きくして Rwp ジャンプは無効化 → S/N トリガのみで発火することを見る
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01,
+                        trigger_rwp_ratio=100.0, snr_trigger=8.0)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid, changepoint_window=99))
+    assert calls["finder"] > 0  # S/N トリガで探索が発火した
+    assert len(res.appearances) == 1  # delta 受理
+
+
+def test_accept_new_phase_despite_old_phase_validity_fail():
+    """③ 受理閾値: 旧相ドリフトで trial.validity=False でも、新相の Rwp 改善+分率+セル健全なら受理。
+
+    転移域で alpha のセルが急変し全相 validity が fail するが、それで delta を巻き添え棄却しない。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            # delta 追加で Rwp 改善するが validity は False (旧相 alpha のドリフト)
+            return _result(24.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                  "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4}, valid=False)
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
+                       {"alpha": 1.0}, valid=False)
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "materials_project", "formula": "CaTeO3", "dara_score": 0.01})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid))
+    assert len(res.appearances) == 1  # delta 受理 (旧相 validity fail に巻き添えされない)
+    assert res.appearances[0].phase_name == "new_CaTeO3"
+
+
+def test_require_validity_restores_strict_rejection():
+    """require_validity=True なら従来通り trial.validity=False で棄却 (後方互換の厳格モード)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(24.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                  "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.6, "new_CaTeO3": 0.4}, valid=False)
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
+                       {"alpha": 1.0}, valid=True)
+
+    def finder(frame, elements, exclude, workdir):
+        return [(delta, {"source": "mp", "formula": "CaTeO3"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, require_validity=True)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid))
+    assert res.appearances == ()  # validity fail で棄却
+
+
+def test_reject_new_phase_when_rwp_gain_below_threshold():
+    """相対 Rwp 改善が min_rwp_gain 未満なら棄却 (過剰適合ガード)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    junk = PhaseSpec(structure_path="junk.cif", phase_name="new_junk")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_junk" in [p.phase_name for p in phases]:
+            # 分率・セルは OK だが Rwp がほぼ下がらない (0.3% < 1%)
+            return _result(29.91, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                   "new_junk": (5.0, 5.0, 5.0, 90, 90, 90)},
+                           {"alpha": 0.6, "new_junk": 0.4})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir):
+        return [(junk, {"source": "mp", "formula": "JUNK"})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.03, min_rwp_gain=0.01)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid))
+    assert res.appearances == ()  # Rwp 改善不足で棄却
 
 
 def test_auto_add_phase_rejected_when_not_improving():

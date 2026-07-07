@@ -29,6 +29,7 @@ from .model import (
     SequentialConfig,
     SequentialRietveldResult,
 )
+from .residual import residual_significance
 
 # runner: (frame, phases, initial_cells) -> AutoRietveldResult
 Runner = Callable[
@@ -138,16 +139,29 @@ def run_sequential_rietveld(
         lattice_history.append({"a": rep_cell[0], "b": rep_cell[1], "c": rep_cell[2]})
         signal = detect_changepoint(rwp_history, lattice_history, 0, config=cp_config)
 
-        # --- 新相自動同定 (トリガ: 変化点 or Rwp 相対ジャンプ) ---
+        # --- 新相自動同定 (トリガ: 残差 S/N or 変化点 or Rwp 相対ジャンプ) ---
         appended_this_frame: PhaseAppearance | None = None
-        if phase_finder is not None and pid is not None and pid.enabled and rwp < float("inf"):
+        _cap_reached = pid is not None and pid.max_new_phases > 0 and len(appearances) >= pid.max_new_phases
+        if (
+            phase_finder is not None and pid is not None and pid.enabled
+            and rwp < float("inf") and not _cap_reached
+        ):
             rwp_jump = min_rwp < float("inf") and rwp > min_rwp * pid.trigger_rwp_ratio
-            # 前回探索時の Rwp から 5% 超動いたら再探索 (相の成長=Rwp 上昇を捉える)。同一水準の
-            # 連続再探索 (MP スパム) は抑える (M1)。changepoint は毎回許可。
+            # 【残差 S/N トリガ (2相目追加判定)】: 既存相 fit の残差に、計数統計ノイズを超える未説明
+            #   ピーク (S/N > 閾値) があれば未同定相の証拠。恣意的 Rwp 比でなくノイズ基準で判定する。
+            snr_trigger = False
+            if pid.snr_trigger > 0 and result.residual_two_theta:
+                _sig = residual_significance(
+                    result.residual_two_theta, result.residual_intensity, result.residual_sigma
+                )
+                snr_trigger = _sig.warrants_new_phase(pid.snr_trigger)
+            # 【空振り抑制 (moved ガード)】: 前回探索から Rwp が 5% 超動いた時のみ再探索する。相が
+            #   採用されれば Rwp が動き→次の探索を許可、空振り (採用なし) なら Rwp 不変→再探索しない。
+            #   これで S/N トリガが**自己抑制的**になり (新相の mis-fit で残差 S/N が高止まりしても無駄試行を
+            #   繰り返さない)、恣意的な max_new_phases キャップは不要になる。changepoint は毎回許可。
             moved = last_search_rwp is None or abs(rwp - last_search_rwp) > 0.05 * max(rwp, 1.0)
-            if signal.triggered or (rwp_jump and moved):
-                if rwp_jump or signal.triggered:
-                    last_search_rwp = rwp
+            if signal.triggered or ((snr_trigger or rwp_jump) and moved):
+                last_search_rwp = rwp
                 result, appended_this_frame, warn = _try_add_phase(
                     frame, phases, known_formulas, result, rwp, pid, phase_finder,
                     runner, _resolve_workdir(), i, ledger,
@@ -200,6 +214,12 @@ def run_sequential_rietveld(
         if not refine_failed and cells:
             prev_cells = {**(prev_cells or {}), **cells}
 
+    # --- 逆方向伝播 (operando 逆方向解析): 確立した新相を前フレームへ逆伝播し onset を精密化 ---
+    if config.backward_propagation and pid is not None and pid.enabled and appearances:
+        frame_results, appearances = _consolidate_phase_cells(
+            frames, n, frame_results, appearances, phases, pid, runner, ledger,
+        )
+
     all_phase_names = tuple(p.phase_name for p in phases)
     ledger.append("m9_seq_done", {"phases": list(all_phase_names), "appearances": len(appearances)})
 
@@ -212,16 +232,161 @@ def run_sequential_rietveld(
     )
 
 
+def _best_established_cell(
+    frame_results: "list[FrameRietveldResult]", phase_name: str, from_frame: int
+) -> "Cell | None":
+    """from_frame 以降で phase_name の相分率が最大のフレームの精密化格子を返す (確立セル)。
+
+    支配フレーム (分率最大) ほど新相のセル/プロファイルが良く決まるため、そのセルを逆伝播の初期値にする。
+    """
+    best_frac = -1.0
+    best_cell: "Cell | None" = None
+    for j in range(from_frame, len(frame_results)):
+        fr = frame_results[j]
+        if fr.refine_failed:
+            continue
+        frac = float(fr.phase_fractions.get(phase_name, 0.0))
+        cell = fr.refined_cells.get(phase_name)
+        if cell is not None and frac > best_frac:
+            best_frac = frac
+            best_cell = cell
+    return best_cell
+
+
+def _rebuild_frame(res, fr, names) -> "FrameRietveldResult":
+    """再精密化結果 res で FrameRietveldResult を作り直す (元 fr のメタは保持)。"""
+    cells = {name: _cell6(c) for name, c in res.refined_cells.items()}
+    return FrameRietveldResult(
+        frame_index=fr.frame_index, axis_value=fr.axis_value, data_path=fr.data_path,
+        rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
+        phase_fractions=_fractions_of(res, tuple(names)), phase_names=tuple(names),
+        changepoint=fr.changepoint, changepoint_reasons=fr.changepoint_reasons,
+        validity_passed=res.validity.passed, refine_failed=False,
+    )
+
+
+def _consolidate_phase_cells(
+    frames, n, frame_results, appearances, all_phases, pid, runner, ledger,
+):
+    """確立した新相の**globally-best セル**で全フレームを再精密化し、onset を逆伝播で捕捉する。
+
+    実測診断: 少数相 (delta) は onset 域では prealign がセルを誤整合し (支配相 alpha のピークにロック)、
+    誤セルを warm-start 前進させると Rietveld が異方誤差を飛び越えられず Rwp 高止まり → 偽相を誘発する。
+    prealign が正しいセル (誤差 <0.05Å) を返すのは**相が支配的なフレーム**のみ。そこで各新相 P について:
+
+    1. **前方再精密化**: P が最も支配的なフレームの確立セルを初期値に、P を含む全フレーム (k..n-1) を
+       再 fit し Rwp 改善なら差し替える (onset 域の誤セル poison を除去)。
+    2. **逆方向 onset**: その良いセルを初期値に k-1, k-2, ... を P 追加で再 fit、相分率有意 + Rwp 改善なら
+       採用し onset を前へ、外れたら停止。
+
+    「支配時に良いセルを確立 → 全フレームへ配る」ことで少数 onset のセル誤整合を回避する。
+    """
+    name_to_spec = {p.phase_name: p for p in all_phases}
+    updated = list(frame_results)
+    new_appearances = list(appearances)
+
+    for idx, ap in enumerate(appearances):
+        spec = name_to_spec.get(ap.phase_name)
+        if spec is None:
+            continue
+        k = ap.frame_index
+        est_cell = _best_established_cell(updated, ap.phase_name, from_frame=k)
+        if est_cell is None:
+            continue
+        # 1) 前方再精密化: P を含む k..n-1 を globally-best セルで再 fit (onset 域の誤セル poison 除去)
+        for j in range(k, n):
+            fr = updated[j]
+            if ap.phase_name not in fr.phase_names or fr.refine_failed:
+                continue
+            phases_j = tuple(name_to_spec[nm] for nm in fr.phase_names if nm in name_to_spec)
+            warm = {nm: fr.refined_cells[nm] for nm in fr.phase_names if nm in fr.refined_cells}
+            warm[ap.phase_name] = est_cell
+            res = runner(frames[j], phases_j, warm)
+            if res.final_rwp < float("inf") and float(res.final_rwp) < fr.rwp - 1e-9:
+                updated[j] = _rebuild_frame(res, fr, fr.phase_names)
+                ledger.append(
+                    "m9_consolidate_forward",
+                    {"frame": j, "phase": ap.phase_name, "rwp_before": fr.rwp,
+                     "rwp_after": float(res.final_rwp)},
+                )
+        # 前方再精密化でセルが更新された可能性 → 良いセルを取り直す
+        est_cell = _best_established_cell(updated, ap.phase_name, from_frame=k) or est_cell
+        # 2) 逆方向 onset: pre-onset フレームに P を良いセルで追加
+        onset = k
+        for j in range(k - 1, -1, -1):
+            fr = updated[j]
+            if ap.phase_name in fr.phase_names or fr.refine_failed:
+                continue
+            existing = [name_to_spec[nm] for nm in fr.phase_names if nm in name_to_spec]
+            if not existing:
+                continue
+            trial_phases = tuple(existing + [spec])
+            warm: dict[str, Cell] = {
+                nm: fr.refined_cells[nm] for nm in fr.phase_names if nm in fr.refined_cells
+            }
+            warm[ap.phase_name] = est_cell
+            res = runner(frames[j], trial_phases, warm)
+            new_frac = float(res.phase_fractions.get(ap.phase_name, 0.0))
+            base_rwp = fr.rwp
+            accepted = (
+                (res.final_rwp < float("inf"))
+                and new_frac > pid.frac_min
+                and float(res.final_rwp) < base_rwp - 1e-9
+            )
+            ledger.append(
+                "m9_backward_trial",
+                {"frame": j, "phase": ap.phase_name, "rwp_before": base_rwp,
+                 "rwp_after": float(res.final_rwp), "fraction": new_frac, "accepted": bool(accepted)},
+            )
+            if not accepted:
+                break  # onset 発見 (これ以上前に P はない)
+            names = tuple(fr.phase_names) + (ap.phase_name,)
+            updated[j] = _rebuild_frame(res, fr, names)
+            onset = j
+        if onset < k:
+            # onset を前へ更新 (逆伝播で捕捉した最も早いフレーム)
+            new_appearances[idx] = PhaseAppearance(
+                phase_name=ap.phase_name, frame_index=onset, axis_value=frames[onset].axis_value,
+                structure_path=ap.structure_path, source=ap.source,
+                rwp_before=updated[onset].rwp, rwp_after=updated[onset].rwp,
+                evidence={**dict(ap.evidence), "backward_onset": True, "forward_frame": k},
+            )
+    return updated, tuple(new_appearances)
+
+
+def _accept_new_phase(trial, new_name, base_rwp, trial_rwp, new_frac, pid) -> bool:
+    """新相受理判定 (③ 受理閾値): 相対 Rwp 改善 ∧ 分率 ∧ 新相セル健全 ∧ (任意) 全相妥当性。
+
+    転移域では旧相 (alpha) のセルが急変し全相 validity が fail するが、それは新相 (delta) 追加の
+    是非とは独立。そこで既定では**新相セルの非崩壊のみ**を必須ガードにし (require_validity=False)、
+    Rwp の相対改善 + 有意分率で採否する。junk は Rwp が下がらず弾かれる (物理ベースの判定)。
+    """
+    rwp_gain = (base_rwp - trial_rwp) / base_rwp if base_rwp > 0 else 0.0
+    new_cell = trial.refined_cells.get(new_name)
+    new_cell_ok = new_cell is not None and min(
+        float(new_cell[0]), float(new_cell[1]), float(new_cell[2])
+    ) > 1.0
+    validity_ok = trial.validity.passed if pid.require_validity else True
+    return (
+        rwp_gain > pid.min_rwp_gain
+        and new_frac > pid.frac_min
+        and new_cell_ok
+        and validity_ok
+    )
+
+
 def _try_add_phase(
     frame, phases, known_formulas, base_result, base_rwp, pid, phase_finder, runner,
     workdir, frame_idx, ledger,
 ) -> "tuple[AutoRietveldResult, PhaseAppearance | None, str | None]":
     """新相候補を同定・追加して再精密化し、受理基準を満たす**最良候補**を採用する (可逆・提案≠適用)。
 
-    受理基準 (§1 過剰適合ガード): (1) 新相の相分率 > frac_min ∧ (2) Rwp が rwp_eps 超改善 ∧
-    (3) validity.passed 維持。**複数候補 (top_k) を全て試し、受理基準を満たす中で最小 Rwp のものを採る**
-    (Dara スコア上位が必ずしも最良の Rietveld フィットではないため; 例 CaTeO3 は MP に 8 多形あり
-    Dara 首位が構造ミスマッチ)。満たすものが無ければ base_result のまま返す。
+    受理基準 (③ 受理閾値, 過剰適合ガード): (1) 新相の相分率 > frac_min ∧ (2) Rwp が**相対**で
+    min_rwp_gain 超改善 ∧ (3) 新相セルが健全 (非崩壊) ∧ (4) require_validity 時のみ全相妥当性。
+    **旧相ドリフトの妥当性 fail で新相を巻き添え棄却しない** (転移域では旧相 alpha のセルが急変し
+    valid=False になるが、それは delta 追加の是非とは無関係; 実データで frame 150 の delta 受理を確認)。
+    junk 候補は Rwp が下がらず (frame 90 の O₂: Rwp 悪化) 弾かれる。**複数候補 (top_k) を全て試し、
+    受理基準を満たす中で最小 Rwp のものを採る** (Dara 順でなく Rietveld フィットで選ぶ)。
 
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
     """
@@ -240,7 +405,7 @@ def _try_add_phase(
         trial = runner(frame, trial_phases, base_cells)
         trial_rwp = float(trial.final_rwp)
         new_frac = float(trial.phase_fractions.get(cand_spec.phase_name, 0.0))
-        accepted = (trial_rwp < base_rwp - pid.rwp_eps) and (new_frac > pid.frac_min) and trial.validity.passed
+        accepted = _accept_new_phase(trial, cand_spec.phase_name, base_rwp, trial_rwp, new_frac, pid)
         ledger.append(
             "m9_phaseid_trial",
             {
@@ -434,6 +599,7 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
             top_k=pid.top_k, hull_cutoff_ev=pid.hull_cutoff_ev, subtract_bg=pid.subtract_bg,
             name_prefix="new", cell_refiner=cell_refiner,
             rerank_top_k=pid.rerank_top_k, rerank_wavelength=pid.wavelength,
+            require_full_element_system=pid.require_full_element_system,
         )
         return [
             (

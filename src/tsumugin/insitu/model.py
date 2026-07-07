@@ -76,6 +76,25 @@ class PhaseIdConfig:
     :param wavelength: プリアラインの線源波長 (Å)。既定 Cu Kα1。放射光/中性子系列では実波長を指定。
     :param rerank_top_k: >0 で相同定の上位 K 候補を異方格子整合で再スコアする (Issue #20 hybrid)。
         等方整合が DFT の軸別誤差で正解相を top_k から落とすのを防ぐ。既定 5 (0 で無効)。
+    :param min_rwp_gain: 新相受理に要する**相対** Rwp 改善 (0.01=1%)。転移域では旧相単独 fit が
+        既に高 Rwp のため絶対差でなく相対改善で判定する。junk 候補は Rwp が下がらず (or 悪化) 弾かれる。
+    :param require_validity: 受理に全相の物理妥当性 (`check_validity`) を要求するか。転移域では旧相
+        (alpha) のセルが急変して妥当性 fail し**新相 delta を巻き添えで弾く**ため既定 False。代わりに
+        新相セルの健全性 (軸長 >1Å = 非崩壊) のみを必須ガードにする (③ 受理閾値, 実データで確認)。
+    :param require_full_element_system: 新相候補を**全元素系 (elements すべてを含む) 相**に限定するか
+        (③ 化学ガード)。相転移は骨格元素を保存するため、元素部分集合の単純相 (元素 Ca・O₂・CaO 等) が
+        少数相パターンに偶然マッチし上位化するのを防ぐ (実測: Ca-Te-O 三元限定で delta が frame90 #33→#1)。
+        既定 True。副生成物 (二元分解相等) を許すなら False。
+    :param snr_trigger: 残差 S/N トリガの閾値 (2相目追加判定)。既存相 fit の残差に、計数統計ノイズを
+        超える未説明ピーク (S/N ≥ 本値) があれば新相探索を発火する。恣意的な Rwp 比でなくノイズ基準で
+        「本物の未説明反射」を検出する (F 検定同型)。既定 20.0 (0 で無効)。**注意: この閾値は既知相の
+        モデル品質に依存しデータセット固有** — 実測 CaTeO3 で純 alpha (新相なし) の残差でも profile/選択
+        配向/水素の未モデル分で ~17σ のピークが出るため、8 では常時発火する。純 alpha 17σ vs delta 萌芽
+        35σ の間の 20 に校正。理想的には well-fit 基準フレームの残差 S/N 比 or エージェント/人間が設定する
+        (3 層の判断層)。GSAS 残差が無い runner (テストスタブ等) では無効化される。
+    :param max_new_phases: 系列全体で追加する新相数の上限 (0 で無制限)。**通常は不要** — S/N トリガの
+        moved 抑制 (空振り後は残差が動くまで再探索しない) が無駄試行を自己抑制するため。想定相数が厳密に
+        既知で、かつ探索を確実に打ち切りたい場合のみのオプション escape hatch。
     """
 
     elements: tuple[str, ...] = ()
@@ -88,6 +107,11 @@ class PhaseIdConfig:
     refine_new_phase_cell: bool = True
     wavelength: float = 1.5406
     rerank_top_k: int = 5
+    min_rwp_gain: float = 0.01
+    require_validity: bool = False
+    require_full_element_system: bool = True
+    snr_trigger: float = 20.0
+    max_new_phases: int = 0
 
     @property
     def enabled(self) -> bool:
@@ -103,6 +127,11 @@ class SequentialConfig:
     :param max_frames: 先頭から解析するフレーム上限 (None なら全部, デバッグ/検証短縮用)
     :param changepoint_window: 変化点検出のローリング窓 (sequential.changepoint と整合)
     :param phase_id: 新相自動同定設定 (None/無効なら相追加しない)
+    :param backward_propagation: 新相の**globally-best セルで全フレームを再精密化**し onset を逆伝播で
+        捕捉するか (operando セル整合)。転移域では少数相のうちは prealign がセルを誤整合し (支配相のピークに
+        ロック)、誤セルを warm-start 前進させると Rwp 高止まり→偽相を誘発する (実測)。prealign が正しい
+        セルを返すのは相が支配的なフレームのみ。そこで支配フレームで確立した良いセルで (1) P を含む全
+        フレームを再 fit (onset 域の誤セル poison 除去) + (2) 前フレームへ逆伝播して onset を捕捉する。既定 True。
     """
 
     warm_start: bool = True
@@ -110,6 +139,7 @@ class SequentialConfig:
     max_frames: int | None = None
     changepoint_window: int = 5
     phase_id: PhaseIdConfig | None = None
+    backward_propagation: bool = True
 
 
 @dataclass(frozen=True)
