@@ -95,6 +95,16 @@ class PhaseIdConfig:
     :param max_new_phases: 系列全体で追加する新相数の上限 (0 で無制限)。**通常は不要** — S/N トリガの
         moved 抑制 (空振り後は残差が動くまで再探索しない) が無駄試行を自己抑制するため。想定相数が厳密に
         既知で、かつ探索を確実に打ち切りたい場合のみのオプション escape hatch。
+    :param bic_acceptance: 単一フレームの新相受理を **bic モデル選択** で判定するか (**既定 False**)。
+        `bic = gof²·(n_obs−n_params) + n_params·ln(n_obs)`, n_params = base + per_phase·相数、trial_bic <
+        base_bic で採用。**ベンチマーク結論 (Issue #23 層1)**: 粉末パターンは n_obs~数千と大きく、相追加の
+        パラメータ罰 (~91) が chi2 改善スケール (~数百〜千) に対し微小なため、bic は forward-pass では
+        `min_rwp_gain` より**寛容**で偽相 (大分率で Rwp を下げる Ca3TeO6 等) も採ってしまい過剰適合ガードに
+        ならない。よって forward-pass は既定で相対 Rwp を用いる。bic の実効は**相集合が違う区間比較**
+        (M10 anchor crossover, パラメータ罰がフレーム跨ぎで累積) にあり、そこでは既定 on。小 n_obs や
+        原理的判定が要る時のみ本フラグを True。frac/セル/妥当性ガードは両方式で共通。
+    :param bic_base_params: bic の非相パラメータ数 (背景/プロファイル/ゼロ等)。
+    :param bic_per_phase_params: bic の 1 相あたりパラメータ数 (scale+格子+プロファイル概算)。
     """
 
     elements: tuple[str, ...] = ()
@@ -112,6 +122,9 @@ class PhaseIdConfig:
     require_full_element_system: bool = True
     snr_trigger: float = 20.0
     max_new_phases: int = 0
+    bic_acceptance: bool = False
+    bic_base_params: int = 30
+    bic_per_phase_params: int = 12
 
     @property
     def enabled(self) -> bool:
