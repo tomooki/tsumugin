@@ -116,7 +116,9 @@ def extract_anchors(
         if conf < cfg.anchor_confidence_min:
             continue
         a = _refine_anchor(i, frames[i], specs, runner, confidence=conf)
-        if a.rwp <= cfg.anchor_rwp_max and a.validity_passed:
+        # 高温/時間系列では室温 CIF 基準の validity が正当な格子伸長を fail するため既定で課さない
+        # (M9 H1 と同根)。Rwp + 信頼度でアンカーを確定する。
+        if a.rwp <= cfg.anchor_rwp_max and (not cfg.require_anchor_validity or a.validity_passed):
             anchors.append(a)
     if anchors:
         return tuple(anchors)

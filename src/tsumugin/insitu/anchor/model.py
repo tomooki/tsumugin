@@ -30,6 +30,10 @@ class AnchorConfig:
 
     :param anchor_confidence_min: アンカー候補に要する合成信頼度の下限 (段階 A スクリーニング)。
     :param anchor_rwp_max: 確定アンカーに要する Rietveld Rwp の上限 (段階 B 確認)。
+    :param require_anchor_validity: 確定アンカーに `check_validity` pass を要求するか。**既定 False** —
+        `check_validity` は室温 CIF セルとの乖離を fail 判定するため、高温/時間系列では正当に格子が伸びた
+        フレームを軒並み fail させ (M9 H1 と同根)、アンカーが取れず単一アンカーに縮退する (実測)。よって
+        アンカーは Rwp + 信頼度で確定し、validity は既定で課さない。良い参照セルがある系のみ True。
     :param w_score: 信頼度合成の Dara スコア重み。
     :param w_margin: 信頼度合成のスコアマージン (top1−top2) 重み。
     :param w_strain: 信頼度合成の strain ペナルティ重み (小 strain=良)。
@@ -46,6 +50,7 @@ class AnchorConfig:
 
     anchor_confidence_min: float = 0.5
     anchor_rwp_max: float = 20.0
+    require_anchor_validity: bool = False
     w_score: float = 1.0
     w_margin: float = 1.0
     w_strain: float = 2.0

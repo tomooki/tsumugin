@@ -101,6 +101,39 @@ def test_stage_b_rejects_high_rwp_despite_confidence():
     assert [a.frame_index for a in anchors] == [2]  # Rwp ゲートを通ったのは frame2 のみ
 
 
+def test_validity_not_required_by_default():
+    """既定 (require_anchor_validity=False): validity fail でも Rwp+信頼度でアンカー確定。
+
+    高温系列は室温 CIF 基準の validity を軒並み fail するため (M9 H1 同根)、既定で validity を課さない。
+    """
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0)  # require_anchor_validity 既定 False
+
+    def identifier(frame):
+        return (0.9, (ALPHA,))
+
+    def runner(frame, phases, cells):
+        return _result(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0}, valid=False)
+
+    anchors = extract_anchors(_frames(3), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    assert [a.frame_index for a in anchors] == [0, 1, 2]  # validity False でも全て確定
+    assert all(not a.validity_passed for a in anchors)
+
+
+def test_validity_gate_opt_in():
+    """require_anchor_validity=True なら validity fail フレームをアンカーから除外。"""
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0, require_anchor_validity=True)
+
+    def identifier(frame):
+        return (0.9, (ALPHA,))
+
+    def runner(frame, phases, cells):
+        i = int((frame.axis_value - 300) / 30)
+        return _result(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0}, valid=(i == 1))
+
+    anchors = extract_anchors(_frames(3), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    assert [a.frame_index for a in anchors] == [1]  # validity pass は frame1 のみ
+
+
 def test_fallback_when_no_confident_anchor():
     """確定 0 個 → 最高信頼フレームを 1 個 fallback アンカーに (REQ-1003)。"""
     cfg = AnchorConfig(anchor_confidence_min=0.9)  # 誰も満たさない
