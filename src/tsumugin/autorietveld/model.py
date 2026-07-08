@@ -103,6 +103,9 @@ class PhaseSpec:
         例: (("Fe1","Al1"), ("Al2","Fe2")) — 各組で占有率和=1 制約と Uiso 等価制約を張る
     :param free_occupancy_labels: 単独で占有率を解放する原子ラベル (和=1 制約なし)。
         例: ("Ow",) — 部分占有のゼオライト水など、共有サイトでない部分占有サイトの占有率精密化に用いる
+    :param occupancy_equiv_groups: 占有率を等値拘束する原子ラベルの組の列 (add_EquivConstr)。
+        例: (("O1","DO11","DO12"),) — D₂O の D 占有率を親水 O に等値し 1 変数として精密化する
+        (水フラクションと D 量を連動させる)
     :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
     """
 
@@ -111,6 +114,7 @@ class PhaseSpec:
     format_hint: str = "CIF"
     mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
     free_occupancy_labels: tuple[str, ...] = ()
+    occupancy_equiv_groups: tuple[tuple[str, ...], ...] = ()
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -121,6 +125,7 @@ class PhaseSpec:
             "format_hint": self.format_hint,
             "mixed_occupancy_groups": [list(g) for g in self.mixed_occupancy_groups],
             "free_occupancy_labels": list(self.free_occupancy_labels),
+            "occupancy_equiv_groups": [list(g) for g in self.occupancy_equiv_groups],
             "temperature": self.temperature,
         }
 
@@ -129,12 +134,14 @@ class PhaseSpec:
         """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
         groups = d.get("mixed_occupancy_groups") or ()
         free_occ = d.get("free_occupancy_labels") or ()
+        equiv = d.get("occupancy_equiv_groups") or ()
         return cls(
             structure_path=str(d["structure_path"]),
             phase_name=str(d["phase_name"]),
             format_hint=str(d.get("format_hint", "CIF")),
             mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
             free_occupancy_labels=tuple(str(a) for a in free_occ),
+            occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
 

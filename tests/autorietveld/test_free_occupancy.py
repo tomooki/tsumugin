@@ -91,6 +91,55 @@ def test_setup_constraints_bounds_and_sum_constraints():
     assert "0::Afrac:0" not in gpx.bounds["parmMin"]
 
 
+def test_setup_constraints_occupancy_equiv_groups():
+    from tsumugin.autorietveld.engine import _setup_constraints
+
+    ph = _FakePhase(0, ["Ow", "DOw1", "DOw2"])  # Afrac idx: Ow=0, DOw1=1, DOw2=2
+    spec = PhaseSpec(
+        "m.cif", "NaCuHCF",
+        free_occupancy_labels=("Ow",),
+        occupancy_equiv_groups=(("Ow", "DOw1", "DOw2"),),
+    )
+    gpx = _FakeGpx()
+    _setup_constraints(gpx, [ph], [], [spec])
+    # D 占有率を親 O に等値 (add_EquivConstr で 1 変数化)。
+    assert ("0::Afrac:0", "0::Afrac:1", "0::Afrac:2") in gpx.equiv
+
+
+def test_tof_profile_stage_refines_only_tof_histograms():
+    from tsumugin.autorietveld.engine import _apply_stage, _tof_profile_keys
+    from tsumugin.autorietveld.model import RefinementStage
+
+    class _FakeHist:
+        def __init__(self):
+            self.refined = []
+
+        def set_refinements(self, d):
+            self.refined.append(d)
+
+    xray_h, tof_h = _FakeHist(), _FakeHist()
+    rads = [Radiation.XRAY_SYNCHROTRON, Radiation.NEUTRON_TOF]
+    stage = RefinementStage("tofprof", {"tof_profile": True})
+    _apply_stage(None, [xray_h, tof_h], [], [], [], rads, stage)
+    # TOF ヒストグラムのみ profile 較正キーを解放。
+    assert tof_h.refined == [{"Instrument Parameters": _tof_profile_keys()}]
+    assert xray_h.refined == []
+    assert _tof_profile_keys() == ["sig-1", "sig-2"]
+
+
+def test_equiv_groups_from_sites_groups_by_parent():
+    from tsumugin.autorietveld.deuterium import DeuteriumSite, equiv_groups_from_sites
+
+    sites = (
+        DeuteriumSite("DO11", "O1", (0.0, 0.0, 0.0), 0.25),
+        DeuteriumSite("DO12", "O1", (0.1, 0.0, 0.0), 0.25),
+        DeuteriumSite("DOw1", "Ow", (0.2, 0.0, 0.0), 0.17),
+        DeuteriumSite("DOw2", "Ow", (0.3, 0.0, 0.0), 0.17),
+    )
+    groups = equiv_groups_from_sites(sites)
+    assert groups == (("O1", "DO11", "DO12"), ("Ow", "DOw1", "DOw2"))
+
+
 def test_recipe_adds_occupancy_stage_for_free_occ_only():
     # mixed_occupancy_groups は空だが free_occupancy_labels があれば occupancy 段階が入る。
     hist = HistogramSpec(

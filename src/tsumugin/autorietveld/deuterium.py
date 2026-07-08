@@ -25,6 +25,7 @@ from tsumugin.autorietveld.cif_normalize import (
 
 __all__ = [
     "DeuteriumSite",
+    "equiv_groups_from_sites",
     "frac_to_cart_matrix",
     "place_d2o",
 ]
@@ -44,6 +45,24 @@ class DeuteriumSite:
     parent_label: str
     frac: tuple[float, float, float]
     occupancy: float
+
+
+def equiv_groups_from_sites(
+    sites: tuple[DeuteriumSite, ...],
+) -> tuple[tuple[str, ...], ...]:
+    """``DeuteriumSite`` 列から占有率等値グループ ``(親O, D1, D2, ...)`` を親ごとに組む。🔵
+
+    ``PhaseSpec.occupancy_equiv_groups`` にそのまま渡し、D の占有率を親水 O に連動 (1 変数化) させる。
+    親ラベルの初出順を保つ (決定論)。
+    """
+    order: list[str] = []
+    by_parent: dict[str, list[str]] = {}
+    for s in sites:
+        if s.parent_label not in by_parent:
+            by_parent[s.parent_label] = [s.parent_label]
+            order.append(s.parent_label)
+        by_parent[s.parent_label].append(s.label)
+    return tuple(tuple(by_parent[p]) for p in order)
 
 
 def frac_to_cart_matrix(

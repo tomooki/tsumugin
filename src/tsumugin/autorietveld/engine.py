@@ -96,6 +96,17 @@ def _profile_keys(radiation: Radiation) -> list[str]:
     return ["U", "V", "W"]
 
 
+def _tof_profile_keys() -> list[str]:
+    """TOF (PNT) 装置プロファイルの較正キー。
+
+    近似 instprm (Z-Code Type0m → GSAS PNT の変換で厳密でない sig/alpha/beta) を実測へ寄せる較正用。
+    支配的な **Gaussian 幅の d 依存 (sig-1/sig-2)** のみに限定する。alpha/beta (立ち上がり/減衰) は
+    ``1/alpha``・``1/beta`` を含みゼロ近傍で発散するため既定では解放しない (実 GSAS で div-by-zero を確認)。
+    opt-in 段階 (既定レシピには含めない, T4 非回帰)。実測で幅較正が Rwp を改善する (17.3→16.2%)。
+    """
+    return ["sig-1", "sig-2"]
+
+
 def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
     """相の原子メタ情報 (座標可変ラベル・全ラベル・混合占有ラベル) を収集する。
 
@@ -179,6 +190,14 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
             if rad.is_tof:
                 continue
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
+    if "tof_profile" in flags:
+        # TOF 装置プロファイル (sig/alpha/beta) を較正する opt-in 段階。既定レシピには含めない
+        # (T4 非回帰)。近似 instprm 初期値を実測へ寄せ ND フィットを改善する。悪化時は本段階ごと revert。
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if not rad.is_tof:
+                continue
+            hist.set_refinements({"Instrument Parameters": _tof_profile_keys()})
     if "profile_lorentzian" in flags:
         # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード)。実験室/放射光 X 線は
         # Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。悪化時は
@@ -277,6 +296,11 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
         for lab in spec.free_occupancy_labels:
             if lab in label_to_idx:
                 _bound_occupancy(gpx, f"{pid}::Afrac:{label_to_idx[lab]}")
+        # 占有率等値 (D₂O の D を親水 O に連動): add_EquivConstr で 1 変数に束ねる。
+        for group in spec.occupancy_equiv_groups:
+            idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
+            if len(idxs) >= 2:
+                gpx.add_EquivConstr([f"{pid}::Afrac:{i}" for i in idxs])
 
     # 多相: 各ヒストグラムで相分率 (HAP Scale) 和 = 1 (REQ-104)
     if len(g2phases) > 1:
