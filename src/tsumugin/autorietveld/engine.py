@@ -480,6 +480,12 @@ def run_auto_rietveld(
             if h.two_theta_limits is not None:
                 lo, hi = h.two_theta_limits
                 hist.set_refinements({"Limits": [lo, hi]})
+            if h.weight != 1.0:
+                # ヒストグラム重み係数 (GSAS-II wtFactor)。joint の相対重み調整。
+                try:
+                    hist.data["data"][0]["wtFactor"] = float(h.weight)
+                except (KeyError, IndexError, TypeError):
+                    pass
             g2hists.append(hist)
 
         # --- 相追加 ---

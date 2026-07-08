@@ -60,6 +60,9 @@ class HistogramSpec:
     bank: int | None = None
     two_theta_limits: tuple[float, float] | None = None
     temperature: float | None = None
+    weight: float = 1.0
+    """ヒストグラム重み係数 (GSAS-II wtFactor)。joint 精密化で相対重みを調整する (既定 1.0)。
+    XRD 支配の joint で中性子を上げ重みする等に用いる (>1 で当該ヒストグラムを優先)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (Enum→値文字列, tuple→list)。"""
@@ -74,6 +77,7 @@ class HistogramSpec:
             if self.two_theta_limits is not None
             else None,
             "temperature": self.temperature,
+            "weight": self.weight,
         }
 
     @classmethod
@@ -89,6 +93,7 @@ class HistogramSpec:
             bank=d.get("bank"),  # type: ignore[arg-type]
             two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
             temperature=d.get("temperature"),  # type: ignore[arg-type]
+            weight=float(d.get("weight", 1.0)),
         )
 
 
