@@ -60,6 +60,12 @@ class HistogramSpec:
     bank: int | None = None
     two_theta_limits: tuple[float, float] | None = None
     temperature: float | None = None
+    weight: float = 1.0
+    """ヒストグラム重み係数 (GSAS-II wtFactor)。joint 精密化で相対重みを調整する (既定 1.0)。
+    XRD 支配の joint で中性子を上げ重みする等に用いる (>1 で当該ヒストグラムを優先)。"""
+    absorption: float = 0.0
+    """試料吸収係数の初期値 (GSAS-II Sample Parameters Absorption)。TOF 中性子は λ(=TOF) 依存吸収を
+    与える (μR 相当)。recipe の "absorption" 段階で解放する。既定 0.0 (無補正)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (Enum→値文字列, tuple→list)。"""
@@ -74,6 +80,8 @@ class HistogramSpec:
             if self.two_theta_limits is not None
             else None,
             "temperature": self.temperature,
+            "weight": self.weight,
+            "absorption": self.absorption,
         }
 
     @classmethod
@@ -89,6 +97,8 @@ class HistogramSpec:
             bank=d.get("bank"),  # type: ignore[arg-type]
             two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
             temperature=d.get("temperature"),  # type: ignore[arg-type]
+            weight=float(d.get("weight", 1.0)),
+            absorption=float(d.get("absorption", 0.0)),
         )
 
 
@@ -101,6 +111,14 @@ class PhaseSpec:
     :param format_hint: GSAS-II importer ヒント ("CIF"/"EXP")
     :param mixed_occupancy_groups: 混合占有サイトを共有する原子ラベルの組の列。
         例: (("Fe1","Al1"), ("Al2","Fe2")) — 各組で占有率和=1 制約と Uiso 等価制約を張る
+    :param free_occupancy_labels: 単独で占有率を解放する原子ラベル (和=1 制約なし)。
+        例: ("Ow",) — 部分占有のゼオライト水など、共有サイトでない部分占有サイトの占有率精密化に用いる
+    :param occupancy_equiv_groups: 占有率を等値拘束する原子ラベルの組の列 (add_EquivConstr)。
+        例: (("O1","DO11","DO12"),) — D₂O の D 占有率を親水 O に等値し 1 変数として精密化する
+        (水フラクションと D 量を連動させる)
+    :param free_uiso_labels: Uiso を解放する原子ラベルを限定する (空なら uiso 段階で全原子を解放)。
+        例: ("Cu","Na1","Na2","O1","O3","Ow") — 重原子/可動陽イオン/水のみ Uiso 解放し、軽元素
+        framework (C/N) や占有率 0 のゴースト原子の Uiso 発散/負値を防ぐ (heavy-atom + 無秩序構造の定石)
     :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
     """
 
@@ -108,6 +126,11 @@ class PhaseSpec:
     phase_name: str
     format_hint: str = "CIF"
     mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
+    free_occupancy_labels: tuple[str, ...] = ()
+    occupancy_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    free_uiso_labels: tuple[str, ...] = ()
+    position_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -117,6 +140,11 @@ class PhaseSpec:
             "phase_name": self.phase_name,
             "format_hint": self.format_hint,
             "mixed_occupancy_groups": [list(g) for g in self.mixed_occupancy_groups],
+            "free_occupancy_labels": list(self.free_occupancy_labels),
+            "occupancy_equiv_groups": [list(g) for g in self.occupancy_equiv_groups],
+            "free_uiso_labels": list(self.free_uiso_labels),
+            "position_equiv_groups": [list(g) for g in self.position_equiv_groups],
+            "occupancy_sum_groups": [list(g) for g in self.occupancy_sum_groups],
             "temperature": self.temperature,
         }
 
@@ -124,11 +152,23 @@ class PhaseSpec:
     def from_dict(cls, d: Mapping[str, object]) -> "PhaseSpec":
         """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
         groups = d.get("mixed_occupancy_groups") or ()
+        free_occ = d.get("free_occupancy_labels") or ()
+        equiv = d.get("occupancy_equiv_groups") or ()
+        free_uiso = d.get("free_uiso_labels") or ()
         return cls(
             structure_path=str(d["structure_path"]),
             phase_name=str(d["phase_name"]),
             format_hint=str(d.get("format_hint", "CIF")),
             mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
+            free_occupancy_labels=tuple(str(a) for a in free_occ),
+            occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
+            free_uiso_labels=tuple(str(a) for a in free_uiso),
+            position_equiv_groups=tuple(
+                tuple(str(a) for a in g) for g in (d.get("position_equiv_groups") or ())
+            ),
+            occupancy_sum_groups=tuple(
+                tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
+            ),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
 

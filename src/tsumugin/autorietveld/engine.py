@@ -96,6 +96,17 @@ def _profile_keys(radiation: Radiation) -> list[str]:
     return ["U", "V", "W"]
 
 
+def _tof_profile_keys() -> list[str]:
+    """TOF (PNT) 装置プロファイルの較正キー。
+
+    近似 instprm (Z-Code Type0m → GSAS PNT の変換で厳密でない sig/alpha/beta) を実測へ寄せる較正用。
+    支配的な **Gaussian 幅の d 依存 (sig-1/sig-2)** のみに限定する。alpha/beta (立ち上がり/減衰) は
+    ``1/alpha``・``1/beta`` を含みゼロ近傍で発散するため既定では解放しない (実 GSAS で div-by-zero を確認)。
+    opt-in 段階 (既定レシピには含めない, T4 非回帰)。実測で幅較正が Rwp を改善する (17.3→16.2%)。
+    """
+    return ["sig-1", "sig-2"]
+
+
 def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
     """相の原子メタ情報 (座標可変ラベル・全ラベル・混合占有ラベル) を収集する。
 
@@ -118,7 +129,14 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
         if has_free:
             coord_atoms.append(row[ct - 1])
     mixed = {lab for grp in spec.mixed_occupancy_groups for lab in grp}
-    return {"labels": labels, "coord_atoms": coord_atoms, "mixed": mixed}
+    free_occ = set(spec.free_occupancy_labels)
+    equiv_occ = {lab for grp in spec.occupancy_equiv_groups for lab in grp}
+    sum_occ = {lab for grp in spec.occupancy_sum_groups for lab in grp}
+    return {
+        "labels": labels, "coord_atoms": coord_atoms,
+        "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ | sum_occ,
+        "uiso_labels": list(spec.free_uiso_labels),
+    }
 
 
 def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
@@ -126,7 +144,7 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
 
     - coords: 一般位置原子に "X"
     - uiso: 全原子に "U"
-    - occupancy: 混合占有原子に "F"
+    - occupancy: 混合占有原子 + 単独解放原子 (free_occ) に "F"
     """
     changed = False
 
@@ -141,11 +159,17 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
         for lab in info["coord_atoms"]:
             add(lab, "X")
     if "uiso" in stage_flags:
-        for lab in info["labels"]:
+        # free_uiso_labels 指定時はその原子のみ、未指定なら全原子の Uiso を解放。
+        uiso_targets = info.get("uiso_labels") or info["labels"]
+        for lab in uiso_targets:
             add(lab, "U")
     if "occupancy" in stage_flags:
         for lab in info["mixed"]:
             add(lab, "F")
+        for lab in info.get("free_occ", set()):
+            add(lab, "F")
+        for lab in info.get("equiv_occ", set()):
+            add(lab, "F")  # 等値グループ (例 Fe=C=N) も解放 ([0,1] 拘束は張らない)
     return changed
 
 
@@ -157,8 +181,17 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
     """
     flags = stage.flags
     if "background" in flags:
-        n = int(flags["background"].get("coeffs", 6))  # type: ignore[union-attr]
-        gpx.set_refinement({"set": {"Background": {"no. coeffs": n, "refine": True}}})
+        bg = flags["background"]
+        default_n = int(bg.get("coeffs", 6))  # type: ignore[union-attr]
+        by_index = bg.get("by_index", {})  # type: ignore[union-attr]
+        bg_type = bg.get("type")  # type: ignore[union-attr]
+        # ヒストグラム毎に背景項数を設定 (ND は正規化 TOF で背景が支配的なため過剰項を避け少なめに)。
+        for i, hist in enumerate(hists):
+            n = int(by_index.get(i, default_n))
+            spec = {"no. coeffs": n, "refine": True}
+            if bg_type is not None:
+                spec["type"] = bg_type
+            hist.set_refinements({"Background": spec})
     # scale: GSAS-II はヒストグラムスケールを既定で精密化するため単相では no-op。
     if "cell" in flags:
         for ph in phases:
@@ -176,6 +209,34 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
             if rad.is_tof:
                 continue
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
+    if "absorption" in flags:
+        # 試料吸収を解放する opt-in 段階。TOF 中性子は λ(=TOF) 依存吸収でピーク強度の d 依存を補正
+        # (Cu/Fe 等の吸収)。既定レシピ非搭載。悪化時は本段階ごと revert。
+        for hist in hists:
+            hist.set_refinements({"Sample Parameters": ["Absorption"]})
+    if "tof_profile" in flags:
+        # TOF 装置プロファイル (sig/alpha/beta) を較正する opt-in 段階。既定レシピには含めない
+        # (T4 非回帰)。近似 instprm 初期値を実測へ寄せ ND フィットを改善する。悪化時は本段階ごと revert。
+        # フラグ値がリストならそのキー集合、True なら既定キー (_tof_profile_keys)。
+        tp = flags["tof_profile"]
+        keys = list(tp) if isinstance(tp, (list, tuple)) else _tof_profile_keys()
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if not rad.is_tof:
+                continue
+            hist.set_refinements({"Instrument Parameters": keys})
+    if "preferred_orientation" in flags:
+        # 選択配向 (preferred orientation) を解放する opt-in 段階。既定レシピには含めない。
+        # 値が偶数なら球面調和 (SH) その次数、1 なら March-Dollase、True なら SH order 4。PBA 等の
+        # 系統的ピーク強度ズレ (obs>calc) を配向分布で吸収する。悪化時は本段階ごと revert。
+        val = flags["preferred_orientation"]
+        order = 4 if val is True else int(val)
+        for ph in phases:
+            try:
+                ph.HAPvalue("Pref.Ori.", order)
+            except Exception:
+                pass
+            ph.set_HAP_refinements({"Pref.Ori.": True}, histograms=list(hists))
     if "profile_lorentzian" in flags:
         # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード)。実験室/放射光 X 線は
         # Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。悪化時は
@@ -229,16 +290,49 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
                 ph.set_refinements({"Atoms": active})
 
 
+def _bound_occupancy(gpx, frac: str) -> None:
+    """占有率パラメータを物理範囲 [0,1] に登録拘束する (GSAS-II parmMin/parmMax)。
+
+    範囲外へ出た占有率は GSAS-II が境界で凍結する (dropOOBvars)。部分占有水など**単独解放**
+    (free_occupancy_labels) の占有率が [0,1] を外れるのを防ぐ。
+
+    注意: **占有率和=1 (add_EqnConstr) を張った共有サイトには効かない**。和=1 拘束下では GSAS-II は
+    個々の Afrac でなく制約生成変数を varyList に入れるため、個別 Afrac の parmMin/parmMax は
+    freeze 判定に載らない (NaCuHCF の Na2/O1 は和=1 のため境界を超えても凍結されない)。共有サイトの
+    非物理占有は**正しいモデル選択で解消する**のが本筋 (model5→model6 で Ow が過剰密度を吸収し物理化)。
+    """
+    try:
+        gpx.set_Controls("parmMin", 0.0, variable=frac)
+        gpx.set_Controls("parmMax", 1.0, variable=frac)
+    except Exception:
+        # 古い GSAS-II で parmMin/parmMax 未対応でも精密化自体は継続させる (ガードのみ諦める)。
+        pass
+
+
+def _equiv_positions(gpx, pid, idxs) -> None:
+    """原子群の座標 (dAx/dAy/dAz shift) を等値拘束する (共有サイト/共位置を保つ)。
+
+    GSAS-II の座標精密化は shift 変数 (dAx 等) で行うため、shift を等値にすれば共位置の原子が
+    同じだけ動き相対位置を保つ (初期共位置が前提)。特殊位置で解放座標が無い成分は GSAS 側で無視される。
+    """
+    if len(idxs) < 2:
+        return
+    for coord in ("dAx", "dAy", "dAz"):
+        try:
+            gpx.add_EquivConstr([f"{pid}::{coord}:{i}" for i in idxs])
+        except Exception:
+            pass
+
+
 def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
     """占有率和=1・Uiso 等価 (混合占有) と相分率和=1 (多相) の制約を登録する (REQ-102/104)。
 
     占有率和=1 (add_EqnConstr) がないと占有率解放が発散し、Uiso 等価 (add_EquivConstr) が
-    ないと少数占有原子の Uiso が発散する (T2 実測)。多相では各ヒストグラムで相分率和=1 を課す。
+    ないと少数占有原子の Uiso が発散する (T2 実測)。混合占有・単独解放の占有率は物理範囲 [0,1] に
+    拘束する。多相では各ヒストグラムで相分率和=1 を課す。
     """
-    # 混合占有: 占有率和=1 + Uiso 等価
+    # 混合占有: 占有率和=1 + Uiso 等価 + [0,1] 拘束。単独解放 (free_occ) も [0,1] 拘束。
     for ph, spec in zip(g2phases, specs):
-        if not spec.mixed_occupancy_groups:
-            continue
         atoms = ph.data["Atoms"]
         ct = ph.data["General"]["AtomPtrs"][1]
         label_to_idx = {row[ct - 1]: i for i, row in enumerate(atoms)}
@@ -251,6 +345,33 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             uisos = [f"{pid}::AUiso:{i}" for i in idxs]
             gpx.add_EqnConstr(1.0, fracs, [1.0] * len(fracs))
             gpx.add_EquivConstr(uisos)
+            for frac in fracs:
+                _bound_occupancy(gpx, frac)
+            # 共有サイトは共位置: 座標 (dAx/dAy/dAz) も等値拘束する。
+            _equiv_positions(gpx, pid, idxs)
+        # 明示的な座標等値グループ (共位置 H/D 対など)。
+        for group in spec.position_equiv_groups:
+            pidx = [label_to_idx[lab] for lab in group if lab in label_to_idx]
+            if len(pidx) >= 2:
+                _equiv_positions(gpx, pid, pidx)
+        for lab in spec.free_occupancy_labels:
+            if lab in label_to_idx:
+                _bound_occupancy(gpx, f"{pid}::Afrac:{label_to_idx[lab]}")
+        # 占有率等値 (D₂O の D を親水 O に連動): add_EquivConstr で 1 変数に束ねる。
+        for group in spec.occupancy_equiv_groups:
+            idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
+            if len(idxs) >= 2:
+                gpx.add_EquivConstr([f"{pid}::Afrac:{i}" for i in idxs])
+        # 占有率和 (H/D ミキシング): (親, 子1, 子2, ...) で Σ子 − 親 = 0 を課す。
+        for group in spec.occupancy_sum_groups:
+            if len(group) < 2 or group[0] not in label_to_idx:
+                continue
+            parent = label_to_idx[group[0]]
+            children = [label_to_idx[lab] for lab in group[1:] if lab in label_to_idx]
+            if not children:
+                continue
+            variables = [f"{pid}::Afrac:{i}" for i in children] + [f"{pid}::Afrac:{parent}"]
+            gpx.add_EqnConstr(0.0, variables, [1.0] * len(children) + [-1.0])
 
     # 多相: 各ヒストグラムで相分率 (HAP Scale) 和 = 1 (REQ-104)
     if len(g2phases) > 1:
@@ -406,6 +527,18 @@ def run_auto_rietveld(
             if h.two_theta_limits is not None:
                 lo, hi = h.two_theta_limits
                 hist.set_refinements({"Limits": [lo, hi]})
+            if h.weight != 1.0:
+                # ヒストグラム重み係数 (GSAS-II wtFactor)。joint の相対重み調整。
+                try:
+                    hist.data["data"][0]["wtFactor"] = float(h.weight)
+                except (KeyError, IndexError, TypeError):
+                    pass
+            if h.absorption != 0.0:
+                # 試料吸収係数の初期値 (Sample Parameters Absorption)。TOF は λ 依存吸収を与える。
+                try:
+                    hist.data["Sample Parameters"]["Absorption"][0] = float(h.absorption)
+                except (KeyError, IndexError, TypeError):
+                    pass
             g2hists.append(hist)
 
         # --- 相追加 ---

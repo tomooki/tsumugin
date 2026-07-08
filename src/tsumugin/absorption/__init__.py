@@ -6,5 +6,12 @@
 from __future__ import annotations
 
 from .model import AbsorptionConfig, transmission_factor
+from .neutron import crystal_density, neutron_mu, neutron_mu_r
 
-__all__ = ["AbsorptionConfig", "transmission_factor"]
+__all__ = [
+    "AbsorptionConfig",
+    "crystal_density",
+    "neutron_mu",
+    "neutron_mu_r",
+    "transmission_factor",
+]
