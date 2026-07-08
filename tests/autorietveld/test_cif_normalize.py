@@ -66,6 +66,20 @@ def test_write_gsas_cif_single_block_and_uiso(tmp_path):
     assert len(st2.atoms) == 3
 
 
+def test_read_structure_keeps_atoms_across_blank_rows():
+    # 一部 CIF ライタはサイト行の間に空行を挿む。空行で loop を打ち切って原子を落とさないこと。
+    cif = (
+        "_cell_length_a 5\n_cell_length_b 5\n_cell_length_c 5\n"
+        "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+        "_symmetry_space_group_name_H-M 'P 1'\n"
+        "loop_\n_atom_site_label\n_atom_site_type_symbol\n"
+        "_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n"
+        "O1 O 0.0 0.0 0.0\n\nO2 O 0.5 0.5 0.5\n"
+    )
+    st = read_structure_cif_from_text(cif)
+    assert {a.label for a in st.atoms} == {"O1", "O2"}  # 空行後の O2 も保持
+
+
 def test_normalize_roundtrip(tmp_path):
     src = tmp_path / "src.cif"
     src.write_text(_CHECKCIF, encoding="utf-8")

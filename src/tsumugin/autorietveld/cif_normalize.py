@@ -137,7 +137,11 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
     atoms: list[Atom] = []
     for ln in lines[i:]:
         s = ln.strip()
-        if not s or s.startswith(("#", "loop_", "_", ";")):
+        # 空行はサイト行の区切りとして許容し読み飛ばす (一部 CIF ライタは行間に空行を挿む)。
+        # ループ終端は構造トークン (loop_/_tag/#/;) でのみ判定する。
+        if not s:
+            continue
+        if s.startswith(("#", "loop_", "_", ";")):
             break
         row = s.split()
         if len(row) < len(tags):

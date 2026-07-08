@@ -10,8 +10,9 @@ KEK/J-PARC の Z-Rietveld / Z-Code エコシステム (iMATERIA TOF 中性子を
   階層のテキスト。:func:`parse_zdiffractometer` で :class:`ZDiffractometer` へ読む。X 線 (v1) と
   TOF 中性子 (v2) の双方に対応し、instprm 生成 (:mod:`tsumugin.interop.instrument`) の入力になる。
 
-GSAS-II TOF FXYE の X 列規約: GSAS-II の FXYE リーダは第 1 列を常に ``/100`` する (CW のセンチ度由来)。
-そのため TOF (μs) は ``TOF × 100`` で書き出す。放射源が TOF かどうかは instprm の ``Type:PNT`` が決める。
+GSAS-II TOF FXYE の X 列規約: ``fmthint="GSAS"`` で読ませる TOF FXYE では、GSAS-II の GSAS 粉末リーダは
+第 1 列を **TOF[μs] としてそのまま**採る (×100 しない)。よって :func:`convert_igor_tof` は生の μs を書く
+(実 GSAS-II で検証済 → T5 gated test)。放射源が TOF かどうかは instprm の ``Type:PNT`` が決める。
 """
 
 from __future__ import annotations
@@ -198,7 +199,10 @@ def parse_zdiffractometer(text: str) -> ZDiffractometer:
         for i, (tag, _rest) in enumerate(parsed):
             if tag != target:
                 continue
-            for tag2, rest2 in parsed[i + 1: i + 4]:
+            # ブロック内の最初の [Value] を採る ([End] / 次の同名ブロックまで走査)。
+            for tag2, rest2 in parsed[i + 1:]:
+                if tag2 in ("End", target):
+                    break
                 if tag2 == "Value":
                     v = _first_float(rest2)
                     if v is not None:
