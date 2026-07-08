@@ -101,6 +101,8 @@ class PhaseSpec:
     :param format_hint: GSAS-II importer ヒント ("CIF"/"EXP")
     :param mixed_occupancy_groups: 混合占有サイトを共有する原子ラベルの組の列。
         例: (("Fe1","Al1"), ("Al2","Fe2")) — 各組で占有率和=1 制約と Uiso 等価制約を張る
+    :param free_occupancy_labels: 単独で占有率を解放する原子ラベル (和=1 制約なし)。
+        例: ("Ow",) — 部分占有のゼオライト水など、共有サイトでない部分占有サイトの占有率精密化に用いる
     :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
     """
 
@@ -108,6 +110,7 @@ class PhaseSpec:
     phase_name: str
     format_hint: str = "CIF"
     mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
+    free_occupancy_labels: tuple[str, ...] = ()
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -117,6 +120,7 @@ class PhaseSpec:
             "phase_name": self.phase_name,
             "format_hint": self.format_hint,
             "mixed_occupancy_groups": [list(g) for g in self.mixed_occupancy_groups],
+            "free_occupancy_labels": list(self.free_occupancy_labels),
             "temperature": self.temperature,
         }
 
@@ -124,11 +128,13 @@ class PhaseSpec:
     def from_dict(cls, d: Mapping[str, object]) -> "PhaseSpec":
         """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
         groups = d.get("mixed_occupancy_groups") or ()
+        free_occ = d.get("free_occupancy_labels") or ()
         return cls(
             structure_path=str(d["structure_path"]),
             phase_name=str(d["phase_name"]),
             format_hint=str(d.get("format_hint", "CIF")),
             mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
+            free_occupancy_labels=tuple(str(a) for a in free_occ),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
 

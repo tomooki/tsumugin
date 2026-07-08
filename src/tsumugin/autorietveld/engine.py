@@ -118,7 +118,8 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
         if has_free:
             coord_atoms.append(row[ct - 1])
     mixed = {lab for grp in spec.mixed_occupancy_groups for lab in grp}
-    return {"labels": labels, "coord_atoms": coord_atoms, "mixed": mixed}
+    free_occ = set(spec.free_occupancy_labels)
+    return {"labels": labels, "coord_atoms": coord_atoms, "mixed": mixed, "free_occ": free_occ}
 
 
 def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
@@ -126,7 +127,7 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
 
     - coords: 一般位置原子に "X"
     - uiso: 全原子に "U"
-    - occupancy: 混合占有原子に "F"
+    - occupancy: 混合占有原子 + 単独解放原子 (free_occ) に "F"
     """
     changed = False
 
@@ -145,6 +146,8 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
             add(lab, "U")
     if "occupancy" in stage_flags:
         for lab in info["mixed"]:
+            add(lab, "F")
+        for lab in info.get("free_occ", set()):
             add(lab, "F")
     return changed
 
