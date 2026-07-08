@@ -225,13 +225,31 @@ def load_xrdml(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     return parse_xrdml(text)
 
 
+def _load_rietan_int(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """RIETAN-FP .int を読む (interop.rietan への一方向委譲)。"""
+    from tsumugin.interop.rietan import load_rietan_int
+
+    return load_rietan_int(path)
+
+
+def _load_igor_tof_xy(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Z-Code Igor TOF を ``(tof[μs], intensity)`` として読む (esd は捨てる; interop へ委譲)。"""
+    from tsumugin.interop.zrietveld import load_igor_tof
+
+    tof, intensity, _esd = load_igor_tof(path)
+    return tof, intensity
+
+
 # データ形式名 → ローダー (M9 逐次解析の相同定入力を形式非依存に読むディスパッチャ)。
+# INT/IGOR は interop への一方向委譲 (interop は reference.io を import しない = 循環回避)。
 _LOADERS = {
     "XRDML": load_xrdml,
     "FXYE": load_fxye,
     "GSAS": load_gsas_powder,
     "XYE": load_xy,
     "XY": load_xy,
+    "INT": _load_rietan_int,
+    "IGOR": _load_igor_tof_xy,
 }
 
 
