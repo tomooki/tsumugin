@@ -82,5 +82,6 @@ def prepare_histograms(
         geometry=Geometry.DEBYE_SCHERRER,
         data_format="GSAS",
         two_theta_limits=limits,
+        absorption=float(zn.absorption) if zn.absorption else 0.0,  # Z-Code [Absorption]
     )
     return xray_spec, nd_spec

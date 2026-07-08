@@ -80,9 +80,11 @@ def test_setup_constraints_bounds_and_sum_constraints():
     )
     gpx = _FakeGpx()
     _setup_constraints(gpx, [ph], [], [spec])
-    # 共有サイトに 占有率和=1 + Uiso 等価。
+    # 共有サイトに 占有率和=1 + Uiso 等価 + 座標 (dAx/dAy/dAz) 等価。
     assert (1.0, ("0::Afrac:1", "0::Afrac:2")) in gpx.eqn
     assert ("0::AUiso:1", "0::AUiso:2") in gpx.equiv
+    for coord in ("dAx", "dAy", "dAz"):
+        assert (f"0::{coord}:1", f"0::{coord}:2") in gpx.equiv
     # 混合占有 (Na1,O3) と単独解放 (Ow) の Afrac に [0,1] 拘束。
     for v in ("0::Afrac:1", "0::Afrac:2", "0::Afrac:3"):
         assert gpx.bounds["parmMin"][v] == 0.0
@@ -128,6 +130,17 @@ def test_update_atom_flags_frees_equiv_occ_group():
     for lab in ("Fe", "C1", "N1"):
         assert "F" in flags.get(lab, "")
     assert "F" not in flags.get("Cu", "")  # 非対象は解放しない
+
+
+def test_setup_constraints_position_equiv_groups():
+    from tsumugin.autorietveld.engine import _setup_constraints
+
+    ph = _FakePhase(0, ["DO1", "HO1"])  # 共位置 D/H 対
+    spec = PhaseSpec("m.cif", "NaCuHCF", position_equiv_groups=(("DO1", "HO1"),))
+    gpx = _FakeGpx()
+    _setup_constraints(gpx, [ph], [], [spec])
+    for coord in ("dAx", "dAy", "dAz"):
+        assert (f"0::{coord}:0", f"0::{coord}:1") in gpx.equiv
 
 
 def test_setup_constraints_occupancy_equiv_groups():

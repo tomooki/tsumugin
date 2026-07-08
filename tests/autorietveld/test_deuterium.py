@@ -82,6 +82,20 @@ def test_place_d2o_writes_type_D_and_preserves_atoms(tmp_path):
         assert a.occ == pytest.approx(0.30)
 
 
+def test_place_d2o_element_and_occupancy_scale(tmp_path):
+    src = tmp_path / "m.cif"
+    src.write_text(_CIF, encoding="utf-8")
+    # H 同位体 + 占有率 0.5 倍 (H/D 混合の H 側)。
+    out, sites = place_d2o(src, ["Ow"], tmp_path / "m_h.cif", element="H", occupancy_scale=0.4)
+    assert {s.label for s in sites} == {"HOw1", "HOw2"}
+    assert all(s.occupancy == pytest.approx(0.30 * 0.4) for s in sites)
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+
+    st = read_structure_cif(out)
+    h = [a for a in st.atoms if a.label.startswith("HOw")]
+    assert all(a.type_symbol == "H" for a in h)
+
+
 def test_place_d2o_unknown_label_raises(tmp_path):
     src = tmp_path / "m.cif"
     src.write_text(_CIF, encoding="utf-8")

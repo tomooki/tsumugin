@@ -199,6 +199,11 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
             if rad.is_tof:
                 continue
             hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
+    if "absorption" in flags:
+        # 試料吸収を解放する opt-in 段階。TOF 中性子は λ(=TOF) 依存吸収でピーク強度の d 依存を補正
+        # (Cu/Fe 等の吸収)。既定レシピ非搭載。悪化時は本段階ごと revert。
+        for hist in hists:
+            hist.set_refinements({"Sample Parameters": ["Absorption"]})
     if "tof_profile" in flags:
         # TOF 装置プロファイル (sig/alpha/beta) を較正する opt-in 段階。既定レシピには含めない
         # (T4 非回帰)。近似 instprm 初期値を実測へ寄せ ND フィットを改善する。悪化時は本段階ごと revert。
@@ -294,6 +299,21 @@ def _bound_occupancy(gpx, frac: str) -> None:
         pass
 
 
+def _equiv_positions(gpx, pid, idxs) -> None:
+    """原子群の座標 (dAx/dAy/dAz shift) を等値拘束する (共有サイト/共位置を保つ)。
+
+    GSAS-II の座標精密化は shift 変数 (dAx 等) で行うため、shift を等値にすれば共位置の原子が
+    同じだけ動き相対位置を保つ (初期共位置が前提)。特殊位置で解放座標が無い成分は GSAS 側で無視される。
+    """
+    if len(idxs) < 2:
+        return
+    for coord in ("dAx", "dAy", "dAz"):
+        try:
+            gpx.add_EquivConstr([f"{pid}::{coord}:{i}" for i in idxs])
+        except Exception:
+            pass
+
+
 def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
     """占有率和=1・Uiso 等価 (混合占有) と相分率和=1 (多相) の制約を登録する (REQ-102/104)。
 
@@ -317,6 +337,13 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             gpx.add_EquivConstr(uisos)
             for frac in fracs:
                 _bound_occupancy(gpx, frac)
+            # 共有サイトは共位置: 座標 (dAx/dAy/dAz) も等値拘束する。
+            _equiv_positions(gpx, pid, idxs)
+        # 明示的な座標等値グループ (共位置 H/D 対など)。
+        for group in spec.position_equiv_groups:
+            pidx = [label_to_idx[lab] for lab in group if lab in label_to_idx]
+            if len(pidx) >= 2:
+                _equiv_positions(gpx, pid, pidx)
         for lab in spec.free_occupancy_labels:
             if lab in label_to_idx:
                 _bound_occupancy(gpx, f"{pid}::Afrac:{label_to_idx[lab]}")
@@ -484,6 +511,12 @@ def run_auto_rietveld(
                 # ヒストグラム重み係数 (GSAS-II wtFactor)。joint の相対重み調整。
                 try:
                     hist.data["data"][0]["wtFactor"] = float(h.weight)
+                except (KeyError, IndexError, TypeError):
+                    pass
+            if h.absorption != 0.0:
+                # 試料吸収係数の初期値 (Sample Parameters Absorption)。TOF は λ 依存吸収を与える。
+                try:
+                    hist.data["Sample Parameters"]["Absorption"][0] = float(h.absorption)
                 except (KeyError, IndexError, TypeError):
                     pass
             g2hists.append(hist)

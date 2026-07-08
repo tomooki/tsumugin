@@ -97,17 +97,23 @@ def place_d2o(
     dod_angle: float = 104.5,
     uiso: float | None = None,
     phase_name: str = "phase",
+    element: str = "D",
+    occupancy_scale: float = 1.0,
 ) -> tuple[Path, tuple[DeuteriumSite, ...]]:
-    """CIF の水 O サイトへ D を 2 個ずつ幾何配置した GSAS 向け最小 CIF を書き出す。🔵
+    """CIF の水 O サイトへ水素同位体 (D/H) を 2 個ずつ幾何配置した GSAS 向け最小 CIF を書き出す。🔵
 
     :param structure_path: 入力 CIF (水 O を含むモデル)
-    :param water_labels: D を付ける水 O サイトのラベル列 (例 ``["O1", "O3", "Ow"]``)
+    :param water_labels: 水素を付ける水 O サイトのラベル列 (例 ``["O1", "O3", "Ow"]``)
     :param out_path: 出力 CIF パス (正規化された最小 CIF)
-    :param od_distance: O–D 距離 [Å]
-    :param dod_angle: D–O–D 角 [deg]
-    :param uiso: D の Uiso 初期値 (None なら親 O の Uiso を流用)
+    :param od_distance: O–H/D 距離 [Å]
+    :param dod_angle: H/D–O–H/D 角 [deg]
+    :param uiso: 水素の Uiso 初期値 (None なら親 O の Uiso を流用)
     :param phase_name: 出力 CIF の data ブロック名
-    :returns: ``(出力 CIF パス, 配置した DeuteriumSite のタプル)``
+    :param element: 配置する同位体 (``"D"`` / ``"H"``)。D₂O 完全重水素化は "D"。H/D ミキシング検討では
+        同一構造に "D" と "H" を共位置配置し (``occupancy_scale`` で分率化)、``position_equiv_groups`` で
+        座標を等値拘束する。
+    :param occupancy_scale: 占有率倍率 (H/D 混合の分率 fD / 1−fD を親 O 占有に掛ける。既定 1.0)
+    :returns: ``(出力 CIF パス, 配置した水素サイトのタプル)``
 
     Raises:
         ValueError: 指定した水ラベルが atom_site に見つからないとき。
@@ -136,17 +142,18 @@ def place_d2o(
         po = by_label[parent]
         o_cart = mat @ np.array([po.x, po.y, po.z])
         d_uiso = uiso if uiso is not None else po.uiso
+        occ = po.occ * occupancy_scale
         for n, direction in enumerate(dirs, start=1):
             d_frac = inv @ (o_cart + od_distance * direction)
-            label = f"D{parent}{n}"
+            label = f"{element}{parent}{n}"
             new_atoms.append(
                 Atom(
                     label=label,
-                    type_symbol="D",
+                    type_symbol=element,
                     x=float(d_frac[0]),
                     y=float(d_frac[1]),
                     z=float(d_frac[2]),
-                    occ=po.occ,
+                    occ=occ,
                     uiso=d_uiso,
                 )
             )
@@ -155,7 +162,7 @@ def place_d2o(
                     label=label,
                     parent_label=parent,
                     frac=(float(d_frac[0]), float(d_frac[1]), float(d_frac[2])),
-                    occupancy=po.occ,
+                    occupancy=occ,
                 )
             )
 

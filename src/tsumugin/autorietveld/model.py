@@ -63,6 +63,9 @@ class HistogramSpec:
     weight: float = 1.0
     """ヒストグラム重み係数 (GSAS-II wtFactor)。joint 精密化で相対重みを調整する (既定 1.0)。
     XRD 支配の joint で中性子を上げ重みする等に用いる (>1 で当該ヒストグラムを優先)。"""
+    absorption: float = 0.0
+    """試料吸収係数の初期値 (GSAS-II Sample Parameters Absorption)。TOF 中性子は λ(=TOF) 依存吸収を
+    与える (μR 相当)。recipe の "absorption" 段階で解放する。既定 0.0 (無補正)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (Enum→値文字列, tuple→list)。"""
@@ -78,6 +81,7 @@ class HistogramSpec:
             else None,
             "temperature": self.temperature,
             "weight": self.weight,
+            "absorption": self.absorption,
         }
 
     @classmethod
@@ -94,6 +98,7 @@ class HistogramSpec:
             two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
             temperature=d.get("temperature"),  # type: ignore[arg-type]
             weight=float(d.get("weight", 1.0)),
+            absorption=float(d.get("absorption", 0.0)),
         )
 
 
@@ -124,6 +129,7 @@ class PhaseSpec:
     free_occupancy_labels: tuple[str, ...] = ()
     occupancy_equiv_groups: tuple[tuple[str, ...], ...] = ()
     free_uiso_labels: tuple[str, ...] = ()
+    position_equiv_groups: tuple[tuple[str, ...], ...] = ()
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -136,6 +142,7 @@ class PhaseSpec:
             "free_occupancy_labels": list(self.free_occupancy_labels),
             "occupancy_equiv_groups": [list(g) for g in self.occupancy_equiv_groups],
             "free_uiso_labels": list(self.free_uiso_labels),
+            "position_equiv_groups": [list(g) for g in self.position_equiv_groups],
             "temperature": self.temperature,
         }
 
@@ -154,6 +161,9 @@ class PhaseSpec:
             free_occupancy_labels=tuple(str(a) for a in free_occ),
             occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
             free_uiso_labels=tuple(str(a) for a in free_uiso),
+            position_equiv_groups=tuple(
+                tuple(str(a) for a in g) for g in (d.get("position_equiv_groups") or ())
+            ),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
 

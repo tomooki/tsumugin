@@ -155,6 +155,12 @@ class ZDiffractometer:
     default_profile: str | None = None
     fitting_range: tuple[float, float] | None = None
     bank_two_theta: float | None = None
+    absorption: float | None = None
+    """吸収係数 (TOF 中性子: μR 相当 ``[Absorption]``。X 線 Debye-Scherrer: μR = μ·radius 換算)。"""
+    powder_density: float | None = None
+    """試料充填密度 ``[Powder density]`` (g/cm³ 相当)。"""
+    sample_radius: float | None = None
+    """試料半径 [mm] ``[Radius of crystal]`` (X 線キャピラリ)。"""
 
     @property
     def is_tof(self) -> bool:
@@ -251,6 +257,13 @@ def parse_zdiffractometer(text: str) -> ZDiffractometer:
     # TOF バンク角 ([Intensity correction parameters] 内の [Diffraction angle])。
     bank_two_theta = _first_float(scalars.get("Diffraction angle", ""))
 
+    # 吸収補正パラメータ ([Intensity correction parameters])。Absorption/Radius はインラインスカラ、
+    # Powder density は有値ブロック。
+    absorption = _first_float(scalars.get("Absorption", ""))
+    sample_radius = _first_float(scalars.get("Radius of crystal", ""))
+    density_vals = _values_after("Powder density")
+    powder_density = density_vals[0] if density_vals else None
+
     return ZDiffractometer(
         beam_type=beam_type,
         method=method,
@@ -263,6 +276,9 @@ def parse_zdiffractometer(text: str) -> ZDiffractometer:
         default_profile=default_profile,
         fitting_range=fitting_range,
         bank_two_theta=bank_two_theta,
+        absorption=absorption,
+        powder_density=powder_density,
+        sample_radius=sample_radius,
     )
 
 
