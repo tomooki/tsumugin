@@ -23,7 +23,9 @@ from .action import (
     AdjustBackground,
     AnalysisAction,
     ReleaseParams,
+    RestrictUiso,
     ReviseStructure,
+    SetAbsorption,
     SetLimits,
 )
 
@@ -199,6 +201,52 @@ def propose_next_actions(
                             "asymmetry_residual": f.asymmetry_residual,
                             "hist_id": f.hist_id,
                             "candidate": lbl,
+                        },
+                        safe=True,
+                    )
+                )
+        # Uiso 発散/負値 → 解放対象を安定原子に限定 (RestrictUiso, REQ-105)。
+        # 発散原子を除いた残り (重原子/水など) のみ Uiso 解放を許す。
+        if f.diverged_uiso_labels:
+            diverged = set(f.diverged_uiso_labels)
+            all_labels = {lab for ph in result.atom_uiso.values() for lab in ph}
+            keep = tuple(sorted(all_labels - diverged))
+            if keep:
+                proposals.append(
+                    ActionProposal(
+                        action=RestrictUiso(keep),
+                        rationale=f"hist{f.hist_id}: Uiso 発散 {tuple(sorted(diverged))} "
+                        f"→ 解放を {keep} に限定",
+                        priority=float(len(diverged)),
+                        evidence={
+                            "signal": "uiso_diverged",
+                            "diverged": tuple(sorted(diverged)),
+                            "hist_id": f.hist_id,
+                        },
+                        safe=True,
+                    )
+                )
+        # 吸収寄与が不確実 → free / 物理(現値固定) / 0 の三択を「別々に」試す (SetAbsorption, REQ-106)。
+        if f.absorption_uncertain:
+            cur = (
+                result.hist_absorption[f.hist_id]
+                if f.hist_id < len(result.hist_absorption)
+                else 0.0
+            )
+            cands = [("abs_free", 0.0, True)]
+            if abs(cur) > 1e-6:
+                cands.append(("abs_fixed", cur, False))
+            cands.append(("abs_zero", 0.0, False))
+            for lbl, val, ref in cands:
+                proposals.append(
+                    ActionProposal(
+                        action=SetAbsorption(f.hist_id, val, ref),
+                        rationale=f"hist{f.hist_id}: 吸収不確実 → {lbl} を試して観察",
+                        priority=0.4,
+                        evidence={
+                            "signal": "absorption",
+                            "candidate": lbl,
+                            "hist_id": f.hist_id,
                         },
                         safe=True,
                     )
