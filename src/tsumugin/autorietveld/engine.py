@@ -193,11 +193,26 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
     if "tof_profile" in flags:
         # TOF 装置プロファイル (sig/alpha/beta) を較正する opt-in 段階。既定レシピには含めない
         # (T4 非回帰)。近似 instprm 初期値を実測へ寄せ ND フィットを改善する。悪化時は本段階ごと revert。
+        # フラグ値がリストならそのキー集合、True なら既定キー (_tof_profile_keys)。
+        tp = flags["tof_profile"]
+        keys = list(tp) if isinstance(tp, (list, tuple)) else _tof_profile_keys()
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
             if not rad.is_tof:
                 continue
-            hist.set_refinements({"Instrument Parameters": _tof_profile_keys()})
+            hist.set_refinements({"Instrument Parameters": keys})
+    if "preferred_orientation" in flags:
+        # 選択配向 (preferred orientation) を解放する opt-in 段階。既定レシピには含めない。
+        # 値が偶数なら球面調和 (SH) その次数、1 なら March-Dollase、True なら SH order 4。PBA 等の
+        # 系統的ピーク強度ズレ (obs>calc) を配向分布で吸収する。悪化時は本段階ごと revert。
+        val = flags["preferred_orientation"]
+        order = 4 if val is True else int(val)
+        for ph in phases:
+            try:
+                ph.HAPvalue("Pref.Ori.", order)
+            except Exception:
+                pass
+            ph.set_HAP_refinements({"Pref.Ori.": True}, histograms=list(hists))
     if "profile_lorentzian" in flags:
         # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード)。実験室/放射光 X 線は
         # Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。悪化時は

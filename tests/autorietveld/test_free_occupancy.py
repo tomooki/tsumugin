@@ -127,6 +127,49 @@ def test_tof_profile_stage_refines_only_tof_histograms():
     assert _tof_profile_keys() == ["sig-1", "sig-2"]
 
 
+def test_tof_profile_accepts_custom_key_list():
+    from tsumugin.autorietveld.engine import _apply_stage
+    from tsumugin.autorietveld.model import RefinementStage
+
+    class _FakeHist:
+        def __init__(self):
+            self.refined = []
+
+        def set_refinements(self, d):
+            self.refined.append(d)
+
+    tof_h = _FakeHist()
+    stage = RefinementStage("tp3", {"tof_profile": ["sig-0", "sig-1", "sig-2"]})
+    _apply_stage(None, [tof_h], [], [], [], [Radiation.NEUTRON_TOF], stage)
+    assert tof_h.refined == [{"Instrument Parameters": ["sig-0", "sig-1", "sig-2"]}]
+
+
+def test_preferred_orientation_stage_sets_and_refines():
+    from tsumugin.autorietveld.engine import _apply_stage
+    from tsumugin.autorietveld.model import RefinementStage
+
+    class _FakePhase:
+        def __init__(self):
+            self.po_order = None
+            self.hap = []
+
+        def HAPvalue(self, param, value):
+            self.po_order = (param, value)
+
+        def set_HAP_refinements(self, refs, histograms=None):
+            self.hap.append(refs)
+
+    ph = _FakePhase()
+    # 既定 (True) は SH order 4。
+    _apply_stage(None, [], [ph], [], [], [], RefinementStage("po", {"preferred_orientation": True}))
+    assert ph.po_order == ("Pref.Ori.", 4)
+    assert {"Pref.Ori.": True} in ph.hap
+    # 明示次数 (6) も反映。
+    ph2 = _FakePhase()
+    _apply_stage(None, [], [ph2], [], [], [], RefinementStage("po6", {"preferred_orientation": 6}))
+    assert ph2.po_order == ("Pref.Ori.", 6)
+
+
 def test_equiv_groups_from_sites_groups_by_parent():
     from tsumugin.autorietveld.deuterium import DeuteriumSite, equiv_groups_from_sites
 
