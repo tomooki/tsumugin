@@ -6,7 +6,14 @@ GSAS 非依存モック (getdata + .data) で検証。numpy-only。
 from __future__ import annotations
 
 from tsumugin.autorietveld.engine import _profile_ranges, _profiles_physical
-from tsumugin.autorietveld.model import Radiation
+from tsumugin.autorietveld.model import Geometry, HistogramSpec, Radiation
+
+
+def _hspec(limits):
+    return HistogramSpec(
+        "d.xye", "i.instprm", radiation=Radiation.XRAY_SYNCHROTRON,
+        geometry=Geometry.DEBYE_SCHERRER, data_format="XYE", two_theta_limits=limits,
+    )
 
 
 class _MockHist:
@@ -35,6 +42,30 @@ def test_cw_range_is_two_theta_minmax():
     prof = ({"U": (2.0, True)},)
     rng = _profile_ranges([h], [Radiation.XRAY_SYNCHROTRON], prof)
     assert rng == ((10.0, 120.0),)
+
+
+def test_cw_range_clamped_to_two_theta_limits():
+    # two_theta_limits で精密化区間に切り詰め (ノイズ tail 除外, T4 非回帰)
+    h = _MockHist([5.0, 55.0, 130.0], inst={"U": [2, 2, True]})
+    prof = ({"U": (2.0, True)},)
+    rng = _profile_ranges([h], [Radiation.XRAY_SYNCHROTRON], prof, [_hspec((20.0, 120.0))])
+    assert rng == ((20.0, 120.0),)
+
+
+def test_cw_range_no_limits_uses_full_data():
+    # limits None → 観測全域 (後方互換)
+    h = _MockHist([5.0, 130.0], inst={"U": [2, 2, True]})
+    prof = ({"U": (2.0, True)},)
+    rng = _profile_ranges([h], [Radiation.XRAY_SYNCHROTRON], prof, [_hspec(None)])
+    assert rng == ((5.0, 130.0),)
+
+
+def test_limits_outside_data_gives_none():
+    # 限界指定が観測外 (交差空) → None skip
+    h = _MockHist([5.0, 30.0], inst={"U": [2, 2, True]})
+    prof = ({"U": (2.0, True)},)
+    rng = _profile_ranges([h], [Radiation.XRAY_SYNCHROTRON], prof, [_hspec((40.0, 120.0))])
+    assert rng == (None,)
 
 
 def test_tof_range_converts_to_d():

@@ -128,16 +128,18 @@ def _extract_profile(g2hists) -> tuple[dict[str, tuple[float, bool]], ...]:
 
 
 def _profile_ranges(
-    g2hists, radiations, profiles
+    g2hists, radiations, profiles, histograms=None
 ) -> tuple[tuple[float, float] | None, ...]:
     """各ヒストグラムのプロファイル評価レンジ (CW=2θ°, TOF=d) を返す。
 
-    CW は getdata("x") の 2θ 度の min/max。TOF は getdata("x") (TOF μs) を d≈(t-Zero)/difC で
-    d に換算する (difC,Zero は profiles から)。getdata 失敗・空・difC 欠落/0 は None に縮退し、
-    利用側 (check_profile_physicality) がレンジ依存判定を skip する (EDGE-003)。
+    評価レンジは **精密化に用いる区間** に限定する: getdata("x") の観測範囲を、指定があれば
+    HistogramSpec.two_theta_limits で切り詰める。プロファイルはこの区間でのみ実際に使われるため、
+    区間外 (ノイズ tail 等) の幅関数負値で誤 revert しないための処置 (T4 非回帰)。TOF は切り詰め後の
+    範囲 (TOF μs) を d≈(t-Zero)/difC で d に換算する (difC,Zero は profiles から)。getdata 失敗・空・
+    difC 欠落/0 は None に縮退し、利用側がレンジ依存判定を skip する (EDGE-003)。
     """
     out: list[tuple[float, float] | None] = []
-    for h, rad, prof in zip(g2hists, radiations, profiles):
+    for i, (h, rad, prof) in enumerate(zip(g2hists, radiations, profiles)):
         try:
             xs = h.getdata("x")
         except Exception:  # noqa: BLE001 — 取得失敗は非致命 skip
@@ -147,6 +149,14 @@ def _profile_ranges(
             out.append(None)
             continue
         lo, hi = float(min(xs)), float(max(xs))
+        # 精密化レンジ (two_theta_limits) で切り詰める (残差抽出のマスクと同じ区間)。
+        if histograms is not None and i < len(histograms):
+            lim = histograms[i].two_theta_limits
+            if lim is not None:
+                lo, hi = max(lo, float(lim[0])), min(hi, float(lim[1]))
+                if lo >= hi:  # 交差が空 (限界指定が観測外) → レンジ判定を skip
+                    out.append(None)
+                    continue
         if getattr(rad, "is_tof", False):
             dif_c = prof.get("difC", (0.0, False))[0]
             zero = prof.get("Zero", (0.0, False))[0]
@@ -160,7 +170,7 @@ def _profile_ranges(
     return tuple(out)
 
 
-def _profiles_physical(g2hists, radiations) -> ValidityReport:
+def _profiles_physical(g2hists, radiations, histograms=None) -> ValidityReport:
     """プロファイル物理性を判定する薄いラッパ (_cells_physical と同格の revert ガード用)。
 
     抽出不能 (全 hist が空 dict) は passed=True に縮退する (判定 skip, EDGE-001)。
@@ -168,7 +178,7 @@ def _profiles_physical(g2hists, radiations) -> ValidityReport:
     profiles = _extract_profile(g2hists)
     if not any(profiles):
         return ValidityReport(passed=True)
-    ranges = _profile_ranges(g2hists, radiations, profiles)
+    ranges = _profile_ranges(g2hists, radiations, profiles, histograms)
     return check_profile_physicality(
         profiles=profiles, radiations=radiations, ranges=ranges
     )
@@ -711,7 +721,7 @@ def run_auto_rietveld(
                 # 係数が非物理) は発散とみなし inf 化 → 既存 revert 経路 (物理妥当性ガード)。
                 # プロファイルガードは解放済パラメータのみ hard 判定するため T1〜T4 は非回帰。
                 if not _cells_physical(g2phases) or not _profiles_physical(
-                    g2hists, radiations
+                    g2hists, radiations, histograms
                 ).passed:
                     rwp, gof, converged = float("inf"), float("inf"), False
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
@@ -781,7 +791,7 @@ def run_auto_rietveld(
         # hist_profile を充填 (TASK-0001 で追加済・未配線だった内省フィールドを生かす → diagnose_residual
         # が実プロファイル値を使える)。物理性の checks/warnings (soft 上限含む) を validity にマージする。
         prof_full = _extract_profile(g2hists)
-        prof_ranges = _profile_ranges(g2hists, radiations, prof_full)
+        prof_ranges = _profile_ranges(g2hists, radiations, prof_full, histograms)
         prof_report = (
             check_profile_physicality(
                 profiles=prof_full, radiations=radiations, ranges=prof_ranges
