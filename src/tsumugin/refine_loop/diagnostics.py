@@ -46,6 +46,19 @@ class ResidualFeatures:
     unindexed_peak_frac: float = 0.0
     edge_low_snr: bool = False
     n_background_coeffs: int = 6
+    # 【拡張シグナル (refine-loop-diagnostics)】: すべて既定 0/空 = シグナルなし (EDGE-001 縮退)。
+    asymmetry_residual: float = 0.0
+    """残差の左右非対称度 (0=対称)。>tol でシフト(Zero)と非対称の**別々の**候補を出す (REQ-101)。"""
+    intensity_bias: float = 0.0
+    """系統的 obs>calc 度 (>tol で選択配向候補, REQ-102)。"""
+    bg_extrema_count: int = 0
+    """背景プロファイルの極値数 (過多で背景減項候補, REQ-104)。"""
+    diverged_uiso_labels: tuple[str, ...] = ()
+    """発散/負値の Uiso 原子ラベル (RestrictUiso 候補, REQ-105)。"""
+    absorption_uncertain: bool = False
+    """吸収寄与が不確実か (free/物理/0 の SetAbsorption 三択候補, REQ-106)。"""
+    radiation_is_tof: bool = False
+    """TOF ヒストか (非対称候補を SH/L[X線] と alpha/beta[TOF] で分岐, REQ-101)。"""
 
 
 @dataclass(frozen=True)
@@ -75,6 +88,7 @@ def propose_next_actions(
     bg_residual_tol: float = 0.1,
     fwhm_tol: float = 0.1,
     unindexed_tol: float = 0.05,
+    asymmetry_tol: float = 0.05,
 ) -> tuple[ActionProposal, ...]:
     """残差シグネチャと妥当性から次手候補を決定論・安定順で返す (§5)。
 
@@ -112,6 +126,36 @@ def propose_next_actions(
                     safe=True,
                 )
             )
+        # 非対称/位置ズレ → シフト(Zero)と非対称を「別々の」候補として提案 (REQ-101)。
+        # どちらが効くかは焼き込まず (REQ-405/DD-2)、policy が個別に試し _accept が採否を決める。
+        if f.asymmetry_residual > asymmetry_tol:
+            if f.radiation_is_tof:
+                cands = (
+                    ("tof_zero", {"tof_profile": ["Zero", "sig-1", "sig-2"]}, "位置(Zero)シフト"),
+                    ("tof_asymmetry",
+                     {"tof_profile": ["alpha", "beta-1", "sig-1", "sig-2"]}, "ピーク非対称(alpha/beta)"),
+                )
+            else:
+                cands = (
+                    ("xray_zero", {"profile_lorentzian": True}, "位置(Zero)シフト"),
+                    ("xray_asymmetry", {"profile_asymmetry": True}, "ピーク非対称(SH/L)"),
+                )
+            for lbl, flags, note in cands:
+                proposals.append(
+                    ActionProposal(
+                        action=ReleaseParams(lbl, flags),
+                        rationale=f"hist{f.hist_id}: 非対称残差 {f.asymmetry_residual:.2f} "
+                        f"→ {note}を別々に解放して観察",
+                        priority=float(f.asymmetry_residual),
+                        evidence={
+                            "signal": "asymmetry",
+                            "asymmetry_residual": f.asymmetry_residual,
+                            "hist_id": f.hist_id,
+                            "candidate": lbl,
+                        },
+                        safe=True,
+                    )
+                )
         # 未指数 obs ピーク → 相追加 (ModelAction, 提案のみ)
         if f.unindexed_peak_frac > unindexed_tol:
             proposals.append(
