@@ -232,16 +232,34 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
                 ph.set_refinements({"Atoms": active})
 
 
+def _bound_occupancy(gpx, frac: str) -> None:
+    """占有率パラメータを物理範囲 [0,1] に登録拘束する (GSAS-II parmMin/parmMax)。
+
+    範囲外へ出た占有率は GSAS-II が境界で凍結する (dropOOBvars)。部分占有水など**単独解放**
+    (free_occupancy_labels) の占有率が [0,1] を外れるのを防ぐ。
+
+    注意: **占有率和=1 (add_EqnConstr) を張った共有サイトには効かない**。和=1 拘束下では GSAS-II は
+    個々の Afrac でなく制約生成変数を varyList に入れるため、個別 Afrac の parmMin/parmMax は
+    freeze 判定に載らない (NaCuHCF の Na2/O1 は和=1 のため境界を超えても凍結されない)。共有サイトの
+    非物理占有は**正しいモデル選択で解消する**のが本筋 (model5→model6 で Ow が過剰密度を吸収し物理化)。
+    """
+    try:
+        gpx.set_Controls("parmMin", 0.0, variable=frac)
+        gpx.set_Controls("parmMax", 1.0, variable=frac)
+    except Exception:
+        # 古い GSAS-II で parmMin/parmMax 未対応でも精密化自体は継続させる (ガードのみ諦める)。
+        pass
+
+
 def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
     """占有率和=1・Uiso 等価 (混合占有) と相分率和=1 (多相) の制約を登録する (REQ-102/104)。
 
     占有率和=1 (add_EqnConstr) がないと占有率解放が発散し、Uiso 等価 (add_EquivConstr) が
-    ないと少数占有原子の Uiso が発散する (T2 実測)。多相では各ヒストグラムで相分率和=1 を課す。
+    ないと少数占有原子の Uiso が発散する (T2 実測)。混合占有・単独解放の占有率は物理範囲 [0,1] に
+    拘束する。多相では各ヒストグラムで相分率和=1 を課す。
     """
-    # 混合占有: 占有率和=1 + Uiso 等価
+    # 混合占有: 占有率和=1 + Uiso 等価 + [0,1] 拘束。単独解放 (free_occ) も [0,1] 拘束。
     for ph, spec in zip(g2phases, specs):
-        if not spec.mixed_occupancy_groups:
-            continue
         atoms = ph.data["Atoms"]
         ct = ph.data["General"]["AtomPtrs"][1]
         label_to_idx = {row[ct - 1]: i for i, row in enumerate(atoms)}
@@ -254,6 +272,11 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             uisos = [f"{pid}::AUiso:{i}" for i in idxs]
             gpx.add_EqnConstr(1.0, fracs, [1.0] * len(fracs))
             gpx.add_EquivConstr(uisos)
+            for frac in fracs:
+                _bound_occupancy(gpx, frac)
+        for lab in spec.free_occupancy_labels:
+            if lab in label_to_idx:
+                _bound_occupancy(gpx, f"{pid}::Afrac:{label_to_idx[lab]}")
 
     # 多相: 各ヒストグラムで相分率 (HAP Scale) 和 = 1 (REQ-104)
     if len(g2phases) > 1:

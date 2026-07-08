@@ -43,6 +43,54 @@ def test_phasespec_roundtrip_free_occupancy():
     assert p2.mixed_occupancy_groups == (("Na1", "O3"),)
 
 
+class _FakePhase:
+    def __init__(self, pid, labels):
+        self.id = pid
+        # AtomPtrs=[cx,ct,cs,cia]; ct=1 → label は row[ct-1]=row[0]。
+        self.data = {
+            "Atoms": [[lab] for lab in labels],
+            "General": {"AtomPtrs": [1, 1, 2, 3]},
+        }
+
+
+class _FakeGpx:
+    def __init__(self):
+        self.eqn = []
+        self.equiv = []
+        self.bounds = {"parmMin": {}, "parmMax": {}}
+
+    def add_EqnConstr(self, total, vars_, weights):
+        self.eqn.append((total, tuple(vars_)))
+
+    def add_EquivConstr(self, vars_):
+        self.equiv.append(tuple(vars_))
+
+    def set_Controls(self, control, value, variable=None):
+        self.bounds[control][variable] = value
+
+
+def test_setup_constraints_bounds_and_sum_constraints():
+    from tsumugin.autorietveld.engine import _setup_constraints
+
+    ph = _FakePhase(0, ["Cu", "Na1", "O3", "Ow"])  # Afrac idx: Na1=1,O3=2,Ow=3
+    spec = PhaseSpec(
+        "m.cif", "NaCuHCF",
+        mixed_occupancy_groups=(("Na1", "O3"),),
+        free_occupancy_labels=("Ow",),
+    )
+    gpx = _FakeGpx()
+    _setup_constraints(gpx, [ph], [], [spec])
+    # 共有サイトに 占有率和=1 + Uiso 等価。
+    assert (1.0, ("0::Afrac:1", "0::Afrac:2")) in gpx.eqn
+    assert ("0::AUiso:1", "0::AUiso:2") in gpx.equiv
+    # 混合占有 (Na1,O3) と単独解放 (Ow) の Afrac に [0,1] 拘束。
+    for v in ("0::Afrac:1", "0::Afrac:2", "0::Afrac:3"):
+        assert gpx.bounds["parmMin"][v] == 0.0
+        assert gpx.bounds["parmMax"][v] == 1.0
+    # 非占有原子 (Cu, Afrac:0) には拘束を張らない。
+    assert "0::Afrac:0" not in gpx.bounds["parmMin"]
+
+
 def test_recipe_adds_occupancy_stage_for_free_occ_only():
     # mixed_occupancy_groups は空だが free_occupancy_labels があれば occupancy 段階が入る。
     hist = HistogramSpec(
