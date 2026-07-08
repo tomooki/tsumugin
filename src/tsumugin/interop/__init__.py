@@ -15,6 +15,7 @@ RIETAN-FP / Z-Rietveld (Z-Code, J-PARC iMATERIA TOF) など外部粉末解析ソ
 from __future__ import annotations
 
 from tsumugin.interop.instrument import write_gsas_instprm
+from tsumugin.interop.prepare import prepare_histograms
 from tsumugin.interop.rietan import (
     convert_rietan_int,
     load_rietan_int,
@@ -37,5 +38,6 @@ __all__ = [
     "parse_igor_tof",
     "parse_rietan_int",
     "parse_zdiffractometer",
+    "prepare_histograms",
     "write_gsas_instprm",
 ]
