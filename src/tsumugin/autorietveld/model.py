@@ -236,3 +236,18 @@ class AutoRietveldResult:
     residual_two_theta: tuple[float, ...] = ()
     residual_intensity: tuple[float, ...] = ()
     residual_sigma: tuple[float, ...] = ()
+    # 【内省フィールド (refine-loop-diagnostics REQ-001)】: 残差以外の系統誤差を診断が「見える」ように
+    #   露出する。すべて末尾追加・既定空で後方互換 (旧構築/スタブは空 → diagnose は該当シグナルを立てない,
+    #   EDGE-001 縮退)。GSAS runner が gpx から算出して詰める。numpy コアは値を消費するのみ。🔵
+    # per-atom: 相名→原子ラベル→値。Uiso 発散/負値 (REQ-105)・占有率 [0,1] 逸脱の検出源。
+    atom_uiso: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    atom_occupancy: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    # per-histogram (索引順): 現吸収値・現プロファイル値 (Zero/alpha/X/Y/U/V/W 等)。
+    hist_absorption: tuple[float, ...] = ()
+    hist_profile: tuple[Mapping[str, float], ...] = ()
+    # per-histogram メトリクス: obs/calc FWHM 比 (幅ずれ REQ-103)・残差左右非対称度 (非対称 REQ-101)・
+    #   系統 obs>calc 度 (選択配向 REQ-102)・背景極値数 (背景 overfit REQ-104)。
+    peak_width_ratio: tuple[float, ...] = ()
+    asymmetry_metric: tuple[float, ...] = ()
+    intensity_bias_metric: tuple[float, ...] = ()
+    bg_extrema: tuple[int, ...] = ()
