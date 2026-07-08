@@ -66,10 +66,12 @@ def test_background_not_proposed_when_at_cap():
 
 
 def test_fwhm_ratio_mismatch_proposes_release_size_strain_safe():
+    # 幅ずれは U,V,W / X,Y / size を「別々の」候補として提案する (REQ-103)。
     props = propose_next_actions(_result(), [_feat(fwhm_ratio=1.4)])
-    rp = [p for p in props if isinstance(p.action, ReleaseParams)]
-    assert rp and rp[0].safe
-    assert "size_strain" in rp[0].action.flags
+    fwhm = [p for p in props if p.evidence.get("signal") == "fwhm"]
+    assert all(isinstance(p.action, ReleaseParams) and p.safe for p in fwhm)
+    labels = {p.action.label for p in fwhm}
+    assert labels == {"profile_uvw", "profile_xy", "size_strain"}
 
 
 def test_unindexed_peaks_propose_addphase_unsafe():

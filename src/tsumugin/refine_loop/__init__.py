@@ -19,18 +19,22 @@ from .action import (
     ModelAction,
     ReleaseParams,
     RemovePhase,
+    RestrictUiso,
     ReviseStructure,
     SafeAction,
+    SetAbsorption,
     SetLimits,
     SetMixedOccupancy,
     Stop,
 )
+from .diagnose_residual import diagnose_residual
 from .diagnostics import (
     ActionProposal,
     ResidualFeatures,
     propose_initial_limits,
     propose_next_actions,
 )
+from .model_compare import ModelCompareResult, run_model_comparison
 from .orchestrator import RefinementLoopResult, run_refinement_loop
 from .policy import (
     AnalysisPolicy,
@@ -50,18 +54,23 @@ __all__ = [
     "AnalysisState",
     "AnalysisStep",
     "ModelAction",
+    "ModelCompareResult",
     "PolicyBudget",
     "RefinementLoopResult",
     "ReleaseParams",
     "RemovePhase",
     "ResidualFeatures",
+    "RestrictUiso",
     "ReviseStructure",
     "RuleBasedPolicy",
     "SafeAction",
+    "SetAbsorption",
     "SetLimits",
     "SetMixedOccupancy",
     "Stop",
+    "diagnose_residual",
     "propose_initial_limits",
     "propose_next_actions",
+    "run_model_comparison",
     "run_refinement_loop",
 ]

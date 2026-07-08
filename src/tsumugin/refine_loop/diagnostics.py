@@ -23,7 +23,9 @@ from .action import (
     AdjustBackground,
     AnalysisAction,
     ReleaseParams,
+    RestrictUiso,
     ReviseStructure,
+    SetAbsorption,
     SetLimits,
 )
 
@@ -46,6 +48,21 @@ class ResidualFeatures:
     unindexed_peak_frac: float = 0.0
     edge_low_snr: bool = False
     n_background_coeffs: int = 6
+    # 【拡張シグナル (refine-loop-diagnostics)】: すべて既定 0/空 = シグナルなし (EDGE-001 縮退)。
+    asymmetry_residual: float = 0.0
+    """残差の左右非対称度 (0=対称)。>tol でシフト(Zero)と非対称の**別々の**候補を出す (REQ-101)。"""
+    intensity_bias: float = 0.0
+    """系統的 obs>calc 度 (>tol で選択配向候補, REQ-102)。"""
+    bg_extrema_count: int = 0
+    """背景プロファイルの極値数 (過多で背景減項候補, REQ-104)。"""
+    diverged_uiso_labels: tuple[str, ...] = ()
+    """発散/負値の Uiso 原子ラベル (RestrictUiso 候補, REQ-105)。"""
+    absorption_uncertain: bool = False
+    """吸収寄与が不確実か (free/物理/0 の SetAbsorption 三択候補, REQ-106)。"""
+    radiation_is_tof: bool = False
+    """TOF ヒストか (非対称候補を SH/L[X線] と alpha/beta[TOF] で分岐, REQ-101)。"""
+    radiation_is_neutron: bool = False
+    """中性子ヒストか (CW 中性子は X 線専用 Lorentzian/SH-L が engine で無効 → 該当候補を出さない)。"""
 
 
 @dataclass(frozen=True)
@@ -75,6 +92,10 @@ def propose_next_actions(
     bg_residual_tol: float = 0.1,
     fwhm_tol: float = 0.1,
     unindexed_tol: float = 0.05,
+    asymmetry_tol: float = 0.05,
+    intensity_bias_tol: float = 0.05,
+    background_min: int = 6,
+    bg_extrema_max: int = 6,
 ) -> tuple[ActionProposal, ...]:
     """残差シグネチャと妥当性から次手候補を決定論・安定順で返す (§5)。
 
@@ -100,18 +121,155 @@ def propose_next_actions(
                     safe=True,
                 )
             )
-        # obs/calc FWHM 比の系統ずれ → size/mustrain 解放 (SafeAction)
-        if abs(f.fwhm_ratio - 1.0) > fwhm_tol:
+        # 背景の過剰 wiggle (極値過多) → 背景減項 (REQ-104)。増項規則と両立・下限ガード。
+        if f.bg_extrema_count > bg_extrema_max and f.n_background_coeffs > background_min:
+            reduced_n = max(f.n_background_coeffs - background_step, background_min)
             proposals.append(
                 ActionProposal(
-                    action=ReleaseParams("size_strain", {"size_strain": True}),
-                    rationale=f"hist{f.hist_id}: obs/calc FWHM 比 {f.fwhm_ratio:.2f} "
-                    f"→ 結晶子サイズ/微小歪みを解放",
-                    priority=float(abs(f.fwhm_ratio - 1.0)),
-                    evidence={"signal": "fwhm", "fwhm_ratio": f.fwhm_ratio, "hist_id": f.hist_id},
+                    action=AdjustBackground(reduced_n),
+                    rationale=f"hist{f.hist_id}: 背景極値 {f.bg_extrema_count} 過多 "
+                    f"→ 背景 {f.n_background_coeffs}→{reduced_n} 項 (過適合抑制)",
+                    priority=float(f.bg_extrema_count),
+                    evidence={
+                        "signal": "background_overfit",
+                        "bg_extrema_count": f.bg_extrema_count,
+                        "hist_id": f.hist_id,
+                    },
                     safe=True,
                 )
             )
+        # obs/calc FWHM 比の系統ずれ → 幅パラメータを「別々の」候補で提案 (REQ-103)。放射源に応じた
+        # 有効候補のみ出す (非対称規則と整合; engine が TOF でスキップする X 線専用フラグの no-op を避ける)。
+        if abs(f.fwhm_ratio - 1.0) > fwhm_tol:
+            if f.radiation_is_tof:
+                width_cands = (
+                    ("tof_sig", {"tof_profile": ["sig-1", "sig-2"]}, "TOF Gaussian 幅 (sig)"),
+                    ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
+                )
+            elif f.radiation_is_neutron:
+                # CW 中性子: Lorentzian(X,Y) は engine で無効。Gaussian(U,V,W) + size のみ。
+                width_cands = (
+                    ("profile_uvw", {"profile": ["U", "V", "W"]}, "Gaussian U,V,W"),
+                    ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
+                )
+            else:
+                width_cands = (
+                    ("profile_uvw", {"profile": ["U", "V", "W"]}, "Gaussian U,V,W"),
+                    ("profile_xy", {"profile_lorentzian": True}, "Lorentzian X,Y"),
+                    ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
+                )
+            for lbl, flags, note in width_cands:
+                proposals.append(
+                    ActionProposal(
+                        action=ReleaseParams(lbl, flags),
+                        rationale=f"hist{f.hist_id}: obs/calc FWHM 比 {f.fwhm_ratio:.2f} "
+                        f"→ {note}を別々に解放して観察",
+                        priority=float(abs(f.fwhm_ratio - 1.0)),
+                        evidence={
+                            "signal": "fwhm",
+                            "fwhm_ratio": f.fwhm_ratio,
+                            "hist_id": f.hist_id,
+                            "candidate": lbl,
+                        },
+                        safe=True,
+                    )
+                )
+        # 系統的 obs>calc のピーク強度 → 選択配向 (preferred orientation) を提案 (REQ-102)。
+        if f.intensity_bias > intensity_bias_tol:
+            proposals.append(
+                ActionProposal(
+                    action=ReleaseParams("preferred_orientation", {"preferred_orientation": 4}),
+                    rationale=f"hist{f.hist_id}: 系統的 obs>calc {f.intensity_bias:.2f} "
+                    f"→ 選択配向 (SH order 4) を解放して観察",
+                    priority=float(f.intensity_bias),
+                    evidence={
+                        "signal": "intensity_bias",
+                        "intensity_bias": f.intensity_bias,
+                        "hist_id": f.hist_id,
+                    },
+                    safe=True,
+                )
+            )
+        # 非対称/位置ズレ → シフト(Zero)と非対称を「別々の」候補として提案 (REQ-101)。
+        # どちらが効くかは焼き込まず (REQ-405/DD-2)、policy が個別に試し _accept が採否を決める。
+        # CW 中性子は X 線専用の Lorentzian/SH-L が engine で無効なため候補を出さない (適用可能な
+        # 位置/非対称フラグがない → no-op トライを避ける)。TOF/X 線のみ提案する。
+        if f.asymmetry_residual > asymmetry_tol and not (
+            f.radiation_is_neutron and not f.radiation_is_tof
+        ):
+            if f.radiation_is_tof:
+                cands = (
+                    ("tof_zero", {"tof_profile": ["Zero", "sig-1", "sig-2"]}, "位置(Zero)シフト"),
+                    ("tof_asymmetry",
+                     {"tof_profile": ["alpha", "beta-1", "sig-1", "sig-2"]}, "ピーク非対称(alpha/beta)"),
+                )
+            else:
+                cands = (
+                    ("xray_zero", {"profile_lorentzian": True}, "位置(Zero)シフト"),
+                    ("xray_asymmetry", {"profile_asymmetry": True}, "ピーク非対称(SH/L)"),
+                )
+            for lbl, flags, note in cands:
+                proposals.append(
+                    ActionProposal(
+                        action=ReleaseParams(lbl, flags),
+                        rationale=f"hist{f.hist_id}: 非対称残差 {f.asymmetry_residual:.2f} "
+                        f"→ {note}を別々に解放して観察",
+                        priority=float(f.asymmetry_residual),
+                        evidence={
+                            "signal": "asymmetry",
+                            "asymmetry_residual": f.asymmetry_residual,
+                            "hist_id": f.hist_id,
+                            "candidate": lbl,
+                        },
+                        safe=True,
+                    )
+                )
+        # Uiso 発散/負値 → 解放対象を安定原子に限定 (RestrictUiso, REQ-105)。
+        # 発散原子を除いた残り (重原子/水など) のみ Uiso 解放を許す。
+        if f.diverged_uiso_labels:
+            diverged = set(f.diverged_uiso_labels)
+            all_labels = {lab for ph in result.atom_uiso.values() for lab in ph}
+            keep = tuple(sorted(all_labels - diverged))
+            if keep:
+                proposals.append(
+                    ActionProposal(
+                        action=RestrictUiso(keep),
+                        rationale=f"hist{f.hist_id}: Uiso 発散 {tuple(sorted(diverged))} "
+                        f"→ 解放を {keep} に限定",
+                        priority=float(len(diverged)),
+                        evidence={
+                            "signal": "uiso_diverged",
+                            "diverged": tuple(sorted(diverged)),
+                            "hist_id": f.hist_id,
+                        },
+                        safe=True,
+                    )
+                )
+        # 吸収寄与が不確実 → free / 物理(現値固定) / 0 の三択を「別々に」試す (SetAbsorption, REQ-106)。
+        if f.absorption_uncertain:
+            cur = (
+                result.hist_absorption[f.hist_id]
+                if f.hist_id < len(result.hist_absorption)
+                else 0.0
+            )
+            cands = [("abs_free", 0.0, True)]
+            if abs(cur) > 1e-6:
+                cands.append(("abs_fixed", cur, False))
+            cands.append(("abs_zero", 0.0, False))
+            for lbl, val, ref in cands:
+                proposals.append(
+                    ActionProposal(
+                        action=SetAbsorption(f.hist_id, val, ref),
+                        rationale=f"hist{f.hist_id}: 吸収不確実 → {lbl} を試して観察",
+                        priority=0.4,
+                        evidence={
+                            "signal": "absorption",
+                            "candidate": lbl,
+                            "hist_id": f.hist_id,
+                        },
+                        safe=True,
+                    )
+                )
         # 未指数 obs ピーク → 相追加 (ModelAction, 提案のみ)
         if f.unindexed_peak_frac > unindexed_tol:
             proposals.append(

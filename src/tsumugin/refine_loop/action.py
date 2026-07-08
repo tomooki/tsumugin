@@ -99,6 +99,57 @@ class Stop(SafeAction):
     reason: str
 
 
+@dataclass(frozen=True)
+class RestrictUiso(SafeAction):
+    """Uiso 解放対象を限定する (発散防止, REQ-105)。free_uiso_labels を設定する純変換。
+
+    軽元素 framework や占有率 0 のゴースト原子の Uiso が発散/負値化するのを、重原子/可動イオン/
+    水など安定な原子のみに Uiso 解放を絞ることで防ぐ (heavy-atom + 無秩序構造の定石)。
+
+    :param labels: Uiso を解放してよい原子ラベル (これ以外は Uiso 固定)
+    :param phase: 対象相名 (None なら全相)
+    """
+
+    labels: tuple[str, ...]
+    phase: str | None = None
+
+    def apply(self, inp: AnalysisInput) -> AnalysisInput:
+        phases = tuple(
+            dataclasses.replace(p, free_uiso_labels=tuple(self.labels))
+            if (self.phase is None or p.phase_name == self.phase)
+            else p
+            for p in inp.phases
+        )
+        return dataclasses.replace(inp, phases=phases)
+
+
+@dataclass(frozen=True)
+class SetAbsorption(SafeAction):
+    """ヒストグラムの吸収を値固定 or 解放する (free/物理/0 の三択トライ, REQ-106)。
+
+    弱吸収試料は吸収の自由精密化が負に振れやすい。物理値固定・0・自由精密化を別々に試し
+    妥当性+Rwp で採否する (try→revert)。
+
+    :param hist_id: 対象ヒストグラム索引 (0 始まり)
+    :param value: 設定する吸収初期値 (物理値/0 等)
+    :param refine: True なら "absorption" 解放段を extra_stages に追加、False なら固定
+    """
+
+    hist_id: int
+    value: float = 0.0
+    refine: bool = False
+
+    def apply(self, inp: AnalysisInput) -> AnalysisInput:
+        if not (0 <= self.hist_id < len(inp.histograms)):
+            raise IndexError(f"hist_id={self.hist_id} が範囲外 (n={len(inp.histograms)})")
+        hists = list(inp.histograms)
+        hists[self.hist_id] = dataclasses.replace(hists[self.hist_id], absorption=self.value)
+        extra = inp.extra_stages
+        if self.refine:
+            extra = (*extra, RefinementStage("abs", {"absorption": True}, note="SetAbsorption"))
+        return dataclasses.replace(inp, histograms=tuple(hists), extra_stages=extra)
+
+
 # ---------------- ModelAction ----------------
 
 
