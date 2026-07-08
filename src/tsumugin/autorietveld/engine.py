@@ -134,6 +134,7 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
     return {
         "labels": labels, "coord_atoms": coord_atoms,
         "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ,
+        "uiso_labels": list(spec.free_uiso_labels),
     }
 
 
@@ -157,7 +158,9 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
         for lab in info["coord_atoms"]:
             add(lab, "X")
     if "uiso" in stage_flags:
-        for lab in info["labels"]:
+        # free_uiso_labels 指定時はその原子のみ、未指定なら全原子の Uiso を解放。
+        uiso_targets = info.get("uiso_labels") or info["labels"]
+        for lab in uiso_targets:
             add(lab, "U")
     if "occupancy" in stage_flags:
         for lab in info["mixed"]:

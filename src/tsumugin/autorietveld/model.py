@@ -106,6 +106,9 @@ class PhaseSpec:
     :param occupancy_equiv_groups: 占有率を等値拘束する原子ラベルの組の列 (add_EquivConstr)。
         例: (("O1","DO11","DO12"),) — D₂O の D 占有率を親水 O に等値し 1 変数として精密化する
         (水フラクションと D 量を連動させる)
+    :param free_uiso_labels: Uiso を解放する原子ラベルを限定する (空なら uiso 段階で全原子を解放)。
+        例: ("Cu","Na1","Na2","O1","O3","Ow") — 重原子/可動陽イオン/水のみ Uiso 解放し、軽元素
+        framework (C/N) や占有率 0 のゴースト原子の Uiso 発散/負値を防ぐ (heavy-atom + 無秩序構造の定石)
     :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
     """
 
@@ -115,6 +118,7 @@ class PhaseSpec:
     mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
     free_occupancy_labels: tuple[str, ...] = ()
     occupancy_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    free_uiso_labels: tuple[str, ...] = ()
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -126,6 +130,7 @@ class PhaseSpec:
             "mixed_occupancy_groups": [list(g) for g in self.mixed_occupancy_groups],
             "free_occupancy_labels": list(self.free_occupancy_labels),
             "occupancy_equiv_groups": [list(g) for g in self.occupancy_equiv_groups],
+            "free_uiso_labels": list(self.free_uiso_labels),
             "temperature": self.temperature,
         }
 
@@ -135,6 +140,7 @@ class PhaseSpec:
         groups = d.get("mixed_occupancy_groups") or ()
         free_occ = d.get("free_occupancy_labels") or ()
         equiv = d.get("occupancy_equiv_groups") or ()
+        free_uiso = d.get("free_uiso_labels") or ()
         return cls(
             structure_path=str(d["structure_path"]),
             phase_name=str(d["phase_name"]),
@@ -142,6 +148,7 @@ class PhaseSpec:
             mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
             free_occupancy_labels=tuple(str(a) for a in free_occ),
             occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
+            free_uiso_labels=tuple(str(a) for a in free_uiso),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
 
