@@ -45,6 +45,13 @@ def test_asymmetry_emits_alpha_beta_for_tof():
     assert "Zero" in flags["tof_zero"]["tof_profile"]
 
 
+def test_cw_neutron_asymmetry_no_proposal():
+    # CW 中性子は X 線専用 Lorentzian/SH-L が無効 → 適用可能な候補なし → 提案しない (no-op 回避)。
+    feats = [ResidualFeatures(hist_id=0, asymmetry_residual=0.3,
+                              radiation_is_tof=False, radiation_is_neutron=True)]
+    assert _asym_proposals(propose_next_actions(_ok_result(), feats)) == []
+
+
 def test_no_asymmetry_no_proposal():
     # 非対称なし → 提案なし (false positive を出さない)。
     feats = [ResidualFeatures(hist_id=0, asymmetry_residual=0.0)]

@@ -82,6 +82,7 @@ def diagnose_residual(
             "hist_id": i,
             "n_background_coeffs": inp.background_coeffs,
             "radiation_is_tof": hist.radiation.is_tof,
+            "radiation_is_neutron": hist.radiation.is_neutron,
         }
         if i < len(result.peak_width_ratio):
             kw["fwhm_ratio"] = float(result.peak_width_ratio[i])

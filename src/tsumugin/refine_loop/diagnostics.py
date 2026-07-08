@@ -61,6 +61,8 @@ class ResidualFeatures:
     """吸収寄与が不確実か (free/物理/0 の SetAbsorption 三択候補, REQ-106)。"""
     radiation_is_tof: bool = False
     """TOF ヒストか (非対称候補を SH/L[X線] と alpha/beta[TOF] で分岐, REQ-101)。"""
+    radiation_is_neutron: bool = False
+    """中性子ヒストか (CW 中性子は X 線専用 Lorentzian/SH-L が engine で無効 → 該当候補を出さない)。"""
 
 
 @dataclass(frozen=True)
@@ -136,14 +138,27 @@ def propose_next_actions(
                     safe=True,
                 )
             )
-        # obs/calc FWHM 比の系統ずれ → Gaussian(U,V,W)/Lorentzian(X,Y)/size を「別々の」候補で提案
-        # (REQ-103)。どれが効くかは焼き込まず try→revert が決める。
+        # obs/calc FWHM 比の系統ずれ → 幅パラメータを「別々の」候補で提案 (REQ-103)。放射源に応じた
+        # 有効候補のみ出す (非対称規則と整合; engine が TOF でスキップする X 線専用フラグの no-op を避ける)。
         if abs(f.fwhm_ratio - 1.0) > fwhm_tol:
-            for lbl, flags, note in (
-                ("profile_uvw", {"profile": ["U", "V", "W"]}, "Gaussian U,V,W"),
-                ("profile_xy", {"profile_lorentzian": True}, "Lorentzian X,Y"),
-                ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
-            ):
+            if f.radiation_is_tof:
+                width_cands = (
+                    ("tof_sig", {"tof_profile": ["sig-1", "sig-2"]}, "TOF Gaussian 幅 (sig)"),
+                    ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
+                )
+            elif f.radiation_is_neutron:
+                # CW 中性子: Lorentzian(X,Y) は engine で無効。Gaussian(U,V,W) + size のみ。
+                width_cands = (
+                    ("profile_uvw", {"profile": ["U", "V", "W"]}, "Gaussian U,V,W"),
+                    ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
+                )
+            else:
+                width_cands = (
+                    ("profile_uvw", {"profile": ["U", "V", "W"]}, "Gaussian U,V,W"),
+                    ("profile_xy", {"profile_lorentzian": True}, "Lorentzian X,Y"),
+                    ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
+                )
+            for lbl, flags, note in width_cands:
                 proposals.append(
                     ActionProposal(
                         action=ReleaseParams(lbl, flags),
@@ -177,7 +192,11 @@ def propose_next_actions(
             )
         # 非対称/位置ズレ → シフト(Zero)と非対称を「別々の」候補として提案 (REQ-101)。
         # どちらが効くかは焼き込まず (REQ-405/DD-2)、policy が個別に試し _accept が採否を決める。
-        if f.asymmetry_residual > asymmetry_tol:
+        # CW 中性子は X 線専用の Lorentzian/SH-L が engine で無効なため候補を出さない (適用可能な
+        # 位置/非対称フラグがない → no-op トライを避ける)。TOF/X 線のみ提案する。
+        if f.asymmetry_residual > asymmetry_tol and not (
+            f.radiation_is_neutron and not f.radiation_is_tof
+        ):
             if f.radiation_is_tof:
                 cands = (
                     ("tof_zero", {"tof_profile": ["Zero", "sig-1", "sig-2"]}, "位置(Zero)シフト"),
