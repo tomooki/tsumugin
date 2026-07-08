@@ -5,18 +5,23 @@ CIF の水 O サイト (例 O1/O3/Ow) それぞれに、O–D≈0.96 Å・D–O�
 新しい CIF を書き出す。配向は無秩序チャネル水では平均的に等方だが、決定論的な種配向を与えて中性子
 Rietveld で座標を解放する (占有率は親 O に等値拘束する = ``DeuteriumSite`` として返し engine が制約化)。
 
-numpy-only。CIF は素の text 操作で読み書きする (pymatgen は元素 "D" を扱えないため使わない)。frac→cart は
-結晶標準セッティング (a∥x) の直交化行列で行う。
+構造 CIF の読み書きは :mod:`tsumugin.autorietveld.cif_normalize` に委譲し、出力は GSAS-II が確実に読める
+最小 CIF になる。frac↔cart は結晶標準セッティング (a∥x) の直交化行列で行う。numpy-only。
 """
 
 from __future__ import annotations
 
 import math
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
+
+from tsumugin.autorietveld.cif_normalize import (
+    Atom,
+    read_structure_cif,
+    write_gsas_cif,
+)
 
 __all__ = [
     "DeuteriumSite",
@@ -64,67 +69,6 @@ def frac_to_cart_matrix(
     )
 
 
-_CELL_KEYS = {
-    "a": "_cell_length_a",
-    "b": "_cell_length_b",
-    "c": "_cell_length_c",
-    "alpha": "_cell_angle_alpha",
-    "beta": "_cell_angle_beta",
-    "gamma": "_cell_angle_gamma",
-}
-
-
-def _strip_esd(token: str) -> float:
-    """``6.95976(2)`` のような esd 付き数値を float 化する (括弧以降を捨てる)。"""
-    return float(re.sub(r"\(.*\)", "", token))
-
-
-def _read_cell(lines: list[str]) -> dict[str, float]:
-    """CIF 行から 6 セル定数を読む。"""
-    out: dict[str, float] = {}
-    for ln in lines:
-        parts = ln.split()
-        if len(parts) >= 2:
-            for name, key in _CELL_KEYS.items():
-                if parts[0] == key:
-                    out[name] = _strip_esd(parts[1])
-    missing = set(_CELL_KEYS) - set(out)
-    if missing:
-        raise ValueError(f"CIF にセル定数が不足しています: {sorted(missing)}")
-    return out
-
-
-def _find_atom_loop(lines: list[str]) -> tuple[int, list[str], int, int]:
-    """atom_site loop のヘッダ列・データ行範囲を返す ``(header_start, tags, data_start, data_end)``。
-
-    data_end は最後のデータ行の次のインデックス (挿入位置)。
-    """
-    # _atom_site_label を含む loop_ ヘッダを探す。
-    label_idx = next(
-        (i for i, ln in enumerate(lines) if ln.strip() == "_atom_site_label"), None
-    )
-    if label_idx is None:
-        raise ValueError("CIF に _atom_site_label ループが見つかりません。")
-    # ヘッダ (_atom_site_*) の連続区間。
-    start = label_idx
-    while start > 0 and lines[start - 1].strip().startswith("_atom_site"):
-        start -= 1
-    tags: list[str] = []
-    i = start
-    while i < len(lines) and lines[i].strip().startswith("_atom_site"):
-        tags.append(lines[i].strip())
-        i += 1
-    data_start = i
-    # データ行: 空行 / loop_ / '#' / '_' 開始 まで。
-    j = data_start
-    while j < len(lines):
-        s = lines[j].strip()
-        if not s or s.startswith(("#", "loop_", "_", ";")):
-            break
-        j += 1
-    return start, tags, data_start, j
-
-
 def place_d2o(
     structure_path: str | Path,
     water_labels: list[str] | tuple[str, ...],
@@ -133,38 +77,28 @@ def place_d2o(
     od_distance: float = 0.96,
     dod_angle: float = 104.5,
     uiso: float | None = None,
+    phase_name: str = "phase",
 ) -> tuple[Path, tuple[DeuteriumSite, ...]]:
-    """CIF の水 O サイトへ D を 2 個ずつ幾何配置した新 CIF を書き出す。🔵
+    """CIF の水 O サイトへ D を 2 個ずつ幾何配置した GSAS 向け最小 CIF を書き出す。🔵
 
     :param structure_path: 入力 CIF (水 O を含むモデル)
     :param water_labels: D を付ける水 O サイトのラベル列 (例 ``["O1", "O3", "Ow"]``)
-    :param out_path: 出力 CIF パス
+    :param out_path: 出力 CIF パス (正規化された最小 CIF)
     :param od_distance: O–D 距離 [Å]
     :param dod_angle: D–O–D 角 [deg]
-    :param uiso: D の Uiso 初期値 (None なら親 O の変位値を流用)
+    :param uiso: D の Uiso 初期値 (None なら親 O の Uiso を流用)
+    :param phase_name: 出力 CIF の data ブロック名
     :returns: ``(出力 CIF パス, 配置した DeuteriumSite のタプル)``
 
     Raises:
-        ValueError: セル定数 / atom_site ループ / 指定した水ラベルが見つからないとき。
+        ValueError: 指定した水ラベルが atom_site に見つからないとき。
     """
-    text = Path(structure_path).read_text(encoding="utf-8", errors="replace")
-    lines = text.splitlines()
-    cell = _read_cell(lines)
+    struct = read_structure_cif(structure_path)
     mat = frac_to_cart_matrix(
-        cell["a"], cell["b"], cell["c"], cell["alpha"], cell["beta"], cell["gamma"]
+        struct.a, struct.b, struct.c, struct.alpha, struct.beta, struct.gamma
     )
     inv = np.linalg.inv(mat)
-
-    _hstart, tags, data_start, data_end = _find_atom_loop(lines)
-    col = {tag: k for k, tag in enumerate(tags)}
-    if "_atom_site_label" not in col:
-        raise ValueError("atom_site ループに _atom_site_label 列がありません。")
-    ix = col["_atom_site_fract_x"]
-    iy = col["_atom_site_fract_y"]
-    iz = col["_atom_site_fract_z"]
-
-    rows = [lines[k].split() for k in range(data_start, data_end)]
-    by_label = {r[col["_atom_site_label"]]: r for r in rows if r}
+    by_label = {at.label: at for at in struct.atoms}
 
     # 種配向: 直交系で bisector=+z, 面内 perp=+x (無秩序水は decision-free で決定論的に固定)。
     half = math.radians(dod_angle / 2.0)
@@ -175,69 +109,38 @@ def place_d2o(
         math.cos(half) * bisector - math.sin(half) * perp,
     )
 
-    new_rows: list[str] = []
+    new_atoms = list(struct.atoms)
     d_sites: list[DeuteriumSite] = []
     for parent in water_labels:
         if parent not in by_label:
             raise ValueError(f"水ラベル {parent!r} が atom_site に見つかりません。")
-        prow = by_label[parent]
-        o_frac = np.array(
-            [_strip_esd(prow[ix]), _strip_esd(prow[iy]), _strip_esd(prow[iz])]
-        )
-        o_cart = mat @ o_frac
-        occ = _strip_esd(prow[col["_atom_site_occupancy"]]) if "_atom_site_occupancy" in col else 1.0
+        po = by_label[parent]
+        o_cart = mat @ np.array([po.x, po.y, po.z])
+        d_uiso = uiso if uiso is not None else po.uiso
         for n, direction in enumerate(dirs, start=1):
-            d_cart = o_cart + od_distance * direction
-            d_frac = inv @ d_cart
+            d_frac = inv @ (o_cart + od_distance * direction)
             label = f"D{parent}{n}"
-            new_rows.append(
-                _format_row(tags, col, prow, label, d_frac, occ, uiso)
+            new_atoms.append(
+                Atom(
+                    label=label,
+                    type_symbol="D",
+                    x=float(d_frac[0]),
+                    y=float(d_frac[1]),
+                    z=float(d_frac[2]),
+                    occ=po.occ,
+                    uiso=d_uiso,
+                )
             )
             d_sites.append(
                 DeuteriumSite(
                     label=label,
                     parent_label=parent,
                     frac=(float(d_frac[0]), float(d_frac[1]), float(d_frac[2])),
-                    occupancy=occ,
+                    occupancy=po.occ,
                 )
             )
 
-    out_lines = lines[:data_end] + new_rows + lines[data_end:]
-    out = Path(out_path)
-    out.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    out = write_gsas_cif(
+        replace(struct, atoms=tuple(new_atoms)), out_path, phase_name=phase_name
+    )
     return out, tuple(d_sites)
-
-
-def _format_row(
-    tags: list[str],
-    col: dict[str, int],
-    parent_row: list[str],
-    label: str,
-    d_frac: np.ndarray,
-    occ: float,
-    uiso: float | None,
-) -> str:
-    """親 O の行を雛形に D 行を組む (列順は元ループに一致)。"""
-    fields: list[str] = []
-    for k, tag in enumerate(tags):
-        if tag == "_atom_site_label":
-            fields.append(label)
-        elif tag == "_atom_site_fract_x":
-            fields.append(f"{d_frac[0]:.5f}")
-        elif tag == "_atom_site_fract_y":
-            fields.append(f"{d_frac[1]:.5f}")
-        elif tag == "_atom_site_fract_z":
-            fields.append(f"{d_frac[2]:.5f}")
-        elif tag == "_atom_site_occupancy":
-            fields.append(f"{occ:.4f}")
-        elif tag == "_atom_site_type_symbol":
-            fields.append("D")
-        elif tag in ("_atom_site_U_iso_or_equiv", "_atom_site_B_iso_or_equiv"):
-            if uiso is not None:
-                fields.append(f"{uiso:.5f}")
-            else:
-                fields.append(parent_row[k] if k < len(parent_row) else "0.05")
-        else:
-            # multiplicity/Wyckoff/adp_type など: 親 O からコピー (無ければプレースホルダ)。
-            fields.append(parent_row[k] if k < len(parent_row) else ".")
-    return " ".join(fields)

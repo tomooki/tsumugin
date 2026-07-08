@@ -70,14 +70,16 @@ def test_place_d2o_writes_type_D_and_preserves_atoms(tmp_path):
     src = tmp_path / "m.cif"
     src.write_text(_CIF, encoding="utf-8")
     out, _sites = place_d2o(src, ["Ow"], tmp_path / "m_d.cif")
-    body = out.read_text(encoding="utf-8")
-    assert "Cu 0.0 0.0 0.0 1.0 Cu 0.01" in body  # 既存原子を保持
-    d_rows = [ln for ln in body.splitlines() if ln.startswith("DOw")]
-    assert len(d_rows) == 2
-    for row in d_rows:
-        parts = row.split()
-        assert parts[-2] == "D"  # _atom_site_type_symbol 列 (U_iso が最後)
-        assert parts[4] == "0.3000"  # occupancy = 親 O
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+
+    struct = read_structure_cif(out)  # 出力は GSAS 向け正規化 CIF (再読込可)
+    labels = {a.label for a in struct.atoms}
+    assert {"Cu", "Ow", "DOw1", "DOw2"} <= labels  # 既存原子 + D を保持
+    d_atoms = [a for a in struct.atoms if a.label.startswith("DOw")]
+    assert len(d_atoms) == 2
+    for a in d_atoms:
+        assert a.type_symbol == "D"
+        assert a.occ == pytest.approx(0.30)
 
 
 def test_place_d2o_unknown_label_raises(tmp_path):
