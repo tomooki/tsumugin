@@ -91,7 +91,20 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
   フレーム精密化格子で先に減算 → 残差がクリーン → 少数相の定量が改善」という設計主張と整合。frame1 の
   絶対 Rwp ~33% は転移共存フレーム固有の難しさ (preferred orientation + 水素 + 混合相; 上記 frame270 と
   同種) で A/B 共通・パイプライン欠陥ではない。**再現**: `scratchpad/cateo3_full_mp_gsas.py [--static]`
-  (MP キーは `.env` から読込, GSAS 実行)。全 14 フレームでの効果測定 (弱 minority 域での検出感度向上)
-  は全フレーム配置後の次段。
+  (MP キーは `.env` から読込, GSAS 実行)。
+- **全 14 フレーム (Data.zip 全配置) の検証 (Issue #28 ①)**: 全 14 フレーム (ax 30–420) を配置し実行
+  (`scratchpad/cateo3_full14_mp_gsas.py`, XRDML は `scratchpad/cateo3_frames14/` へ Data.zip 展開・gitignore)。
+  - **alpha 単相軌跡 (phase-id 無効, 完走)**: 含水 alpha CIF を全 14 フレームに単相フィットした Rwp 軌跡が
+    **脱水進行を定量的に捉える**: ax30 **12.57%** → ax90 40.8% → **ax120 57.4%** (含水 alpha が最悪適合) →
+    転移で試料低結晶化 (ax150 で max intensity 4059→909) → delta 域 ax300–420 で ~54% plateau。
+    単相経路は全系列ハングなしで完走 (`--no-phaseid`)。
+  - **全系列 + MP 相同定はハング (→ [Issue #33](https://github.com/tomooki/tsumugin/issues/33))**: 転移域
+    フレーム (ax≈150 付近) の **2 相 (alpha+delta) GSAS 精密化が単一 LSQ/SVD サイクル内でハング** (near-
+    singular; `masked→nan`・`invalid divide`・shift/esd 発散)。順方向・逆伝播 consolidation 双方で発生、
+    `max_cyc` 圧縮でも解消せず。**alpha 単相全系列は完走**するので**ハングは 2 相精密化に固有**で M9/M11 の
+    numpy 制御ロジックの問題ではない (GSAS 呼び出し自体のハングは崩壊ガードが精密化後にしか効かない)。
+    修正案は GSAS 精密化のウォッチドッグ (タイムアウト→chi2=inf 変換, CLAUDE.md 不変条件と整合) 等
+    (Issue #33)。→ **全系列一括完走はブロック**されるが、**delta 自動同定能力・warm-start 効果の検証は
+    2 フレーム版で達成済** (上記)。
 - **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
   決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。

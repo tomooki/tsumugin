@@ -21,3 +21,4 @@ CLAUDE.md
 
 # Scratchpad run logs (keep repro scripts, ignore their outputs)
 scratchpad/*.log
+scratchpad/cateo3_frames14/
