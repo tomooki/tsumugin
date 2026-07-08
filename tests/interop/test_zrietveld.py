@@ -133,11 +133,12 @@ def test_convert_igor_tof_writes_fxye_x_times_100(tmp_path):
     out = convert_igor_tof(src, tmp_path / "out.fxye")
     lines = out.read_text(encoding="utf-8").splitlines()
     assert lines[1].startswith("BANK 1 4 4 FXYE")
-    # データ行の X 列は TOF[μs] をそのまま (GSAS-II GSAS リーダは TOF FXYE の X を μs として採る)。
+    # X 列は TOF[μs] そのまま。Y/ESD はビン幅 (前方差分 step) を掛ける (GSAS の /step で真強度へ戻す)。
+    step0 = 1503.0 - 1501.0  # = 2
     x0, y0, e0 = (float(v) for v in lines[2].split())
     assert x0 == pytest.approx(1501.0)
-    assert y0 == pytest.approx(0.186482)
-    assert e0 == pytest.approx(0.028728)
+    assert y0 == pytest.approx(0.186482 * step0)
+    assert e0 == pytest.approx(0.028728 * step0)
 
 
 def test_parse_zdiffractometer_tof_conversion_and_range():

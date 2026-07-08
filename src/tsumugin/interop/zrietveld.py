@@ -91,6 +91,14 @@ def convert_igor_tof(igor_path: str | Path, out_path: str | Path, *, title: str 
 
     X 列は TOF[μs] をそのまま書く (GSAS-II の GSAS 粉末リーダは TOF FXYE の X を μs としてそのまま採り、
     ``Type:PNT`` instprm の difC/difA/Zero で d 変換する。実 GSAS-II で検証済 → T5 gated test)。
+
+    **強度はビン幅 (前方差分ステップ) を掛けて書く**。GSAS-II の TOF リーダは各点の強度をビン幅で割る
+    (counts/bin → 強度密度)。iMATERIA `.histogramIgor` は ``nc`` チャネル統合で**可変ビン幅** (step 2→26μs)
+    のため、正規化済 intensity をそのまま渡すと位置依存の 1/step 歪み (低 Q アーティファクト・相対ピーク強度
+    の破壊) が出る。ビン幅を掛けて counts 相当にすれば GSAS の /step で真の強度に戻る (実 GSAS で
+    ``getdata('yobs') == yint`` を検証)。ESD も同倍率でスケールし重みを保つ。等間隔データではビン幅は一定で
+    スケール因子に吸収されるため無害。
+
     出力は ``HistogramSpec(data_format="GSAS")`` として ``run_auto_rietveld`` に渡せる。放射源が TOF で
     あることは instprm の ``Type:PNT`` が決める (このファイル自体には放射源情報を持たせない)。
 
@@ -99,11 +107,18 @@ def convert_igor_tof(igor_path: str | Path, out_path: str | Path, *, title: str 
     """
     tof, yint, yerr = load_igor_tof(igor_path)
     n = int(tof.size)
+    # ビン幅 = 前方差分 (GSAS-II の TOF リーダの規約に一致)。末点は直前の幅を流用。
+    step = np.empty_like(tof)
+    if n >= 2:
+        step[:-1] = np.diff(tof)
+        step[-1] = step[-2]
+    else:
+        step[:] = 1.0
     header = title or Path(igor_path).stem
     out = Path(out_path)
     body = [
-        f"{t:.4f} {y:.6f} {max(e, 1.0e-6):.6f}"
-        for t, y, e in zip(tof.tolist(), yint.tolist(), yerr.tolist())
+        f"{t:.4f} {y * s:.8g} {max(e * s, 1.0e-9):.8g}"
+        for t, y, s, e in zip(tof.tolist(), yint.tolist(), step.tolist(), yerr.tolist())
     ]
     text = f"{header}\nBANK 1 {n} {n} FXYE\n" + "\n".join(body) + "\n"
     out.write_text(text, encoding="utf-8")
