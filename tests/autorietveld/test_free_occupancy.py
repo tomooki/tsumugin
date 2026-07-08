@@ -179,6 +179,25 @@ def test_tof_profile_stage_refines_only_tof_histograms():
     assert _tof_profile_keys() == ["sig-1", "sig-2"]
 
 
+def test_background_per_histogram_coeffs():
+    from tsumugin.autorietveld.engine import _apply_stage
+    from tsumugin.autorietveld.model import RefinementStage
+
+    class _FakeHist:
+        def __init__(self):
+            self.refined = []
+
+        def set_refinements(self, d):
+            self.refined.append(d)
+
+    xrd_h, nd_h = _FakeHist(), _FakeHist()
+    # XRD(0)=30項, ND(1)=12項 (by_index)。
+    stage = RefinementStage("bg", {"background": {"coeffs": 30, "by_index": {1: 12}}})
+    _apply_stage(None, [xrd_h, nd_h], [], [], [], [], stage)
+    assert xrd_h.refined == [{"Background": {"no. coeffs": 30, "refine": True}}]
+    assert nd_h.refined == [{"Background": {"no. coeffs": 12, "refine": True}}]
+
+
 def test_tof_profile_accepts_custom_key_list():
     from tsumugin.autorietveld.engine import _apply_stage
     from tsumugin.autorietveld.model import RefinementStage

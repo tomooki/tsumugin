@@ -180,8 +180,17 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
     """
     flags = stage.flags
     if "background" in flags:
-        n = int(flags["background"].get("coeffs", 6))  # type: ignore[union-attr]
-        gpx.set_refinement({"set": {"Background": {"no. coeffs": n, "refine": True}}})
+        bg = flags["background"]
+        default_n = int(bg.get("coeffs", 6))  # type: ignore[union-attr]
+        by_index = bg.get("by_index", {})  # type: ignore[union-attr]
+        bg_type = bg.get("type")  # type: ignore[union-attr]
+        # ヒストグラム毎に背景項数を設定 (ND は正規化 TOF で背景が支配的なため過剰項を避け少なめに)。
+        for i, hist in enumerate(hists):
+            n = int(by_index.get(i, default_n))
+            spec = {"no. coeffs": n, "refine": True}
+            if bg_type is not None:
+                spec["type"] = bg_type
+            hist.set_refinements({"Background": spec})
     # scale: GSAS-II はヒストグラムスケールを既定で精密化するため単相では no-op。
     if "cell" in flags:
         for ph in phases:
