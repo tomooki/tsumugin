@@ -18,6 +18,7 @@ from typing import Callable, Sequence
 
 from tsumugin.autorietveld import AutoRietveldResult, HistogramSpec, PhaseSpec
 from .action import AnalysisInput, Stop
+from .diagnose_residual import diagnose_residual
 from .diagnostics import ActionProposal, ResidualFeatures, propose_next_actions
 from .policy import (
     AnalysisPolicy,
@@ -90,7 +91,9 @@ def run_refinement_loop(
     if runner is None:
         runner = _default_gsas_runner(seed)
     if diagnose is None:
-        diagnose = _default_diagnose
+        # 既定は残差解析診断 (REQ-002/TASK-0009)。背景のみの粗診断 _default_diagnose は
+        # 後方互換の代替として残置 (明示注入で選択可)。
+        diagnose = diagnose_residual
 
     inp = AnalysisInput(tuple(histograms), tuple(phases), background_coeffs)
     result = runner(inp)  # ベースライン (反復 0)
