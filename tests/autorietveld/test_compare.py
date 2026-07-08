@@ -73,6 +73,45 @@ def test_compare_models_ranks_by_bic_and_sets_delta():
     assert cmp.scores[1].delta_bic == pytest.approx(abs(bic6 - bic5), rel=1e-6)
 
 
+def test_compare_models_best_prefers_valid_over_lower_bic():
+    # 低 BIC だが物理妥当性 fail のモデルより、高 BIC でも妥当なモデルを best に選ぶ
+    # (CLAUDE.md「BIC + 妥当性」)。delta_bic は全体最小 BIC 基準のため不妥当モデルが 0。
+    results = {
+        "bad": _result(gof=1.20, n_params=20, n_obs=20000, passed=False),  # 最小 BIC だが不妥当
+        "good": _result(gof=1.45, n_params=20, n_obs=20000, passed=True),
+    }
+
+    def stub_runner(hists, phases, **kw):
+        return results[phases[0].phase_name]
+
+    variants = (ModelVariant("bad", (_phase("bad"),)), ModelVariant("good", (_phase("good"),)))
+    hist = HistogramSpec("d.xye", "i.instprm", radiation=_rad(), geometry=_geo(), data_format="XYE")
+    cmp = compare_models([hist], variants, runner=stub_runner)
+
+    assert cmp.best == "good"          # 妥当なモデルを選定
+    assert cmp.best_is_valid is True
+    assert cmp.scores[0].name == "bad"  # 序列自体は BIC 昇順 (不妥当が先頭)
+    assert cmp.scores[0].delta_bic == pytest.approx(0.0)
+
+
+def test_compare_models_best_falls_back_when_none_valid():
+    # 全モデル不妥当なら全体最小 BIC にフォールバックし best_is_valid=False。
+    results = {
+        "m1": _result(gof=1.20, n_params=20, n_obs=20000, passed=False),
+        "m2": _result(gof=1.45, n_params=20, n_obs=20000, passed=False),
+    }
+
+    def stub_runner(hists, phases, **kw):
+        return results[phases[0].phase_name]
+
+    variants = (ModelVariant("m1", (_phase("m1"),)), ModelVariant("m2", (_phase("m2"),)))
+    hist = HistogramSpec("d.xye", "i.instprm", radiation=_rad(), geometry=_geo(), data_format="XYE")
+    cmp = compare_models([hist], variants, runner=stub_runner)
+
+    assert cmp.best == "m1"  # 全体最小 BIC (低 GOF)
+    assert cmp.best_is_valid is False
+
+
 def test_compare_models_empty_variants_raises():
     with pytest.raises(ValueError, match="1 つ以上"):
         compare_models([], [], runner=lambda *a, **k: None)

@@ -64,10 +64,17 @@ class ModelScore:
 
 @dataclass(frozen=True)
 class ModelComparison:
-    """全バリアントの序列 (BIC 昇順) と最良モデル名。🔵"""
+    """全バリアントの序列 (BIC 昇順) と最良モデル名。🔵
+
+    :param scores: BIC 昇順の全モデルスコア (``delta_bic`` は全体最小 BIC 基準の ΔBIC)
+    :param best: 選定モデル = **物理妥当なモデルのうち最小 BIC** (CLAUDE.md「BIC + 妥当性」)。
+        妥当なモデルが 1 つも無いときのみ全体最小 BIC にフォールバックする。
+    :param best_is_valid: ``best`` が物理妥当性を満たすか (全モデル不妥当なら False)
+    """
 
     scores: tuple[ModelScore, ...]
     best: str
+    best_is_valid: bool = True
 
 
 def _final_n_params(result: AutoRietveldResult) -> int:
@@ -140,8 +147,14 @@ def compare_models(
             )
         )
 
-    best_bic = min(s.bic for s in raw)
-    best = min(raw, key=lambda s: s.bic).name
+    best_bic = min(s.bic for s in raw)  # ΔBIC 基準 (全体最小 BIC, 情報量規準)
+    # 選定は「BIC + 物理妥当性」: 妥当なモデルのうち最小 BIC を採る。妥当なモデルが無ければ
+    # 全体最小 BIC にフォールバック (best_is_valid=False で呼び出し側に警告)。
+    valid = [s for s in raw if s.validity_passed]
+    pool = valid if valid else raw
+    best_score = min(pool, key=lambda s: s.bic)
+    best = best_score.name
+    best_is_valid = bool(valid)
     scored = tuple(
         ModelScore(
             name=s.name,
@@ -159,4 +172,4 @@ def compare_models(
         )
         for s in sorted(raw, key=lambda s: s.bic)
     )
-    return ModelComparison(scores=scored, best=best)
+    return ModelComparison(scores=scored, best=best, best_is_valid=best_is_valid)
