@@ -89,6 +89,7 @@ def propose_next_actions(
     fwhm_tol: float = 0.1,
     unindexed_tol: float = 0.05,
     asymmetry_tol: float = 0.05,
+    intensity_bias_tol: float = 0.05,
 ) -> tuple[ActionProposal, ...]:
     """残差シグネチャと妥当性から次手候補を決定論・安定順で返す (§5)。
 
@@ -114,15 +115,42 @@ def propose_next_actions(
                     safe=True,
                 )
             )
-        # obs/calc FWHM 比の系統ずれ → size/mustrain 解放 (SafeAction)
+        # obs/calc FWHM 比の系統ずれ → Gaussian(U,V,W)/Lorentzian(X,Y)/size を「別々の」候補で提案
+        # (REQ-103)。どれが効くかは焼き込まず try→revert が決める。
         if abs(f.fwhm_ratio - 1.0) > fwhm_tol:
+            for lbl, flags, note in (
+                ("profile_uvw", {"profile": ["U", "V", "W"]}, "Gaussian U,V,W"),
+                ("profile_xy", {"profile_lorentzian": True}, "Lorentzian X,Y"),
+                ("size_strain", {"size_strain": True}, "結晶子サイズ/微小歪み"),
+            ):
+                proposals.append(
+                    ActionProposal(
+                        action=ReleaseParams(lbl, flags),
+                        rationale=f"hist{f.hist_id}: obs/calc FWHM 比 {f.fwhm_ratio:.2f} "
+                        f"→ {note}を別々に解放して観察",
+                        priority=float(abs(f.fwhm_ratio - 1.0)),
+                        evidence={
+                            "signal": "fwhm",
+                            "fwhm_ratio": f.fwhm_ratio,
+                            "hist_id": f.hist_id,
+                            "candidate": lbl,
+                        },
+                        safe=True,
+                    )
+                )
+        # 系統的 obs>calc のピーク強度 → 選択配向 (preferred orientation) を提案 (REQ-102)。
+        if f.intensity_bias > intensity_bias_tol:
             proposals.append(
                 ActionProposal(
-                    action=ReleaseParams("size_strain", {"size_strain": True}),
-                    rationale=f"hist{f.hist_id}: obs/calc FWHM 比 {f.fwhm_ratio:.2f} "
-                    f"→ 結晶子サイズ/微小歪みを解放",
-                    priority=float(abs(f.fwhm_ratio - 1.0)),
-                    evidence={"signal": "fwhm", "fwhm_ratio": f.fwhm_ratio, "hist_id": f.hist_id},
+                    action=ReleaseParams("preferred_orientation", {"preferred_orientation": 4}),
+                    rationale=f"hist{f.hist_id}: 系統的 obs>calc {f.intensity_bias:.2f} "
+                    f"→ 選択配向 (SH order 4) を解放して観察",
+                    priority=float(f.intensity_bias),
+                    evidence={
+                        "signal": "intensity_bias",
+                        "intensity_bias": f.intensity_bias,
+                        "hist_id": f.hist_id,
+                    },
                     safe=True,
                 )
             )
