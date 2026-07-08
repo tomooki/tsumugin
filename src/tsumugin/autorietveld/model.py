@@ -130,6 +130,7 @@ class PhaseSpec:
     occupancy_equiv_groups: tuple[tuple[str, ...], ...] = ()
     free_uiso_labels: tuple[str, ...] = ()
     position_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -143,6 +144,7 @@ class PhaseSpec:
             "occupancy_equiv_groups": [list(g) for g in self.occupancy_equiv_groups],
             "free_uiso_labels": list(self.free_uiso_labels),
             "position_equiv_groups": [list(g) for g in self.position_equiv_groups],
+            "occupancy_sum_groups": [list(g) for g in self.occupancy_sum_groups],
             "temperature": self.temperature,
         }
 
@@ -163,6 +165,9 @@ class PhaseSpec:
             free_uiso_labels=tuple(str(a) for a in free_uiso),
             position_equiv_groups=tuple(
                 tuple(str(a) for a in g) for g in (d.get("position_equiv_groups") or ())
+            ),
+            occupancy_sum_groups=tuple(
+                tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
             ),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )

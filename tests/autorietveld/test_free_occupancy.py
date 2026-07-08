@@ -132,6 +132,18 @@ def test_update_atom_flags_frees_equiv_occ_group():
     assert "F" not in flags.get("Cu", "")  # 非対象は解放しない
 
 
+def test_setup_constraints_occupancy_sum_groups():
+    from tsumugin.autorietveld.engine import _setup_constraints
+
+    # H/D 混合: O1 位置に D/H 共配置, D+H=O1。
+    ph = _FakePhase(0, ["O1", "DO11", "HO11"])  # O1=0, DO11=1, HO11=2
+    spec = PhaseSpec("m.cif", "NaCuHCF", occupancy_sum_groups=(("O1", "DO11", "HO11"),))
+    gpx = _FakeGpx()
+    _setup_constraints(gpx, [ph], [], [spec])
+    # Σ子 − 親 = 0: [DO11, HO11, O1] 係数 [1,1,-1] 総和 0。
+    assert (0.0, ("0::Afrac:1", "0::Afrac:2", "0::Afrac:0")) in gpx.eqn
+
+
 def test_setup_constraints_position_equiv_groups():
     from tsumugin.autorietveld.engine import _setup_constraints
 

@@ -131,9 +131,10 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
     mixed = {lab for grp in spec.mixed_occupancy_groups for lab in grp}
     free_occ = set(spec.free_occupancy_labels)
     equiv_occ = {lab for grp in spec.occupancy_equiv_groups for lab in grp}
+    sum_occ = {lab for grp in spec.occupancy_sum_groups for lab in grp}
     return {
         "labels": labels, "coord_atoms": coord_atoms,
-        "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ,
+        "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ | sum_occ,
         "uiso_labels": list(spec.free_uiso_labels),
     }
 
@@ -361,6 +362,16 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
             if len(idxs) >= 2:
                 gpx.add_EquivConstr([f"{pid}::Afrac:{i}" for i in idxs])
+        # 占有率和 (H/D ミキシング): (親, 子1, 子2, ...) で Σ子 − 親 = 0 を課す。
+        for group in spec.occupancy_sum_groups:
+            if len(group) < 2 or group[0] not in label_to_idx:
+                continue
+            parent = label_to_idx[group[0]]
+            children = [label_to_idx[lab] for lab in group[1:] if lab in label_to_idx]
+            if not children:
+                continue
+            variables = [f"{pid}::Afrac:{i}" for i in children] + [f"{pid}::Afrac:{parent}"]
+            gpx.add_EqnConstr(0.0, variables, [1.0] * len(children) + [-1.0])
 
     # 多相: 各ヒストグラムで相分率 (HAP Scale) 和 = 1 (REQ-104)
     if len(g2phases) > 1:

@@ -67,7 +67,8 @@ def build_recipe(
 
     multiphase = len(phases) > 1
     mixed_occ = any(
-        p.mixed_occupancy_groups or p.free_occupancy_labels or p.occupancy_equiv_groups
+        p.mixed_occupancy_groups or p.free_occupancy_labels
+        or p.occupancy_equiv_groups or p.occupancy_sum_groups
         for p in phases
     )
     temp_diff = _has_temperature_difference(histograms)

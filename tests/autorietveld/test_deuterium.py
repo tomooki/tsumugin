@@ -96,6 +96,29 @@ def test_place_d2o_element_and_occupancy_scale(tmp_path):
     assert all(a.type_symbol == "H" for a in h)
 
 
+def test_place_hd_mix_colocated_pairs_and_groups(tmp_path):
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+    from tsumugin.autorietveld.deuterium import place_hd_mix
+
+    src = tmp_path / "m.cif"
+    src.write_text(_CIF, encoding="utf-8")
+    out, pos_equiv, occ_sum = place_hd_mix(src, ["Ow"], tmp_path / "hd.cif", deuteration=0.7)
+    st = read_structure_cif(out)
+    atoms = {a.label: a for a in st.atoms}
+    # 各位置に D/H 対 (2 位置)。
+    assert {"DOw1", "HOw1", "DOw2", "HOw2"} <= set(atoms)
+    # 共位置 (座標一致)。
+    for dl, hl in pos_equiv:
+        assert atoms[dl].x == pytest.approx(atoms[hl].x)
+        assert atoms[dl].y == pytest.approx(atoms[hl].y)
+    # 初期占有率 D=0.7·O, H=0.3·O (O=0.30)。
+    assert atoms["DOw1"].occ == pytest.approx(0.30 * 0.7)
+    assert atoms["HOw1"].occ == pytest.approx(0.30 * 0.3)
+    # 拘束グループ: position_equiv 対 + occupancy_sum (親, D, H)。
+    assert ("DOw1", "HOw1") in pos_equiv
+    assert ("Ow", "DOw1", "HOw1") in occ_sum
+
+
 def test_place_d2o_unknown_label_raises(tmp_path):
     src = tmp_path / "m.cif"
     src.write_text(_CIF, encoding="utf-8")

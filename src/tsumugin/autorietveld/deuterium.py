@@ -28,6 +28,7 @@ __all__ = [
     "equiv_groups_from_sites",
     "frac_to_cart_matrix",
     "place_d2o",
+    "place_hd_mix",
 ]
 
 
@@ -45,6 +46,60 @@ class DeuteriumSite:
     parent_label: str
     frac: tuple[float, float, float]
     occupancy: float
+
+
+def place_hd_mix(
+    structure_path: str | Path,
+    water_labels: list[str] | tuple[str, ...],
+    out_path: str | Path,
+    *,
+    deuteration: float = 0.7,
+    od_distance: float = 0.96,
+    dod_angle: float = 104.5,
+    uiso: float | None = None,
+    phase_name: str = "phase",
+) -> tuple[Path, tuple[tuple[str, ...], ...], tuple[tuple[str, ...], ...]]:
+    """各水 O へ **共位置の D/H 対を 2 組**配置し、H/D ミキシング精密化の拘束グループを返す。🔵
+
+    同一位置 (dj) に D{O}{n} と H{O}{n} を置き、座標は等値拘束 (position_equiv)、占有率は
+    ``D + H = 親水 O`` の和拘束 (occupancy_sum) にする。精密化で D:H 比 (重水素化率) が最適化される。
+
+    :param deuteration: D 占有率の初期分率 (0–1)。D₂O 想定なら 0.7–1.0。
+    :returns: ``(出力 CIF, position_equiv_groups, occupancy_sum_groups)`` — 後 2 者を PhaseSpec に渡す。
+    """
+    struct = read_structure_cif(structure_path)
+    mat = frac_to_cart_matrix(struct.a, struct.b, struct.c, struct.alpha, struct.beta, struct.gamma)
+    inv = np.linalg.inv(mat)
+    by_label = {at.label: at for at in struct.atoms}
+    half = math.radians(dod_angle / 2.0)
+    bisector = np.array([0.0, 0.0, 1.0])
+    perp = np.array([1.0, 0.0, 0.0])
+    dirs = (
+        math.cos(half) * bisector + math.sin(half) * perp,
+        math.cos(half) * bisector - math.sin(half) * perp,
+    )
+    new_atoms = list(struct.atoms)
+    pos_equiv: list[tuple[str, ...]] = []
+    occ_sum: list[tuple[str, ...]] = []
+    for parent in water_labels:
+        if parent not in by_label:
+            raise ValueError(f"水ラベル {parent!r} が atom_site に見つかりません。")
+        po = by_label[parent]
+        o_cart = mat @ np.array([po.x, po.y, po.z])
+        u = uiso if uiso is not None else po.uiso
+        for n, direction in enumerate(dirs, start=1):
+            f = inv @ (o_cart + od_distance * direction)
+            dl, hl = f"D{parent}{n}", f"H{parent}{n}"
+            for lab, elem, sc in ((dl, "D", deuteration), (hl, "H", 1.0 - deuteration)):
+                new_atoms.append(
+                    Atom(lab, elem, float(f[0]), float(f[1]), float(f[2]), po.occ * sc, u)
+                )
+            pos_equiv.append((dl, hl))       # 共位置
+            occ_sum.append((parent, dl, hl))  # D + H = O
+    out = write_gsas_cif(
+        replace(struct, atoms=tuple(new_atoms)), out_path, phase_name=phase_name
+    )
+    return out, tuple(pos_equiv), tuple(occ_sum)
 
 
 def equiv_groups_from_sites(
