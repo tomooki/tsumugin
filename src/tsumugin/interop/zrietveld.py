@@ -88,7 +88,8 @@ def load_igor_tof(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 def convert_igor_tof(igor_path: str | Path, out_path: str | Path, *, title: str = "") -> Path:
     """Z-Code Igor TOF を GSAS-II TOF FXYE (``BANK .. FXYE``) へ変換して書き出す。🔵
 
-    GSAS-II の FXYE リーダは第 1 列を ``/100`` するため、X 列には ``TOF[μs] × 100`` を書く。
+    X 列は TOF[μs] をそのまま書く (GSAS-II の GSAS 粉末リーダは TOF FXYE の X を μs としてそのまま採り、
+    ``Type:PNT`` instprm の difC/difA/Zero で d 変換する。実 GSAS-II で検証済 → T5 gated test)。
     出力は ``HistogramSpec(data_format="GSAS")`` として ``run_auto_rietveld`` に渡せる。放射源が TOF で
     あることは instprm の ``Type:PNT`` が決める (このファイル自体には放射源情報を持たせない)。
 
@@ -100,7 +101,7 @@ def convert_igor_tof(igor_path: str | Path, out_path: str | Path, *, title: str 
     header = title or Path(igor_path).stem
     out = Path(out_path)
     body = [
-        f"{t * 100.0:.4f} {y:.6f} {max(e, 1.0e-6):.6f}"
+        f"{t:.4f} {y:.6f} {max(e, 1.0e-6):.6f}"
         for t, y, e in zip(tof.tolist(), yint.tolist(), yerr.tolist())
     ]
     text = f"{header}\nBANK 1 {n} {n} FXYE\n" + "\n".join(body) + "\n"
