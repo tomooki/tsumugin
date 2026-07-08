@@ -90,6 +90,8 @@ def propose_next_actions(
     unindexed_tol: float = 0.05,
     asymmetry_tol: float = 0.05,
     intensity_bias_tol: float = 0.05,
+    background_min: int = 6,
+    bg_extrema_max: int = 6,
 ) -> tuple[ActionProposal, ...]:
     """残差シグネチャと妥当性から次手候補を決定論・安定順で返す (§5)。
 
@@ -110,6 +112,23 @@ def propose_next_actions(
                     evidence={
                         "signal": "background",
                         "low_freq_bg_residual": f.low_freq_bg_residual,
+                        "hist_id": f.hist_id,
+                    },
+                    safe=True,
+                )
+            )
+        # 背景の過剰 wiggle (極値過多) → 背景減項 (REQ-104)。増項規則と両立・下限ガード。
+        if f.bg_extrema_count > bg_extrema_max and f.n_background_coeffs > background_min:
+            reduced_n = max(f.n_background_coeffs - background_step, background_min)
+            proposals.append(
+                ActionProposal(
+                    action=AdjustBackground(reduced_n),
+                    rationale=f"hist{f.hist_id}: 背景極値 {f.bg_extrema_count} 過多 "
+                    f"→ 背景 {f.n_background_coeffs}→{reduced_n} 項 (過適合抑制)",
+                    priority=float(f.bg_extrema_count),
+                    evidence={
+                        "signal": "background_overfit",
+                        "bg_extrema_count": f.bg_extrema_count,
                         "hist_id": f.hist_id,
                     },
                     safe=True,
