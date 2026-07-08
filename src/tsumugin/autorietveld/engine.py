@@ -130,7 +130,11 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
             coord_atoms.append(row[ct - 1])
     mixed = {lab for grp in spec.mixed_occupancy_groups for lab in grp}
     free_occ = set(spec.free_occupancy_labels)
-    return {"labels": labels, "coord_atoms": coord_atoms, "mixed": mixed, "free_occ": free_occ}
+    equiv_occ = {lab for grp in spec.occupancy_equiv_groups for lab in grp}
+    return {
+        "labels": labels, "coord_atoms": coord_atoms,
+        "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ,
+    }
 
 
 def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
@@ -160,6 +164,8 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
             add(lab, "F")
         for lab in info.get("free_occ", set()):
             add(lab, "F")
+        for lab in info.get("equiv_occ", set()):
+            add(lab, "F")  # 等値グループ (例 Fe=C=N) も解放 ([0,1] 拘束は張らない)
     return changed
 
 

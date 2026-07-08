@@ -91,6 +91,22 @@ def test_setup_constraints_bounds_and_sum_constraints():
     assert "0::Afrac:0" not in gpx.bounds["parmMin"]
 
 
+def test_update_atom_flags_frees_equiv_occ_group():
+    # 等値グループ (Fe=C=N) の全原子が occupancy 段階で解放される (mixed/free_occ でなくても)。
+    info = {
+        "labels": ["Fe", "C1", "N1", "Cu"],
+        "coord_atoms": [],
+        "mixed": set(),
+        "free_occ": set(),
+        "equiv_occ": {"Fe", "C1", "N1"},
+    }
+    flags: dict[str, str] = {}
+    _update_atom_flags(flags, info, {"occupancy": True})
+    for lab in ("Fe", "C1", "N1"):
+        assert "F" in flags.get(lab, "")
+    assert "F" not in flags.get("Cu", "")  # 非対象は解放しない
+
+
 def test_setup_constraints_occupancy_equiv_groups():
     from tsumugin.autorietveld.engine import _setup_constraints
 

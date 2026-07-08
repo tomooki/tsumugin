@@ -66,7 +66,10 @@ def build_recipe(
         raise ValueError("phases が空です")
 
     multiphase = len(phases) > 1
-    mixed_occ = any(p.mixed_occupancy_groups or p.free_occupancy_labels for p in phases)
+    mixed_occ = any(
+        p.mixed_occupancy_groups or p.free_occupancy_labels or p.occupancy_equiv_groups
+        for p in phases
+    )
     temp_diff = _has_temperature_difference(histograms)
     has_xray = any(not h.radiation.is_neutron for h in histograms)
     disp = _displacement_map(histograms)
