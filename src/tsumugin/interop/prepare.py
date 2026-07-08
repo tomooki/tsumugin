@@ -82,6 +82,9 @@ def prepare_histograms(
         geometry=Geometry.DEBYE_SCHERRER,
         data_format="GSAS",
         two_theta_limits=limits,
-        absorption=float(zn.absorption) if zn.absorption else 0.0,  # Z-Code [Absorption]
+        # 吸収は既定 0 (無補正) で seed する。Z-Code [Absorption] (=0.3) は Z-Code のパラメータ化で
+        # GSAS-II の Sample Parameters Absorption とは単位が異なり、0.3 を GSAS へ直接与えると
+        # scale と強相関して悪い極小 (ND wRp 発散) に嵌るため使わない (実 GSAS で確認)。吸収補正が
+        # 必要なら recipe の "absorption" 段で 0 から精密化する (小さな正値へ収束)。
     )
     return xray_spec, nd_spec
