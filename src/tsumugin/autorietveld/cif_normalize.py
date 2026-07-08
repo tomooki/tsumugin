@@ -146,7 +146,8 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
         if "_atom_site_type_symbol" in col:
             tsym = row[col["_atom_site_type_symbol"]]
         else:
-            tsym = re.match(r"[A-Za-z]+", label).group(0)  # type: ignore[union-attr]
+            m = re.match(r"[A-Za-z]+", label)
+            tsym = m.group(0) if m else label
         occ = _strip_esd(row[col["_atom_site_occupancy"]]) if "_atom_site_occupancy" in col else 1.0
         if "_atom_site_U_iso_or_equiv" in col:
             uiso = _strip_esd(row[col["_atom_site_U_iso_or_equiv"]])
