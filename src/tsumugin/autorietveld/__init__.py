@@ -41,7 +41,7 @@ from .cell_refine import (
     refine_structure_cell,
 )
 from .recipe import build_recipe
-from .validity import check_bond_validity, check_validity
+from .validity import check_bond_validity, check_profile_physicality, check_validity
 
 __all__ = [
     "AutoRietveldBackend",
@@ -60,6 +60,7 @@ __all__ = [
     "build_recipe",
     "cell_from_reciprocal_metric",
     "check_bond_validity",
+    "check_profile_physicality",
     "check_validity",
     "generate_cell_scales",
     "prealign_cell_from_structure",
