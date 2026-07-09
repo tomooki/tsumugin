@@ -149,31 +149,40 @@ def extract_instrument_profile_from_standard(
     from ..reference.io import load_xy  # 遅延 (numpy コア境界)
 
     two_theta, intensity = load_xy(data_path)
-    wd = Path(work_dir) if work_dir is not None else Path(tempfile.mkdtemp(prefix="reso_"))
-    wd.mkdir(parents=True, exist_ok=True)
-    xye_path = wd / "standard.xye"
-    cif_path = wd / f"{standard}.cif"
-    prm_path = wd / "standard.instprm"
-    xye_path.write_text(to_xye_text(two_theta, intensity), encoding="utf-8")
-    cif_path.write_text(standard_reference_cif(standard), encoding="utf-8")
-    prm_path.write_text(
-        pxc_instprm_text(wavelength, zero=zero, polarization=polarization), encoding="utf-8"
-    )
+    cif_text = standard_reference_cif(standard)  # 未登録は早期に KeyError (ファイル書出前)
+    auto_tmp = work_dir is None
+    wd = Path(tempfile.mkdtemp(prefix="reso_")) if auto_tmp else Path(work_dir)
+    try:
+        wd.mkdir(parents=True, exist_ok=True)
+        xye_path = wd / "standard.xye"
+        cif_path = wd / f"{standard}.cif"
+        prm_path = wd / "standard.instprm"
+        xye_path.write_text(to_xye_text(two_theta, intensity), encoding="utf-8")
+        cif_path.write_text(cif_text, encoding="utf-8")
+        prm_path.write_text(
+            pxc_instprm_text(wavelength, zero=zero, polarization=polarization), encoding="utf-8"
+        )
 
-    hist = HistogramSpec(
-        data_path=str(xye_path),
-        instrument_path=str(prm_path),
-        radiation=radiation,
-        geometry=geometry,
-        data_format="XYE",
-        two_theta_limits=two_theta_limits,
-    )
-    phase = PhaseSpec(structure_path=str(cif_path), phase_name=standard, format_hint="CIF")
-    ip = extract_instrument_profile(
-        hist, phase, runner=runner,
-        background_coeffs=background_coeffs, refine_sh_l=refine_sh_l,
-    )
-    return replace(ip, wavelength=wavelength)
+        hist = HistogramSpec(
+            data_path=str(xye_path),
+            instrument_path=str(prm_path),
+            radiation=radiation,
+            geometry=geometry,
+            data_format="XYE",
+            two_theta_limits=two_theta_limits,
+        )
+        phase = PhaseSpec(structure_path=str(cif_path), phase_name=standard, format_hint="CIF")
+        ip = extract_instrument_profile(
+            hist, phase, runner=runner,
+            background_coeffs=background_coeffs, refine_sh_l=refine_sh_l,
+        )
+        return replace(ip, wavelength=wavelength)
+    finally:
+        # 自動生成した一時ディレクトリのみ後片付け (work_dir 指定時は保持)。
+        if auto_tmp:
+            import shutil
+
+            shutil.rmtree(wd, ignore_errors=True)
 
 
 def build_resolution_recipe(
