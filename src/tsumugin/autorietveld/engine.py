@@ -272,12 +272,41 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
     return changed
 
 
-def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, stage):
+def _fixed_profile_flags(histograms) -> list[bool]:
+    """各ヒストグラムが装置プロファイル固定か (instrument_profile 指定) を返す (numpy, Issue #38)。"""
+    return [getattr(h, "instrument_profile", None) is not None for h in histograms]
+
+
+def _seed_instrument_profile(g2hist, profile) -> None:
+    """InstrumentProfile.values を GSAS Instrument Parameters に書き込む (GSAS 依存, Issue #38)。
+
+    inst[0][key][1] = value。存在しないキー・構造差は無視する (EDGE-001)。
+    """
+    try:
+        inst = g2hist.data["Instrument Parameters"][0]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return
+    for key, val in profile.values.items():
+        entry = inst.get(key) if hasattr(inst, "get") else None
+        if entry is None or len(entry) < 2:
+            continue
+        try:
+            entry[1] = float(val)
+        except (TypeError, ValueError):
+            continue
+
+
+def _apply_stage(
+    gpx, hists, phases, phase_infos, atom_flag_maps, radiations, stage, fixed_profile=None
+):
     """段階の宣言的フラグを GSAS-II 精密化フラグへ翻訳して適用する (enable のみ)。
 
     revert は .gpx スナップショット復元で行うため、ここでは有効化だけを担う。
     原子フラグは GSAS-II が「置換」セマンティクスのため、per-atom の累積マップを毎回設定する。
+    `fixed_profile[i]=True` のヒストグラムは装置プロファイル (U,V,W/X,Y/SH·L) を解放しない (Issue #38)。
     """
+    if fixed_profile is None:
+        fixed_profile = [False] * len(hists)
     flags = stage.flags
     if "background" in flags:
         bg = flags["background"]
@@ -301,13 +330,18 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
             if 0 <= idx < len(hists):
                 hists[idx].set_refinements({"Sample Parameters": list(keys)})
     if "profile" in flags:
+        # フラグ値がキー列なら**そのキー集合**を解放する (分解能抽出で U,V,W,X,Y を同時解放して
+        # 相関局所解を脱出するため; GSAS set_refinements は Instrument Parameters を置換するので
+        # 別段階に分けると先の U,V,W が凍結される)。True/未指定なら CW 既定 U,V,W (build_recipe 互換)。
+        pf = flags["profile"]
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
             # TOF の装置プロファイル (sig/alpha/beta) はキャリブレーション依存のため精密化しない。
             # TOF のピーク形状は最後の size/mustrain (HAP) で処理する (チュートリアル T4 準拠)。
-            if rad.is_tof:
+            if rad.is_tof or fixed_profile[i]:
                 continue
-            hist.set_refinements({"Instrument Parameters": _profile_keys(rad)})
+            keys = list(pf) if isinstance(pf, (list, tuple)) else _profile_keys(rad)
+            hist.set_refinements({"Instrument Parameters": keys})
     if "absorption" in flags:
         # 試料吸収を解放する opt-in 段階。TOF 中性子は λ(=TOF) 依存吸収でピーク強度の d 依存を補正
         # (Cu/Fe 等の吸収)。既定レシピ非搭載。悪化時は本段階ごと revert。
@@ -342,7 +376,7 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
         # 本段階ごと revert され U,V,W は保持される (T3/T4 非回帰)。TOF/中性子は除外。
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
-            if rad.is_tof or rad.is_neutron:
+            if rad.is_tof or rad.is_neutron or fixed_profile[i]:
                 continue
             hist.set_refinements({"Instrument Parameters": ["X", "Y", "Zero"]})
     if "profile_asymmetry" in flags:
@@ -351,7 +385,7 @@ def _apply_stage(gpx, hists, phases, phase_infos, atom_flag_maps, radiations, st
         # 本段階のみ revert する (X,Y,Zero を保持)。TOF/中性子は除外。
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
-            if rad.is_tof or rad.is_neutron:
+            if rad.is_tof or rad.is_neutron or fixed_profile[i]:
                 continue
             hist.set_refinements({"Instrument Parameters": ["SH/L"]})
     if "size_strain" in flags:
@@ -638,6 +672,9 @@ def run_auto_rietveld(
                     hist.data["Sample Parameters"]["Absorption"][0] = float(h.absorption)
                 except (KeyError, IndexError, TypeError):
                     pass
+            if h.instrument_profile is not None:
+                # 標準試料から実測した装置分解能を seed し、以降の段階解放では固定する (Issue #38)。
+                _seed_instrument_profile(hist, h.instrument_profile)
             g2hists.append(hist)
 
         # --- 相追加 ---
@@ -695,6 +732,8 @@ def run_auto_rietveld(
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
         _setup_constraints(gpx, g2phases, g2hists, phases)
         phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
+        # 装置プロファイル固定 (instrument_profile 指定) の per-hist フラグ (Issue #38)。
+        fixed_profile = _fixed_profile_flags(histograms)
 
         gpx.data["Controls"]["data"]["max cyc"] = max_cyc
 
@@ -712,7 +751,8 @@ def run_auto_rietveld(
             prev_atom_flag_maps = [dict(m) for m in atom_flag_maps]
             try:
                 _apply_stage(
-                    gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage
+                    gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage,
+                    fixed_profile,
                 )
                 gpx.do_refinements([{}])
                 rwp, gof, nvar = _rvals(gpx)
