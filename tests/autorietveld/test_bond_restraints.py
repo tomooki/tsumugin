@@ -77,3 +77,24 @@ def test_addrestraint_failure_skipped():
     # 例外は握って継続 (weight 設定まで到達)。
     _apply_bond_restraints(g, [ph], {"P": [_spec(("O",), ("D",), 0.96, weight=50.0)]})
     assert ph.weight == 50.0
+
+
+def test_malformed_spec_skipped():
+    # 必須キー欠落 (distance 無し) の spec は当該拘束のみスキップし、健全な spec は登録される。
+    g = _MockGpx()
+    ph = _MockPhase("P")
+    specs = [{"origin": ("O",), "target": ("D",)},  # distance 欠落 → スキップ
+             _spec(("O2",), ("D2",), 0.96)]         # 健全
+    _apply_bond_restraints(g, [ph], {"P": specs})
+    assert len(ph.dist_calls) == 1
+    assert ph.dist_calls[0][0] == ["O2"]
+
+
+def test_last_weight_applied_phase_wide():
+    # weight は相単位: 複数 spec で異なる weight → 最後の値が相全体に適用される。
+    g = _MockGpx()
+    ph = _MockPhase("P")
+    specs = [_spec(("O",), ("D",), 0.96, weight=100.0),
+             _spec(("O2",), ("D2",), 0.96, weight=300.0)]
+    _apply_bond_restraints(g, [ph], {"P": specs})
+    assert ph.weight == 300.0

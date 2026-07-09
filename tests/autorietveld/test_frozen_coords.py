@@ -6,7 +6,6 @@ PhaseSpec の round-trip と _phase_atom_info の coord_atoms 除外を GSAS 非
 
 from __future__ import annotations
 
-from tsumugin.autorietveld.engine import _phase_atom_info
 from tsumugin.autorietveld.model import PhaseSpec
 
 
@@ -44,10 +43,8 @@ class _MockPhase:
 
 
 def _info(labels, frozen, monkeypatch):
+    # _phase_atom_info は関数内で `from GSASII import GSASIIspc` する → 属性を差し替える。
     import tsumugin.autorietveld.engine as eng
-    monkeypatch.setitem(__import__("sys").modules, "GSASII.GSASIIspc", _MockG2spcModule)
-    # _phase_atom_info は `from GSASII import GSASIIspc` を関数内で行う → sys.modules 差し替え。
-    import GSASII  # noqa: F401
     monkeypatch.setattr("GSASII.GSASIIspc", _MockG2spcModule, raising=False)
     spec = PhaseSpec("s.cif", "P", frozen_coord_labels=tuple(frozen))
     return eng._phase_atom_info(_MockPhase(labels), spec)
