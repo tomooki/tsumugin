@@ -11,6 +11,7 @@ from .model import (
     AutoRietveldResult,
     Geometry,
     HistogramSpec,
+    InstrumentProfile,
     PhaseSpec,
     Radiation,
     RefinementStage,
@@ -41,6 +42,12 @@ from .cell_refine import (
     refine_structure_cell,
 )
 from .recipe import build_recipe
+from .resolution import (
+    build_resolution_recipe,
+    extract_instrument_profile,
+    extract_instrument_profile_from_standard,
+    standard_reference_cif,
+)
 from .validity import check_bond_validity, check_profile_physicality, check_validity
 
 __all__ = [
@@ -48,6 +55,7 @@ __all__ = [
     "AutoRietveldResult",
     "Geometry",
     "HistogramSpec",
+    "InstrumentProfile",
     "LatticeSolution",
     "MultistartStart",
     "CellRefinementResult",
@@ -58,10 +66,13 @@ __all__ = [
     "StageResult",
     "ValidityReport",
     "build_recipe",
+    "build_resolution_recipe",
     "cell_from_reciprocal_metric",
     "check_bond_validity",
     "check_profile_physicality",
     "check_validity",
+    "extract_instrument_profile",
+    "extract_instrument_profile_from_standard",
     "generate_cell_scales",
     "prealign_cell_from_structure",
     "reciprocal_metric_from_cell",
@@ -71,6 +82,7 @@ __all__ = [
     "run_auto_rietveld",
     "run_multistart_rietveld",
     "solve_cell_from_dspacings",
+    "standard_reference_cif",
     "summarize_multistart",
     "two_theta_of_hkls",
 ]

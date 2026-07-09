@@ -39,6 +39,39 @@ class Geometry(Enum):
 
 
 @dataclass(frozen=True)
+class InstrumentProfile:
+    """標準試料 (NIST SRM 674b CeO2 等) から実測した CW 装置分解能関数 (不変)。
+
+    試料精密化で装置プロファイル (U,V,W/X,Y/SH·L) を固定するための値。装置由来と試料由来の広がりが
+    相関して分離できない問題 (Issue #38) への対処で、`HistogramSpec.instrument_profile` に与える。
+
+    :param values: GSAS キー→値 (U,V,W,X,Y,SH/L,Zero の部分集合)
+    :param source_rwp: 抽出精密化の最終 Rwp (出典の質; 既定 NaN)
+    :param wavelength: 波長 Å (任意・記録用)
+    """
+
+    values: Mapping[str, float]
+    source_rwp: float = float("nan")
+    wavelength: float | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "values": {str(k): float(v) for k, v in self.values.items()},
+            "source_rwp": self.source_rwp,
+            "wavelength": self.wavelength,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "InstrumentProfile":
+        raw = d.get("values", {}) or {}
+        return cls(
+            values={str(k): float(v) for k, v in dict(raw).items()},  # type: ignore[union-attr]
+            source_rwp=float(d.get("source_rwp", float("nan"))),  # type: ignore[arg-type]
+            wavelength=(float(d["wavelength"]) if d.get("wavelength") is not None else None),
+        )
+
+
+@dataclass(frozen=True)
 class HistogramSpec:
     """観測ヒストグラム 1 本の入力仕様。
 
@@ -66,6 +99,10 @@ class HistogramSpec:
     absorption: float = 0.0
     """試料吸収係数の初期値 (GSAS-II Sample Parameters Absorption)。TOF 中性子は λ(=TOF) 依存吸収を
     与える (μR 相当)。recipe の "absorption" 段階で解放する。既定 0.0 (無補正)。"""
+    instrument_profile: "InstrumentProfile | None" = None
+    """標準試料から実測した装置分解能関数 (Issue #38)。指定時、engine は値を instprm に seed し、
+    段階解放で U,V,W/X,Y/SH·L を**解放しない** (固定)。試料広がりは size/mustrain が担う。既定 None
+    (未指定なら従来どおり装置プロファイルを解放; 後方互換)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (Enum→値文字列, tuple→list)。"""
@@ -82,6 +119,9 @@ class HistogramSpec:
             "temperature": self.temperature,
             "weight": self.weight,
             "absorption": self.absorption,
+            "instrument_profile": self.instrument_profile.to_dict()
+            if self.instrument_profile is not None
+            else None,
         }
 
     @classmethod
@@ -99,6 +139,11 @@ class HistogramSpec:
             temperature=d.get("temperature"),  # type: ignore[arg-type]
             weight=float(d.get("weight", 1.0)),
             absorption=float(d.get("absorption", 0.0)),
+            instrument_profile=(
+                InstrumentProfile.from_dict(d["instrument_profile"])  # type: ignore[arg-type]
+                if d.get("instrument_profile") is not None
+                else None
+            ),
         )
 
 
