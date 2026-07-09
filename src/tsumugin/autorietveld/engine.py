@@ -17,7 +17,7 @@ import math
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from ..store import Ledger
 from .model import (
@@ -227,6 +227,10 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
             has_free = str(row[cs]).strip() == "1"
         if has_free:
             coord_atoms.append(row[ct - 1])
+    # 座標凍結ラベル (剛体固定原子) は coords 段の解放対象から除く。
+    frozen = set(spec.frozen_coord_labels)
+    if frozen:
+        coord_atoms = [lab for lab in coord_atoms if lab not in frozen]
     mixed = {lab for grp in spec.mixed_occupancy_groups for lab in grp}
     free_occ = set(spec.free_occupancy_labels)
     equiv_occ = {lab for grp in spec.occupancy_equiv_groups for lab in grp}
@@ -536,6 +540,48 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             gpx.add_EqnConstr(1.0, scales, [1.0] * len(scales))
 
 
+def _apply_bond_restraints(gpx, g2phases, bond_restraints) -> None:
+    """相名→結合距離ソフト拘束を GSAS-II Bond restraint として登録する (O–H/D 漂流防止)。
+
+    ``ph.addDistRestraint`` は**現在座標**で origin×target の距離が ``[bond/factor, bond*factor]`` に入る
+    対を探して登録するため、**初期座標が理想幾何のうちに呼ぶ**必要がある (呼出は精密化開始前)。
+    拘束は gpx データツリーに保存され revert (スナップショット復元) 後も保持される。不正 spec・GSAS
+    未対応・ラベル不一致は当該拘束のみスキップして継続する (EDGE)。
+
+    **weight は相単位**: GSAS の ``setDistRestraintWeight`` が相全体の wtFactor を設定するため、同一相の
+    複数 spec で異なる weight を与えても**最後に指定された値**が相全体に適用される (per-bond 重みは不可)。
+    通常は同一相の全 spec に同じ weight を渡す。既定 1000.0。
+    """
+    if not bond_restraints:
+        return
+    rroot = gpx.data.setdefault("Restraints", {"data": {}})
+    rdata = rroot.setdefault("data", {})
+    for ph in g2phases:
+        specs = bond_restraints.get(ph.name)
+        if not specs:
+            continue
+        # 相ごとの Bond 拘束ツリーを初期化 (addDistRestraint が参照する既定構造)。
+        entry = rdata.setdefault(ph.name, {})
+        entry.setdefault("Bond", {"wtFactor": 1.0, "Range": 1.1, "Bonds": [], "Use": True})
+        weight = 1000.0  # 相単位 wtFactor (最後に指定された spec の weight を採用)
+        for spec in specs:
+            try:
+                # 必須/任意キーの取り出しも try 内 (不正 spec は当該拘束のみスキップ)。
+                origin = [str(a) for a in spec["origin"]]  # type: ignore[index]
+                target = [str(a) for a in spec["target"]]  # type: ignore[index]
+                dist = float(spec["distance"])  # type: ignore[index]
+                esd = float(spec.get("esd", 0.02))  # type: ignore[union-attr]
+                factor = float(spec.get("factor", 1.5))  # type: ignore[union-attr]
+                weight = float(spec.get("weight", weight))  # type: ignore[union-attr]
+                ph.addDistRestraint(origin, target, dist, factor=factor, ESD=esd)
+            except Exception:  # noqa: BLE001 — 不正 spec/ラベル不一致/未対応はスキップし継続
+                continue
+        try:
+            ph.setDistRestraintWeight(weight)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _extract_state(phases):
     """validity 用に各相の格子/Uiso/占有率を GSAS-II から抽出する。"""
     refined_cells = {}
@@ -645,6 +691,7 @@ def run_auto_rietveld(
     keep_gpx: str | None = None,
     initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
     initial_cells: dict[str, tuple[float, ...]] | None = None,
+    bond_restraints: dict[str, Sequence[Mapping[str, object]]] | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -656,6 +703,13 @@ def run_auto_rietveld(
     :param max_cyc: 各段階の最大精密化サイクル
     :param worsen_eps: Rwp 悪化とみなす閾値
     :param keep_gpx: 最終 .gpx をこのパスへ保存 (None なら破棄)
+    :param bond_restraints: 相名→結合距離ソフト拘束の列 (GSAS-II Bond restraint)。各拘束は
+        ``{"origin": (ラベル…), "target": (ラベル…), "distance": Å, "esd": Å, "factor": 探索係数,
+        "weight": wtFactor}`` の dict (origin/target/distance 必須, 他は既定 esd0.02/factor1.5/weight1000)。
+        **初期座標が理想幾何のうちに**登録し、精密化中に O–H/D 結合長が理想値から外れる罰を与える
+        (無秩序水の軽原子座標の漂流を防ぐ; 配向は自由)。weight は**相単位** (最後の spec 値が相全体に適用)。
+        既定 None (拘束なし)。⚠ D/H の等値/占有率和など**対称・等値制約と併用すると GSAS scriptable が
+        拘束勾配を制約変数へ伝播せず無効**になる (実測)。硬拘束が要るなら `PhaseSpec.frozen_coord_labels`。
     :param initial_cell_scale: 相名→(fa,fb,fc) の初期格子摂動倍率 (マルチスタート用, None で無摂動)。
         **参照格子は摂動前の初期値を採用**する (妥当性判定を摂動でずらさないため)。
     :param initial_cells: 相名→(a,b,c[,α,β,γ]) の絶対初期格子 (逐次精密化のウォームスタート用,
@@ -753,6 +807,8 @@ def run_auto_rietveld(
 
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
         _setup_constraints(gpx, g2phases, g2hists, phases)
+        # 結合距離ソフト拘束 (初期座標が理想幾何のうちに登録; O–H/D の漂流防止)。
+        _apply_bond_restraints(gpx, g2phases, bond_restraints)
         # 装置パラメータの物理拘束 (profile_bounds; 分解能抽出の U,W,X,Y≥0 等) を登録する (Issue #38)。
         _apply_profile_bounds(gpx, histograms)
         phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]

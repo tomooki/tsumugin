@@ -195,6 +195,10 @@ class PhaseSpec:
     free_uiso_labels: tuple[str, ...] = ()
     position_equiv_groups: tuple[tuple[str, ...], ...] = ()
     occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
+    frozen_coord_labels: tuple[str, ...] = ()
+    """座標を**解放しない**原子ラベル (coords 段で除外)。剛体的に理想幾何へ固定したい原子
+    (例: 無秩序水の D/H を O–D=0.96Å の初期幾何に据置き orientation のみを別途評価する) に用いる。
+    占有率/Uiso の解放とは独立 (座標だけ凍結)。既定 () (従来どおり一般位置は全解放)。"""
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -209,6 +213,7 @@ class PhaseSpec:
             "free_uiso_labels": list(self.free_uiso_labels),
             "position_equiv_groups": [list(g) for g in self.position_equiv_groups],
             "occupancy_sum_groups": [list(g) for g in self.occupancy_sum_groups],
+            "frozen_coord_labels": list(self.frozen_coord_labels),
             "temperature": self.temperature,
         }
 
@@ -233,6 +238,7 @@ class PhaseSpec:
             occupancy_sum_groups=tuple(
                 tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
             ),
+            frozen_coord_labels=tuple(str(a) for a in (d.get("frozen_coord_labels") or ())),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
 
