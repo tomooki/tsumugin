@@ -62,11 +62,39 @@ def extract_instrument_profile(
     background_coeffs: int = 12,
     refine_sh_l: bool = True,
 ) -> InstrumentProfile:
-    """標準試料を精密化し装置分解能 (U,V,W,X,Y,SH/L,Zero) を抽出する。
+    """標準試料を精密化し装置分解能 (U,V,W,X,Y,SH/L,Zero) を抽出する (コア)。
 
     `build_resolution_recipe` を `run_auto_rietveld` (既定) または注入 runner に渡し、
     結果 `hist_profile[0]` から INSTRUMENT_PROFILE_KEYS を拾って InstrumentProfile を返す。
     runner 注入で決定論テスト可能 (GSAS 非依存)。実 CeO2 抽出は @pytest.mark.gsas。
+    """
+    ...
+
+
+# 純ヘルパ (再現パイプライン用, numpy): 2列→esd付き xye / PXC instprm / 標準参照 CIF。
+def to_xye_text(two_theta, intensity) -> str: ...
+def pxc_instprm_text(wavelength: float, *, zero=0.0, polarization=0.95) -> str: ...
+def standard_reference_cif(name: str) -> str: ...  # "CeO2"/"Si"; 未登録は KeyError
+
+
+def extract_instrument_profile_from_standard(
+    data_path: str,
+    *,
+    wavelength: float,
+    standard: str = "CeO2",
+    work_dir: str | None = None,
+    two_theta_limits: "tuple[float, float] | None" = None,
+    zero: float = 0.0,
+    polarization: float = 0.95,
+    background_coeffs: int = 12,
+    refine_sh_l: bool = False,
+    runner=None,
+) -> InstrumentProfile:
+    """**生の 2 列標準データ 1 ファイルから**装置分解能を一括再現する (再現パイプライン)。
+
+    load_xy (2列読込) → to_xye_text (Poisson esd) → standard_reference_cif (CeO2/Si) →
+    pxc_instprm_text → extract_instrument_profile。中間ファイルは work_dir (省略時 一時 dir)。
+    返す InstrumentProfile に wavelength を記録。scratchpad の手作業を関数化し再現性を担保。
     """
     ...
 

@@ -25,8 +25,12 @@ CW 装置プロファイル (U,V,W / X,Y / SH·L) を試料精密化で自由解
 - REQ-001: システムは**標準試料の分解能関数**を保持する不変データ型 `InstrumentProfile`
   (GSAS キー→値の Mapping + 出典 Rwp + 波長) を提供しなければならない 🔵 *ユーザ確定*
 - REQ-002: システムは標準試料データ+構造から装置分解能を抽出する `extract_instrument_profile` を
-  提供しなければならない。抽出は **size/mustrain を解放しない**専用レシピ (背景→cell→U,V,W→X,Y→
-  (任意)SH/L) で行い、結果の `hist_profile` から U,V,W,X,Y,SH/L を返す 🔵 *CeO2 実測で確立した順序*
+  提供しなければならない。抽出は **size/mustrain を解放しない**専用レシピ (背景→cell→W→U,V,W→U,V,W,X,Y→
+  (任意)SH/L の段階解放) で行い、結果の `hist_profile` から U,V,W,X,Y,SH/L を返す 🔵 *CeO2 実測で確立した順序*
+- REQ-002b: システムは**生の 2 列標準試料データ (.dat) 1 ファイルから**装置分解能を一括再現する
+  `extract_instrument_profile_from_standard` を提供しなければならない。2 列読込 (Poisson esd 付与)・
+  標準参照構造 (CeO2/Si 内蔵)・PXC instprm 生成を内包し、決定論的に `InstrumentProfile` を返す
+  (scratchpad の手作業を再現可能な関数に集約) 🔵 *ユーザ要望「再現可能なように別関数化」*
 - REQ-003: システムは `HistogramSpec.instrument_profile` (省略可) を提供し、指定時はその値を
   GSAS instprm に seed しなければならない 🔵 *ユーザ確定*
 

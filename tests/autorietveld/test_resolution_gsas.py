@@ -16,6 +16,7 @@ from tsumugin.autorietveld import (
     PhaseSpec,
     Radiation,
     extract_instrument_profile,
+    extract_instrument_profile_from_standard,
     run_auto_rietveld,
 )
 from tsumugin.autorietveld.resolution import build_resolution_recipe
@@ -54,6 +55,18 @@ def test_extract_ceo2_resolution_reaches_low_rwp():
         assert k in ip.values
     # Lorentzian が有意 (シャープピークは L 支配)
     assert abs(ip.values["Y"]) > 0.5
+
+
+@pytest.mark.skipif(not _present(), reason="Issue #38 CeO2 データ未取得")
+def test_reproduce_from_standard_pipeline(tmp_path):
+    # 生データ 1 ファイルから一括再現 (ceo2.xye を load_xy が 2 列として読む)。~8.9% を再現。
+    ip = extract_instrument_profile_from_standard(
+        str(_DATA / "ceo2.xye"), wavelength=0.79958, standard="CeO2",
+        work_dir=str(tmp_path), two_theta_limits=(8.0, 82.0), zero=0.0059, refine_sh_l=False,
+    )
+    assert ip.source_rwp < 12.0, f"Rwp={ip.source_rwp}"
+    assert ip.wavelength == 0.79958
+    assert {"U", "V", "W", "X", "Y"}.issubset(set(ip.values))
 
 
 @pytest.mark.skipif(not _present(), reason="Issue #38 CeO2 データ未取得")
