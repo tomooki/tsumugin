@@ -321,7 +321,9 @@ def profile_total_fwhm(values: Mapping[str, float], two_theta):
     a = 2.35482 * sig
     poly = (a**5 + 2.69269 * a**4 * g + 2.42843 * a**3 * g**2
             + 4.47163 * a**2 * g**3 + 0.07842 * a * g**4 + g**5)
-    return np.where(poly > 0.0, np.exp(np.log(np.abs(poly)) / 5.0) / 100.0, np.nan)
+    # poly≤0 (発散) は NaN。log は正値のみで評価する (非正の log 警告を避ける)。
+    safe = np.where(poly > 0.0, poly, 1.0)
+    return np.where(poly > 0.0, np.exp(np.log(safe) / 5.0) / 100.0, np.nan)
 
 
 def profile_fwhm_min(
