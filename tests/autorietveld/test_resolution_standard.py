@@ -113,6 +113,29 @@ def test_pipeline_prepares_files_and_extracts(tmp_path):
     assert len(first) == 3
 
 
+def test_pipeline_search_routes_to_physical_best(tmp_path):
+    # search="grid" は物理候補探索へ委譲し、非物理候補を避けて物理最良を返す。
+    dat = tmp_path / "std.dat"
+    dat.write_text("\n".join(f"{10+0.01*i:.3f} {100+i}" for i in range(50)) + "\n")
+
+    def stub(hists, phases, *, recipe=None, **kw):
+        h = hists[0]
+        if h.instrument_profile is not None:  # 候補固定評価: X が 0.4 付近で Rwp 最小
+            x = h.instrument_profile.values.get("X", 0.0)
+            return _result({}, 9.0 + abs(x - 0.4) * 5)
+        # アンカー抽出: 物理プロファイルを返す
+        return _result({"U": 0.0, "V": 1.8, "W": 0.96, "X": 0.4, "Y": 0.0}, 9.06)
+
+    ip = extract_instrument_profile_from_standard(
+        str(dat), wavelength=0.8, standard="CeO2", work_dir=str(tmp_path),
+        two_theta_limits=(8.0, 82.0), search="grid", runner=stub,
+    )
+    # 物理 (Y=0) かつ X が 0.4 近傍 (最良候補) に収束、波長記録
+    assert ip.values["Y"] == 0.0
+    assert abs(ip.values["X"] - 0.4) < 0.15
+    assert ip.wavelength == 0.8
+
+
 def test_pipeline_deterministic(tmp_path):
     dat = tmp_path / "std.dat"
     dat.write_text("\n".join(f"{10+0.01*i:.3f} {100+i}" for i in range(20)) + "\n")

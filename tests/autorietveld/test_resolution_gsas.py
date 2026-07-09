@@ -18,6 +18,7 @@ from tsumugin.autorietveld import (
     extract_instrument_profile,
     extract_instrument_profile_from_standard,
     run_auto_rietveld,
+    search_instrument_profile,
 )
 from tsumugin.autorietveld.resolution import build_resolution_recipe
 
@@ -95,6 +96,19 @@ def test_reproduce_from_standard_pipeline(tmp_path):
     assert ip.source_rwp < 12.0, f"Rwp={ip.source_rwp}"
     assert ip.wavelength == 0.79958
     assert {"U", "V", "W", "X", "Y"}.issubset(set(ip.values))
+
+
+@pytest.mark.skipif(not _present(), reason="Issue #38 CeO2 データ未取得")
+def test_search_finds_physical_best(tmp_path):
+    # 物理候補探索: 境界クランプでなく総 FWHM 正の最良物理解を返す。
+    from tsumugin.autorietveld.resolution import profile_fwhm_min
+
+    ip = search_instrument_profile(_standard(), _ceo2())
+    assert ip.source_rwp < 14.0, f"Rwp={ip.source_rwp}"
+    # 全域 FWHM 正 (転写可能)
+    assert profile_fwhm_min(ip.values, 5.0, 110.0) > 0.0, ip.values
+    # X (Lorentzian) が有意
+    assert ip.values.get("X", 0.0) > 0.05, ip.values
 
 
 @pytest.mark.skipif(not _present(), reason="Issue #38 CeO2 データ未取得")
