@@ -103,6 +103,11 @@ class HistogramSpec:
     """標準試料から実測した装置分解能関数 (Issue #38)。指定時、engine は値を instprm に seed し、
     段階解放で U,V,W/X,Y/SH·L を**解放しない** (固定)。試料広がりは size/mustrain が担う。既定 None
     (未指定なら従来どおり装置プロファイルを解放; 後方互換)。"""
+    profile_bounds: "Mapping[str, tuple[float | None, float | None]] | None" = None
+    """装置パラメータの物理拘束 {GSAS キー: (min, max)} (None で片側自由)。指定時、engine が
+    GSAS parmMin/parmMax を登録する (占有率 [0,1] 拘束と同機構)。分解能抽出で U,W,X,Y≥0 を課し、
+    相関非物理解 (負の Lorentzian) を避け**転写可能** (全域 FWHM 正) な分解能を得るのに用いる。
+    既定 None (拘束なし; 後方互換)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (Enum→値文字列, tuple→list)。"""
@@ -121,6 +126,9 @@ class HistogramSpec:
             "absorption": self.absorption,
             "instrument_profile": self.instrument_profile.to_dict()
             if self.instrument_profile is not None
+            else None,
+            "profile_bounds": {k: [lo, hi] for k, (lo, hi) in self.profile_bounds.items()}
+            if self.profile_bounds is not None
             else None,
         }
 
@@ -142,6 +150,17 @@ class HistogramSpec:
             instrument_profile=(
                 InstrumentProfile.from_dict(d["instrument_profile"])  # type: ignore[arg-type]
                 if d.get("instrument_profile") is not None
+                else None
+            ),
+            profile_bounds=(
+                {
+                    str(k): (
+                        (None if v[0] is None else float(v[0])),
+                        (None if v[1] is None else float(v[1])),
+                    )
+                    for k, v in dict(d["profile_bounds"]).items()  # type: ignore[arg-type]
+                }
+                if d.get("profile_bounds") is not None
                 else None
             ),
         )

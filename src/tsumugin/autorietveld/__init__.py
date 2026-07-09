@@ -43,6 +43,7 @@ from .cell_refine import (
 )
 from .recipe import build_recipe
 from .resolution import (
+    NONNEG_PROFILE_BOUNDS,
     build_resolution_recipe,
     extract_instrument_profile,
     extract_instrument_profile_from_standard,
@@ -59,6 +60,7 @@ __all__ = [
     "LatticeSolution",
     "MultistartStart",
     "CellRefinementResult",
+    "NONNEG_PROFILE_BOUNDS",
     "PhaseSpec",
     "Radiation",
     "RefinementStage",

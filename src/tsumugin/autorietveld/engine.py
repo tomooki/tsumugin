@@ -442,6 +442,28 @@ def _bound_occupancy(gpx, frac: str) -> None:
         pass
 
 
+def _apply_profile_bounds(gpx, histograms) -> None:
+    """`HistogramSpec.profile_bounds` を GSAS parmMin/parmMax に登録する (Issue #38 拘束抽出)。
+
+    装置パラメータの変数名は ``:{hist_index}:{key}`` (例 ``:0:X``)。片側 None は登録しない。
+    分解能抽出で U,W,X,Y≥0 を課し、相関非物理解 (負の Lorentzian) を避け転写可能な分解能を得る。
+    古い GSAS で parmMin/parmMax 未対応でも精密化継続 (拘束のみ諦める, `_bound_occupancy` 流儀)。
+    """
+    for i, h in enumerate(histograms):
+        bounds = getattr(h, "profile_bounds", None)
+        if not bounds:
+            continue
+        for key, (lo, hi) in bounds.items():
+            var = f":{i}:{key}"
+            try:
+                if lo is not None:
+                    gpx.set_Controls("parmMin", float(lo), variable=var)
+                if hi is not None:
+                    gpx.set_Controls("parmMax", float(hi), variable=var)
+            except Exception:  # noqa: BLE001 — 拘束未対応でも継続
+                pass
+
+
 def _equiv_positions(gpx, pid, idxs) -> None:
     """原子群の座標 (dAx/dAy/dAz shift) を等値拘束する (共有サイト/共位置を保つ)。
 
@@ -731,6 +753,8 @@ def run_auto_rietveld(
 
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
         _setup_constraints(gpx, g2phases, g2hists, phases)
+        # 装置パラメータの物理拘束 (profile_bounds; 分解能抽出の U,W,X,Y≥0 等) を登録する (Issue #38)。
+        _apply_profile_bounds(gpx, histograms)
         phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
         # 装置プロファイル固定 (instrument_profile 指定) の per-hist フラグ (Issue #38)。
         fixed_profile = _fixed_profile_flags(histograms)

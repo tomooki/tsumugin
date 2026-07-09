@@ -30,6 +30,12 @@ from .model import (
 # 抽出・固定で扱う CW 装置プロファイルキー。
 INSTRUMENT_PROFILE_KEYS = ("U", "V", "W", "X", "Y", "SH/L", "Zero")
 
+# 転写可能な分解能のための非負拘束 (U,W,X,Y≥0)。V は Caglioti 交差項で負が正常・SH/L は非対称なので拘束外。
+# 無拘束抽出は CeO2 の超シャープピークで相関非物理解 (Y<0・2θ>32° で FWHM 負) に落ち転写不能なため。
+NONNEG_PROFILE_BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "U": (0.0, None), "W": (0.0, None), "X": (0.0, None), "Y": (0.0, None),
+}
+
 # 分解能標準試料の参照構造 (最小 CIF)。line-profile 標準として一般的なもの。
 STANDARD_REFERENCE_CIF: dict[str, str] = {
     # NIST SRM 674b CeO2 (蛍石型 Fm-3m, a≈5.4117 Å)。
@@ -128,6 +134,7 @@ def extract_instrument_profile_from_standard(
     polarization: float = 0.95,
     background_coeffs: int = 12,
     refine_sh_l: bool = False,
+    constrain_nonneg: bool = True,
     runner=None,
 ) -> InstrumentProfile:
     """**生の 2 列標準試料データ**から装置分解能 (U,V,W,X,Y,SH/L,Zero) を一括抽出する再現関数。
@@ -175,6 +182,7 @@ def extract_instrument_profile_from_standard(
         ip = extract_instrument_profile(
             hist, phase, runner=runner,
             background_coeffs=background_coeffs, refine_sh_l=refine_sh_l,
+            constrain_nonneg=constrain_nonneg,
         )
         return replace(ip, wavelength=wavelength)
     finally:
@@ -241,6 +249,7 @@ def extract_instrument_profile(
     runner=None,
     background_coeffs: int = 12,
     refine_sh_l: bool = True,
+    constrain_nonneg: bool = True,
 ) -> InstrumentProfile:
     """標準試料を精密化し CW 装置分解能 (U,V,W,X,Y,SH/L,Zero) を抽出する。
 
@@ -253,8 +262,16 @@ def extract_instrument_profile(
     :param runner: 精密化関数 (既定 run_auto_rietveld; テストは stub 注入)
     :param background_coeffs: 抽出レシピの背景項数
     :param refine_sh_l: SH/L 解放の有無
+    :param constrain_nonneg: U,W,X,Y を非負拘束するか (既定 True; 転写可能な分解能を得るため)。
+        呼出側が standard.profile_bounds を明示指定していればそれを優先し非負拘束を上書きしない
     :returns: InstrumentProfile (values / source_rwp)
     """
+    if constrain_nonneg:
+        # 非負拘束をベースに、呼出側の明示 bounds を優先して上書き (EDGE-002)。
+        merged = dict(NONNEG_PROFILE_BOUNDS)
+        if standard.profile_bounds:
+            merged.update(standard.profile_bounds)
+        standard = replace(standard, profile_bounds=merged)
     run = runner
     if run is None:
         from .engine import run_auto_rietveld  # 遅延 import (GSAS 隔離)
