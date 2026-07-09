@@ -27,9 +27,10 @@ from .model import (
     Radiation,
     RefinementStage,
     StageResult,
+    ValidityReport,
 )
 from .recipe import build_recipe
-from .validity import check_validity
+from .validity import check_profile_physicality, check_validity
 
 
 def _g2sc():
@@ -83,6 +84,104 @@ def _cells_physical(g2phases, min_length: float = 0.5) -> bool:
             if not math.isfinite(v) or v < min_length:
                 return False
     return True
+
+
+# 内省・物理性判定で抽出するプロファイル関連キー (CW + TOF)。
+_PROFILE_INTROSPECT_KEYS = (
+    "U", "V", "W", "X", "Y", "SH/L", "Zero",
+    "sig-0", "sig-1", "sig-2", "alpha", "beta-0", "beta-1", "difC", "difA",
+)
+
+
+def _extract_profile(g2hists) -> tuple[dict[str, tuple[float, bool]], ...]:
+    """各ヒストグラムの GSAS Instrument Parameters から {key: (value, refined)} を抽出する。
+
+    GSAS 格納形は ``hist.data['Instrument Parameters'][0][key] = [default, value, refine_flag]``。
+    プロファイル関連キー (_PROFILE_INTROSPECT_KEYS) のみ拾い、値・解放フラグを取り出す。
+    ``Instrument Parameters`` 不在や要素構造差は当該ヒストグラムを空 dict に縮退する (EDGE-001)。
+    GSAS を import しない純データ抽出のため numpy 決定論テスト可能。
+    """
+    out: list[dict[str, tuple[float, bool]]] = []
+    for h in g2hists:
+        d: dict[str, tuple[float, bool]] = {}
+        try:
+            inst = h.data["Instrument Parameters"][0]
+        except (KeyError, IndexError, TypeError, AttributeError):
+            out.append(d)
+            continue
+        for key in _PROFILE_INTROSPECT_KEYS:
+            entry = inst.get(key) if hasattr(inst, "get") else None
+            if not entry:
+                continue
+            try:
+                if len(entry) >= 2:
+                    val = float(entry[1])
+                    ref = bool(entry[2]) if len(entry) >= 3 else False
+                else:
+                    val = float(entry[0])
+                    ref = False
+            except (IndexError, TypeError, ValueError):
+                continue
+            d[key] = (val, ref)
+        out.append(d)
+    return tuple(out)
+
+
+def _profile_ranges(
+    g2hists, radiations, profiles, histograms=None
+) -> tuple[tuple[float, float] | None, ...]:
+    """各ヒストグラムのプロファイル評価レンジ (CW=2θ°, TOF=d) を返す。
+
+    評価レンジは **精密化に用いる区間** に限定する: getdata("x") の観測範囲を、指定があれば
+    HistogramSpec.two_theta_limits で切り詰める。プロファイルはこの区間でのみ実際に使われるため、
+    区間外 (ノイズ tail 等) の幅関数負値で誤 revert しないための処置 (T4 非回帰)。TOF は切り詰め後の
+    範囲 (TOF μs) を d≈(t-Zero)/difC で d に換算する (difC,Zero は profiles から)。getdata 失敗・空・
+    difC 欠落/0 は None に縮退し、利用側がレンジ依存判定を skip する (EDGE-003)。
+    """
+    out: list[tuple[float, float] | None] = []
+    for i, (h, rad, prof) in enumerate(zip(g2hists, radiations, profiles)):
+        try:
+            xs = h.getdata("x")
+        except Exception:  # noqa: BLE001 — 取得失敗は非致命 skip
+            out.append(None)
+            continue
+        if xs is None or len(xs) == 0:
+            out.append(None)
+            continue
+        lo, hi = float(min(xs)), float(max(xs))
+        # 精密化レンジ (two_theta_limits) で切り詰める (残差抽出のマスクと同じ区間)。
+        if histograms is not None and i < len(histograms):
+            lim = histograms[i].two_theta_limits
+            if lim is not None:
+                lo, hi = max(lo, float(lim[0])), min(hi, float(lim[1]))
+                if lo >= hi:  # 交差が空 (限界指定が観測外) → レンジ判定を skip
+                    out.append(None)
+                    continue
+        if getattr(rad, "is_tof", False):
+            dif_c = prof.get("difC", (0.0, False))[0]
+            zero = prof.get("Zero", (0.0, False))[0]
+            if dif_c == 0.0:
+                out.append(None)
+                continue
+            d_lo, d_hi = (lo - zero) / dif_c, (hi - zero) / dif_c
+            out.append((min(d_lo, d_hi), max(d_lo, d_hi)))
+        else:
+            out.append((lo, hi))
+    return tuple(out)
+
+
+def _profiles_physical(g2hists, radiations, histograms=None) -> ValidityReport:
+    """プロファイル物理性を判定する薄いラッパ (_cells_physical と同格の revert ガード用)。
+
+    抽出不能 (全 hist が空 dict) は passed=True に縮退する (判定 skip, EDGE-001)。
+    """
+    profiles = _extract_profile(g2hists)
+    if not any(profiles):
+        return ValidityReport(passed=True)
+    ranges = _profile_ranges(g2hists, radiations, profiles, histograms)
+    return check_profile_physicality(
+        profiles=profiles, radiations=radiations, ranges=ranges
+    )
 
 
 def _profile_keys(radiation: Radiation) -> list[str]:
@@ -618,8 +717,12 @@ def run_auto_rietveld(
                 gpx.do_refinements([{}])
                 rwp, gof, nvar = _rvals(gpx)
                 converged = _converged(gpx)
-                # 格子崩壊 (0 近傍/非有限) は発散とみなし inf 化 → revert (物理妥当性ガード)
-                if not _cells_physical(g2phases):
+                # 格子崩壊 (0 近傍/非有限) またはプロファイル非物理化 (幅関数がレンジ内で負・散乱/立上り
+                # 係数が非物理) は発散とみなし inf 化 → 既存 revert 経路 (物理妥当性ガード)。
+                # プロファイルガードは解放済パラメータのみ hard 判定するため T1〜T4 は非回帰。
+                if not _cells_physical(g2phases) or not _profiles_physical(
+                    g2hists, radiations, histograms
+                ).passed:
                     rwp, gof, converged = float("inf"), float("inf"), False
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
                 rwp, gof, nvar, converged = float("inf"), float("inf"), 0, False
@@ -684,6 +787,25 @@ def run_auto_rietveld(
             converged=stage_results[-1].converged if stage_results else False,
         )
 
+        # --- プロファイル内省 + 物理性 (最終状態) ---
+        # hist_profile を充填 (TASK-0001 で追加済・未配線だった内省フィールドを生かす → diagnose_residual
+        # が実プロファイル値を使える)。物理性の checks/warnings (soft 上限含む) を validity にマージする。
+        prof_full = _extract_profile(g2hists)
+        prof_ranges = _profile_ranges(g2hists, radiations, prof_full, histograms)
+        prof_report = (
+            check_profile_physicality(
+                profiles=prof_full, radiations=radiations, ranges=prof_ranges
+            )
+            if any(prof_full)
+            else ValidityReport(passed=True)
+        )
+        validity = ValidityReport(
+            passed=validity.passed and prof_report.passed,
+            checks=validity.checks + prof_report.checks,
+            warnings=validity.warnings + prof_report.warnings,
+        )
+        hist_profile = tuple({k: v for k, (v, _) in d.items()} for d in prof_full)
+
         final_rwp = stage_results[-1].rwp if stage_results else float("inf")
         final_gof = stage_results[-1].gof if stage_results else float("inf")
         final_nobs = _nobs(gpx) if stage_results else 0
@@ -708,6 +830,7 @@ def run_auto_rietveld(
         residual_two_theta=resid_tt,
         residual_intensity=resid_int,
         residual_sigma=resid_sig,
+        hist_profile=hist_profile,
     )
 
 
