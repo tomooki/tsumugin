@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace as dataclasses_replace
+
 from tsumugin.autorietveld.model import (
     AutoRietveldResult,
     Geometry,
@@ -15,6 +17,7 @@ from tsumugin.autorietveld.model import (
     ValidityReport,
 )
 from tsumugin.autorietveld.resolution import (
+    NONNEG_PROFILE_BOUNDS,
     build_resolution_recipe,
     extract_instrument_profile,
 )
@@ -120,3 +123,44 @@ def test_extract_deterministic():
     a = extract_instrument_profile(_standard(), _structure(), runner=stub)
     b = extract_instrument_profile(_standard(), _structure(), runner=stub)
     assert dict(a.values) == dict(b.values) and a.source_rwp == b.source_rwp
+
+
+# --- constrain_nonneg (TASK-0003) ---
+
+def test_constrain_nonneg_default_applies_bounds():
+    captured = {}
+
+    def stub(hists, phases, *, recipe=None, **kw):
+        captured["bounds"] = hists[0].profile_bounds
+        return _result({"U": 0.0, "W": 1.0, "X": 0.4, "Y": 0.0}, 9.06)
+
+    extract_instrument_profile(_standard(), _structure(), runner=stub)  # 既定 True
+    assert captured["bounds"] == NONNEG_PROFILE_BOUNDS
+    assert set(NONNEG_PROFILE_BOUNDS) == {"U", "W", "X", "Y"}
+    assert all(lo == 0.0 and hi is None for lo, hi in NONNEG_PROFILE_BOUNDS.values())
+
+
+def test_constrain_nonneg_false_no_bounds():
+    captured = {}
+
+    def stub(hists, phases, *, recipe=None, **kw):
+        captured["bounds"] = hists[0].profile_bounds
+        return _result({"U": -8.0}, 8.88)
+
+    extract_instrument_profile(_standard(), _structure(), runner=stub, constrain_nonneg=False)
+    assert captured["bounds"] is None
+
+
+def test_constrain_nonneg_preserves_caller_bounds():
+    # 呼出側の明示 bounds を優先 (Y に上限を課したい等, EDGE-002)
+    std = _standard()
+    std = dataclasses_replace(std, profile_bounds={"Y": (0.0, 3.0)})
+    captured = {}
+
+    def stub(hists, phases, *, recipe=None, **kw):
+        captured["bounds"] = hists[0].profile_bounds
+        return _result({"W": 1.0}, 9.0)
+
+    extract_instrument_profile(std, _structure(), runner=stub)
+    assert captured["bounds"]["Y"] == (0.0, 3.0)   # 呼出側優先
+    assert captured["bounds"]["X"] == (0.0, None)   # 非負はマージ
