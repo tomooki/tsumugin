@@ -6,6 +6,12 @@
 
 **【信頼性レベル凡例】**: 🔵 確実 / 🟡 妥当な推測 / 🔴 資料にない推測
 
+> **⚠ 改訂 (GSAS getFWHM 精読 + T1 実測)**: 下記 TC のうち「CW 係数の符号違反 → hard NG」を想定した
+> ものは、**soft 警告 (passed=True) に改訂**した。GSAS はガウス分散を `max(0.001,·)` でクランプし、
+> 実 T1 良好フィットが U=-1.96,Y=-3.13 に収束するため。**hard (revert) は真の発散のみ**: 解放済値の
+> NaN/inf・TOF σ²<0・TOF alpha/beta-0≤0。実テストは `tests/autorietveld/test_profile_physicality*.py`
+> が最新 (GSAS 忠実) の正典。CW 系 TC は「passed=True + warnings に記録」へ読み替える。
+
 ---
 
 ## REQ-001: プロファイル値抽出と hist_profile 充填 🔵

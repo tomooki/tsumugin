@@ -164,40 +164,33 @@ def _check_cw_profile(
     shl_soft_max: float,
     width_floor: float,
 ) -> None:
-    """CW (X線/CW中性子) の幅正値性・ローレンツ非負・SH/L 判定を checks/warnings に追記。"""
-    # --- ガウス幅正値性 (U,V,W) : レンジ内区間最小 > width_floor ---
+    """CW (X線/CW中性子) プロファイルの soft 判定 (警告のみ・revert しない)。
+
+    **設計注記 (GSAS-II getFWHM 準拠)**: GSAS は CW ガウス分散を ``sqrt(max(0.001, U·tan²θ+V·tanθ+W))``
+    と**下駄履き (0.001 でクランプ)** して計算するため、U,V,W が負で H_G² がレンジ内で負に振れても
+    非物理ではない (実 T1 fluoroapatite の良好フィットは U=-1.96 等に収束する)。ローレンツ (X,Y) の
+    負値も反射位置以外では総 FWHM に影響せず GSAS が許容する。よって CW 係数の符号は revert 基準に
+    ならず、情報提供の警告に留める。真の発散 (値が NaN/inf) は呼出側で全放射源共通の hard 判定を行う。
+    """
+    # --- ガウス幅 (情報): レンジ内区間最小が負なら警告 (GSAS はクランプするので revert しない) ---
     if all(k in prof for k in ("U", "V", "W")) and rng is not None:
-        (u, ur), (v, vr), (w, wr) = prof["U"], prof["V"], prof["W"]
-        hard = ur or vr or wr
+        u, v, w = prof["U"][0], prof["V"][0], prof["W"][0]
         mn = _gauss_min_over_range(u, v, w, rng[0], rng[1])
-        detail = f"hist{i} H_G²_min={mn:.4g} (要 >{width_floor})"
-        if mn > width_floor:
-            checks.append((f"gauss_width_hist{i}", True, detail))
-        elif hard:
-            checks.append((f"gauss_width_hist{i}", False, detail))
-        else:
-            warnings.append(f"{detail} [U,V,W 未解放につき警告]")
-
-    # --- ローレンツ X,Y 非負 (解放済のみ hard) ---
+        if mn <= width_floor:
+            warnings.append(
+                f"hist{i} H_G²_min={mn:.4g}<=0 (GSAS はガウス分散を 0.001 でクランプ・非 revert) [参考]"
+            )
+    # --- ローレンツ X,Y (情報): 負値を警告 ---
     for key in ("X", "Y"):
-        if key in prof:
-            val, ref = prof[key]
-            if ref:
-                ok = val >= -sign_tol
-                checks.append((f"lorentz_{key}_hist{i}", ok, f"{key}={val:.4g} (要 >=-{sign_tol})"))
-            elif val < -sign_tol:
-                warnings.append(f"hist{i} {key}={val:.4g} 負だが未解放 [警告]")
-
-    # --- 非対称 SH/L : 下限 0 (hard) + soft 上限 (警告) ---
+        if key in prof and prof[key][0] < -sign_tol:
+            warnings.append(f"hist{i} {key}={prof[key][0]:.4g} 負 (総 FWHM は反射位置依存・非 revert) [参考]")
+    # --- 非対称 SH/L (情報): 負値・soft 上限超を警告 ---
     if "SH/L" in prof:
-        val, ref = prof["SH/L"]
-        if ref:
-            ok = val >= -sign_tol
-            checks.append((f"shl_hist{i}", ok, f"SH/L={val:.4g} (要 >=-{sign_tol})"))
-            if ok and val > shl_soft_max:
-                warnings.append(f"hist{i} SH/L={val:.4g} > soft上限 {shl_soft_max} [要注意]")
-        elif val < -sign_tol:
-            warnings.append(f"hist{i} SH/L={val:.4g} 負だが未解放 [警告]")
+        val = prof["SH/L"][0]
+        if val < -sign_tol:
+            warnings.append(f"hist{i} SH/L={val:.4g} 負 [参考]")
+        elif val > shl_soft_max:
+            warnings.append(f"hist{i} SH/L={val:.4g} > soft上限 {shl_soft_max} [要注意]")
 
 
 def _check_tof_profile(
@@ -208,36 +201,31 @@ def _check_tof_profile(
     warnings: list[str],
     sign_tol: float,
 ) -> None:
-    """TOF のガウス分散非負・立上り/減衰 strict-pos 判定を checks/warnings に追記。
+    """TOF プロファイルの hard 判定 (真の発散のみ)。解放済 (refined=True) パラメータのみ hard。
 
-    alpha (立上り) と beta-0 (減衰の支配項) は式中 1/α,1/β で発散するため strict > 0。
-    beta-1 は d 依存係数で単独符号制約を課さない (小さな負値も物理的にありうる)。
+    **設計注記 (GSAS-II getFWHM 準拠)**: TOF ガウス分散は ``sqrt(σ²)`` を**クランプせず**計算するため
+    (`sigTOF`), σ²<0 は NaN を生む真の非物理。立上り alpha・減衰 beta-0 は式中 ``alp/d``,``bet0+…`` から
+    ``1/α``,``1/β`` で発散するため strict > 0 が必須。beta-1 は d 依存の補正係数で単独符号制約を課さない。
     """
-    # --- ガウス分散 σ²≥0 (sig-0/1/2) : レンジ内区間最小 ---
+    # --- ガウス分散 σ²≥0 (sig-0/1/2, 解放済のみ hard; GSAS は sqrt をクランプしない) ---
     sig_keys = ("sig-0", "sig-1", "sig-2")
-    if any(k in prof for k in sig_keys) and rng is not None:
+    if any(prof.get(k, (0.0, False))[1] for k in sig_keys) and rng is not None:
         s0 = prof.get("sig-0", (0.0, False))[0]
         s1 = prof.get("sig-1", (0.0, False))[0]
         s2 = prof.get("sig-2", (0.0, False))[0]
-        hard = any(prof.get(k, (0.0, False))[1] for k in sig_keys)
         mn = _tof_sigma_min_over_range(s0, s1, s2, rng[0], rng[1])
-        detail = f"hist{i} σ²_min={mn:.4g} (要 >=-{sign_tol})"
-        if mn >= -sign_tol:
-            checks.append((f"tof_sigma_hist{i}", True, detail))
-        elif hard:
-            checks.append((f"tof_sigma_hist{i}", False, detail))
-        else:
-            warnings.append(f"{detail} [sig-* 未解放につき警告]")
+        checks.append(
+            (f"tof_sigma_hist{i}", mn >= -sign_tol, f"σ²_min={mn:.4g} (要 >=-{sign_tol})")
+        )
 
-    # --- 立上り/減衰 strict-pos (alpha, beta-0) ---
+    # --- 立上り/減衰 strict-pos (alpha, beta-0; 解放済のみ hard) ---
     for key in ("alpha", "beta-0"):
         if key in prof:
             val, ref = prof[key]
             if ref:
-                ok = val > 0.0
-                checks.append((f"tof_{key}_hist{i}", ok, f"{key}={val:.4g} (要 >0)"))
+                checks.append((f"tof_{key}_hist{i}", val > 0.0, f"{key}={val:.4g} (要 >0)"))
             elif val <= 0.0:
-                warnings.append(f"hist{i} {key}={val:.4g} <=0 だが未解放 [警告]")
+                warnings.append(f"hist{i} {key}={val:.4g} <=0 だが未解放 [参考]")
 
 
 def check_profile_physicality(
@@ -251,23 +239,25 @@ def check_profile_physicality(
 ) -> ValidityReport:
     """精密化後プロファイルの物理的妥当性を判定する (revert 用 hard + 警告用 soft)。
 
-    材料非依存の物理法則 (幅関数の測定レンジ全域での正値性・散乱/立上り係数の符号) のみで判定し、
-    材料固有の結論は埋め込まない。判定は放射源で CW/TOF に分岐する:
+    材料非依存の物理法則のみで判定する。**hard (passed=False = revert) は真の発散のみ**に限定する
+    (GSAS-II getFWHM の実挙動に整合):
 
-    - CW (X線/CW中性子): ガウス幅二乗 H_G²=U·tan²θ+V·tanθ+W のレンジ区間最小 > width_floor;
-      ローレンツ X,Y ≥ -sign_tol; SH/L ≥ -sign_tol (soft 上限 shl_soft_max 超は警告)。
-    - TOF: ガウス分散 σ²=sig0+sig1·d²+sig2·d⁴ のレンジ区間最小 ≥ -sign_tol; alpha,beta-0 strict > 0。
+    - **全放射源共通 hard**: 解放済パラメータの値が NaN/inf (発散)。
+    - **TOF hard**: ガウス分散 σ²=sig0+sig1·d²+sig2·d⁴ のレンジ区間最小 < -sign_tol (GSAS は sqrt(σ²) を
+      クランプしないため NaN 化); alpha, beta-0 ≤ 0 (1/α,1/β 発散)。解放済のときのみ hard。
+    - **CW soft (warnings のみ)**: U,V,W の H_G² 負値 (GSAS が 0.001 にクランプするため非 revert)・X,Y 負値
+      (総 FWHM は反射位置依存)・SH/L 負値/soft 上限超。良好フィットでも U<0,Y<0 に収束しうるため revert
+      基準にしない (実 T1/T3/T4 非回帰の要)。
 
-    **hard (passed=False = revert)** は当該パラメータ群に解放済 (refined=True) が 1 つ以上あるときのみ。
-    未解放パラメータの初期 instprm 由来違反は warnings に留め、誤 revert を防ぐ (REQ-102)。
-    プロファイル抽出不能 (空 dict) やレンジ None は当該判定を skip する (縮退, EDGE-001/003)。
+    hard は当該パラメータ群に解放済 (refined=True) が 1 つ以上あるときのみ (未解放の初期 instprm 由来で
+    誤 revert しない, REQ-102)。抽出不能 (空 dict)・レンジ None は当該判定を skip する (EDGE-001/003)。
 
     :param profiles: 各 hist の {key: (value, refined)}
     :param radiations: 各 hist の放射源 (profiles と同順)
     :param ranges: 各 hist の評価レンジ (CW=2θ°, TOF=d)。None はレンジ依存判定を skip
     :param sign_tol: 符号/非負判定の負側許容 (数値ノイズ用)
     :param shl_soft_max: SH/L の soft 上限 (超過は警告のみ・revert しない)
-    :param width_floor: 幅二乗の下限 (既定 0.0)
+    :param width_floor: ガウス幅二乗の警告下限 (既定 0.0)
     :returns: ValidityReport (passed=全 hard 通過 / checks / warnings)
     """
     checks: list[tuple[str, bool, str]] = []
@@ -277,6 +267,10 @@ def check_profile_physicality(
         if not prof:
             warnings.append(f"hist{i}: プロファイル抽出不能につき物理性判定を skip")
             continue
+        # 全放射源共通: 解放済パラメータの NaN/inf は真の発散 → hard。
+        for key, (val, ref) in prof.items():
+            if ref and not math.isfinite(val):
+                checks.append((f"nonfinite_{key}_hist{i}", False, f"{key}={val} 非有限値 [発散]"))
         if getattr(rad, "is_tof", False):
             _check_tof_profile(i, prof, rng, checks, warnings, sign_tol)
         else:

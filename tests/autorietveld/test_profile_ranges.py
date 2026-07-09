@@ -106,11 +106,19 @@ def test_physical_profile_passes():
 
 
 def test_nonphysical_refined_profile_fails():
-    # W を大負に解放 → 低角で H_G²<0 → hard NG
+    # 解放済パラメータが NaN (真の発散) → hard NG (CW 係数の符号は GSAS クランプ準拠で非 revert)
+    h = _MockHist([10.0, 120.0], inst={
+        "U": [2, float("nan"), True], "V": [-2, -2.0, True], "W": [5, 5.0, True],
+    })
+    assert _profiles_physical([h], [Radiation.XRAY_SYNCHROTRON]).passed is False
+
+
+def test_cw_negative_gauss_does_not_revert():
+    # W 大負でも GSAS はクランプ → passed=True (T1 非回帰の要)
     h = _MockHist([10.0, 120.0], inst={
         "U": [2, 2.0, True], "V": [-2, -2.0, True], "W": [5, -50.0, True],
     })
-    assert _profiles_physical([h], [Radiation.XRAY_SYNCHROTRON]).passed is False
+    assert _profiles_physical([h], [Radiation.XRAY_SYNCHROTRON]).passed is True
 
 
 def test_all_empty_profiles_skip_passes():
