@@ -30,6 +30,10 @@ class Radiation(Enum):
     def is_tof(self) -> bool:
         return self is Radiation.NEUTRON_TOF
 
+    @property
+    def is_xray(self) -> bool:
+        return self in (Radiation.XRAY_LAB, Radiation.XRAY_SYNCHROTRON)
+
 
 class Geometry(Enum):
     """回折計ジオメトリ。試料変位パラメータの種別選択に用いる。"""
