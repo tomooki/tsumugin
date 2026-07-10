@@ -398,15 +398,28 @@ def _apply_stage(
         # 支配され試料由来の情報が乏しく、joint で張ると過剰母数化してフィットを希釈する
         # (T3 実測: X線+CW中性子で CW 中性子を外すと 8.4%→6.7%)。一方 TOF POWGEN は高分解能で
         # 試料ピーク幅情報を持つため張る (T4)。単一 or 全て CW 中性子なら全ヒストグラムに張る (T2)。
+        # フラグ値が文字列なら mustrain type を選択 (isotropic/uniaxial/generalized)。True は既定
+        # isotropic (後方互換)。**異方 (uniaxial/generalized) は X 線に限定**する: 中性子 (特に TOF)
+        # はピーク幅が装置分解能関数 (difC/sig/alpha/beta) に支配され異方 mustrain を分離できず発散する
+        # (NaCuHCF·nD₂O iMATERIA 実測: ND 一般化 mustrain で ND Rwp 15→51%・係数 0 崩壊)。
+        val = flags["size_strain"]
+        allowed = {"isotropic", "uniaxial", "generalized"}
+        mtype = val if (isinstance(val, str) and val in allowed) else "isotropic"
         non_lowres = [
             h for h, r in zip(hists, radiations) if r is not Radiation.NEUTRON_CW
         ]
-        targets = non_lowres if (non_lowres and len(hists) > 1) else list(hists)
+        if mtype == "isotropic":
+            targets = non_lowres if (non_lowres and len(hists) > 1) else list(hists)
+        else:
+            # 異方 mustrain は X 線ヒストグラムに限定 (中性子は分離不能で発散するため除外)。
+            # X 線が無ければ従来の non_lowres へフォールバック (revert ガードが最終的な安全網)。
+            xray = [h for h, r in zip(hists, radiations) if r.is_xray]
+            targets = xray or (non_lowres if (non_lowres and len(hists) > 1) else list(hists))
         for ph in phases:
             ph.set_HAP_refinements(
                 {
                     "Size": {"type": "isotropic", "refine": True},
-                    "Mustrain": {"type": "isotropic", "refine": True},
+                    "Mustrain": {"type": mtype, "refine": True},
                 },
                 histograms=targets,
             )
