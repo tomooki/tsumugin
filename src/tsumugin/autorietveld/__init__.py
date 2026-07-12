@@ -58,12 +58,12 @@ from .validity import check_bond_validity, check_profile_physicality, check_vali
 __all__ = [
     "AutoRietveldBackend",
     "AutoRietveldResult",
+    "CellRefinementResult",
     "Geometry",
     "HistogramSpec",
     "InstrumentProfile",
     "LatticeSolution",
     "MultistartStart",
-    "CellRefinementResult",
     "NONNEG_PROFILE_BOUNDS",
     "PhaseSpec",
     "Radiation",

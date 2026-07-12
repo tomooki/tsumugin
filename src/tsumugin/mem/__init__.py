@@ -17,6 +17,15 @@ from .base import (
     MEMResult,
 )
 from .dysnomia import DysnomiaBackend
+from .gsas import (
+    DensityPeak,
+    MEMDensityResult,
+    MEMRunConfig,
+    assign_peaks_to_atoms,
+    density_kind_from_type,
+    resolve_dysnomia_binary,
+    run_dysnomia_mem,
+)
 from .guard import MEMApplicabilityReport, check_mem_applicability
 from .inputgen import (
     MEMInput,
@@ -33,6 +42,8 @@ from .iterate import (
 from .output import (
     bond_path_min_density,
     extract_cross_section,
+    load_density_grid,
+    save_density_grid,
     write_density_map,
 )
 from .spot import run_mem_spot
@@ -40,22 +51,31 @@ from .spot import run_mem_spot
 __all__ = [
     "BondPathDensity",
     "DensityCrossSection",
+    "DensityPeak",
     "DysnomiaBackend",
     "MEMApplicabilityReport",
     "MEMBackend",
     "MEMDensityMap",
+    "MEMDensityResult",
     "MEMInput",
     "MEMResult",
     "MEMRietveldConfig",
     "MEMRietveldCycle",
     "MEMRietveldResult",
+    "MEMRunConfig",
     "StructureFactor",
+    "assign_peaks_to_atoms",
     "bond_path_min_density",
     "build_mem_input",
     "check_mem_applicability",
+    "density_kind_from_type",
     "extract_cross_section",
     "extract_structure_factors",
+    "load_density_grid",
+    "resolve_dysnomia_binary",
+    "run_dysnomia_mem",
     "run_mem_rietveld",
     "run_mem_spot",
+    "save_density_grid",
     "write_density_map",
 ]

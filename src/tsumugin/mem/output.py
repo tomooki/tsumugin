@@ -19,6 +19,7 @@ MEM 密度マップ (VESTA 互換 .grd) の書き出しと、密度マップか�
 from __future__ import annotations
 
 import math
+import os
 from typing import Literal
 
 import numpy as np
@@ -27,6 +28,72 @@ from .base import BondPathDensity, DensityCrossSection, MEMDensityMap, MEMResult
 
 # 【断面サンプル点数 (1D)】: 経路を等間隔に刻む既定サンプル数 (決定論)。🔵 REQ-028
 _CROSS_SECTION_SAMPLES = 64
+
+# 【.grd ヘッダ行数】: title / cell(6) / grid(nx ny nz) の 3 行。以降が密度値 (C 順)。
+_GRD_HEADER_LINES = 3
+
+
+def save_density_grid(
+    path: str,
+    rho: np.ndarray,
+    cell: tuple[float, float, float, float, float, float],
+    *,
+    title: str = "tsumugin MEM density (VESTA .grd)",
+) -> str:
+    """密度グリッドを VESTA 互換 .grd へ書き出す (決定論・固定フォーマット)。🔵 REQ-027
+
+    フォーマット (``load_density_grid`` と対): 1 行目 title、2 行目 セル (a b c α β γ)、
+    3 行目 グリッド次元 (nx ny nz)、以降 密度値を (i,j,k) C 順で 1 値/行。実 Dysnomia MEM
+    (``gsas.run_dysnomia_mem``) と合成密度の両方が本関数を共有する (書式一元化)。
+    """
+    rho = np.asarray(rho, dtype=float)
+    nx, ny, nz = rho.shape
+    a, b, c, al, be, ga = (float(x) for x in cell)
+    lines = [title, f"{a:.6f} {b:.6f} {c:.6f} {al:.6f} {be:.6f} {ga:.6f}", f"{nx} {ny} {nz}"]
+    lines.extend(f"{v:.8f}" for v in rho.reshape(-1))
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path
+
+
+def load_density_grid(path: str) -> np.ndarray:
+    """``save_density_grid`` 形式の .grd から密度グリッド (nx,ny,nz) を読む。🔵 REQ-027
+
+    3 行目のグリッド次元で以降の値を reshape する。行数不整合は ValueError (fail-loud)。
+    """
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    if len(lines) < _GRD_HEADER_LINES:
+        raise ValueError(f".grd ヘッダが不足しています: {path}")
+    nx, ny, nz = (int(x) for x in lines[2].split()[:3])
+    vals = np.array([float(x) for x in lines[_GRD_HEADER_LINES:_GRD_HEADER_LINES + nx * ny * nz]])
+    if vals.size != nx * ny * nz:
+        raise ValueError(f".grd の密度値数 {vals.size} が次元 {nx * ny * nz} と一致しません: {path}")
+    return vals.reshape((nx, ny, nz))
+
+
+def _real_grid_or_none(density_map: MEMDensityMap) -> np.ndarray | None:
+    """density_map.path に実 .grd があれば読み (次元一致時のみ) 返す。無ければ None。🔵 REQ-027
+
+    実 MEM 密度 (gsas.run_dysnomia_mem が書いた .grd) を断面/伝導経路が読むための橋渡し。
+    読めない/次元不一致/未存在は None を返し、呼び出し側は合成密度へ縮退する (M5 モック互換)。
+    """
+    if not density_map.path or not os.path.isfile(density_map.path):
+        return None
+    try:
+        grid = load_density_grid(density_map.path)
+    except (OSError, ValueError):
+        return None
+    return grid if tuple(grid.shape) == tuple(density_map.grid_shape) else None
+
+
+def _sample_grid(grid: np.ndarray, frac: tuple[float, float, float]) -> float:
+    """分率座標で密度グリッドを最近接サンプルする (周期境界)。🔵 REQ-028/029"""
+    nx, ny, nz = grid.shape
+    i = int(round(frac[0] * nx)) % nx
+    j = int(round(frac[1] * ny)) % ny
+    k = int(round(frac[2] * nz)) % nz
+    return float(grid[i, j, k])
 
 
 def _density_at(frac: tuple[float, float, float], min_d: float, max_d: float) -> float:
@@ -72,28 +139,17 @@ def write_density_map(mem_result: MEMResult, path: str) -> str:
 
     【実 .grd 優先】``density_map.path`` に読める密度グリッドがあればそれを再出力し、無ければ
       grid_shape と min/max から決定論的に合成したグリッドを書き出す (モック MEMResult でも動く)。
-    【VESTA 互換 .grd】ヘッダにグリッド次元・格子情報の代理を書き、続いて密度値を出力する。
+    【VESTA 互換 .grd】``save_density_grid`` と同一書式 (タイトル + セル代理 + グリッド + 密度値)。
     【決定論】同一 MEMResult から常にビット同一の内容を生成する (乱数不使用)。
     """
     dm = mem_result.density_map
-    grid = _synthesize_grid(dm)
-    nx, ny, nz = grid.shape
-
-    # 【VESTA .grd 互換ヘッダ】: タイトル + セル (代理 1,1,1,90,90,90) + グリッド次元。
-    lines = [
-        "tsumugin MEM density (VESTA compatible .grd)",
-        "1.000000 1.000000 1.000000 90.000000 90.000000 90.000000",
-        f"{nx} {ny} {nz}",
-    ]
-    # 密度値を (i,j,k) 昇順で 1 値/行に書き出す (決定論・固定フォーマット)。
-    for i in range(nx):
-        for j in range(ny):
-            for k in range(nz):
-                lines.append(f"{grid[i, j, k]:.8f}")
-
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\n".join(lines) + "\n")
-    return path
+    grid = _real_grid_or_none(dm)
+    if grid is None:
+        grid = _synthesize_grid(dm)
+    return save_density_grid(
+        path, grid, (1.0, 1.0, 1.0, 90.0, 90.0, 90.0),
+        title="tsumugin MEM density (VESTA compatible .grd)",
+    )
 
 
 def _sample_path(
@@ -102,23 +158,33 @@ def _sample_path(
     end: tuple[float, float, float],
     n_samples: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """始点→終点を等間隔サンプルし (経路長座標, 密度値) を決定論的に返す。🔵 REQ-028/029"""
+    """始点→終点を等間隔サンプルし (経路長座標, 密度値) を決定論的に返す。🔵 REQ-028/029
+
+    実 .grd (gsas.run_dysnomia_mem 由来) があれば実密度をサンプルし、無ければ min/max から
+    合成した決定論密度場を用いる (M5 モック互換)。
+    """
     s = np.asarray(start, dtype=float)
     e = np.asarray(end, dtype=float)
     ts = np.linspace(0.0, 1.0, n_samples)
     total_len = float(np.linalg.norm(e - s))
     coords = ts * total_len
-    values = np.array(
-        [
-            _density_at(
-                tuple(s + t * (e - s)),  # type: ignore[arg-type]
-                density_map.min_density,
-                density_map.max_density,
-            )
-            for t in ts
-        ],
-        dtype=float,
-    )
+    real = _real_grid_or_none(density_map)
+    if real is not None:
+        values = np.array(
+            [_sample_grid(real, tuple(s + t * (e - s))) for t in ts], dtype=float
+        )
+    else:
+        values = np.array(
+            [
+                _density_at(
+                    tuple(s + t * (e - s)),  # type: ignore[arg-type]
+                    density_map.min_density,
+                    density_map.max_density,
+                )
+                for t in ts
+            ],
+            dtype=float,
+        )
     return coords, values
 
 
@@ -134,7 +200,8 @@ def extract_cross_section(
 
     【1D】start→end を等間隔にサンプルし経路長 vs 密度の 1D 断面を構成する。
     【2D】start→end を対角とする平面上を格子サンプルし面グリッドの密度を構成する。
-    【決定論】密度は ``_density_at`` から導出し乱数を使わない。値域は [min, max] に収まる。
+    【実 .grd 優先】実 MEM 密度があればそれをサンプルし、無ければ min/max から合成した決定論
+      密度場を用いる (M5 モック互換)。値域は密度に従う。
     """
     if dimension == 2:
         # 【2D 断面】: start→end を主軸、直交方向を副軸に取り面グリッドをサンプルする。
@@ -150,17 +217,18 @@ def extract_cross_section(
         if float(np.linalg.norm(ortho)) == 0.0:
             ortho = np.array([1.0, 0.0, 0.0], dtype=float)
         coords = np.array([[t, u] for t in ts for u in us], dtype=float)
+        real = _real_grid_or_none(density_map)
+
+        def _val(pt: np.ndarray) -> float:
+            if real is not None:
+                return _sample_grid(real, tuple(pt))  # type: ignore[arg-type]
+            return _density_at(
+                tuple(pt),  # type: ignore[arg-type]
+                density_map.min_density, density_map.max_density,
+            )
+
         values = np.array(
-            [
-                _density_at(
-                    tuple(s + t * primary + u * ortho),  # type: ignore[arg-type]
-                    density_map.min_density,
-                    density_map.max_density,
-                )
-                for t in ts
-                for u in us
-            ],
-            dtype=float,
+            [_val(s + t * primary + u * ortho) for t in ts for u in us], dtype=float
         )
         return DensityCrossSection(
             label=label, dimension=2, coordinates=coords, values=values

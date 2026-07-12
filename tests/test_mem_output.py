@@ -22,6 +22,8 @@ from tsumugin.mem.base import BondPathDensity, DensityCrossSection, MEMDensityMa
 from tsumugin.mem.output import (
     bond_path_min_density,
     extract_cross_section,
+    load_density_grid,
+    save_density_grid,
     write_density_map,
 )
 
@@ -38,6 +40,66 @@ def _density_map(path: str = "mock.grd") -> MEMDensityMap:
 
 def _mem_result(path: str = "mock.grd") -> MEMResult:
     return MEMResult(density_map=_density_map(path))
+
+
+# ---------------------------------------------------------------------------
+# (Z) save/load_density_grid + 実 .grd 優先 (REQ-027/028/029, gsas 連携)
+# ---------------------------------------------------------------------------
+
+
+def test_save_load_density_grid_roundtrip(tmp_path):
+    """save→load でグリッドがビット近似で復元する (書式一元化)。"""
+    rho = np.arange(2 * 3 * 4, dtype=float).reshape((2, 3, 4)) * 0.5 - 3.0
+    p = tmp_path / "d.grd"
+    save_density_grid(str(p), rho, (5.0, 6.0, 7.0, 90.0, 100.0, 90.0))
+    back = load_density_grid(str(p))
+    assert back.shape == (2, 3, 4)
+    assert np.allclose(back, rho, atol=1e-6)
+
+
+def test_load_density_grid_bad_count_raises(tmp_path):
+    p = tmp_path / "bad.grd"
+    p.write_text("title\n1 1 1 90 90 90\n2 2 2\n1.0\n2.0\n", encoding="utf-8")
+    import pytest
+
+    with pytest.raises(ValueError):
+        load_density_grid(str(p))
+
+
+def test_extract_cross_section_uses_real_grid(tmp_path):
+    """density_map.path に実 .grd があれば実密度をサンプルする (合成でなく)。"""
+    # 端が 100、中央が 0 の実グリッドを作る。合成場 (min0/max10) では出ない値 100 を検出。
+    rho = np.zeros((9, 9, 9))
+    rho[0, 0, 0] = 100.0
+    p = tmp_path / "real.grd"
+    save_density_grid(str(p), rho, (8.0, 8.0, 8.0, 90.0, 90.0, 90.0))
+    dm = MEMDensityMap(path=str(p), density_kind="nuclear", grid_shape=(9, 9, 9),
+                       min_density=0.0, max_density=100.0)
+    cs = extract_cross_section(dm, start=(0.0, 0.0, 0.0), end=(0.5, 0.0, 0.0))
+    assert float(np.max(cs.values)) == 100.0  # 実グリッドの端点値
+
+
+def test_cross_section_falls_back_to_synthetic_when_no_grd():
+    """.grd が存在しない (モック path) 場合は合成密度へ縮退する (M5 互換)。"""
+    dm = _density_map("does_not_exist_zzz.grd")
+    cs = extract_cross_section(dm, start=(0.0, 0.0, 0.0), end=(0.5, 0.5, 0.5))
+    assert cs.dimension == 1
+    # 合成場は [min,max] に収まる。
+    assert float(np.min(cs.values)) >= dm.min_density - 1e-9
+    assert float(np.max(cs.values)) <= dm.max_density + 1e-9
+
+
+def test_bond_path_min_density_real_grid(tmp_path):
+    """伝導ボトルネック (経路最小密度) を実グリッドから取る。"""
+    rho = np.full((9, 9, 9), 5.0)
+    rho[4, 0, 0] = -2.0  # 経路途中に低密度ボトルネック
+    p = tmp_path / "bp.grd"
+    save_density_grid(str(p), rho, (9.0, 9.0, 9.0, 90.0, 90.0, 90.0))
+    dm = MEMDensityMap(path=str(p), density_kind="nuclear", grid_shape=(9, 9, 9),
+                       min_density=-2.0, max_density=5.0)
+    bp = bond_path_min_density(dm, start_site="A", end_site="B",
+                               start=(0.0, 0.0, 0.0), end=(0.889, 0.0, 0.0))
+    assert bp.min_density == -2.0
 
 
 # ---------------------------------------------------------------------------
