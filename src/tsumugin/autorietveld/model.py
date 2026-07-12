@@ -88,6 +88,11 @@ class HistogramSpec:
     :param data_format: GSAS-II importer 種別 ("GSAS"/"FXYE"/"XYE")
     :param bank: TOF の複数フレーム/バンク選択 (1 始まり, None なら既定)
     :param two_theta_limits: 精密化に用いる下限/上限 (None なら全域)
+    :param excluded_regions: 使用域内部で除外する 2θ 区間の列 (Issue #53)。寄生線/アーチファクト等、
+        データファイル自体を事前マスクせずに内部区間を精密化から除外したい場合に用いる。GSAS-II の
+        ``hist.data['Limits']`` は ``[(orig_min, orig_max), [used_lo, used_hi], *excluded_pairs]`` の
+        構造を持ち、``set_refinements({'Exclude': ...})`` キーは存在しない (実測で例外)。本フィールドは
+        engine が使用域設定後に ``[lo, hi]`` を直接 append する。既定 () (除外なし; 後方互換)。
     :param temperature: 測定温度 (K)。複数ヒストグラム間の温度差吸収判定に用いる
     """
 
@@ -98,6 +103,7 @@ class HistogramSpec:
     data_format: str = "GSAS"
     bank: int | None = None
     two_theta_limits: tuple[float, float] | None = None
+    excluded_regions: tuple[tuple[float, float], ...] = ()
     temperature: float | None = None
     weight: float = 1.0
     """ヒストグラム重み係数 (GSAS-II wtFactor)。joint 精密化で相対重みを調整する (既定 1.0)。
@@ -133,6 +139,9 @@ class HistogramSpec:
             "two_theta_limits": list(self.two_theta_limits)
             if self.two_theta_limits is not None
             else None,
+            "excluded_regions": [list(r) for r in self.excluded_regions]
+            if self.excluded_regions
+            else [],
             "temperature": self.temperature,
             "weight": self.weight,
             "absorption": self.absorption,
@@ -157,6 +166,9 @@ class HistogramSpec:
             data_format=str(d.get("data_format", "GSAS")),
             bank=d.get("bank"),  # type: ignore[arg-type]
             two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
+            excluded_regions=tuple(
+                (float(r[0]), float(r[1])) for r in (d.get("excluded_regions") or ())
+            ),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
             weight=float(d.get("weight", 1.0)),
             absorption=float(d.get("absorption", 0.0)),

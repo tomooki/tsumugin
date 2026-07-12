@@ -16,9 +16,12 @@ GSAS 駆動は既定 runner (`_default_gsas_runner`) 内の `run_auto_rietveld` 
 from __future__ import annotations
 
 import math
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
+
+if TYPE_CHECKING:
+    from ..autorietveld.model import RefinementStage
 from ..reference.model import ReferencePhase
 from ..sequential.changepoint import ChangepointConfig, detect_changepoint
 from ..store.ledger import Ledger
@@ -510,6 +513,7 @@ def make_gsas_runner(
     two_theta_limits: tuple[float, float] | None = None,
     max_cyc: int = 12,
     background_coeffs: int = 6,
+    recipe: "Sequence[RefinementStage] | None" = None,
 ) -> Runner:
     """放射源/ジオメトリ/装置を指定して FrameSpec→run_auto_rietveld の runner を作る (実運用の推奨 API)。
 
@@ -518,6 +522,10 @@ def make_gsas_runner(
     放射光 (CuCr₂O₄) は radiation=XRAY_SYNCHROTRON/geometry=DEBYE_SCHERRER で、実験室 X 線 (CaTeO3) は
     XRAY_LAB/BRAGG_BRENTANO で作る。``background_coeffs`` は Chebyshev 背景項数 (実験室 X 線は背景が
     複雑で 6 では不足、24 前後を推奨; CaTeO3 実測で 6→24 が Rwp を大きく下げた)。
+    ``recipe`` を渡すと既定の ``build_recipe`` (7 段階) を使わず、そのまま ``run_auto_rietveld`` に
+    渡す (Issue #52)。operando 系列で不要な段階をスキップした軽量レシピを注入する用途 — 未指定
+    (None) なら従来通り ``build_recipe`` で組み立てる (非回帰)。``recipe`` 指定時は ``background_coeffs``
+    はレシピ側の背景段階に委ねられるため使われない。
     """
     import os
     import tempfile
@@ -544,12 +552,17 @@ def make_gsas_runner(
                 geometry=geometry,  # type: ignore[arg-type]
                 data_format=data_format,
                 two_theta_limits=limits,
+                excluded_regions=frame.excluded_regions,
                 temperature=frame.axis_value,
                 absorber_layers=frame.absorber_layers,
             )
-            recipe = build_recipe([hist], list(phases), background_coeffs=background_coeffs)
+            recipe_ = (
+                recipe
+                if recipe is not None
+                else build_recipe([hist], list(phases), background_coeffs=background_coeffs)
+            )
             return run_auto_rietveld(
-                [hist], list(phases), recipe=recipe, max_cyc=max_cyc,
+                [hist], list(phases), recipe=recipe_, max_cyc=max_cyc,
                 initial_cells=dict(initial_cells) if initial_cells else None,
             )
 

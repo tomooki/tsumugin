@@ -74,18 +74,44 @@ def _nobs(gpx) -> int:
         return 0
 
 
-def _cells_physical(g2phases, min_length: float = 0.5) -> bool:
-    """全相の格子長が物理的 (有限かつ min_length 以上) かを判定する。
+def _cells_physical(
+    g2phases, min_length: float = 0.5, max_length: float = 1000.0
+) -> bool:
+    """全相の格子が物理的 (有限・妥当な長さ・幾何学的に可能な計量テンソル) かを判定する。
 
-    多相・高分解能データではプロファイル/サイズ解放時に格子が 0 へ崩壊する発散が起こり得る。
-    崩壊した段階は「悪化」とみなして revert させるためのガード。
+    多相・高分解能データではプロファイル/サイズ解放時に格子が 0 へ崩壊する発散が起こり得る
+    (近ゼロ崩壊)。加えて Issue #49: 少数相の相分率が 0 に近づくと格子が悪条件化し、
+    近ゼロ崩壊とは逆に長さが桁違いに**爆発**したり、角度が幾何学的に不可能な組み合わせ
+    (計量テンソルが非正定値 = "Invalid cell metric tensor") に発散する場合がある。
+    これらは chi2=inf 化されず validity のみ False になって結果に残留し得るため、
+    revert 対象として検出する。参照格子 (前フレーム/CIF) に依存しないため operando の
+    フレーム単位判定にもそのまま使える。
+
+    判定は 3 種:
+    1. 近ゼロ崩壊: a/b/c いずれかが非有限、または min_length 未満。
+    2. 爆発: a/b/c いずれかが max_length を超過。
+    3. 無効計量テンソル: α/β/γ が非有限、または体積項
+       t = 1 - cos²α - cos²β - cos²γ + 2·cosα·cosβ·cosγ が非有限あるいは 0 以下
+       (退化・非正定値 = 幾何学的に構成不可能な格子)。
     """
     for ph in g2phases:
         cell = ph.get_cell()
         for key in ("length_a", "length_b", "length_c"):
             v = float(cell[key])
-            if not math.isfinite(v) or v < min_length:
+            if not math.isfinite(v) or v < min_length or v > max_length:
                 return False
+
+        angles = []
+        for key in ("angle_alpha", "angle_beta", "angle_gamma"):
+            a = float(cell[key])
+            if not math.isfinite(a):
+                return False
+            angles.append(a)
+        alpha, beta, gamma = (math.radians(a) for a in angles)
+        ca, cb, cg = math.cos(alpha), math.cos(beta), math.cos(gamma)
+        t = 1.0 - ca * ca - cb * cb - cg * cg + 2.0 * ca * cb * cg
+        if not math.isfinite(t) or t <= 0.0:
+            return False
     return True
 
 
@@ -755,6 +781,12 @@ def run_auto_rietveld(
             if h.two_theta_limits is not None:
                 lo, hi = h.two_theta_limits
                 hist.set_refinements({"Limits": [lo, hi]})
+            if h.excluded_regions:
+                # GSAS-II の Limits は [(orig_min,orig_max), [used_lo,used_hi], *excluded_pairs] で、
+                # set_refinements に 'Exclude' キーは存在しない (実測で例外)。使用域確定後に
+                # [lo, hi] を直接 append する (Issue #53)。
+                for r in h.excluded_regions:
+                    hist.data["Limits"].append([float(r[0]), float(r[1])])
             if h.absorber_layers:
                 # 固定吸収体レイヤー (electrolyte/window, Issue #54): 角度依存の透過補正を
                 # Yobs/weight へ直接適用する (定数部はスケール因子と縮退するため含めない)。

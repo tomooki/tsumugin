@@ -16,6 +16,7 @@ import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import combinations
+from pathlib import Path
 from typing import Mapping, Protocol, runtime_checkable
 
 from ..errors import MPUnavailableError
@@ -23,6 +24,7 @@ from ..errors import MPUnavailableError
 __all__ = ["MPClient", "MPEntry", "MPRestClient"]
 
 _API_KEY_ENV = "MATERIALS_PROJECT_API"
+_DOTENV_FILENAME = ".env"
 
 
 @dataclass(frozen=True)
@@ -58,9 +60,11 @@ class MPRestClient:
         include_subsystems: True で全部分系 (単体相・下位系を含む) をクエリする。相同定では
             試料が純金属や下位酸化物を含み得るため既定 True。False で完全系のみに限定する。
         _env: 環境変数マッピング (テスト注入用, 既定は ``os.environ``)。
+        _dotenv_path: ``.env`` ファイルの明示パス (テスト注入用)。None かつ ``_env`` が
+            未注入 (実運用) の場合のみ、cwd から親方向へ ``.env`` を自動探索する。
 
     Raises:
-        ValueError: 明示キーも環境変数も無いとき (mp_api を import せずに失敗する)。
+        ValueError: 明示キーも環境変数も (該当時) .env にも無いとき (mp_api を import せずに失敗する)。
     """
 
     def __init__(
@@ -69,16 +73,22 @@ class MPRestClient:
         *,
         include_subsystems: bool = True,
         _env: Mapping[str, str] | None = None,
+        _dotenv_path: str | Path | None = None,
     ) -> None:
         env = os.environ if _env is None else _env
         raw = api_key if api_key is not None else env.get(_API_KEY_ENV)
+        # .env autoload (Issue #51): 実運用 (_env 未注入) か、テストが明示的に _dotenv_path を
+        # 指定したときのみ読む。_env={} だけのテスト注入 (キー欠落を検証したい既存テスト) は
+        # このゲートを通らないため、リポジトリの実 .env に汚染されない。
+        if raw is None and (_env is None or _dotenv_path is not None):
+            raw = _read_dotenv_key(_API_KEY_ENV, _dotenv_path)
         # .env は "MATERIALS_PROJECT_API = key" 形式で前後空白が入り得るため strip 後に検証する。
         # 空白のみのキーを空文字で通過させず、構築時点で分かりやすく失敗させる。
         key = raw.strip() if raw is not None else None
         if not key:
             raise ValueError(
                 f"Materials Project API キーがありません。引数 api_key で渡すか、環境変数 "
-                f"{_API_KEY_ENV} を設定してください。"
+                f"{_API_KEY_ENV} を設定するか、.env に {_API_KEY_ENV} を記載してください。"
             )
         self.api_key: str = key
         self._include_subsystems = include_subsystems
@@ -127,6 +137,50 @@ class MPRestClient:
             for combo in combinations(elems, r):
                 systems.append("-".join(combo))
         return systems
+
+
+def _read_dotenv_key(key: str, path: str | Path | None = None) -> str | None:
+    """``.env`` ファイルから ``key`` の値を読む (Issue #51)。🟡
+
+    ``path`` 指定時はそのファイルのみを読む (テスト決定論用)。未指定なら ``Path.cwd()`` から
+    親方向へ ``.env`` を探索し、最初に見つかったものを読む。ファイル欠落/読取失敗/キー欠落は
+    例外を投げず None を返す (認証情報の欠落は呼び出し側の ValueError に委ねる)。値は
+    決してログ出力しない (シークレットのため)。
+    """
+    target = Path(path) if path is not None else _find_dotenv()
+    if target is None:
+        return None
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].lstrip()
+        if "=" not in stripped:
+            continue
+        line_key, _, line_value = stripped.partition("=")
+        line_key = line_key.strip()
+        if line_key != key:
+            continue
+        value = line_value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        return value.strip()
+    return None
+
+
+def _find_dotenv() -> Path | None:
+    """``Path.cwd()`` から親方向へ ``.env`` を探索する。見つからなければ None。🟡"""
+    for directory in (Path.cwd(), *Path.cwd().parents):
+        candidate = directory / _DOTENV_FILENAME
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _doc_to_entry(doc: object) -> MPEntry:

@@ -41,7 +41,14 @@ class Atom:
 
 @dataclass(frozen=True)
 class Structure:
-    """最小構造 (セル + 空間群 + 原子)。🔵"""
+    """最小構造 (セル + 空間群 + 原子)。🔵
+
+    :param symops: 空間群対称操作の xyz 表記文字列 (Issue #48)。CIF に
+        ``_space_group_symop_operation_xyz`` / ``_symmetry_equiv_pos_as_xyz`` ループが
+        あれば保持し、正規化後も維持する。非標準セッティング (例: P21/n) では H-M 名だけでは
+        GSAS-II が標準セッティング (P21/c) へ誤って正準化し座標を変換しないため、原子座標と
+        symop が食い違って消滅則が崩れる。無ければ空タプル (H-M 名のみで正規化)。
+    """
 
     a: float
     b: float
@@ -52,6 +59,7 @@ class Structure:
     spacegroup_hm: str
     it_number: int | None
     atoms: tuple[Atom, ...]
+    symops: tuple[str, ...] = ()
 
 
 def _strip_esd(token: str) -> float:
@@ -69,6 +77,14 @@ _CELL_TAGS = {
 }
 _HM_TAGS = ("_space_group_name_H-M_alt", "_symmetry_space_group_name_H-M")
 _IT_TAGS = ("_space_group_IT_number", "_symmetry_Int_Tables_number")
+# 対称操作ループのタグ: 新 (_space_group_symop_*) / 旧 (_symmetry_equiv_pos_as_xyz) の両対応。
+_SYMOP_XYZ_TAGS = ("_space_group_symop_operation_xyz", "_symmetry_equiv_pos_as_xyz")
+_SYMOP_TAG_PREFIXES = ("_space_group_symop", "_symmetry_equiv_pos")
+
+
+def _tokenize_cif_row(line: str) -> list[str]:
+    """CIF の 1 データ行を引用符を尊重してトークン化する (単一引用符内の空白を保持)。"""
+    return re.findall(r"'[^']*'|\"[^\"]*\"|\S+", line)
 
 
 def _scalar(lines: list[str], tags: tuple[str, ...]) -> str | None:
@@ -109,11 +125,47 @@ def read_structure_cif(path: str | Path) -> Structure:
     atoms = _read_atom_loop(lines)
     if not atoms:
         raise ValueError("CIF から原子サイトを読めませんでした。")
+    symops = _read_symop_loop(lines)
     return Structure(
         a=cell["a"], b=cell["b"], c=cell["c"],
         alpha=cell["alpha"], beta=cell["beta"], gamma=cell["gamma"],
         spacegroup_hm=hm, it_number=it_number, atoms=tuple(atoms),
+        symops=symops,
     )
+
+
+def _read_symop_loop(lines: list[str]) -> tuple[str, ...]:
+    """空間群対称操作ループ (新旧タグ両対応) を読む。無ければ空タプル。🔵 Issue #48
+
+    ``_space_group_symop_id`` のような付随列があっても、xyz 表記列だけを抽出する。
+    値は単一/二重引用符で囲まれていても素のトークンでもよい (引用符は除去)。
+    """
+    tag_idx = next((i for i, ln in enumerate(lines) if ln.strip() in _SYMOP_XYZ_TAGS), None)
+    if tag_idx is None:
+        return ()
+    start = tag_idx
+    while start > 0 and lines[start - 1].strip().startswith(_SYMOP_TAG_PREFIXES):
+        start -= 1
+    tags: list[str] = []
+    i = start
+    while i < len(lines) and lines[i].strip().startswith(_SYMOP_TAG_PREFIXES):
+        tags.append(lines[i].strip())
+        i += 1
+    xyz_tag = next(t for t in tags if t in _SYMOP_XYZ_TAGS)
+    col = tags.index(xyz_tag)
+
+    ops: list[str] = []
+    for ln in lines[i:]:
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith(("#", "loop_", "_", ";")):
+            break
+        row = _tokenize_cif_row(s)
+        if len(row) <= col:
+            continue
+        ops.append(row[col].strip("'\""))
+    return tuple(ops)
 
 
 def _read_atom_loop(lines: list[str]) -> list[Atom]:
@@ -186,7 +238,16 @@ def write_gsas_cif(structure: Structure, out_path: str | Path, *, phase_name: st
         f"_cell_angle_gamma {structure.gamma:.6f}",
         f'_symmetry_space_group_name_H-M "{sg}"',
     ]
-    if structure.it_number is not None:
+    if structure.symops:
+        # Issue #48: symop ループを保存し、非標準セッティング (例: P21/n) で GSAS-II が
+        # H-M 名だけを見て標準セッティング (P21/c) へ誤って正準化し座標を変換しない事態を防ぐ。
+        # ⚠ _symmetry_Int_Tables_number は書かない: IT 番号があると GSAS-II が標準セッティング
+        # (P21/c) を強制し、ループ内の非標準 n-glide 操作と食い違って CIF 全体を拒否する
+        # ("Symmetry element ... not matched in GSAS-II setting")。symop が対称性を完全に定義する
+        # ので IT 番号は不要。symop が無いときのみ IT 番号を書く (従来挙動)。
+        lines += ["loop_", " _space_group_symop_operation_xyz"]
+        lines += [f" '{op}'" for op in structure.symops]
+    elif structure.it_number is not None:
         lines.append(f"_symmetry_Int_Tables_number {structure.it_number}")
     lines += [
         "loop_",

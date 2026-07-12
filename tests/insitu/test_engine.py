@@ -665,3 +665,112 @@ def test_determinism_identical_runs():
     r2 = run_sequential_rietveld(_frames(4), [alpha], runner=runner)
     assert [f.rwp for f in r1.frames] == [f.rwp for f in r2.frames]
     assert r1.phase_names == r2.phase_names
+
+
+# --- Issue #52: make_gsas_runner recipe injection ---------------------------------------------
+
+
+def test_make_gsas_runner_custom_recipe_passthrough(monkeypatch):
+    """recipe= を注入すると build_recipe を呼ばずそのまま run_auto_rietveld に渡る。"""
+    from tsumugin.autorietveld.model import Geometry, RefinementStage, Radiation
+    from tsumugin.insitu.engine import make_gsas_runner
+
+    captured: dict[str, object] = {}
+
+    def fake_run(histograms, phases, *, recipe=None, max_cyc=12, initial_cells=None, **kwargs):
+        captured["recipe"] = recipe
+        captured["max_cyc"] = max_cyc
+        captured["initial_cells"] = initial_cells
+        return object()  # sentinel: run_auto_rietveld の戻り値をそのまま返す
+
+    def boom_build_recipe(*a, **k):
+        raise AssertionError("recipe= 指定時は build_recipe を呼んではいけない")
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_run)
+    monkeypatch.setattr("tsumugin.autorietveld.recipe.build_recipe", boom_build_recipe)
+
+    custom_recipe = (
+        RefinementStage(label="scale+bg", flags={"scale": True, "background": {"coeffs": 8}},
+                        note=""),
+    )
+    frame = FrameSpec(data_path="dummy.xye", data_format="XYE", axis_value=300.0)
+    phase = PhaseSpec(structure_path="dummy.cif", phase_name="alpha")
+    initial_cells = {"alpha": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)}
+
+    runner = make_gsas_runner(
+        instrument_path="dummy.instprm",
+        radiation=Radiation.XRAY_SYNCHROTRON,
+        geometry=Geometry.DEBYE_SCHERRER,
+        recipe=custom_recipe,
+    )
+    result = runner(frame, [phase], initial_cells)
+
+    assert captured["recipe"] is custom_recipe
+    assert result is not None
+    assert captured["max_cyc"] == 12
+    assert captured["initial_cells"] == initial_cells
+
+
+def test_make_gsas_runner_default_recipe_unchanged(monkeypatch):
+    """recipe 未指定なら従来通り build_recipe で組み立てた既定レシピが渡る (非回帰)。"""
+    from tsumugin.autorietveld.model import Geometry, RefinementStage, Radiation
+    from tsumugin.autorietveld.recipe import build_recipe
+    from tsumugin.insitu.engine import make_gsas_runner
+
+    captured: dict[str, object] = {}
+
+    def fake_run(histograms, phases, *, recipe=None, max_cyc=12, initial_cells=None, **kwargs):
+        captured["recipe"] = recipe
+        captured["histograms"] = list(histograms)
+        captured["phases"] = list(phases)
+        return object()
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_run)
+
+    frame = FrameSpec(data_path="dummy.xye", data_format="XYE", axis_value=300.0)
+    phase = PhaseSpec(structure_path="dummy.cif", phase_name="alpha")
+
+    runner = make_gsas_runner(
+        instrument_path="dummy.instprm",
+        radiation=Radiation.XRAY_SYNCHROTRON,
+        geometry=Geometry.DEBYE_SCHERRER,
+    )
+    runner(frame, [phase], None)
+
+    recipe = captured["recipe"]
+    assert recipe is not None
+    assert isinstance(recipe, tuple)
+    assert len(recipe) > 0
+    assert all(isinstance(stage, RefinementStage) for stage in recipe)
+    expected = build_recipe(captured["histograms"], captured["phases"], background_coeffs=6)
+    assert recipe == expected
+
+
+def test_make_gsas_runner_max_cyc_and_initial_cells_passthrough(monkeypatch):
+    """max_cyc/initial_cells は recipe 注入の有無に関係なく従来通り run_auto_rietveld に渡る。"""
+    from tsumugin.autorietveld.model import Geometry, Radiation
+    from tsumugin.insitu.engine import make_gsas_runner
+
+    captured: dict[str, object] = {}
+
+    def fake_run(histograms, phases, *, recipe=None, max_cyc=12, initial_cells=None, **kwargs):
+        captured["max_cyc"] = max_cyc
+        captured["initial_cells"] = initial_cells
+        return object()
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_run)
+
+    frame = FrameSpec(data_path="dummy.xye", data_format="XYE", axis_value=300.0)
+    phase = PhaseSpec(structure_path="dummy.cif", phase_name="alpha")
+    initial_cells = {"alpha": (6.0, 6.0, 6.0, 90.0, 90.0, 90.0)}
+
+    runner = make_gsas_runner(
+        instrument_path="dummy.instprm",
+        radiation=Radiation.XRAY_SYNCHROTRON,
+        geometry=Geometry.DEBYE_SCHERRER,
+        max_cyc=5,
+    )
+    runner(frame, [phase], initial_cells)
+
+    assert captured["max_cyc"] == 5
+    assert captured["initial_cells"] == initial_cells
