@@ -20,6 +20,15 @@ from .model import (
 )
 from .backend_adapter import AutoRietveldBackend
 from .engine import run_auto_rietveld
+from .mem import (
+    DensityPeak,
+    MEMDensityResult,
+    MEMRunConfig,
+    assign_peaks_to_atoms,
+    density_kind_from_type,
+    resolve_dysnomia_binary,
+    run_dysnomia_mem,
+)
 from .lattice import (
     LatticeSolution,
     cell_from_reciprocal_metric,
@@ -58,12 +67,15 @@ from .validity import check_bond_validity, check_profile_physicality, check_vali
 __all__ = [
     "AutoRietveldBackend",
     "AutoRietveldResult",
+    "CellRefinementResult",
+    "DensityPeak",
     "Geometry",
     "HistogramSpec",
     "InstrumentProfile",
     "LatticeSolution",
+    "MEMDensityResult",
+    "MEMRunConfig",
     "MultistartStart",
-    "CellRefinementResult",
     "NONNEG_PROFILE_BOUNDS",
     "PhaseSpec",
     "Radiation",
@@ -71,6 +83,7 @@ __all__ = [
     "RietveldMultistartResult",
     "StageResult",
     "ValidityReport",
+    "assign_peaks_to_atoms",
     "build_recipe",
     "build_resolution_recipe",
     "candidate_profiles",
@@ -78,6 +91,7 @@ __all__ = [
     "check_bond_validity",
     "check_profile_physicality",
     "check_validity",
+    "density_kind_from_type",
     "extract_instrument_profile",
     "extract_instrument_profile_from_standard",
     "generate_cell_scales",
@@ -88,7 +102,9 @@ __all__ = [
     "refine_cell_from_indexed_peaks",
     "refine_structure_cell",
     "refine_cell_robust",
+    "resolve_dysnomia_binary",
     "run_auto_rietveld",
+    "run_dysnomia_mem",
     "run_multistart_rietveld",
     "search_instrument_profile",
     "solve_cell_from_dspacings",
