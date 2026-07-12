@@ -554,6 +554,7 @@ def make_gsas_runner(
                 two_theta_limits=limits,
                 excluded_regions=frame.excluded_regions,
                 temperature=frame.axis_value,
+                absorber_layers=frame.absorber_layers,
             )
             recipe_ = (
                 recipe

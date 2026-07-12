@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from ..autorietveld.absorption import AbsorberLayer
+
 # 相ごとの格子: (a, b, c, α, β, γ)
 Cell = tuple[float, float, float, float, float, float]
 
@@ -29,6 +31,9 @@ class FrameSpec:
         事前マスクなしに除外したい場合に用いる (`autorietveld.model.HistogramSpec.excluded_regions`
         と同義)。既定 () (除外なし; 後方互換)。
     :param label: 人間可読ラベル (既定はファイル名)
+    :param absorber_layers: 固定吸収体レイヤー (operando セルの電解液層・窓材, Issue #54)。
+        `make_gsas_runner` が構築する `HistogramSpec.absorber_layers` へそのまま引き継がれる。
+        既定 () (補正なし; 後方互換)。
     """
 
     data_path: str
@@ -37,6 +42,7 @@ class FrameSpec:
     two_theta_limits: tuple[float, float] | None = None
     excluded_regions: tuple[tuple[float, float], ...] = ()
     label: str = ""
+    absorber_layers: tuple[AbsorberLayer, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -50,6 +56,7 @@ class FrameSpec:
             if self.excluded_regions
             else [],
             "label": self.label,
+            "absorber_layers": [layer.to_dict() for layer in self.absorber_layers],
         }
 
     @classmethod
@@ -64,6 +71,9 @@ class FrameSpec:
                 (float(r[0]), float(r[1])) for r in (d.get("excluded_regions") or ())
             ),
             label=str(d.get("label", "")),
+            absorber_layers=tuple(
+                AbsorberLayer.from_dict(x) for x in (d.get("absorber_layers") or ())  # type: ignore[arg-type]
+            ),
         )
 
 
