@@ -45,6 +45,7 @@ from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
 from . import mem as _mem
 from .insitu_tools import INSITU_TOOLS as _INSITU_TOOLS
+from .mem_tools import MEM_MODEL_TOOLS as _MEM_MODEL_TOOLS
 from .rietveld_tools import RIETVELD_TOOLS as _RIETVELD_TOOLS
 
 __all__ = [
@@ -465,10 +466,11 @@ def identify_phase_mixtures(
 
 
 # 【ツールレジストリ】: 10 ツール (M4 8 + M6 相同定 2) + M8 実構造 Rietveld 3 + M9 in situ 逐次 3
-#   = 16 ツール名 → 実処理関数。アダプタ層 (server.py) が配線に使う単一情報源 🔵 REQ-021。
-#   M8 の 3 ツール (auto_rietveld/propose_next_actions/refine_with_revisions) と M9 の 3 ツール
-#   (sequential_rietveld/identify_and_add_phase/parametric_fit) は session を取らない計器+アクチュ
-#   エータ (rietveld_tools.py / insitu_tools.py, 閉ループ丸ごとは出さない = ③ が回す, architecture.md §6)。
+#   + M8-③ MEM model-fix 3 = 19 ツール名 → 実処理関数。アダプタ層 (server.py) が配線に使う単一情報源
+#   🔵 REQ-021。M8 の 3 ツール (auto_rietveld/propose_next_actions/refine_with_revisions)・M9 の 3 ツール
+#   (sequential_rietveld/identify_and_add_phase/parametric_fit)・M8-③ の 3 ツール (mem_density/
+#   propose_structure_revisions/edit_cif) は session を取らない計器+アクチュエータ (rietveld_tools.py /
+#   insitu_tools.py / mem_tools.py, 閉ループ丸ごとは出さない = ③ が回す, architecture.md §6)。
 MCP_TOOLS: Mapping[str, object] = {
     "submit_analysis": submit_analysis,
     "list_hypotheses": list_hypotheses,
@@ -482,4 +484,5 @@ MCP_TOOLS: Mapping[str, object] = {
     "identify_phase_mixtures": identify_phase_mixtures,
     **_RIETVELD_TOOLS,
     **_INSITU_TOOLS,
+    **_MEM_MODEL_TOOLS,
 }
