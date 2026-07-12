@@ -161,6 +161,13 @@ def test_assign_peaks_empty():
     assert out == ()
 
 
+def test_assign_peaks_empty_atoms_returns_empty():
+    """原子リストが空でもピークが非空なら空を返す (argmin クラッシュ回避)。"""
+    amat = _cubic_amat(8.0)
+    out = assign_peaks_to_atoms(np.array([[0.1, 0.0, 0.0]]), np.array([5.0]), [], amat)
+    assert out == ()
+
+
 def test_density_peak_is_frozen():
     p = DensityPeak(frac=(0.0, 0.0, 0.0), magnitude=1.0, nearest_atom="X", distance=0.5)
     with pytest.raises(FrozenInstanceError):

@@ -186,7 +186,7 @@ def assign_peaks_to_atoms(
     """
     peaks_frac = np.atleast_2d(np.asarray(peaks_frac, dtype=float))
     magnitudes = np.asarray(magnitudes, dtype=float).ravel()
-    if peaks_frac.size == 0 or magnitudes.size == 0:
+    if peaks_frac.size == 0 or magnitudes.size == 0 or len(atoms) == 0:
         return ()
     atom_frac = np.array([[a[1], a[2], a[3]] for a in atoms], dtype=float)
     atom_lbl = [a[0] for a in atoms]
@@ -415,8 +415,9 @@ def run_dysnomia_mem(
         peaks = _search_and_assign(gen, G2mth, np.asarray(amat, float), atoms,
                                    config.top_peaks)
 
-        # .grd 書き出し (呼び出し側指定 or 作業外へ退避)
-        grd_path = out_grd or str(Path(gpx_path).with_suffix(".mem.grd"))
+        # .grd 書き出し (呼び出し側指定 or 入力 gpx の隣へ)。既定名に密度種別を含め、joint で
+        # electron/nuclear を続けて回しても取り違え/上書きしない。
+        grd_path = out_grd or str(Path(gpx_path).with_suffix(f".mem_{kind}.grd"))
         _write_grd(grd_path, mp["rho"], gen["Cell"][1:7], kind)
 
         density_map = MEMDensityMap(
