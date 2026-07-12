@@ -95,3 +95,117 @@ def read_structure_cif_from_text(text):
     p = Path(tempfile.mktemp(suffix=".cif"))
     p.write_text(text, encoding="utf-8")
     return read_structure_cif(p)
+
+
+# Issue #48: P21/n (非標準セッティング) の対称操作ループ (n-glide 含む)。
+# VESTA 由来 CIF は _symmetry_equiv_pos_as_xyz (旧タグ) を使うことが多いが、ここでは新タグ
+# _space_group_symop_operation_xyz で検証し、旧タグは別テストで確認する。
+_P21N_SYMOPS = """data_p21n
+_cell_length_a 5
+_cell_length_b 6
+_cell_length_c 7
+_cell_angle_alpha 90
+_cell_angle_beta 95
+_cell_angle_gamma 90
+_symmetry_space_group_name_H-M 'P 21/n'
+_symmetry_Int_Tables_number 14
+
+loop_
+_space_group_symop_id
+_space_group_symop_operation_xyz
+1 'x, y, z'
+2 '-x+1/2, y+1/2, -z+1/2'
+3 '-x, -y, -z'
+4 'x+1/2, -y+1/2, z+1/2'
+
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_U_iso_or_equiv
+Fe1 Fe 0.1 0.2 0.3 1.0 0.01
+Mn1 Mn 0.4 0.5 0.6 1.0 0.01
+"""
+
+# 旧タグ (_symmetry_equiv_pos_as_xyz) 版。同じ n-glide を含む。
+_P21N_SYMOPS_LEGACY_TAG = _P21N_SYMOPS.replace(
+    "_space_group_symop_id\n_space_group_symop_operation_xyz",
+    "_symmetry_equiv_pos_as_xyz",
+).replace("1 'x, y, z'", "'x, y, z'").replace(
+    "2 '-x+1/2, y+1/2, -z+1/2'", "'-x+1/2, y+1/2, -z+1/2'"
+).replace("3 '-x, -y, -z'", "'-x, -y, -z'").replace(
+    "4 'x+1/2, -y+1/2, z+1/2'", "'x+1/2, -y+1/2, z+1/2'"
+)
+
+
+def test_read_structure_parses_symop_loop_new_tag():
+    st = read_structure_cif_from_text(_P21N_SYMOPS)
+    assert "-x+1/2, y+1/2, -z+1/2" in st.symops
+    assert len(st.symops) == 4
+
+
+def test_read_structure_parses_symop_loop_legacy_tag():
+    st = read_structure_cif_from_text(_P21N_SYMOPS_LEGACY_TAG)
+    assert "-x+1/2, y+1/2, -z+1/2" in st.symops
+    assert len(st.symops) == 4
+
+
+def test_write_gsas_cif_preserves_symops(tmp_path):
+    st = read_structure_cif_from_text(_P21N_SYMOPS)
+    out = write_gsas_cif(st, tmp_path / "p21n.cif", phase_name="p21n")
+    text = out.read_text(encoding="utf-8")
+    assert "_space_group_symop_operation_xyz" in text
+    assert "-x+1/2, y+1/2, -z+1/2" in text
+
+
+def test_normalize_roundtrip_preserves_n_glide(tmp_path):
+    # Issue #48: P21/n の symop ループを落とすと GSAS が P21/c へ誤って正規化し、
+    # n-glide による消滅則 (systematic absence) が失われる。正規化後の CIF に
+    # n-glide 操作が残っていることを確認する。
+    src = tmp_path / "src.cif"
+    src.write_text(_P21N_SYMOPS, encoding="utf-8")
+    out = normalize_cif_for_gsas(src, tmp_path / "out.cif", phase_name="p21n")
+    text = out.read_text(encoding="utf-8")
+    assert "-x+1/2, y+1/2, -z+1/2" in text
+    st2 = read_structure_cif(out)
+    assert "-x+1/2, y+1/2, -z+1/2" in st2.symops
+
+
+def test_write_gsas_cif_omits_it_number_when_symops_present(tmp_path):
+    # Issue #48: symop がある場合は _symmetry_Int_Tables_number を書かない。
+    # IT 番号があると GSAS が標準セッティング (P21/c) を強制し、非標準 n-glide 操作と
+    # 食い違って CIF 全体を拒否する。symop が対称性を完全に定義するので IT 番号は不要。
+    st = read_structure_cif_from_text(_P21N_SYMOPS)
+    assert st.it_number == 14  # 入力には IT 番号がある
+    out = write_gsas_cif(st, tmp_path / "p21n.cif", phase_name="p21n")
+    text = out.read_text(encoding="utf-8")
+    assert "_symmetry_Int_Tables_number" not in text
+    assert "_space_group_symop_operation_xyz" in text
+
+
+def test_write_gsas_cif_keeps_it_number_when_no_symops(tmp_path):
+    # symop が無い場合は従来通り IT 番号を書く (回帰ガード)。
+    st = read_structure_cif_from_text(_CHECKCIF)
+    assert st.symops == ()
+    assert st.it_number == 14
+    out = write_gsas_cif(st, tmp_path / "clean3.cif", phase_name="p")
+    text = out.read_text(encoding="utf-8")
+    assert "_symmetry_Int_Tables_number 14" in text
+
+
+def test_read_structure_no_symop_loop_yields_empty():
+    # H-M 名のみで symop ループがない CIF は symops が空のまま (既存挙動の回帰ガード)。
+    st = read_structure_cif_from_text(_CHECKCIF)
+    assert st.symops == ()
+
+
+def test_write_gsas_cif_no_symops_does_not_fabricate_loop(tmp_path):
+    st = read_structure_cif_from_text(_CHECKCIF)
+    out = write_gsas_cif(st, tmp_path / "clean2.cif", phase_name="p")
+    text = out.read_text(encoding="utf-8")
+    assert "_space_group_symop_operation_xyz" not in text
+    assert "_symmetry_equiv_pos_as_xyz" not in text
+    assert '_symmetry_space_group_name_H-M "P 21/c"' in text
