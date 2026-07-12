@@ -78,6 +78,66 @@ class InstrumentProfile:
 
 
 @dataclass(frozen=True)
+class CalibrationResult:
+    """標準試料からの波長・ゼロ点較正の結果 (Issue #61)。
+
+    格子を認証値に固定した標準試料精密化で得た**実効波長** (Lam)・ゼロ点・装置プロファイルを保持する。
+    実効波長は装置ラインシェイプ (非対称) のバイアスを吸収した値で、同一光学系の試料に適用すると
+    系統シフトが相殺し正しい格子定数を与える。
+
+    :param wavelength: 較正後の実効波長 [Å]
+    :param wavelength_init: 入力波長 [Å]
+    :param zero: 較正後のゼロ点 [°2θ]
+    :param profile: 装置プロファイル (U,V,W,X,Y,SH/L の部分集合)
+    :param reference_cell: 固定した認証格子 (a,b,c,α,β,γ)
+    :param source_rwp: 較正精密化の最終 Rwp [%]
+    """
+
+    wavelength: float
+    wavelength_init: float
+    zero: float
+    profile: Mapping[str, float]
+    reference_cell: tuple[float, float, float, float, float, float]
+    source_rwp: float = float("nan")
+
+    @property
+    def ppm_shift(self) -> float:
+        """入力波長からの相対シフト [ppm] (実効波長 − 入力) / 入力 × 1e6。"""
+        if self.wavelength_init == 0.0:
+            return float("nan")
+        return 1e6 * (self.wavelength - self.wavelength_init) / self.wavelength_init
+
+    def to_instrument_profile(self) -> "InstrumentProfile":
+        """装置プロファイル + Zero を `InstrumentProfile` に写す (試料精密化での固定用)。"""
+        vals = {str(k): float(v) for k, v in self.profile.items()}
+        vals["Zero"] = float(self.zero)
+        return InstrumentProfile(values=vals, source_rwp=self.source_rwp,
+                                 wavelength=self.wavelength)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "wavelength": self.wavelength,
+            "wavelength_init": self.wavelength_init,
+            "zero": self.zero,
+            "profile": {str(k): float(v) for k, v in self.profile.items()},
+            "reference_cell": list(self.reference_cell),
+            "source_rwp": self.source_rwp,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "CalibrationResult":
+        cell = tuple(float(v) for v in d["reference_cell"])  # type: ignore[arg-type]
+        return cls(
+            wavelength=float(d["wavelength"]),  # type: ignore[arg-type]
+            wavelength_init=float(d["wavelength_init"]),  # type: ignore[arg-type]
+            zero=float(d["zero"]),  # type: ignore[arg-type]
+            profile={str(k): float(v) for k, v in dict(d.get("profile", {})).items()},  # type: ignore[union-attr]
+            reference_cell=cell,  # type: ignore[arg-type]
+            source_rwp=float(d.get("source_rwp", float("nan"))),  # type: ignore[arg-type]
+        )
+
+
+@dataclass(frozen=True)
 class HistogramSpec:
     """観測ヒストグラム 1 本の入力仕様。
 
