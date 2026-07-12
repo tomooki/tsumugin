@@ -124,6 +124,89 @@ def test_mp_rest_client_rejects_whitespace_only_key():
         MPRestClient(api_key=None, _env={"MATERIALS_PROJECT_API": "   "})
 
 
+# --- Issue #51: .env autoload (gated so injected _env={} tests stay unaffected) --------
+
+
+def test_mp_rest_client_missing_env_and_no_dotenv_path_still_raises():
+    # _env={} without _dotenv_path must NOT read the repo's real .env (gate off)
+    from tsumugin.mp.client import MPRestClient
+
+    with pytest.raises(ValueError):
+        MPRestClient(api_key=None, _env={})
+
+
+def test_mp_rest_client_reads_dotenv_when_env_lacks_key(tmp_path):
+    from tsumugin.mp.client import MPRestClient
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("MATERIALS_PROJECT_API = fromfile\n", encoding="utf-8")
+
+    client = MPRestClient(api_key=None, _env={}, _dotenv_path=dotenv)
+    assert client.api_key == "fromfile"
+
+
+def test_mp_rest_client_explicit_api_key_wins_over_dotenv(tmp_path):
+    from tsumugin.mp.client import MPRestClient
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("MATERIALS_PROJECT_API = fromfile\n", encoding="utf-8")
+
+    client = MPRestClient(api_key="explicit", _env={}, _dotenv_path=dotenv)
+    assert client.api_key == "explicit"
+
+
+def test_mp_rest_client_injected_env_wins_over_dotenv(tmp_path):
+    from tsumugin.mp.client import MPRestClient
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("MATERIALS_PROJECT_API = fromfile\n", encoding="utf-8")
+
+    client = MPRestClient(
+        api_key=None, _env={"MATERIALS_PROJECT_API": "fromenv"}, _dotenv_path=dotenv
+    )
+    assert client.api_key == "fromenv"
+
+
+def test_mp_rest_client_dotenv_value_quoted_and_padded(tmp_path):
+    from tsumugin.mp.client import MPRestClient
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text('MATERIALS_PROJECT_API = "  spaced  "\n', encoding="utf-8")
+
+    client = MPRestClient(api_key=None, _env={}, _dotenv_path=dotenv)
+    assert client.api_key == "spaced"
+
+
+def test_mp_rest_client_missing_dotenv_path_raises(tmp_path):
+    from tsumugin.mp.client import MPRestClient
+
+    missing = tmp_path / "does_not_exist" / ".env"
+    with pytest.raises(ValueError):
+        MPRestClient(api_key=None, _env={}, _dotenv_path=missing)
+
+
+def test_read_dotenv_key_parses_comments_blank_export_and_first_equals(tmp_path):
+    from tsumugin.mp.client import _read_dotenv_key
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "\n"
+        "# a comment line\n"
+        "export MATERIALS_PROJECT_API=key=with=equals\n"
+        "OTHER_VAR=ignored\n",
+        encoding="utf-8",
+    )
+    assert _read_dotenv_key("MATERIALS_PROJECT_API", dotenv) == "key=with=equals"
+    assert _read_dotenv_key("OTHER_VAR", dotenv) == "ignored"
+    assert _read_dotenv_key("MISSING_VAR", dotenv) is None
+
+
+def test_read_dotenv_key_missing_file_returns_none(tmp_path):
+    from tsumugin.mp.client import _read_dotenv_key
+
+    assert _read_dotenv_key("MATERIALS_PROJECT_API", tmp_path / "nope.env") is None
+
+
 def test_doc_to_entry_normalizes_mp_api_doc():
     # mp_api summary doc の形状 (属性アクセス) を MPEntry へ正規化する (ネットワーク不要)
     import types
