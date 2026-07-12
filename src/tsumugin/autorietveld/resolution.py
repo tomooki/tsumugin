@@ -413,8 +413,13 @@ def calibrate_instrument_from_standard(
     from ..reference.io import load_xy  # 遅延 (numpy コア境界)
 
     two_theta, intensity = load_xy(data_path)
-    cif_text = standard_reference_cif(standard)  # 未登録は早期 KeyError
-    a = float(cell_a) if cell_a is not None else STANDARD_CELL_A.get(standard)
+    cif_text = standard_reference_cif(standard)  # 未登録は早期 KeyError (大小文字非依存)
+    if cell_a is not None:
+        a: float | None = float(cell_a)
+    else:
+        # STANDARD_CELL_A も standard_reference_cif と同じく大小文字非依存で引く (整合)。
+        cell_key = {k.lower(): k for k in STANDARD_CELL_A}.get(standard.lower())
+        a = STANDARD_CELL_A[cell_key] if cell_key is not None else None
     if a is None:
         raise KeyError(
             f"標準 {standard!r} の認証格子が未登録です。cell_a を明示指定してください "

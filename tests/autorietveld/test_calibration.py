@@ -164,6 +164,22 @@ def test_calibrate_cell_a_override(tmp_path):
     assert captured["a"] == 5.4110
 
 
+def test_calibrate_standard_name_case_insensitive(tmp_path):
+    # standard_reference_cif と STANDARD_CELL_A は共に大小文字非依存 (整合; 偽 KeyError 回避)
+    captured = {}
+
+    def stub(hists, phases, *, recipe=None, initial_cells=None, **kw):
+        captured["a"] = initial_cells["ceo2"][0]
+        return _stub_result(0.4964, -0.01)
+
+    res = calibrate_instrument_from_standard(
+        _xy_file(tmp_path), wavelength_init=0.4962537, standard="ceo2",  # 小文字
+        work_dir=str(tmp_path / "wd"), runner=stub,
+    )
+    assert captured["a"] == STANDARD_CELL_A["CeO2"]  # 認証格子を正しく引く
+    assert res.reference_cell[0] == STANDARD_CELL_A["CeO2"]
+
+
 def test_calibrate_unknown_standard_raises(tmp_path):
     with pytest.raises(KeyError):
         calibrate_instrument_from_standard(
