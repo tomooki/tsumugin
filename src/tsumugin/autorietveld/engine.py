@@ -752,6 +752,12 @@ def run_auto_rietveld(
             if h.two_theta_limits is not None:
                 lo, hi = h.two_theta_limits
                 hist.set_refinements({"Limits": [lo, hi]})
+            if h.excluded_regions:
+                # GSAS-II の Limits は [(orig_min,orig_max), [used_lo,used_hi], *excluded_pairs] で、
+                # set_refinements に 'Exclude' キーは存在しない (実測で例外)。使用域確定後に
+                # [lo, hi] を直接 append する (Issue #53)。
+                for r in h.excluded_regions:
+                    hist.data["Limits"].append([float(r[0]), float(r[1])])
             if h.weight != 1.0:
                 # ヒストグラム重み係数 (GSAS-II wtFactor)。joint の相対重み調整。
                 try:
