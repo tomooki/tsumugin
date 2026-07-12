@@ -41,6 +41,27 @@ def test_config_defaults():
     assert c.density_kind is None
     assert c.binary_path is None
     assert c.extra_search_dirs == ()
+    assert c.map_type == "Fobs"
+
+
+def test_deltF_map_type_skips_dysnomia_binary_gate(monkeypatch, tmp_path):
+    """map_type='delt-F' は Dysnomia を使わないためバイナリ未解決を無視して進む。
+
+    バイナリ解決を None に固定し存在しない gpx で呼ぶ。Fobs はバイナリ検査で
+    「バイナリが見つかりません」、delt-F はそれを飛ばして「gpx が存在しません」になる。
+    """
+    import tsumugin.mem.gsas as memmod
+
+    monkeypatch.setattr(memmod, "resolve_dysnomia_binary", lambda **kw: None)
+    missing = str(tmp_path / "nope.gpx")
+
+    with pytest.raises(MEMUnavailableError) as fobs_exc:
+        run_dysnomia_mem(missing, config=MEMRunConfig(map_type="Fobs"))
+    assert "バイナリが見つかりません" in str(fobs_exc.value)
+
+    with pytest.raises(MEMUnavailableError) as delt_exc:
+        run_dysnomia_mem(missing, config=MEMRunConfig(map_type="delt-F"))
+    assert "gpx が存在しません" in str(delt_exc.value)  # バイナリ検査を飛ばした証拠
 
 
 def test_config_is_frozen():

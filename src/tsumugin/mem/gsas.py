@@ -60,6 +60,10 @@ class MEMRunConfig:
     :param cutoff: SearchMap のピーク閾値 (rhoMax の %)。閾値 = cutoff% × rhoMax 以上を
         ピークとする。100 だと最大値しか拾えないため既定 30 (骨格〜中量原子を拾う)。
     :param top_peaks: 抽出する上位ピーク数 (正/負それぞれ)。
+    :param map_type: 密度マップ種別。``"Fobs"`` (既定) は Dysnomia MEM 密度 (既知密度の可視化)。
+        ``"delt-F"`` は差フーリエ (Fo-Fc) で **Dysnomia を使わず**未モデル密度を直接出す
+        (model-fix の欠損原子探索向け; 高分解能・低重なりデータ [放射光X線] で有効)。他に
+        ``"2*Fo-Fc"``/``"Fcalc"`` も可 (GSAS FourierMap 準拠)。
     """
 
     dmin: float = 0.9
@@ -72,6 +76,7 @@ class MEMRunConfig:
     extra_search_dirs: tuple[str, ...] = ()
     cutoff: float = 30.0
     top_peaks: int = 8
+    map_type: str = "Fobs"
 
 
 @dataclass(frozen=True)
@@ -311,15 +316,20 @@ def run_dysnomia_mem(
       (5) Dysnomia を実行, (6) ``MEMupdateReflData`` で MEM 最適化 F を回収し密度を再計算,
       (7) 密度統計 + ピーク→原子割当 + .grd 書き出し。
     【未導入縮退 (REQ-020/EDGE-006)】バイナリ/GSAS 未解決や実行失敗は ``MEMUnavailableError``。
+    【差フーリエ (map_type="delt-F")】Dysnomia を使わず GSAS ネイティブ FourierMap で未モデル密度を
+      出す (model-fix の欠損原子探索向け・バイナリ不要)。
     """
-    binary = resolve_dysnomia_binary(
-        binary_path=config.binary_path, extra_search_dirs=config.extra_search_dirs
-    )
-    if binary is None:
-        raise MEMUnavailableError(
-            "Dysnomia バイナリが見つかりません。MEMRunConfig(binary_path=...) で指定するか、"
-            "jp-minerals.org/dysnomia から入手し PATH/~/.GSASII/Dysnomia 等に配置してください。"
+    use_dysnomia = config.map_type == "Fobs"
+    binary = None
+    if use_dysnomia:
+        binary = resolve_dysnomia_binary(
+            binary_path=config.binary_path, extra_search_dirs=config.extra_search_dirs
         )
+        if binary is None:
+            raise MEMUnavailableError(
+                "Dysnomia バイナリが見つかりません。MEMRunConfig(binary_path=...) で指定するか、"
+                "jp-minerals.org/dysnomia から入手し PATH/~/.GSASII/Dysnomia 等に配置してください。"
+            )
     if not os.path.isfile(gpx_path):
         raise MEMUnavailableError(f"gpx が存在しません: {gpx_path}")
 
@@ -344,7 +354,9 @@ def run_dysnomia_mem(
 
     with tempfile.TemporaryDirectory(prefix="tsumugin-mem-") as tmp:
         work = Path(tmp)
-        _prepare_workdir(work, binary)
+        if use_dysnomia:
+            # Dysnomia が cwd から読む .dat をバイナリ同梱先から複製 (差フーリエでは不要)。
+            _prepare_workdir(work, binary)
         gpx_copy = work / "mem_input.gpx"
         shutil.copyfile(gpx_path, gpx_copy)
 
@@ -358,64 +370,69 @@ def run_dysnomia_mem(
 
         kind = config.density_kind or density_kind_from_type(rtype)
 
-        # (3) Fobs Fourier マップ (MEM 前・グリッド次元決定)
+        # (3) Fourier マップ (グリッド次元決定)。map_type 準拠 (Fobs=MEM 前 / delt-F=差密度)。
         gen["Map"] = G2elem.mapDefault.copy()
-        gen["Map"]["MapType"] = "Fobs"
+        gen["Map"]["MapType"] = config.map_type
         gen["Map"]["GridStep"] = config.grid_step
         gen["Map"]["cutOff"] = config.cutoff
         gen["Map"]["RefList"] = [hist.name]
         G2mth.FourierMap(ph.data, {"RefList": reflData, "Type": rtype})
         pre_min, pre_max = float(gen["Map"]["minmax"][1]), float(gen["Map"]["minmax"][0])
-
-        # (4) Dysnomia 制御辞書
-        ph.data["Dysnomia"] = {
-            "DenStart": "uniform", "Optimize": config.optimize,
-            "Lagrange": ["user", config.lagrange, 0.05], "wt pwr": 0, "E_factor": 1.0,
-            "Ncyc": config.ncyc, "prior": "uniform", "Lam frac": list(_LAM_FRAC),
-            "overlap": 0.2, "MEMdmin": config.dmin,
-        }
-        memtype = _mem_type(gen, rtype)
         n_reflections = int(np.sum(np.array([r[3] for r in reflData]) > 0))
 
-        cwd0 = os.getcwd()
-        os.chdir(work)
-        try:
-            prf = str(G2pwd.makePRFfile(ph.data, memtype))
-            ok = G2pwd.makeMEMfile(ph.data, reflData, memtype, str(binary))
-            if not ok:
-                raise MEMUnavailableError(
-                    f"makeMEMfile 失敗 (非標準空間群 {gen['SGData']['SpGrp']!r} は Dysnomia 非対応)。"
-                )
+        if use_dysnomia:
+            # (4) Dysnomia 制御辞書 → (5) 実行 → (6) MEMupdateReflData で MEM 最適化 F を回収。
+            ph.data["Dysnomia"] = {
+                "DenStart": "uniform", "Optimize": config.optimize,
+                "Lagrange": ["user", config.lagrange, 0.05], "wt pwr": 0, "E_factor": 1.0,
+                "Ncyc": config.ncyc, "prior": "uniform", "Lam frac": list(_LAM_FRAC),
+                "overlap": 0.2, "MEMdmin": config.dmin,
+            }
+            memtype = _mem_type(gen, rtype)
+            cwd0 = os.getcwd()
+            os.chdir(work)
             try:
-                proc = subprocess.run(
-                    [str(binary), prf], cwd=str(work), capture_output=True,
-                    text=True, check=True,
-                )
-            except subprocess.CalledProcessError as exc:
-                raise MEMUnavailableError(
-                    f"Dysnomia 実行に失敗 (returncode={exc.returncode})。"
-                ) from exc
-            converged, mem_r = _parse_dysnomia_out(proc.stdout)
+                prf = str(G2pwd.makePRFfile(ph.data, memtype))
+                ok = G2pwd.makeMEMfile(ph.data, reflData, memtype, str(binary))
+                if not ok:
+                    raise MEMUnavailableError(
+                        f"makeMEMfile 失敗 (非標準空間群 {gen['SGData']['SpGrp']!r} は Dysnomia 非対応)。"
+                    )
+                try:
+                    proc = subprocess.run(
+                        [str(binary), prf], cwd=str(work), capture_output=True,
+                        text=True, check=True,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    raise MEMUnavailableError(
+                        f"Dysnomia 実行に失敗 (returncode={exc.returncode})。"
+                    ) from exc
+                converged, mem_r = _parse_dysnomia_out(proc.stdout)
 
-            fba = Path(prf).with_suffix(".fba")
-            if not fba.exists():
-                raise MEMUnavailableError("Dysnomia が .fba (MEM 構造因子) を生成しませんでした。")
-            # MEMupdateReflData は .fba と反射リストの不整合 (発散精密化で反射行が壊れる等) で
-            # 素の IndexError/KeyError/ValueError を投げうる → MEMUnavailableError へ縮退 (非破壊)。
-            try:
-                goon, newRefl = G2pwd.MEMupdateReflData(prf, ph.data, reflData)
-            except (IndexError, KeyError, ValueError, TypeError) as exc:
-                raise MEMUnavailableError(
-                    f"MEMupdateReflData が MEM 構造因子を回収できませんでした ({type(exc).__name__})。"
-                    "精密化の発散で反射リストが壊れた可能性があります。"
-                ) from exc
-            if not goon:
-                raise MEMUnavailableError("MEMupdateReflData が MEM 構造因子を回収できませんでした。")
-        finally:
-            os.chdir(cwd0)
+                fba = Path(prf).with_suffix(".fba")
+                if not fba.exists():
+                    raise MEMUnavailableError("Dysnomia が .fba (MEM 構造因子) を生成しませんでした。")
+                # MEMupdateReflData は .fba と反射リストの不整合 (発散精密化で反射行が壊れる等) で
+                # 素の IndexError/KeyError/ValueError を投げうる → MEMUnavailableError へ縮退 (非破壊)。
+                try:
+                    goon, newRefl = G2pwd.MEMupdateReflData(prf, ph.data, reflData)
+                except (IndexError, KeyError, ValueError, TypeError) as exc:
+                    raise MEMUnavailableError(
+                        f"MEMupdateReflData が MEM 構造因子を回収できませんでした ({type(exc).__name__})。"
+                        "精密化の発散で反射リストが壊れた可能性があります。"
+                    ) from exc
+                if not goon:
+                    raise MEMUnavailableError(
+                        "MEMupdateReflData が MEM 構造因子を回収できませんでした。"
+                    )
+            finally:
+                os.chdir(cwd0)
+            # MEM 最適化 F で密度を再計算 = MEM 密度。
+            G2mth.FourierMap(ph.data, {"RefList": newRefl, "Type": rtype})
+        else:
+            # 差フーリエ等: Dysnomia を使わず (3) の FourierMap がそのまま密度。
+            converged, mem_r = True, None
 
-        # (6) MEM 最適化 F で密度を再計算 = MEM 密度
-        G2mth.FourierMap(ph.data, {"RefList": newRefl, "Type": rtype})
         mp = gen["Map"]
         post_min, post_max = float(mp["minmax"][1]), float(mp["minmax"][0])
         grid_shape = tuple(int(x) for x in mp["rho"].shape)
@@ -433,7 +450,7 @@ def run_dysnomia_mem(
         grd_path = out_grd or str(Path(gpx_path).with_suffix(f".mem_{kind}.grd"))
         save_density_grid(grd_path, np.asarray(mp["rho"], dtype=float),
                           tuple(float(x) for x in gen["Cell"][1:7]),
-                          title=f"tsumugin Dysnomia MEM density ({kind}) (VESTA .grd)")
+                          title=f"tsumugin {config.map_type} density ({kind}) (VESTA .grd)")
 
         density_map = MEMDensityMap(
             path=grd_path, density_kind=kind, grid_shape=grid_shape,

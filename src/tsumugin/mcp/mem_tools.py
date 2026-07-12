@@ -41,22 +41,25 @@ def mem_density(
     grid_step: float = 0.25,
     cutoff: float = 30.0,
     top_peaks: int = 8,
+    map_type: str = "Fobs",
     binary_path: str | None = None,
     extra_search_dirs: Sequence[str] = (),
     out_grd: str | None = None,
 ) -> dict:
-    """精密化済み gpx から実 Dysnomia MEM を回し密度統計 + 未モデル密度ピークを返す (計器)。
+    """精密化済み gpx から実 MEM/差フーリエ密度を回し密度統計 + 未モデル密度ピークを返す (計器)。
 
     :param gpx_path: auto_rietveld が返した gpx ハンドル
     :param phase/hist: 対象相/ヒスト (None は既定選択; joint は density_kind で取り違え防止)
     :param density_kind: ``electron``/``nuclear`` を明示 (None は probe から自動)
+    :param map_type: ``"Fobs"`` (Dysnomia MEM 密度・既定) / ``"delt-F"`` (差フーリエ Fo-Fc,
+        **欠損原子探索向け**・Dysnomia 不要・高分解能データで有効)。model-fix は delt-F 推奨。
     :returns: 密度統計 + peaks[] の素の型 dict。Dysnomia 未解決は ``{"error", "error_type"}``。
     """
     from ..mem.gsas import MEMRunConfig, run_dysnomia_mem  # 遅延 (GSAS 境界隔離)
 
     cfg = MEMRunConfig(
         dmin=dmin, grid_step=grid_step, density_kind=density_kind, cutoff=cutoff,
-        top_peaks=top_peaks, binary_path=binary_path,
+        top_peaks=top_peaks, map_type=map_type, binary_path=binary_path,
         extra_search_dirs=tuple(extra_search_dirs),
     )
     try:

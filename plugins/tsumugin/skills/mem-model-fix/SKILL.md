@@ -28,8 +28,11 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
 ## 手順
 
 1. **収束モデルを用意する**: `analyze` (または `auto_rietveld`) で得た `gpx_path` と相の CIF パスを持つ。
-2. **`mem_density` を呼ぶ**: probe に応じ密度種別が決まる (X線=電子密度 / 中性子=核密度)。joint は
-   `density_kind` か `hist` で対象を指定 (X線/中性子の取り違え防止)。返る `peaks` を読む。
+2. **`mem_density` を呼ぶ**: **欠損原子探索には `map_type="delt-F"` (差フーリエ Fo-Fc) を使う**
+   (既定の `"Fobs"` は Dysnomia MEM 密度で既知密度の可視化向け・骨格ピークが支配し欠損を隠す)。
+   delt-F は Dysnomia 不要。**位置特定は高分解能・低重なりデータが必須**なので、joint なら
+   `hist`/`density_kind` で**放射光 X 線ヒスト**を選ぶ (中性子 TOF は重なりで位置が出ない — 実測で
+   確認)。probe に応じ密度種別が決まる (X線=電子密度 / 中性子=核密度)。返る `peaks` を読む。
 3. **`propose_structure_revisions`** に `peaks` + `density_kind` + `phase` を渡し、`ReviseStructure`
    候補を得る。各候補の `evidence` (frac・magnitude・nearest_atom・suggested_op・suggested_edit) を見る。
 4. **密度を結晶学的に読む (R5 — あなたの判断)**:
@@ -86,7 +89,11 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
 - MEM 密度は **既知密度の可視化 (結合・無秩序・占有の偏り)** には有効。**未知原子の位置探索**は
   不確実で、確定には試行精密化 + 事前知識 (配位・結合距離・電荷中性) が要る。
 - 位置特定が要るなら **高分解能側 (放射光 X 線) のヒスト**を `hist` 指定で使う、`dmin` を下げて
-  分解能を上げる、を試すが、それでも粉末の本質的限界は残る。
+  分解能を上げる、を試す。**実測での挙動 (NaCuHCF で既知 N3 を削除して復元を試行)**:
+  - **放射光 X 線 + `map_type="delt-F"` → 欠損 N3 を 0.17Å で正しく復元** (弱散乱 N でも高分解能なら OK)。
+  - X 線でも `map_type="Fobs"` は骨格 (Cu/Fe) が支配し復元不可。中性子 TOF は Fobs/delt-F とも
+    重なりで復元不可 (~2Å)。低占有の空隙水 (occ0.11) はどの条件でも検出限界以下。
+  → **model-fix は「delt-F + 高分解能ヒスト」を既定**とし、それでも位置は試行精密化で必ず確認する。
 
 ## 失敗・縮退
 
