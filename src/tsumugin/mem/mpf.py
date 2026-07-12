@@ -162,6 +162,11 @@ def run_mem_rietveld_gpx(
       収束/発散判定。前反復の gpx は上書きしない (P2)。
     【停止 (REQ-026/107)】Rwp∧密度 max の相対変化 < 閾値で収束、Rwp 悪化で発散 (当該反復を残す)、
       いずれでもなければ max_iter。停止理由と各反復を ledger に追記する。
+
+    :param snapshot_dir: 子スナップショット gpx の出力先 (None なら入力 gpx と同ディレクトリ)。
+        各反復は ``mpf_iter{i}.gpx`` を書くため、**呼び出しごとに固有のディレクトリ**を渡すこと
+        (同一ディレクトリを別呼び出しで再利用すると ``mpf_iter0.gpx`` 等が上書きされ、返した
+        ``MPFCycle.gpx_path`` が別実行の内容を指す)。
     """
     if not config.enabled:
         return MPFResult(cycles=(), stop_reason="disabled")
