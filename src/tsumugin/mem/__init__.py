@@ -39,6 +39,12 @@ from .iterate import (
     MEMRietveldResult,
     run_mem_rietveld,
 )
+from .mpf import (
+    MPFConfig,
+    MPFCycle,
+    MPFResult,
+    run_mem_rietveld_gpx,
+)
 from .output import (
     bond_path_min_density,
     extract_cross_section,
@@ -63,6 +69,9 @@ __all__ = [
     "MEMRietveldCycle",
     "MEMRietveldResult",
     "MEMRunConfig",
+    "MPFConfig",
+    "MPFCycle",
+    "MPFResult",
     "StructureFactor",
     "assign_peaks_to_atoms",
     "bond_path_min_density",
@@ -75,6 +84,7 @@ __all__ = [
     "resolve_dysnomia_binary",
     "run_dysnomia_mem",
     "run_mem_rietveld",
+    "run_mem_rietveld_gpx",
     "run_mem_spot",
     "save_density_grid",
     "write_density_map",
