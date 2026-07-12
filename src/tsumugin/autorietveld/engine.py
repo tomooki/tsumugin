@@ -239,6 +239,7 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
         "labels": labels, "coord_atoms": coord_atoms,
         "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ | sum_occ,
         "uiso_labels": list(spec.free_uiso_labels),
+        "refine_cell": spec.refine_cell,
     }
 
 
@@ -326,8 +327,10 @@ def _apply_stage(
             hist.set_refinements({"Background": spec})
     # scale: GSAS-II はヒストグラムスケールを既定で精密化するため単相では no-op。
     if "cell" in flags:
-        for ph in phases:
-            ph.set_refinements({"Cell": True})
+        # refine_cell=False の相 (副相/不純物の格子固定, Issue #47) は Cell 解放をスキップする。
+        for ph, info in zip(phases, phase_infos):
+            if info.get("refine_cell", True):
+                ph.set_refinements({"Cell": True})
     if "displacement" in flags:
         mapping = flags["displacement"]
         for idx, keys in mapping.items():  # type: ignore[union-attr]
