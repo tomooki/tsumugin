@@ -25,6 +25,9 @@ class FrameSpec:
     :param axis_value: フレーム軸値 (温度 K または時間)。None なら index 軸
     :param data_format: GSAS-II importer 種別 ("XRDML"/"FXYE"/"GSAS"/"XYE")
     :param two_theta_limits: このフレームの精密化レンジ (None なら系列既定/全域)
+    :param excluded_regions: 使用域内部で除外する 2θ 区間の列 (Issue #53)。寄生線/アーチファクト等を
+        事前マスクなしに除外したい場合に用いる (`autorietveld.model.HistogramSpec.excluded_regions`
+        と同義)。既定 () (除外なし; 後方互換)。
     :param label: 人間可読ラベル (既定はファイル名)
     """
 
@@ -32,6 +35,7 @@ class FrameSpec:
     axis_value: float | None = None
     data_format: str = "XRDML"
     two_theta_limits: tuple[float, float] | None = None
+    excluded_regions: tuple[tuple[float, float], ...] = ()
     label: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -42,6 +46,9 @@ class FrameSpec:
             "two_theta_limits": list(self.two_theta_limits)
             if self.two_theta_limits is not None
             else None,
+            "excluded_regions": [list(r) for r in self.excluded_regions]
+            if self.excluded_regions
+            else [],
             "label": self.label,
         }
 
@@ -53,6 +60,9 @@ class FrameSpec:
             axis_value=d.get("axis_value"),  # type: ignore[arg-type]
             data_format=str(d.get("data_format", "XRDML")),
             two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
+            excluded_regions=tuple(
+                (float(r[0]), float(r[1])) for r in (d.get("excluded_regions") or ())
+            ),
             label=str(d.get("label", "")),
         )
 

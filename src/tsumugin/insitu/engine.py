@@ -552,6 +552,7 @@ def make_gsas_runner(
                 geometry=geometry,  # type: ignore[arg-type]
                 data_format=data_format,
                 two_theta_limits=limits,
+                excluded_regions=frame.excluded_regions,
                 temperature=frame.axis_value,
             )
             recipe_ = (
