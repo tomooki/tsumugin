@@ -1,4 +1,4 @@
-"""autorietveld.mem (実 Dysnomia MEM 駆動) の TDD テスト (XND / MEM 実装)。
+"""mem.gsas (実 Dysnomia MEM 駆動) の TDD テスト (XND / REQ-019 本実装)。
 
 numpy-only の決定論コア (設定 dataclass / バイナリ解決 / ピーク→原子割当 / 密度種別 /
 未導入縮退) を GSAS 非依存で検証し、実 Dysnomia MEM は @pytest.mark.gsas + バイナリ/
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from tsumugin.errors import MEMUnavailableError
-from tsumugin.autorietveld.mem import (
+from tsumugin.mem.gsas import (
     DensityPeak,
     MEMDensityResult,
     MEMRunConfig,
@@ -180,7 +180,7 @@ def test_density_peak_is_frozen():
 
 
 def test_run_raises_when_binary_unavailable(monkeypatch, tmp_path):
-    import tsumugin.autorietveld.mem as memmod
+    import tsumugin.mem.gsas as memmod
 
     monkeypatch.setattr(memmod, "resolve_dysnomia_binary", lambda **kw: None)
     fake_gpx = tmp_path / "x.gpx"

@@ -1,16 +1,19 @@
-"""実 Dysnomia MEM 駆動 (精密化済み gpx → 最大エントロピー密度) (XND / FR-601〜606)。
+"""実 Dysnomia MEM 駆動 (精密化済み gpx → 最大エントロピー密度) (FR-601〜606 実体化)。
 
-M5 の ``tsumugin.mem`` は MEM ソルバ境界 (Protocol) + 結果型 + シミュレート joint 用の
-入力生成のモック実装だった。本モジュールは **実構造 Rietveld (autorietveld) で精密化した
-gpx** から、GSAS-II 内蔵の実 Dysnomia 駆動系 (``GSASIIpwd.makePRFfile`` / ``makeMEMfile`` /
-``MEMupdateReflData`` + Dysnomia バイナリ) を回して**実 MEM 密度**を得る。
+同じ ``tsumugin.mem`` の ``dysnomia.py`` (``DysnomiaBackend``) は **シミュレート joint パイプ
+ライン** (``MEMInput`` の代理 F_obs) 向けの Protocol 実装 (境界層)。本モジュールは **実構造
+Rietveld (``autorietveld``) で精密化した実データ gpx** から、GSAS-II 内蔵の実 Dysnomia 駆動系
+(``GSASIIpwd.makePRFfile`` / ``makeMEMfile`` / ``MEMupdateReflData`` + Dysnomia バイナリ) を
+回して**実 MEM 密度**を得る、REQ-019 の本実装 (production 経路)。密度マップは同パッケージの
+``output`` (``extract_cross_section`` / ``bond_path_min_density``) で実 .grd から断面/伝導経路
+最小密度を取れる (REQ-027/028/029 を実データで充足)。
 
 【役割分担】結晶学 (反射リスト・構造因子・位相・空間群展開・Fourier 変換) は GSAS-II に委譲し、
   本モジュールは (1) バイナリ解決、(2) Dysnomia 制御辞書の組み立て、(3) 一時作業領域の準備
-  (Dysnomia は ``spgra.dat`` 等を cwd から読む)、(4) MEM 前/後の密度統計・ピーク→原子割当の
-  抽出、を担う。密度種別は probe (X 線→電子密度 / 中性子→核密度) から決定する。
+  (Dysnomia は ``spgra.dat`` 等を cwd から読む)、(4) MEM 前/後の密度統計・ピーク→原子割当・
+  実 .grd 書き出し、を担う。密度種別は probe (X 線→電子密度 / 中性子→核密度) から決定する。
 
-【core-only import (REQ-403)】``import tsumugin.autorietveld.mem`` は numpy のみで成功する
+【core-only import (REQ-403)】``import tsumugin.mem.gsas`` は numpy のみで成功する
   (GSAS-II は関数内で遅延 import)。バイナリ/GSAS 未導入時は ``MEMUnavailableError`` へ縮退する
   (``DysnomiaBackend`` と対称)。
 
@@ -31,8 +34,9 @@ from typing import Sequence
 import numpy as np
 
 from ..errors import MEMUnavailableError
-from ..mem.base import MEMDensityMap
 from ..store.ledger import Ledger
+from .base import MEMDensityMap
+from .output import save_density_grid
 
 # Dysnomia が cwd から読む空間群/Wyckoff データファイル (バイナリと同ディレクトリに同梱)。
 _DYS_DATFILES = ("spgra.dat", "spgro.dat", "wyckoff.dat")
@@ -416,9 +420,12 @@ def run_dysnomia_mem(
                                    config.top_peaks)
 
         # .grd 書き出し (呼び出し側指定 or 入力 gpx の隣へ)。既定名に密度種別を含め、joint で
-        # electron/nuclear を続けて回しても取り違え/上書きしない。
+        # electron/nuclear を続けて回しても取り違え/上書きしない。書式は output と一元化し、
+        # extract_cross_section / bond_path_min_density が実密度を読めるようにする。
         grd_path = out_grd or str(Path(gpx_path).with_suffix(f".mem_{kind}.grd"))
-        _write_grd(grd_path, mp["rho"], gen["Cell"][1:7], kind)
+        save_density_grid(grd_path, np.asarray(mp["rho"], dtype=float),
+                          tuple(float(x) for x in gen["Cell"][1:7]),
+                          title=f"tsumugin Dysnomia MEM density ({kind}) (VESTA .grd)")
 
         density_map = MEMDensityMap(
             path=grd_path, density_kind=kind, grid_shape=grid_shape,
@@ -479,19 +486,3 @@ def _search_and_assign(
         )
     results.sort(key=lambda p: -abs(p.magnitude))
     return tuple(results)
-
-
-def _write_grd(path: str, rho: np.ndarray, cell, kind: str) -> None:
-    """VESTA 互換 .grd に密度グリッドを書き出す (決定論・固定フォーマット)。🔵 REQ-027"""
-    rho = np.asarray(rho, dtype=float)
-    nx, ny, nz = rho.shape
-    a, b, c, al, be, ga = (float(x) for x in cell)
-    lines = [
-        f"tsumugin Dysnomia MEM density ({kind}) (VESTA .grd)",
-        f"{a:.6f} {b:.6f} {c:.6f} {al:.6f} {be:.6f} {ga:.6f}",
-        f"{nx} {ny} {nz}",
-    ]
-    flat = rho.reshape(-1)
-    lines.extend(f"{v:.8f}" for v in flat)
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\n".join(lines) + "\n")
