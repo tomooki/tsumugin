@@ -116,8 +116,10 @@ def _cells_physical(
 
 
 # 内省・物理性判定で抽出するプロファイル関連キー (CW + TOF)。
+# Lam (波長) は較正 (calibrate_instrument_from_standard, Issue #61) で hist_profile に露出するため含める。
+# FWHM/物理性判定は U,V,W,X,Y のみを用いるので Lam の追加は非破壊 (余分キーは無視される)。
 _PROFILE_INTROSPECT_KEYS = (
-    "U", "V", "W", "X", "Y", "SH/L", "Zero",
+    "Lam", "U", "V", "W", "X", "Y", "SH/L", "Zero",
     "sig-0", "sig-1", "sig-2", "alpha", "beta-0", "beta-1", "difC", "difA",
 )
 

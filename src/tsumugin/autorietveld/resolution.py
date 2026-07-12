@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .model import (
+    CalibrationResult,
     Geometry,
     HistogramSpec,
     InstrumentProfile,
@@ -27,6 +28,13 @@ from .model import (
     Radiation,
     RefinementStage,
 )
+from .recipe import _GEOMETRY_DISPLACEMENT
+
+# 立方標準の認証格子定数 a [Å] (a=b=c, 90°)。波長較正で格子を固定する基準。
+STANDARD_CELL_A: dict[str, float] = {
+    "CeO2": 5.41165,   # NIST SRM 674b
+    "Si": 5.43119,     # NIST SRM 640
+}
 
 # 抽出・固定で扱う CW 装置プロファイルキー。
 INSTRUMENT_PROFILE_KEYS = ("U", "V", "W", "X", "Y", "SH/L", "Zero")
@@ -292,6 +300,191 @@ def extract_instrument_profile(
     prof = result.hist_profile[0] if result.hist_profile else {}
     values = {k: float(prof[k]) for k in INSTRUMENT_PROFILE_KEYS if k in prof}
     return InstrumentProfile(values=values, source_rwp=result.final_rwp)
+
+
+def build_calibration_recipe(
+    *,
+    geometry: Geometry = Geometry.DEBYE_SCHERRER,
+    background_coeffs: int = 12,
+    refine_wavelength: bool = False,
+) -> tuple[RefinementStage, ...]:
+    """標準試料較正用レシピ (格子固定・ゼロ点/変位/プロファイル解放, Issue #61)。
+
+    格子は認証値に固定 (呼出側が `PhaseSpec.refine_cell=False` + `initial_cells` で設定) し、
+    背景 → Zero+試料変位 → W → U,V,W,X,Y+Zero の順で位置とプロファイルを解放する。
+
+    ⚠ **波長 (Lam) は既定で解放しない**。標準の強反射が低角に偏るデータでは、波長 (∝tanθ)・
+    ゼロ点 (定数)・試料変位 (∝cosθ/sinθ) の角度依存が低角でほぼ縮退し、波長が試料変位と分離できない
+    (CeO2 実測: 変位固定で +67 ppm・変位解放で +1172 ppm と大きく振れ同 Rwp)。波長はモノクロメータの
+    エネルギー較正で与える公称値を**信頼して固定**し、標準ではゼロ点・変位・プロファイルを較正する。
+    小さいゼロ点/変位で良好 Rwp なら公称波長と認証格子が整合している傍証となる。
+    高角に強反射がある高分解能データで敢えて波長を交差確認したい場合のみ `refine_wavelength=True`
+    (縮退に留意し変位と同時解放しない: Lam+Zero を W より前に単独段で解放)。
+
+    **SH/L は解放しない**: 装置の非対称ラインシェイプと相関して位置を発散させる (Rwp 12→26% 悪化)。
+
+    :param geometry: 回折計ジオメトリ (試料変位パラメータの選択に用いる)
+    :param background_coeffs: 背景 (Chebyshev) 係数数
+    :param refine_wavelength: 波長 Lam も解放するか (既定 False; 縮退のため非推奨・交差確認用)
+    :returns: RefinementStage のタプル (calibrate_instrument_from_standard が用いる)
+    """
+    disp_keys = _GEOMETRY_DISPLACEMENT[geometry]
+    disp = {0: list(disp_keys)}
+    stages = [
+        RefinementStage(
+            label="cal scale+bkg",
+            flags={"scale": True, "background": {"coeffs": int(background_coeffs)}},
+            note="相分率スケール + 背景 (標準較正)",
+        ),
+        RefinementStage(
+            label="cal zero+disp",
+            flags={"displacement": disp, "profile": ["Zero"]},
+            note="ゼロ点 + 試料変位 (位置合わせ)",
+        ),
+    ]
+    if refine_wavelength:
+        stages.append(
+            RefinementStage(
+                label="cal lam+zero",
+                flags={"profile": ["Lam", "Zero"]},
+                note="波長 Lam + ゼロ点 (縮退に留意; 変位・プロファイルと同時解放しない)",
+            )
+        )
+    stages += [
+        RefinementStage(
+            label="cal W",
+            flags={"profile": ["W"]},
+            note="ガウス W 定数 (位置確定後にプロファイル)",
+        ),
+        RefinementStage(
+            label="cal UVWXY+Zero",
+            flags={"profile": ["U", "V", "W", "X", "Y", "Zero"]},
+            note="U,V,W + Lorentzian X,Y + Zero (装置プロファイル)",
+        ),
+    ]
+    return tuple(stages)
+
+
+def calibrate_instrument_from_standard(
+    data_path: str,
+    *,
+    wavelength_init: float,
+    standard: str = "CeO2",
+    cell_a: float | None = None,
+    work_dir: str | None = None,
+    two_theta_limits: tuple[float, float] | None = None,
+    radiation: Radiation = Radiation.XRAY_SYNCHROTRON,
+    geometry: Geometry = Geometry.DEBYE_SCHERRER,
+    polarization: float = 0.95,
+    background_coeffs: int = 12,
+    constrain_nonneg: bool = True,
+    refine_wavelength: bool = False,
+    runner=None,
+) -> CalibrationResult:
+    """立方標準試料 (CeO2/Si 等) で**ゼロ点・試料変位・装置プロファイル**を較正する (格子固定, Issue #61)。
+
+    `extract_instrument_profile*` が格子を解放して分解能を抽出するのと対照的に、本関数は格子を
+    **認証値に固定** (`PhaseSpec.refine_cell=False` + `initial_cells`) し、公称波長も固定した上で、
+    ゼロ点・試料変位・装置プロファイルを標準に合わせる。小さいゼロ点/変位で良好 Rwp なら、公称波長と
+    認証格子の整合の傍証となる。
+
+    ⚠ **波長は既定で解放しない** (`refine_wavelength=False`)。強反射が低角に偏ると波長は試料変位と
+    縮退して分離できず (CeO2 実測: 変位固定 +67 ppm・変位解放 +1172 ppm・同 Rwp)、標準からの波長較正は
+    信頼できない。波長はモノクロメータのエネルギー較正で与える公称値を採る。→ `CalibrationResult.wavelength`
+    は既定で入力値と同一 (`ppm_shift=0`)。
+
+    手順: 2 列読込 → Poisson esd 付き xye → 標準参照 CIF → PXC instprm → `build_calibration_recipe`
+    (格子固定) を `run_auto_rietveld` へ。結果 `hist_profile[0]` から Zero/プロファイル (+任意で Lam) を拾う。
+    転写に用いるのは Zero と装置プロファイル (V,X 等)。**試料変位は試料固有 (毛細管位置) なので転写せず**、
+    試料側で別途精密化する。
+
+    ⚠ **立方標準専用** (a=b=c, 90°)。非立方標準は未対応。SH/L は解放しない (位置を発散させる)。
+
+    :param data_path: 生の 2 列 (2θ, 強度) データ (.dat/.xy)。3 列目 esd があれば無視し Poisson を用いる
+    :param wavelength_init: 公称波長 [Å] (モノクロメータ較正値)。既定では固定して用いる
+    :param standard: 標準試料名 (STANDARD_CELL_A/STANDARD_REFERENCE_CIF に登録: "CeO2"/"Si")
+    :param cell_a: 認証格子 a [Å] (None なら STANDARD_CELL_A[standard])。ロット/温度で微調整する場合に指定
+    :param two_theta_limits: 精密化レンジ (直接ビーム/低角ノイズ除外に推奨)
+    :param constrain_nonneg: U,W,X,Y を非負拘束するか (既定 True; 転写可能な物理プロファイルを得る)
+    :param refine_wavelength: 波長 Lam も解放するか (既定 False; 縮退のため非推奨・交差確認用)
+    :param runner: 精密化関数 (既定 run_auto_rietveld; テストは stub 注入)
+    :returns: CalibrationResult (wavelength/zero/profile/reference_cell/source_rwp)
+    """
+    from ..reference.io import load_xy  # 遅延 (numpy コア境界)
+
+    two_theta, intensity = load_xy(data_path)
+    cif_text = standard_reference_cif(standard)  # 未登録は早期 KeyError (大小文字非依存)
+    if cell_a is not None:
+        a: float | None = float(cell_a)
+    else:
+        # STANDARD_CELL_A も standard_reference_cif と同じく大小文字非依存で引く (整合)。
+        cell_key = {k.lower(): k for k in STANDARD_CELL_A}.get(standard.lower())
+        a = STANDARD_CELL_A[cell_key] if cell_key is not None else None
+    if a is None:
+        raise KeyError(
+            f"標準 {standard!r} の認証格子が未登録です。cell_a を明示指定してください "
+            f"(登録済: {', '.join(STANDARD_CELL_A)})"
+        )
+    ref_cell = (a, a, a, 90.0, 90.0, 90.0)
+
+    auto_tmp = work_dir is None
+    wd = Path(tempfile.mkdtemp(prefix="calib_")) if auto_tmp else Path(work_dir)
+    try:
+        wd.mkdir(parents=True, exist_ok=True)
+        xye_path = wd / "standard.xye"
+        cif_path = wd / f"{standard}.cif"
+        prm_path = wd / "standard.instprm"
+        xye_path.write_text(to_xye_text(two_theta, intensity), encoding="utf-8")
+        cif_path.write_text(cif_text, encoding="utf-8")
+        prm_path.write_text(
+            pxc_instprm_text(wavelength_init, polarization=polarization), encoding="utf-8"
+        )
+
+        bounds = dict(NONNEG_PROFILE_BOUNDS) if constrain_nonneg else None
+        hist = HistogramSpec(
+            data_path=str(xye_path),
+            instrument_path=str(prm_path),
+            radiation=radiation,
+            geometry=geometry,
+            data_format="XYE",
+            two_theta_limits=two_theta_limits,
+            profile_bounds=bounds,
+        )
+        # 格子を認証値に固定 (refine_cell=False) し、initial_cells で認証セルを設定する。
+        phase = PhaseSpec(
+            structure_path=str(cif_path), phase_name=standard, format_hint="CIF",
+            refine_cell=False,
+        )
+        run = runner
+        if run is None:
+            from .engine import run_auto_rietveld  # 遅延 import (GSAS 隔離)
+
+            run = run_auto_rietveld
+        recipe = build_calibration_recipe(
+            geometry=geometry, background_coeffs=background_coeffs,
+            refine_wavelength=refine_wavelength,
+        )
+        result = run(
+            [hist], [phase], recipe=recipe, initial_cells={standard: ref_cell}
+        )
+        prof = result.hist_profile[0] if result.hist_profile else {}
+        # 波長は既定で固定 → 入力値を採る。refine_wavelength=True のときのみ精密化値 (縮退注意)。
+        lam = float(prof.get("Lam", wavelength_init)) if refine_wavelength else float(wavelength_init)
+        zero = float(prof.get("Zero", 0.0))
+        profile = {k: float(prof[k]) for k in ("U", "V", "W", "X", "Y", "SH/L") if k in prof}
+        return CalibrationResult(
+            wavelength=lam,
+            wavelength_init=float(wavelength_init),
+            zero=zero,
+            profile=profile,
+            reference_cell=ref_cell,
+            source_rwp=result.final_rwp,
+        )
+    finally:
+        if auto_tmp:
+            import shutil
+
+            shutil.rmtree(wd, ignore_errors=True)
 
 
 # =====================================================================
