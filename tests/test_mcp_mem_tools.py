@@ -88,6 +88,15 @@ def test_edit_cif_error_returns_error_dict(tmp_path):
     assert res["error_type"] == "KeyError"
 
 
+def test_edit_cif_missing_input_returns_error_dict(tmp_path):
+    """入力 CIF が存在しない場合もエラー dict へ縮退する (例外を投げない)。"""
+    res = edit_cif(str(tmp_path / "nope.cif"),
+                   [{"op": "set_occupancy", "label": "Cu1", "occ": 0.5}],
+                   str(tmp_path / "o.cif"))
+    assert "error" in res
+    assert res["error_type"] in ("FileNotFoundError", "OSError")
+
+
 # ---- mem_density (Dysnomia 未解決の縮退, GSAS 非依存) ----
 
 

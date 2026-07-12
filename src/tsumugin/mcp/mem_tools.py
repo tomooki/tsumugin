@@ -163,7 +163,8 @@ def edit_cif(
         )
     try:
         path = apply_atom_edits(cif_path, aedits, out_path, phase_name=phase_name)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, FileNotFoundError, OSError) as exc:
+        # 編集エラー (不正 op/重複/欠落ラベル) や入力 CIF 未存在/不読を破壊なくエラー dict へ縮退。
         return {"error": str(exc), "error_type": type(exc).__name__}
     return {"cif_path": path, "n_edits": len(aedits)}
 
