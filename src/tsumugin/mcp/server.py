@@ -82,7 +82,7 @@ def create_mcp_server(session: AnalysisSession) -> object:
 
     server: Any = Server("tsumugin")
 
-    # 【ツール記述子】: MCP_TOOLS の全ツール (M4 8 + M6 2 + M8 3 = 13) を list_tools で公開する。
+    # 【ツール記述子】: MCP_TOOLS の全ツール (M4 8 + M6 2 + M8 3 + M9 3 + M8-③ 3 = 19) を list_tools で公開する。
     #   入力スキーマは緩い object (追加プロパティ許容) とし、実処理関数側の引数検証・既定値へ委ねる 🔵
     _tool_descriptors = [
         mcp_types.Tool(
@@ -95,7 +95,7 @@ def create_mcp_server(session: AnalysisSession) -> object:
 
     @server.list_tools()
     async def _list_tools() -> list[Any]:
-        # 【ツール公開】: MCP_TOOLS の 8 記述子をそのまま返す (単一情報源) 🔵 REQ-021
+        # 【ツール公開】: MCP_TOOLS の 19 記述子をそのまま返す (単一情報源) 🔵 REQ-021
         return _tool_descriptors
 
     @server.call_tool()

@@ -23,6 +23,7 @@ from .gsas import (
     MEMRunConfig,
     assign_peaks_to_atoms,
     density_kind_from_type,
+    expand_atoms_by_operators,
     resolve_dysnomia_binary,
     run_dysnomia_mem,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "build_mem_input",
     "check_mem_applicability",
     "density_kind_from_type",
+    "expand_atoms_by_operators",
     "extract_cross_section",
     "extract_structure_factors",
     "load_density_grid",

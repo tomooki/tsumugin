@@ -62,3 +62,11 @@ Uiso<0・占有率逸脱・格子逸脱を生む手は過剰適合として棄�
 Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発散→混合占有制約 (SetMixedOccupancy)、
 座標段階でセル発散→特殊位置の座標解放を避ける、TOF/放射光の高止まり→データリミット、
 未指数ピーク→相追加 (AddPhase, 相同定へ)。いずれも ModelAction はユーザー承認を挟む。
+
+## 構造改訂が要るとき → `mem-model-fix` skill
+
+Rwp は収束したが **物理妥当性 fail・占有率発散・構造の誤りが疑われる**とき、残差だけでは「どこを
+どう直すか」が一意に決まらない。**MEM (電子/核密度) で未モデル散乱を空間的に可視化して構造を修正
+する** `mem-model-fix` skill (`plugins/tsumugin/skills/mem-model-fix/SKILL.md`, `/mem-fix`) へ引き継ぐ。
+MCP `mem_density` → `propose_structure_revisions` → `edit_cif` → `refine_with_revisions` を駆動し、
+欠損原子/分割サイト/占有率誤り/水素を判断する (構造編集はユーザー承認・Rwp 改善∧妥当性維持で受理)。

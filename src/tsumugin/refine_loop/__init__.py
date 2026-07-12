@@ -34,6 +34,7 @@ from .diagnostics import (
     propose_initial_limits,
     propose_next_actions,
 )
+from .mem_diagnostics import propose_structure_revisions_from_mem
 from .model_compare import ModelCompareResult, run_model_comparison
 from .orchestrator import RefinementLoopResult, run_refinement_loop
 from .policy import (
@@ -71,6 +72,7 @@ __all__ = [
     "diagnose_residual",
     "propose_initial_limits",
     "propose_next_actions",
+    "propose_structure_revisions_from_mem",
     "run_model_comparison",
     "run_refinement_loop",
 ]
