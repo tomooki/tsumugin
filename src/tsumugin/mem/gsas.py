@@ -400,7 +400,15 @@ def run_dysnomia_mem(
             fba = Path(prf).with_suffix(".fba")
             if not fba.exists():
                 raise MEMUnavailableError("Dysnomia が .fba (MEM 構造因子) を生成しませんでした。")
-            goon, newRefl = G2pwd.MEMupdateReflData(prf, ph.data, reflData)
+            # MEMupdateReflData は .fba と反射リストの不整合 (発散精密化で反射行が壊れる等) で
+            # 素の IndexError/KeyError/ValueError を投げうる → MEMUnavailableError へ縮退 (非破壊)。
+            try:
+                goon, newRefl = G2pwd.MEMupdateReflData(prf, ph.data, reflData)
+            except (IndexError, KeyError, ValueError, TypeError) as exc:
+                raise MEMUnavailableError(
+                    f"MEMupdateReflData が MEM 構造因子を回収できませんでした ({type(exc).__name__})。"
+                    "精密化の発散で反射リストが壊れた可能性があります。"
+                ) from exc
             if not goon:
                 raise MEMUnavailableError("MEMupdateReflData が MEM 構造因子を回収できませんでした。")
         finally:

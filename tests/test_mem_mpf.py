@@ -121,6 +121,28 @@ def test_disabled_returns_immediately(tmp_path):
     assert res.cycles == ()
 
 
+def test_mem_failure_stops_gracefully(monkeypatch, tmp_path):
+    """MEM 実行が MEMUnavailableError を投げてもループはクラッシュせず停止する (P2)。"""
+    import tsumugin.mem.mpf as mpfmod
+    from tsumugin.errors import MEMUnavailableError
+
+    fake = tmp_path / "x.gpx"
+    fake.write_text("stub")
+    monkeypatch.setattr(mpfmod, "_refine_gpx_cycles", lambda p, c: 10.0)
+
+    def _boom(*a, **k):
+        raise MEMUnavailableError("反射リスト破損")
+
+    monkeypatch.setattr(mpfmod, "run_dysnomia_mem", _boom)
+    res = run_mem_rietveld_gpx(
+        str(fake), config=MPFConfig(enabled=True, max_iter=3),
+        snapshot_dir=str(tmp_path / "snap"),
+    )
+    assert res.stop_reason == "diverged"
+    assert res.cycles == ()          # MEM 前に失敗 → サイクル未確定
+    assert any("MEM 実行に失敗" in w for w in res.warnings)
+
+
 # ---------------------------------------------------------------------------
 # (E) @gsas: 実 MPF smoke (T1 実データ)
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from ..errors import MEMUnavailableError
 from ..store.ledger import Ledger
 from .gsas import MEMRunConfig, run_dysnomia_mem
 
@@ -100,15 +101,20 @@ def _decide_stop(
     """直前/現反復から停止判定する。継続なら None。🔵 REQ-026/107/EDGE-008
 
     収束を先に判定する: Rwp と密度 max の相対変化がともに閾値未満なら (符号によらず) 収束
-    ノイズとみなし ``converged``。収束でなく Rwp が worsen_eps 超で悪化していれば ``diverged``
-    (当該反復を残し停止)。いずれでもなければ継続 (None)。
+    ノイズとみなし ``converged``。収束でなく、Rwp が **rwp_tol を超える有意な悪化** かつ
+    worsen_eps 超なら ``diverged`` (当該反復を残し停止)。rwp_tol 以内の微小な上振れは収束ノイズ
+    であり発散とはしない (継続 or max_iter で停止)。いずれでもなければ継続 (None)。
     """
+    rwp_change = _relative_change(prev.rwp, cur.rwp)
     if (
-        _relative_change(prev.rwp, cur.rwp) < config.rwp_tol
+        rwp_change < config.rwp_tol
         and _relative_change(prev.density_max, cur.density_max) < config.density_tol
     ):
         return "converged"
-    if cur.rwp > prev.rwp * (1.0 + config.worsen_eps):
+    if (
+        cur.rwp > prev.rwp * (1.0 + config.worsen_eps)
+        and rwp_change >= config.rwp_tol
+    ):
         return "diverged"
     return None
 
@@ -179,11 +185,19 @@ def run_mem_rietveld_gpx(
         # (2) Rietveld 再精密化 (現フラグ継続)。
         rwp = _refine_gpx_cycles(cur_gpx, config.refine_max_cyc)
 
-        # (3) 実 Dysnomia MEM (当該反復の gpx 上)。
-        mem = run_dysnomia_mem(
-            cur_gpx, phase_name=phase_name, hist_name=hist_name, config=config.mem,
-            out_grd=str(snap_dir / f"mpf_iter{it}.mem.grd"),
-        )
+        # (3) 実 Dysnomia MEM (当該反復の gpx 上)。MEM 失敗 (発散で反射リスト破損・バイナリ
+        #     未解決等) は当該反復を残しループを停止する (P2・破壊しない)。
+        try:
+            mem = run_dysnomia_mem(
+                cur_gpx, phase_name=phase_name, hist_name=hist_name, config=config.mem,
+                out_grd=str(snap_dir / f"mpf_iter{it}.mem.grd"),
+            )
+        except MEMUnavailableError as exc:
+            warnings.append(f"反復 {it} で MEM 実行に失敗 ({exc}) → ループ停止。")
+            stop_reason = "diverged"
+            if ledger is not None:
+                ledger.append("mpf_mem_failed", {"iteration": it, "error": str(exc)[:200]})
+            break
         n_unmodeled = sum(
             1 for p in mem.peaks
             if p.magnitude > 0 and p.distance >= config.unmodeled_distance
