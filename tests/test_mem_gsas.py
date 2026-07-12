@@ -21,6 +21,7 @@ from tsumugin.mem.gsas import (
     _select_histogram,
     assign_peaks_to_atoms,
     density_kind_from_type,
+    expand_atoms_by_operators,
     resolve_dysnomia_binary,
     run_dysnomia_mem,
 )
@@ -187,6 +188,44 @@ def test_assign_peaks_empty_atoms_returns_empty():
     amat = _cubic_amat(8.0)
     out = assign_peaks_to_atoms(np.array([[0.1, 0.0, 0.0]]), np.array([5.0]), [], amat)
     assert out == ()
+
+
+# ---------------------------------------------------------------------------
+# (D2) expand_atoms_by_operators (対称等価まで展開 → 最近接判定の偽陽性防止)
+# ---------------------------------------------------------------------------
+
+_IDENTITY = (np.eye(3), np.zeros(3))
+_INVERSION = (-np.eye(3), np.zeros(3))
+
+
+def test_expand_atoms_inversion():
+    """P-1 (恒等+反転) で原子 (0.1,0.2,0.3) が 2 等価に展開される。"""
+    out = expand_atoms_by_operators([("A", 0.1, 0.2, 0.3)], [_IDENTITY, _INVERSION])
+    coords = {(round(a[1], 3), round(a[2], 3), round(a[3], 3)) for a in out}
+    assert (0.1, 0.2, 0.3) in coords
+    assert (0.9, 0.8, 0.7) in coords  # -p mod 1
+    assert all(a[0] == "A" for a in out)
+
+
+def test_expand_atoms_dedup_special_position():
+    """特殊位置 (0,0,0) は反転で自身に戻るため重複排除で 1 個。"""
+    out = expand_atoms_by_operators([("O", 0.0, 0.0, 0.0)], [_IDENTITY, _INVERSION])
+    assert len(out) == 1
+
+
+def test_expanded_atoms_fix_false_unmodeled():
+    """対称等価に出たピークは、展開後の原子で最近接 0 になる (未モデル偽陽性を防ぐ)。"""
+    amat = _cubic_amat(10.0)
+    atoms = [("A", 0.1, 0.2, 0.3)]
+    peak = np.array([[0.9, 0.8, 0.7]])  # A の反転等価位置
+    mags = np.array([5.0])
+    # 非対称のみ → 遠い (未モデルに見える)
+    bare = assign_peaks_to_atoms(peak, mags, atoms, amat)
+    assert bare[0].distance > 1.0
+    # 対称展開後 → 反転等価があるので距離ほぼ 0 (モデル済み)
+    expanded = expand_atoms_by_operators(atoms, [_IDENTITY, _INVERSION])
+    sym = assign_peaks_to_atoms(peak, mags, expanded, amat)
+    assert sym[0].distance == pytest.approx(0.0, abs=1e-6)
 
 
 def test_density_peak_is_frozen():

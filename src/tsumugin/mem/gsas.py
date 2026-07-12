@@ -223,6 +223,48 @@ def assign_peaks_to_atoms(
     return tuple(out)
 
 
+def expand_atoms_by_operators(
+    atoms: Sequence[tuple[str, float, float, float]],
+    operators: Sequence[tuple[np.ndarray, np.ndarray]],
+) -> tuple[tuple[str, float, float, float], ...]:
+    """原子を対称操作で全等価位置へ展開する (最近接原子判定の対称対応, 決定論)。🔵
+
+    各原子 ``(label, x, y, z)`` に各操作 ``(R (3,3), t (3,))`` を適用し ``R·p + t (mod 1)`` を
+    単位胞内へ畳む。同一等価 (小数第4位で丸め一致) は重複排除する。これを ``assign_peaks_to_atoms``
+    に渡すと、**対称等価位置に出た MEM ピークを既存原子と正しく対応付け**られる (最近接距離を過大
+    評価して未モデルと誤検出する偽陽性を防ぐ)。純 numpy・GSAS 非依存 (操作は呼び出し側が供給)。
+    """
+    out: list[tuple[str, float, float, float]] = []
+    for lbl, x, y, z in atoms:
+        p = np.array([x, y, z], dtype=float)
+        seen: set[tuple[float, float, float]] = set()
+        for rot, trans in operators:
+            q = (np.asarray(rot, dtype=float) @ p + np.asarray(trans, dtype=float)) % 1.0
+            key = (round(float(q[0]), 4), round(float(q[1]), 4), round(float(q[2]), 4))
+            if key not in seen:
+                seen.add(key)
+                out.append((lbl, float(q[0]), float(q[1]), float(q[2])))
+    return tuple(out)
+
+
+def _sg_operators(sgdata) -> list[tuple[np.ndarray, np.ndarray]]:
+    """GSAS SGData から全一般位置操作 (回転 R・並進 t) を組む (SGOps×SGCen×反転)。🔵
+
+    ``SGOps`` (一般位置), ``SGCen`` (格子心並進), ``SGInv`` (中心対称なら反転を追加) を掛け合わせ、
+    ``expand_atoms_by_operators`` 用の (R, t) 列にする。GSAS の SGData 辞書のみに依存 (numpy 値)。
+    """
+    ops = [(np.asarray(m, dtype=float), np.asarray(t, dtype=float))
+           for m, t in sgdata.get("SGOps", [(np.eye(3), np.zeros(3))])]
+    if sgdata.get("SGInv", 0):
+        ops = ops + [(-m, -t) for m, t in ops]
+    cens = [np.asarray(c, dtype=float) for c in sgdata.get("SGCen", [np.zeros(3)])]
+    full: list[tuple[np.ndarray, np.ndarray]] = []
+    for cen in cens:
+        for m, t in ops:
+            full.append((m, t + cen))
+    return full
+
+
 # ---------------------------------------------------------------------------
 # 実 Dysnomia 駆動 (GSAS-II 遅延 import)
 # ---------------------------------------------------------------------------
@@ -437,9 +479,11 @@ def run_dysnomia_mem(
         post_min, post_max = float(mp["minmax"][1]), float(mp["minmax"][0])
         grid_shape = tuple(int(x) for x in mp["rho"].shape)
 
-        # (7) ピーク → 原子割当 (相の原子ラベル + 分率座標)
-        atoms = [(a[0], float(a[3]), float(a[4]), float(a[5]))
-                 for a in ph.data["Atoms"]]
+        # (7) ピーク → 原子割当 (相の原子ラベル + 分率座標)。対称等価まで展開して最近接判定する
+        #     (対称等価位置に出たピークを既存原子と対応付け、未モデルの偽陽性を防ぐ)。
+        asym_atoms = [(a[0], float(a[3]), float(a[4]), float(a[5]))
+                      for a in ph.data["Atoms"]]
+        atoms = expand_atoms_by_operators(asym_atoms, _sg_operators(gen["SGData"]))
         amat, _ = G2lat.cell2AB(gen["Cell"][1:7])
         peaks = _search_and_assign(gen, G2mth, np.asarray(amat, float), atoms,
                                    config.top_peaks)
