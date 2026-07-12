@@ -19,7 +19,10 @@ import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 
+import numpy as np
+
 from ..store import Ledger
+from .absorption import apply_absorption_correction
 from .model import (
     AutoRietveldResult,
     HistogramSpec,
@@ -752,6 +755,16 @@ def run_auto_rietveld(
             if h.two_theta_limits is not None:
                 lo, hi = h.two_theta_limits
                 hist.set_refinements({"Limits": [lo, hi]})
+            if h.absorber_layers:
+                # 固定吸収体レイヤー (electrolyte/window, Issue #54): 角度依存の透過補正を
+                # Yobs/weight へ直接適用する (定数部はスケール因子と縮退するため含めない)。
+                d = hist.data["data"][1]  # [x, Yobs, weight, Ycalc, Ybkg, Ydiff]
+                x = np.asarray(d[0])
+                y = np.asarray(d[1])
+                w = np.asarray(d[2])
+                y2, w2 = apply_absorption_correction(x, y, w, h.absorber_layers)
+                d[1] = y2
+                d[2] = w2
             if h.weight != 1.0:
                 # ヒストグラム重み係数 (GSAS-II wtFactor)。joint の相対重み調整。
                 try:

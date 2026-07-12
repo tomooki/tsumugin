@@ -7,6 +7,13 @@
 
 from __future__ import annotations
 
+from .absorption import (
+    AbsorberLayer,
+    apply_absorption_correction,
+    mu_from_composition,
+    transmission_correction,
+    wavelength_to_energy_kev,
+)
 from .model import (
     AutoRietveldResult,
     Geometry,
@@ -56,6 +63,7 @@ from .resolution import (
 from .validity import check_bond_validity, check_profile_physicality, check_validity
 
 __all__ = [
+    "AbsorberLayer",
     "AutoRietveldBackend",
     "AutoRietveldResult",
     "CellRefinementResult",
@@ -71,6 +79,7 @@ __all__ = [
     "RietveldMultistartResult",
     "StageResult",
     "ValidityReport",
+    "apply_absorption_correction",
     "build_recipe",
     "build_resolution_recipe",
     "candidate_profiles",
@@ -81,6 +90,7 @@ __all__ = [
     "extract_instrument_profile",
     "extract_instrument_profile_from_standard",
     "generate_cell_scales",
+    "mu_from_composition",
     "prealign_cell_from_structure",
     "profile_fwhm_min",
     "profile_total_fwhm",
@@ -94,5 +104,7 @@ __all__ = [
     "solve_cell_from_dspacings",
     "standard_reference_cif",
     "summarize_multistart",
+    "transmission_correction",
     "two_theta_of_hkls",
+    "wavelength_to_energy_kev",
 ]

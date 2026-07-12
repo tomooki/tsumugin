@@ -51,6 +51,12 @@ mp = [
     "pymatgen>=2024.3",
     "mp-api>=0.41",
 ]
+# Issue #54 固定吸収体レイヤー補正: 組成→μ (原子散乱因子 f'') の算出に用いる。
+# ``autorietveld.absorption.mu_from_composition`` は本 extra を遅延 import し、未導入時は
+# ImportError へ縮退する (transmission_correction/apply_absorption_correction は本 extra に非依存)。
+absorption = [
+    "periodictable>=1.6",
+]
 
 [dependency-groups]
 dev = [

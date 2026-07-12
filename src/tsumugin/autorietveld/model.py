@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
 
+from .absorption import AbsorberLayer
+
 
 class Radiation(Enum):
     """放射源。背景/プロファイル既定と前方計算の分岐に用いる。"""
@@ -112,6 +114,12 @@ class HistogramSpec:
     GSAS parmMin/parmMax を登録する (占有率 [0,1] 拘束と同機構)。分解能抽出で U,W,X,Y≥0 を課し、
     相関非物理解 (負の Lorentzian) を避け**転写可能** (全域 FWHM 正) な分解能を得るのに用いる。
     既定 None (拘束なし; 後方互換)。"""
+    absorber_layers: tuple[AbsorberLayer, ...] = ()
+    """固定吸収体レイヤー (operando/in-situ セルの電解液層・窓材, Issue #54)。ビーム路に固定
+    厚みの吸収体があると回折ビーム路長が 2θ 依存 (平板透過: t/cos2θ) になり、高角ほど強く
+    吸収される。engine がヒストグラム読込直後に `absorption.apply_absorption_correction` で
+    Yobs/weight へ角度依存の補正を掛ける (定数部はスケール因子と縮退するため含めない)。
+    既定 () (補正なし; 後方互換)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (Enum→値文字列, tuple→list)。"""
@@ -134,6 +142,7 @@ class HistogramSpec:
             "profile_bounds": {k: [lo, hi] for k, (lo, hi) in self.profile_bounds.items()}
             if self.profile_bounds is not None
             else None,
+            "absorber_layers": [layer.to_dict() for layer in self.absorber_layers],
         }
 
     @classmethod
@@ -166,6 +175,9 @@ class HistogramSpec:
                 }
                 if d.get("profile_bounds") is not None
                 else None
+            ),
+            absorber_layers=tuple(
+                AbsorberLayer.from_dict(x) for x in (d.get("absorber_layers") or ())  # type: ignore[arg-type]
             ),
         )
 

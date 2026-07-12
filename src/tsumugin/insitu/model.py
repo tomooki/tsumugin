@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from ..autorietveld.absorption import AbsorberLayer
+
 # 相ごとの格子: (a, b, c, α, β, γ)
 Cell = tuple[float, float, float, float, float, float]
 
@@ -26,6 +28,9 @@ class FrameSpec:
     :param data_format: GSAS-II importer 種別 ("XRDML"/"FXYE"/"GSAS"/"XYE")
     :param two_theta_limits: このフレームの精密化レンジ (None なら系列既定/全域)
     :param label: 人間可読ラベル (既定はファイル名)
+    :param absorber_layers: 固定吸収体レイヤー (operando セルの電解液層・窓材, Issue #54)。
+        `make_gsas_runner` が構築する `HistogramSpec.absorber_layers` へそのまま引き継がれる。
+        既定 () (補正なし; 後方互換)。
     """
 
     data_path: str
@@ -33,6 +38,7 @@ class FrameSpec:
     data_format: str = "XRDML"
     two_theta_limits: tuple[float, float] | None = None
     label: str = ""
+    absorber_layers: tuple[AbsorberLayer, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -43,6 +49,7 @@ class FrameSpec:
             if self.two_theta_limits is not None
             else None,
             "label": self.label,
+            "absorber_layers": [layer.to_dict() for layer in self.absorber_layers],
         }
 
     @classmethod
@@ -54,6 +61,9 @@ class FrameSpec:
             data_format=str(d.get("data_format", "XRDML")),
             two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
             label=str(d.get("label", "")),
+            absorber_layers=tuple(
+                AbsorberLayer.from_dict(x) for x in (d.get("absorber_layers") or ())  # type: ignore[arg-type]
+            ),
         )
 
 

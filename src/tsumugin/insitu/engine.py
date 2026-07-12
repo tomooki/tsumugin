@@ -545,6 +545,7 @@ def make_gsas_runner(
                 data_format=data_format,
                 two_theta_limits=limits,
                 temperature=frame.axis_value,
+                absorber_layers=frame.absorber_layers,
             )
             recipe = build_recipe([hist], list(phases), background_coeffs=background_coeffs)
             return run_auto_rietveld(
