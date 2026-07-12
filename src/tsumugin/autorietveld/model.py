@@ -203,6 +203,12 @@ class PhaseSpec:
     """座標を**解放しない**原子ラベル (coords 段で除外)。剛体的に理想幾何へ固定したい原子
     (例: 無秩序水の D/H を O–D=0.96Å の初期幾何に据置き orientation のみを別途評価する) に用いる。
     占有率/Uiso の解放とは独立 (座標だけ凍結)。既定 () (従来どおり一般位置は全解放)。"""
+    refine_cell: bool = True
+    """当該相の格子 (単位胞) を精密化するか (Issue #47)。``False`` なら engine の "cell" 段で
+    Cell 解放をスキップし、格子を初期値に固定する。副相/不純物相の相分率が 0 近傍に落ちると
+    無拘束の格子が発散し、``_cells_physical`` ガードが段全体を revert して主相の格子精密化まで
+    巻き添えにする問題を回避する。格子が既知参照と一致する副相 (例 hollandite 不純物) に用いる。
+    既定 True (全相解放; 後方互換)。"""
     temperature: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -218,6 +224,7 @@ class PhaseSpec:
             "position_equiv_groups": [list(g) for g in self.position_equiv_groups],
             "occupancy_sum_groups": [list(g) for g in self.occupancy_sum_groups],
             "frozen_coord_labels": list(self.frozen_coord_labels),
+            "refine_cell": self.refine_cell,
             "temperature": self.temperature,
         }
 
@@ -243,6 +250,7 @@ class PhaseSpec:
                 tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
             ),
             frozen_coord_labels=tuple(str(a) for a in (d.get("frozen_coord_labels") or ())),
+            refine_cell=bool(d.get("refine_cell", True)),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
 
