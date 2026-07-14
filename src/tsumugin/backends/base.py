@@ -41,6 +41,10 @@ class RefinementResult:
     globals: Mapping[str, float] = field(default_factory=dict)
     # 【警告列】: 経験推定モード明示 / 逆算 μt 提示 / restraint 逸脱の相関疑い。既定 空 tuple 🔵
     warnings: tuple[str, ...] = ()
+    # 【追加フィールド (Issue #64 / FR-123)】: opt-in の EM ノイズ推定 (evidence.noise) を
+    # 呼んだ場合のみ設定されるノイズスケール s。既定 None は「未推定」= 既存呼び出し元と
+    # ビット同一 (末尾・既定値付きで非破壊追加, REQ-404)。🔵
+    noise_scale: float | None = None
 
 
 @runtime_checkable

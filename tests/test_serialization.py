@@ -19,11 +19,19 @@ import json
 import math
 import pytest
 
-from tsumugin.model import LatticeParams, PhaseInstance, PhaseLifecycle, TofBankParams
+from tsumugin.model import (
+    LatticeParams,
+    PhaseInstance,
+    PhaseLifecycle,
+    RefinementMetrics,
+    TofBankParams,
+)
 from tsumugin.store.ledger import _canonical_json
 from tsumugin.store.serialization import (
     bank_params_from_dict,
     bank_params_to_dict,
+    metrics_from_dict,
+    metrics_to_dict,
     phase_from_dict,
     phase_to_dict,
 )
@@ -487,3 +495,125 @@ def test_bank_params_boundary_zero_values_preserved():
     p = TofBankParams(difc=0.0, difa=0.0, zero=0.0)
     restored = bank_params_from_dict(bank_params_to_dict(p))
     assert restored == p
+
+
+# ---------------------------------------------------------------------------
+# 6. Issue #64 / FR-123: RefinementMetrics 往復 (metrics_to_dict / metrics_from_dict)
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_roundtrip_full_with_noise_scale():
+    # 【テスト目的】: noise_scale を含む全フィールド入り RefinementMetrics が dict 往復で
+    #   完全一致することを確認 (Issue #64 (g))。
+    m = RefinementMetrics(
+        rwp=4.5,
+        gof=1.2,
+        chi2=123.4,
+        n_obs=1000,
+        n_params=8,
+        evidence={"bic": 130.0, "aic": 140.0},
+        multistart={"n": 8, "n_basins": 1, "n_diverged": 0},
+        noise_scale=1.35,
+    )
+    restored = metrics_from_dict(metrics_to_dict(m))
+    assert restored == m
+
+
+def test_metrics_to_dict_schema_keys():
+    # 【テスト目的】: metrics_to_dict の返り値キー集合を固定する (下流依存の契約)。
+    d = metrics_to_dict(RefinementMetrics(rwp=0.0, gof=1.0, chi2=5.0, n_obs=10, n_params=2))
+    assert set(d) == {
+        "rwp",
+        "gof",
+        "chi2",
+        "n_obs",
+        "n_params",
+        "evidence",
+        "multistart",
+        "noise_scale",
+    }
+
+
+def test_metrics_noise_scale_none_by_default_roundtrips_as_none():
+    # 【テスト目的】: noise_scale 未指定 (既定 None) が dict 往復でも None のまま保たれることを確認。
+    m = RefinementMetrics(rwp=0.0, gof=1.0, chi2=5.0, n_obs=10, n_params=2)
+    assert m.noise_scale is None
+    d = metrics_to_dict(m)
+    assert d["noise_scale"] is None
+    restored = metrics_from_dict(d)
+    assert restored.noise_scale is None
+    assert restored == m
+
+
+def test_metrics_from_dict_missing_noise_scale_key_defaults_to_none():
+    # 【テスト目的】: Issue #64 以前に永続化された旧データ (noise_scale キーが存在しない) を
+    #   復元しても None で補完され例外にならないことを確認 (後方互換, REQ-404)。
+    legacy = {
+        "rwp": 0.0,
+        "gof": 1.0,
+        "chi2": 5.0,
+        "n_obs": 10,
+        "n_params": 2,
+        "evidence": {},
+        # multistart / noise_scale キーは存在しない (旧スキーマを模擬)
+    }
+    restored = metrics_from_dict(legacy)
+    assert restored.noise_scale is None
+    assert restored.multistart is None
+
+
+def test_metrics_multistart_none_by_default_roundtrips_as_none():
+    # 【テスト目的】: multistart (既存の末尾追加フィールド) も往復で None が保たれることを確認
+    #   (metrics_to_dict/from_dict が全フィールドを網羅していることの回帰保証)。
+    m = RefinementMetrics(rwp=0.0, gof=1.0, chi2=5.0, n_obs=10, n_params=2)
+    restored = metrics_from_dict(metrics_to_dict(m))
+    assert restored.multistart is None
+
+
+def test_metrics_infinite_chi2_survives_roundtrip():
+    # 【テスト目的】: chi2=inf (EDGE-004: 精密化失敗の正常経路) が dict 往復でも忠実に保持され、
+    #   0.0 等へ捏造されないことを確認 (PhaseInstance の非有限純化とは異なる方針、Issue #64)。
+    m = RefinementMetrics(rwp=math.inf, gof=math.inf, chi2=math.inf, n_obs=100, n_params=3)
+    restored = metrics_from_dict(metrics_to_dict(m))
+    assert math.isinf(restored.chi2)
+    assert math.isinf(restored.rwp)
+    assert math.isinf(restored.gof)
+    assert restored == m
+
+
+def test_metrics_from_dict_missing_required_key_raises():
+    # 【テスト目的】: rwp/gof/chi2/n_obs/n_params は構造的必須値のため、欠落時は fail-loud
+    #   (KeyError) で捏造しないことを確認 (phase_from_dict の phase_ref/lattice と同方針)。
+    with pytest.raises(KeyError):
+        metrics_from_dict({"gof": 1.0, "chi2": 5.0, "n_obs": 10, "n_params": 2})
+
+
+def test_metrics_evidence_roundtrip_preserved():
+    # 【テスト目的】: evidence (backend 名 -> 値) の Mapping が dict 往復で保存されることを確認。
+    m = RefinementMetrics(
+        rwp=0.0, gof=1.0, chi2=5.0, n_obs=10, n_params=2, evidence={"bic": 9.0, "aic": 11.0}
+    )
+    restored = metrics_from_dict(metrics_to_dict(m))
+    assert restored.evidence == {"bic": 9.0, "aic": 11.0}
+
+
+def test_metrics_to_dict_json_dumps_safe_for_finite_values():
+    # 【テスト目的】: 全フィールドが有限のとき json.dumps(allow_nan=False) が例外を出さないことを確認。
+    m = RefinementMetrics(
+        rwp=4.5,
+        gof=1.2,
+        chi2=123.4,
+        n_obs=1000,
+        n_params=8,
+        evidence={"bic": 130.0},
+        multistart={"n": 4},
+        noise_scale=1.1,
+    )
+    text = json.dumps(metrics_to_dict(m), allow_nan=False)
+    assert metrics_from_dict(json.loads(text)) == m
+
+
+def test_metrics_deterministic_to_dict():
+    # 【テスト目的】: metrics_to_dict の決定論を確認 (NFR-102)。
+    m = RefinementMetrics(rwp=1.0, gof=1.0, chi2=5.0, n_obs=10, n_params=2, noise_scale=1.4)
+    assert metrics_to_dict(m) == metrics_to_dict(m)

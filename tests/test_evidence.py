@@ -86,3 +86,70 @@ def test_bic_with_zero_observations_does_not_raise():
     # n_obs=0 (空パターンの縮退) でも math domain error にせず log(1)=0 として扱う
     r = BICBackend().score(_metrics(5.0, 3, n=0))
     assert r.value == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# Issue #64 / FR-123: noise_scale の BIC/AIC への反映
+# ---------------------------------------------------------------------------
+
+
+def _metrics_ns(chi2: float, k: int, n: int, noise_scale: float | None) -> RefinementMetrics:
+    return RefinementMetrics(rwp=0.0, gof=1.0, chi2=chi2, n_obs=n, n_params=k, noise_scale=noise_scale)
+
+
+def test_noise_scale_defaults_to_none_and_matches_legacy_formula_bitwise():
+    # (e) noise_scale 未指定 (既定 None) は現行式と厳密一致 (後方互換)。
+    m = _metrics(100.0, 5, 1000)
+    assert m.noise_scale is None
+    legacy = 100.0 + 5 * math.log(1000)
+    assert BICBackend().score(m).value == legacy  # 近似でなく厳密一致
+    assert AICBackend().score(m).value == 100.0 + 2.0 * 5
+
+
+def test_noise_scale_one_is_bitwise_identical_to_none():
+    # s=1.0 を明示しても None と厳密に同じ値になる (ln(1)=0, chi2/1=chi2 が正確)。
+    none_metrics = _metrics_ns(123.0, 4, 500, None)
+    unit_metrics = _metrics_ns(123.0, 4, 500, 1.0)
+    assert BICBackend().score(none_metrics).value == BICBackend().score(unit_metrics).value
+    assert AICBackend().score(none_metrics).value == AICBackend().score(unit_metrics).value
+
+
+def test_bic_noise_scale_formula():
+    # BIC = chi2/s² + n·ln(s²) + k·ln(n)
+    m = _metrics_ns(90.0, 3, 200, 2.0)
+    expected = 90.0 / 4.0 + 200 * math.log(4.0) + 3 * math.log(200)
+    assert BICBackend().score(m).value == pytest.approx(expected)
+
+
+def test_aic_noise_scale_formula():
+    # AIC = chi2/s² + n·ln(s²) + 2k
+    m = _metrics_ns(90.0, 3, 200, 2.0)
+    expected = 90.0 / 4.0 + 200 * math.log(4.0) + 2.0 * 3
+    assert AICBackend().score(m).value == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("invalid_scale", [0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_noise_scale_falls_back_to_unscaled_chi2(invalid_scale: float):
+    # 数学的に無効な s (<=0 / 非有限) は補正を諦め従来式へ防御的にフォールバックする。
+    m = _metrics_ns(50.0, 2, 100, invalid_scale)
+    legacy = 50.0 + 2 * math.log(100)
+    assert BICBackend().score(m).value == legacy
+
+
+def test_bic_ranking_flip_with_differing_noise_scale():
+    # (f) 回帰ケース: 生の chi2 だけならチ B (chi2=95) が A (chi2=100) より良く見えるが、
+    # B のノイズスケールが大きい (自己無矛盾でない重みだった) と分かると評価が逆転する。
+    n, k = 50, 5
+    hyp_a = _metrics_ns(chi2=100.0, k=k, n=n, noise_scale=1.0)
+    hyp_b = _metrics_ns(chi2=95.0, k=k, n=n, noise_scale=2.5)
+
+    bic_a = BICBackend().score(hyp_a).value
+    bic_b = BICBackend().score(hyp_b).value
+
+    # 素の chi2 (= noise_scale=1 相当) では B が勝つ (95 < 100)。
+    naive_a = 100.0 + k * math.log(n)
+    naive_b = 95.0 + k * math.log(n)
+    assert naive_b < naive_a
+
+    # だが noise_scale 補正後は A が勝つ (序列が反転する)。
+    assert bic_a < bic_b

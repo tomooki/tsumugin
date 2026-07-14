@@ -86,6 +86,9 @@ def _serialize_metrics(metrics: "RefinementMetrics | None") -> dict[str, Any] | 
         # 【センチネル非関与】: 詳細 API が読む metrics.evidence は生 backend 値 (失敗ノードは inf)
         #   のため素の finite_or_none で足りる。センチネル純化は to_summary 経由 (tree) が担う 🔵
         "evidence": {str(k): finite_or_none(v) for k, v in metrics.evidence.items()},
+        # 【Issue #64 / FR-123 σ の由来明示 (NFR-107)】: EM 推定していれば noise_scale を配信し、
+        #   未推定 (既定 None) はそのまま null (finite_or_none は None 透過) 🔵
+        "noise_scale": finite_or_none(metrics.noise_scale),
     }
 
 

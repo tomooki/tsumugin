@@ -23,6 +23,7 @@ from .errors import (
     OEDUnavailableError,
 )
 from .evidence.ic import AICBackend, BICBackend
+from .evidence.noise import NoiseEstimate, estimate_noise_em
 from .evidence.ranking import RankedHypothesis, rank
 from .export import export_gpx
 
@@ -132,6 +133,8 @@ from .store import (
     PersistentLedger,
     PersistentSnapshotStore,
     SnapshotStore,
+    metrics_from_dict,
+    metrics_to_dict,
     phase_from_dict,
     phase_to_dict,
 )
@@ -317,6 +320,7 @@ __all__ = [
     "NestedConfig",
     "NestedOutcome",
     "NestedUnavailableError",
+    "NoiseEstimate",
     "OEDProposal",
     "OEDUnavailableError",
     "OccupancyReleaseRecommendation",
@@ -389,6 +393,7 @@ __all__ = [
     "detect_changepoint",
     "detect_escalations",
     "discriminate_interval",
+    "estimate_noise_em",
     "estimate_snip_background",
     "estimate_transition",
     "expand_atoms_by_operators",
@@ -405,6 +410,8 @@ __all__ = [
     "load_density_grid",
     "load_gsas_powder",
     "load_xy",
+    "metrics_from_dict",
+    "metrics_to_dict",
     "phase_from_dict",
     "phase_to_dict",
     "propose_measurements",
