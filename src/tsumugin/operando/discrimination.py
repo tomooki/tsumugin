@@ -23,10 +23,21 @@ Evidence Engine (bic 一次) で **固溶体 vs 二相反応** を判別する�
 のため、ΔBIC からペナルティ項が相殺し判別は実質 chi2 差 (適合度差) に帰着する。この釣り合わせは合成ベンチで
 較正した M3 v1 の暫定仕様であり、実データでの妥当性 (端成分 DOF の数え方) は要検証。
 
+**nested 裁定の配線 (Issue #65 / FR-313 / FR-122)**: ``config.nested_arbitration`` (既定 None) を
+``ArbitrationConfig`` で与えるとオプトインで発動する。bic 一次判定が close_competitor (僅差) と
+判定したときのみ ``nested.arbitration.arbitrate`` (``full_nested=True`` 強制) で仮説 A/B のみを
+再裁定し、暫定 verdict・``adjudicated_by``・``nested_delta_evidence`` を結果へ反映する。非僅差では
+一切呼ばない (コスト抑制)。ReviewQueue への close_competitor 通知は再裁定後も維持する
+(FR-403「暫定裁定+要確認フラグ」・処理はブロックしない)。nested/EvidenceProblem は Σbic を
+BIC 対応値 (chi2=Σbic, k=0) として渡す v1 サロゲートで、実 nested サンプラでの evidence は
+このサロゲートの粗い近似 (restraint 由来の物理事前分布/尤度の配線は M-later)。裁定が例外で完全に
+失敗しても bic 一次の close_competitor エスカレーションへ縮退する (例外化しない)。
+
 🔵 信頼性レベル: 契約は ``docs/design/m3-operando/interfaces.py`` L252-284、設計 D4
   (``docs/design/m3-operando/architecture.md`` L71-76)、``dataflow.md`` FR-313 シーケンス (L53-77)、
   REQ-010/101/102・EDGE-002/005・NFR-102 に依拠。🟡 verdict 符号規約・仮説 B の free_suffixes・
-  代表 rwp の集約・ledger kind は実装裁量 (いずれも要件へ遡及可能)。
+  代表 rwp の集約・ledger kind は実装裁量 (いずれも要件へ遡及可能)。nested 裁定配線 (Issue #65) は
+  M5 ``nested.arbitration`` の既存契約に依拠しつつ、EvidenceProblem サロゲート化は実装裁量 🟡。
 """
 
 from __future__ import annotations
@@ -41,6 +52,9 @@ from ..backends.base import RefinementBackend, RefinementModel, RefinementResult
 from ..evidence.ic import BICBackend
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
 from ..multistart import MultistartConfig, MultistartEngine, MultistartResult
+from ..nested.arbitration import ArbitrationConfig, ArbitrationResult, arbitrate
+from ..nested.base import EvidenceProblem, PriorSpec
+from ..nested.sampler import NestedBackend
 from ..selection.review_queue import ReviewQueue
 from ..sequential.series import FrameSeries
 from ..store.ledger import Ledger
@@ -81,6 +95,9 @@ class DiscriminationConfig:
     multistart: MultistartConfig = MultistartConfig()  # 【必須適用】: 端点マルチスタート設定 (FR-233) 🔵
     high_r_threshold: float = 30.0  # 【高 R 閾値】: 両仮説の代表 rwp[%] がこれを超えたら未知相 (EDGE-005) 🟡
     seq_max_cycles: int = 10  # 【逐次サイクル上限】: 区間内 direct refine の max_cycles 🟡
+    # 【nested 裁定オプトイン (Issue #65 / FR-313 / FR-122)】: None (既定) は現行挙動不変。
+    #   ArbitrationConfig を与えると close_competitor (僅差) のときのみ nested/Laplace 再裁定を発動する。🟡
+    nested_arbitration: ArbitrationConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,11 @@ class DiscriminationResult:
     multistart_two_phase: MultistartResult  # 【B 端点マルチスタート】🔵
     escalations: tuple[str, ...]  # 【エスカレーション】: 僅差/高 R の説明文字列 (REQ-101/EDGE-005) 🔵
     warnings: tuple[str, ...] = ()  # 【警告】: 発散除外/全滅縮退の伝播 (REQ-102/EDGE-002) 🔵
+    # 【nested 裁定由来 (Issue #65 / FR-313 / FR-122)】: nested_arbitration 未設定 / 非僅差では
+    #   "bic" のまま・nested_delta_evidence/nested_arbitration は None (既定・後方互換) 🟡
+    adjudicated_by: Literal["bic", "nested", "laplace"] = "bic"
+    nested_delta_evidence: float | None = None  # 【nested/Laplace 裁定後の ΔBIC 相当】 🟡
+    nested_arbitration: ArbitrationResult | None = None  # 【nested 裁定の生結果 (詳細監査用)】 🟡
 
 
 @dataclass(frozen=True)
@@ -135,26 +157,38 @@ def discriminate_interval(
     fixed_phases: tuple[FixedPhaseSpec, ...] = (),
     ledger: Ledger | None = None,
     queue: ReviewQueue | None = None,
+    nested_backend: NestedBackend | None = None,
 ) -> DiscriminationResult:
     """operando 1 区間の固溶体 vs 二相判別を実行し ``DiscriminationResult`` を返す (FR-313)。
 
     【機能概要】: 仮説 A (単相 warm-start 逐次 direct refine) と仮説 B (端成分 2 相・格子固定) を同区間で
       精密化して Σbic を求め、両仮説の区間端点でマルチスタートを必須適用し、ΔBIC の符号/大きさで verdict を
       決める。僅差/高 R は自動確定せず ReviewQueue へ通知しエスカレーションする (処理をブロックしない)。
-    【実装方針】: 下位部品 (逐次 refine / MultistartEngine / BIC 評価 / ReviewQueue / Ledger) を束ねる
-      薄いオーケストレータ。乱数・時刻・集合反復順に依存せず 2 回実行でビット同一 (NFR-102)。
-    【テスト対応】: tests/test_discrimination.py の 17 件すべて。
+    【nested 裁定 (Issue #65 / FR-313 / FR-122)】: ``config.nested_arbitration`` (既定 None) を与えた
+      ときのみ、bic 一次判定が close_competitor (僅差) と判定した場合に限り
+      ``nested.arbitration.arbitrate`` で仮説 A/B を再裁定する (非僅差では絶対に呼ばない)。再裁定が
+      解消できれば verdict を暫定的に確定するが、ReviewQueue への close_competitor 通知は維持する
+      (FR-403「暫定裁定+要確認フラグ」)。裁定が完全に失敗しても例外化せず bic 一次のエスカレーションへ
+      縮退する。
+    【実装方針】: 下位部品 (逐次 refine / MultistartEngine / BIC 評価 / ReviewQueue / Ledger / nested
+      裁定) を束ねる薄いオーケストレータ。乱数・時刻・集合反復順に依存せず 2 回実行でビット同一
+      (NFR-102。ただし nested_backend に実サンプラを注入した場合はサンプラ自身の再現性契約に従う)。
+    【テスト対応】: tests/test_discrimination.py。
     🔵 信頼性レベル: 設計 D4 / dataflow.md FR-313 (L53-77) / interfaces.py L274-284 に直接依拠。
+      nested 裁定配線 (Issue #65) は実装裁量 🟡。
 
     @param backend: 精密化バックエンド (RefinementBackend Protocol: name + refine)。
     @param series: 共通 2θ グリッド + (n_frames, n_points) 強度行列を持つ FrameSeries。
     @param frame_range: 判別対象区間 (start, end)。両端 inclusive・0<=start<=end<n_frames を要求する。
     @param initial_phases: 活物質の初期相 (仮説 A の単相起点)。
-    @param config: 判別設定 (閾値・マルチスタート・逐次サイクル)。
+    @param config: 判別設定 (閾値・マルチスタート・逐次サイクル・nested 裁定オプトイン)。
     @param fixed_phases: セル固定相 (両仮説に常駐・構造固定・scale のみ解放)。
     @param ledger: 追記専用台帳 (None なら記録スキップ・結果不変)。
     @param queue: エスカレーション通知先 (None なら通知スキップ・結果不変)。
-    @returns: verdict・ΔBIC・両仮説・両マルチスタート・エスカレーション/警告を含む DiscriminationResult。
+    @param nested_backend: nested 裁定に用いる ``NestedBackend`` 互換オブジェクト (テスト注入用)。
+      None かつ ``config.nested_arbitration`` が非 None のときのみ既定 ``NestedBackend()`` を構築する。
+    @returns: verdict・ΔBIC・両仮説・両マルチスタート・エスカレーション/警告・nested 裁定由来を含む
+      DiscriminationResult。
     """
     # 【フェイルファスト検証】: 器の契約違反 (範囲外/start>end/負値) は refine 開始前に ValueError にする 🟡 TC-E04
     start, end = _validate_frame_range(frame_range, series.n_frames)
@@ -245,12 +279,9 @@ def discriminate_interval(
         n_finite_two_phase=len(seq_b.finite_frames),
     )
 
-    # ---- ReviewQueue 通知 (提供時のみ・ブロックしない) -----------------------------------
-    if queue is not None and queue_reason is not None:
-        queue.add(queue_reason, detail=escalations[0] if escalations else "")
-
     # ---- 両仮説 Hypothesis を metrics.multistart 付きで構築 (単一 basin でも付与) -----------
-    #   両仮説の構築は id・区間結果・端点マルチスタートだけが異なる同形処理のため共通ヘルパへ集約する 🔵
+    #   両仮説の構築は id・区間結果・端点マルチスタートだけが異なる同形処理のため共通ヘルパへ集約する。
+    #   nested 裁定 (下記) が仮説 id を EvidenceProblem のキーに用いるため、ここで先に構築する 🔵
     hyp_single = _build_endpoint_hypothesis(
         "discrimination-single", seq_a, multistart_single, start, end
     )
@@ -258,13 +289,57 @@ def discriminate_interval(
         "discrimination-two-phase", seq_b, multistart_two_phase, start, end
     )
 
-    # ---- 警告の集約 (発散除外/全滅縮退を判別結果へ伝播) ----------------------------------
+    # ---- FR-313/FR-122: 僅差競合のみ nested 裁定 (オプトイン・非僅差では絶対に呼ばない) ------------
+    #   既存 close_competitor 判定 (queue_reason) を発動条件として再利用し、arbitrate 内部の rank()
+    #   による close 再判定 (異なる閾値設定の可能性) には委ねない (要件2 / コスト抑制)。nested
+    #   未導入/タイムアウトは run_with_fallback の既存フォールバック (Laplace 代替 + truncated 警告)
+    #   に任せる。裁定実行そのものが例外で完全に失敗しても bic 一次の close_competitor エスカレー
+    #   ションへ縮退し、判別処理は止めない (要件3/4)。
+    adjudicated_by: Literal["bic", "nested", "laplace"] = "bic"
+    nested_delta_evidence: float | None = None
+    nested_arbitration_result: ArbitrationResult | None = None
+    nested_warnings: tuple[str, ...] = ()
+    if config.nested_arbitration is not None and queue_reason == "close_competitor":
+        try:
+            active_nested_backend = (
+                nested_backend if nested_backend is not None else NestedBackend()
+            )
+            nested_outcome = _run_nested_arbitration(
+                hyp_single, hyp_two_phase, seq_a, seq_b,
+                config.close_threshold, config.nested_arbitration, active_nested_backend, ledger,
+            )
+        except Exception as exc:  # noqa: BLE001 【防御】: nested 裁定が完全不能でも判別を止めない
+            nested_warnings = (
+                f"discrimination nested_arbitration: 裁定実行が例外で失敗したため bic 一次の "
+                f"close_competitor エスカレーションへ縮退しました ({exc!r})。",
+            )
+        else:
+            adjudicated_by = nested_outcome.adjudicated_by
+            nested_delta_evidence = nested_outcome.delta
+            nested_arbitration_result = nested_outcome.result
+            if nested_outcome.provisional_verdict != "undecided":
+                # 【暫定裁定 (FR-403)】: nested/Laplace が僅差を解消できたら verdict を更新する。
+                #   ReviewQueue への通知 (下記) は維持し「要確認フラグ」として人間に残す
+                #   (処理はブロックしない・close_competitor エスカレーションは取り下げない)。
+                verdict = nested_outcome.provisional_verdict
+            escalations = escalations + (
+                f"nested_arbitration: {adjudicated_by} 裁定 (ΔBIC_nested="
+                f"{nested_delta_evidence:.4g}) により暫定 verdict={verdict} としました。"
+                f"close_competitor のため引き続き人間の確認を要求します。",
+            )
+
+    # ---- ReviewQueue 通知 (提供時のみ・ブロックしない) -----------------------------------
+    if queue is not None and queue_reason is not None:
+        queue.add(queue_reason, detail=escalations[0] if escalations else "")
+
+    # ---- 警告の集約 (発散除外/全滅縮退/nested 裁定失敗を判別結果へ伝播) --------------------
     warnings = (
         seq_a.warnings + seq_b.warnings
         + multistart_single.warnings + multistart_two_phase.warnings
+        + nested_warnings
     )
 
-    # ---- ledger 記録 (提供時のみ・全 kind は "discrimination." 前置) --------------------
+    # ---- ledger 記録 (提供時のみ・"discrimination." 前置。nested 経路は arbitrate/nested 自身も追記) --
     _record(
         ledger, "discrimination.hypothesis_single",
         {"sum_bic": seq_a.sum_bic, "n_finite": len(seq_a.finite_frames)},
@@ -276,6 +351,16 @@ def discriminate_interval(
     _record(ledger, "discrimination.verdict", {"verdict": verdict, "delta_evidence": delta})
     if escalations:
         _record(ledger, "discrimination.escalation", {"reasons": list(escalations)})
+    if nested_arbitration_result is not None:
+        _record(
+            ledger, "discrimination.nested_arbitration",
+            {
+                "adjudicated_by": adjudicated_by,
+                "nested_delta_evidence": nested_delta_evidence,
+                "provisional_verdict": verdict,
+                "nested_ids": list(nested_arbitration_result.nested_ids),
+            },
+        )
 
     return DiscriminationResult(
         verdict=verdict,
@@ -286,6 +371,9 @@ def discriminate_interval(
         multistart_two_phase=multistart_two_phase,
         escalations=escalations,
         warnings=warnings,
+        adjudicated_by=adjudicated_by,
+        nested_delta_evidence=nested_delta_evidence,
+        nested_arbitration=nested_arbitration_result,
     )
 
 
@@ -625,3 +713,143 @@ def _record(ledger: Ledger | None, kind: str, payload: dict) -> None:
     """
     if ledger is not None:
         ledger.append(kind, payload)
+
+
+# ===========================================================================
+# nested 裁定配線 (Issue #65 / FR-313 / FR-122)
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class _NestedArbitrationOutcome:
+    """close_competitor 2 仮説の nested 裁定 1 回分の内部結果束 (非公開・frozen)。
+
+    【機能概要】: ``arbitrate`` の生結果 (``ArbitrationResult``)・nested/Laplace 裁定後の
+      ΔBIC 相当 (single−two_phase)・統合 adjudicated_by・その ΔBIC から導いた暫定 verdict を束ねる。
+    🟡 信頼性レベル: 実装裁量 (Issue #65 の要件3「裁定結果を判別結果に反映」を満たす内部表現)。
+    """
+
+    result: ArbitrationResult  # 【nested 裁定の生結果】: nested_ids・両仮説の再ランキングを保持
+    delta: float  # 【ΔBIC(nested)】: single の evidence − two_phase の evidence (bic と同一符号規約)
+    adjudicated_by: Literal["bic", "nested", "laplace"]  # 【裁定の由来 (両仮説で集約)】
+    provisional_verdict: Literal["solid_solution", "two_phase", "undecided"]  # 【暫定 verdict】
+
+
+def _build_evidence_problem(outcome: _IntervalOutcome, *, label: str) -> EvidenceProblem:
+    """区間 Σbic から nested/Laplace 裁定用の ``EvidenceProblem`` を組む (M3-nested v1 サロゲート)。
+
+    【機能概要】: ``outcome.sum_bic`` (モデル DOF 込みの区間 Σbic) を ``chi2``・``n_params=0``・
+      ``n_obs=1`` の ``RefinementMetrics`` に載せ、``BICBackend``/``LaplaceBackend.score`` が
+      Σbic をそのまま再現するようにする (map_point/hessian 無しの Laplace フォールバック経路で
+      bic 一次判定と厳密に一致させる)。1 次元ダミー一様事前分布 + 定数対数尤度
+      (``logL=-Σbic/2``, BIC の -2logL_max=Σbic 対応) の flat problem とし、実 nested サンプラでも
+      評価可能にする。
+    【制限 (v1)】: 実 nested サンプラ (単位一様事前分布 = 体積1・定数尤度) では
+      -logZ=-logL=Σbic/2 となり、Laplace フォールバック (=Σbic そのもの) とスケールが factor-2 で
+      異なりうる。restraint 由来の真の物理事前分布/尤度配線は M-later (discrimination には現状
+      連続自由パラメータの事後分布が無いための暫定サロゲート)。
+    🟡 信頼性レベル: 実装裁量 (nested/laplace 既存契約 ``EvidenceProblem`` への Σbic 写像)。
+    """
+    sum_bic = outcome.sum_bic
+    is_finite = math.isfinite(sum_bic)
+    metrics = RefinementMetrics(
+        rwp=outcome.representative_rwp,
+        gof=math.sqrt(sum_bic) if is_finite and sum_bic >= 0.0 else float("inf"),
+        chi2=sum_bic,
+        n_obs=1,
+        n_params=0,
+    )
+    priors = (PriorSpec(param_name=f"discrimination.{label}.quality"),)
+
+    def log_likelihood(theta: np.ndarray) -> float:
+        # 【定数尤度サロゲート】: θ に依存せず Σbic の BIC 対応 logL_max=-Σbic/2 を返す (docstring 参照)。
+        return -0.5 * sum_bic
+
+    return EvidenceProblem(
+        metrics=metrics, log_likelihood=log_likelihood, priors=priors, label=label
+    )
+
+
+def _nested_verdict_from_delta(
+    delta: float, close_threshold: float
+) -> Literal["solid_solution", "two_phase", "undecided"]:
+    """nested/Laplace 裁定後の ΔBIC(nested) を discrimination 自身の close_threshold と比較する。
+
+    【実装方針】: bic 一次判定 (``_decide_verdict``) と同一の閉境界規約 (>=/<=) を用いる。
+      both_high_r / 比較可能性ガードは close_competitor 到達時点で既に確認済み (呼び側が保証) の
+      ためここでは扱わない。
+    🟡 信頼性レベル: _decide_verdict の閉境界規約を nested 裁定へ再利用する実装裁量。
+    """
+    if delta <= -close_threshold:
+        return "solid_solution"
+    if delta >= close_threshold:
+        return "two_phase"
+    return "undecided"
+
+
+def _combine_adjudicated_by(
+    single: Literal["bic", "nested", "laplace"], two_phase: Literal["bic", "nested", "laplace"]
+) -> Literal["bic", "nested", "laplace"]:
+    """両仮説の ``adjudicated_by`` を判別レベルの単一値へ集約する (保守側: 純 nested 以外は laplace)。
+
+    ``_run_nested_arbitration`` は ``full_nested=True`` を強制し両仮説に必ず problem を供給するため、
+    通常は両方とも "nested" か両方とも "laplace" に揃う。想定外の混在 (例: 片方のみ problem 欠損)
+    は「nested で完全には裁定し切れなかった」ことを示すため、保守側に倒し "laplace" とする。
+    🟡 信頼性レベル: 実装裁量 (REQ-015 の adjudicated_by 明示を 2 仮説の集約値として表現)。
+    """
+    if single == "nested" and two_phase == "nested":
+        return "nested"
+    return "laplace"
+
+
+def _run_nested_arbitration(
+    hyp_single: Hypothesis,
+    hyp_two_phase: Hypothesis,
+    seq_a: _IntervalOutcome,
+    seq_b: _IntervalOutcome,
+    close_threshold: float,
+    arbitration_config: ArbitrationConfig,
+    nested_backend: NestedBackend,
+    ledger: Ledger | None,
+) -> _NestedArbitrationOutcome:
+    """close_competitor の 2 仮説 (A/B) のみを対象に nested/Laplace 裁定を実行する (FR-122/313)。
+
+    【実装方針】: discrimination 側で既に close_competitor と判定済み (呼び側の発動条件) のため、
+      ``arbitrate`` 内部の ``rank()`` ベース close 再判定 (``ArbitrationConfig.close_threshold`` が
+      discrimination 側の ``close_threshold`` と異なる可能性がある) には委ねず、
+      ``full_nested=True`` を強制して両仮説を確実に nested 裁定対象にする (要件2「既存
+      close_competitor 判定の再利用」)。``ledger`` は ``arbitrate`` へそのまま渡し、
+      "arbitration"/"nested_run"/"nested_fallback" 記録は既存契約に委ねる (呼び側が別途
+      "discrimination.nested_arbitration" を追記する)。
+    🟡 信頼性レベル: 実装裁量 (nested/arbitration.arbitrate 既存契約への配線)。
+
+    @returns: nested 裁定の生結果・ΔBIC(nested)・集約 adjudicated_by・暫定 verdict を束ねた結果。
+    """
+    problems = {
+        hyp_single.id: _build_evidence_problem(seq_a, label="single"),
+        hyp_two_phase.id: _build_evidence_problem(seq_b, label="two_phase"),
+    }
+    # 【full_nested 強制】: close_threshold/temperature は呼び出し側設定を尊重しつつ、対象抽出だけを
+    #   full_nested で上書きする 🟡
+    effective_config = ArbitrationConfig(
+        full_nested=True,
+        close_threshold=arbitration_config.close_threshold,
+        temperature=arbitration_config.temperature,
+    )
+    arb = arbitrate(
+        (hyp_single, hyp_two_phase),
+        problems=problems,
+        nested=nested_backend,
+        config=effective_config,
+        ledger=ledger,
+    )
+    by_id = {a.ranked.hypothesis.id: a for a in arb.arbitrated}
+    single_arb = by_id[hyp_single.id]
+    two_phase_arb = by_id[hyp_two_phase.id]
+    delta = single_arb.ranked.evidence.value - two_phase_arb.ranked.evidence.value
+    adjudicated_by = _combine_adjudicated_by(single_arb.adjudicated_by, two_phase_arb.adjudicated_by)
+    provisional_verdict = _nested_verdict_from_delta(delta, close_threshold)
+    return _NestedArbitrationOutcome(
+        result=arb, delta=delta, adjudicated_by=adjudicated_by,
+        provisional_verdict=provisional_verdict,
+    )
