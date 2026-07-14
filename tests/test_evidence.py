@@ -128,9 +128,11 @@ def test_aic_noise_scale_formula():
     assert AICBackend().score(m).value == pytest.approx(expected)
 
 
-@pytest.mark.parametrize("invalid_scale", [0.0, -1.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("invalid_scale", [0.0, -1.0, -2.0, float("nan"), float("inf")])
 def test_invalid_noise_scale_falls_back_to_unscaled_chi2(invalid_scale: float):
     # 数学的に無効な s (<=0 / 非有限) は補正を諦め従来式へ防御的にフォールバックする。
+    # -2.0 は s² だけの判定だと (-2)²=4>0 で素通りし誤補正が適用される回帰ケース
+    #   ((-1)²=1 は偶然無補正と同値になるため検出できない — レビュー実測)。🔵
     m = _metrics_ns(50.0, 2, 100, invalid_scale)
     legacy = 50.0 + 2 * math.log(100)
     assert BICBackend().score(m).value == legacy

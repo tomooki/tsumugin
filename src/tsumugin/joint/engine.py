@@ -250,6 +250,14 @@ def _build_aggregate(
     算出は本タスクの範囲外 (将来課題) のため、「算出していない joint σ」を「単一ヒスト σ」で
     誤表示しないよう、集約時に ``model.strip_lattice_sigma`` で σ/sigma_source を剥離する
     (gsasii.py の GSAS 例外分岐と同型の目的で、重複実装を避け model 層の共有ヘルパを使う)。
+
+    【noise_scale は集約しない (レビュー対応, Issue #64 収束確認)】: per_results の各ヒストは
+    ``estimate_noise=True`` で個別の noise_scale を持ちうるが、複数ヒストを結合した joint
+    ノイズスケールは v1 では定義しない (格子 σ と同じ理由 — 単一ヒスト値を joint 値と
+    誤表示しない)。したがって集約 RefinementResult の ``noise_scale`` は意図的に None のまま
+    とし、下流 ``_metrics_from_aggregate`` の noise_scale 引き継ぎは「将来 joint 集約が定義
+    された場合に備えた素通し」である (現状 None→None)。joint 経路で FR-123 補正を効かせる
+    には joint ノイズモデルの定義が別途必要 (未着手の将来課題)。
     """
     # 【格子 σ の剥離】: 0 ヒストグラム経路・通常経路のいずれでも共通に適用する 🔵
     phases = strip_lattice_sigma(phases)

@@ -161,9 +161,32 @@ def test_segmentation_frame_bic_propagates_noise_scale():
 
 
 def test_joint_verification_metrics_from_aggregate_propagates_noise_scale():
+    # 【注意 (Issue #64 収束確認)】: これは _metrics_from_aggregate 単体の素通し検証。
+    #   実運用の joint 集約 (_build_aggregate) は joint ノイズスケールを定義せず
+    #   noise_scale=None を返すため、joint 経路の FR-123 補正は現状効かない (意図的 —
+    #   単一ヒスト値を joint 値と誤表示しない。joint/engine.py の docstring 参照)。
     aggregate = _result(chi2=70.0, noise_scale=1.8)
     metrics = _metrics_from_aggregate(aggregate, evidence=None, prior=None)
     assert metrics.noise_scale == 1.8
+
+
+def test_joint_build_aggregate_does_not_define_joint_noise_scale():
+    # 実運用経路の確認: per-histogram の noise_scale があっても集約は None (未定義) を保つ。
+    from tsumugin.backends.simulated import SimulatedBackend
+    from tsumugin.joint.engine import refine_joint
+    from tsumugin.joint.model import JointHistogram, JointRefinementModel
+
+    backend = SimulatedBackend(peak_fwhm=0.2, estimate_noise=True)
+    phases = (_phase(5.0),)
+    pattern = backend.simulate(phases, GRID)
+    model = JointRefinementModel(
+        phases=phases,
+        histograms=(JointHistogram(two_theta=GRID, intensity=pattern),),
+        shared_free_params=frozenset({"phase0.lattice.a"}),
+        per_histogram_free_params={0: frozenset({"phase0.scale"})},
+    )
+    result = refine_joint(backend, model)
+    assert result.noise_scale is None
 
 
 def test_sequential_engine_metrics_from_result_propagates_noise_scale():
