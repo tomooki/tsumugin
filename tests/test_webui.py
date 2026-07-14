@@ -208,6 +208,15 @@ def test_hypothesis_detail_returns_full_json(client, result):
     # 【検証項目】: metrics 全量 (evidence 含む) 🟡
 
 
+def test_hypothesis_detail_metrics_noise_scale_defaults_to_null(client, result):
+    # 【テスト目的】: Issue #64 / FR-123 (NFR-107 σ の由来明示) — metrics に noise_scale キーが
+    #   常に含まれ、EM 未推定 (既定 None) の仮説では JSON null で配信されることを確認。
+    known_id = result.ranked[0].hypothesis.id
+    data = client.get(f"/api/hypotheses/{known_id}").json()
+    assert "noise_scale" in data["metrics"]
+    assert data["metrics"]["noise_scale"] is None
+
+
 def test_hypothesis_detail_is_json_serializable_pure_types(client, result):
     # 【テスト目的】: 詳細 JSON が numpy スカラー/dataclass を素通しせず純型化されていることを確認 🟡
     # 【テスト内容】: json.dumps の成功と rwp/lattice.a が float であることを検証

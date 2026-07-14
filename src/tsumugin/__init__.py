@@ -23,6 +23,7 @@ from .errors import (
     OEDUnavailableError,
 )
 from .evidence.ic import AICBackend, BICBackend
+from .evidence.noise import NoiseEstimate, estimate_noise_em
 from .evidence.ranking import RankedHypothesis, rank
 from .export import export_gpx
 
@@ -135,6 +136,12 @@ from .store import (
     phase_from_dict,
     phase_to_dict,
 )
+
+# 【Issue #64 レビュー対応: metrics_to_dict/metrics_from_dict の降格】: 本番永続化経路
+# (store/persistent.py の PersistentLedger/PersistentSnapshotStore) から一切呼ばれておらず
+# (Snapshot は phases のみを永続化し metrics を含まない)、トップレベル公開面に昇格させる
+# 既存の自然な配線先が無い。webui/将来の永続化用ユーティリティとして tsumugin.store.serialization
+# モジュール内 API に留め、トップレベル __all__ へは載せない (未配線であることを明示)。
 
 # 【M5 公開面統合 (REQ-404 / TASK-0058)】: nested/mem/oed のコア公開シンボル 40 個を is-同一実体で
 # トップレベルへ集約する。実サンプラ (dynesty/ultranest)・実バイナリ (Dysnomia)・pyboed は各境界の
@@ -317,6 +324,7 @@ __all__ = [
     "NestedConfig",
     "NestedOutcome",
     "NestedUnavailableError",
+    "NoiseEstimate",
     "OEDProposal",
     "OEDUnavailableError",
     "OccupancyReleaseRecommendation",
@@ -389,6 +397,7 @@ __all__ = [
     "detect_changepoint",
     "detect_escalations",
     "discriminate_interval",
+    "estimate_noise_em",
     "estimate_snip_background",
     "estimate_transition",
     "expand_atoms_by_operators",

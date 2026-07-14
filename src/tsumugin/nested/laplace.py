@@ -41,6 +41,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..evidence.base import EvidenceResult
+from ..evidence.ic import _scaled_chi2_term
 from ..model import RefinementMetrics
 from .base import EvidenceProblem
 
@@ -49,8 +50,13 @@ def _bic_value(metrics: RefinementMetrics) -> float:
     """BIC 近似値 chi2 + k ln max(n_obs,1) (``evidence.ic.BICBackend`` と同一式)。REQ-002/003。
 
     n_obs=0 (空パターン等の縮退) は log(max(0,1))=log(1)=0 として非例外化する (BICBackend と統一)。
+    【Issue #64 / FR-123 レビュー対応】: noise_scale 補正の中核 (chi2/s² 項・n·ln(s²) 項・
+      degenerate ガード) を ``evidence.ic._scaled_chi2_term`` と共有し、式の二重実装 (ドリフトの
+      温床) を解消する。``metrics.noise_scale`` が ``None``/無効なら補正なしで従来式と一致する
+      (BICBackend と厳密に同一の計算式・同一のガード条件)。
     """
-    return metrics.chi2 + metrics.n_params * math.log(max(metrics.n_obs, 1))
+    chi2_term, scale_term = _scaled_chi2_term(metrics)
+    return chi2_term + scale_term + metrics.n_params * math.log(max(metrics.n_obs, 1))
 
 
 @dataclass(frozen=True)

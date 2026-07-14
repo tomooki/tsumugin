@@ -260,6 +260,8 @@ class MultistartEngine:
             n_obs=representative.n_obs,
             n_params=representative.n_params,
             multistart={"n": n_starts, "n_basins": n_basins, "n_diverged": n_diverged},
+            # 【Issue #64 / FR-123 写像】: backend が推定した noise_scale を metrics へ伝播する 🔵
+            noise_scale=representative.noise_scale,
         )
         # 【昇格】: 代表 phases を持つ候補仮説を決定論 id で生成 🔵
         return Hypothesis(

@@ -19,6 +19,7 @@ from tsumugin.model import (
     LatticeParams,
     PhaseInstance,
     PhaseLifecycle,
+    RefinementMetrics,
     SigmaSource,
     TofBankParams,
 )
@@ -30,6 +31,8 @@ _SIGMA_SOURCES: frozenset[str] = frozenset(get_args(SigmaSource))
 __all__ = [
     "bank_params_from_dict",
     "bank_params_to_dict",
+    "metrics_from_dict",
+    "metrics_to_dict",
     "phase_from_dict",
     "phase_to_dict",
 ]
@@ -218,4 +221,80 @@ def bank_params_from_dict(data: Mapping[str, Any]) -> TofBankParams:
         difc=_value_or_default(data.get("difc"), 0.0),
         difa=_value_or_default(data.get("difa"), 0.0),
         zero=_value_or_default(data.get("zero"), 0.0),
+    )
+
+
+def metrics_to_dict(metrics: RefinementMetrics) -> dict[str, Any]:
+    """【機能概要】: RefinementMetrics を dict へ直列化する (Issue #64 / FR-123 noise_scale 追加)。
+    【位置づけ (Issue #64 レビュー対応)】: webui/将来の永続化用ユーティリティ (未配線)。本番
+    永続化経路 (``store/persistent.py`` の ``PersistentLedger``/``PersistentSnapshotStore``) から
+    呼ばれることはない (``Snapshot`` は ``phases`` のみを永続化し ``metrics`` を含まないため、
+    自然な配線先が現状存在しない)。パッケージ集約面 (``tsumugin`` トップレベル/``tsumugin.store``)
+    へは re-export せず、本モジュール (``tsumugin.store.serialization``) 内 API として留める。
+    【実装方針】: PhaseInstance の格子 (a/b/c) と異なり、rwp/gof/chi2 は非有限 (chi2=inf) が
+    「精密化失敗」を示す正常な状態 (EDGE-004) である。ここを finite_or_none で None へ純化する
+    と、往復復元時に 0.0 等へフォールバックせざるを得ず「収束成功」を捏造して evidence
+    (BIC/AIC) を汚染しかねない。よって rwp/gof/chi2/evidence は非有限のまま忠実に往復させる
+    (呼び出し元の ledger/persistent は json.dumps に allow_nan=False を使わないため、Python
+    内部の往復であれば inf/nan も安全に運べる)。外部 HTTP 配信向けの非有限→null 純化は
+    webui._serialize_metrics が別途担う (用途が異なる: 内部永続化 vs 外部 JSON 配信)。
+    optional フィールド (multistart/noise_scale) は未設定なら None のまま出力する。
+    🟡 信頼性レベル: RefinementMetrics には往復変換の precedent がなく、既存 phase_to_dict /
+    bank_params_to_dict の様式 (dict.get 前方互換・欠損補完) を踏襲した設計判断。
+
+    Args:
+        metrics: 直列化する精密化メトリクス。
+
+    Returns:
+        metrics_from_dict で復元可能な素の dict。
+    """
+    return {
+        "rwp": float(metrics.rwp),
+        "gof": float(metrics.gof),
+        "chi2": float(metrics.chi2),
+        "n_obs": int(metrics.n_obs),
+        "n_params": int(metrics.n_params),
+        "evidence": {str(key): float(value) for key, value in metrics.evidence.items()},
+        # 【None 保持】: multistart 未設定 (非マルチスタート精密化) と後方互換のための None 🟡
+        "multistart": dict(metrics.multistart) if metrics.multistart is not None else None,
+        # 【None 保持 (Issue #64)】: noise_scale 未推定 (既定) と後方互換のための None 🔵
+        "noise_scale": (
+            float(metrics.noise_scale) if metrics.noise_scale is not None else None
+        ),
+    }
+
+
+def metrics_from_dict(data: Mapping[str, Any]) -> RefinementMetrics:
+    """【機能概要】: metrics_to_dict が生成した dict から RefinementMetrics を再構築する。
+    【位置づけ (Issue #64 レビュー対応)】: webui/将来の永続化用ユーティリティ (未配線)。
+    metrics_to_dict と同様、本番永続化経路からは呼ばれず本モジュール内 API に留める
+    (詳細は ``metrics_to_dict`` docstring 参照)。
+    【実装方針】: rwp/gof/chi2/n_obs/n_params は構造的必須フィールド (dataclass に既定値なし)
+    のため明示キー取り出しとし、欠落は KeyError に委ねる (phase_to_dict の phase_ref/lattice
+    と同じ fail-loud 方針)。evidence/multistart/noise_scale は optional (欠損 or None は
+    既定値へ後方互換で補完, REQ-404): evidence は旧データ (キー欠落) で {}、multistart/
+    noise_scale は旧データ (Issue #64 以前に永続化された dict) で None を補完する。
+    🟡 信頼性レベル: metrics_to_dict と対称な設計判断 (precedent なし)。
+
+    Args:
+        data: metrics_to_dict の出力 (または後続スキーマ) の Mapping。
+
+    Returns:
+        復元された RefinementMetrics。
+
+    Raises:
+        KeyError: rwp/gof/chi2/n_obs/n_params のいずれかが欠落している (構造的必須値)。
+    """
+    multistart_data = data.get("multistart")
+    noise_scale_data = data.get("noise_scale")
+    return RefinementMetrics(
+        rwp=float(data["rwp"]),
+        gof=float(data["gof"]),
+        chi2=float(data["chi2"]),
+        n_obs=int(data["n_obs"]),
+        n_params=int(data["n_params"]),
+        # 【欠損補完】: evidence 欠落 (旧スキーマ/未計算) → {} 🟡
+        evidence={str(key): float(value) for key, value in (data.get("evidence") or {}).items()},
+        multistart=dict(multistart_data) if multistart_data is not None else None,
+        noise_scale=float(noise_scale_data) if noise_scale_data is not None else None,
     )

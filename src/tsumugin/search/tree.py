@@ -570,6 +570,9 @@ class HypothesisTreeSearch:
             n_obs=n_obs,
             n_params=n_params,
             evidence={},
+            # 【Issue #64 / FR-123 写像】: backend が推定した noise_scale を metrics へ伝播する
+            #   (未指定なら None のまま、既存経路とビット同一) 🔵
+            noise_scale=result.noise_scale,
         )
         # 【BIC 一次評価】: 全評価ノードに evidence["bic"] を格納する (rank の前提) 🔵 REQ-004
         ev = self._evidence.score(base_metrics)

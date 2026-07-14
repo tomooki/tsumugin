@@ -81,6 +81,8 @@ def _metrics_from_aggregate(
         n_obs=n_obs,
         n_params=n_params,
         evidence=dict(prior.evidence) if prior is not None else {},
+        # 【Issue #64 / FR-123 写像】: backend が推定した noise_scale を metrics へ伝播する 🔵
+        noise_scale=aggregate.noise_scale,
     )
     if evidence is not None:
         ev = evidence.score(base)

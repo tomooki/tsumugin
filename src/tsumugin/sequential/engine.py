@@ -582,6 +582,8 @@ class SequentialEngine:
             chi2=result.chi2,
             n_obs=result.n_obs,
             n_params=result.n_params,
+            # 【Issue #64 / FR-123 写像】: backend が推定した noise_scale を metrics へ伝播する 🔵
+            noise_scale=result.noise_scale,
         )
 
     @staticmethod

@@ -89,6 +89,11 @@ def metrics_from_result(result: AutoRietveldResult) -> RefinementMetrics:
 
     ``χ² = GOF²·(n_obs − k)`` で重み付き残差二乗和を復元する (GOF²=χ²/自由度)。自由度が非正になる
     縮退時は ``n_obs`` を下限に採る。
+
+    【noise_scale 対象外 (Issue #64 レビュー対応)】: 入力は ``RefinementResult`` でなく
+      ``AutoRietveldResult`` (GSAS-II 駆動の自動 Rietveld 結果) で、noise_scale フィールドを
+      持たない (EM ノイズ推定は現状 SimulatedBackend のみに配線, GSASIIBackend への配線はスコープ外)。
+      よって本関数は noise_scale を伝播しない。
     """
     k = _final_n_params(result)
     n = int(result.n_obs)

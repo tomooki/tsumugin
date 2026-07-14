@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from ..absorption.model import AbsorptionConfig, transmission_factor
+from ..evidence.noise import noise_extras
 from ..model import LatticeParams, PhaseInstance
 from .base import RefinementModel, RefinementResult, parse_param
 
@@ -53,12 +54,17 @@ class SimulatedBackend:
         wavelength: float = _DEFAULT_WAVELENGTH,
         hkl_table: Mapping[str, Sequence[tuple[int, int, int]]] | None = None,
         absorption: AbsorptionConfig | None = None,
+        estimate_noise: bool = False,
     ) -> None:
         self.peak_fwhm = float(peak_fwhm)
         self.wavelength = float(wavelength)
         self._hkl_table = dict(hkl_table) if hkl_table else {}
         # 【吸収設定】: None なら従来挙動 (透過因子乗算なし)。設定時は前方モデルへ吸収を織り込む 🔵
         self._absorption = absorption
+        # 【Issue #64 / FR-123】: 既定 False (既存呼び出しとビット同一)。True のときのみ
+        # refine() の最終残差から evidence.noise.estimate_noise_em を呼び、結果を
+        # RefinementResult.noise_scale / globals["noise_scale"] / warnings へ記録する。🔵
+        self._estimate_noise = bool(estimate_noise)
 
     # ---- 前方モデル -----------------------------------------------------
 
@@ -242,17 +248,24 @@ class SimulatedBackend:
         # 【σ リセット】: 何も解放しない呼び出しでも σ セマンティクス (当該 refine() の推定のみ)
         #   に従い、入力に残る古い sigma/sigma_source を空へリセットする 🔵
         if not names and not fit_mu_t:
+            y_calc0 = self._simulate(phases, two_theta, const_mu_t)
+            noise_scale0, noise_globals0, noise_warnings0 = self._noise_estimate_extras(
+                y_obs, y_calc0, weights
+            )
             return RefinementResult(
                 phases=self._apply_lattice_sigma(
                     phases, names, np.zeros(0), False, full_residual, r, chi2
                 ),
                 chi2=chi2,
-                rwp=_rwp(weights, y_obs, self._simulate(phases, two_theta, const_mu_t)),
+                rwp=_rwp(weights, y_obs, y_calc0),
                 n_obs=n_obs,
                 n_params=0,
                 converged=True,
                 n_cycles=1,
                 free_params=frozenset(),
+                globals=noise_globals0,
+                warnings=noise_warnings0,
+                noise_scale=noise_scale0,
             )
 
         p = read_vec(phases, mu_t)
@@ -302,6 +315,13 @@ class SimulatedBackend:
         free_out = frozenset(names) | ({"global.mu_t"} if fit_mu_t else frozenset())
         globals_out: dict[str, float] = {"mu_t": float(mu_t)} if fit_mu_t else {}
         warnings_out = self._build_warnings(absorption, fit_mu_t, mu_t, rwp)
+        # 【Issue #64 / FR-123】: opt-in (estimate_noise=True) のときのみ EM ノイズ推定を実行し、
+        #   globals/warnings/noise_scale へ由来を記録する (既定 False は空 tuple/dict/None) 🔵
+        noise_scale, noise_globals, noise_warnings = self._noise_estimate_extras(
+            y_obs, y_final, weights
+        )
+        globals_out = {**globals_out, **noise_globals}
+        warnings_out = warnings_out + noise_warnings
         # 【格子 σ】: 最終受理パラメータの JᵀJ 漸近共分散から解放格子属性の σ を導出し、
         #   解放しなかった相の古い σ はリセットする (FR-306/NFR-107) 🔵
         phases = self._apply_lattice_sigma(phases, names, p, fit_mu_t, full_residual, r, chi2)
@@ -316,7 +336,31 @@ class SimulatedBackend:
             free_params=free_out,
             globals=globals_out,
             warnings=warnings_out,
+            noise_scale=noise_scale,
         )
+
+    def _noise_estimate_extras(
+        self, y_obs: np.ndarray, y_calc: np.ndarray, weights: np.ndarray
+    ) -> tuple[float | None, dict[str, float], tuple[str, ...]]:
+        """opt-in (``estimate_noise=True``) のときのみ EM ノイズ推定を実行する (Issue #64 / FR-123)。
+
+        【機能概要】: 最終受理パラメータでの観測–計算残差 ``y_obs - y_calc`` と統計重み
+          ``weights`` から ``evidence.noise.noise_extras`` (backend 非依存の共有オーケストレーション
+          関数) へ委譲するだけの薄いラッパ (Issue #64 レビュー対応: 将来の GSAS-II backend 配線が
+          同一実装を再利用できるように、EM 呼び出しの判定・変換ロジックそのものは backend 非依存に
+          抽出済み)。既定オフ (``estimate_noise=False``) では追加計算なしでビット同一を保つ
+          (REQ-404、``noise_extras`` 側の ``enabled=False`` 早期リターンに従う)。
+
+        Args:
+            y_obs: 観測強度。
+            y_calc: 最終受理パラメータでの前方モデル計算強度。
+            weights: 統計重み ``w_i`` (``estimate_noise_em`` が期待する分散モデルの重み)。
+
+        Returns:
+            ``estimate_noise=False`` なら ``(None, {}, ())``。``True`` なら
+            ``(estimate.scale, {"noise_scale": estimate.scale}, (由来文字列,))``。
+        """
+        return noise_extras(y_obs - y_calc, weights, enabled=self._estimate_noise)
 
     def _build_warnings(
         self,

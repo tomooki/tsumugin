@@ -358,3 +358,100 @@ def test_metrics_non_negative():
     )
     assert result.rwp >= 0.0
     assert result.chi2 >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Issue #64 / FR-123: opt-in estimate_noise の SimulatedBackend 配線
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_noise_defaults_off_and_leaves_noise_scale_none():
+    # 【テスト目的】: estimate_noise 未指定 (既定 False) では EM を一切呼ばず noise_scale=None・
+    #   warnings/globals も変化しないことを確認 (既存呼び出しとビット同一, REQ-404)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=3.0)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    assert result.noise_scale is None
+    assert result.globals == {}
+    assert result.warnings == ()
+
+
+def test_estimate_noise_opt_in_populates_noise_scale():
+    # 【テスト目的】: estimate_noise=True のとき最終残差から EM 推定した noise_scale が
+    #   RefinementResult に populate されることを確認。
+    backend = SimulatedBackend(peak_fwhm=0.2, estimate_noise=True)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=3.0)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    assert result.noise_scale is not None
+    assert math.isfinite(result.noise_scale)
+    assert result.noise_scale > 0.0
+    assert result.globals["noise_scale"] == pytest.approx(result.noise_scale)
+
+
+def test_estimate_noise_opt_in_records_provenance_warning():
+    # 【テスト目的】: opt-in 時に σ の由来 (NFR-107: 反復回数・収束可否・inlier 比率) が
+    #   warnings へ記録されることを確認。
+    backend = SimulatedBackend(peak_fwhm=0.2, estimate_noise=True)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=3.0)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    assert len(result.warnings) >= 1
+    assert any("ノイズスケール" in w and "FR-123" in w for w in result.warnings)
+
+
+def test_estimate_noise_opt_in_is_deterministic():
+    backend = SimulatedBackend(peak_fwhm=0.2, estimate_noise=True)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=2.5)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    r1 = backend.refine(model)
+    r2 = backend.refine(model)
+    assert r1.noise_scale == r2.noise_scale
+    assert r1.warnings == r2.warnings
+
+
+def test_estimate_noise_opt_in_populates_on_no_free_params_path():
+    # 【テスト目的】: 早期リターン経路 (解放パラメータ皆無) でも estimate_noise=True なら
+    #   noise_scale が populate されることを確認 (2 経路とも配線されていることの回帰保証)。
+    backend = SimulatedBackend(peak_fwhm=0.2, estimate_noise=True)
+    tt = _grid()
+    phase = _phase(a=5.0, scale=2.0)
+    y = backend.simulate((phase,), tt)
+    result = backend.refine(
+        RefinementModel(phases=(phase,), free_params=frozenset(), two_theta=tt, intensity=y)
+    )
+    assert result.noise_scale is not None
+    assert math.isfinite(result.noise_scale)

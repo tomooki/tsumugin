@@ -22,6 +22,10 @@ class RefinementMetrics:
     evidence: Mapping[str, float] = field(default_factory=dict)
     # 【追加フィールド】: マルチスタート精密化のメタ ({"n","n_basins","n_diverged"})。末尾・既定 None で後方互換 (REQ-006/REQ-404) 🔵
     multistart: Mapping[str, int] | None = None
+    # 【追加フィールド (Issue #64 / FR-123)】: EM 推定したノイズスケール s。既定 None は
+    # 「未推定 (現行 chi2 をそのまま使う)」を意味し、evidence/ic.py の BIC/AIC は None のとき
+    # 従来式と完全一致する (末尾・既定値付きで非破壊追加, REQ-404)。🔵
+    noise_scale: float | None = None
 
 
 @dataclass(frozen=True)
