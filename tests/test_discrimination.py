@@ -1029,7 +1029,12 @@ def test_nested_arbitration_non_finite_delta_does_not_override_verdict():
     assert result.verdict == "undecided"  # 【確認内容】: 非有限 ΔBIC では verdict を上書きしない 🔵
     assert result.nested_delta_evidence is not None
     assert not math.isfinite(result.nested_delta_evidence)  # 由来自体は記録される (監査用) 🔵
-    assert any("再裁定でも僅差は解消されませんでした" in msg for msg in result.escalations)
+    # 【文言検証 (レビュー指摘)】: 非有限は通常の僅差継続と区別し「evidence 計算の異常」と明示する。
+    #   「僅差は解消されませんでした」(閾値未満の正常ケース文言) を出さない 🔵
+    non_finite_msgs = [m for m in result.escalations if "非有限" in m]
+    assert non_finite_msgs
+    assert all("異常" in m for m in non_finite_msgs)
+    assert all("僅差は解消されませんでした" not in m for m in result.escalations)
 
 
 def test_nested_arbitration_unresolved_message_omits_settled_wording():

@@ -954,8 +954,9 @@ def _nested_escalation_message(
     """nested/Laplace 裁定結果から ReviewQueue/escalations 向けの説明文字列を組む (レビュー指摘)。
 
     【正直なメッセージング】: 三重ガードのいずれかで verdict を上書きできなかった場合に「〜と
-      しました」と誤って確定を主張しないよう、経路混在 / 未解消 (route は一致するが有限性・閾値の
-      いずれかを満たさない) / 解消 の 3 パターンで文言を分岐する。解消時のみ「〜としました」を含む。
+      しました」と誤って確定を主張しないよう、経路混在 / 非有限 (evidence 計算の異常) / 未解消
+      (有限だが閾値未満の僅差のまま) / 解消 の 4 パターンで文言を分岐する。解消時のみ「〜と
+      しました」を含む。非有限は「僅差」と呼ばない (異常値を通常の僅差継続と誤読させない)。
     🟡 信頼性レベル: 実装裁量 (レビュー指摘「メッセージングの正直化」を満たす具体文言)。
 
     @param outcome: ``_run_nested_arbitration`` の結果。
@@ -973,6 +974,13 @@ def _nested_escalation_message(
             f"nested_arbitration: {outcome.adjudicated_by} 裁定 (ΔBIC_nested="
             f"{outcome.delta:.4g}) により暫定 verdict={verdict} としました。"
             f"close_competitor のため引き続き人間の確認を要求します。"
+        )
+    if not math.isfinite(outcome.delta):
+        # 【ガード②失敗の明示】: 非有限は僅差継続でなく evidence 計算の異常。「僅差」と表現しない 🔵
+        return (
+            f"nested_arbitration: {outcome.adjudicated_by} 裁定値が非有限 "
+            f"(ΔBIC_nested={outcome.delta}) のため比較できません。evidence 計算の異常を疑って"
+            f"ください。verdict は undecided のままとします。"
         )
     return (
         f"nested_arbitration: {outcome.adjudicated_by} 再裁定でも僅差は解消されませんでした "
