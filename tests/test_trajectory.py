@@ -50,6 +50,10 @@ PHASE_FIELD_SUFFIXES = [
     "c",
     "scale",
     "wt_frac",
+    "a_sigma",
+    "b_sigma",
+    "c_sigma",
+    "sigma_source",
     "birth_frame",
     "death_frame",
     "confidence",
@@ -62,11 +66,15 @@ REASONS_DELIMITER = "|"
 # ---------------------------------------------------------------------------
 
 
-def _phase(ref="A", a=5.0, b=6.0, c=7.0, scale=1.0, wt_frac=0.5):
-    """相 PhaseInstance を組む簡易ヘルパ (model/phase.py 既存型を再利用)。"""
+def _phase(ref="A", a=5.0, b=6.0, c=7.0, scale=1.0, wt_frac=0.5, sigma=None, sigma_source=""):
+    """相 PhaseInstance を組む簡易ヘルパ (model/phase.py 既存型を再利用)。
+
+    【Issue #66 / FR-306】: sigma/sigma_source を任意指定できるよう拡張。既定は sigma=None
+    (=空 dict) / sigma_source="" で既存テストの挙動は不変 (LatticeParams の既定と同一)。
+    """
     return PhaseInstance(
         phase_ref=ref,
-        lattice=LatticeParams(a=a, b=b, c=c),
+        lattice=LatticeParams(a=a, b=b, c=c, sigma=sigma or {}, sigma_source=sigma_source),
         scale=scale,
         wt_frac=wt_frac,
     )
@@ -235,6 +243,59 @@ def test_phase_columns_values(tmp_path):
     assert row["A.birth_frame"] == "2"  # 【確認内容】: lifecycle birth 🔵
     assert row["A.death_frame"] == "8"  # 【確認内容】: lifecycle death (非 None) 🔵
     assert float(row["A.confidence"]) == pytest.approx(0.75)  # 【確認内容】: confidence 🔵
+    # 【Issue #66 / FR-306】: sigma 未指定の相は a_sigma/b_sigma/c_sigma/sigma_source が空欄 🔵
+    assert row["A.a_sigma"] == ""
+    assert row["A.b_sigma"] == ""
+    assert row["A.c_sigma"] == ""
+    assert row["A.sigma_source"] == ""
+
+
+def test_phase_lattice_sigma_columns_values(tmp_path):
+    # 【テスト目的】: LatticeParams.sigma/sigma_source が CSV の a_sigma/b_sigma/c_sigma/sigma_source
+    #   列へ正しく反映されることを確認 (Issue #66 / FR-306 / NFR-107)。
+    # 【テスト内容】: sigma={"a":0.002,"b":0.003,"c":0.004}, sigma_source="covariance" の相を検証
+    # 【期待される動作】: 3 列とも対応する数値が str 化され、由来列に "covariance" が出力される
+    # 🔵 信頼性レベル: Issue #66 本文 (格子±σ をトラジェクトリ CSV に出力) に直接依拠
+
+    a = _phase(
+        ref="A",
+        sigma={"a": 0.002, "b": 0.003, "c": 0.004},
+        sigma_source="covariance",
+    )
+    traj = Trajectory(
+        records=(_record(frame_index=0, phases=(a,)),),
+        lifecycles={"A": PhaseLifecycle()},
+    )
+    path = str(tmp_path / "sigma.csv")
+
+    traj.to_csv(path)
+    row = _read_dicts(path)[0]
+
+    assert row["A.a_sigma"] == "0.002"  # 【確認内容】: a の σ 🔵
+    assert row["A.b_sigma"] == "0.003"  # 【確認内容】: b の σ 🔵
+    assert row["A.c_sigma"] == "0.004"  # 【確認内容】: c の σ 🔵
+    assert row["A.sigma_source"] == "covariance"  # 【確認内容】: σ 由来 (共分散) 🔵
+
+
+def test_phase_lattice_sigma_partial_keys_blank_for_missing(tmp_path):
+    # 【テスト目的】: sigma dict に一部キーしかない場合、未提供キーの列が空欄になることを確認
+    #   (Issue #66 / FR-306)。SimulatedBackend が解放した格子属性のみ populate する挙動を模す。
+    # 🟡 信頼性レベル: 要件 §4.3 の空欄非ブロック方針からの妥当な拡張
+
+    a = _phase(ref="A", sigma={"a": 0.01}, sigma_source="proxy")
+    traj = Trajectory(
+        records=(_record(frame_index=0, phases=(a,)),),
+        lifecycles={"A": PhaseLifecycle()},
+    )
+    path = str(tmp_path / "partial_sigma.csv")
+
+    traj.to_csv(path)
+    row = _read_dicts(path)[0]
+
+    assert row["A.a_sigma"] == "0.01"  # 【確認内容】: 提供済みキーは値 🔵
+    assert row["A.b_sigma"] == ""  # 【確認内容】: 未提供キーは空欄 🔵
+    assert row["A.c_sigma"] == ""  # 【確認内容】: 未提供キーは空欄 🔵
+    assert row["A.sigma_source"] == "proxy"  # 【確認内容】: 由来 (代理値) 🔵
 
 
 def test_to_csv_returns_input_path(tmp_path):

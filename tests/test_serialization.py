@@ -69,7 +69,8 @@ def test_to_dict_schema_keys_and_nesting():
 
     # 【結果検証】: キー名・ネスト構造・既定値の出力を確認
     assert d["phase_ref"] == "A"  # 【確認内容】: phase_ref が top-level に出力される 🟡
-    assert set(d["lattice"]) == {"a", "b", "c", "alpha", "beta", "gamma", "sigma"}  # 🟡
+    # 【Issue #66 / FR-306】: σ 由来 sigma_source を lattice スキーマへ追加 🟡
+    assert set(d["lattice"]) == {"a", "b", "c", "alpha", "beta", "gamma", "sigma", "sigma_source"}
     assert d["lattice"]["a"] == 5.0  # 【確認内容】: 格子長がネスト dict に出力される 🟡
     assert d["lattice"]["alpha"] == 90.0  # 【確認内容】: 既定角も明示出力される 🟡
     assert d["lifecycle"]["birth_frame"] == 3  # 【確認内容】: lifecycle がネスト dict である 🟡
@@ -143,6 +144,22 @@ def test_sigma_occupancies_roundtrip_preserved():
     # 【結果検証】: Mapping フィールドが lossless に往復し相全体も等価
     assert q.lattice.sigma == {"a": 0.01, "b": 0.02}  # 【確認内容】: sigma が保存される 🔵
     assert q.occupancies == {"Na": 0.9}  # 【確認内容】: occupancies が保存される 🔵
+    assert q == p  # 【確認内容】: 相全体が == で一致 🔵
+
+
+def test_sigma_source_roundtrip_preserved():
+    # 【テスト目的】: sigma_source ("covariance"/"proxy") が dict 往復で保存されることを確認
+    #   (Issue #66 / FR-306 / NFR-107)。
+    # 🔵 信頼性: Issue #66 本文 / phase.py LatticeParams.sigma_source
+
+    p = PhaseInstance(
+        "A",
+        LatticeParams(5, 5, 5, sigma={"a": 0.01}, sigma_source="covariance"),
+    )
+
+    q = phase_from_dict(phase_to_dict(p))
+
+    assert q.lattice.sigma_source == "covariance"  # 【確認内容】: σ 由来が保存される 🔵
     assert q == p  # 【確認内容】: 相全体が == で一致 🔵
 
 

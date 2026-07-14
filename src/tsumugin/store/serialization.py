@@ -94,6 +94,8 @@ def phase_to_dict(phase: PhaseInstance) -> dict[str, Any]:
             "beta": finite_or_none(lattice.beta),
             "gamma": finite_or_none(lattice.gamma),
             "sigma": _finite_map(lattice.sigma),  # 【素 dict コピー】: 空なら {} 🔵
+            # 【Issue #66 / FR-306】: σ 由来 ("covariance"/"proxy"/"") をラウンドトリップ保存 🔵
+            "sigma_source": lattice.sigma_source,
         },
         "scale": finite_or_none(phase.scale),
         "wt_frac": finite_or_none(phase.wt_frac),  # 【None 保持】: 未定 None と消失 0.0 を区別 🟡
@@ -128,6 +130,8 @@ def phase_from_dict(data: Mapping[str, Any]) -> PhaseInstance:
         beta=_value_or_default(lattice_data.get("beta"), 90.0),
         gamma=_value_or_default(lattice_data.get("gamma"), 90.0),
         sigma=dict(lattice_data.get("sigma") or {}),  # 【欠損補完】: sigma 欠落 → {} 🟡
+        # 【欠損補完】: sigma_source 欠落 (旧スキーマ) は既定 "" で補完 (後方互換, Issue #66) 🟡
+        sigma_source=lattice_data.get("sigma_source") or "",
     )
 
     # 【lifecycle 復元】: dict のままにせず PhaseLifecycle として型復元する (N-04) 🔵

@@ -8,6 +8,7 @@ Levenberg–Marquardt で最適化する精密化を提供する。乱数は一�
 from __future__ import annotations
 
 import math
+from dataclasses import replace as _dc_replace
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -33,6 +34,11 @@ _SCALAR_KEYS = ("scale", "wt_frac")
 
 _FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))
 _DEFAULT_WAVELENGTH = 1.5406  # Cu Kα1 (Å)
+
+# 【代理 σ 基準相対不確かさ】: 適合が完璧 (reduced χ²≤1) でも格子定数の 0.1% を下限として
+# 計上する経験的下限。真の共分散 (GSASIIBackend) と混同しないよう sigma_source="proxy" を
+# 併記する (FR-306 / NFR-107)。🟡 設計裁量 (簡易代理値、統計的厳密性は主張しない)。
+_LATTICE_SIGMA_BASE_RELATIVE = 1e-3
 
 # restraint 逸脱 (相関疑い) 判定の残差閾値。restraint が μt を中心へ引き留めた結果、
 # 強度プロファイルに系統的な残差 (rwp[%]) が残るとき μt–scale 相関 (§14) を疑う。
@@ -297,6 +303,8 @@ class SimulatedBackend:
         free_out = frozenset(names) | ({"global.mu_t"} if fit_mu_t else frozenset())
         globals_out: dict[str, float] = {"mu_t": float(mu_t)} if fit_mu_t else {}
         warnings_out = self._build_warnings(absorption, fit_mu_t, mu_t, rwp)
+        # 【格子 σ 代理値】: 解放した格子属性のみへ決定論的な代理 σ を書き込む (FR-306/NFR-107) 🟡
+        phases = self._apply_lattice_sigma(phases, names, n_obs, len(p), chi2)
         return RefinementResult(
             phases=phases,
             chi2=chi2,
@@ -416,11 +424,66 @@ class SimulatedBackend:
             jac[:, j] = (r_pert - r) / step
         return jac
 
+    def _apply_lattice_sigma(
+        self,
+        phases: tuple[PhaseInstance, ...],
+        names: list[str],
+        n_obs: int,
+        n_params: int,
+        chi2: float,
+    ) -> tuple[PhaseInstance, ...]:
+        """解放した格子属性のみに決定論的な代理 σ (``sigma_source="proxy"``) を書き込む。
+
+        【設計方針】: GSAS-II 共分散のような真の統計的不確かさ (GSASIIBackend が担う
+        "covariance") ではなく、格子定数自身の相対値と適合度 (reduced χ²) から導く粗い
+        代理値。式: ``σ = |value| × base_relative × sqrt(max(reduced_chi2, 1.0))``
+        (reduced_chi2 = chi2 / max(n_obs - n_params, 1))。適合が良好 (reduced_chi2≤1) でも
+        base_relative (既定 0.1%) を下限とし、適合が悪化するほど σ を比例拡大する。
+        乱数不使用・同一入力でビット同一 (NFR-102)。解放していない格子属性/相は変更しない
+        (P2 非破壊: 既存 sigma エントリはそのまま残す)。
+        🟡 信頼性レベル: FR-306/NFR-107 の「σ 由来明示」を満たす設計裁量の簡易式。
+
+        :param phases: 精密化後の相集合
+        :param names: 解放された free_params 名 (``phase{i}.lattice.a`` 等)
+        :param n_obs: 観測点数 (自由度算出用)
+        :param n_params: 解放パラメータ総数 (μt 含む。自由度算出用)
+        :param chi2: 精密化後の残差二乗和 (restraint 項含む)
+        :returns: 解放した格子属性のみ sigma/sigma_source を更新した新しい phases
+        """
+        by_phase: dict[int, list[str]] = {}
+        for name in names:
+            idx, key = parse_param(name)
+            if key.startswith("lattice."):
+                by_phase.setdefault(idx, []).append(key.split(".", 1)[1])
+        if not by_phase:
+            return phases
+
+        dof = max(n_obs - n_params, 1)
+        reduced_chi2 = chi2 / dof
+        relative = _LATTICE_SIGMA_BASE_RELATIVE * math.sqrt(max(reduced_chi2, 1.0))
+
+        phases_list = list(phases)
+        for idx, attrs in by_phase.items():
+            phase = phases_list[idx]
+            lattice = phase.lattice
+            new_sigma = dict(lattice.sigma)
+            for attr in attrs:
+                new_sigma[attr] = abs(getattr(lattice, attr)) * relative
+            phases_list[idx] = phase.with_updates(
+                lattice=_replace_lattice_sigma(lattice, new_sigma, "proxy")
+            )
+        return tuple(phases_list)
+
 
 def _replace_lattice(lattice: LatticeParams, attr: str, value: float) -> LatticeParams:
-    from dataclasses import replace
+    return _dc_replace(lattice, **{attr: value})
 
-    return replace(lattice, **{attr: value})
+
+def _replace_lattice_sigma(
+    lattice: LatticeParams, sigma: Mapping[str, float], source: str
+) -> LatticeParams:
+    """sigma/sigma_source のみを更新した新しい LatticeParams を返す (非破壊)。"""
+    return _dc_replace(lattice, sigma=sigma, sigma_source=source)
 
 
 def _rwp(weights: np.ndarray, y_obs: np.ndarray, y_calc: np.ndarray) -> float:

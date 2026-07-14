@@ -98,6 +98,55 @@ def test_refine_lattice_recovers_cell():
 
 
 @pytest.mark.gsas
+def test_refine_lattice_populates_covariance_sigma():
+    # 【テスト目的】: 格子 a を解放すると G2Phase.get_cell_and_esd() 由来の共分散 σ が
+    #   LatticeParams.sigma["a"] に populate され、sigma_source="covariance" になることを
+    #   確認 (Issue #66 / FR-306 / NFR-107)。
+    backend = GSASIIBackend()
+    tt = _grid()
+    truth = _phase(a=4.0, scale=1.0)
+    y = backend.simulate((truth,), tt)
+
+    start = _phase(a=4.01, scale=1.0)
+    fitted = backend.refine(
+        RefinementModel(
+            phases=(start,),
+            free_params=frozenset({param_name(0, "lattice.a")}),
+            two_theta=tt,
+            intensity=y,
+        )
+    )
+    lattice = fitted.phases[0].lattice
+    assert lattice.sigma_source == "covariance"  # 【確認内容】: 共分散由来を明示 🔵
+    assert "a" in lattice.sigma  # 【確認内容】: 解放した a の esd が populate される 🔵
+    assert lattice.sigma["a"] > 0.0
+    assert lattice.sigma["a"] < 1.0  # 【確認内容】: 妥当なオーダー (Å 未満) 🟡
+
+
+@pytest.mark.gsas
+def test_refine_without_lattice_free_leaves_gsas_sigma_empty():
+    # 【テスト目的】: 格子未解放 (scale のみ) では sigma が空・sigma_source="" のまま
+    #   縮退することを確認 (fail-loud しない / 非回帰)。
+    backend = GSASIIBackend()
+    tt = _grid()
+    truth = _phase(a=4.0, scale=2.0)
+    y = backend.simulate((truth,), tt)
+
+    start = _phase(a=4.0, scale=0.5)
+    fitted = backend.refine(
+        RefinementModel(
+            phases=(start,),
+            free_params=frozenset({param_name(0, "scale")}),
+            two_theta=tt,
+            intensity=y,
+        )
+    )
+    lattice = fitted.phases[0].lattice
+    assert lattice.sigma == {}  # 【確認内容】: 格子非解放は空 dict 🔵
+    assert lattice.sigma_source == ""  # 【確認内容】: 由来も未設定 🔵
+
+
+@pytest.mark.gsas
 def test_pipeline_ranks_hypotheses_on_gsasii_backend():
     """M0 受け入れ機能 (多仮説ランキング) が実バックエンドで動くことの契約。"""
     from tsumugin.pipeline import analyze_single_pattern

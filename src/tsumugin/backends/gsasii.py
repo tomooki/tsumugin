@@ -227,7 +227,7 @@ class GSASIIBackend:
             vary_list = cov.get("varyList", [])
             converged = bool(rvals.get("converged", True)) if any_free else True
 
-            new_phases = self._read_back(g2phases, hist, model.phases)
+            new_phases = self._read_back(g2phases, hist, model.phases, cell_free)
 
         return RefinementResult(
             phases=new_phases,
@@ -309,11 +309,20 @@ class GSASIIBackend:
         return g2phases
 
     def _read_back(
-        self, g2phases, hist, originals: tuple[PhaseInstance, ...]
+        self,
+        g2phases,
+        hist,
+        originals: tuple[PhaseInstance, ...],
+        cell_free: set[int],
     ) -> tuple[PhaseInstance, ...]:
         out: list[PhaseInstance] = []
-        for g2ph, orig in zip(g2phases, originals):
+        for i, (g2ph, orig) in enumerate(zip(g2phases, originals)):
             cell = g2ph.get_cell()
+            sigma: dict[str, float] = {}
+            sigma_source = ""
+            if i in cell_free:
+                # 【共分散由来 σ】: 格子を解放した相のみ get_cell_and_esd() を試みる (REQ-306) 🔵
+                sigma, sigma_source = self._cell_sigma(g2ph)
             lattice = LatticeParams(
                 a=float(cell["length_a"]),
                 b=float(cell["length_b"]),
@@ -321,7 +330,36 @@ class GSASIIBackend:
                 alpha=float(cell["angle_alpha"]),
                 beta=float(cell["angle_beta"]),
                 gamma=float(cell["angle_gamma"]),
+                sigma=sigma,
+                sigma_source=sigma_source,
             )
             scale = float(g2ph.getHAPvalues(hist)["Scale"][0])
             out.append(orig.with_updates(lattice=lattice, scale=scale))
         return tuple(out)
+
+    def _cell_sigma(self, g2ph) -> tuple[dict[str, float], str]:
+        """精密化済み格子の共分散由来 esd (a/b/c) を ``get_cell_and_esd()`` から取得する。
+
+        【機能概要】: GSAS-II の共分散行列由来の真の格子 esd を sigma_source="covariance" で
+        返す (FR-306/NFR-107)。GSAS-II 側 API は共分散欠如時 ``KeyError`` を自前で吸収して
+        esd=0.0 の dict へ縮退させる実装のため、ここでは 0.0/非有限を「取得不能」として除外する。
+        【設計方針】: 取得不能 (例外・0.0・非有限) は空 dict + "" へ縮退し fail-loud しない
+        (「精密化バックエンドの失敗は chi2=inf へ変換しガードレールに処理させる」不変条件と同趣旨、
+        σ 取得は精密化成否そのものではないため例外を上げず黙って未提供とする)。
+        🟡 信頼性レベル: GSASIIscriptable.G2Phase.get_cell_and_esd() 実装 (KeyError→0.0 縮退) に依拠。
+        """
+        try:
+            _, esd = g2ph.get_cell_and_esd()
+        except Exception:
+            return {}, ""
+        sigma: dict[str, float] = {}
+        for attr, key in (("a", "length_a"), ("b", "length_b"), ("c", "length_c")):
+            value = esd.get(key)
+            if value is None:
+                continue
+            value = float(value)
+            if math.isfinite(value) and value > 0.0:
+                sigma[attr] = value
+        if not sigma:
+            return {}, ""
+        return sigma, "covariance"

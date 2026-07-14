@@ -28,14 +28,21 @@ _FRAME_COMMON_COLUMNS = [
     "changepoint_reasons",
     "refine_failed",
 ]
-# 【凍結列レイアウト】: 相ごと列のうち「当該フレームの相由来」の接尾辞 (格子 abc / scale / wt_frac)。順序固定 🔵
+# 【凍結列レイアウト】: 相ごと列のうち「当該フレームの相由来」の接尾辞
+# (格子 abc / scale / wt_frac / 格子 σ abc / σ 由来)。順序固定 🔵
 # 【改善内容】: 相由来列と lifecycle 由来列を分離し、空欄プレースホルダの個数をこの定義から導出可能にした 🔵
+# 【Issue #66 / FR-306】: 格子 ±σ (a_sigma/b_sigma/c_sigma) + 由来 (sigma_source) を末尾追加。
+#   既存列の順序は変えず追記のみとし、既存消費側 (header()/rows_by_frame() 経由) を非破壊で拡張する 🔵
 _PHASE_FRAME_SUFFIXES = [
     "a",
     "b",
     "c",
     "scale",
     "wt_frac",
+    "a_sigma",
+    "b_sigma",
+    "c_sigma",
+    "sigma_source",
 ]
 # 【凍結列レイアウト】: 相ごと列のうち「相メタ (lifecycle) 由来」の接尾辞。全行一貫で並ぶ。順序固定 🔵
 _PHASE_LIFECYCLE_SUFFIXES = [
@@ -192,12 +199,19 @@ class Trajectory:
                 row.extend([""] * len(_PHASE_FRAME_SUFFIXES))
             else:
                 # 【格子/scale/wt_frac】: 有限値のみ str 化、None/非有限は空欄 (T-N04/T-E02) 🔵
+                # 【格子 σ / 由来 (Issue #66 / FR-306)】: sigma dict 未提供キーは空欄化 (_num_cell(None))、
+                #   sigma_source は "" のとき自然に空欄化される単純文字列列 🔵
+                sigma = phase.lattice.sigma
                 row.extend([
                     _num_cell(phase.lattice.a),
                     _num_cell(phase.lattice.b),
                     _num_cell(phase.lattice.c),
                     _num_cell(phase.scale),
                     _num_cell(phase.wt_frac),
+                    _num_cell(sigma.get("a")),
+                    _num_cell(sigma.get("b")),
+                    _num_cell(sigma.get("c")),
+                    phase.lattice.sigma_source,
                 ])
 
             # 【lifecycle 列】: 相メタとして lifecycles から引き全行一貫。欠損相は空欄 (T-N04/T-B04) 🔵

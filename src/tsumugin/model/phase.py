@@ -18,6 +18,9 @@ class LatticeParams:
     beta: float = 90.0
     gamma: float = 90.0
     sigma: Mapping[str, float] = field(default_factory=dict)
+    # 【σ 由来明示】: "covariance" (共分散由来の真の esd, 例 GSASIIBackend) /
+    #   "proxy" (簡易代理値, 例 SimulatedBackend) / "" (未提供, 既定)。NFR-107 🔵
+    sigma_source: str = ""
 
     def volume(self) -> float:
         """一般三斜格子の単位胞体積 (Å³)。"""

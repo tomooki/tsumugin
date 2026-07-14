@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -120,6 +122,70 @@ def test_deterministic():
     r2 = backend.refine(model)
     assert r1.chi2 == r2.chi2
     assert r1.phases[0].scale == r2.phases[0].scale
+
+
+def test_refine_lattice_populates_proxy_sigma():
+    # 【テスト目的】: 格子 a を解放すると LatticeParams.sigma["a"] が代理値で populate され、
+    #   sigma_source="proxy" になることを確認 (Issue #66 / FR-306)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=1.0)
+    y = backend.simulate((truth,), tt)
+
+    start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.03, 5.0, 5.0), scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "lattice.a")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    lattice = result.phases[0].lattice
+    assert lattice.sigma_source == "proxy"  # 【確認内容】: 代理値の由来明示 🔵
+    assert "a" in lattice.sigma  # 【確認内容】: 解放した a のみ populate 🔵
+    assert lattice.sigma["a"] > 0.0  # 【確認内容】: 正の有限値 🔵
+    assert math.isfinite(lattice.sigma["a"])
+    # 【確認内容】: 解放していない b/c は sigma に含まれない (最小 blast radius) 🔵
+    assert "b" not in lattice.sigma
+    assert "c" not in lattice.sigma
+
+
+def test_refine_without_lattice_free_leaves_sigma_empty():
+    # 【テスト目的】: 格子を解放しない (scale のみ) 精密化では lattice.sigma が空 dict のまま
+    #   (既存挙動を保持) であることを確認 (非回帰)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=3.0)
+    y = backend.simulate((truth,), tt)
+
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    assert result.phases[0].lattice.sigma == {}  # 【確認内容】: 格子非解放は空 dict 🔵
+    assert result.phases[0].lattice.sigma_source == ""  # 【確認内容】: 由来も未設定 🔵
+
+
+def test_refine_lattice_sigma_is_deterministic():
+    # 【テスト目的】: 同一入力の 2 回精密化で代理 σ がビット同一であることを確認 (NFR-102)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=1.0)
+    y = backend.simulate((truth,), tt)
+    start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.03, 5.0, 5.0), scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "lattice.a")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    r1 = backend.refine(model)
+    r2 = backend.refine(model)
+    assert r1.phases[0].lattice.sigma["a"] == r2.phases[0].lattice.sigma["a"]
 
 
 def test_metrics_non_negative():
