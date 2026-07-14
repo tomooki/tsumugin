@@ -310,6 +310,44 @@ def test_refine_lattice_sigma_with_absorption_restraint_stays_finite():
     assert lattice.sigma["a"] < 0.02
 
 
+def test_refine_lattice_sigma_excludes_non_identifiable_angle():
+    # 【テスト目的】: orthorhombic 近似の前方モデルは alpha に無寄与 (Jacobian 列が恒等 0) なので、
+    #   a/b/c と同時解放しても alpha は非識別として σ から除外され、識別可能な a/b/c は
+    #   丸ごと {} に巻き添えにされず正の有限 σ を保持することを確認 (Issue #66 レビュー対応)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=1.0)  # a=b=c=5.0, alpha=beta=gamma=90 (既定)
+    y = backend.simulate((truth,), tt)
+
+    start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.03, 4.97, 5.02), scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset(
+            {
+                param_name(0, "lattice.a"),
+                param_name(0, "lattice.b"),
+                param_name(0, "lattice.c"),
+                param_name(0, "lattice.alpha"),
+            }
+        ),
+        two_theta=tt,
+        intensity=y,
+    )
+    r1 = backend.refine(model)
+    r2 = backend.refine(model)  # 【決定論】: 2 回実行でビット同一 (NFR-102) 🔵
+
+    lattice1 = r1.phases[0].lattice
+    assert lattice1.sigma_source == "covariance"
+    # 【確認内容】: 非識別な alpha は含まれず、識別可能な a/b/c のみが σ を持つ 🔵
+    assert set(lattice1.sigma) == {"a", "b", "c"}
+    for key in ("a", "b", "c"):
+        assert math.isfinite(lattice1.sigma[key])
+        assert lattice1.sigma[key] > 0.0
+
+    lattice2 = r2.phases[0].lattice
+    assert lattice1.sigma == lattice2.sigma  # 【確認内容】: ビット同一 🔵
+
+
 def test_metrics_non_negative():
     backend = SimulatedBackend()
     tt = _grid()

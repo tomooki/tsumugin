@@ -32,7 +32,7 @@ from ..backends.base import (
     RefinementModel,
     RefinementResult,
 )
-from ..model import PhaseInstance
+from ..model import PhaseInstance, strip_lattice_sigma
 from ..store.ledger import Ledger
 from .model import (
     JointHistogram,
@@ -235,14 +235,25 @@ def _build_aggregate(
     hist_weight は chi2 側に効き、rwp は分母正規化で吸収されるため二者の役割は分離している。
     **同一 weighting 下では** 全仮説が同じ w_k を共有するため、BIC = chi2 + k·ln(n) の比較は
     chi2 の順序を保存し、weighting に対して決定論・一貫である (BIC 比較の一貫性)。
-    - phases = 共有構造 (±σ はバックエンドが phases に持たせた LatticeParams.sigma を保持)。
+    - phases = 共有構造。**格子 σ は strip_lattice_sigma で剥離** (下記参照)。
     - globals = "hist{k}.rwp"/"hist{k}.scale"/"hist{k}.chi2" (ヒスト別値, REQ-006)。
     - warnings = 失敗ヒスト index を明示 (EDGE-001)。
 
     【0 ヒストグラム (F11)】: histograms 空 (n_hist==0) は精密化対象が無く、chi2=0/converged=True
     の「沈黙成功」は誤り。chi2=inf + warning + converged=False の非成功結果へ落とし、ガードレール
     (chi2 非有限を失敗として扱う下流) に処理させる (staged.py の chi2=inf 非例外化と整合)。
+
+    【格子 σ の剥離 (レビュー対応, Issue #66 ラウンド2)】: ブロック座標降下 (D2) は各ヒストを
+    ``backend.refine`` で個別に精密化し、その都度「そのヒスト 1 本の統計」で共有格子の
+    ``LatticeParams.sigma`` を上書きしながら次ヒストへ伝播する。そのため最終 phases に残る σ は
+    最後に処理したヒスト依存の局所量であり、joint として結合した σ ではない。joint 結合 σ の
+    算出は本タスクの範囲外 (将来課題) のため、「算出していない joint σ」を「単一ヒスト σ」で
+    誤表示しないよう、集約時に ``model.strip_lattice_sigma`` で σ/sigma_source を剥離する
+    (gsasii.py の GSAS 例外分岐と同型の目的で、重複実装を避け model 層の共有ヘルパを使う)。
     """
+    # 【格子 σ の剥離】: 0 ヒストグラム経路・通常経路のいずれでも共通に適用する 🔵
+    phases = strip_lattice_sigma(phases)
+
     # 【0 ヒストグラム防御 (F11)】: 対象無しは成功でなく非成功 (chi2=inf) として扱う 🔵
     if not per_results:
         return RefinementResult(

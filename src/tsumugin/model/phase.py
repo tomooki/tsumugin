@@ -92,3 +92,34 @@ class PhaseInstance:
     def with_updates(self, **changes) -> "PhaseInstance":
         """変更を適用した新インスタンスを返す。自身は不変。"""
         return replace(self, **changes)
+
+
+def strip_lattice_sigma(phases: tuple[PhaseInstance, ...]) -> tuple[PhaseInstance, ...]:
+    """格子 σ (``lattice.sigma``/``sigma_source``) が非空の相のみ {}/"" へ縮退した新タプルを返す。
+
+    【共有ヘルパー (レビュー対応, Issue #66 ラウンド2)】: 「当該 refine() 呼び出しで推定した
+    不確かさのみを σ として表す」統一セマンティクスを、精密化結果を素通りさせる 2 箇所で
+    一貫させるための純関数。重複実装を避けるため model 層に 1 実装のみ置き、呼び出し側が
+    import して使う:
+
+    - ``backends.gsasii.GSASIIBackend.refine`` の GSAS 例外分岐: 最小二乗が失敗し
+      入力 ``model.phases`` をそのまま返す際、入力に残る古い σ が chi2=inf の仮説に
+      付いたまま見えてしまうのを防ぐ。
+    - ``joint.engine._build_aggregate``: ブロック座標降下の各 ``backend.refine`` は
+      「そのヒスト 1 本の統計」で共有格子の σ を都度上書きするため、最終 phases の σ は
+      最後に処理したヒスト依存の局所量になる。joint としての結合 σ は現状算出していない
+      (将来課題) ため、単一ヒスト σ を joint σ と誤表示しないよう最終集約時に剥離する。
+
+    全相が既に sigma/sigma_source 空なら同一タプルをそのまま返す (無駄な複製回避)。
+
+    :param phases: 対象の相集合 (精密化結果または途中経過)
+    :returns: sigma/sigma_source を全相 {}/"" に揃えた新タプル (非破壊, P2)
+    """
+    if not any(p.lattice.sigma or p.lattice.sigma_source for p in phases):
+        return phases
+    return tuple(
+        p.with_updates(lattice=replace(p.lattice, sigma={}, sigma_source=""))
+        if (p.lattice.sigma or p.lattice.sigma_source)
+        else p
+        for p in phases
+    )

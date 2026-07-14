@@ -162,6 +162,30 @@ def test_refine_joint_detailed_returns_aggregate_and_per_histogram_in_order():
     assert detailed.aggregate.phases[0].lattice.a == pytest.approx(plain.phases[0].lattice.a)
 
 
+def test_aggregate_phases_strip_lattice_sigma():
+    # 【目的】: ブロック座標降下の各 backend.refine は「そのヒスト 1 本の統計」で共有格子の
+    #   σ を都度上書きするため、最終 phases の σ は最後に処理したヒスト依存の局所量になる。
+    #   joint としての結合 σ は現状算出していないため、最終集約時に σ が剥離され
+    #   「単一ヒスト σ を joint σ と誤表示する」ことがないことを確認する (レビュー対応)。
+    model, backend = _two_histogram_model(truth_a=5.03, start_a=5.0)
+    result = refine_joint(backend, model)
+
+    lattice = result.phases[0].lattice
+    assert lattice.sigma == {}  # 【確認】: joint 集約は格子 σ を持たない 🔵
+    assert lattice.sigma_source == ""
+
+
+def test_detailed_aggregate_phases_also_strip_lattice_sigma():
+    # 【目的】: refine_joint_detailed の aggregate も同じ剥離を適用することを確認する
+    #   (refine_joint と同じ _build_aggregate を共有するため非回帰的に一致するはず)。
+    model, backend = _two_histogram_model(truth_a=5.03, start_a=5.0)
+    detailed = refine_joint_detailed(backend, model)
+
+    lattice = detailed.aggregate.phases[0].lattice
+    assert lattice.sigma == {}
+    assert lattice.sigma_source == ""
+
+
 def test_detailed_sigma_source_reflects_weighting():
     # 【目的】: PerHistogramMetrics.sigma_source が weighting.sigma_source に一致 (REQ-009) 🔵
     model, backend = _two_histogram_model()

@@ -177,6 +177,22 @@ def test_unknown_sigma_source_degrades_to_empty():
     assert q.lattice.sigma_source == ""  # 【確認内容】: 許容外は "" へ縮退 (fail-loud しない) 🔵
 
 
+@pytest.mark.parametrize("bad_value", [["covariance"], {"covariance": True}, None, 42])
+def test_non_hashable_or_wrong_type_sigma_source_degrades_to_empty(bad_value):
+    # 【テスト目的】: sigma_source に非 hashable 型 (list/dict) や単純に型違い (None/int) が
+    #   混入しても ``value in _SIGMA_SOURCES`` (frozenset の in 判定) が TypeError で
+    #   クラッシュせず "" へ縮退することを確認 (Issue #66 レビュー ラウンド2)。
+    # 🔵 信頼性: レビュー指摘「["covariance"] in frozenset は TypeError」の再現防止
+
+    p = PhaseInstance("A", LatticeParams(5, 5, 5))
+    d = phase_to_dict(p)
+    d["lattice"]["sigma_source"] = bad_value  # 【異常型混入】: 破損データ/バグを再現 🔵
+
+    q = phase_from_dict(d)  # 【確認内容】: TypeError を送出せず正常に復元できる 🔵
+
+    assert q.lattice.sigma_source == ""  # 【確認内容】: 非文字列は無条件で "" へ縮退 🔵
+
+
 def test_deterministic_to_dict_and_canonical_json():
     # 【テスト目的】: phase_to_dict の決定論と _canonical_json 互換を確認 (N-06 / NFR-102・REQ-402)
     # 【テスト内容】: 同一相に 2 回適用した dict の等価と canonical JSON 文字列一致を検証

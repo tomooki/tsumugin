@@ -25,6 +25,7 @@ import numpy as np
 from .._json import finite_or_none
 from ..errors import GSASUnavailableError
 from ..model import LatticeParams, PhaseInstance, SigmaSource
+from ..model import strip_lattice_sigma as _strip_sigma
 from .base import RefinementModel, RefinementResult, parse_param
 
 _DEFAULT_WAVELENGTH = 1.5406  # Cu Kα1 (Å)
@@ -215,8 +216,10 @@ class GSASIIBackend:
                 gpx.do_refinements([{}])
             except Exception:
                 # 最小二乗の失敗は発散として表現し、ガードレール側で処理させる。
+                # 【σ 素通り防止 (レビュー対応)】: model.phases に残る古い σ をそのまま返すと
+                # chi2=inf の仮説に σ が付いて見えてしまうため _strip_sigma で剥離する 🔵
                 return RefinementResult(
-                    phases=model.phases,
+                    phases=_strip_sigma(model.phases),
                     chi2=float("inf"),
                     rwp=float("inf"),
                     n_obs=int(intensity.size),
@@ -370,10 +373,15 @@ class GSASIIBackend:
         ``get_cell()`` 二重呼び出しを不要にする。GSAS-II 側 API は共分散欠如時 ``KeyError``
         を自前で吸収して esd=0.0 の dict へ縮退させる実装のため、0.0/非有限は「取得不能」
         として除外する (非有限判定は ``_json.finite_or_none`` の単一実装へ委譲)。
-        【設計方針】: try スコープを esd/cell 処理全体に広げ、戻り値形状が dict 以外でも
-        クラッシュせず (None, {}, "") へ縮退し fail-loud しない (「精密化バックエンドの失敗は
-        chi2=inf へ変換しガードレールに処理させる」不変条件と同趣旨、σ 取得は精密化成否
-        そのものではないため例外を上げず黙って未提供とする)。
+        【設計方針 (レビュー対応, ラウンド2)】: try スコープを 2 段に分割する。外側 try は
+        ``get_cell_and_esd()`` 呼び出しと cell 6 成分の float 化のみを担い、失敗時は
+        (None, {}, "") へ縮退する (cell 自体が取得不能)。内側 try は esd 抽出のみを担い、
+        失敗しても**検証済み cell は活かす** (cell, {}, "") へ縮退する。旧実装は 1 つの try で
+        両方を包んでいたため、cell 検証に成功していても esd 側の例外 (戻り値形状異常等) で
+        cell まで巻き添えに捨てて呼び出し側が ``get_cell()`` を再呼び出しする無駄が生じていた。
+        いずれの縮退も fail-loud しない (「精密化バックエンドの失敗は chi2=inf へ変換し
+        ガードレールに処理させる」不変条件と同趣旨、σ 取得は精密化成否そのものではないため
+        例外を上げず黙って未提供とする)。
         :returns: (検証済み cell dict | None, sigma dict, sigma_source)。cell=None は取得不能
         (呼び出し側が get_cell() へフォールバックする)。
         🟡 信頼性レベル: GSASIIscriptable.G2Phase.get_cell_and_esd() 実装 (KeyError→0.0 縮退) に依拠。
@@ -382,13 +390,20 @@ class GSASIIBackend:
             raw_cell, esd = g2ph.get_cell_and_esd()
             # 【cell 検証】: 6 成分を float 化して形状を検証 (失敗は except で縮退) 🔵
             cell = {key: float(raw_cell[key]) for key in _CELL_KEYS}
-            sigma: dict[str, float] = {}
+        except Exception:
+            return None, {}, ""
+
+        sigma: dict[str, float] = {}
+        try:
             for attr, key in (("a", "length_a"), ("b", "length_b"), ("c", "length_c")):
                 value = finite_or_none(esd.get(key))
                 if value is not None and value > 0.0:
                     sigma[attr] = value
         except Exception:
-            return None, {}, ""
+            # 【esd 抽出のみ失敗】: 検証済み cell は捨てず活かす (呼び出し側の get_cell() 二重
+            #   呼び出しを回避, レビュー対応) 🔵
+            return cell, {}, ""
+
         if not sigma:
             return cell, {}, ""
         return cell, sigma, "covariance"

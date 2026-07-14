@@ -57,10 +57,15 @@ def _coerce_sigma_source(value: Any) -> SigmaSource:
     """【機能概要】: 復元した sigma_source を SigmaSource の許容値へ縮退させる。
     【実装方針】: 欠落 (None) と許容外文字列 (旧データ/破損) は "" へフォールバックし、
     fail-loud しない (σ 由来は精密化成否そのものではない)。許容値は Literal から導出した
-    ``_SIGMA_SOURCES`` を単一情報源とする。
-    【テスト対応】: test_unknown_sigma_source_degrades_to_empty / 既存 roundtrip テスト。
-    🔵 信頼性レベル: Issue #66 レビュー対応 (許容外文字列 → "" 縮退) に依拠。
+    ``_SIGMA_SOURCES`` を単一情報源とする。``value in _SIGMA_SOURCES`` は非 hashable な値
+    (list/dict 等) で ``TypeError`` を送出しうるため、先に ``isinstance(value, str)`` で
+    型を確認してから集合判定する (str 以外は判定を試みず即座に "" へ縮退, レビュー対応)。
+    【テスト対応】: test_unknown_sigma_source_degrades_to_empty /
+    test_non_string_sigma_source_degrades_to_empty / 既存 roundtrip テスト。
+    🔵 信頼性レベル: Issue #66 レビュー対応 (許容外文字列 → "" 縮退、非 hashable クラッシュ回避)。
     """
+    if not isinstance(value, str):
+        return ""
     return value if value in _SIGMA_SOURCES else ""
 
 

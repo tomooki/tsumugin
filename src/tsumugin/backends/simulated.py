@@ -450,8 +450,22 @@ class SimulatedBackend:
         ``sigma_source="covariance"`` を付す (scale/μt 等は対象外)。乱数不使用・同一入力で
         ビット同一 (NFR-102)。
 
+        【識別可能性の事前判定 (Issue #66 レビュー対応)】: orthorhombic 近似の前方モデルは
+        alpha/beta/gamma を一切参照しないため、これらを解放しても Jacobian 列は恒等的に 0
+        (前進差分で摂動しても forward モデルが変化しない)。この列を含めたまま pinv(JᵀJ) を
+        取ると、丸め誤差により当該対角成分が厳密な 0 でなく var≈1e-19 等の「偽高精度 σ」として
+        混入することがある。そこで σ 組み立て前に、解放した格子属性ごとに Jacobian 列ノルム
+        ``norm(jac[:, j])`` を確認し、J の全列 (μt 含む) の最大ノルムに対して
+        ``norm(jac[:, j]) <= 1e-12 × 最大列ノルム`` (厳密な 0 列も max_col_norm=0 の退化ケースも
+        自然に包含する相対閾値) なら「モデルに無寄与」と判定してその属性のみ σ エントリから
+        除外する (相全体は殺さない)。**相単位の {} への丸ごと縮退は、識別可能と判定された属性の
+        var が非有限/非正の場合のみ**に限定する (非識別属性しか解放していない場合に
+        well-conditioned な他属性まで巻き添えにしない)。非識別属性 (モデルに無寄与) は σ 未提供、
+        識別可能属性の σ は保持する。
+
         【ガード (NaN を絶対に書き込まない)】: chi2 非有限 / J に非有限 / pinv 失敗
-        (LinAlgError) / σ 非有限・非正 のいずれでも、当該相の sigma は {} + "" に縮退する。
+        (LinAlgError) / 識別可能属性の σ が非有限・非正 のいずれでも、当該相の sigma は
+        {} + "" に縮退する。
 
         :param phases: 精密化後の相集合
         :param names: 解放された free_params 名 (``phase{i}.lattice.a`` 等、p の先頭部と同順)
@@ -483,15 +497,25 @@ class SimulatedBackend:
                 except np.linalg.LinAlgError:
                     cov = None  # 【pinv 失敗】: σ 未提供へ縮退 🔵
             if cov is not None:
+                # 【識別可能性の閾値】: 全列 (μt 含む) の最大ノルムに対する相対閾値 🔵
+                col_norms = np.linalg.norm(jac, axis=0)
+                max_col_norm = float(np.max(col_norms)) if col_norms.size else 0.0
+                identifiability_tol = 1e-12 * max_col_norm
                 for idx, attrs in by_phase.items():
                     sigma: dict[str, float] = {}
+                    degraded = False
                     for attr, j in attrs.items():
+                        if float(col_norms[j]) <= identifiability_tol:
+                            # 【非識別属性】: モデルに無寄与 → この属性のみ σ 未提供 (相は殺さない) 🔵
+                            continue
                         var = float(cov[j, j])
                         if not (math.isfinite(var) and var > 0.0):
-                            # 【σ 非有限/非正】: 当該相の sigma を丸ごと {} + "" に縮退 🔵
-                            sigma = {}
+                            # 【識別可能属性の σ が非有限/非正】: 相全体を丸ごと {} + "" へ縮退 🔵
+                            degraded = True
                             break
                         sigma[attr] = math.sqrt(var)
+                    if degraded:
+                        sigma = {}
                     if sigma:
                         sigma_by_phase[idx] = sigma
 

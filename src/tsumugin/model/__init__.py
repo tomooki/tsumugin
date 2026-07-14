@@ -5,7 +5,14 @@ from __future__ import annotations
 from .cell import BeamConfig, CellConfig, CellLayer, MuCalculator, XraylibMuCalculator
 from .channel import ExternalChannel
 from .hypothesis import Hypothesis, HypothesisStatus, RefinementMetrics
-from .phase import LatticeParams, PhaseInstance, PhaseLifecycle, PhaseRef, SigmaSource
+from .phase import (
+    LatticeParams,
+    PhaseInstance,
+    PhaseLifecycle,
+    PhaseRef,
+    SigmaSource,
+    strip_lattice_sigma,
+)
 from .project import Dataset, Frame, HistogramRef, Probe, Project, TofBankParams
 
 __all__ = [
@@ -29,4 +36,5 @@ __all__ = [
     "SigmaSource",
     "TofBankParams",
     "XraylibMuCalculator",
+    "strip_lattice_sigma",
 ]
