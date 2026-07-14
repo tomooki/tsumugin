@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import time
 from dataclasses import FrozenInstanceError
@@ -29,9 +30,12 @@ import pytest
 
 from tsumugin.backends.base import RefinementModel, RefinementResult
 from tsumugin.backends.simulated import SimulatedBackend
+from tsumugin.evidence.base import EvidenceResult
 from tsumugin.model import Hypothesis, LatticeParams, PhaseInstance
 from tsumugin.multistart import MultistartConfig
 from tsumugin.multistart.engine import MultistartResult
+from tsumugin.nested.arbitration import ArbitrationConfig
+from tsumugin.nested.sampler import NestedBackend, NestedConfig, NestedOutcome
 from tsumugin.operando.cell_phases import CELL_PHASE_PRESETS
 from tsumugin.selection.review_queue import ReviewQueue
 from tsumugin.sequential.series import FrameSeries
@@ -286,6 +290,91 @@ class FrameFailFakeBackend:
             n_cycles=1,
             free_params=frozenset(model.free_params),
         )
+
+
+class FakeNestedBackend:
+    """discriminate_interval(nested_backend=...) 注入用フェイク (Issue #65)。
+
+    ``EvidenceProblem.label`` ("single"/"two_phase") ごとに固定 value を返すことで、
+    nested 裁定の結果を決定論的に制御する。実 dynesty/ultranest を一切 import しない。
+    ``run_with_fallback(problem, *, ledger=None) -> NestedOutcome`` のみ実装 (duck typing)。
+    """
+
+    def __init__(self, values_by_label: dict[str, float], *, truncated: bool = False) -> None:
+        self._values = values_by_label
+        self._truncated = truncated
+        self.calls: list[str] = []
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        self.calls.append(problem.label)
+        value = self._values[problem.label]
+        backend_name = "laplace" if self._truncated else "nested"
+        result = EvidenceResult(backend=backend_name, value=value)
+        if ledger is not None:
+            ledger.append(
+                "nested_fallback" if self._truncated else "nested_run",
+                {"label": problem.label, "value": value},
+            )
+        return NestedOutcome(result=result, logz=-value, truncated=self._truncated)
+
+
+class RaisingNestedBackend:
+    """run_with_fallback がフォールバックすら不能な完全失敗を模すフェイク (Issue #65 / 要件3d)。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        self.calls.append(problem.label)
+        raise RuntimeError("total nested failure (simulated)")
+
+
+class MixedRouteNestedBackend:
+    """label ごとに nested 成功/Laplace 縮退 (truncated) を個別制御できるフェイク。
+
+    PR #75 レビュー指摘の三重ガード①「同一経路」検証用: 片側 nested 成功・片側 Laplace 縮退という
+    evidence のスケールが食い違う (-logZ vs Σbic) 非対称ケースを決定論的に注入する。
+    ``warnings_by_label`` を与えると ``NestedOutcome.warnings`` にそのタプルを載せ、
+    ``ArbitrationResult.warnings`` 経由の伝播 (要件4) も検証できる。
+    """
+
+    def __init__(
+        self,
+        values_by_label: dict[str, float],
+        truncated_by_label: dict[str, bool],
+        *,
+        warnings_by_label: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
+        self._values = values_by_label
+        self._truncated = truncated_by_label
+        self._warnings = warnings_by_label or {}
+        self.calls: list[str] = []
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        self.calls.append(problem.label)
+        value = self._values[problem.label]
+        truncated = self._truncated[problem.label]
+        backend_name = "laplace" if truncated else "nested"
+        result = EvidenceResult(backend=backend_name, value=value)
+        warnings = self._warnings.get(problem.label, ())
+        if ledger is not None:
+            ledger.append(
+                "nested_fallback" if truncated else "nested_run",
+                {"label": problem.label, "value": value},
+            )
+        return NestedOutcome(result=result, logz=-value, truncated=truncated, warnings=warnings)
+
+
+class SpyNestedBackend:
+    """discriminate_interval が nested を呼んだかどうかだけを記録するフェイク (Issue #65 / 要件2)。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        self.calls.append(problem.label)
+        result = EvidenceResult(backend="nested", value=0.0)
+        return NestedOutcome(result=result, logz=0.0, truncated=False)
 
 
 # ===========================================================================
@@ -748,3 +837,334 @@ def test_single_interval_discrimination_under_thirty_seconds():
     # 【結果検証】: 性能上限と判別の正しさ
     assert elapsed < 30.0  # 【確認内容】: 判別 1 区間が 30 秒以内 🟡
     assert result.verdict == "solid_solution"  # 【確認内容】: smoke でも判別が正しい 🔵
+
+
+# ===========================================================================
+# 4. nested 裁定 (Issue #65 / FR-313 / FR-122) — bic 一次 + 僅差競合のみ nested 再裁定
+# ===========================================================================
+#
+# ControlledFakeBackend(mode="close") + _fake_series() は既存 TC-E01 と同一構成: chi2_single==
+# chi2_two==100.0 かつ両仮説の評価 DOF が釣り合う (4==4) ため ΔBIC=0 (僅差)。この close_competitor
+# 構成に discriminate_interval(nested_backend=...) を注入して nested 裁定配線を検証する。
+
+
+def _close_competitor_config(nested_arbitration: ArbitrationConfig | None) -> DiscriminationConfig:
+    """TC-E01 と同一の close_threshold=10.0 既定で nested_arbitration だけを差し替える。"""
+    return DiscriminationConfig(nested_arbitration=nested_arbitration)
+
+
+def test_nested_arbitration_invoked_on_close_competitor_adds_provenance():
+    # 【テスト目的】: 僅差競合 + nested_arbitration 設定ありで裁定が実行され、判別結果に由来
+    #   (adjudicated_by/nested_delta_evidence/nested_arbitration) が付くことを確認 (Red (a))。
+    # 【テスト内容】: close 構成 + FakeNestedBackend(単相優位に振った決定論値) を注入して判別
+    # 【期待される動作】: 例外なし、nested が両ラベルで呼ばれる、adjudicated_by=="nested"、
+    #   nested_delta_evidence が負 (単相優位)、暫定 verdict=="solid_solution" へ更新、
+    #   close_competitor の ReviewQueue 通知は維持される (要件4)
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    queue = ReviewQueue()
+    nested = FakeNestedBackend({"single": 50.0, "two_phase": 200.0})
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, queue=queue, nested_backend=nested,
+    )
+
+    # 【結果検証】: nested 裁定が実際に実行され (両ラベル呼び出し)、由来と暫定 verdict が反映される
+    assert sorted(nested.calls) == ["single", "two_phase"]  # 両仮説とも nested 対象 🔵
+    assert result.adjudicated_by == "nested"  # 【確認内容】: 裁定由来が判別結果に付く (要件3) 🔵
+    assert result.nested_delta_evidence == pytest.approx(50.0 - 200.0)  # single 優位で負 🔵
+    assert result.nested_arbitration is not None
+    assert result.nested_arbitration.nested_ids == ("discrimination-single", "discrimination-two-phase")
+    assert result.verdict == "solid_solution"  # 【確認内容】: 暫定裁定で undecided から更新 (FR-403) 🔵
+    # 【要件4】: 既存エスカレーション動作は維持 (close_competitor は取り下げない・要確認フラグ)
+    assert any(item.reason == "close_competitor" for item in queue.unresolved)
+    assert any("nested_arbitration" in msg for msg in result.escalations)
+    # 【レビュー指摘 (d): 解消時の文言】: verdict が確定した場合のみ「〜としました」を含む 🔵
+    assert any("としました" in msg for msg in result.escalations)
+
+
+def test_nested_arbitration_not_invoked_when_not_close_competitor():
+    # 【テスト目的】: 非僅差 (明瞭な判別) では nested が絶対に呼ばれないことを確認 (Red (b) / 要件2)。
+    # 【テスト内容】: 固溶体系列の decisive 判別に nested_arbitration を設定し SpyNestedBackend を注入
+    # 【期待される動作】: nested.calls が空、adjudicated_by=="bic"、nested_arbitration is None
+    series = _solid_solution_series(n_frames=8)
+    spy = SpyNestedBackend()
+    config = DiscriminationConfig(
+        multistart=MultistartConfig(n_starts=2), nested_arbitration=ArbitrationConfig()
+    )
+
+    result = discriminate_interval(
+        SimulatedBackend(peak_fwhm=0.2), series, (0, 7), (PHASE_A0,),
+        config=config, nested_backend=spy,
+    )
+
+    # 【結果検証】: 明瞭な判別 (非僅差) では nested がコスト抑制のため一切呼ばれない
+    assert result.verdict == "solid_solution"  # 【前提確認】: 明瞭判別 (close_competitor でない) 🔵
+    assert spy.calls == []  # 【確認内容】: nested は非僅差で絶対に呼ばれない 🔵
+    assert result.adjudicated_by == "bic"  # 【確認内容】: 由来は bic のまま 🔵
+    assert result.nested_arbitration is None
+    assert result.nested_delta_evidence is None
+
+
+def test_nested_arbitration_none_config_matches_prior_behavior():
+    # 【テスト目的】: nested_arbitration=None (既定) では新フィールドが中立既定のまま現行挙動と
+    #   完全一致することを確認 (Red (c) / 後方互換)。
+    # 【テスト内容】: 旧来どおりの呼び出し (新 kwarg 省略) と、明示的に nested_arbitration=None を
+    #   渡した呼び出しを比較し、bic 系フィールドが TC-E01 の期待と一致することを確認
+    backend_kwargs = dict(mode="close", chi2_single=100.0, chi2_two=100.0)
+    series = _fake_series()
+
+    result_legacy = discriminate_interval(
+        ControlledFakeBackend(**backend_kwargs), series, (0, 3), (PHASE_A0,),
+    )
+    result_explicit_none = discriminate_interval(
+        ControlledFakeBackend(**backend_kwargs), series, (0, 3), (PHASE_A0,),
+        config=DiscriminationConfig(nested_arbitration=None),
+    )
+
+    for result in (result_legacy, result_explicit_none):
+        assert result.verdict == "undecided"  # 【確認内容】: TC-E01 と同一の bic 一次結果 🔵
+        assert abs(result.delta_evidence) < 10.0
+        assert result.adjudicated_by == "bic"  # 【確認内容】: nested 未配線時の中立既定 🔵
+        assert result.nested_delta_evidence is None
+        assert result.nested_arbitration is None
+    # 【後方互換】: nested_arbitration 省略と明示 None は完全に同一の結果になる
+    assert result_legacy == result_explicit_none
+
+
+def test_nested_arbitration_total_failure_falls_back_to_review_queue_escalation():
+    # 【テスト目的】: nested 裁定が (フォールバックすら不能な) 例外で完全失敗しても discriminate_interval
+    #   が例外を投げず、bic 一次の close_competitor エスカレーションへ縮退することを確認 (Red (d))。
+    # 【テスト内容】: run_with_fallback が常に RuntimeError を送出する RaisingNestedBackend を注入
+    # 【期待される動作】: 例外なし、verdict=="undecided" (bic 一次のまま)、adjudicated_by=="bic"、
+    #   nested_arbitration is None、queue に close_competitor 通知は維持、warnings に失敗理由が残る
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    queue = ReviewQueue()
+    raising = RaisingNestedBackend()
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, queue=queue, nested_backend=raising,
+    )
+
+    # 【結果検証】: 完全失敗でも例外化せず bic 一次のエスカレーションへ縮退する (要件3/4)
+    assert result.verdict == "undecided"  # 【確認内容】: bic 一次のまま (nested が救えなかった) 🔵
+    assert result.adjudicated_by == "bic"  # 【確認内容】: nested 裁定は不成立 🔵
+    assert result.nested_arbitration is None
+    assert result.nested_delta_evidence is None
+    assert any(item.reason == "close_competitor" for item in queue.unresolved)  # 通知は維持 🔵
+    assert any("nested_arbitration" in w for w in result.warnings)  # 失敗理由が警告に残る 🔵
+
+
+def test_nested_arbitration_records_ledger_and_verifies():
+    # 【テスト目的】: nested 裁定発動時に判別・裁定双方の操作が ledger に記録され、記録後も
+    #   verify()==True であることを確認 (Red (e) / NFR-105)。
+    # 【テスト内容】: close 構成 + FakeNestedBackend + Ledger を渡して判別を実行
+    # 【期待される動作】: entries 非空、"discrimination.nested_arbitration" と "arbitration"
+    #   (nested.arbitration.arbitrate 自身の記録) の両方を含み、verify()==True
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    nested = FakeNestedBackend({"single": 50.0, "two_phase": 200.0})
+    ledger = Ledger()
+    config = _close_competitor_config(ArbitrationConfig())
+
+    discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, ledger=ledger, nested_backend=nested,
+    )
+
+    # 【結果検証】: nested 裁定の実行・結果・由来が理由付きで記録され、チェーン整合を保つ
+    kinds = [e.kind for e in ledger.entries]
+    assert "discrimination.nested_arbitration" in kinds  # discrimination 自身の由来記録 🔵
+    assert "arbitration" in kinds  # nested.arbitration.arbitrate 自身の理由付き記録 (再利用) 🔵
+    assert ledger.verify() is True  # 【確認内容】: 追記後もハッシュチェーン整合 🔵
+
+
+# ---------------------------------------------------------------------------
+# PR #75 レビュー確定指摘: verdict 上書きの三重ガード / 契約修復 / メッセージング正直化 (Issue #65)
+# ---------------------------------------------------------------------------
+
+
+def test_nested_arbitration_mixed_route_does_not_override_verdict():
+    # 【テスト目的】: 片側 nested 成功・片側 Laplace 縮退 (経路混在) では、素朴な ΔBIC(nested) が
+    #   閾値を超えていても verdict を上書きせず、経路非対称の警告を残すことを確認
+    #   (レビュー指摘: 三重ガード①「同一経路」。evidence のスケール [-logZ vs Σbic] が食い違うため)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    queue = ReviewQueue()
+    nested = MixedRouteNestedBackend(
+        values_by_label={"single": 50.0, "two_phase": 200.0},
+        truncated_by_label={"single": False, "two_phase": True},
+    )
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, queue=queue, nested_backend=nested,
+    )
+
+    # 【結果検証】: 両ラベルとも呼ばれるが経路混在のため verdict は undecided のまま
+    assert sorted(nested.calls) == ["single", "two_phase"]
+    assert result.verdict == "undecided"  # 【確認内容】: 経路混在では verdict を上書きしない 🔵
+    assert any(
+        "経路が非対称のため裁定値を比較できません" in msg for msg in result.escalations
+    )  # 経路混在の警告 🔵
+    assert any(item.reason == "close_competitor" for item in queue.unresolved)  # 通知は維持 🔵
+
+
+def test_nested_arbitration_non_finite_delta_does_not_override_verdict():
+    # 【テスト目的】: nested/Laplace 裁定後の ΔBIC(nested) が非有限 (inf) のとき verdict を
+    #   上書きしないことを確認 (レビュー指摘: 三重ガード②「有限性」)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    queue = ReviewQueue()
+    nested = FakeNestedBackend({"single": float("inf"), "two_phase": 200.0})
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, queue=queue, nested_backend=nested,
+    )
+
+    # 【結果検証】: 非有限 delta では verdict を確定しない (bic 一次の undecided のまま)
+    assert result.verdict == "undecided"  # 【確認内容】: 非有限 ΔBIC では verdict を上書きしない 🔵
+    assert result.nested_delta_evidence is not None
+    assert not math.isfinite(result.nested_delta_evidence)  # 由来自体は記録される (監査用) 🔵
+    # 【文言検証 (レビュー指摘)】: 非有限は通常の僅差継続と区別し「evidence 計算の異常」と明示する。
+    #   「僅差は解消されませんでした」(閾値未満の正常ケース文言) を出さない 🔵
+    non_finite_msgs = [m for m in result.escalations if "非有限" in m]
+    assert non_finite_msgs
+    assert all("異常" in m for m in non_finite_msgs)
+    assert all("僅差は解消されませんでした" not in m for m in result.escalations)
+
+
+def test_nested_arbitration_unresolved_message_omits_settled_wording():
+    # 【テスト目的】: nested 裁定後も僅差が解消されない (|ΔBIC(nested)| < close_threshold のまま) 場合、
+    #   verdict を確定させたと誤解させる「〜としました」という文言を含まないことを確認
+    #   (レビュー指摘: メッセージングの正直化)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    nested = FakeNestedBackend({"single": 100.0, "two_phase": 105.0})  # |Δ|=5 < close_threshold=10
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=nested,
+    )
+
+    # 【結果検証】: 未解消メッセージのみが積まれ、「としました」を含まない
+    assert result.verdict == "undecided"
+    nested_msgs = [m for m in result.escalations if "nested_arbitration" in m]
+    assert nested_msgs  # 【確認内容】: nested 裁定のメッセージ自体は積まれる 🔵
+    assert all("としました" not in m for m in nested_msgs)  # 未確定を確定と誤認させない 🔵
+    assert any("再裁定でも僅差は解消されませんでした" in m for m in nested_msgs)
+
+
+def test_nested_arbitration_propagates_arbitration_warnings():
+    # 【テスト目的】: nested 裁定 (ArbitrationResult) 由来の警告 (truncated/縮退等) が
+    #   DiscriminationResult.warnings へマージされることを確認 (レビュー指摘: warnings 退行の修復)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    nested = MixedRouteNestedBackend(
+        values_by_label={"single": 50.0, "two_phase": 200.0},
+        truncated_by_label={"single": True, "two_phase": True},  # 両方 Laplace 縮退 (同一経路)
+        warnings_by_label={
+            "single": ("nested sampling を打ち切り Laplace 代替へ縮退しました (single)。",),
+            "two_phase": ("nested sampling を打ち切り Laplace 代替へ縮退しました (two_phase)。",),
+        },
+    )
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=nested,
+    )
+
+    # 【結果検証】: 両ラベルの縮退警告が判別結果の warnings に現れる (以前は空になっていた退行)
+    assert any("Laplace 代替へ縮退しました (single)" in w for w in result.warnings)
+    assert any("Laplace 代替へ縮退しました (two_phase)" in w for w in result.warnings)
+
+
+def test_nested_arbitration_queue_detail_includes_bic_and_nested_messages():
+    # 【テスト目的】: ReviewQueue の detail に close_competitor の元メッセージ (bic 一次) と
+    #   nested 裁定結果の両方が含まれ、detail 単体で読めることを確認 (レビュー指摘: queue detail 更新)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    queue = ReviewQueue()
+    nested = FakeNestedBackend({"single": 50.0, "two_phase": 200.0})
+    config = _close_competitor_config(ArbitrationConfig())
+
+    discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, queue=queue, nested_backend=nested,
+    )
+
+    items = [i for i in queue.unresolved if i.reason == "close_competitor"]
+    assert items
+    detail = items[0].detail
+    assert "close_competitor" in detail  # 元メッセージ (bic 一次の僅差説明) 🔵
+    assert "nested_arbitration" in detail  # nested 裁定結果も同一 detail から読める 🔵
+
+
+def test_nested_arbitration_ledger_sanitizes_non_finite_delta():
+    # 【テスト目的】: nested_delta_evidence が非有限 (inf) のとき ledger payload では None 化される
+    #   ことを確認 (レビュー指摘: canonical JSON への Infinity 混入防止)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    nested = FakeNestedBackend({"single": float("inf"), "two_phase": 200.0})
+    ledger = Ledger()
+    config = _close_competitor_config(ArbitrationConfig())
+
+    discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, ledger=ledger, nested_backend=nested,
+    )
+
+    entry = next(e for e in ledger.entries if e.kind == "discrimination.nested_arbitration")
+    assert entry.payload["nested_delta_evidence"] is None  # 非有限は None 化 🔵
+    assert ledger.verify() is True  # 【確認内容】: 追記後もハッシュチェーン整合 🔵
+
+
+def test_nested_arbitration_is_deterministic_bitwise_identical():
+    # 【テスト目的】: 同一入力 (決定論フェイク nested backend) で 2 回実行すると DiscriminationResult
+    #   が完全ビット同一になることを確認 (Red (f) / NFR-102)。
+    # 【テスト内容】: close 構成 + FakeNestedBackend (乱数不使用) を独立に 2 回判別し結果の == 一致を確認
+    # 【期待される動作】: result_a == result_b (nested_arbitration/adjudicated_by/verdict 含め全一致)
+    config = _close_competitor_config(ArbitrationConfig())
+
+    def _run() -> DiscriminationResult:
+        backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+        nested = FakeNestedBackend({"single": 50.0, "two_phase": 200.0})
+        return discriminate_interval(
+            backend, _fake_series(), (0, 3), (PHASE_A0,),
+            config=config, nested_backend=nested,
+        )
+
+    result_a = _run()
+    result_b = _run()
+
+    # 【結果検証】: LaplaceBackend/シミュレートのみ用いた決定論経路でビット同一 (NFR-102)
+    assert result_a == result_b  # 【確認内容】: 2 回実行でビット同一 🔵
+
+
+@pytest.mark.nested
+def test_nested_arbitration_real_dynesty_smoke():
+    # 【テスト目的】: 実 nested サンプラ (dynesty, optional extra) が導入済みの環境で、discrimination
+    #   が構成する EvidenceProblem (定数尤度サロゲート) が実サンプラで最後まで実行できることを確認する
+    #   smoke テスト (未導入環境は conftest.py の nested マーカーで自動 skip)。
+    # 【テスト内容】: close 構成 + 実 NestedBackend (n_live/max_calls を小さく絞り高速化) で判別
+    # 【期待される動作】: 例外なし、adjudicated_by in ("nested","laplace") (時間内に完走すれば nested)、
+    #   nested_arbitration.nested_ids に両仮説の id が含まれる
+    if importlib.util.find_spec("dynesty") is None:
+        pytest.skip("dynesty 未導入")
+
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    real_nested = NestedBackend(config=NestedConfig(n_live=25, max_calls=2000, seed=0))
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=real_nested,
+    )
+
+    # 【結果検証】: 実サンプラ配線が最後まで動作する (縮退しても laplace で許容)
+    assert result.adjudicated_by in ("nested", "laplace")
+    assert result.nested_arbitration is not None
+    assert set(result.nested_arbitration.nested_ids) == {
+        "discrimination-single", "discrimination-two-phase",
+    }
