@@ -18,15 +18,27 @@ import math
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
+from .._json import finite_or_none
 from ..errors import GSASUnavailableError
-from ..model import LatticeParams, PhaseInstance
+from ..model import LatticeParams, PhaseInstance, SigmaSource
+from ..model import strip_lattice_sigma as _strip_sigma
 from .base import RefinementModel, RefinementResult, parse_param
 
 _DEFAULT_WAVELENGTH = 1.5406  # Cu Kα1 (Å)
+
+# 【セル辞書キー】: get_cell()/get_cell_and_esd() が返す格子 6 成分のキー (読み戻し検証用) 🔵
+_CELL_KEYS = (
+    "length_a",
+    "length_b",
+    "length_c",
+    "angle_alpha",
+    "angle_beta",
+    "angle_gamma",
+)
 
 
 @lru_cache(maxsize=1)
@@ -204,8 +216,10 @@ class GSASIIBackend:
                 gpx.do_refinements([{}])
             except Exception:
                 # 最小二乗の失敗は発散として表現し、ガードレール側で処理させる。
+                # 【σ 素通り防止 (レビュー対応)】: model.phases に残る古い σ をそのまま返すと
+                # chi2=inf の仮説に σ が付いて見えてしまうため _strip_sigma で剥離する 🔵
                 return RefinementResult(
-                    phases=model.phases,
+                    phases=_strip_sigma(model.phases),
                     chi2=float("inf"),
                     rwp=float("inf"),
                     n_obs=int(intensity.size),
@@ -227,7 +241,7 @@ class GSASIIBackend:
             vary_list = cov.get("varyList", [])
             converged = bool(rvals.get("converged", True)) if any_free else True
 
-            new_phases = self._read_back(g2phases, hist, model.phases)
+            new_phases = self._read_back(g2phases, hist, model.phases, cell_free)
 
         return RefinementResult(
             phases=new_phases,
@@ -309,11 +323,32 @@ class GSASIIBackend:
         return g2phases
 
     def _read_back(
-        self, g2phases, hist, originals: tuple[PhaseInstance, ...]
+        self,
+        g2phases,
+        hist,
+        originals: tuple[PhaseInstance, ...],
+        cell_free: set[int],
     ) -> tuple[PhaseInstance, ...]:
+        """精密化済み格子/scale を読み戻す。
+
+        【σ セマンティクス (統一定義)】: ``lattice.sigma``/``sigma_source`` は「当該 refine()
+        呼び出しで推定した不確かさのみ」を表す。格子を解放した相のみ ``get_cell_and_esd()``
+        の共分散由来 esd を新 dict として与え、非解放相は sigma={} / sigma_source="" とする
+        (入力に古い σ が残っていても持ち越さない。SimulatedBackend と対称)。
+        【効率化】: 格子解放相は ``get_cell_and_esd()`` の cell 戻り値を再利用し、
+        ``get_cell()`` の二重呼び出しを避ける (取得失敗時のみ get_cell へフォールバック)。
+        """
         out: list[PhaseInstance] = []
-        for g2ph, orig in zip(g2phases, originals):
-            cell = g2ph.get_cell()
+        for i, (g2ph, orig) in enumerate(zip(g2phases, originals)):
+            cell: Mapping[str, float] | None = None
+            sigma: dict[str, float] = {}
+            sigma_source: SigmaSource = ""
+            if i in cell_free:
+                # 【共分散由来 σ + cell 再利用】: 格子解放相は get_cell_and_esd() 一発 (REQ-306) 🔵
+                cell, sigma, sigma_source = self._cell_sigma(g2ph)
+            if cell is None:
+                # 【フォールバック】: 非解放相の従来経路 / esd 取得失敗時 🔵
+                cell = g2ph.get_cell()
             lattice = LatticeParams(
                 a=float(cell["length_a"]),
                 b=float(cell["length_b"]),
@@ -321,7 +356,54 @@ class GSASIIBackend:
                 alpha=float(cell["angle_alpha"]),
                 beta=float(cell["angle_beta"]),
                 gamma=float(cell["angle_gamma"]),
+                sigma=sigma,
+                sigma_source=sigma_source,
             )
             scale = float(g2ph.getHAPvalues(hist)["Scale"][0])
             out.append(orig.with_updates(lattice=lattice, scale=scale))
         return tuple(out)
+
+    def _cell_sigma(
+        self, g2ph
+    ) -> tuple[dict[str, float] | None, dict[str, float], SigmaSource]:
+        """精密化済み格子と共分散由来 esd (a/b/c) を ``get_cell_and_esd()`` から取得する。
+
+        【機能概要】: GSAS-II の共分散行列由来の真の格子 esd を sigma_source="covariance" で
+        返す (FR-306/NFR-107)。cell 戻り値も検証済み dict として返し、呼び出し側の
+        ``get_cell()`` 二重呼び出しを不要にする。GSAS-II 側 API は共分散欠如時 ``KeyError``
+        を自前で吸収して esd=0.0 の dict へ縮退させる実装のため、0.0/非有限は「取得不能」
+        として除外する (非有限判定は ``_json.finite_or_none`` の単一実装へ委譲)。
+        【設計方針 (レビュー対応, ラウンド2)】: try スコープを 2 段に分割する。外側 try は
+        ``get_cell_and_esd()`` 呼び出しと cell 6 成分の float 化のみを担い、失敗時は
+        (None, {}, "") へ縮退する (cell 自体が取得不能)。内側 try は esd 抽出のみを担い、
+        失敗しても**検証済み cell は活かす** (cell, {}, "") へ縮退する。旧実装は 1 つの try で
+        両方を包んでいたため、cell 検証に成功していても esd 側の例外 (戻り値形状異常等) で
+        cell まで巻き添えに捨てて呼び出し側が ``get_cell()`` を再呼び出しする無駄が生じていた。
+        いずれの縮退も fail-loud しない (「精密化バックエンドの失敗は chi2=inf へ変換し
+        ガードレールに処理させる」不変条件と同趣旨、σ 取得は精密化成否そのものではないため
+        例外を上げず黙って未提供とする)。
+        :returns: (検証済み cell dict | None, sigma dict, sigma_source)。cell=None は取得不能
+        (呼び出し側が get_cell() へフォールバックする)。
+        🟡 信頼性レベル: GSASIIscriptable.G2Phase.get_cell_and_esd() 実装 (KeyError→0.0 縮退) に依拠。
+        """
+        try:
+            raw_cell, esd = g2ph.get_cell_and_esd()
+            # 【cell 検証】: 6 成分を float 化して形状を検証 (失敗は except で縮退) 🔵
+            cell = {key: float(raw_cell[key]) for key in _CELL_KEYS}
+        except Exception:
+            return None, {}, ""
+
+        sigma: dict[str, float] = {}
+        try:
+            for attr, key in (("a", "length_a"), ("b", "length_b"), ("c", "length_c")):
+                value = finite_or_none(esd.get(key))
+                if value is not None and value > 0.0:
+                    sigma[attr] = value
+        except Exception:
+            # 【esd 抽出のみ失敗】: 検証済み cell は捨てず活かす (呼び出し側の get_cell() 二重
+            #   呼び出しを回避, レビュー対応) 🔵
+            return cell, {}, ""
+
+        if not sigma:
+            return cell, {}, ""
+        return cell, sigma, "covariance"

@@ -8,6 +8,7 @@ Levenberg–Marquardt で最適化する精密化を提供する。乱数は一�
 from __future__ import annotations
 
 import math
+from dataclasses import replace as _dc_replace
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -238,9 +239,13 @@ class SimulatedBackend:
         chi2 = float(r @ r)
 
         # 【早期リターン】: 解放パラメータ (相 or μt) が皆無なら 1 サイクルで確定 (既存挙動保存) 🔵
+        # 【σ リセット】: 何も解放しない呼び出しでも σ セマンティクス (当該 refine() の推定のみ)
+        #   に従い、入力に残る古い sigma/sigma_source を空へリセットする 🔵
         if not names and not fit_mu_t:
             return RefinementResult(
-                phases=phases,
+                phases=self._apply_lattice_sigma(
+                    phases, names, np.zeros(0), False, full_residual, r, chi2
+                ),
                 chi2=chi2,
                 rwp=_rwp(weights, y_obs, self._simulate(phases, two_theta, const_mu_t)),
                 n_obs=n_obs,
@@ -297,6 +302,9 @@ class SimulatedBackend:
         free_out = frozenset(names) | ({"global.mu_t"} if fit_mu_t else frozenset())
         globals_out: dict[str, float] = {"mu_t": float(mu_t)} if fit_mu_t else {}
         warnings_out = self._build_warnings(absorption, fit_mu_t, mu_t, rwp)
+        # 【格子 σ】: 最終受理パラメータの JᵀJ 漸近共分散から解放格子属性の σ を導出し、
+        #   解放しなかった相の古い σ はリセットする (FR-306/NFR-107) 🔵
+        phases = self._apply_lattice_sigma(phases, names, p, fit_mu_t, full_residual, r, chi2)
         return RefinementResult(
             phases=phases,
             chi2=chi2,
@@ -416,11 +424,120 @@ class SimulatedBackend:
             jac[:, j] = (r_pert - r) / step
         return jac
 
+    def _apply_lattice_sigma(
+        self,
+        phases: tuple[PhaseInstance, ...],
+        names: list[str],
+        p: np.ndarray,
+        fit_mu_t: bool,
+        full_residual,
+        r: np.ndarray,
+        chi2: float,
+    ) -> tuple[PhaseInstance, ...]:
+        """最終受理パラメータの JᵀJ 漸近共分散から解放格子属性の σ を書き込む (FR-306/NFR-107)。
+
+        【σ セマンティクス (統一定義)】: 出力の ``lattice.sigma``/``sigma_source`` は「当該
+        refine() 呼び出しで推定した不確かさのみ」を表す。今回解放した格子属性のみからなる
+        新 dict へ**置換**し (既存 sigma のマージ持ち越しは行わない)、今回格子を解放しなかった
+        相は sigma={} / sigma_source="" にリセットする (入力に残る古い σ の混入排除。
+        GSASIIBackend ``_read_back`` と対称)。
+
+        【式】: 標準的な非線形最小二乗の漸近共分散
+        ``cov = pinv(JᵀJ) × reduced_chi2``、``reduced_chi2 = chi2 / max(n_res − n_params, 1)``。
+        J は最終受理パラメータ p で 1 回再計算した weighted Jacobian (restraint 行を含む)、
+        n_res は restraint 行を含む残差ベクトル全長、n_params は μt を含む解放総数。
+        解放した格子属性に対応する対角成分のみ ``σ = sqrt(cov[i,i])`` として抽出し
+        ``sigma_source="covariance"`` を付す (scale/μt 等は対象外)。乱数不使用・同一入力で
+        ビット同一 (NFR-102)。
+
+        【識別可能性の事前判定 (Issue #66 レビュー対応)】: orthorhombic 近似の前方モデルは
+        alpha/beta/gamma を一切参照しないため、これらを解放しても Jacobian 列は恒等的に 0
+        (前進差分で摂動しても forward モデルが変化しない)。この列を含めたまま pinv(JᵀJ) を
+        取ると、丸め誤差により当該対角成分が厳密な 0 でなく var≈1e-19 等の「偽高精度 σ」として
+        混入することがある。そこで σ 組み立て前に、解放した格子属性ごとに Jacobian 列ノルム
+        ``norm(jac[:, j])`` を確認し、J の全列 (μt 含む) の最大ノルムに対して
+        ``norm(jac[:, j]) <= 1e-12 × 最大列ノルム`` (厳密な 0 列も max_col_norm=0 の退化ケースも
+        自然に包含する相対閾値) なら「モデルに無寄与」と判定してその属性のみ σ エントリから
+        除外する (相全体は殺さない)。**相単位の {} への丸ごと縮退は、識別可能と判定された属性の
+        var が非有限/非正の場合のみ**に限定する (非識別属性しか解放していない場合に
+        well-conditioned な他属性まで巻き添えにしない)。非識別属性 (モデルに無寄与) は σ 未提供、
+        識別可能属性の σ は保持する。
+
+        【ガード (NaN を絶対に書き込まない)】: chi2 非有限 / J に非有限 / pinv 失敗
+        (LinAlgError) / 識別可能属性の σ が非有限・非正 のいずれでも、当該相の sigma は
+        {} + "" に縮退する。
+
+        :param phases: 精密化後の相集合
+        :param names: 解放された free_params 名 (``phase{i}.lattice.a`` 等、p の先頭部と同順)
+        :param p: 最終受理パラメータベクトル (fit_mu_t 時は末尾に μt)
+        :param fit_mu_t: μt を精密化したか (J の μt 列の有無)
+        :param full_residual: 拡張残差関数 (restraint 行を含む)
+        :param r: 最終受理パラメータでの拡張残差ベクトル
+        :param chi2: 精密化後の残差二乗和 (restraint 項含む)
+        :returns: σ セマンティクスに従い sigma/sigma_source を更新した新しい phases
+        """
+        # 【解放格子属性の索引】: 相 idx -> {attr: p 内の列位置 j} (names 順 = J の列順) 🔵
+        by_phase: dict[int, dict[str, int]] = {}
+        for j, name in enumerate(names):
+            idx, key = parse_param(name)
+            if key.startswith("lattice."):
+                by_phase.setdefault(idx, {})[key.split(".", 1)[1]] = j
+
+        # 【共分散算出】: ガードを全て通過した場合のみ相ごとの σ dict を組み立てる 🔵
+        sigma_by_phase: dict[int, dict[str, float]] = {}
+        if by_phase and math.isfinite(chi2):
+            dof = max(int(r.size) - int(p.size), 1)  # 【n_res 自由度】: restraint 行を含む 🔵
+            reduced_chi2 = chi2 / dof
+            # 【J の再計算】: LM ループ先頭の J は最終受理 p より古いため、最終 p で 1 回再計算 🔵
+            jac = self._jacobian(phases, names, p, fit_mu_t, full_residual, r)
+            cov: np.ndarray | None = None
+            if bool(np.all(np.isfinite(jac))):
+                try:
+                    cov = np.linalg.pinv(jac.T @ jac) * reduced_chi2
+                except np.linalg.LinAlgError:
+                    cov = None  # 【pinv 失敗】: σ 未提供へ縮退 🔵
+            if cov is not None:
+                # 【識別可能性の閾値】: 全列 (μt 含む) の最大ノルムに対する相対閾値 🔵
+                col_norms = np.linalg.norm(jac, axis=0)
+                max_col_norm = float(np.max(col_norms)) if col_norms.size else 0.0
+                identifiability_tol = 1e-12 * max_col_norm
+                for idx, attrs in by_phase.items():
+                    sigma: dict[str, float] = {}
+                    degraded = False
+                    for attr, j in attrs.items():
+                        if float(col_norms[j]) <= identifiability_tol:
+                            # 【非識別属性】: モデルに無寄与 → この属性のみ σ 未提供 (相は殺さない) 🔵
+                            continue
+                        var = float(cov[j, j])
+                        if not (math.isfinite(var) and var > 0.0):
+                            # 【識別可能属性の σ が非有限/非正】: 相全体を丸ごと {} + "" へ縮退 🔵
+                            degraded = True
+                            break
+                        sigma[attr] = math.sqrt(var)
+                    if degraded:
+                        sigma = {}
+                    if sigma:
+                        sigma_by_phase[idx] = sigma
+
+        # 【置換 + リセット】: σ を得た相は新 dict へ置換、それ以外は空へリセット (混入排除) 🔵
+        phases_list = list(phases)
+        for idx, phase in enumerate(phases_list):
+            new_sigma = sigma_by_phase.get(idx)
+            if new_sigma:
+                phases_list[idx] = phase.with_updates(
+                    lattice=_dc_replace(
+                        phase.lattice, sigma=new_sigma, sigma_source="covariance"
+                    )
+                )
+            elif phase.lattice.sigma or phase.lattice.sigma_source:
+                phases_list[idx] = phase.with_updates(
+                    lattice=_dc_replace(phase.lattice, sigma={}, sigma_source="")
+                )
+        return tuple(phases_list)
+
 
 def _replace_lattice(lattice: LatticeParams, attr: str, value: float) -> LatticeParams:
-    from dataclasses import replace
-
-    return replace(lattice, **{attr: value})
+    return _dc_replace(lattice, **{attr: value})
 
 
 def _rwp(weights: np.ndarray, y_obs: np.ndarray, y_calc: np.ndarray) -> float:

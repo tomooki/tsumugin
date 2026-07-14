@@ -69,7 +69,8 @@ def test_to_dict_schema_keys_and_nesting():
 
     # 【結果検証】: キー名・ネスト構造・既定値の出力を確認
     assert d["phase_ref"] == "A"  # 【確認内容】: phase_ref が top-level に出力される 🟡
-    assert set(d["lattice"]) == {"a", "b", "c", "alpha", "beta", "gamma", "sigma"}  # 🟡
+    # 【Issue #66 / FR-306】: σ 由来 sigma_source を lattice スキーマへ追加 🟡
+    assert set(d["lattice"]) == {"a", "b", "c", "alpha", "beta", "gamma", "sigma", "sigma_source"}
     assert d["lattice"]["a"] == 5.0  # 【確認内容】: 格子長がネスト dict に出力される 🟡
     assert d["lattice"]["alpha"] == 90.0  # 【確認内容】: 既定角も明示出力される 🟡
     assert d["lifecycle"]["birth_frame"] == 3  # 【確認内容】: lifecycle がネスト dict である 🟡
@@ -144,6 +145,52 @@ def test_sigma_occupancies_roundtrip_preserved():
     assert q.lattice.sigma == {"a": 0.01, "b": 0.02}  # 【確認内容】: sigma が保存される 🔵
     assert q.occupancies == {"Na": 0.9}  # 【確認内容】: occupancies が保存される 🔵
     assert q == p  # 【確認内容】: 相全体が == で一致 🔵
+
+
+def test_sigma_source_roundtrip_preserved():
+    # 【テスト目的】: sigma_source ("covariance"/"proxy") が dict 往復で保存されることを確認
+    #   (Issue #66 / FR-306 / NFR-107)。
+    # 🔵 信頼性: Issue #66 本文 / phase.py LatticeParams.sigma_source
+
+    p = PhaseInstance(
+        "A",
+        LatticeParams(5, 5, 5, sigma={"a": 0.01}, sigma_source="covariance"),
+    )
+
+    q = phase_from_dict(phase_to_dict(p))
+
+    assert q.lattice.sigma_source == "covariance"  # 【確認内容】: σ 由来が保存される 🔵
+    assert q == p  # 【確認内容】: 相全体が == で一致 🔵
+
+
+def test_unknown_sigma_source_degrades_to_empty():
+    # 【テスト目的】: 許容外の sigma_source 文字列 (旧データ/破損) が "" に縮退することを確認
+    #   (SigmaSource Literal の許容値 "covariance"/"proxy"/"" のみ復元する後方互換ガード)。
+    # 🔵 信頼性: Issue #66 レビュー対応 / model.phase.SigmaSource
+
+    p = PhaseInstance("A", LatticeParams(5, 5, 5))
+    d = phase_to_dict(p)
+    d["lattice"]["sigma_source"] = "magic"  # 【許容外文字列】: スキーマ外の値を注入 🔵
+
+    q = phase_from_dict(d)
+
+    assert q.lattice.sigma_source == ""  # 【確認内容】: 許容外は "" へ縮退 (fail-loud しない) 🔵
+
+
+@pytest.mark.parametrize("bad_value", [["covariance"], {"covariance": True}, None, 42])
+def test_non_hashable_or_wrong_type_sigma_source_degrades_to_empty(bad_value):
+    # 【テスト目的】: sigma_source に非 hashable 型 (list/dict) や単純に型違い (None/int) が
+    #   混入しても ``value in _SIGMA_SOURCES`` (frozenset の in 判定) が TypeError で
+    #   クラッシュせず "" へ縮退することを確認 (Issue #66 レビュー ラウンド2)。
+    # 🔵 信頼性: レビュー指摘「["covariance"] in frozenset は TypeError」の再現防止
+
+    p = PhaseInstance("A", LatticeParams(5, 5, 5))
+    d = phase_to_dict(p)
+    d["lattice"]["sigma_source"] = bad_value  # 【異常型混入】: 破損データ/バグを再現 🔵
+
+    q = phase_from_dict(d)  # 【確認内容】: TypeError を送出せず正常に復元できる 🔵
+
+    assert q.lattice.sigma_source == ""  # 【確認内容】: 非文字列は無条件で "" へ縮退 🔵
 
 
 def test_deterministic_to_dict_and_canonical_json():

@@ -113,6 +113,8 @@ def _serialize_phase(phase: "PhaseInstance") -> dict[str, Any]:
             "gamma": float(lattice.gamma),
             # 【sigma 全量】: 格子誤差 (±σ) も純型化して含める 🟡 §2.4
             "sigma": {str(k): float(v) for k, v in lattice.sigma.items()},
+            # 【σ 由来明示】: "covariance"/"proxy"/"" を純型化して配信 (Issue #66 / NFR-107) 🔵
+            "sigma_source": str(lattice.sigma_source),
         },
     }
 
