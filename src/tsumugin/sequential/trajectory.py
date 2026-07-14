@@ -33,6 +33,9 @@ _FRAME_COMMON_COLUMNS = [
 # 【改善内容】: 相由来列と lifecycle 由来列を分離し、空欄プレースホルダの個数をこの定義から導出可能にした 🔵
 # 【Issue #66 / FR-306】: 格子 ±σ (a_sigma/b_sigma/c_sigma) + 由来 (sigma_source) を末尾追加。
 #   既存列の順序は変えず追記のみとし、既存消費側 (header()/rows_by_frame() 経由) を非破壊で拡張する 🔵
+# 【設計選択 (σ 列の範囲)】: CSV は軸長 a/b/c の σ のみ出力する。角度 (alpha/beta/gamma) の σ は
+#   LatticeParams.sigma には保持され、snapshot/webui JSON 側で全量保持・配信される
+#   (CSV 列の肥大を避ける出力層の設計裁量であり、情報の欠落ではない) 🟡
 _PHASE_FRAME_SUFFIXES = [
     "a",
     "b",

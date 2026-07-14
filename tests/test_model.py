@@ -36,6 +36,16 @@ def test_lattice_sigma_source_defaults_empty_and_with_updates_compatible():
     assert lat.sigma_source == ""  # 【確認内容】: 元インスタンスは不変 (P2) 🔵
 
 
+def test_sigma_source_literal_defines_allowed_values():
+    # 【テスト目的】: SigmaSource 型エイリアスが "covariance"/"proxy"/"" の 3 値 Literal として
+    #   model から公開されることを確認 (joint/model.py の Literal 慣習と整合, Issue #66 レビュー対応)。
+    from typing import get_args
+
+    from tsumugin.model import SigmaSource
+
+    assert set(get_args(SigmaSource)) == {"covariance", "proxy", ""}  # 【確認内容】: 許容 3 値 🔵
+
+
 def test_triclinic_volume_matches_general_formula():
     a, b, c = 4.0, 5.0, 6.0
     alpha, beta, gamma = 80.0, 85.0, 95.0

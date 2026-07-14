@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from typing import Mapping
+from typing import Literal, Mapping
+
+# 【σ 由来の許容値】: "covariance" (共分散由来の真の esd) / "proxy" (簡易代理値, 将来用) /
+#   "" (未提供, 既定)。joint/model.py の PerHistogramMetrics.sigma_source と同じ Literal 慣習。
+#   NFR-107 (σ 由来明示) 🔵
+SigmaSource = Literal["covariance", "proxy", ""]
 
 
 @dataclass(frozen=True)
 class LatticeParams:
-    """格子定数 (±σ)。角はすべて度。"""
+    """格子定数 (±σ)。角はすべて度。
+
+    ``sigma``/``sigma_source`` は「当該 refine() 呼び出しで推定した不確かさのみ」を表す
+    (統一セマンティクス)。今回解放しなかった格子属性・相の σ は空 (持ち越しなし)。
+    """
 
     a: float
     b: float
@@ -18,9 +27,8 @@ class LatticeParams:
     beta: float = 90.0
     gamma: float = 90.0
     sigma: Mapping[str, float] = field(default_factory=dict)
-    # 【σ 由来明示】: "covariance" (共分散由来の真の esd, 例 GSASIIBackend) /
-    #   "proxy" (簡易代理値, 例 SimulatedBackend) / "" (未提供, 既定)。NFR-107 🔵
-    sigma_source: str = ""
+    # 【σ 由来明示】: SigmaSource 参照 (NFR-107) 🔵
+    sigma_source: SigmaSource = ""
 
     def volume(self) -> float:
         """一般三斜格子の単位胞体積 (Å³)。"""

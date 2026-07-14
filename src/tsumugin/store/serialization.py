@@ -12,10 +12,20 @@ import しないレイヤ制約を守り、非有限判定は共有葉モジュ�
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from typing import Any, Mapping, get_args
 
 from tsumugin._json import finite_or_none
-from tsumugin.model import LatticeParams, PhaseInstance, PhaseLifecycle, TofBankParams
+from tsumugin.model import (
+    LatticeParams,
+    PhaseInstance,
+    PhaseLifecycle,
+    SigmaSource,
+    TofBankParams,
+)
+
+# 【sigma_source 許容値】: SigmaSource Literal から導出した単一情報源。許容外の文字列
+#   (旧データ/破損) は復元時に "" へ縮退させる (後方互換, Issue #66 レビュー対応) 🔵
+_SIGMA_SOURCES: frozenset[str] = frozenset(get_args(SigmaSource))
 
 __all__ = [
     "bank_params_from_dict",
@@ -41,6 +51,17 @@ def _value_or_default(value: float | None, default: float) -> float:
     🟡 信頼性レベル: 要件定義 §2.2 欠損補完 / None 頑健性からの妥当な具体化。
     """
     return default if value is None else value
+
+
+def _coerce_sigma_source(value: Any) -> SigmaSource:
+    """【機能概要】: 復元した sigma_source を SigmaSource の許容値へ縮退させる。
+    【実装方針】: 欠落 (None) と許容外文字列 (旧データ/破損) は "" へフォールバックし、
+    fail-loud しない (σ 由来は精密化成否そのものではない)。許容値は Literal から導出した
+    ``_SIGMA_SOURCES`` を単一情報源とする。
+    【テスト対応】: test_unknown_sigma_source_degrades_to_empty / 既存 roundtrip テスト。
+    🔵 信頼性レベル: Issue #66 レビュー対応 (許容外文字列 → "" 縮退) に依拠。
+    """
+    return value if value in _SIGMA_SOURCES else ""
 
 
 def _require_finite_lattice(value: Any, field: str) -> float:
@@ -130,8 +151,9 @@ def phase_from_dict(data: Mapping[str, Any]) -> PhaseInstance:
         beta=_value_or_default(lattice_data.get("beta"), 90.0),
         gamma=_value_or_default(lattice_data.get("gamma"), 90.0),
         sigma=dict(lattice_data.get("sigma") or {}),  # 【欠損補完】: sigma 欠落 → {} 🟡
-        # 【欠損補完】: sigma_source 欠落 (旧スキーマ) は既定 "" で補完 (後方互換, Issue #66) 🟡
-        sigma_source=lattice_data.get("sigma_source") or "",
+        # 【欠損補完 + 許容値ガード】: sigma_source 欠落 (旧スキーマ) は "" 補完、許容外文字列
+        #   (SigmaSource Literal 外) も "" へ縮退させる (後方互換, Issue #66) 🟡
+        sigma_source=_coerce_sigma_source(lattice_data.get("sigma_source")),
     )
 
     # 【lifecycle 復元】: dict のままにせず PhaseLifecycle として型復元する (N-04) 🔵

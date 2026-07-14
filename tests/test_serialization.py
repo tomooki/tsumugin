@@ -163,6 +163,20 @@ def test_sigma_source_roundtrip_preserved():
     assert q == p  # 【確認内容】: 相全体が == で一致 🔵
 
 
+def test_unknown_sigma_source_degrades_to_empty():
+    # 【テスト目的】: 許容外の sigma_source 文字列 (旧データ/破損) が "" に縮退することを確認
+    #   (SigmaSource Literal の許容値 "covariance"/"proxy"/"" のみ復元する後方互換ガード)。
+    # 🔵 信頼性: Issue #66 レビュー対応 / model.phase.SigmaSource
+
+    p = PhaseInstance("A", LatticeParams(5, 5, 5))
+    d = phase_to_dict(p)
+    d["lattice"]["sigma_source"] = "magic"  # 【許容外文字列】: スキーマ外の値を注入 🔵
+
+    q = phase_from_dict(d)
+
+    assert q.lattice.sigma_source == ""  # 【確認内容】: 許容外は "" へ縮退 (fail-loud しない) 🔵
+
+
 def test_deterministic_to_dict_and_canonical_json():
     # 【テスト目的】: phase_to_dict の決定論と _canonical_json 互換を確認 (N-06 / NFR-102・REQ-402)
     # 【テスト内容】: 同一相に 2 回適用した dict の等価と canonical JSON 文字列一致を検証

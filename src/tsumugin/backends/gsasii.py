@@ -18,15 +18,26 @@ import math
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
+from .._json import finite_or_none
 from ..errors import GSASUnavailableError
-from ..model import LatticeParams, PhaseInstance
+from ..model import LatticeParams, PhaseInstance, SigmaSource
 from .base import RefinementModel, RefinementResult, parse_param
 
 _DEFAULT_WAVELENGTH = 1.5406  # Cu Kα1 (Å)
+
+# 【セル辞書キー】: get_cell()/get_cell_and_esd() が返す格子 6 成分のキー (読み戻し検証用) 🔵
+_CELL_KEYS = (
+    "length_a",
+    "length_b",
+    "length_c",
+    "angle_alpha",
+    "angle_beta",
+    "angle_gamma",
+)
 
 
 @lru_cache(maxsize=1)
@@ -315,14 +326,26 @@ class GSASIIBackend:
         originals: tuple[PhaseInstance, ...],
         cell_free: set[int],
     ) -> tuple[PhaseInstance, ...]:
+        """精密化済み格子/scale を読み戻す。
+
+        【σ セマンティクス (統一定義)】: ``lattice.sigma``/``sigma_source`` は「当該 refine()
+        呼び出しで推定した不確かさのみ」を表す。格子を解放した相のみ ``get_cell_and_esd()``
+        の共分散由来 esd を新 dict として与え、非解放相は sigma={} / sigma_source="" とする
+        (入力に古い σ が残っていても持ち越さない。SimulatedBackend と対称)。
+        【効率化】: 格子解放相は ``get_cell_and_esd()`` の cell 戻り値を再利用し、
+        ``get_cell()`` の二重呼び出しを避ける (取得失敗時のみ get_cell へフォールバック)。
+        """
         out: list[PhaseInstance] = []
         for i, (g2ph, orig) in enumerate(zip(g2phases, originals)):
-            cell = g2ph.get_cell()
+            cell: Mapping[str, float] | None = None
             sigma: dict[str, float] = {}
-            sigma_source = ""
+            sigma_source: SigmaSource = ""
             if i in cell_free:
-                # 【共分散由来 σ】: 格子を解放した相のみ get_cell_and_esd() を試みる (REQ-306) 🔵
-                sigma, sigma_source = self._cell_sigma(g2ph)
+                # 【共分散由来 σ + cell 再利用】: 格子解放相は get_cell_and_esd() 一発 (REQ-306) 🔵
+                cell, sigma, sigma_source = self._cell_sigma(g2ph)
+            if cell is None:
+                # 【フォールバック】: 非解放相の従来経路 / esd 取得失敗時 🔵
+                cell = g2ph.get_cell()
             lattice = LatticeParams(
                 a=float(cell["length_a"]),
                 b=float(cell["length_b"]),
@@ -337,29 +360,35 @@ class GSASIIBackend:
             out.append(orig.with_updates(lattice=lattice, scale=scale))
         return tuple(out)
 
-    def _cell_sigma(self, g2ph) -> tuple[dict[str, float], str]:
-        """精密化済み格子の共分散由来 esd (a/b/c) を ``get_cell_and_esd()`` から取得する。
+    def _cell_sigma(
+        self, g2ph
+    ) -> tuple[dict[str, float] | None, dict[str, float], SigmaSource]:
+        """精密化済み格子と共分散由来 esd (a/b/c) を ``get_cell_and_esd()`` から取得する。
 
         【機能概要】: GSAS-II の共分散行列由来の真の格子 esd を sigma_source="covariance" で
-        返す (FR-306/NFR-107)。GSAS-II 側 API は共分散欠如時 ``KeyError`` を自前で吸収して
-        esd=0.0 の dict へ縮退させる実装のため、ここでは 0.0/非有限を「取得不能」として除外する。
-        【設計方針】: 取得不能 (例外・0.0・非有限) は空 dict + "" へ縮退し fail-loud しない
-        (「精密化バックエンドの失敗は chi2=inf へ変換しガードレールに処理させる」不変条件と同趣旨、
-        σ 取得は精密化成否そのものではないため例外を上げず黙って未提供とする)。
+        返す (FR-306/NFR-107)。cell 戻り値も検証済み dict として返し、呼び出し側の
+        ``get_cell()`` 二重呼び出しを不要にする。GSAS-II 側 API は共分散欠如時 ``KeyError``
+        を自前で吸収して esd=0.0 の dict へ縮退させる実装のため、0.0/非有限は「取得不能」
+        として除外する (非有限判定は ``_json.finite_or_none`` の単一実装へ委譲)。
+        【設計方針】: try スコープを esd/cell 処理全体に広げ、戻り値形状が dict 以外でも
+        クラッシュせず (None, {}, "") へ縮退し fail-loud しない (「精密化バックエンドの失敗は
+        chi2=inf へ変換しガードレールに処理させる」不変条件と同趣旨、σ 取得は精密化成否
+        そのものではないため例外を上げず黙って未提供とする)。
+        :returns: (検証済み cell dict | None, sigma dict, sigma_source)。cell=None は取得不能
+        (呼び出し側が get_cell() へフォールバックする)。
         🟡 信頼性レベル: GSASIIscriptable.G2Phase.get_cell_and_esd() 実装 (KeyError→0.0 縮退) に依拠。
         """
         try:
-            _, esd = g2ph.get_cell_and_esd()
+            raw_cell, esd = g2ph.get_cell_and_esd()
+            # 【cell 検証】: 6 成分を float 化して形状を検証 (失敗は except で縮退) 🔵
+            cell = {key: float(raw_cell[key]) for key in _CELL_KEYS}
+            sigma: dict[str, float] = {}
+            for attr, key in (("a", "length_a"), ("b", "length_b"), ("c", "length_c")):
+                value = finite_or_none(esd.get(key))
+                if value is not None and value > 0.0:
+                    sigma[attr] = value
         except Exception:
-            return {}, ""
-        sigma: dict[str, float] = {}
-        for attr, key in (("a", "length_a"), ("b", "length_b"), ("c", "length_c")):
-            value = esd.get(key)
-            if value is None:
-                continue
-            value = float(value)
-            if math.isfinite(value) and value > 0.0:
-                sigma[attr] = value
+            return None, {}, ""
         if not sigma:
-            return {}, ""
-        return sigma, "covariance"
+            return cell, {}, ""
+        return cell, sigma, "covariance"

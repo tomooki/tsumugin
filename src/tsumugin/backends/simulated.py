@@ -35,11 +35,6 @@ _SCALAR_KEYS = ("scale", "wt_frac")
 _FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))
 _DEFAULT_WAVELENGTH = 1.5406  # Cu Kα1 (Å)
 
-# 【代理 σ 基準相対不確かさ】: 適合が完璧 (reduced χ²≤1) でも格子定数の 0.1% を下限として
-# 計上する経験的下限。真の共分散 (GSASIIBackend) と混同しないよう sigma_source="proxy" を
-# 併記する (FR-306 / NFR-107)。🟡 設計裁量 (簡易代理値、統計的厳密性は主張しない)。
-_LATTICE_SIGMA_BASE_RELATIVE = 1e-3
-
 # restraint 逸脱 (相関疑い) 判定の残差閾値。restraint が μt を中心へ引き留めた結果、
 # 強度プロファイルに系統的な残差 (rwp[%]) が残るとき μt–scale 相関 (§14) を疑う。
 # 🟡 設計裁量 (要件定義 2.4 の「許容幅は設計裁量」)。合成データの良好適合は rwp≈0。
@@ -244,9 +239,13 @@ class SimulatedBackend:
         chi2 = float(r @ r)
 
         # 【早期リターン】: 解放パラメータ (相 or μt) が皆無なら 1 サイクルで確定 (既存挙動保存) 🔵
+        # 【σ リセット】: 何も解放しない呼び出しでも σ セマンティクス (当該 refine() の推定のみ)
+        #   に従い、入力に残る古い sigma/sigma_source を空へリセットする 🔵
         if not names and not fit_mu_t:
             return RefinementResult(
-                phases=phases,
+                phases=self._apply_lattice_sigma(
+                    phases, names, np.zeros(0), False, full_residual, r, chi2
+                ),
                 chi2=chi2,
                 rwp=_rwp(weights, y_obs, self._simulate(phases, two_theta, const_mu_t)),
                 n_obs=n_obs,
@@ -303,8 +302,9 @@ class SimulatedBackend:
         free_out = frozenset(names) | ({"global.mu_t"} if fit_mu_t else frozenset())
         globals_out: dict[str, float] = {"mu_t": float(mu_t)} if fit_mu_t else {}
         warnings_out = self._build_warnings(absorption, fit_mu_t, mu_t, rwp)
-        # 【格子 σ 代理値】: 解放した格子属性のみへ決定論的な代理 σ を書き込む (FR-306/NFR-107) 🟡
-        phases = self._apply_lattice_sigma(phases, names, n_obs, len(p), chi2)
+        # 【格子 σ】: 最終受理パラメータの JᵀJ 漸近共分散から解放格子属性の σ を導出し、
+        #   解放しなかった相の古い σ はリセットする (FR-306/NFR-107) 🔵
+        phases = self._apply_lattice_sigma(phases, names, p, fit_mu_t, full_residual, r, chi2)
         return RefinementResult(
             phases=phases,
             chi2=chi2,
@@ -428,62 +428,92 @@ class SimulatedBackend:
         self,
         phases: tuple[PhaseInstance, ...],
         names: list[str],
-        n_obs: int,
-        n_params: int,
+        p: np.ndarray,
+        fit_mu_t: bool,
+        full_residual,
+        r: np.ndarray,
         chi2: float,
     ) -> tuple[PhaseInstance, ...]:
-        """解放した格子属性のみに決定論的な代理 σ (``sigma_source="proxy"``) を書き込む。
+        """最終受理パラメータの JᵀJ 漸近共分散から解放格子属性の σ を書き込む (FR-306/NFR-107)。
 
-        【設計方針】: GSAS-II 共分散のような真の統計的不確かさ (GSASIIBackend が担う
-        "covariance") ではなく、格子定数自身の相対値と適合度 (reduced χ²) から導く粗い
-        代理値。式: ``σ = |value| × base_relative × sqrt(max(reduced_chi2, 1.0))``
-        (reduced_chi2 = chi2 / max(n_obs - n_params, 1))。適合が良好 (reduced_chi2≤1) でも
-        base_relative (既定 0.1%) を下限とし、適合が悪化するほど σ を比例拡大する。
-        乱数不使用・同一入力でビット同一 (NFR-102)。解放していない格子属性/相は変更しない
-        (P2 非破壊: 既存 sigma エントリはそのまま残す)。
-        🟡 信頼性レベル: FR-306/NFR-107 の「σ 由来明示」を満たす設計裁量の簡易式。
+        【σ セマンティクス (統一定義)】: 出力の ``lattice.sigma``/``sigma_source`` は「当該
+        refine() 呼び出しで推定した不確かさのみ」を表す。今回解放した格子属性のみからなる
+        新 dict へ**置換**し (既存 sigma のマージ持ち越しは行わない)、今回格子を解放しなかった
+        相は sigma={} / sigma_source="" にリセットする (入力に残る古い σ の混入排除。
+        GSASIIBackend ``_read_back`` と対称)。
+
+        【式】: 標準的な非線形最小二乗の漸近共分散
+        ``cov = pinv(JᵀJ) × reduced_chi2``、``reduced_chi2 = chi2 / max(n_res − n_params, 1)``。
+        J は最終受理パラメータ p で 1 回再計算した weighted Jacobian (restraint 行を含む)、
+        n_res は restraint 行を含む残差ベクトル全長、n_params は μt を含む解放総数。
+        解放した格子属性に対応する対角成分のみ ``σ = sqrt(cov[i,i])`` として抽出し
+        ``sigma_source="covariance"`` を付す (scale/μt 等は対象外)。乱数不使用・同一入力で
+        ビット同一 (NFR-102)。
+
+        【ガード (NaN を絶対に書き込まない)】: chi2 非有限 / J に非有限 / pinv 失敗
+        (LinAlgError) / σ 非有限・非正 のいずれでも、当該相の sigma は {} + "" に縮退する。
 
         :param phases: 精密化後の相集合
-        :param names: 解放された free_params 名 (``phase{i}.lattice.a`` 等)
-        :param n_obs: 観測点数 (自由度算出用)
-        :param n_params: 解放パラメータ総数 (μt 含む。自由度算出用)
+        :param names: 解放された free_params 名 (``phase{i}.lattice.a`` 等、p の先頭部と同順)
+        :param p: 最終受理パラメータベクトル (fit_mu_t 時は末尾に μt)
+        :param fit_mu_t: μt を精密化したか (J の μt 列の有無)
+        :param full_residual: 拡張残差関数 (restraint 行を含む)
+        :param r: 最終受理パラメータでの拡張残差ベクトル
         :param chi2: 精密化後の残差二乗和 (restraint 項含む)
-        :returns: 解放した格子属性のみ sigma/sigma_source を更新した新しい phases
+        :returns: σ セマンティクスに従い sigma/sigma_source を更新した新しい phases
         """
-        by_phase: dict[int, list[str]] = {}
-        for name in names:
+        # 【解放格子属性の索引】: 相 idx -> {attr: p 内の列位置 j} (names 順 = J の列順) 🔵
+        by_phase: dict[int, dict[str, int]] = {}
+        for j, name in enumerate(names):
             idx, key = parse_param(name)
             if key.startswith("lattice."):
-                by_phase.setdefault(idx, []).append(key.split(".", 1)[1])
-        if not by_phase:
-            return phases
+                by_phase.setdefault(idx, {})[key.split(".", 1)[1]] = j
 
-        dof = max(n_obs - n_params, 1)
-        reduced_chi2 = chi2 / dof
-        relative = _LATTICE_SIGMA_BASE_RELATIVE * math.sqrt(max(reduced_chi2, 1.0))
+        # 【共分散算出】: ガードを全て通過した場合のみ相ごとの σ dict を組み立てる 🔵
+        sigma_by_phase: dict[int, dict[str, float]] = {}
+        if by_phase and math.isfinite(chi2):
+            dof = max(int(r.size) - int(p.size), 1)  # 【n_res 自由度】: restraint 行を含む 🔵
+            reduced_chi2 = chi2 / dof
+            # 【J の再計算】: LM ループ先頭の J は最終受理 p より古いため、最終 p で 1 回再計算 🔵
+            jac = self._jacobian(phases, names, p, fit_mu_t, full_residual, r)
+            cov: np.ndarray | None = None
+            if bool(np.all(np.isfinite(jac))):
+                try:
+                    cov = np.linalg.pinv(jac.T @ jac) * reduced_chi2
+                except np.linalg.LinAlgError:
+                    cov = None  # 【pinv 失敗】: σ 未提供へ縮退 🔵
+            if cov is not None:
+                for idx, attrs in by_phase.items():
+                    sigma: dict[str, float] = {}
+                    for attr, j in attrs.items():
+                        var = float(cov[j, j])
+                        if not (math.isfinite(var) and var > 0.0):
+                            # 【σ 非有限/非正】: 当該相の sigma を丸ごと {} + "" に縮退 🔵
+                            sigma = {}
+                            break
+                        sigma[attr] = math.sqrt(var)
+                    if sigma:
+                        sigma_by_phase[idx] = sigma
 
+        # 【置換 + リセット】: σ を得た相は新 dict へ置換、それ以外は空へリセット (混入排除) 🔵
         phases_list = list(phases)
-        for idx, attrs in by_phase.items():
-            phase = phases_list[idx]
-            lattice = phase.lattice
-            new_sigma = dict(lattice.sigma)
-            for attr in attrs:
-                new_sigma[attr] = abs(getattr(lattice, attr)) * relative
-            phases_list[idx] = phase.with_updates(
-                lattice=_replace_lattice_sigma(lattice, new_sigma, "proxy")
-            )
+        for idx, phase in enumerate(phases_list):
+            new_sigma = sigma_by_phase.get(idx)
+            if new_sigma:
+                phases_list[idx] = phase.with_updates(
+                    lattice=_dc_replace(
+                        phase.lattice, sigma=new_sigma, sigma_source="covariance"
+                    )
+                )
+            elif phase.lattice.sigma or phase.lattice.sigma_source:
+                phases_list[idx] = phase.with_updates(
+                    lattice=_dc_replace(phase.lattice, sigma={}, sigma_source="")
+                )
         return tuple(phases_list)
 
 
 def _replace_lattice(lattice: LatticeParams, attr: str, value: float) -> LatticeParams:
     return _dc_replace(lattice, **{attr: value})
-
-
-def _replace_lattice_sigma(
-    lattice: LatticeParams, sigma: Mapping[str, float], source: str
-) -> LatticeParams:
-    """sigma/sigma_source のみを更新した新しい LatticeParams を返す (非破壊)。"""
-    return _dc_replace(lattice, sigma=sigma, sigma_source=source)
 
 
 def _rwp(weights: np.ndarray, y_obs: np.ndarray, y_calc: np.ndarray) -> float:

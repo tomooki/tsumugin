@@ -198,8 +198,12 @@ def test_hypothesis_detail_returns_full_json(client, result):
     phase = data["phases"][0]
     assert {"phase_ref", "scale", "wt_frac", "occupancies", "lattice"} <= set(phase)
     # 【検証項目】: 相ごとの scale/wt_frac/occupancies/格子まで含む 🟡
-    assert {"a", "b", "c", "alpha", "beta", "gamma", "sigma"} <= set(phase["lattice"])
-    # 【検証項目】: 格子は a/b/c に加え角度・sigma まで含めてよい 🟡
+    assert {"a", "b", "c", "alpha", "beta", "gamma", "sigma", "sigma_source"} <= set(
+        phase["lattice"]
+    )
+    # 【検証項目】: 格子は a/b/c に加え角度・sigma・σ 由来 (sigma_source) まで含める 🟡
+    assert isinstance(phase["lattice"]["sigma_source"], str)
+    # 【検証項目】: sigma_source は str で純型化される (Issue #66 / NFR-107) 🔵
     assert {"rwp", "gof", "chi2", "n_obs", "n_params", "evidence"} <= set(data["metrics"])
     # 【検証項目】: metrics 全量 (evidence 含む) 🟡
 
