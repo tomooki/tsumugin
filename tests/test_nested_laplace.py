@@ -92,6 +92,36 @@ def test_score_equals_bicbackend_value():
     assert bic_res.backend == "bic"
 
 
+def test_score_equals_bicbackend_value_with_noise_scale():
+    # Issue #64 / FR-123 レビュー対応: LaplaceBackend._bic_value は evidence.ic の
+    # _scaled_chi2_term を共有するため、noise_scale 設定時も BICBackend と厳密一致する
+    # (以前は laplace 側が noise_scale を一切見ない独自の chi2 + k ln n 式だったため
+    # noise_scale 設定 metrics で両者が乖離していた)。
+    from tsumugin.evidence.ic import BICBackend
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    metrics = RefinementMetrics(
+        rwp=1.0, gof=1.0, chi2=90.0, n_obs=200, n_params=3, noise_scale=2.0
+    )
+    laplace_res = LaplaceBackend().score(metrics)
+    bic_res = BICBackend().score(metrics)
+    assert laplace_res.value == bic_res.value  # 厳密一致 (同一実装の共有)
+
+
+def test_score_falls_back_correctly_for_invalid_noise_scale():
+    # noise_scale が無効 (非有限/非正/アンダーフロー) でも従来式へ縮退し BICBackend と一致する。
+    from tsumugin.evidence.ic import BICBackend
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    for invalid in (0.0, float("nan"), float("inf"), 1e-200):
+        metrics = RefinementMetrics(
+            rwp=1.0, gof=1.0, chi2=42.0, n_obs=80, n_params=4, noise_scale=invalid
+        )
+        laplace_res = LaplaceBackend().score(metrics)
+        bic_res = BICBackend().score(metrics)
+        assert laplace_res.value == bic_res.value
+
+
 def test_rank_mixes_laplace_ascending():
     # TC-501-02: value 小さいほど良い符号規約で rank に混在できる
     from tsumugin.evidence.ranking import rank

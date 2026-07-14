@@ -14,7 +14,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from ..absorption.model import AbsorptionConfig, transmission_factor
-from ..evidence.noise import NoiseEstimate, estimate_noise_em
+from ..evidence.noise import noise_extras
 from ..model import LatticeParams, PhaseInstance
 from .base import RefinementModel, RefinementResult, parse_param
 
@@ -345,16 +345,11 @@ class SimulatedBackend:
         """opt-in (``estimate_noise=True``) のときのみ EM ノイズ推定を実行する (Issue #64 / FR-123)。
 
         【機能概要】: 最終受理パラメータでの観測–計算残差 ``y_obs - y_calc`` と統計重み
-          ``weights`` から ``evidence.noise.estimate_noise_em`` を呼び、
-          ``(noise_scale, globals へ追加する dict, warnings へ追加する tuple)`` を返す。
-        【既定オフ (後方互換)】: ``estimate_noise=False`` (既定) では EM を一切呼ばず即座に
-          ``(None, {}, ())`` を返す。呼び出し元 (refine の 2 経路) はこの結果をそのまま
-          ``globals``/``warnings``/``noise_scale`` へマージするだけでよく、既定経路は
-          追加計算なしでビット同一を保つ (REQ-404)。
-        【σ の由来明示 (NFR-107)】: 推定結果 (反復回数・収束可否・inlier 比率・縮退理由) を
-          人間可読な警告文として記録し、ledger/レポートで追跡できるようにする。
-        🟡 信頼性レベル: NFR-107 の要求 (由来明示) を既存の warnings/globals 様式へ
-          最小追加するという設計裁量。
+          ``weights`` から ``evidence.noise.noise_extras`` (backend 非依存の共有オーケストレーション
+          関数) へ委譲するだけの薄いラッパ (Issue #64 レビュー対応: 将来の GSAS-II backend 配線が
+          同一実装を再利用できるように、EM 呼び出しの判定・変換ロジックそのものは backend 非依存に
+          抽出済み)。既定オフ (``estimate_noise=False``) では追加計算なしでビット同一を保つ
+          (REQ-404、``noise_extras`` 側の ``enabled=False`` 早期リターンに従う)。
 
         Args:
             y_obs: 観測強度。
@@ -365,14 +360,7 @@ class SimulatedBackend:
             ``estimate_noise=False`` なら ``(None, {}, ())``。``True`` なら
             ``(estimate.scale, {"noise_scale": estimate.scale}, (由来文字列,))``。
         """
-        if not self._estimate_noise:
-            return None, {}, ()
-        estimate = estimate_noise_em(y_obs - y_calc, weights)
-        return (
-            estimate.scale,
-            {"noise_scale": estimate.scale},
-            (_noise_provenance_warning(estimate),),
-        )
+        return noise_extras(y_obs - y_calc, weights, enabled=self._estimate_noise)
 
     def _build_warnings(
         self,
@@ -602,15 +590,3 @@ def _rwp(weights: np.ndarray, y_obs: np.ndarray, y_calc: np.ndarray) -> float:
     if den <= 0:
         return 0.0
     return 100.0 * math.sqrt(num / den)
-
-
-def _noise_provenance_warning(estimate: NoiseEstimate) -> str:
-    """``NoiseEstimate`` の由来を人間可読な警告文へ変換する (NFR-107 σ の由来明示)。"""
-    text = (
-        f"ノイズスケール EM 推定 (FR-123): s={estimate.scale:.4g}"
-        f" (n_iterations={estimate.n_iterations}, converged={estimate.converged},"
-        f" inlier_fraction={estimate.inlier_fraction:.4g})"
-    )
-    if estimate.degenerate_reason is not None:
-        text += f"; 縮退: {estimate.degenerate_reason}"
-    return text

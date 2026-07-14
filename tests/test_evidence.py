@@ -136,6 +136,17 @@ def test_invalid_noise_scale_falls_back_to_unscaled_chi2(invalid_scale: float):
     assert BICBackend().score(m).value == legacy
 
 
+def test_extreme_small_noise_scale_does_not_raise_zero_division():
+    # Issue #64 レビュー対応: noise_scale=1e-200 は s 自体は有限かつ正だが、s*s が float64 の
+    # 下限を割ってちょうど 0.0 にアンダーフローする。旧ガード (s<=0 判定) はこれを見逃し
+    # chi2/s2 が ZeroDivisionError を送出していた (実測)。s² を判定基準にすることで
+    # ZeroDivisionError を送出せず現行式 (noise_scale 無効時と同じ) へ縮退することを確認する。
+    m = _metrics_ns(50.0, 2, 100, 1e-200)
+    legacy = 50.0 + 2 * math.log(100)
+    assert BICBackend().score(m).value == legacy  # 例外を投げず縮退
+    assert AICBackend().score(m).value == 50.0 + 2 * 2
+
+
 def test_bic_ranking_flip_with_differing_noise_scale():
     # (f) 回帰ケース: 生の chi2 だけならチ B (chi2=95) が A (chi2=100) より良く見えるが、
     # B のノイズスケールが大きい (自己無矛盾でない重みだった) と分かると評価が逆転する。

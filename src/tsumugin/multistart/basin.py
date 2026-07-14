@@ -55,15 +55,18 @@ def _evidence_of(result: RefinementResult) -> float:
 
     【実装方針】: RefinementResult の chi2/n_obs/n_params を RefinementMetrics へ詰め替え
     BICBackend.score の value を取る。BIC = chi2 + n_params·ln(max(n_obs,1))。
+    noise_scale (Issue #64 / FR-123) が backend から報告されていれば伝播し、BIC のノイズ
+    スケール補正を basin 代表選出/evidence へも反映する 🔵。
     🔵 信頼性レベル: evidence/ic.py BICBackend / note §3 に依拠。
     """
-    # 【メトリクス詰め替え】: BIC は chi2/n_params/n_obs のみ参照 (rwp/gof は評価に無関与) 🔵
+    # 【メトリクス詰め替え】: BIC は chi2/n_params/n_obs (+noise_scale) のみ参照 (rwp/gof は評価に無関与) 🔵
     metrics = RefinementMetrics(
         rwp=result.rwp,
         gof=0.0,
         chi2=result.chi2,
         n_obs=result.n_obs,
         n_params=result.n_params,
+        noise_scale=result.noise_scale,
     )
     return _BIC.score(metrics).value
 

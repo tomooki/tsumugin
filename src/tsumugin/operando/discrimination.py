@@ -699,7 +699,13 @@ def _model_bic(
     dof = max(int(result.n_obs) - k, 1)
     gof = math.sqrt(chi2 / dof) if math.isfinite(chi2) and chi2 >= 0.0 else float("inf")
     metrics = RefinementMetrics(
-        rwp=float(result.rwp), gof=gof, chi2=chi2, n_obs=int(result.n_obs), n_params=k
+        rwp=float(result.rwp),
+        gof=gof,
+        chi2=chi2,
+        n_obs=int(result.n_obs),
+        n_params=k,
+        # 【Issue #64 / FR-123 写像】: backend が推定した noise_scale を metrics へ伝播する 🔵
+        noise_scale=result.noise_scale,
     )
     # 【単一情報源】: bic 式は BICBackend にのみ存在させ、ΔBIC 比較の一貫性を担保する 🔵
     return float(_BIC.score(metrics).value)
@@ -758,6 +764,8 @@ def _metrics_with_multistart(
             "n_basins": len(multistart.basins),
             "n_diverged": int(multistart.n_diverged),
         },
+        # 【Issue #64 / FR-123 写像】: backend が推定した noise_scale を metrics へ伝播する 🔵
+        noise_scale=result.noise_scale,
     )
 
 
@@ -814,6 +822,10 @@ def _build_evidence_problem(outcome: _IntervalOutcome, *, label: str) -> Evidenc
       -logZ=-logL=Σbic/2 となり、Laplace フォールバック (=Σbic そのもの) とスケールが factor-2 で
       異なりうる。restraint 由来の真の物理事前分布/尤度配線は Issue #76 で追跡 (discrimination には
       現状連続自由パラメータの事後分布が無いための暫定サロゲート)。
+    【noise_scale 対象外 (Issue #64 レビュー対応)】: ``chi2`` フィールドは既にモデル DOF・(``_model_bic``
+      経由で) noise_scale 補正込みの Σbic であり、単一の ``RefinementResult`` から直接組んだ生の chi2
+      ではない。ここへさらに noise_scale を適用すると二重補正になるため、本関数は意図的に
+      noise_scale を伝播しない (単一 ``RefinementResult`` 由来でない合成 metrics)。
     🟡 信頼性レベル: 実装裁量 (nested/laplace 既存契約 ``EvidenceProblem`` への Σbic 写像)。
     """
     sum_bic = outcome.sum_bic

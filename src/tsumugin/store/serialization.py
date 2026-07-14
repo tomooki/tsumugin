@@ -226,6 +226,11 @@ def bank_params_from_dict(data: Mapping[str, Any]) -> TofBankParams:
 
 def metrics_to_dict(metrics: RefinementMetrics) -> dict[str, Any]:
     """【機能概要】: RefinementMetrics を dict へ直列化する (Issue #64 / FR-123 noise_scale 追加)。
+    【位置づけ (Issue #64 レビュー対応)】: webui/将来の永続化用ユーティリティ (未配線)。本番
+    永続化経路 (``store/persistent.py`` の ``PersistentLedger``/``PersistentSnapshotStore``) から
+    呼ばれることはない (``Snapshot`` は ``phases`` のみを永続化し ``metrics`` を含まないため、
+    自然な配線先が現状存在しない)。パッケージ集約面 (``tsumugin`` トップレベル/``tsumugin.store``)
+    へは re-export せず、本モジュール (``tsumugin.store.serialization``) 内 API として留める。
     【実装方針】: PhaseInstance の格子 (a/b/c) と異なり、rwp/gof/chi2 は非有限 (chi2=inf) が
     「精密化失敗」を示す正常な状態 (EDGE-004) である。ここを finite_or_none で None へ純化する
     と、往復復元時に 0.0 等へフォールバックせざるを得ず「収束成功」を捏造して evidence
@@ -261,6 +266,9 @@ def metrics_to_dict(metrics: RefinementMetrics) -> dict[str, Any]:
 
 def metrics_from_dict(data: Mapping[str, Any]) -> RefinementMetrics:
     """【機能概要】: metrics_to_dict が生成した dict から RefinementMetrics を再構築する。
+    【位置づけ (Issue #64 レビュー対応)】: webui/将来の永続化用ユーティリティ (未配線)。
+    metrics_to_dict と同様、本番永続化経路からは呼ばれず本モジュール内 API に留める
+    (詳細は ``metrics_to_dict`` docstring 参照)。
     【実装方針】: rwp/gof/chi2/n_obs/n_params は構造的必須フィールド (dataclass に既定値なし)
     のため明示キー取り出しとし、欠落は KeyError に委ねる (phase_to_dict の phase_ref/lattice
     と同じ fail-loud 方針)。evidence/multistart/noise_scale は optional (欠損 or None は
