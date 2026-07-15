@@ -15,6 +15,7 @@ GSAS 駆動は既定 runner (`_default_gsas_runner`) 内の `run_auto_rietveld` 
 
 from __future__ import annotations
 
+import inspect
 import math
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -64,6 +65,42 @@ def _fractions_of(result: AutoRietveldResult, phase_names: Sequence[str]) -> dic
     if not fr and len(phase_names) == 1:
         return {phase_names[0]: 1.0}
     return {name: float(fr.get(name, 0.0)) for name in phase_names}
+
+
+def _runner_accepts_initial_fractions(runner: "Runner") -> bool:
+    """runner が ``initial_fractions`` キーワード引数を受け付けるか判定する (Issue #82)。
+
+    ``Runner`` は ``(frame, phases, initial_cells)`` の 3 引数プロトコルを保つ (`make_gsas_runner`・
+    `insitu.anchor`・既存テストが依存する公開 API のため破壊しない)。相分率ウォームスタートは対応済み
+    runner (`make_gsas_runner` が生成するもの) にのみ、シグネチャ検査 (inspect) で検出して渡す。
+    3 引数のみの runner (大半のテストスタブ・カスタム runner) には一切渡さず、Runner 型自体は不変
+    のまま TypeError を起こさない (非破壊)。
+    """
+    try:
+        sig = inspect.signature(runner)
+    except (TypeError, ValueError):
+        return False
+    params = sig.parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    return "initial_fractions" in params
+
+
+def _call_runner(
+    runner: "Runner",
+    frame: FrameSpec,
+    phases: Sequence[PhaseSpec],
+    initial_cells: "dict[str, Cell] | None",
+    initial_fractions: "dict[str, float] | None",
+) -> AutoRietveldResult:
+    """runner を呼ぶ。initial_fractions は対応 runner のみへキーワード引数で渡す (Issue #82)。
+
+    Runner の 3 引数プロトコル自体は変更しない。initial_fractions が None、または runner が
+    受け付けないシグネチャの場合は従来通り 3 引数で呼ぶ (非回帰)。
+    """
+    if initial_fractions is not None and _runner_accepts_initial_fractions(runner):
+        return runner(frame, phases, initial_cells, initial_fractions=initial_fractions)
+    return runner(frame, phases, initial_cells)
 
 
 def run_sequential_rietveld(
@@ -124,6 +161,12 @@ def run_sequential_rietveld(
     rwp_history: list[float] = []
     lattice_history: list[dict[str, float]] = []
     prev_cells: dict[str, Cell] | None = None
+    # 相分率ウォームスタート用の直前状態 (Issue #82 再スコープ)。prev_active_names は「その分率が
+    # 有効だった相集合」を記録し、次フレーム開始時点の相集合と一致する時のみ引き継ぐ (核形成安全弁:
+    # フレーム内で新相が追加された直後の 1 フレームは prev_active_names が旧相集合のままなので
+    # 不一致となり fresh にリセットされる)。
+    prev_fractions: dict[str, float] | None = None
+    prev_active_names: tuple[str, ...] | None = None
     min_rwp = float("inf")
     # 直近に rwp_jump トリガで探索を実行した際の Rwp。同一水準での無駄な再探索 (既定 finder は MP
     # ネットワーク往復) を避けつつ、**未追加相が成長すると Rwp が動く**ため前回探索から有意に動いたら
@@ -134,11 +177,22 @@ def run_sequential_rietveld(
 
     for i in range(n):
         frame = frames[i]
+        cur_names_before = tuple(p.phase_name for p in phases)  # このフレーム開始時点の相集合
         init_cells = prev_cells if (config.warm_start and prev_cells) else None
-        result = runner(frame, tuple(phases), init_cells)
+        init_fractions: dict[str, float] | None = None
+        if (
+            config.warm_start_fractions and config.warm_start
+            and prev_fractions is not None and prev_active_names == cur_names_before
+        ):
+            init_fractions = prev_fractions
+        result = _call_runner(runner, frame, tuple(phases), init_cells, init_fractions)
         rwp = float(result.final_rwp)
         cells = {name: _cell6(c) for name, c in result.refined_cells.items()}
         rep = phases[0].phase_name  # 代表相 (格子ジャンプ監視)
+        # ウォームスタート用の分率 (フレーム内の新相追加トライアル前, cur_names_before に対応)。
+        # 新相追加トライアルの結果で `result` が差し替わっても、次フレームへ引き継ぐのはこの
+        # 追加前の値 (核形成安全弁: 追加後の相集合は次フレームでのみ fresh から解禁する)。
+        pre_addition_fractions = _fractions_of(result, cur_names_before)
 
         # --- 変化点判定 (Rwp/格子ジャンプ) ---
         rwp_history.append(rwp)
@@ -220,6 +274,11 @@ def run_sequential_rietveld(
         # ウォームスタート用に直前セルを更新 (失敗フレームは据え置き)
         if not refine_failed and cells:
             prev_cells = {**(prev_cells or {}), **cells}
+        # 分率ウォームスタート用に直前状態を更新 (失敗フレームは据え置き)。追加トライアル前の
+        # cur_names_before/pre_addition_fractions を記録する (核形成安全弁, Issue #82)。
+        if not refine_failed:
+            prev_fractions = pre_addition_fractions
+            prev_active_names = cur_names_before
 
     # --- 逆方向伝播 (operando 逆方向解析): 確立した新相を前フレームへ逆伝播し onset を精密化 ---
     if config.backward_propagation and pid is not None and pid.enabled and appearances:
@@ -526,6 +585,12 @@ def make_gsas_runner(
     渡す (Issue #52)。operando 系列で不要な段階をスキップした軽量レシピを注入する用途 — 未指定
     (None) なら従来通り ``build_recipe`` で組み立てる (非回帰)。``recipe`` 指定時は ``background_coeffs``
     はレシピ側の背景段階に委ねられるため使われない。
+
+    返す runner は ``initial_fractions`` キーワード引数 (相名→相対相分率) を任意で受け付け、指定
+    されれば ``run_auto_rietveld(initial_fractions=)`` へそのまま転送する (Issue #82:
+    ``SequentialConfig.warm_start_fractions`` の分率ウォームスタート)。呼び出し側 (`run_sequential_rietveld`)
+    がシグネチャ検査でこのキーワードの有無を検出するため、``Runner`` の 3 引数プロトコル自体は
+    変わらない (未指定時は従来通り 3 引数呼び出しのみで動作する)。
     """
     import os
     import tempfile
@@ -535,7 +600,10 @@ def make_gsas_runner(
     from ..autorietveld.recipe import build_recipe
 
     def runner(
-        frame: FrameSpec, phases: Sequence[PhaseSpec], initial_cells: "dict[str, Cell] | None"
+        frame: FrameSpec,
+        phases: Sequence[PhaseSpec],
+        initial_cells: "dict[str, Cell] | None",
+        initial_fractions: "dict[str, float] | None" = None,
     ) -> AutoRietveldResult:
         instr = instrument_path(frame) if callable(instrument_path) else instrument_path
         limits = frame.two_theta_limits or two_theta_limits
@@ -564,6 +632,7 @@ def make_gsas_runner(
             return run_auto_rietveld(
                 [hist], list(phases), recipe=recipe_, max_cyc=max_cyc,
                 initial_cells=dict(initial_cells) if initial_cells else None,
+                initial_fractions=dict(initial_fractions) if initial_fractions else None,
             )
 
     return runner

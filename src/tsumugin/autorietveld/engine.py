@@ -770,6 +770,44 @@ def _perturb_initial_cell(ph, scale: tuple[float, float, float]) -> None:
     ph.data["General"]["Cell"][7] = G2lat.calc_V(G2lat.cell2A(new))
 
 
+def _apply_initial_fractions(g2phases, g2hists, fractions: Mapping[str, float]) -> None:
+    """相分率 (HAP Scale) を initial_fractions で初期化する (逐次精密化ウォームスタート用, Issue #82)。
+
+    実測動機: `run_sequential_rietveld` の warm_start は格子のみを引き継ぎ、相分率は毎フレーム既定
+    HAP Scale (単相 1.0/多相は add_phase 既定の等分) から再出発するため、転移ドーム域で分率精密化が
+    局所的に動かず既定値に張り付くフレームが生じる (実測 2 相 cubic+tetragonal 系列: f112 0.48, f116
+    0.55, f120 0.60, **f124 0.50, f128 0.50** (未着手の seed 値そのまま), f132 0.59 — 分率 warm-start
+    ありの系列は同域で ≈0.69 まで滑らかに追従した)。
+
+    add_phase 直後・精密化前に `initial_cells` と対称の位置で呼ぶ。値は**相対値**で良い — GSAS の
+    相分率和=1 制約 (`_setup_constraints` の `phase_fraction_sum`, 多相のみ登録) が精密化開始時に
+    正規化する。既存の refine フラグ (解放/固定) は変更せず値のみ差し替える。
+
+    :param g2phases: 相追加済みの G2Phase 列
+    :param g2hists: 精密化対象ヒストグラム列 (Scale は HAP = 相×ヒストグラムの組ごとに持つ)
+    :param fractions: 相名→相対分率。未知の相名は無視する
+
+    fail-open (Issue #82 要件): fractions が空、または全値が非有限/ゼロなら何もしない。誤って
+    全相を 0 分率に固定してしまう事故 (精密化が動けなくなる) を避けるための安全側フォールバック。
+    """
+    if not fractions or not g2hists:
+        return
+    finite_vals = [v for v in fractions.values() if math.isfinite(v)]
+    if not finite_vals or not any(v != 0.0 for v in finite_vals):
+        return
+    for ph in g2phases:
+        frac = fractions.get(ph.name)
+        if frac is None or not math.isfinite(frac):
+            continue
+        for hist in g2hists:
+            try:
+                cur = ph.getHAPvalues(hist)["Scale"]
+                refine_flag = cur[1]
+            except (KeyError, IndexError, TypeError):
+                refine_flag = True
+            ph.setHAPvalues({"Scale": [float(frac), refine_flag]}, targethistlist=[hist])
+
+
 def run_auto_rietveld(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
@@ -782,6 +820,7 @@ def run_auto_rietveld(
     keep_gpx: str | None = None,
     initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
     initial_cells: dict[str, tuple[float, ...]] | None = None,
+    initial_fractions: Mapping[str, float] | None = None,
     bond_restraints: dict[str, Sequence[Mapping[str, object]]] | None = None,
     auto_freeze_minor_cells: float | None = None,
 ) -> AutoRietveldResult:
@@ -807,6 +846,10 @@ def run_auto_rietveld(
     :param initial_cells: 相名→(a,b,c[,α,β,γ]) の絶対初期格子 (逐次精密化のウォームスタート用,
         None で CIF 既定)。直前フレームの精密化格子を次フレームの初期値に引き継ぐのに用いる。
         ``initial_cell_scale`` と併用時は本絶対セルを先に適用し、その上に摂動倍率を掛ける。
+    :param initial_fractions: 相名→相対相分率 (逐次精密化の分率ウォームスタート用, Issue #82,
+        None で GSAS 既定 HAP Scale)。直前フレームの精密化相分率を次フレームの HAP Scale 初期値に
+        引き継ぐ。相分率和=1 制約 (多相のみ) が精密化開始時に正規化するため絶対値である必要はない。
+        未知の相名は無視、全値が非有限/ゼロなら fail-open でシーディングを丸ごとスキップする。
     :param auto_freeze_minor_cells: 分率連動の自動セル凍結閾値 (opt-in, Issue #80: #47/#50 の
         自動化)。None (既定) なら従来動作 (非回帰): "cell" 段は ``PhaseSpec.refine_cell`` の
         明示指定のみに従う。float (例 0.2) を与えると、"cell" 段の適用時点で live な
@@ -922,6 +965,10 @@ def run_auto_rietveld(
                 scale = initial_cell_scale.get(ph.name)
                 if scale is not None:
                     _perturb_initial_cell(ph, scale)
+
+        # --- 初期相分率ウォームスタート (逐次精密化, 任意, Issue #82) ---
+        if initial_fractions:
+            _apply_initial_fractions(g2phases, g2hists, initial_fractions)
 
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
         _setup_constraints(gpx, g2phases, g2hists, phases)
