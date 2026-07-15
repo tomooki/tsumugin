@@ -46,11 +46,13 @@ P2 非破壊・ledger 追記。**MCP は共有ポータブル核**で、Codex �
 
 いずれも**返すだけ**。閉ループも判断も ② には出さない (M8 の `agentic_analyze` を出さない方針を踏襲)。
 
-`residual_report` は **`auto_rietveld` の出力に同梱する**のが主経路である。残差配列
-(`residual_two_theta`/`residual_intensity`/`residual_sigma`) は実データで 2392 点 × 3 本 ≈ 150KB あり
-**MCP 境界を跨がせてはならない**が、レポート自体は数個の float + ~6 特徴と小さい。よってサーバ側
-(`rietveld_tools._result_to_dict` → `residual_report_from_result`) で算出して返し、③ は**再精密化なしに**
-J2/J3 を判断できる。単独ツール (明示配列入力) は既に配列を手元に持つ呼び出し側のために残す。
+`residual_report` は **`auto_rietveld` / `sequential_rietveld` の出力に同梱する**のが主経路である。
+残差配列 (`residual_two_theta`/`residual_intensity`/`residual_sigma`) は実データで 2392 点 × 3 本 =
+**JSON text 135 KiB/frame** (247 フレームで **32.6 MiB**) あり **MCP 境界を跨がせてはならない**が、
+レポート自体は数個の float + ~6 特徴で **~1.1 KiB/frame** (247 フレームで 264 KiB) と小さい (§4.5 に実測表)。
+よってサーバ側 (`rietveld_tools._result_to_dict` / `insitu_tools.seq_result_to_dict` →
+`residual_report_from_result`) で算出して返し、③ は**再精密化なしに** J2/J3 を判断できる。
+単独ツール (明示配列入力) は既に配列を手元に持つ呼び出し側のために残す。
 `repair_frames` は再精密化を伴うが、**Rwp 改善時のみ採用**という自己検証可能な規則なので ①/② に置ける
 (= 安全部分集合)。改善しなかったものは `needs_model_revision` として ③ へ上げる。
 
@@ -174,14 +176,14 @@ Python スクリプトだったため、**自分の解析が MCP 経路では再
 
 ## 5. 実装計画
 
-| 段 | 内容 | 依存 |
-|---|---|---|
-| 1 | ② MCP 4 ツール (`mcp/tools.py`, MCP_TOOLS に追加) + 決定論テスト | ① 実装済 |
-| 1b | **到達可能性の修正** (§4.5): Issue #93 (`instrument` spec + `warm_start_fractions` #82 + `auto_freeze_minor_cells` #80 の配線) + `seq_result_to_dict` への `residual_report` 同梱 | 段1 |
-| 2 | ③ `skills/operando-diagnose/SKILL.md` + `commands/operando-diagnose.md` | 段1 |
-| 2b | **既存 `skills/insitu/SKILL.md` の改訂 (§3.5 の R1-R5)** — R1 (危険な受理基準) と R5 (陳腐化) は独立に先行実施可 | R1/R5 は即時、R2/R3 は段1、**R4 は段1b** (§4.5: `auto_freeze_minor_cells`/`warm_start_fractions` は ② 未露出のため、配線前に手順へ書くと嘘になる) |
-| 3 | `AGENT_PLAYBOOK` に移植版を追記 (Codex 等の非 Claude ハーネス用) | 段2 |
-| 4 | plugin.json の description 更新 (operando 診断を明記) | 段2 |
+| 段 | 内容 | 依存 | 状態 |
+|---|---|---|---|
+| 1 | ② MCP 4 ツール (`mcp/tools.py`, MCP_TOOLS に追加) + 決定論テスト | ① 実装済 | **実装済** (MCP_TOOLS 19→23) |
+| 1b | **到達可能性の修正** (§4.5): Issue #93 (`instrument` spec + `warm_start_fractions` #82 + `auto_freeze_minor_cells` #80 の配線) + `seq_result_to_dict` への `residual_report` 同梱 | 段1 | **実装済** |
+| 2 | ③ `skills/operando-diagnose/SKILL.md` + `commands/operando-diagnose.md` | 段1 | **実装済** |
+| 2b | **既存 `skills/insitu/SKILL.md` の改訂 (§3.5 の R1-R5)** — R1 (危険な受理基準) と R5 (陳腐化) は独立に先行実施可 | R1/R5 は即時、R2/R3 は段1、**R4 は段1b** (§4.5: `auto_freeze_minor_cells`/`warm_start_fractions` は ② 未露出のため、配線前に手順へ書くと嘘になる) | **実装済** (恒久ガード `tests/test_m9_plugin.py`) |
+| 3 | `AGENT_PLAYBOOK` に移植版を追記 (Codex 等の非 Claude ハーネス用) | 段2 | **実装済** (`docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md`) |
+| 4 | plugin.json の description 更新 (operando 診断を明記) | 段2 | **実装済** |
 
 ## 6. 受け入れ基準
 
