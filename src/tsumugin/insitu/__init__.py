@@ -31,24 +31,38 @@ from .parametric import (
 )
 from .phaseid import IdentifiedPhase, identify_new_phases, phasespec_to_reference
 from .anchor import AnchorConfig, run_anchored_sequential
+from .repair import (
+    Discontinuity,
+    FrameRepair,
+    RepairReport,
+    classify,
+    detect_discontinuities,
+    repair_isolated,
+)
 
 __all__ = [
     "AnchorConfig",
     "Cell",
+    "Discontinuity",
+    "FrameRepair",
     "FrameRietveldResult",
     "FrameSpec",
     "IdentifiedPhase",
     "ParametricAnalysis",
     "PhaseAppearance",
     "PhaseIdConfig",
+    "RepairReport",
     "SequentialConfig",
     "SequentialRietveldResult",
     "analyze_phase",
+    "classify",
+    "detect_discontinuities",
     "identify_new_phases",
     "lattice_baseline",
     "make_gsas_runner",
     "phasespec_to_reference",
     "pseudo_variable_series",
+    "repair_isolated",
     "run_anchored_sequential",
     "run_sequential_rietveld",
     "transition_from_fractions",
