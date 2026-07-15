@@ -173,6 +173,16 @@ class SequentialConfig:
         ロック)、誤セルを warm-start 前進させると Rwp 高止まり→偽相を誘発する (実測)。prealign が正しい
         セルを返すのは相が支配的なフレームのみ。そこで支配フレームで確立した良いセルで (1) P を含む全
         フレームを再 fit (onset 域の誤セル poison 除去) + (2) 前フレームへ逆伝播して onset を捕捉する。既定 True。
+    :param warm_start_fractions: 直前フレームの精密化相分率 (HAP Scale) も次フレームの初期値に引き継ぐか
+        (Issue #82 再スコープ)。``warm_start`` は格子のみを引き継ぎ、相分率は毎フレーム既定 HAP Scale
+        から再出発するため、実測で 2 相 (cubic+tetragonal) ドーム域の一部フレームが未着手の seed 値
+        (0.50) に張り付き、分率 warm-start ありの系列は同域で滑らかに追従した (0.50→0.69)。**既定 False**
+        (非回帰)。True でも ``warm_start=False`` なら効果なし (格子と同じ warm_start ゲートに従う)。
+        **核形成安全弁**: 相集合が変化した直後の 1 フレームは分率を引き継がない (fresh) — 分率
+        warm-start は 0 分率の新相を核形成できないため、新規追加相にはウォームスタートなしの
+        1 回の精密化機会を与える。runner が 4 番目の引数 (``initial_fractions`` キーワード) を
+        受け付ける場合のみ実際に渡される (``Runner`` 3 引数プロトコルは非破壊; `make_gsas_runner` は
+        対応済み、カスタム/テスト用 3 引数 runner は従来通り無視される)。
     """
 
     warm_start: bool = True
@@ -181,6 +191,7 @@ class SequentialConfig:
     changepoint_window: int = 5
     phase_id: PhaseIdConfig | None = None
     backward_propagation: bool = True
+    warm_start_fractions: bool = False
 
 
 @dataclass(frozen=True)
