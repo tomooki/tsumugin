@@ -718,6 +718,77 @@ def _phase_fraction_map(g2phases, g2hists) -> dict[str, float]:
     return out
 
 
+def _finite_or_zero(x: object) -> float:
+    """非有限 (NaN/inf) を 0.0 に落として float 化する (esd の JSON 安全化)。
+
+    esd の 0.0 は GSAS-II の慣習で「精密化していない/不確かさ不明」を表す
+    (`get_cell_and_esd` も共分散なしの場合 0.0 を返す)。算出不能を同じ表現へ寄せる。
+    """
+    try:
+        v = float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
+
+
+def _cell_esd_map(g2phases) -> dict[str, tuple[float, float, float, float, float, float]]:
+    """相名→格子の標準不確かさ (a,b,c,α,β,γ) を GSAS-II の共分散から抽出する。
+
+    出典 `G2Phase.get_cell_and_esd()` → (cellDict, esdDict)。両者は length_a/b/c・angle_alpha/beta/
+    gamma・volume をキーに持つが、``refined_cells`` は**体積を含まない 6 要素**なので同一レイアウトへ
+    揃える (体積 esd は落とす)。対称拘束された角度や未精密化パラメータは 0.0 になる。
+
+    共分散が無い場合 (未収束/精密化未実行) GSAS 側が全 0.0 の dict へ縮退するため本関数も 0.0 を返す。
+    抽出不能な相はキーごと落とし、**例外は送出しない** (バックエンド失敗は結果へ縮退する不変条件)。
+    """
+    out: dict[str, tuple[float, float, float, float, float, float]] = {}
+    for ph in g2phases:
+        try:
+            _cell, esd = ph.get_cell_and_esd()
+            out[ph.name] = (
+                _finite_or_zero(esd["length_a"]),
+                _finite_or_zero(esd["length_b"]),
+                _finite_or_zero(esd["length_c"]),
+                _finite_or_zero(esd["angle_alpha"]),
+                _finite_or_zero(esd["angle_beta"]),
+                _finite_or_zero(esd["angle_gamma"]),
+            )
+        except Exception:  # noqa: BLE001 — 共分散欠落/キー欠落は当該相をスキップし継続
+            continue
+    return out
+
+
+def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str, float]]:
+    """相名→(重量分率, その esd) を GSAS-II 自身の質量分率計算から抽出する。
+
+    出典 `G2PwdrData.ComputeMassFracs()` → `GSASIIstrMath.calcMassFracs(varyList, covMatrix,
+    Phases, hist, hId)`。正準式は ``wtSum = Σ mass[p]*Scale[p]``・``WgtFrac[j] =
+    mass[j]*Scale[j]/wtSum`` で、esd は Jacobian と共分散行列から伝播される。
+
+    **`phase_fractions` (Scale の和=1 正規化) との違い**: Scale は単位胞の散乱能に対する係数であり、
+    単位胞質量が相間で異なると重量分率と大きく乖離する。さらに mass は精密化された占有率に依存して
+    フレーム毎に変わるため、静的 CIF 質量からの後付け換算では正しくない → GSAS に毎回計算させる。
+
+    先頭ヒストグラム基準 (`phase_fractions` と同じ規約)。単相は calcMassFracs が空を返す仕様
+    (``len(valDict)==1`` で早期 return) なので、自明な ({name: 1.0}, {name: 0.0}) を返す。
+    共分散が無い/取得不能なら空 dict へ縮退し**例外は送出しない**。
+    """
+    if not g2phases or not g2hists:
+        return {}, {}
+    if len(g2phases) == 1:
+        return {g2phases[0].name: 1.0}, {g2phases[0].name: 0.0}
+    try:
+        vals = g2hists[0].ComputeMassFracs()
+    except Exception:  # noqa: BLE001 — 共分散なし (未収束/未精密化) 等は空へ縮退
+        return {}, {}
+    fracs: dict[str, float] = {}
+    esds: dict[str, float] = {}
+    for name, pair in dict(vals).items():
+        fracs[str(name)] = _finite_or_zero(pair[0])
+        esds[str(name)] = _finite_or_zero(pair[1])
+    return fracs, esds
+
+
 def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
     """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。
 
@@ -1104,6 +1175,9 @@ def run_auto_rietveld(
         final_gof = stage_results[-1].gof if stage_results else float("inf")
         final_nobs = _nobs(gpx) if stage_results else 0
         phase_fractions = _phase_fraction_map(g2phases, g2hists)
+        # 出版用の不確かさ: 格子 esd と GSAS 自身が算出した重量分率 (±esd)。共分散が無ければ空へ縮退。
+        cell_esd = _cell_esd_map(g2phases)
+        wt_fracs, wt_frac_esd = _weight_fraction_maps(g2phases, g2hists)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
         out_gpx = ""
@@ -1125,6 +1199,9 @@ def run_auto_rietveld(
         residual_intensity=resid_int,
         residual_sigma=resid_sig,
         hist_profile=hist_profile,
+        cell_esd=cell_esd,
+        phase_weight_fractions=wt_fracs,
+        phase_weight_fraction_esd=wt_frac_esd,
     )
 
 

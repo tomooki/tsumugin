@@ -393,8 +393,11 @@ class AutoRietveldResult:
     # 【観測点数】: 精密化に用いた実観測点数 (全ヒストグラム総和, レンジ制限反映)。chi2/BIC の
     #   dof・n 罰に用いる。末尾・既定 0 で後方互換 (0=未設定; 利用側は代替源へフォールバック) 🔵 Issue #16
     n_obs: int = 0
-    # 【相分率】: 相名→相分率 (先頭ヒストグラムの HAP Scale 和=1 正規化)。単相は {name: 1.0}。
-    #   逐次解析 (M9) が新相の有意性判定・転移推定に用いる。末尾・既定空 dict で後方互換 🔵 M9
+    # 【相分率】: 相名→**HAP Scale を和=1 に正規化した値** (先頭ヒストグラム)。単相は {name: 1.0}。
+    #   ⚠ これは**重量分率ではない**。Scale は単位胞の散乱能に対する比例係数であり、相間で単位胞質量
+    #   が異なると重量分率と大きく乖離する (例 K₂Mn[Fe(CN)₆] の cubic 1103.4 vs tetra 517.8 で ~2.1x)。
+    #   **出版値には `phase_weight_fractions` (GSAS-II calcMassFracs 由来の質量重み分率) を使うこと**。
+    #   本フィールドは逐次解析 (M9) の新相の有意性判定・転移推定という**相対比較**用途に限る 🔵 M9
     phase_fractions: Mapping[str, float] = field(default_factory=dict)
     # 【残差パターン】: 先頭ヒストグラムの (2θ, Yobs−Ycalc, σ)。精密化レンジ内のみ。既存相で説明でき
     #   ない未モデル強度 = 未同定の少数相の寄与。σ は計数統計の標準偏差 (GSAS 重み由来)。逐次解析の
@@ -417,3 +420,20 @@ class AutoRietveldResult:
     asymmetry_metric: tuple[float, ...] = ()
     intensity_bias_metric: tuple[float, ...] = ()
     bg_extrema: tuple[int, ...] = ()
+    # 【出版用の標準不確かさ (esd)】: esd を伴わない精密化値は出版できないため、GSAS-II が共分散行列
+    #   から算出した su を露出する。すべて末尾追加・既定空 dict で後方互換 (旧構築サイトは空に縮退)。
+    #   共分散が得られない場合 (未収束/精密化未実行) も空 dict へ縮退し**例外を送出しない**
+    #   (「バックエンド失敗は例外でなく結果に縮退」の不変条件)。🔵
+    # 相名→格子 esd。`refined_cells` と**同一レイアウト** (a,b,c,α,β,γ の 6 要素; 体積は含まない)。
+    #   出典 `G2Phase.get_cell_and_esd()` (第 2 要素)。固定パラメータ (対称拘束された角度等) は 0.0。
+    cell_esd: Mapping[str, tuple[float, float, float, float, float, float]] = field(
+        default_factory=dict
+    )
+    # 相名→**重量 (質量) 分率**。出典 `G2PwdrData.ComputeMassFracs()` → GSAS-II
+    #   `GSASIIstrMath.calcMassFracs` (wtSum=Σ mass[p]*Scale[p]; WgtFrac[j]=mass[j]*Scale[j]/wtSum)。
+    #   mass は精密化された占有率を反映するため**フレーム毎に GSAS が算出**する (静的 CIF 質量では不可)。
+    #   単相は {name: 1.0} (自明)。定量相分析の**出版値はこちら** (`phase_fractions` ではない)。
+    phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
+    # 相名→重量分率の esd。calcMassFracs が Jacobian + 共分散行列から伝播した値。単相は {name: 0.0}
+    #   (自明な 1.0 に不確かさはない)。分率非精密化/共分散なしなら空 dict。
+    phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
