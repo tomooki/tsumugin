@@ -19,5 +19,11 @@ docs/benchmark/testdata/
 # Local agent instructions
 CLAUDE.md
 
-# Scratchpad run logs (keep repro scripts, ignore their outputs)
-scratchpad/*.log
+# Scratchpad = ローカル解析ワークスペース (非バージョン管理)
+# 実解析は大容量の派生データ (生データ展開・ステージング xye・.gpx) と多数の図/CSV を生むため、
+# ディレクトリごと ignore する。
+# 注1: ignore は**追跡済みファイルには影響しない**。従来方針 (repro スクリプトは残す) で既に
+#      追跡されている scratchpad/*.py は引き続き追跡される。
+# 注2: 今後 repro スクリプトを意図的にバージョン管理したい場合は `git add -f <path>` が必要。
+#      恒久的に残す価値があるものは tests/ か docs/ へ昇格させるのが本筋。
+scratchpad/
