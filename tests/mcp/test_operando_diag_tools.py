@@ -699,3 +699,49 @@ def test_repair_frames_bad_two_theta_limits_returns_error_dict():
     assert out["error_type"] == "ValueError"
     assert "two_theta_limits" in out["error"]
     json.dumps(out, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    ("label", "args", "kwargs"),
+    [
+        ("None 入力", (None, None, None), {}),
+        ("スカラ入力", (5.0, 5.0, 5.0), {}),
+        ("dict 混入", ({"a": 1}, [1.0, 2.0], [1.0, 2.0]), {}),
+        ("n_bins 型不正", ([1.0, 2.0, 3.0], [10.0, 20.0, 30.0], [9.0, 19.0, 29.0]), {"n_bins": "x"}),
+    ],
+)
+def test_residual_report_malformed_input_returns_error_dict(label, args, kwargs):
+    """residual_report も「例外を送出しない」契約を守ること (兄弟 3 ツールと同じ)。
+
+    ``ValueError`` しか捕捉しておらず ``IndexError``/``TypeError`` が MCP 境界を貫いていた。
+    ``server.py:_call_tool`` は ``fn(**kwargs)`` を素通しするため、③ は回復不能なハード失敗を受ける。
+    """
+    out = residual_report(*args, **kwargs)
+    assert "error" in out, f"{label}: 例外が境界を越えた (error dict へ縮退していない)"
+    assert "error_type" in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_residual_report_empty_arrays_is_never_a_perfect_fit():
+    """空配列は rwp=0.0 (完璧なフィット) でなくエラーであること。
+
+    J5 の garbage→"clean" と同型の最悪の失敗形: 「何も渡さなかったので残差ゼロ」は
+    ③ が疑うのをやめる根拠になり得る。
+    """
+    out = residual_report([], [], [])
+    assert "error" in out, f"空配列が完璧なフィットとして返った: {out}"
+    assert out.get("rwp") is None
+
+
+def test_check_phase_set_error_does_not_suggest_an_impossible_chain():
+    """`frames` 欠落エラーの案内が、実際に通る手順のみを示すこと。
+
+    旧メッセージは「repair_frames が返す系列結果を渡せ」と案内していたが、`repair_frames` の
+    戻り値に `frames` キーは無い (repairs/needs_model_revision のみ, architecture.md §2)。
+    案内に従うと**同じエラーを再生産する** — ③ が回復できない自己矛盾した指示だった。
+    """
+    out = check_phase_set({"nope": 1})
+    assert out["error_type"] == "ValueError"
+    msg = out["error"]
+    assert "sequential_rietveld" in msg, "実際に通る入力元を案内していない"
+    assert "渡せません" in msg, "repair_frames の戻り値が渡せないことを案内していない"

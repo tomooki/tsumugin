@@ -164,9 +164,10 @@ def _validate_seq_result(result: Mapping[str, object]) -> None:
         )
     if "frames" not in result:
         raise ValueError(
-            "result に 'frames' キーがありません。sequential_rietveld / repair_frames が返す"
-            "系列結果 dict をそのまま渡してください (空の系列を「相集合は完全」と判定しない"
-            "ため、ここで打ち切ります)。"
+            "result に 'frames' キーがありません。**sequential_rietveld** が返す系列結果 dict を"
+            "そのまま渡してください (空の系列を「相集合は完全」と判定しないため打ち切ります)。"
+            "注: repair_frames の戻り値は系列結果ではない (repairs/needs_model_revision のみ) ので"
+            "渡せません — 修復後の系列が要るなら sequential_rietveld を再実行してください。"
         )
     frames = result["frames"]
     if isinstance(frames, (str, bytes)) or not isinstance(frames, Sequence):
@@ -303,11 +304,19 @@ def residual_report(
     :param ycalc: 計算強度
     :param weight: Rwp の重み。None なら計数統計慣習 ``w=1/max(yobs,1)`` を自動導出
     :returns: ``rwp``/``peak_only_rwp``/``baseline_numerator_fraction``/``peak_numerator_fraction``/
-        ``angular_rwp``/``top_features``。失敗 (長さ不一致等) は ``{"error", "error_type"}``
+        ``angular_rwp``/``top_features``。失敗 (長さ不一致・空配列・型不正等) は
+        ``{"error", "error_type"}``
     """
     from ..autorietveld.residual_report import residual_report as _residual_report
 
     try:
+        # 空配列は「完璧なフィット」(rwp=0.0) を返してしまう。J5 の garbage→"clean" と同型の
+        # 最悪の失敗形 (③ が疑うのをやめる) なのでエラー化する。
+        if len(x) == 0 or len(yobs) == 0 or len(ycalc) == 0:
+            raise ValueError(
+                "残差配列が空です。空配列は rwp=0.0 (完璧なフィット) を意味しないため"
+                "打ち切ります。x/yobs/ycalc に実際の残差を渡してください。"
+            )
         rep = _residual_report(
             x,
             yobs,
@@ -319,8 +328,8 @@ def residual_report(
             n_features=n_features,
             feature_min_separation=feature_min_separation,
         )
-    except ValueError as exc:
-        return {"error": str(exc), "error_type": "ValueError"}
+    except (KeyError, ValueError, TypeError, AttributeError, IndexError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
 
     out = residual_report_to_dict(rep)
     out["reason"] = reason
@@ -337,8 +346,11 @@ def check_phase_set(
     """相集合の完全性 + 相ごとの分率非単調性を返す (計器・① ``insitu.phaseset`` へ委譲)。
 
     J5/J7 (計量の近い相が互いの強度を肩代わりし、Rwp が良好なまま非物理な描像を生む) の検出器。
-    ``sequential_rietveld``/``repair_frames`` が返す系列結果 dict をそのまま渡せる
+    ``sequential_rietveld`` が返す系列結果 dict をそのまま渡せる
     (``insitu_tools._result_from_dict`` と往復可能)。
+
+    **``repair_frames`` の戻り値は渡せない** — あれは系列結果ではなく修復レポート
+    (``repairs``/``needs_model_revision``) であり ``frames`` キーを持たない (architecture.md §2)。
 
     :param result: ``sequential_rietveld`` 等が返す系列結果 (JSON dict)
     :param min_amplitude: ``flag_nonmonotonic_fraction`` の振幅フィルタ (既定 0.1)
