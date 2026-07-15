@@ -41,16 +41,29 @@ def _parasitic_pattern() -> tuple[np.ndarray, np.ndarray]:
     return x, y
 
 
+def _subtracted_pattern() -> tuple[np.ndarray, np.ndarray]:
+    """背景減算済みを模擬: ベースラインはほぼ 0 (Poisson ノイズのみ) で構造なし。"""
+    rng = np.random.default_rng(0)
+    x = np.linspace(10.0, 50.0, 4000)
+    peaks = _gaussian_peaks(x, centers=[15.0, 22.0, 30.0, 38.0], height=120.0, width=0.1)
+    baseline = 2.0 + rng.normal(0.0, 0.3, size=x.size)
+    return x, np.clip(baseline + peaks, 0.1, None)
+
+
+def _raw_pattern() -> tuple[np.ndarray, np.ndarray]:
+    """生データを模擬: 実質的なベースラインがあり低角側で高く高角側で下がる (実背景)。"""
+    rng = np.random.default_rng(1)
+    x = np.linspace(10.0, 50.0, 4000)
+    peaks = _gaussian_peaks(x, centers=[15.0, 22.0, 30.0, 38.0], height=100.0, width=0.1)
+    sloping_background = 60.0 - 0.8 * (x - x.min()) + rng.normal(0.0, 3.0, size=x.size)
+    return x, np.clip(sloping_background + peaks, 1.0, None)
+
+
 # --- detect_background_subtracted -----------------------------------------
 
 
 def test_detect_background_subtracted_true_for_bkg_subtracted_synthetic():
-    rng = np.random.default_rng(0)
-    x = np.linspace(10.0, 50.0, 4000)
-    peaks = _gaussian_peaks(x, centers=[15.0, 22.0, 30.0, 38.0], height=120.0, width=0.1)
-    # 減算済み: ベースラインはほぼ 0 (Poisson ノイズのみ) で構造なし
-    baseline = 2.0 + rng.normal(0.0, 0.3, size=x.size)
-    y = np.clip(baseline + peaks, 0.1, None)
+    x, y = _subtracted_pattern()
     esd = np.sqrt(np.maximum(y, 1.0))
 
     report = detect_background_subtracted(x, y, esd)
@@ -63,17 +76,74 @@ def test_detect_background_subtracted_true_for_bkg_subtracted_synthetic():
 
 
 def test_detect_background_subtracted_false_for_raw_like_synthetic():
-    rng = np.random.default_rng(1)
-    x = np.linspace(10.0, 50.0, 4000)
-    peaks = _gaussian_peaks(x, centers=[15.0, 22.0, 30.0, 38.0], height=100.0, width=0.1)
-    # 生データ: 実質的なベースラインが存在し、低角側で高く高角側で下がる (実背景を模擬)
-    sloping_background = 60.0 - 0.8 * (x - x.min()) + rng.normal(0.0, 3.0, size=x.size)
-    y = np.clip(sloping_background + peaks, 1.0, None)
+    x, y = _raw_pattern()
 
     report = detect_background_subtracted(x, y)
 
     assert report.is_subtracted is False
     assert report.confidence < 0.5
+
+
+def test_detect_background_subtracted_esd_does_not_inflate_confidence_for_raw():
+    """esd=√y は生データでも成立する慣習なので confidence を一切押し上げてはならない。
+
+    生データ合成は h3 (平坦性) のみ発火し 0.32 (=0.8/2.5) となる (この合成の線形背景は
+    変動比 0.229 で閾値 0.4 を下回るため)。旧実装では h4 が加わり 0.32→0.51 で判定が
+    `is_subtracted=True` に反転していた。ここでは esd を与えても confidence が h1/h2/h3
+    のみの値から動かないこと (= h4 が投票に寄与しないこと) を検証する。
+    """
+    x, y = _raw_pattern()
+    esd = np.sqrt(np.maximum(y, 1.0))
+
+    with_esd = detect_background_subtracted(x, y, esd)
+    without_esd = detect_background_subtracted(x, y)
+
+    assert with_esd.is_subtracted is False
+    assert with_esd.confidence == pytest.approx(without_esd.confidence)
+    # esd 起因の誤解を招く根拠が「非減算」レポートに載らないこと
+    assert not any("esd" in r for r in with_esd.reasons)
+
+
+def test_detect_background_subtracted_esd_reason_is_context_only_when_subtracted():
+    """減算済み判定時のみ、esd≈√y は判定に不使用である旨を明記した補助情報として付記される。"""
+    x, y = _subtracted_pattern()
+    esd = np.sqrt(np.maximum(y, 1.0))
+
+    report = detect_background_subtracted(x, y, esd)
+
+    # h1+h2+h3 が全て発火 → confidence は esd 抜きで 1.0
+    assert report.confidence == pytest.approx(1.0)
+    esd_reasons = [r for r in report.reasons if "esd" in r]
+    assert len(esd_reasons) == 1
+    assert "判定には不使用" in esd_reasons[0]
+
+
+def test_detect_background_subtracted_raw_with_esd_is_not_false_positive():
+    """回帰: 生データ + esd=√y が「減算済み」と誤判定されないこと。
+
+    h4 を重み 1.0 で投票に含めていた旧実装では、この生データ合成が h3(0.8)+h4(1.0)=1.8/3.5
+    = 0.514 ≥ 0.5 となり `is_subtracted=True` に誤反転していた (実測)。h4 を投票から外した
+    ことで 0.32 < 0.5 となり正しく False を返す。
+    """
+    x, y = _raw_pattern()
+    esd = np.sqrt(np.maximum(y, 1.0))
+
+    report = detect_background_subtracted(x, y, esd)
+
+    assert report.is_subtracted is False
+    assert report.confidence < 0.5
+
+
+def test_detect_background_subtracted_confidence_identical_with_and_without_esd():
+    """esd の有無で confidence が変わらない (投票に寄与しないことの直接確認)。"""
+    x, y = _subtracted_pattern()
+    esd = np.sqrt(np.maximum(y, 1.0))
+
+    with_esd = detect_background_subtracted(x, y, esd)
+    without_esd = detect_background_subtracted(x, y)
+
+    assert with_esd.confidence == pytest.approx(without_esd.confidence)
+    assert with_esd.is_subtracted is without_esd.is_subtracted
 
 
 def test_detect_background_subtracted_is_frozen():

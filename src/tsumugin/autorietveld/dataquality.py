@@ -70,21 +70,29 @@ def detect_background_subtracted(
     """観測データが背景減算済みかを決定論ヒューリスティックの組み合わせで判定する。
 
     背景減算済みデータは esd=√I 重み付けの下で、減算によりほぼ 0 になったノイズ底を過大に
-    重み付けし Rwp を膨らませる (fit の質でなく重み付けの問題)。以下のヒューリスティックを
-    重み付き投票で組み合わせる (いずれも独立に成立し得るため OR ではなく多数決に近い設計):
+    重み付けし Rwp を膨らませる (fit の質でなく重み付けの問題)。以下の**判別的な**
+    ヒューリスティックのみを重み付き投票で組み合わせる (いずれも独立に成立し得るため OR では
+    なく多数決に近い設計。`total_weight` = 1.0+0.7+0.8 = 2.5):
 
-    1. ピーク間ベースライン (下位 `low_percentile` %点) がピーク最大値に対しほぼ 0
-    2. 最小強度がピーク最大値に対しほぼ 0
-    3. ベースラインが 2θ 全域で平坦・構造なし (実背景は低角側で立ち上がる等の構造を持つ)
-    4. (`esd` 指定時) esd が sqrt(強度) にほぼ一致 (減算後強度からの Poisson esd の疑い;
-       生データでも同傾向を示し得るため補助的な根拠に留める)
+    1. ピーク間ベースライン (下位 `low_percentile` %点) がピーク最大値に対しほぼ 0 (重み 1.0)
+    2. 最小強度がピーク最大値に対しほぼ 0 (重み 0.7)
+    3. ベースラインが 2θ 全域で平坦・構造なし (重み 0.8。実背景は低角側で立ち上がる等の構造を持つ)
+
+    **`esd ≈ √y` は意図的に投票へ含めない**。`esd=√max(I,1)` は `.xye` 等を作成する際の一般的な
+    esd 慣習であり、**生データでも背景減算済みデータでも等しく成立する**ため、減算の有無について
+    判別情報を持たないからである。投票に含めると生データにも偽の confidence が乗り (実測: 生
+    データが confidence 0.29)、さらに「平坦で低い背景を持つ生データ」では h1+h3 と合算して誤って
+    `is_subtracted=True` を導く恐れがある。`esd` は判定に一切用いず、`is_subtracted` が True と
+    判定された場合に限り**補助的な文脈情報**として `reasons` に付記する (`esd_sqrt_rel_tol` は
+    この付記の判定にのみ使う)。
 
     閾値はすべてキーワード引数でチューニング可能。データ点数が 0 または最大強度が 0 以下の
     退化ケースは例外を送出せず `is_subtracted=False, confidence=0.0` を返す (判定不能)。
 
     :param x: 2θ (または TOF) 配列 (昇順を想定)
     :param y: 観測強度
-    :param esd: 観測誤差 (esd) 配列。未指定ならヒューリスティック4は評価しない
+    :param esd: 観測誤差 (esd) 配列。**判定 (confidence) には一切寄与しない**。減算済みと判定
+        された場合に補助的な文脈情報を `reasons` へ付記するためだけに使う
     :returns: `BackgroundSubtractedReport`
     """
     y_arr = np.asarray(y, dtype=float)
@@ -163,28 +171,30 @@ def detect_background_subtracted(
                     f"(変動比={flatness_ratio:.3g} < 閾値{flatness_ratio_threshold})"
                 )
 
-    # ヒューリスティック 4: esd ≈ sqrt(強度) (指定時のみ)
-    if esd is not None:
+    # confidence は判別的な h1/h2/h3 のみから決まる (esd は投票に含めない: 下記参照)。
+    confidence = votes / total_weight if total_weight > 0 else 0.0
+    is_subtracted = confidence >= vote_threshold
+
+    # 補助情報 (投票には不使用): esd ≈ sqrt(強度) か。esd=√max(I,1) は生データ・減算済みデータの
+    # 双方で用いられる一般的な慣習であり減算の有無を判別しないため、confidence には寄与させず、
+    # 減算済みと判定された場合に限り文脈として付記する。
+    if esd is not None and is_subtracted:
         esd_arr = np.asarray(esd, dtype=float)
         if esd_arr.size == y_arr.size and esd_arr.size > 0:
             expected = np.sqrt(np.maximum(y_arr, 1.0))
             valid = expected > 0
             if np.any(valid):
-                weight = 1.0
-                total_weight += weight
                 rel_diff = float(
                     np.median(np.abs(esd_arr[valid] - expected[valid]) / expected[valid])
                 )
                 if rel_diff < esd_sqrt_rel_tol:
-                    votes += weight
                     reasons.append(
+                        "(補助情報; 生データでも成立するため判定には不使用) "
                         "esd が sqrt(強度) にほぼ一致 "
                         f"(中央相対差={rel_diff:.3g} < 閾値{esd_sqrt_rel_tol}); "
-                        "減算後強度からの Poisson esd の疑い"
+                        "減算後強度に対し Poisson esd が与えられている場合、"
+                        "ノイズ底が過大に重み付けされる"
                     )
-
-    confidence = votes / total_weight if total_weight > 0 else 0.0
-    is_subtracted = confidence >= vote_threshold
 
     if is_subtracted:
         recommendation = (
