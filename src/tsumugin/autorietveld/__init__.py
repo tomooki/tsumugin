@@ -27,6 +27,13 @@ from .model import (
     ValidityReport,
 )
 from .backend_adapter import AutoRietveldBackend
+from .dataquality import (
+    BackgroundScanReport,
+    BackgroundSubtractedReport,
+    detect_background_subtracted,
+    scan_background_coeffs,
+    suggest_two_theta_limit,
+)
 from .engine import run_auto_rietveld
 from .lattice import (
     LatticeSolution,
@@ -70,6 +77,8 @@ __all__ = [
     "AbsorberLayer",
     "AutoRietveldBackend",
     "AutoRietveldResult",
+    "BackgroundScanReport",
+    "BackgroundSubtractedReport",
     "CalibrationResult",
     "CellRefinementResult",
     "Geometry",
@@ -95,6 +104,7 @@ __all__ = [
     "check_bond_validity",
     "check_profile_physicality",
     "check_validity",
+    "detect_background_subtracted",
     "extract_instrument_profile",
     "extract_instrument_profile_from_standard",
     "generate_cell_scales",
@@ -108,9 +118,11 @@ __all__ = [
     "refine_cell_robust",
     "run_auto_rietveld",
     "run_multistart_rietveld",
+    "scan_background_coeffs",
     "search_instrument_profile",
     "solve_cell_from_dspacings",
     "standard_reference_cif",
+    "suggest_two_theta_limit",
     "summarize_multistart",
     "transmission_correction",
     "two_theta_of_hkls",
