@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from ..autorietveld.absorption import AbsorberLayer
+
+if TYPE_CHECKING:
+    from ..autorietveld.residual_report import ResidualReport
 
 # 相ごとの格子: (a, b, c, α, β, γ)
 Cell = tuple[float, float, float, float, float, float]
@@ -211,6 +214,16 @@ class FrameRietveldResult:
     :param validity_passed: 物理妥当性ゲート合格か
     :param refine_failed: 精密化が失敗 (inf 変換) したフレームか
     :param n_obs: 精密化に使った観測点数 (bic 算出用, M10)。既定 0 で後方互換 (bic 未使用時は不要)
+    :param residual_report: このフレームの残差分解 (`autorietveld.residual_report` の
+        `ResidualReport`)。None なら残差が復元不能 (runner が残差配列を返していない/スタブ)。
+
+        **配列でなく報告を持つ**理由 (docs/design/operando-diagnosis/architecture.md §4.5):
+        残差配列 (`AutoRietveldResult.residual_two_theta`/`_intensity`/`_sigma`) は実データで
+        2392 点 × 3 本 ≈ 150KB/フレームあり、247 フレーム系列でそのまま保持すると ~37MB になる。
+        一方レポートは数個の float + ~6 特徴と小さい。エンジンがフレーム構築時に
+        `residual_report_from_result` で畳んで持たせることで、系列結果の消費側 (③ の J2/J3:
+        未説明ピーク → 欠落相 / 強度比異常 → 対称性低下) が**再精密化なしに**残差を判断できる。
+        既定 None で後方互換 (既存の 3 引数スタブ runner は残差を持たない)。
     """
 
     frame_index: int
@@ -226,6 +239,7 @@ class FrameRietveldResult:
     validity_passed: bool = True
     refine_failed: bool = False
     n_obs: int = 0
+    residual_report: "ResidualReport | None" = None
 
 
 @dataclass(frozen=True)

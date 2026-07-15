@@ -1,6 +1,6 @@
 {
   "name": "tsumugin",
   "version": "0.1.0",
-  "description": "多仮説・全自動 Rietveld 解析 (③ agentic 判断層)。MCP ツール (auto_rietveld / propose_next_actions / refine_with_revisions) を Claude が反復駆動し、SafeAction は自律・ModelAction (構造改訂/相追加) はユーザー承認を挟んで閉ループ解析する。mem-model-fix skill は MEM (電子/核密度) を読んで構造モデルの誤り (欠損原子/分割サイト/占有率/水素) を修正する (mem_density / propose_structure_revisions / edit_cif)。",
+  "description": "多仮説・全自動 Rietveld 解析 (③ agentic 判断層)。MCP ツール (auto_rietveld / propose_next_actions / refine_with_revisions) を Claude が反復駆動し、SafeAction は自律・ModelAction (構造改訂/相追加) はユーザー承認を挟んで閉ループ解析する。mem-model-fix skill は MEM (電子/核密度) を読んで構造モデルの誤り (欠損原子/分割サイト/占有率/水素) を修正する (mem_density / propose_structure_revisions / edit_cif)。insitu skill は温度/時間系列を逐次精密化し新相を自動同定する (sequential_rietveld / identify_and_add_phase / parametric_fit)。operando-diagnose skill は系列結果を疑い、Rwp が良好なまま物理的に誤っている描像 — 計量の近い相が別相の強度を肩代わりする欠落相の誤り — を検出してモデルを改訂する (assess_data_quality / check_phase_set / repair_frames)。",
   "author": "tsumugin"
 }

@@ -3,8 +3,10 @@
 閉ループの丸ごと (agentic_analyze) は **出さない**。③ (Claude Code) が以下を反復駆動して回す
 (architecture.md §0, §6, 二重反転回避):
 
-- ``auto_rietveld``: spec (JSON) を run_auto_rietveld で実行 → 段階別/最終 Rwp・格子・validity を
-  構造化して返す。spec ハンドルは stateless echo (サーバ状態なし)。
+- ``auto_rietveld``: spec (JSON) を run_auto_rietveld で実行 → 段階別/最終 Rwp・格子・validity・
+  **残差レポート** を構造化して返す。spec ハンドルは stateless echo (サーバ状態なし)。残差配列
+  (実データで 2392 点 × 3 本 ≈ 150KB) は跨がせず、小さなレポートのみサーバ側で算出して同梱する
+  (operando 診断 ②, docs/design/operando-diagnosis/architecture.md §2)。
 - ``propose_next_actions``: 直前結果 + 残差シグネチャ → ActionProposal[] (rationale/priority/**safe**)。
 - ``refine_with_revisions``: spec + ③ が決めた AnalysisAction[] を適用して再実行。
 
@@ -28,6 +30,7 @@ from ..refine_loop.serialization import (
     features_from_dicts,
     proposal_to_dict,
 )
+from .operando_diag_tools import residual_report_to_dict
 
 Runner = Callable[[AnalysisInput], AutoRietveldResult]
 
@@ -46,6 +49,26 @@ def _specs_dict(inp: AnalysisInput) -> dict[str, object]:
         "phases": [p.to_dict() for p in inp.phases],
         "background_coeffs": inp.background_coeffs,
     }
+
+
+def _residual_report_dict(result: AutoRietveldResult) -> dict[str, object] | None:
+    """精密化結果から残差レポートを**サーバ側で**算出し素の型 dict で返す (None = 残差なし)。
+
+    【配列を跨がせない】: ``residual_two_theta``/``residual_intensity``/``residual_sigma`` は実データで
+      2392 点 × 3 本 ≈ 150KB あり、MCP 境界を跨がせるべきでない。一方レポートは数個の float +
+      ~6 特徴と小さいため、ここで算出して同梱する。これにより ③ (MCP しか触れない skill) が
+      残差診断 (J2/J3: 未説明ピーク → 欠落相/対称性低下) を**再精密化なしに**行える
+      (architecture.md §2 の ``residual_report`` 行)。
+    【縮退】: ``residual_report_from_result`` は残差フィールドが空/長さ不一致/全点非有限のとき
+      None を返す (後方互換の既定は空タプル = スタブ runner や旧構築)。その場合は None を返し、
+      呼び出し側が ``"residual_report": None`` として出す (キーは常に存在させスキーマを安定させる)。
+    """
+    from ..autorietveld.residual_report import residual_report_from_result
+
+    rep = residual_report_from_result(result)
+    if rep is None:
+        return None
+    return residual_report_to_dict(rep)
 
 
 def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str, object]:
@@ -76,6 +99,9 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
             "checks": [[name, bool(ok), detail] for name, ok, detail in result.validity.checks],
             "warnings": list(result.validity.warnings),
         },
+        # 【残差レポート同梱 (operando 診断 ②)】: 大きな残差配列は跨がせず、小さなレポートのみを
+        #   サーバ側で算出して返す。残差フィールドが空 (既定/スタブ) なら None (キーは常に存在) 🔵
+        "residual_report": _residual_report_dict(result),
         "gpx_path": result.gpx_path,
     }
 
