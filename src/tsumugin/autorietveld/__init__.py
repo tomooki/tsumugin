@@ -57,6 +57,12 @@ from .cell_refine import (
     refine_structure_cell,
 )
 from .recipe import build_recipe
+from .residual_report import (
+    ResidualFeature,
+    ResidualReport,
+    residual_report,
+    residual_report_from_result,
+)
 from .resolution import (
     NONNEG_PROFILE_BOUNDS,
     STANDARD_CELL_A,
@@ -88,6 +94,8 @@ __all__ = [
     "MultistartStart",
     "NONNEG_PROFILE_BOUNDS",
     "PhaseSpec",
+    "ResidualFeature",
+    "ResidualReport",
     "STANDARD_CELL_A",
     "Radiation",
     "RefinementStage",
@@ -116,6 +124,8 @@ __all__ = [
     "refine_cell_from_indexed_peaks",
     "refine_structure_cell",
     "refine_cell_robust",
+    "residual_report",
+    "residual_report_from_result",
     "run_auto_rietveld",
     "run_multistart_rietveld",
     "scan_background_coeffs",
