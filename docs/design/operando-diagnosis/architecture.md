@@ -40,11 +40,17 @@ P2 非破壊・ledger 追記。**MCP は共有ポータブル核**で、Codex �
 | ツール | ① の実体 | 入力 | 出力 (構造化) |
 |---|---|---|---|
 | `assess_data_quality` | `dataquality` | 観測ファイル (+esd) | `is_subtracted`/`confidence`/`reasons`/`recommendation`, `suggested_two_theta_limit` (要 `excluded_regions`) |
-| `residual_report` | `residual_report` | 精密化結果 or (x,yobs,ycalc,w) | `rwp`/`peak_only_rwp`/`baseline_numerator_fraction`/`angular_rwp`/`top_features` (2θ+符号) |
+| `residual_report` | `residual_report` | **`auto_rietveld` の出力に `residual_report` を同梱** (配列は MCP を跨がせない) + 明示配列入力 (x,yobs,ycalc,w) も可 | `rwp`/`peak_only_rwp`/`baseline_numerator_fraction`/`angular_rwp`/`top_features` (2θ+符号) |
 | `check_phase_set` | `insitu.phaseset` | 系列結果 | `is_complete`/`union`/`frames_with_missing`, 相ごとの `turning_points`/`flagged` |
 | `repair_frames` | `insitu.repair` | 系列結果 + frames + phases | `repairs` (採用のみ)/`needs_model_revision`/`systematic_hint` |
 
 いずれも**返すだけ**。閉ループも判断も ② には出さない (M8 の `agentic_analyze` を出さない方針を踏襲)。
+
+`residual_report` は **`auto_rietveld` の出力に同梱する**のが主経路である。残差配列
+(`residual_two_theta`/`residual_intensity`/`residual_sigma`) は実データで 2392 点 × 3 本 ≈ 150KB あり
+**MCP 境界を跨がせてはならない**が、レポート自体は数個の float + ~6 特徴と小さい。よってサーバ側
+(`rietveld_tools._result_to_dict` → `residual_report_from_result`) で算出して返し、③ は**再精密化なしに**
+J2/J3 を判断できる。単独ツール (明示配列入力) は既に配列を手元に持つ呼び出し側のために残す。
 `repair_frames` は再精密化を伴うが、**Rwp 改善時のみ採用**という自己検証可能な規則なので ①/② に置ける
 (= 安全部分集合)。改善しなかったものは `needs_model_revision` として ③ へ上げる。
 

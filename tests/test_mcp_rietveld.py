@@ -119,6 +119,72 @@ def test_auto_rietveld_json_safe_when_cells_non_finite():
     assert out["refined_cells"]["ph"][0] is None and out["refined_cells"]["ph"][2] is None
 
 
+def _residual_runner(inp: AnalysisInput) -> AutoRietveldResult:
+    """残差フィールドを詰めた runner (実 GSAS runner が返す形)。
+
+    ``residual_report_from_result`` は yobs≈sigma², ycalc=yobs-residual で復元する。ここでは
+    ベースライン (obs≈100) に 1 本だけ未説明ピーク (calc 不足 = 残差 +) を置く。
+    """
+    n = 200
+    x = [5.0 + 0.25 * i for i in range(n)]
+    yobs = [100.0] * n
+    yobs[50] = 5000.0
+    resid = [0.0] * n
+    resid[50] = 4900.0  # obs-calc > 0 = 未説明強度
+    sigma = [v**0.5 for v in yobs]  # 計数統計慣習 (yobs ≈ sigma²)
+    return AutoRietveldResult(
+        stage_results=(StageResult(label="S0", rwp=12.0, gof=1.1, n_params=8, converged=True),),
+        final_rwp=12.0,
+        final_gof=1.1,
+        refined_cells={"ph": (9.37, 9.37, 6.89, 90.0, 90.0, 120.0)},
+        validity=ValidityReport(passed=True),
+        residual_two_theta=tuple(x),
+        residual_intensity=tuple(resid),
+        residual_sigma=tuple(sigma),
+    )
+
+
+def test_auto_rietveld_embeds_residual_report_when_residuals_present():
+    # 【operando 診断 ②】: 残差配列は跨がせず、レポートのみをサーバ側で算出して同梱する。
+    #   ③ (MCP しか触れない skill) が再精密化なしに J2 (未説明ピーク→欠落相) を判断できる。
+    out = auto_rietveld([_H], [_P], runner=_residual_runner)
+    json.dumps(out, allow_nan=False)
+
+    rep = out["residual_report"]
+    assert rep is not None
+    assert set(rep) == {
+        "rwp",
+        "peak_only_rwp",
+        "baseline_numerator_fraction",
+        "peak_numerator_fraction",
+        "angular_rwp",
+        "top_features",
+    }
+    assert rep["rwp"] > 0.0
+    # 最大の未説明特徴は仕込んだピーク位置 (5.0 + 0.25*50 = 17.5°) で符号は正 (calc 不足)
+    top = rep["top_features"][0]
+    assert top["two_theta"] == 17.5
+    assert top["residual"] > 0.0
+    # 大きな残差配列そのものは境界を跨がない (150KB 回避)
+    assert "residual_two_theta" not in out
+    assert "residual_intensity" not in out
+
+
+def test_auto_rietveld_residual_report_is_none_when_residuals_empty():
+    # 既定 (空タプル) / スタブ runner では復元不能 → None。例外を送出せずキーは常に存在する。
+    out = auto_rietveld([_H], [_P], background_coeffs=6, runner=_stub_runner)
+    assert out["residual_report"] is None
+    json.dumps(out, allow_nan=False)
+
+
+def test_refine_with_revisions_also_embeds_residual_report():
+    # アクチュエータ経路 (_result_to_dict 共有) でも同梱される。
+    actions = [{"type": "AdjustBackground", "n_coeffs": 9}]
+    out = refine_with_revisions([_H], [_P], actions, runner=_residual_runner)
+    assert out["residual_report"] is not None
+    json.dumps(out, allow_nan=False)
+
+
 def test_refine_with_model_action_setlimits():
     # ModelAction (SetLimits) も refine_with_revisions で適用できる (③ が判断した改訂)
     actions = [{"type": "SetLimits", "hist_id": 0, "low": 2.5, "high": 32.0}]
