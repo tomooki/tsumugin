@@ -23,6 +23,7 @@ from ..autorietveld.model import AutoRietveldResult, PhaseSpec
 
 if TYPE_CHECKING:
     from ..autorietveld.model import RefinementStage
+    from ..autorietveld.residual_report import ResidualReport
 from ..reference.model import ReferencePhase
 from ..sequential.changepoint import ChangepointConfig, detect_changepoint
 from ..store.ledger import Ledger
@@ -57,6 +58,21 @@ def _cell6(cell: Sequence[float]) -> Cell:
         float(vals[0]), float(vals[1]), float(vals[2]),
         float(vals[3]), float(vals[4]), float(vals[5]),
     )
+
+
+def _residual_report_of(result: AutoRietveldResult) -> "ResidualReport | None":
+    """AutoRietveldResult の残差配列をフレーム毎の `ResidualReport` に畳む (None = 復元不能)。
+
+    【配列でなく報告を持つ】: 残差配列は 2392 点 × 3 本 ≈ 150KB/フレームで、247 フレーム系列では
+      ~37MB になる。報告は数個の float + ~6 特徴と小さい。ここで畳んでおくことで、系列結果の
+      消費側 (MCP `seq_result_to_dict` → ③) が**再精密化なしに** J2/J3 (未説明ピーク → 欠落相 /
+      強度比異常 → 対称性低下) を判断できる (architecture.md §4.5 到達可能性 #3)。
+    【縮退】: `residual_report_from_result` は残差フィールドが空/長さ不一致/全点非有限のとき
+      None を返す (後方互換の既定は空タプル = スタブ runner や旧構築)。
+    """
+    from ..autorietveld.residual_report import residual_report_from_result
+
+    return residual_report_from_result(result)
 
 
 def _fractions_of(result: AutoRietveldResult, phase_names: Sequence[str]) -> dict[str, float]:
@@ -257,6 +273,9 @@ def run_sequential_rietveld(
                 changepoint_reasons=signal.reasons,
                 validity_passed=result.validity.passed,
                 refine_failed=refine_failed,
+                # 【残差レポート同梱】: 新相追加トライアル後の最終 `result` から畳む (採用時は
+                #   追加後モデルの残差 = 実際に報告する fit と一致させる) 🔵 §4.5
+                residual_report=_residual_report_of(result),
             )
         )
         ledger.append(
@@ -328,6 +347,9 @@ def _rebuild_frame(res, fr, names) -> "FrameRietveldResult":
         phase_fractions=_fractions_of(res, tuple(names)), phase_names=tuple(names),
         changepoint=fr.changepoint, changepoint_reasons=fr.changepoint_reasons,
         validity_passed=res.validity.passed, refine_failed=False,
+        # 再精密化結果の残差で**再計算**する (元 fr の古い報告を持ち越すと、③ が差し替え済みの
+        # fit に対して陳腐化した未説明ピークを読むことになる)。
+        residual_report=_residual_report_of(res),
     )
 
 
@@ -573,6 +595,7 @@ def make_gsas_runner(
     max_cyc: int = 12,
     background_coeffs: int = 6,
     recipe: "Sequence[RefinementStage] | None" = None,
+    auto_freeze_minor_cells: float | None = None,
 ) -> Runner:
     """放射源/ジオメトリ/装置を指定して FrameSpec→run_auto_rietveld の runner を作る (実運用の推奨 API)。
 
@@ -591,6 +614,11 @@ def make_gsas_runner(
     ``SequentialConfig.warm_start_fractions`` の分率ウォームスタート)。呼び出し側 (`run_sequential_rietveld`)
     がシグネチャ検査でこのキーワードの有無を検出するため、``Runner`` の 3 引数プロトコル自体は
     変わらない (未指定時は従来通り 3 引数呼び出しのみで動作する)。
+
+    ``auto_freeze_minor_cells`` は ``run_auto_rietveld`` へそのまま転送する分率連動の自動セル凍結
+    **閾値** (Issue #80; bool ではなく float — 例 0.2 なら "cell" 段適用時点の相分率が 0.2 未満の相の
+    セル解放をスキップ)。None (既定) で無効 = 従来動作 (非回帰)。少数相のセル解放で発散する多相
+    operando 系列 (#47/#50) の自動化で、M9 系列経路から到達できる唯一の口 (Issue #93)。
     """
     import os
     import tempfile
@@ -633,6 +661,7 @@ def make_gsas_runner(
                 [hist], list(phases), recipe=recipe_, max_cyc=max_cyc,
                 initial_cells=dict(initial_cells) if initial_cells else None,
                 initial_fractions=dict(initial_fractions) if initial_fractions else None,
+                auto_freeze_minor_cells=auto_freeze_minor_cells,
             )
 
     return runner

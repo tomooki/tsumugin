@@ -8,7 +8,9 @@
 - ``check_phase_set``: 系列結果 (JSON) → 相集合完全性 + 相ごとの非単調性フラグ (計器)。
 - ``repair_frames``: 系列結果 + frames + phases → 不連続検出 + 近傍 warm-start 修復 (Rwp 改善時のみ
   採用の自己検証可能な規則なので①/②に置ける安全部分集合)。改善しなかったものは
-  ``needs_model_revision`` として③へ上げる。
+  ``needs_model_revision`` として③へ上げる。入力の整合性 (フレーム数一致・相集合の完全性) は
+  **精密化前に**検証し、破れていれば error dict を返す (相を黙って落とした fit を「修復成功」と
+  報告しない = J5 の失敗様態を隠さない)。試行記録は ``ledger_entries`` で返す (P2 非破壊)。
 
 **SDK 非依存**: 素の型 dict のみを返す (json.dumps allow_nan=False 安全, 浮動小数は
 ``finite_or_none``)。GSAS は ``repair_frames`` の既定 runner でのみ遅延 import。runner は注入可能
@@ -27,10 +29,11 @@ import numpy as np
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ..insitu.model import FrameSpec
-from .insitu_tools import _result_from_dict
+from .insitu_tools import _parse_two_theta_limits, _result_from_dict, _runner_from_instrument
 
 if TYPE_CHECKING:
     from ..autorietveld.residual_report import ResidualReport
+    from ..store.ledger import LedgerEntry
 
 __all__ = [
     "OPERANDO_DIAG_TOOLS",
@@ -69,23 +72,92 @@ def residual_report_to_dict(rep: "ResidualReport") -> dict[str, object]:
     }
 
 
+def _ledger_entry_to_dict(entry: "LedgerEntry") -> dict[str, object]:
+    """``LedgerEntry`` を素の型 dict へ平坦化 (json.dumps allow_nan=False 安全)。
+
+    ``repair_isolated`` が追記する ``insitu_repair_adopted`` / ``_rejected`` / ``_no_neighbour``
+    の payload はスカラ (frame/rwp*/source) と文字列列 (reasons) のみ。float は非有限を None へ
+    落とす (`finite_or_none`) ことで allow_nan=False を担保する。
+    """
+    out: dict[str, object] = {"index": entry.index, "kind": entry.kind}
+    for key, value in entry.payload.items():
+        if isinstance(value, float):
+            out[key] = finite_or_none(value)
+        elif isinstance(value, (list, tuple)):
+            out[key] = [str(v) for v in value]
+        else:
+            out[key] = value
+    return out
+
+
+def _parse_excluded_regions(
+    excluded_regions: Sequence[Sequence[float]] | None,
+) -> tuple[tuple[float, float], ...] | None:
+    """``excluded_regions`` を検証して ``((lo, hi), ...)`` へ正規化する。
+
+    呼び出し側は LLM が組んだ JSON なので、3 要素の区間・スカラ・逆順 (lo >= hi) といった
+    取り違えが起きやすい。素朴に ``for lo, hi in ...`` と展開すると ValueError が MCP 境界を
+    貫くため、問題の区間を名指しする ``ValueError`` に正規化して呼び出し側の try で捕らえさせる。
+
+    :raises ValueError: 区間が 2 要素の数値ペアでない、または ``lo >= hi`` のとき
+    """
+    if not excluded_regions:
+        return None
+    out: list[tuple[float, float]] = []
+    for i, region in enumerate(excluded_regions):
+        if isinstance(region, (str, bytes)):
+            raise ValueError(
+                f"excluded_regions[{i}] が区間になっていません: {region!r} "
+                "([lo, hi] の 2 要素数値ペアの列で渡してください)"
+            )
+        try:
+            values = list(region)
+        except TypeError as exc:  # スカラ (非反復) を区間として渡した
+            raise ValueError(
+                f"excluded_regions[{i}] が区間になっていません: {region!r} "
+                "([lo, hi] の 2 要素数値ペアの列で渡してください)"
+            ) from exc
+        if len(values) != 2:
+            raise ValueError(
+                f"excluded_regions[{i}] は 2 要素 [lo, hi] である必要があります: "
+                f"{region!r} (実際 {len(values)} 要素)"
+            )
+        try:
+            lo, hi = float(values[0]), float(values[1])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"excluded_regions[{i}] の要素が数値ではありません: {region!r}"
+            ) from exc
+        if not (lo < hi):
+            raise ValueError(
+                f"excluded_regions[{i}] は lo < hi である必要があります: {region!r}"
+            )
+        out.append((lo, hi))
+    return tuple(out)
+
+
 def _load_pattern_with_esd(
     path: str, data_format: str | None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """観測ファイルを (two_theta, intensity, esd|None) へ読む。
 
-    ``reference.io`` の各ローダーは esd (3 列目) を破棄するため、既定の ``XY`` (2〜3 列 ascii)
-    は numpy で直接読み esd を保持する。他形式 (XRDML/FXYE/GSAS 等) は ``reference.io.load_pattern``
-    に委譲し esd は None (未対応形式では esd を判別的に使わない; ``detect_background_subtracted``
-    も esd を補助情報としてのみ使う設計と整合)。
+    ``reference.io`` の各ローダーは esd (3 列目) を破棄する (``XYE`` も ``load_xy`` へ写像され
+    3 列目が捨てられる) ため、**3 列 ascii の ``XY``/``XYE`` は numpy で直接読み esd を保持する**。
+    ``XYE`` は esd を実際に持つ唯一の形式であり、J1 (背景減算済みデータの esd=√I 過大重み) の
+    主要な証拠がまさに esd ケースなので、ここで落としてはならない。
+
+    他形式 (XRDML/FXYE/GSAS 等) は ``reference.io.load_pattern`` に委譲し esd は None
+    (未対応形式では esd を判別的に使わない; ``detect_background_subtracted`` も esd を
+    補助情報としてのみ使う設計と整合)。
     """
     fmt = (data_format or "XY").upper()
-    if fmt == "XY":
-        arr = np.loadtxt(path, comments="#")
-        if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
+    if fmt in {"XY", "XYE"}:
+        # 【ndmin=2】: 1 次元結果を reshape(1, -1) すると **1 行ファイルと 1 列ファイルを区別できず**、
+        #   強度だけの 1 列ファイル (N,) が (1, N) の「1 点パターン」に化けて 2 列ガードをすり抜ける。
+        #   ndmin=2 は元の行/列構造を保つ (1 列 N 行 → (N, 1) / 1 行 3 列 → (1, 3)) ので両者を弁別できる。
+        arr = np.loadtxt(path, comments="#", ndmin=2)
         if arr.shape[1] < 2:
-            raise ValueError(f"XY データは2列以上必要です: {path!r} (実際 {arr.shape[1]} 列)")
+            raise ValueError(f"{fmt} データは2列以上必要です: {path!r} (実際 {arr.shape[1]} 列)")
         x = arr[:, 0].astype(float)
         y = arr[:, 1].astype(float)
         esd = arr[:, 2].astype(float) if arr.shape[1] >= 3 else None
@@ -110,26 +182,29 @@ def assess_data_quality(
     という助言のみで、ここでは何も変更しない (提案≠適用)。
 
     :param path: 観測データファイルパス
-    :param data_format: ``FrameSpec.data_format`` と同語彙 ("XY"/"XRDML"/"FXYE"/"GSAS"/"XYE"、
-        既定 None は "XY" 扱い)。"XY" のみ esd (3 列目) を保持する
+    :param data_format: 形式名の**語彙**は ``reference.io.load_pattern`` /
+        ``FrameSpec.data_format`` と共通 ("XY"/"XYE"/"XRDML"/"FXYE"/"GSAS"/"INT"/"IGOR")。
+        **既定値は共通でない**: ``FrameSpec.data_format`` の既定は "XRDML" だが、本ツールは
+        単発のファイル診断であり、None は "XY" (プレーン ascii) 扱いとする。
+        3 列 ascii の "XY"/"XYE" のみ esd (3 列目) を保持する (他形式は esd を破棄)
     :param excluded_regions: 寄生ピーク等を 2θ 上限提案から除外する区間 ``[lo, hi]`` の列
-        (渡さないと寄生ピークまで信号終端として拾われる, architecture.md §3 手順1 の注意)
+        (渡さないと寄生ピークまで信号終端として拾われる, architecture.md §3 手順1 の注意)。
+        各区間は ``lo < hi`` の 2 要素数値ペアであること (破れば error dict)
     :returns: ``is_subtracted``/``confidence``/``reasons``/``recommendation``/``baseline_level``/
-        ``peak_max``/``suggested_two_theta_limit``。読み込み失敗は ``{"error", "error_type"}``
+        ``peak_max``/``suggested_two_theta_limit``。読み込み失敗・``excluded_regions`` 不正は
+        ``{"error", "error_type"}``
     """
     from ..autorietveld.dataquality import detect_background_subtracted, suggest_two_theta_limit
 
+    # 【入力検証を try 内へ】: 区間の展開 (旧 `for lo, hi in ...`) は try の外にあり、3 要素区間や
+    #   スカラで ValueError が MCP 境界を貫いていた (module docstring の「例外を送出しない」違反)。
     try:
+        regions = _parse_excluded_regions(excluded_regions)
         x, y, esd = _load_pattern_with_esd(path, data_format)
-    except (OSError, ValueError, IndexError) as exc:
+    except (OSError, ValueError, TypeError, IndexError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     report = detect_background_subtracted(x, y, esd)
-    regions = (
-        tuple((float(lo), float(hi)) for lo, hi in excluded_regions)
-        if excluded_regions
-        else None
-    )
     limit = suggest_two_theta_limit(x, y, excluded_regions=regions)
 
     return {
@@ -213,11 +288,19 @@ def check_phase_set(
     :param min_amplitude: ``flag_nonmonotonic_fraction`` の振幅フィルタ (既定 0.1)
     :param max_turning_points: 同上の turning point 上限 (既定 2; 単一ドームまでは正常)
     :returns: ``is_complete``/``union``/``frames_with_missing``/``recommendation``/``phases``
-        (和集合の全相について ``{phase, turning_points, flagged, reason}``)
+        (和集合の全相について ``{phase, turning_points, flagged, reason}``)。
+        系列結果の復元失敗は ``{"error", "error_type"}`` (``repair_frames`` と同じ縮退契約)
     """
     from ..insitu.phaseset import flag_nonmonotonic_fraction, suggest_phase_set_completion
 
-    seq = _result_from_dict(result)
+    # 【縮退契約の統一】: 本モジュールの 4 ツールは例外を送出せず error dict へ縮退する
+    #   (module docstring)。`_result_from_dict` は壊れた系列結果で KeyError/ValueError/TypeError を
+    #   投げるため、`repair_frames` と同じ形で捕らえる。
+    try:
+        seq = _result_from_dict(result)
+    except (KeyError, ValueError, TypeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
     completion = suggest_phase_set_completion(seq)
 
     phases = []
@@ -256,6 +339,8 @@ def repair_frames(
     frac_delta: float = 0.15,
     rwp_tol: float = 0.1,
     min_block: int = 2,
+    two_theta_limits: Sequence[float] | None = None,
+    instrument: Mapping[str, object] | None = None,
     runner: Callable | None = None,
     reason: str = "",
 ) -> dict:
@@ -266,16 +351,33 @@ def repair_frames(
     ③ (モデル改訂の判断) へ上げる。
 
     :param result: ``sequential_rietveld`` 等が返す系列結果 (JSON dict)
-    :param frames: ``result["frames"]`` と同順・同数の ``FrameSpec.to_dict()`` 列
-    :param phases: 系列で使われている全相の ``PhaseSpec.to_dict()`` 列 (相名で引く辞書のソース)
-    :param runner: ``(frame, phases, initial_cells) -> AutoRietveldResult``。None なら
-        GSAS 駆動の既定 runner (``insitu.engine`` と同じ既定, ``sequential_rietveld`` に倣う)
-    :returns: ``repairs``/``needs_model_revision``/``systematic_hint``/``discontinuities``。
-        失敗 (frames と result のフレーム数不一致等) は ``{"error", "error_type"}``
+    :param frames: ``result["frames"]`` と同順・同数の ``FrameSpec.to_dict()`` 列。**数が違えば
+        精密化せず error dict を返す** (``repair_isolated`` は ``frames[i]`` を位置で引くため)
+    :param phases: 系列で使われている全相の ``PhaseSpec.to_dict()`` 列 (相名で引く辞書のソース)。
+        **系列に現れる相を 1 つでも欠くと精密化せず error dict を返す** (下記 相集合ガード)
+    :param two_theta_limits: 修復試行の精密化レンジ ``[lo, hi]``。**系列を精密化したのと同じレンジを
+        渡すこと**: 採用規則 ``rwp_after < rwp_before - rwp_tol`` は系列側の Rwp と比較するため、
+        レンジが違うと**別のデータ域どうしの Rwp を比べる**ことになり採否の判断が無効になる
+        (実測: 2θ≤18° で回した系列を全域で修復試行すると比較が成立しない)。``instrument`` 指定時は
+        その runner へ、未指定時は既定 runner の ``SequentialConfig`` へ渡す (どちらの経路でも効く)
+    :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
+        ならこの spec からサーバ側で ``make_gsas_runner`` を組み立てる。キー/既定は
+        ``sequential_rietveld`` の同名引数と**完全に同一** (同じ ``_runner_from_instrument`` を
+        共有する): ``path``/``paths``/``radiation``/``geometry``/``background_coeffs``/``max_cyc``/
+        ``auto_freeze_minor_cells`` (float 閾値; bool は拒否)。指定なし (None) は従来通り
+        実験室 X 線 Bragg-Brentano・背景 6 項・data_path 隣接 ``.instprm`` 規約の既定 runner
+        — **放射光データはこの spec 無しでは修復できない**
+    :param runner: **注入/テスト用**の Python callable
+        ``(frame, phases, initial_cells) -> AutoRietveldResult``。JSON 境界越しには渡せない。
+        明示指定時は ``instrument`` より優先する (``sequential_rietveld`` と同じ優先順)
+    :returns: ``repairs``/``needs_model_revision``/``systematic_hint``/``discontinuities``/
+        ``ledger_entries``。失敗 (フレーム数不一致・相集合の欠落・spec 復元失敗・instrument spec
+        不正・レンジ不正) は ``{"error", "error_type"}`` (この場合 ``repairs`` 等のキーは返らない)
     """
     from ..insitu.engine import _default_gsas_runner
     from ..insitu.model import SequentialConfig
     from ..insitu.repair import detect_discontinuities, repair_isolated
+    from ..store.ledger import Ledger
 
     try:
         seq = _result_from_dict(result)
@@ -284,10 +386,62 @@ def repair_frames(
     except (KeyError, ValueError, TypeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
 
+    # 【フレーム数ガード】: repair_isolated は frames[i] を **位置**で引く (i は result 側の
+    #   フレーム番号)。数が違うと IndexError で落ちるか、最悪の場合 **別フレームのデータで**
+    #   精密化してしまう。docstring が約束する error dict を明示的に返す (捕まえた IndexError より
+    #   原因が分かるメッセージを出せる)。
+    if len(frame_specs) != len(seq.frames):
+        return {
+            "error": (
+                f"frames と result のフレーム数が一致しません: frames={len(frame_specs)}, "
+                f"result['frames']={len(seq.frames)}。同順・同数で渡してください。"
+            ),
+            "error_type": "ValueError",
+        }
+
+    # 【相集合ガード】: repair_isolated は `phases` に無い相名を **黙って捨てて** 精密化する
+    #   (`if nm in name_to_spec`)。相が 1 つ落ちた状態の fit は Rwp が下がることすらあり
+    #   (計量の近い相が互いの強度を肩代わりする = J5 の失敗様態)、「相の削除」が「修復成功」として
+    #   報告されてしまう。系列途中で自動追加された相は `appearances` に phase_name/structure_path
+    #   しか持たず、呼び出し側が `phases` に入れ忘れやすい。よって**精密化前に**完全性を検証する。
+    known = {p.phase_name for p in phase_specs}
+    used = set(seq.phase_names) | {nm for fr in seq.frames for nm in fr.phase_names}
+    missing = sorted(used - known)
+    if missing:
+        return {
+            "error": (
+                f"系列で使われている相が phases に含まれていません: {missing}。"
+                "欠けたまま精密化すると相が黙って削除され、Rwp が改善しても物理的に誤った描像に"
+                "なります (相の削除が修復成功として報告される)。系列途中で自動追加された相 "
+                "(result['appearances']) の PhaseSpec も含めて渡してください。"
+            ),
+            "error_type": "ValueError",
+        }
+
+    # 【実運用設定への到達可能性 (architecture.md §4.5 #2)】: 旧実装は `_default_gsas_runner(
+    #   SequentialConfig())` 決め打ちで、③ (JSON しか送れない) からは放射源も背景項数もレンジも
+    #   届かなかった。結果 (a) 2θ≤18° で回した系列を**全域**で修復試行し、採用規則が異なるデータ域の
+    #   Rwp を比較する無効判定になる (b) 放射光データは修復不能。優先順は sequential_rietveld と同一:
+    #   明示 runner > instrument spec > 既定 (レンジは既定 runner にも配線する)。
+    try:
+        limits = _parse_two_theta_limits(two_theta_limits)
+        if runner is not None:
+            run = runner
+        elif instrument is not None:
+            run = _runner_from_instrument(instrument, frame_specs, limits)
+        else:
+            run = _default_gsas_runner(SequentialConfig(two_theta_limits=limits))
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
     discontinuities = detect_discontinuities(
         seq, rwp_abs=rwp_abs, rwp_delta=rwp_delta, frac_delta=frac_delta
     )
-    run = runner or _default_gsas_runner(SequentialConfig())
+
+    # 【P2 非破壊・監査可能性】: repair_isolated は採用/棄却/近傍なしを ledger へ追記する
+    #   (architecture.md §1「P2 非破壊・ledger 追記」)。実 GSAS 精密化が走る以上、その試行記録は
+    #   MCP 越しにも辿れなければならない。追記専用 Ledger を用意し、素の型で返す。
+    ledger = Ledger()
 
     report = repair_isolated(
         frame_specs,
@@ -297,9 +451,11 @@ def repair_frames(
         discontinuities,
         rwp_tol=rwp_tol,
         min_block=min_block,
+        ledger=ledger,
     )
 
     return {
+        "ledger_entries": [_ledger_entry_to_dict(e) for e in ledger.entries],
         "repairs": [
             {
                 "frame": r.frame_index,

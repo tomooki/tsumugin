@@ -774,3 +774,117 @@ def test_make_gsas_runner_max_cyc_and_initial_cells_passthrough(monkeypatch):
 
     assert captured["max_cyc"] == 5
     assert captured["initial_cells"] == initial_cells
+
+
+# --- Issue #93: make_gsas_runner → run_auto_rietveld の auto_freeze_minor_cells 配線 (#80) ------
+
+
+def test_make_gsas_runner_auto_freeze_minor_cells_passthrough(monkeypatch):
+    """auto_freeze_minor_cells= を注入すると run_auto_rietveld へそのまま転送される (Issue #80/#93)。"""
+    from tsumugin.autorietveld.model import Geometry, Radiation
+    from tsumugin.insitu.engine import make_gsas_runner
+
+    captured: dict[str, object] = {}
+
+    def fake_run(histograms, phases, *, auto_freeze_minor_cells=None, **kwargs):
+        captured["auto_freeze_minor_cells"] = auto_freeze_minor_cells
+        return object()
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_run)
+
+    frame = FrameSpec(data_path="dummy.xye", data_format="XYE", axis_value=300.0)
+    phase = PhaseSpec(structure_path="dummy.cif", phase_name="alpha")
+
+    runner = make_gsas_runner(
+        instrument_path="dummy.instprm",
+        radiation=Radiation.XRAY_SYNCHROTRON,
+        geometry=Geometry.DEBYE_SCHERRER,
+        auto_freeze_minor_cells=0.2,
+    )
+    runner(frame, [phase], None)
+
+    assert captured["auto_freeze_minor_cells"] == pytest.approx(0.2)
+
+
+def test_make_gsas_runner_auto_freeze_minor_cells_default_none(monkeypatch):
+    """未指定なら None が渡る (= run_auto_rietveld の従来動作, 非回帰)。"""
+    from tsumugin.autorietveld.model import Geometry, Radiation
+    from tsumugin.insitu.engine import make_gsas_runner
+
+    captured: dict[str, object] = {}
+
+    def fake_run(histograms, phases, *, auto_freeze_minor_cells=None, **kwargs):
+        captured["auto_freeze_minor_cells"] = auto_freeze_minor_cells
+        return object()
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_run)
+
+    frame = FrameSpec(data_path="dummy.xye", data_format="XYE", axis_value=300.0)
+    phase = PhaseSpec(structure_path="dummy.cif", phase_name="alpha")
+
+    runner = make_gsas_runner(
+        instrument_path="dummy.instprm",
+        radiation=Radiation.XRAY_LAB,
+        geometry=Geometry.BRAGG_BRENTANO,
+    )
+    runner(frame, [phase], None)
+
+    assert captured["auto_freeze_minor_cells"] is None
+
+
+# --- G1: 残差レポートのフレームへの引き回し (§4.5 到達可能性) ------------------------------
+
+
+def _synthetic_residual(n=64):
+    """(two_theta, residual, sigma) — 1 点だけ大きな未説明ピークを持つ合成残差。"""
+    tt = [10.0 + 0.05 * i for i in range(n)]
+    resid = [0.0] * n
+    resid[32] = 500.0  # 未説明ピーク (calc 不足)
+    sigma = [10.0] * n
+    return tt, resid, sigma
+
+
+def test_frame_result_carries_residual_report():
+    """runner の残差配列からフレーム毎の ResidualReport が組み立てられる (③ の J2/J3 入力)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    tt, resid, sigma = _synthetic_residual()
+
+    def runner(frame, phases, initial_cells):
+        return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0},
+                       residual=(tt, resid, sigma))
+
+    res = run_sequential_rietveld(_frames(2), [alpha], runner=runner)
+    for f in res.frames:
+        assert f.residual_report is not None
+        assert f.residual_report.top_features[0].two_theta == pytest.approx(10.0 + 0.05 * 32)
+        assert f.residual_report.top_features[0].residual == pytest.approx(500.0)
+
+
+def test_frame_result_residual_report_none_without_residual_arrays():
+    """残差フィールドが空 (スタブ runner/旧構築) なら None (後方互換・キーは常に存在)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+
+    def runner(frame, phases, initial_cells):
+        return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    res = run_sequential_rietveld(_frames(2), [alpha], runner=runner)
+    assert all(f.residual_report is None for f in res.frames)
+
+
+def test_rebuilt_frame_recomputes_residual_report():
+    """_consolidate_phase_cells の再精密化フレームも再計算した残差レポートを持つ (古い報告を残さない)。"""
+    from tsumugin.insitu.engine import _rebuild_frame
+
+    tt, resid, sigma = _synthetic_residual()
+    fr_before = run_sequential_rietveld(
+        _frames(1), [PhaseSpec("alpha.cif", "alpha")],
+        runner=lambda f, p, c: _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
+                                       {"alpha": 1.0}),
+    ).frames[0]
+    assert fr_before.residual_report is None
+
+    res = _result(7.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0},
+                  residual=(tt, resid, sigma))
+    rebuilt = _rebuild_frame(res, fr_before, ("alpha",))
+    assert rebuilt.residual_report is not None
+    assert rebuilt.residual_report.top_features[0].residual == pytest.approx(500.0)

@@ -133,13 +133,53 @@ plugins/tsumugin/
 `insitu` が「進める」skill、`operando-diagnose` が「疑う」skill。両者は併用され、
 `insitu` の結果を `operando-diagnose` に渡すのが標準動線。
 
+## 4.5 ② 層の設計規則 — **到達可能性 (reachability)**
+
+> 本節は段1 実装中に**同一クラスの欠陥が 3 件**出たため追加した。単発のミスではなく再発パターン。
+
+**規則: MCP ツールの各引数について「これはどの MCP ツールの出力から来るのか」を言えること。**
+言えない引数があるツールは、テストが全部 green でも ③ からは**呼び手が存在しない (dead on arrival)**。
+
+実際に出た 3 件:
+
+| # | 欠陥 | 処置 |
+|---|---|---|
+| 1 | `residual_report(x, yobs, ycalc)` — 残差配列を返す ② ツールが 1 つも無く ③ は入力を作れない | **実装済**: `auto_rietveld` の出力に報告を同梱 (配列は境界を跨がせない) |
+| 2 | `sequential_rietveld` — 実運用設定 (radiation/geometry/instrument/`background_coeffs`) が全て `runner` **Python callable** の中。JSON クライアントは渡せず、既定は lab X-ray/Bragg-Brentano/背景 6 項に固定され**放射光データを扱えない** | **実装済**: Issue #93 — JSON の `instrument` spec でサーバ側 runner 構築。**同じ欠陥が `repair_frames` にもあった** (`runner or _default_gsas_runner(SequentialConfig())` の決め打ち) → 同一の `instrument` spec + `two_theta_limits` を共有ヘルパ (`_runner_from_instrument`/`_parse_two_theta_limits`) で配線 |
+| 3 | 1 の修正が `auto_rietveld` にしか及ばず `seq_result_to_dict` は未対応 → **系列フレームの J2/J3 は依然 answer 不能** | **実装済**: `FrameRietveldResult.residual_report` (engine が `residual_report_from_result` で畳む) を `seq_result_to_dict` に同梱。① が残差配列を**フレーム結果に持っていなかった**ため、②の直列化だけでなく ① へのスレッド通しが実体だった |
+
+> #2 の `repair_frames` は**採否の判断を壊す**形で顕在化していた: 2θ≤18° で精密化した系列に対し
+> 修復試行が全域で走り、採用規則 `rwp_after < rwp_before - rwp_tol` が**異なるデータ域の Rwp を
+> 比較**していた。「呼べるが黙って間違う」は「呼べない」より悪い。
+
+**なぜ見落とすか**: ① に実装し Python API でテストが通ると完成に見える。だが ① を直接叩けるのは
+Python スクリプトだけで、③ は ② の JSON しか持たない。本解析自体が `make_gsas_runner` を注入した
+Python スクリプトだったため、**自分の解析が MCP 経路では再現不能**という事実が最後まで隠れていた。
+
+**帰結する規則**:
+- callable 引数 (`runner`/`provider`/`materializer`) は**テスト注入専用**と割り切る。実運用経路は
+  必ず JSON spec を別に用意する。callable の既定が「ゼロ設定の便宜版」なら、**③ から見た実質的な
+  既定はその固定値**である (それを ② の仕様として書く)。
+- **大きい配列は境界を跨がせない**。サーバ側で報告 (スカラ + 少数の特徴) に畳む。実測 (残差 2392 点 × 3 本):
+
+  | | 1 フレーム | 247 フレーム (実系列長) |
+  |---|---|---|
+  | 残差配列を JSON text で跨がせた場合 | **135 KiB** (float64 の実体は 56 KiB) | **32.6 MiB** |
+  | 報告に畳んだ場合 (採用) | **~1.1 KiB** | **264 KiB** |
+
+  畳んで **~120 分の 1**。畳む先は ① (`FrameRietveldResult.residual_report`) であって ② の直列化層
+  ではない — ② で畳もうとすると ① が配列を捨てている事実に気づけない (#3 がまさにこれ)。
+- **① に機能を足したら ② への配線を同じ PR で確認する。② に無い機能を ③ の手順書に書かない**
+  (書けば「存在しないツマミを指示する嘘の手順書」になる — §3.5 R4 が実際にこれに該当した)。
+
 ## 5. 実装計画
 
 | 段 | 内容 | 依存 |
 |---|---|---|
 | 1 | ② MCP 4 ツール (`mcp/tools.py`, MCP_TOOLS に追加) + 決定論テスト | ① 実装済 |
+| 1b | **到達可能性の修正** (§4.5): Issue #93 (`instrument` spec + `warm_start_fractions` #82 + `auto_freeze_minor_cells` #80 の配線) + `seq_result_to_dict` への `residual_report` 同梱 | 段1 |
 | 2 | ③ `skills/operando-diagnose/SKILL.md` + `commands/operando-diagnose.md` | 段1 |
-| 2b | **既存 `skills/insitu/SKILL.md` の改訂 (§3.5 の R1-R5)** — R1 (危険な受理基準) と R5 (陳腐化) は独立に先行実施可 | R1/R5 は即時、R2-R4 は段1 |
+| 2b | **既存 `skills/insitu/SKILL.md` の改訂 (§3.5 の R1-R5)** — R1 (危険な受理基準) と R5 (陳腐化) は独立に先行実施可 | R1/R5 は即時、R2/R3 は段1、**R4 は段1b** (§4.5: `auto_freeze_minor_cells`/`warm_start_fractions` は ② 未露出のため、配線前に手順へ書くと嘘になる) |
 | 3 | `AGENT_PLAYBOOK` に移植版を追記 (Codex 等の非 Claude ハーネス用) | 段2 |
 | 4 | plugin.json の description 更新 (operando 診断を明記) | 段2 |
 

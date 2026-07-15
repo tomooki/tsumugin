@@ -136,6 +136,68 @@ def test_assess_data_quality_missing_file_returns_error_dict(tmp_path):
     json.dumps(out, allow_nan=False)
 
 
+def test_assess_data_quality_xye_keeps_esd(tmp_path):
+    """XYE は 3 列 ascii なので XY 同様 esd を保持する (J1 の主証拠は esd ケース)。"""
+    x = np.linspace(5.0, 60.0, 400)
+    y = np.zeros_like(x)
+    for c in (15.0, 30.0, 45.0):
+        y += 500.0 * np.exp(-0.5 * ((x - c) / 0.2) ** 2)
+    esd = np.sqrt(np.maximum(y, 1.0))
+    path = _write_xy(tmp_path, x, y, esd, name="pattern.xye")
+
+    out = assess_data_quality(path, data_format="XYE")
+    assert out["is_subtracted"] is True
+    # esd を保持していれば「補助情報」の esd 注記が reasons に載る
+    assert any("esd" in r for r in out["reasons"])
+    json.dumps(out, allow_nan=False)
+
+
+def test_assess_data_quality_rejects_single_column_file(tmp_path):
+    """1 列ファイル (強度のみ) は 2 列ガードで弾く — 1 行ファイルと混同してはならない。"""
+    path = tmp_path / "one_column.xy"
+    path.write_text("100\n105\n102\n99\n101\n", encoding="utf-8")
+
+    out = assess_data_quality(str(path))
+    assert "error" in out
+    assert out["error_type"] == "ValueError"
+    # 3 個の数値が「1 点のパターン」として自信ありげに診断されてはならない
+    assert "is_subtracted" not in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_assess_data_quality_accepts_single_row_file(tmp_path):
+    """正当な 1 行 3 列ファイルは引き続き読める (1 列ガードの巻き添えにしない)。"""
+    path = tmp_path / "one_row.xy"
+    path.write_text("10.0 500.0 22.3\n", encoding="utf-8")
+
+    out = assess_data_quality(str(path))
+    assert "error" not in out
+    assert out["peak_max"] == pytest.approx(500.0)
+    json.dumps(out, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        [[10.0, 12.0, 14.0]],  # 3 要素
+        [[10.0]],  # 1 要素
+        [10.0],  # スカラ (区間でない)
+        [[12.0, 10.0]],  # lo >= hi
+        [["a", "b"]],  # 非数値
+    ],
+)
+def test_assess_data_quality_bad_excluded_regions_returns_error_dict(tmp_path, regions):
+    """LLM 由来の不正な excluded_regions は例外でなく error dict (module docstring の約束)。"""
+    x = np.linspace(5.0, 60.0, 400)
+    y = 100.0 + 500.0 * np.exp(-0.5 * ((x - 30.0) / 0.2) ** 2)
+    path = _write_xy(tmp_path, x, y)
+
+    out = assess_data_quality(path, excluded_regions=regions)
+    assert "error" in out
+    assert out["error_type"] == "ValueError"
+    json.dumps(out, allow_nan=False)
+
+
 def test_assess_data_quality_passes_excluded_regions(tmp_path):
     x = np.linspace(5.0, 60.0, 400)
     y = np.zeros_like(x)
@@ -216,6 +278,15 @@ def test_check_phase_set_complete_series():
     json.dumps(out, allow_nan=False)
 
 
+def test_check_phase_set_malformed_result_returns_error_dict():
+    """壊れた系列結果は例外でなく error dict (repair_frames と同じ縮退契約)。"""
+    out = check_phase_set({"frames": [{"rwp": 8.0}]})  # frame_index 欠落
+    assert "error" in out
+    assert out["error_type"] == "KeyError"
+    assert "is_complete" not in out
+    json.dumps(out, allow_nan=False)
+
+
 def test_check_phase_set_flags_oscillating_fraction():
     fractions = [0.5, 0.15, 0.55, 0.1, 0.6, 0.05]
     frames = tuple(
@@ -284,6 +355,130 @@ def test_repair_frames_escalates_when_runner_does_not_improve():
     json.dumps(out, allow_nan=False)
 
 
+def test_repair_frames_rejects_phase_subset():
+    """系列で使われている相が phases に無いと、黙って相を落として「修復成功」に見せてしまう。"""
+    frame_specs = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 0.6, "beta": 0.4}, cells={"alpha": (5.0,) * 3 + (90.0,) * 3,
+                                                         "beta": (6.0,) * 3 + (90.0,) * 3})
+        for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+
+    def runner(frame, phases, initial_cells):  # pragma: no cover - 検証で弾かれ呼ばれないはず
+        raise AssertionError("相集合が不完全なので精密化してはならない")
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],  # beta が欠落
+        rwp_delta=1.8,
+        runner=runner,
+    )
+    assert "error" in out
+    assert out["error_type"] == "ValueError"
+    assert "beta" in out["error"]
+    assert "repairs" not in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_accepts_superset_of_phases():
+    """phases が系列の相を包含していれば (余剰があっても) 通す。"""
+    frame_specs = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+    extra = PhaseSpec(structure_path="beta.cif", phase_name="beta")
+
+    def runner(frame, phases, initial_cells):
+        return _autorietveld_result(7.0, GOOD_CELL, {"alpha": 1.0})
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict(), extra.to_dict()],
+        rwp_delta=1.8,
+        runner=runner,
+    )
+    assert len(out["repairs"]) == 1
+
+
+def test_repair_frames_frame_count_mismatch_returns_error_dict():
+    """frames と result のフレーム数不一致は IndexError でなく error dict (docstring の約束)。"""
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL)
+        for i, r in enumerate([8.0, 8.0, 8.0, 8.0, 15.0])
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+
+    def runner(frame, phases, initial_cells):  # pragma: no cover - 検証で弾かれ呼ばれないはず
+        raise AssertionError("フレーム数不一致なので精密化してはならない")
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in _base_frames(3)],  # 3 != 5
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=runner,
+    )
+    assert "error" in out
+    assert out["error_type"] == "ValueError"
+    assert "3" in out["error"] and "5" in out["error"]
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_surfaces_ledger_entries():
+    """P2 非破壊 — repair の採用/棄却が ledger エントリとして返り値に現れる。"""
+    frame_specs = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+
+    def runner(frame, phases, initial_cells):
+        return _autorietveld_result(7.0, GOOD_CELL, {"alpha": 1.0})
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=runner,
+    )
+    entries = out["ledger_entries"]
+    assert [e["kind"] for e in entries] == ["insitu_repair_adopted"]
+    assert entries[0]["frame"] == 2
+    assert entries[0]["rwp_before"] == 15.0
+    assert entries[0]["rwp_after"] == 7.0
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_ledger_records_rejection():
+    """改善しなかった試行も ledger に残る (監査可能性)。"""
+    frame_specs = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+
+    def runner(frame, phases, initial_cells):
+        return _autorietveld_result(16.0, GOOD_CELL, {"alpha": 1.0})
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=runner,
+    )
+    assert [e["kind"] for e in out["ledger_entries"]] == ["insitu_repair_rejected"]
+    json.dumps(out, allow_nan=False)
+
+
 def test_repair_frames_no_discontinuities_is_a_noop():
     frame_specs = _base_frames(4)
     fr_results = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(4))
@@ -298,4 +493,150 @@ def test_repair_frames_no_discontinuities_is_a_noop():
     assert out["repairs"] == []
     assert out["needs_model_revision"] == []
     assert out["discontinuities"] == []
+    json.dumps(out, allow_nan=False)
+
+
+# ===========================================================================
+# G2: repair_frames の instrument spec / two_theta_limits (§4.5 到達可能性 #2)
+# ===========================================================================
+
+
+def _repair_inputs(n=5):
+    frame_specs = _base_frames(n)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0] + [8.0] * (n - 3))
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+    return result, [f.to_dict() for f in frame_specs], [ALPHA.to_dict()]
+
+
+def _capture_make_runner(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_make(**kwargs):
+        captured.update(kwargs)
+
+        def runner(frame, phases, initial_cells, initial_fractions=None):
+            return _autorietveld_result(7.0, GOOD_CELL, {"alpha": 1.0})
+
+        captured["runner"] = runner
+        return runner
+
+    monkeypatch.setattr("tsumugin.insitu.engine.make_gsas_runner", fake_make)
+    return captured
+
+
+def test_repair_frames_instrument_spec_builds_runner(monkeypatch):
+    """instrument spec (JSON) からサーバ側で runner を組み立てる (③ の唯一の実運用経路)。"""
+    from tsumugin.autorietveld.model import Geometry, Radiation
+
+    made = _capture_make_runner(monkeypatch)
+    result, frames, phases = _repair_inputs()
+
+    out = repair_frames(
+        result, frames, phases,
+        instrument={
+            "path": "sr.instprm",
+            "radiation": "xray_synchrotron",
+            "geometry": "debye_scherrer",
+            "background_coeffs": 18,
+            "max_cyc": 20,
+            "auto_freeze_minor_cells": 0.2,
+        },
+        two_theta_limits=[2.0, 18.0],
+    )
+
+    assert made["instrument_path"] == "sr.instprm"
+    assert made["radiation"] is Radiation.XRAY_SYNCHROTRON
+    assert made["geometry"] is Geometry.DEBYE_SCHERRER
+    assert made["background_coeffs"] == 18
+    assert made["max_cyc"] == 20
+    assert made["auto_freeze_minor_cells"] == pytest.approx(0.2)
+    # (a) 修復試行を系列と**同じレンジ**で行う: Rwp 比較が同一データ域で成立する
+    assert made["two_theta_limits"] == (2.0, 18.0)
+    assert len(out["repairs"]) == 1
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_instrument_paths_per_frame(monkeypatch):
+    """paths (frames と 1:1) から フレーム→instprm の解決関数が組まれる (insitu_tools と同一ヘルパ)。"""
+    made = _capture_make_runner(monkeypatch)
+    result, frames, phases = _repair_inputs(3)
+
+    repair_frames(
+        result, frames, phases,
+        instrument={"paths": ["a.instprm", "b.instprm", "c.instprm"]},
+    )
+    resolver = made["instrument_path"]
+    assert callable(resolver)
+    assert resolver(FrameSpec(data_path="f1.xrdml", axis_value=1.0)) == "b.instprm"
+
+
+def test_repair_frames_two_theta_limits_reach_default_runner(monkeypatch):
+    """instrument 未指定でも two_theta_limits は既定 runner の SequentialConfig へ届く。"""
+    made = _capture_make_runner(monkeypatch)
+    result, frames, phases = _repair_inputs()
+
+    repair_frames(result, frames, phases, two_theta_limits=[2.0, 18.0])
+    assert made["two_theta_limits"] == (2.0, 18.0)
+
+
+def test_repair_frames_explicit_runner_overrides_instrument(monkeypatch):
+    """runner= 明示注入は instrument より優先 (sequential_rietveld と同じ優先順)。"""
+    def boom(**kwargs):
+        raise AssertionError("runner= 注入時は make_gsas_runner を呼んではいけない")
+
+    monkeypatch.setattr("tsumugin.insitu.engine.make_gsas_runner", boom)
+    result, frames, phases = _repair_inputs()
+
+    def runner(frame, phases_, initial_cells):
+        return _autorietveld_result(7.0, GOOD_CELL, {"alpha": 1.0})
+
+    out = repair_frames(result, frames, phases, runner=runner,
+                        instrument={"path": "sr.instprm", "radiation": "xray_synchrotron"})
+    assert len(out["repairs"]) == 1
+
+
+def test_repair_frames_auto_freeze_bool_rejected(monkeypatch):
+    """auto_freeze_minor_cells は float 閾値 (#80)。bool true = 全相凍結の罠なので拒否 (共有ガード)。"""
+    _capture_make_runner(monkeypatch)
+    result, frames, phases = _repair_inputs()
+
+    out = repair_frames(result, frames, phases,
+                        instrument={"path": "x.instprm", "auto_freeze_minor_cells": True})
+    assert out["error_type"] == "ValueError"
+    assert "threshold" in out["error"]
+    assert "repairs" not in out
+    json.dumps(out, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"path": "x.instprm", "radiation": "synchrotron"},
+        {"path": "x.instprm", "geometry": "capillary"},
+        {"radiation": "xray_lab"},
+    ],
+)
+def test_repair_frames_bad_instrument_spec_returns_error_dict(monkeypatch, spec):
+    _capture_make_runner(monkeypatch)
+    result, frames, phases = _repair_inputs()
+
+    out = repair_frames(result, frames, phases, instrument=spec)
+    assert out["error_type"] == "ValueError"
+    assert "repairs" not in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_bad_two_theta_limits_returns_error_dict():
+    """two_theta_limits の要素数不正は例外でなく error dict (境界を例外が貫かない)。"""
+    result, frames, phases = _repair_inputs()
+
+    def runner(frame, phases_, initial_cells):
+        return _autorietveld_result(7.0, GOOD_CELL, {"alpha": 1.0})
+
+    out = repair_frames(result, frames, phases, two_theta_limits=[2.0], runner=runner)
+    assert out["error_type"] == "ValueError"
+    assert "two_theta_limits" in out["error"]
     json.dumps(out, allow_nan=False)

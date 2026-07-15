@@ -4,7 +4,9 @@ M8 の `rietveld_tools` と同じ設計 (二重反転回避): 閉ループ丸ご
 以下を反復駆動して系列解析を進める。
 
 - ``sequential_rietveld``: frames + initial_phases spec (JSON) を run_sequential_rietveld で実行 →
-  フレーム別 Rwp/格子/相分率・変化点・自動出現相を構造化して返す。
+  フレーム別 Rwp/格子/相分率・変化点・自動出現相を構造化して返す。実運用の装置設定 (放射源/
+  ジオメトリ/instprm/背景項数) は ``instrument`` spec (JSON) でサーバ側の runner 組み立てに渡す
+  (Issue #93: ``runner`` callable は JSON 境界を越えられないため、③ の実データ解析には instrument が必須)。
 - ``identify_and_add_phase``: 残差/生パターン + elements → MP で新相を同定・CIF 物質化し PhaseSpec を返す
   (相追加の候補提示; 実際の採否・再精密化は ③ が sequential_rietveld/refine で行う)。
 - ``parametric_fit``: 系列結果 (JSON) + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ。
@@ -22,6 +24,7 @@ from typing import Callable, Mapping, Sequence
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ..insitu.model import (
+    FrameRietveldResult,
     FrameSpec,
     PhaseIdConfig,
     SequentialConfig,
@@ -40,8 +43,30 @@ def _cells_dict(cells: Mapping[str, Sequence[float]]) -> dict[str, list[float | 
     return {name: [finite_or_none(v) for v in cell] for name, cell in cells.items()}
 
 
+def _frame_residual_report(f: "FrameRietveldResult") -> dict[str, object] | None:
+    """フレームの残差レポートを素の型 dict へ (None = 残差なし; キーは常に存在させる)。
+
+    【単一 serializer】: ``auto_rietveld`` 経路 (``rietveld_tools._result_to_dict``) と同じ
+      ``operando_diag_tools.residual_report_to_dict`` を使い、③ から見た残差レポートの形が経路に
+      よらず一致することを保証する (二重実装を作らない)。**関数内 import** なのは
+      ``operando_diag_tools`` が本モジュールの ``_result_from_dict`` を module-level で import して
+      いるため (module-level に上げると循環 import になる)。
+    """
+    from .operando_diag_tools import residual_report_to_dict
+
+    rep = f.residual_report
+    return None if rep is None else residual_report_to_dict(rep)
+
+
 def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
-    """SequentialRietveldResult を素の型 dict へ (③ の判断入力・parametric_fit 入力)。"""
+    """SequentialRietveldResult を素の型 dict へ (③ の判断入力・parametric_fit 入力)。
+
+    各フレームには ``residual_report`` を同梱する (architecture.md §4.5 到達可能性 #3): 単独の
+    ``residual_report`` ツールは配列入力を要し、``auto_rietveld`` フォールバックは ``FrameSpec``
+    から作れない ``HistogramSpec`` を要するため、**同梱しないと系列フレームの J2/J3 (未説明ピーク
+    → 欠落相 / 強度比異常 → 対称性低下) は ③ からは原理的に answer 不能**になる。残差配列自体は
+    境界を跨がせない (engine が `ResidualReport` に畳んだものを直列化するだけ)。
+    """
     return {
         "phase_names": list(result.phase_names),
         "frames": [
@@ -58,6 +83,9 @@ def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
                 "changepoint_reasons": list(f.changepoint_reasons),
                 "validity_passed": bool(f.validity_passed),
                 "refine_failed": bool(f.refine_failed),
+                # 【残差レポート同梱】: 残差なし (スタブ runner 等) でもキーは None で存在させ、
+                #   ③ から見たスキーマを安定させる (auto_rietveld 経路と同一規律) 🔵 §4.5
+                "residual_report": _frame_residual_report(f),
             }
             for f in result.frames
         ],
@@ -88,9 +116,11 @@ def _jsonable(v: object) -> object:
 
 
 def _result_from_dict(d: Mapping[str, object]) -> SequentialRietveldResult:
-    """seq_result_to_dict の逆写像 (parametric_fit が受け取る系列結果)。最小フィールドのみ復元。"""
-    from ..insitu.model import FrameRietveldResult
+    """seq_result_to_dict の逆写像 (parametric_fit が受け取る系列結果)。最小フィールドのみ復元。
 
+    ``residual_report`` は復元しない (往復先の消費者 — parametric_fit / check_phase_set /
+    repair_frames — はいずれも残差を見ない。③ は同梱された dict を直接読む)。
+    """
     frames = []
     for fd in d.get("frames", []):  # type: ignore[union-attr]
         cells = {
@@ -118,15 +148,123 @@ def _result_from_dict(d: Mapping[str, object]) -> SequentialRietveldResult:
     )
 
 
+def _enum_from_value(enum_cls: type, value: object, key: str) -> object:
+    """enum の **値** (小文字文字列) から enum メンバを引く。未知値は ValueError (→ error dict)。"""
+    try:
+        return enum_cls(str(value))
+    except ValueError:
+        allowed = ", ".join(sorted(str(m.value) for m in enum_cls))  # type: ignore[attr-defined]
+        raise ValueError(f"unknown {key}: {value!r} (expected one of: {allowed})") from None
+
+
+def _parse_two_theta_limits(
+    two_theta_limits: Sequence[float] | None,
+) -> tuple[float, float] | None:
+    """``two_theta_limits`` を検証して ``(lo, hi)`` へ正規化する (None は制限なし)。
+
+    呼び出し側は LLM が組んだ JSON なので、1 要素・3 要素・非数値の取り違えが起きやすい。素朴な
+    ``limits[0], limits[1]`` は IndexError/TypeError を MCP 境界に貫かせるため、呼び出し側の try で
+    error dict へ縮退できる ``ValueError`` に正規化する。``sequential_rietveld`` と
+    ``operando_diag_tools.repair_frames`` の共有ヘルパ (レンジ解釈を一致させる)。
+
+    :raises ValueError: 2 要素の数値ペアでない、または ``lo >= hi`` のとき
+    """
+    if two_theta_limits is None:
+        return None
+    try:
+        values = list(two_theta_limits)
+    except TypeError as exc:
+        raise ValueError(
+            f"two_theta_limits は [lo, hi] の 2 要素数値ペアです: {two_theta_limits!r}"
+        ) from exc
+    if len(values) != 2:
+        raise ValueError(
+            f"two_theta_limits は 2 要素 [lo, hi] である必要があります: "
+            f"{two_theta_limits!r} (実際 {len(values)} 要素)"
+        )
+    try:
+        lo, hi = float(values[0]), float(values[1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"two_theta_limits の要素が数値ではありません: {two_theta_limits!r}"
+        ) from exc
+    if not (lo < hi):
+        raise ValueError(f"two_theta_limits は lo < hi である必要があります: {two_theta_limits!r}")
+    return (lo, hi)
+
+
+def _instrument_path_resolver(
+    spec: Mapping[str, object], frame_specs: Sequence[FrameSpec]
+) -> str | Callable[[FrameSpec], str]:
+    """instrument spec の ``path``/``paths`` を make_gsas_runner の instrument_path へ写す。
+
+    ``paths`` は frames と 1:1 の列 (フレーム毎に instprm が異なる系列)。JSON からは callable を
+    渡せないため、ここでフレーム→パスの解決関数を組み立てる (同一 FrameSpec オブジェクトが
+    runner へ渡るため id で引き、保険として data_path でも引く)。
+    """
+    paths = spec.get("paths")
+    if paths is not None:
+        path_list = [str(p) for p in paths]  # type: ignore[union-attr]
+        if len(path_list) != len(frame_specs):
+            raise ValueError(
+                f"instrument paths length {len(path_list)} != frames length {len(frame_specs)}"
+            )
+        by_id = {id(fs): p for fs, p in zip(frame_specs, path_list)}
+        by_data = {fs.data_path: p for fs, p in zip(frame_specs, path_list)}
+
+        def resolve(frame: FrameSpec) -> str:
+            if id(frame) in by_id:
+                return by_id[id(frame)]
+            if frame.data_path in by_data:
+                return by_data[frame.data_path]
+            raise ValueError(f"no instrument path for frame {frame.data_path!r}")
+
+        return resolve
+    path = spec.get("path")
+    if path is None:
+        raise ValueError("instrument spec requires 'path' (str) or 'paths' (list matching frames)")
+    return str(path)
+
+
+def _runner_from_instrument(
+    spec: Mapping[str, object],
+    frame_specs: Sequence[FrameSpec],
+    two_theta_limits: tuple[float, float] | None,
+) -> Callable:
+    """instrument spec (JSON) から make_gsas_runner で runner を組み立てる (Issue #93)。"""
+    from ..autorietveld.model import Geometry, Radiation
+    from ..insitu.engine import make_gsas_runner
+
+    afmc = spec.get("auto_freeze_minor_cells")
+    # ⚠ #80 の本体は **float 閾値** (bool ではない)。JSON の true をそのまま float 化すると 1.0 =
+    # 「分率 1.0 未満の相を凍結」= 多相では全相のセル凍結という静かな事故になるため明示的に拒否する。
+    if isinstance(afmc, bool):
+        raise ValueError(
+            "auto_freeze_minor_cells is a phase-fraction threshold (float, e.g. 0.2), not a bool; "
+            "pass null to disable (bool true would freeze every phase in a multiphase run)"
+        )
+    return make_gsas_runner(
+        instrument_path=_instrument_path_resolver(spec, frame_specs),
+        radiation=_enum_from_value(Radiation, spec.get("radiation", "xray_lab"), "radiation"),
+        geometry=_enum_from_value(Geometry, spec.get("geometry", "bragg_brentano"), "geometry"),
+        two_theta_limits=two_theta_limits,
+        max_cyc=int(spec.get("max_cyc", 12)),  # type: ignore[arg-type]
+        background_coeffs=int(spec.get("background_coeffs", 6)),  # type: ignore[arg-type]
+        auto_freeze_minor_cells=None if afmc is None else float(afmc),  # type: ignore[arg-type]
+    )
+
+
 def sequential_rietveld(
     frames: Sequence[Mapping[str, object]],
     initial_phases: Sequence[Mapping[str, object]],
     *,
     phase_id: Mapping[str, object] | None = None,
     warm_start: bool = True,
+    warm_start_fractions: bool = False,
     two_theta_limits: Sequence[float] | None = None,
     max_frames: int | None = None,
     workdir: str = ".",
+    instrument: Mapping[str, object] | None = None,
     runner: Callable | None = None,
     phase_finder: Callable | None = None,
     reason: str = "",
@@ -136,12 +274,42 @@ def sequential_rietveld(
     :param frames: FrameSpec.to_dict の列
     :param initial_phases: PhaseSpec.to_dict の列 (フレーム 0 の既知相)
     :param phase_id: {"elements": [...], "frac_min": .., "top_k": .., ...} (新相自動同定, None で無効)
-    :param runner/phase_finder: 注入可能 (既定 GSAS/MP 駆動)。テストは決定論スタブ
+    :param warm_start_fractions: 直前フレームの精密化相分率も次フレームの初期値に引き継ぐか
+        (Issue #82; 分率が seed に張り付くフレームの是正。``warm_start`` 有効時のみ効く)
+    :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
+        なら、この spec からサーバ側で ``make_gsas_runner`` を組み立てる。指定なし (None) は従来通り
+        engine 既定の ``_default_gsas_runner`` (実験室 X 線 Bragg-Brentano・背景 6 項・装置は data_path
+        隣接の ``.instprm`` 規約) — 放射光や背景項数の変更はこの spec でしか届かない。キー:
+
+        - ``path``: instprm パス (str, 必須。``paths`` と排他)
+        - ``paths``: frames と 1:1 の instprm パス列 (フレーム毎に装置が異なる系列)
+        - ``radiation``: ``Radiation`` の **値** ("xray_lab"/"xray_synchrotron"/"neutron_cw"/
+          "neutron_tof"、既定 "xray_lab")
+        - ``geometry``: ``Geometry`` の値 ("bragg_brentano"/"debye_scherrer"、既定 "bragg_brentano")
+        - ``background_coeffs``: Chebyshev 背景項数 (int, 既定 6。実験室 X 線/放射光は 18-24 推奨)
+        - ``max_cyc``: 各段階の最大精密化サイクル (int, 既定 12)
+        - ``auto_freeze_minor_cells``: 分率連動の自動セル凍結**閾値** (float|None, 既定 None=無効。
+          Issue #80: 例 0.2 なら相分率 0.2 未満の相のセルを解放しない)
+
+        ``two_theta_limits`` は本引数の runner にも転送される (フレーム側指定が優先)。
+    :param runner: **注入/テスト用**の Python callable ((frame, phases, initial_cells)→
+        AutoRietveldResult)。JSON 境界越しには渡せない。明示指定時は ``instrument`` より優先する
+        (後方互換)。None かつ ``instrument`` も None なら engine 既定 GSAS runner
+    :param phase_finder: 新相探索器 (注入可能、既定 MP 駆動)
+    :returns: 系列構造化結果。instrument spec 不正は ``{"error", "error_type"}``
     """
     from ..insitu.engine import run_sequential_rietveld
 
     frame_specs = [FrameSpec.from_dict(f) for f in frames]
     phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
+    # 【レンジ検証を縮退契約に載せる】: 旧実装は `two_theta_limits[0]` を直接引いており、1 要素等の
+    #   取り違えで IndexError が MCP 境界を貫いていた (error dict へ縮退する契約に反する)。
+    try:
+        limits = _parse_two_theta_limits(two_theta_limits)
+        if runner is None and instrument is not None:
+            runner = _runner_from_instrument(instrument, frame_specs, limits)
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
     pid = None
     if phase_id is not None:
         pid = PhaseIdConfig(
@@ -155,9 +323,8 @@ def sequential_rietveld(
         )
     config = SequentialConfig(
         warm_start=warm_start,
-        two_theta_limits=(float(two_theta_limits[0]), float(two_theta_limits[1]))
-        if two_theta_limits is not None
-        else None,
+        warm_start_fractions=warm_start_fractions,
+        two_theta_limits=limits,
         max_frames=max_frames,
         phase_id=pid,
     )
