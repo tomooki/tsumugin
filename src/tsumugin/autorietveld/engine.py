@@ -332,15 +332,46 @@ def _seed_instrument_profile(g2hist, profile) -> None:
             continue
 
 
+def _should_refine_cell(info: dict, fraction: float | None, threshold: float | None) -> bool:
+    """相のセル (格子) 解放可否を判定する (Issue #47 手動凍結 + Issue #80 自動閾値凍結)。
+
+    判定優先順位 (手動 > 自動 > 既定解放):
+
+    1. 明示 ``PhaseSpec.refine_cell=False`` (手動, Issue #47) は常に優先し凍結する。
+       自動閾値の有無や分率に関わらず解放しない (**手動が自動に勝つ**)。
+    2. 自動閾値 (``threshold``) が ``None`` → 従来動作 (非回帰): 分率を見ず解放する。
+    3. 分率が不明 (``fraction=None``, 例: 相分率抽出に失敗/精密化前で未取得) →
+       **fail open** (凍結しない)。少数相と誤認して全相を凍結する事故を避ける。
+    4. 分率が ``threshold`` 未満 → 自動凍結 (計量が近い相同士の相関による発散を防ぐ, Issue #80)。
+    5. それ以外 (分率が閾値以上, 単相の分率 1.0 を含む) → 解放。
+    """
+    if not info.get("refine_cell", True):
+        return False
+    if threshold is None:
+        return True
+    if fraction is None:
+        return True
+    return fraction >= threshold
+
+
 def _apply_stage(
-    gpx, hists, phases, phase_infos, atom_flag_maps, radiations, stage, fixed_profile=None
-):
+    gpx, hists, phases, phase_infos, atom_flag_maps, radiations, stage, fixed_profile=None,
+    auto_freeze_minor_cells: float | None = None,
+) -> list[str]:
     """段階の宣言的フラグを GSAS-II 精密化フラグへ翻訳して適用する (enable のみ)。
 
     revert は .gpx スナップショット復元で行うため、ここでは有効化だけを担う。
     原子フラグは GSAS-II が「置換」セマンティクスのため、per-atom の累積マップを毎回設定する。
     `fixed_profile[i]=True` のヒストグラムは装置プロファイル (U,V,W/X,Y/SH·L) を解放しない (Issue #38)。
+
+    :param auto_freeze_minor_cells: 分率連動の自動セル凍結閾値 (Issue #80)。None で無効
+        (従来動作)。有効時は "cell" 段の適用時点で ``_phase_fraction_map`` により**その時点の
+        live な** g2phases/g2hists から相分率を取得し (フラグ解放前の直近値; 分率段が未実行の
+        単相/初期状態では 1.0 または初期 Scale)、閾値未満の相のみ自動凍結する。
+    :returns: この呼び出しで自動閾値により凍結された相名のリスト (手動凍結は含まない;
+        cell 段以外や凍結なしなら空リスト)。ledger/StageResult で挙動を可視化するため。
     """
+    auto_frozen: list[str] = []
     if fixed_profile is None:
         fixed_profile = [False] * len(hists)
     flags = stage.flags
@@ -359,9 +390,21 @@ def _apply_stage(
     # scale: GSAS-II はヒストグラムスケールを既定で精密化するため単相では no-op。
     if "cell" in flags:
         # refine_cell=False の相 (副相/不純物の格子固定, Issue #47) は Cell 解放をスキップする。
+        # auto_freeze_minor_cells 有効時は加えて、この段階適用時点の live な相分率
+        # (_phase_fraction_map, Issue #80) が閾値未満の相も自動でスキップする (手動 > 自動)。
+        fraction_map: dict[str, float] | None = None
+        if auto_freeze_minor_cells is not None:
+            try:
+                fraction_map = _phase_fraction_map(phases, hists)
+            except Exception:  # noqa: BLE001 — 分率抽出不能は fail open (凍結しない)
+                fraction_map = None
         for ph, info in zip(phases, phase_infos):
-            if info.get("refine_cell", True):
+            fraction = fraction_map.get(ph.name) if fraction_map else None
+            if _should_refine_cell(info, fraction, auto_freeze_minor_cells):
                 ph.set_refinements({"Cell": True})
+            elif info.get("refine_cell", True) and fraction is not None:
+                # 手動凍結ではなく自動閾値により凍結された相のみ記録する。
+                auto_frozen.append(ph.name)
     if "displacement" in flags:
         mapping = flags["displacement"]
         for idx, keys in mapping.items():  # type: ignore[union-attr]
@@ -472,6 +515,7 @@ def _apply_stage(
             active = {lab: fl for lab, fl in fmap.items() if fl}
             if active:
                 ph.set_refinements({"Atoms": active})
+    return auto_frozen
 
 
 def _bound_occupancy(gpx, frac: str) -> None:
@@ -739,6 +783,7 @@ def run_auto_rietveld(
     initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
     initial_cells: dict[str, tuple[float, ...]] | None = None,
     bond_restraints: dict[str, Sequence[Mapping[str, object]]] | None = None,
+    auto_freeze_minor_cells: float | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -762,6 +807,16 @@ def run_auto_rietveld(
     :param initial_cells: 相名→(a,b,c[,α,β,γ]) の絶対初期格子 (逐次精密化のウォームスタート用,
         None で CIF 既定)。直前フレームの精密化格子を次フレームの初期値に引き継ぐのに用いる。
         ``initial_cell_scale`` と併用時は本絶対セルを先に適用し、その上に摂動倍率を掛ける。
+    :param auto_freeze_minor_cells: 分率連動の自動セル凍結閾値 (opt-in, Issue #80: #47/#50 の
+        自動化)。None (既定) なら従来動作 (非回帰): "cell" 段は ``PhaseSpec.refine_cell`` の
+        明示指定のみに従う。float (例 0.2) を与えると、"cell" 段の適用時点で live な
+        ``g2phases``/``g2hists`` から ``_phase_fraction_map`` により取得した現在の相分率が
+        閾値未満の相は、その段階の Cell 解放をスキップする (計量が近い相同士の相関で少数相
+        セルを解放すると発散する実測知見, Issue #80 背景)。**手動が自動に勝つ**:
+        ``PhaseSpec.refine_cell=False`` は本閾値の値に関わらず常に凍結を維持する。単相は
+        分率 1.0 のため凍結されない。分率が取得できない場合は fail open (凍結しない) — 全相を
+        誤って凍結する事故を避ける。自動凍結された相名は各段の ledger エントリ
+        (``m7_stage`` の ``auto_frozen_cells``) に記録され、挙動が監査可能になる。
     :returns: AutoRietveldResult
     """
     g2sc = _g2sc()
@@ -892,10 +947,11 @@ def run_auto_rietveld(
             gpx.save()
             shutil.copyfile(gpx_path, snap)
             prev_atom_flag_maps = [dict(m) for m in atom_flag_maps]
+            auto_frozen: list[str] = []
             try:
-                _apply_stage(
+                auto_frozen = _apply_stage(
                     gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage,
-                    fixed_profile,
+                    fixed_profile, auto_freeze_minor_cells,
                 )
                 gpx.do_refinements([{}])
                 rwp, gof, nvar = _rvals(gpx)
@@ -934,6 +990,13 @@ def run_auto_rietveld(
             else:
                 prev_rwp, prev_gof, prev_nvar = rwp, gof, nvar
 
+            # 自動セル凍結 (Issue #80) が発生した相を note に付記し挙動を可視化する
+            # (非破壊: stage.note 自体は変更せず、StageResult 側でのみ拡張する)。
+            note = stage.note
+            if auto_frozen:
+                frozen_note = f"auto_frozen_cells={','.join(auto_frozen)}"
+                note = f"{note}; {frozen_note}" if note else frozen_note
+
             stage_results.append(
                 StageResult(
                     label=stage.label,
@@ -942,7 +1005,7 @@ def run_auto_rietveld(
                     n_params=nvar,
                     converged=converged,
                     reverted=reverted,
-                    note=stage.note,
+                    note=note,
                 )
             )
             ledger.append(
@@ -953,6 +1016,7 @@ def run_auto_rietveld(
                     "gof": gof,
                     "n_params": nvar,
                     "reverted": reverted,
+                    "auto_frozen_cells": list(auto_frozen),
                 },
             )
 
