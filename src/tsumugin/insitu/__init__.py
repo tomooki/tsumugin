@@ -39,6 +39,12 @@ from .repair import (
     detect_discontinuities,
     repair_isolated,
 )
+from .phaseset import (
+    NonMonotonicReport,
+    PhaseSetCompletionReport,
+    flag_nonmonotonic_fraction,
+    suggest_phase_set_completion,
+)
 
 __all__ = [
     "AnchorConfig",
@@ -48,15 +54,18 @@ __all__ = [
     "FrameRietveldResult",
     "FrameSpec",
     "IdentifiedPhase",
+    "NonMonotonicReport",
     "ParametricAnalysis",
     "PhaseAppearance",
     "PhaseIdConfig",
+    "PhaseSetCompletionReport",
     "RepairReport",
     "SequentialConfig",
     "SequentialRietveldResult",
     "analyze_phase",
     "classify",
     "detect_discontinuities",
+    "flag_nonmonotonic_fraction",
     "identify_new_phases",
     "lattice_baseline",
     "make_gsas_runner",
@@ -65,5 +74,6 @@ __all__ = [
     "repair_isolated",
     "run_anchored_sequential",
     "run_sequential_rietveld",
+    "suggest_phase_set_completion",
     "transition_from_fractions",
 ]
