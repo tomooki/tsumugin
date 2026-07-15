@@ -56,7 +56,31 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 ### 2. 系列を回す
 
 `sequential_rietveld` (`insitu` skill と同じ)。**`instrument` spec を明示する**
-(省略すると実験室 X 線・背景 6 項の便宜既定になる)。
+(省略すると**実験室 X 線 Bragg-Brentano・背景 6 項**の便宜既定になり、放射光データは扱えない)。
+
+```python
+sequential_rietveld(
+    frames=[{"data_path": f, "axis_value": i, "data_format": "XYE",
+             "two_theta_limits": [2.4, 18.0],
+             "excluded_regions": [[6.6, 7.6]]} for i, f in enumerate(files)],
+    initial_phases=[{"structure_path": "mono.cif", "phase_name": "mono", "refine_cell": False}, ...],
+    instrument={"path": "kmnfe.instprm", "radiation": "xray_synchrotron",
+                "geometry": "debye_scherrer", "background_coeffs": 18,
+                "auto_freeze_minor_cells": 0.2},
+    warm_start_fractions=True, two_theta_limits=[2.4, 18.0],
+)
+```
+
+| `instrument` キー | 意味 |
+|---|---|
+| `path` / `paths` | 装置ファイル (系列共通 / フレーム毎に 1:1) |
+| `radiation` | `xray_lab` / `xray_synchrotron` / `neutron_cw` / `neutron_tof` |
+| `geometry` | `bragg_brentano` / `debye_scherrer` |
+| `background_coeffs` | 背景項数 (既定 6)。実測で **18 が最良** の系があった (26%→6.7% の一部) |
+| `auto_freeze_minor_cells` | **相分率の閾値 (float, 例 0.2)。bool ではない** — 分率が閾値未満の相のセルを自動凍結する (解放すると計量相関で発散・分率崩壊)。`True` は `float(True)==1.0` = 全相凍結になるため ② が拒否する。**`instrument` の中に置く** (tool の kwarg ではない) |
+
+> `refine_cell=False` は **`PhaseSpec` のキー** (相ごとの手動凍結。手動が自動に優先)。
+> `auto_freeze_minor_cells` とは階層が違うので混同しないこと。
 
 ### 3. 疑う — **ここからが本 skill の主眼**
 
@@ -85,8 +109,15 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 
 #### J6 系統ブロックの再構成
 
-`repair_frames(result, frames, phases, instrument=...)`:
+```python
+repair_frames(result, frames, phases,
+              instrument={...},              # 系列と同じ装置設定
+              two_theta_limits=[2.4, 18.0])  # ★系列を精密化したのと同じレンジ
+```
 
+- **`two_theta_limits` は必ず系列と同じ値を渡す**。省略すると修復試行だけが全域で走り、採用規則
+  `rwp_after < rwp_before - rwp_tol` が**異なるデータ域の Rwp を比較**する。**エラーは出ず、
+  無効な比較のまま「修復成功」が採用される**。「呼べるが黙って間違う」は「呼べない」より悪い。
 - **`phases` には系列で使われている全相を渡す** (`appearances` の自動追加相を含む)。
   欠けるとツールがエラーにする — 黙って相を落として「修復成功」にしないため。
 - `repairs` は Rwp 改善時のみ採用済 (規則なので自律)。
@@ -138,8 +169,15 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 |---|---|---|
 | データ品質の検出・2θ 上限の提案 | ✅ 提示のみ | ✅ 生データの要求はユーザーへ |
 | 不連続フレームの近傍 warm-start 修復 | ✅ 自律 (Rwp 改善時のみ採用・ledger) | `needs_model_revision` を判断 |
+| **新相の自動追加** (`phase_id` 有効時) | 🟡 **受理基準で自律採用する** (frac∧Rwp∧validity) | ✅ **`appearances` を監査**し化学妥当性を確認・疑わしきはユーザー承認 |
 | 相集合の完全性 (相の**欠落**) | ❌ **原理的に不可** | ✅ **あなたが疑う** |
-| 相の追加/除外・対称性変更・構造改訂 | ❌ | ✅ **ユーザー承認必須** |
+| **③ が判断して**相を追加/除外・対称性変更・構造改訂 | ❌ | ✅ **ユーザー承認必須** |
+
+> **注意**: `sequential_rietveld` に `phase_id` を渡すと、**コアは承認なしに相を追加する**
+> (受理基準を満たす場合のみ・可逆棄却つき — `insitu` skill と同じ挙動)。「相集合は自分が
+> 変えない限り不変」と思い込まないこと。**`appearances` を必ず読み**、追加された相が化学的に
+> 妥当か・未指数ピークを説明するかを ③ が判断する。承認が要るのは**あなたが判断して行う**
+> 改訂 (相の追加/除外・対称性変更・構造改訂) である。
 
 **なぜ相の欠落は自律検出できないか**: 受理基準は「**追加された相が残差を説明するか**」しか見ない。
 欠落相は**その視野の外**にあり、しかも欠けた相の強度は計量の近い別相が肩代わりして Rwp を保つ。

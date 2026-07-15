@@ -83,9 +83,13 @@ Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を�
 
 ### 4. 不連続を修復する
 
-`repair_frames(result, frames, phases)` で Rwp/相分率が不連続なフレームを両隣から warm-start
-し直す。**`phases` には系列で使われている全相を渡すこと** — `appearances` の自動追加相を
-含め忘れると相が黙って落ちる (ツールが検出してエラーにするが、意味を理解して渡すこと)。
+`repair_frames(result, frames, phases, instrument={...}, two_theta_limits=[...])` で Rwp/相分率が
+不連続なフレームを両隣から warm-start し直す。
+
+- **`two_theta_limits` は系列と同じ値を必ず渡す**。省略すると修復試行だけが全域で走り、採用規則
+  が**異なるデータ域の Rwp を比較**する (エラーは出ず、無効な比較のまま採用される)。
+- **`phases` には系列で使われている全相を渡すこと** — `appearances` の自動追加相を
+  含め忘れると相が黙って落ちる (ツールが検出してエラーにするが、意味を理解して渡すこと)。
 
 - `repairs` は Rwp 改善時のみ採用済 (自己検証可能な規則なので自律)。
 - **`needs_model_revision` はモデルの欠陥**であり、近傍 warm-start では直らない

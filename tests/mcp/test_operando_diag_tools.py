@@ -279,11 +279,42 @@ def test_check_phase_set_complete_series():
 
 
 def test_check_phase_set_malformed_result_returns_error_dict():
-    """壊れた系列結果は例外でなく error dict (repair_frames と同じ縮退契約)。"""
+    """壊れた系列結果は例外でなく error dict (repair_frames と同じ縮退契約)。
+
+    `frame_index` 欠落は以前 `_result_from_dict` の KeyError として現れたが、現在は前段の
+    `_validate_seq_result` が必須キーの欠落として先に捕らえる (ValueError)。error dict へ縮退する
+    という契約は不変で、error_type が具体化しただけ。
+    """
     out = check_phase_set({"frames": [{"rwp": 8.0}]})  # frame_index 欠落
     assert "error" in out
-    assert out["error_type"] == "KeyError"
+    assert out["error_type"] == "ValueError"
+    assert "frame_index" in out["error"]
     assert "is_complete" not in out
+    json.dumps(out, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param({"nope": 1}, id="frames キーが無い"),
+        pytest.param({}, id="空 dict"),
+        pytest.param({"frames": [], "phase_names": []}, id="frames が空"),
+        pytest.param({"frames": [{"frame_index": 0}]}, id="必須フィールド欠落 (rwp/phase_names)"),
+        pytest.param({"frames": "abc"}, id="frames が列でない"),
+        pytest.param({"frames": [None]}, id="frame が dict でない"),
+    ],
+)
+def test_check_phase_set_empty_or_malformed_result_is_never_clean(bad):
+    """空/壊れた系列結果を「相集合は完全」と報告しない (J5 の最悪の失敗様態)。
+
+    `frames` キーの無い dict は `_result_from_dict` で**例外にならず空の系列**へ復元されるため、
+    ガードが働かず `is_complete=True`/`union=[]` の「無罪放免」が返っていた。③ に「相集合は
+    完全だ」と告げることは、本設計が防ごうとしたまさにその失敗 (③ が疑うのをやめる) を招く。
+    """
+    out = check_phase_set(bad)
+    assert "error" in out, f"空/壊れた入力が error dict にならない: {out}"
+    assert out["error_type"]
+    assert "is_complete" not in out, "壊れた入力から相集合の判定を返してはならない"
     json.dumps(out, allow_nan=False)
 
 
@@ -426,6 +457,34 @@ def test_repair_frames_frame_count_mismatch_returns_error_dict():
     assert "error" in out
     assert out["error_type"] == "ValueError"
     assert "3" in out["error"] and "5" in out["error"]
+    json.dumps(out, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param({"nope": 1}, id="frames キーが無い"),
+        pytest.param({}, id="空 dict"),
+        pytest.param({"frames": [], "phase_names": []}, id="frames が空"),
+        pytest.param({"frames": [{"frame_index": 0}]}, id="必須フィールド欠落 (rwp/phase_names)"),
+        pytest.param({"frames": "abc"}, id="frames が列でない"),
+        pytest.param({"frames": [None]}, id="frame が dict でない"),
+    ],
+)
+def test_repair_frames_empty_or_malformed_result_is_never_clean(bad):
+    """空/壊れた系列結果を「不連続なし = 修復不要」と報告しない (check_phase_set と同じ縮退契約)。
+
+    ``{"nope": 1}`` は空の系列へ復元され、フレーム数ガード (0 == 0) すら通り抜けて
+    ``repairs=[]``/``needs_model_revision=[]`` の「異常なし」を返していた。
+    """
+
+    def runner(frame, phases, initial_cells):  # pragma: no cover - 検証で弾かれ呼ばれないはず
+        raise AssertionError("壊れた入力で精密化してはならない")
+
+    out = repair_frames(bad, [], [ALPHA.to_dict()], runner=runner)
+    assert "error" in out, f"空/壊れた入力が error dict にならない: {out}"
+    assert out["error_type"]
+    assert "repairs" not in out, "壊れた入力から修復レポートを返してはならない"
     json.dumps(out, allow_nan=False)
 
 

@@ -13,14 +13,62 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from tsumugin.mcp.tools import MCP_TOOLS
 
 _PLUGIN = Path("plugins/tsumugin")
 _SKILL = _PLUGIN / "skills" / "operando-diagnose" / "SKILL.md"
 _COMMAND = _PLUGIN / "commands" / "operando-diagnose.md"
+_INSITU_SKILL = _PLUGIN / "skills" / "insitu" / "SKILL.md"
+_PLAYBOOK = Path("docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md")
 
 # 本 skill が駆動する ② 診断ツール (architecture.md §2 の 4 ツール)
 _DIAG_TOOLS = ("assess_data_quality", "check_phase_set", "repair_frames", "residual_report")
+
+# `repair_frames` の呼び出し例を載せている全ドキュメント (skill 2 種 + 非 Claude 向け playbook)
+_REPAIR_FRAMES_DOCS = (_SKILL, _INSITU_SKILL, _PLAYBOOK)
+
+# `appearances` を「読む/監査する」旨の指示 (語は変わりうるので動詞は選択肢で受ける)
+_APPEARANCES_AUDIT = re.compile(r"`appearances`[^\n]{0,40}(監査|読む|読み|確認)")
+
+
+def _call_sites(text: str, func: str) -> list[str]:
+    """``func(`` の呼び出し例を**括弧の対応をとって**丸ごと抜き出す (複数行の呼び出しに対応)。
+
+    表 (``| `repair_frames` | ... |``) や散文中の言及は ``func(`` に一致しないので拾わない —
+    検証対象は「③ がそのまま真似する呼び出し例」だけである。
+    """
+    sites: list[str] = []
+    for m in re.finditer(re.escape(func) + r"\(", text):
+        start = m.end()
+        depth = 1
+        for i in range(start, len(text)):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    sites.append(text[start:i])
+                    break
+        else:  # pragma: no cover - 閉じ括弧の無い壊れた例
+            sites.append(text[start:])
+    return sites
+
+
+def _table_rows(text: str, heading: str) -> list[list[str]]:
+    """``heading`` 節の markdown 表を ``[セル, ...]`` の行リストへ (区切り行/ヘッダは除く)。"""
+    body = text.split(heading, 1)[1].split("\n## ", 1)[0]
+    rows: list[list[str]] = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if all(set(c) <= {"-", ":"} and c for c in cells):  # 区切り行
+            continue
+        rows.append(cells)
+    return rows
 
 
 def test_operando_diagnose_skill_and_command_exist():
@@ -89,6 +137,142 @@ def test_command_references_skill_and_gates_on_data_quality():
     assert "assess_data_quality" in text
     assert "check_phase_set" in text
     assert "承認" in text
+
+
+# ===========================================================================
+# ドキュメント整合の恒久ガード (誤った指示 = 実装バグと同等に有害)
+# ===========================================================================
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_repair_frames_examples_always_pass_two_theta_limits(doc):
+    """ガード1: `repair_frames` の呼び出し例は必ず `two_theta_limits` を伴うこと。
+
+    省略すると修復試行だけが全域で走り、採用規則 `rwp_after < rwp_before - rwp_tol` が
+    **系列側と異なるデータ域の Rwp を比較**する。**例外は出ず、無効な比較のまま「修復成功」が
+    採用される** ——「呼べるが黙って間違う」は「呼べない」より悪い (architecture.md §4.5 #2)。
+    ③ は例をそのまま真似するので、例から欠けることが即ちこの失敗の再導入になる。
+    """
+    text = doc.read_text(encoding="utf-8")
+    sites = _call_sites(text, "repair_frames")
+    assert sites, f"{doc}: repair_frames の呼び出し例が無い (③ が真似する例が必要)"
+    bad = [s for s in sites if "two_theta_limits" not in s]
+    assert not bad, (
+        f"{doc}: two_theta_limits の無い repair_frames 呼び出し例がある: {bad}。"
+        "系列を精密化したのと同じレンジを必ず渡すこと (異なるデータ域の Rwp 比較は無効)。"
+    )
+
+
+@pytest.mark.parametrize("skill", (_SKILL, _INSITU_SKILL), ids=lambda p: p.as_posix())
+def test_skill_authority_tables_agree_on_autonomous_phase_addition(skill):
+    """ガード2: 2 つの skill の権限境界表が「新相の自動追加」で矛盾しないこと。
+
+    実装は `phase_id` 有効時、**ユーザー承認なしに**受理基準 (frac∧Rwp∧validity) だけで相を
+    追加する (`insitu.engine._accept_new_phase`)。「相追加には常に承認が要る」と書く skill が
+    あると、③ は**実際に起きた相追加を監査しない** — 追加された相の化学的妥当性は受理基準の
+    視野の外 (残差の説明力しか見ない) なので、監査の欠落は誤った相の見逃しに直結する。
+
+    脆くしないため、語ではなく**主張**を見る: 「新相」の行の決定論コア列が (a) 自律採用すると
+    言い (b) 受理基準を根拠に挙げ (c) ❌ (=コアは行わない) でないこと。加えて ③ 側に
+    `appearances` の監査指示があること。
+    """
+    text = skill.read_text(encoding="utf-8")
+    rows = [r for r in _table_rows(text, "## 権限境界") if "新相" in r[0]]
+    assert rows, f"{skill}: 権限境界表に「新相」の追加に関する行が無い"
+    for cells in rows:
+        core = cells[1]
+        assert "自律" in core and "受理基準" in core, (
+            f"{skill}: 新相追加が受理基準による自律採用だと書かれていない: {cells!r}。"
+            "実装は承認なしに追加する — 表がそれを隠すと ③ が監査をやめる。"
+        )
+        assert "❌" not in core, (
+            f"{skill}: 新相追加をコアが行わない (❌) と書いている: {cells!r}。"
+            "実装は phase_id 有効時に自律追加する (常に承認必須ではない)。"
+        )
+    assert _APPEARANCES_AUDIT.search(text), (
+        f"{skill}: 自動追加された相 (`appearances`) を ③ が監査/確認する指示が無い。"
+        "自律追加を許す以上、事後監査が唯一の歯止めである。"
+    )
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        pytest.param(re.compile(r"Rwp が良くても信じない"), id="J5: Rwp が良くても信じない"),
+        pytest.param(re.compile(r"J5"), id="J5 の見出し"),
+        pytest.param(_APPEARANCES_AUDIT, id="appearances の監査"),
+        pytest.param(re.compile(r"残差を説明するためだけに相を足さない"), id="相の水増し禁止"),
+    ],
+)
+def test_playbook_and_skill_share_safety_critical_instructions(marker):
+    """ガード3: playbook (`内容は本書と同一` と宣言) と operando-diagnose skill が乖離しないこと。
+
+    playbook は非 Claude ハーネス向けの同一内容版であり、**片方にしか無い安全指示は、その
+    ハーネスでだけ失敗が再現する**ことを意味する。安全上の要 (J5/Rwp を信じない・`appearances`
+    の監査・相の水増し禁止) を双方に要求する。`two_theta_limits` の必須性は
+    `test_repair_frames_examples_always_pass_two_theta_limits` が両文書に対して担保する。
+
+    **本ガードの限界**: 表現の同値性は検査できない (語 → 主張の写像は機械化できない)。
+    再言明の欠落を捕らえるだけで、意味の食い違いまでは防げない — 最終防波堤は人間のレビュー。
+    """
+    for doc in (_SKILL, _PLAYBOOK):
+        text = doc.read_text(encoding="utf-8")
+        assert marker.search(text), (
+            f"{doc}: 安全上の要となる指示 ({marker.pattern}) が無い。"
+            "playbook と skill は同一内容を宣言している — 片方だけの安全指示は乖離である。"
+        )
+
+
+@pytest.mark.parametrize("doc", (_SKILL, _PLAYBOOK), ids=lambda p: p.as_posix())
+def test_instrument_spec_keys_are_documented_where_instrument_is_required(doc):
+    """ガード3c: `instrument` を渡せと指示する文書は、そのキーも文書化していること。
+
+    ③ は JSON しか送れず、`instrument` spec の中身は**サーバ側 runner の全設定**である
+    (放射光か実験室 X 線か・背景項数・少数相セル凍結)。「`instrument` を明示せよ」とだけ書いて
+    キーを書かない文書は、③ に**組み立てられない値**を要求する (§4.5 到達可能性と同型の欠陥)。
+
+    実際 operando-diagnose skill は `auto_freeze_minor_cells` に一切言及しないまま
+    `instrument` を要求しており、playbook の「内容は本書と同一」宣言が偽になっていた。
+
+    **限界**: キーが列挙されていることしか見ない。値の意味の正しさは human review。
+    """
+    text = doc.read_text(encoding="utf-8")
+    assert "instrument" in text, f"{doc}: instrument spec への言及が無い"
+    for key in ("path", "radiation", "geometry", "background_coeffs", "auto_freeze_minor_cells"):
+        assert key in text, (
+            f"{doc}: `instrument` を要求しているのにキー `{key}` を文書化していない。"
+            "③ は JSON しか送れないため、キーが書かれていなければ組み立てられない。"
+        )
+    # 置き場所の取り違え (tool の kwarg として渡す → TypeError が境界を越える) を防ぐ
+    assert re.search(r"auto_freeze_minor_cells[^\n]{0,200}(閾値|threshold)", text, re.S), (
+        f"{doc}: auto_freeze_minor_cells を閾値と説明していない (bool 誤用は全相凍結になる)"
+    )
+
+
+def test_playbook_documents_auto_freeze_as_instrument_spec_threshold():
+    """ガード3b: playbook の `auto_freeze_minor_cells` の説明が実装と一致すること。
+
+    2 通りの取り違えがどちらも**黙って**壊す:
+    - **tool の kwarg として渡す** → `TypeError` が MCP 境界を越える (置き場所は `instrument` spec)。
+    - **bool を渡す** → `float(True)==1.0` = 「分率 1.0 未満の相をすべて凍結」= 全相のセルが
+      黙って凍結される (② が bool を拒否するのはこのため)。
+
+    `insitu` SKILL 側の同じ主張は `test_m9_plugin.py` が守っている。
+    """
+    import inspect  # noqa: PLC0415
+
+    from tsumugin.autorietveld.engine import run_auto_rietveld  # noqa: PLC0415
+
+    ann = inspect.signature(run_auto_rietveld).parameters["auto_freeze_minor_cells"].annotation
+    assert "float" in str(ann), f"実装の型が変わった: {ann}"
+
+    text = _PLAYBOOK.read_text(encoding="utf-8")
+    assert "auto_freeze_minor_cells" in text
+    assert "閾値" in text, "playbook が auto_freeze_minor_cells を閾値と説明していない"
+    assert "bool ではない" in text, "playbook に bool との取り違えへの注意が無い"
+    assert re.search(r"`instrument` spec のキー", text), (
+        "playbook が auto_freeze_minor_cells の置き場所 (instrument spec) を明示していない"
+    )
 
 
 def test_plugin_manifest_advertises_operando_diagnose():

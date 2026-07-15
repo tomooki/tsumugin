@@ -136,6 +136,62 @@ def _parse_excluded_regions(
     return tuple(out)
 
 
+#: 系列結果の各フレームが**判断に足る**ために最低限持つべきキー。``seq_result_to_dict`` は常に
+#: この 3 つを出す (値が None でも可)。欠けた dict は ``_result_from_dict`` が既定値
+#: (rwp=inf / phase_names=()) で黙って埋めるため、**キーの有無でしか欠落を検出できない**。
+_REQUIRED_FRAME_KEYS = ("frame_index", "rwp", "phase_names")
+
+
+def _validate_seq_result(result: Mapping[str, object]) -> None:
+    """系列結果 dict が判断に足る形かを**判定/精密化の前に**検証する。
+
+    ``_result_from_dict`` は寛容で、``frames`` キーの無い dict を **例外にせず空の系列**へ復元する
+    (``d.get("frames", [])``)。そのため ``check_phase_set({"nope": 1})`` は ``is_complete=True`` /
+    ``union=[]`` の「相集合は完全」を返していた。**J5 (Rwp が盲目な相集合の誤りを捕まえる) の
+    判定器がゴミ入力から無罪放免を出すのは最悪の失敗様態**である: ③ に「疑わなくてよい」と
+    告げることは、本設計が防ごうとしたまさにその失敗を招く。何も判断できないときは
+    ``is_complete`` を返してはならず、error dict へ縮退する。
+
+    ``frames`` が空の系列も**エラーとする**: 判断の対象が存在しない以上「完全」とは言えず、
+    黙って完全と答えるのは上と同じ不安全である (系列結果は必ず 1 フレーム以上を持つ)。
+
+    :raises ValueError: ``result`` が Mapping でない、``frames`` が無い/空/列でない、
+        フレームが dict でない、フレームが ``_REQUIRED_FRAME_KEYS`` を欠くとき
+    """
+    if not isinstance(result, Mapping):
+        raise ValueError(
+            f"result は系列結果 dict である必要があります: {type(result).__name__}"
+        )
+    if "frames" not in result:
+        raise ValueError(
+            "result に 'frames' キーがありません。sequential_rietveld / repair_frames が返す"
+            "系列結果 dict をそのまま渡してください (空の系列を「相集合は完全」と判定しない"
+            "ため、ここで打ち切ります)。"
+        )
+    frames = result["frames"]
+    if isinstance(frames, (str, bytes)) or not isinstance(frames, Sequence):
+        raise ValueError(
+            f"result['frames'] はフレーム dict の列である必要があります: {type(frames).__name__}"
+        )
+    if not frames:
+        raise ValueError(
+            "result['frames'] が空です。判断の対象が無い系列を「相集合は完全」とは報告できません"
+            "(系列を実行できていない可能性があります — sequential_rietveld の結果を確認してください)。"
+        )
+    for i, fd in enumerate(frames):
+        if not isinstance(fd, Mapping):
+            raise ValueError(
+                f"result['frames'][{i}] がフレーム dict ではありません: {type(fd).__name__}"
+            )
+        missing = [key for key in _REQUIRED_FRAME_KEYS if key not in fd]
+        if missing:
+            raise ValueError(
+                f"result['frames'][{i}] に必須キーがありません: {missing}。"
+                "欠けたキーは既定値 (rwp=inf / phase_names=()) で黙って埋まり、相集合の判定が"
+                "入力の不備を反映しない誤った結論になります。"
+            )
+
+
 def _load_pattern_with_esd(
     path: str, data_format: str | None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
@@ -289,16 +345,21 @@ def check_phase_set(
     :param max_turning_points: 同上の turning point 上限 (既定 2; 単一ドームまでは正常)
     :returns: ``is_complete``/``union``/``frames_with_missing``/``recommendation``/``phases``
         (和集合の全相について ``{phase, turning_points, flagged, reason}``)。
-        系列結果の復元失敗は ``{"error", "error_type"}`` (``repair_frames`` と同じ縮退契約)
+        系列結果が空/不正 (``frames`` 無し・空・必須キー欠落) または復元失敗のときは
+        ``{"error", "error_type"}`` (``repair_frames`` と同じ縮退契約)。
+        **「相集合は完全」という判定はこの場合返らない** (``_validate_seq_result`` 参照)
     """
     from ..insitu.phaseset import flag_nonmonotonic_fraction, suggest_phase_set_completion
 
     # 【縮退契約の統一】: 本モジュールの 4 ツールは例外を送出せず error dict へ縮退する
     #   (module docstring)。`_result_from_dict` は壊れた系列結果で KeyError/ValueError/TypeError を
     #   投げるため、`repair_frames` と同じ形で捕らえる。
+    # 【前段の入力検証】: ただし `_result_from_dict` は **投げない壊れ方** (frames キー無し → 空系列)
+    #   があり、それが素通りすると「相集合は完全」という最悪の誤答になる。先に形を検証する。
     try:
+        _validate_seq_result(result)
         seq = _result_from_dict(result)
-    except (KeyError, ValueError, TypeError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     completion = suggest_phase_set_completion(seq)
@@ -371,19 +432,24 @@ def repair_frames(
         ``(frame, phases, initial_cells) -> AutoRietveldResult``。JSON 境界越しには渡せない。
         明示指定時は ``instrument`` より優先する (``sequential_rietveld`` と同じ優先順)
     :returns: ``repairs``/``needs_model_revision``/``systematic_hint``/``discontinuities``/
-        ``ledger_entries``。失敗 (フレーム数不一致・相集合の欠落・spec 復元失敗・instrument spec
-        不正・レンジ不正) は ``{"error", "error_type"}`` (この場合 ``repairs`` 等のキーは返らない)
+        ``ledger_entries``。失敗 (系列結果が空/不正・フレーム数不一致・相集合の欠落・spec 復元
+        失敗・instrument spec 不正・レンジ不正) は ``{"error", "error_type"}``
+        (この場合 ``repairs`` 等のキーは返らない = 「不連続なし」と誤読されない)
     """
     from ..insitu.engine import _default_gsas_runner
     from ..insitu.model import SequentialConfig
     from ..insitu.repair import detect_discontinuities, repair_isolated
     from ..store.ledger import Ledger
 
+    # 【前段の入力検証】: 空/壊れた系列結果は `_result_from_dict` を素通りして空の系列になり、
+    #   フレーム数ガード (0 == 0) すら通り抜けて `repairs=[]`/`needs_model_revision=[]` の
+    #   「異常なし」を返していた (check_phase_set と同じ失敗様態)。判定の前に形を検証する。
     try:
+        _validate_seq_result(result)
         seq = _result_from_dict(result)
         frame_specs = [FrameSpec.from_dict(f) for f in frames]
         phase_specs = [PhaseSpec.from_dict(p) for p in phases]
-    except (KeyError, ValueError, TypeError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     # 【フレーム数ガード】: repair_isolated は frames[i] を **位置**で引く (i は result 側の

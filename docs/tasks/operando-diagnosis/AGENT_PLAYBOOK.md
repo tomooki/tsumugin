@@ -58,7 +58,8 @@ sequential_rietveld(
                     {"structure_path": "cubic.cif", "phase_name": "cubic"},
                     {"structure_path": "tetra_real.cif", "phase_name": "tetra", "refine_cell": False}],
     instrument={"path": "kmnfe.instprm", "radiation": "xray_synchrotron",
-                "geometry": "debye_scherrer", "background_coeffs": 18},
+                "geometry": "debye_scherrer", "background_coeffs": 18,
+                "auto_freeze_minor_cells": 0.2},   # ← instrument spec の中。tool の kwarg ではない
     warm_start_fractions=True,
     two_theta_limits=[2.4, 18.0],
 )
@@ -71,9 +72,14 @@ sequential_rietveld(
 |---|---|
 | 生データ + `background_coeffs=18` | Rwp 26% → **6.7%** (12/24 項は劣る) |
 | `two_theta_limits=[2.4, 18.0]` | 30°→18° で **369s→8s** かつ収束改善 |
-| 少数相のセル凍結 (`refine_cell=False` / `auto_freeze_minor_cells=0.2`) | 解放すると計量相関で発散・分率崩壊 |
-| `warm_start_fractions=True` | 分率が初期値に張り付くフレームを是正 (#82) |
+| 少数相のセル凍結 (`PhaseSpec.refine_cell=False` / `instrument["auto_freeze_minor_cells"]=0.2`) | 解放すると計量相関で発散・分率崩壊 |
+| `warm_start_fractions=True` (tool の kwarg) | 分率が初期値に張り付くフレームを是正 (#82) |
 
+> **置き場所に注意** (2 つは階層が違う):
+> - `refine_cell` は **`PhaseSpec` のキー** (相ごとの手動凍結。手動が自動に優先する)。
+> - `auto_freeze_minor_cells` は **`instrument` spec のキー** (tool のトップレベル kwarg ではない
+>   — 直接渡すと `TypeError` が MCP 境界を越える)。サーバが runner を組むときにのみ効く。
+>
 > `auto_freeze_minor_cells` は**相分率の閾値 (float, 例 0.2)。bool ではない** —
 > `True` は `float(True)==1.0` = 全相凍結になる (② が bool を拒否する)。
 
@@ -164,8 +170,13 @@ V-t / dQ/dV を人間に要求する。
 |---|---|---|
 | データ品質の検出・2θ 上限の提案 | ✅ 提示のみ | ✅ 生データの要求は人間へ |
 | 不連続フレームの近傍 warm-start 修復 | ✅ 自律 (Rwp 改善時のみ採用・ledger) | `needs_model_revision` を判断 |
+| **新相の自動追加** (`phase_id` 有効時) | 🟡 **受理基準で自律採用する** (frac∧Rwp∧validity) | ✅ **`appearances` を監査**し化学妥当性を確認 |
 | **相集合の完全性** (相の**欠落**) | ❌ **原理的に不可** | ✅ **③ が疑う** |
-| 相の追加/除外・対称性変更・構造改訂 | ❌ | ✅ **人間の承認必須** |
+| **③ が判断して**相を追加/除外・対称性変更・構造改訂 | ❌ | ✅ **人間の承認必須** |
+
+> `sequential_rietveld` に `phase_id` を渡すと**コアは承認なしに相を追加する** (受理基準を満たす
+> 場合のみ・可逆棄却つき)。「相集合は自分が変えない限り不変」と思い込まず、**`appearances` を
+> 必ず読む**こと。人間の承認が要るのは **③ が判断して行う**改訂である。
 
 **なぜ相の欠落は自律検出できないか**: 受理基準は「**追加された相が残差を説明するか**」しか
 見ない。欠落相は**その視野の外**にあり、しかも欠けた相の強度は計量の近い別相が肩代わりして
