@@ -16,10 +16,12 @@ def _ident(scores, *, strain=0.0, has_unknown=False):
     return SimpleNamespace(matches=matches, unmatched=SimpleNamespace(has_unknown=has_unknown))
 
 
-def _result(rwp, cells, fracs, *, valid=True, gof=1.0):
+def _result(rwp, cells, fracs, *, valid=True, gof=1.0, wfracs=None, wfrac_esd=None, cesd=None):
     return AutoRietveldResult(
         stage_results=(), final_rwp=rwp, final_gof=gof, refined_cells=cells,
         validity=ValidityReport(passed=valid), phase_fractions=fracs,
+        phase_weight_fractions=wfracs or {}, phase_weight_fraction_esd=wfrac_esd or {},
+        cell_esd=cesd or {},
     )
 
 
@@ -165,6 +167,46 @@ def test_multiphase_anchor_carries_phase_set():
 
     anchors = extract_anchors(_frames(1), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
     assert anchors[0].phase_names == ("alpha", "new_delta")
+
+
+def test_anchor_carries_weight_fractions_and_esd():
+    """段階 B の重量分率 + esd + 格子 esd が Anchor へ貫通する (出力フレームへ運ぶための中継)。"""
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0)
+
+    def identifier(frame):
+        return (0.8, (ALPHA, DELTA))
+
+    def runner(frame, phases, cells):
+        names = [p.phase_name for p in phases]
+        return _result(
+            9.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in names},
+            {"alpha": 0.3, "new_delta": 0.7},
+            wfracs={"alpha": 0.42, "new_delta": 0.58},
+            wfrac_esd={"alpha": 0.007, "new_delta": 0.007},
+            cesd={"alpha": (0.001, 0.001, 0.001, 0.0, 0.0, 0.0),
+                  "new_delta": (0.002, 0.002, 0.002, 0.0, 0.0, 0.0)},
+        )
+
+    anchors = extract_anchors(_frames(1), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    a = anchors[0]
+    assert a.phase_weight_fractions == {"alpha": 0.42, "new_delta": 0.58}
+    assert a.phase_weight_fraction_esd == {"alpha": 0.007, "new_delta": 0.007}
+    assert a.cell_esd["new_delta"] == (0.002, 0.002, 0.002, 0.0, 0.0, 0.0)
+
+
+def test_anchor_esd_empty_when_runner_omits():
+    """重量分率/esd を返さない runner では Anchor の該当フィールドは空 dict。"""
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0)
+
+    def identifier(frame):
+        return (0.9, (ALPHA,))
+
+    def runner(frame, phases, cells):
+        return _result(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    anchors = extract_anchors(_frames(1), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    assert anchors[0].phase_weight_fractions == {}
+    assert anchors[0].cell_esd == {}
 
 
 def test_empty_frames():

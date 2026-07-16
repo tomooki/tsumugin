@@ -37,6 +37,9 @@ def _anchor_frame_result(anchor: Anchor) -> FrameRietveldResult:
         phase_fractions=dict(anchor.phase_fractions), phase_names=anchor.phase_names,
         validity_passed=anchor.validity_passed,
         refine_failed=not (anchor.rwp < float("inf")), n_obs=anchor.n_obs,
+        phase_weight_fractions=dict(anchor.phase_weight_fractions),
+        phase_weight_fraction_esd=dict(anchor.phase_weight_fraction_esd),
+        cell_esd={k: tuple(v) for k, v in anchor.cell_esd.items()},
     )
 
 

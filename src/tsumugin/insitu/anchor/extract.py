@@ -65,11 +65,18 @@ def _refine_anchor(
     res = runner(frame, specs, None)
     cells: dict[str, Cell] = {k: tuple(v) for k, v in res.refined_cells.items()}  # type: ignore[misc]
     fracs = {k: float(v) for k, v in res.phase_fractions.items()}
+    # 出版値 (重量分率 + esd) は段階 B の AutoRietveldResult から Anchor へ貫通させる
+    # (Anchor 経由でしか出力フレームに届かないため; 空/非対応 runner は既定空 dict に縮退)。
+    wfracs = {k: float(v) for k, v in getattr(res, "phase_weight_fractions", {}).items()}
+    wfrac_esd = {k: float(v) for k, v in getattr(res, "phase_weight_fraction_esd", {}).items()}
+    cesd = {k: tuple(float(x) for x in v)
+            for k, v in getattr(res, "cell_esd", {}).items()}
     return Anchor(
         frame_index=i, axis_value=frame.axis_value, phase_specs=tuple(specs),
         refined_cells=cells, rwp=float(res.final_rwp), gof=float(res.final_gof),
         phase_fractions=fracs, confidence=float(confidence), validity_passed=res.validity.passed,
         n_obs=int(getattr(res, "n_obs", 0)), fallback=fallback,
+        phase_weight_fractions=wfracs, phase_weight_fraction_esd=wfrac_esd, cell_esd=cesd,
     )
 
 

@@ -26,9 +26,13 @@ def _anchor(frame, phases=("alpha",), cell=(5.0, 5.0, 5.0, 90, 90, 90), fraction
                   phase_fractions=fractions if fractions is not None else {})
 
 
-def _result(rwp, cells, fracs):
-    return AutoRietveldResult(stage_results=(), final_rwp=rwp, final_gof=1.0, refined_cells=cells,
-                              validity=ValidityReport(passed=True), phase_fractions=fracs)
+def _result(rwp, cells, fracs, *, wfracs=None, wfrac_esd=None, cesd=None):
+    return AutoRietveldResult(
+        stage_results=(), final_rwp=rwp, final_gof=1.0, refined_cells=cells,
+        validity=ValidityReport(passed=True), phase_fractions=fracs,
+        phase_weight_fractions=wfracs or {}, phase_weight_fraction_esd=wfrac_esd or {},
+        cell_esd=cesd or {},
+    )
 
 
 # --- build_segments ---
@@ -189,6 +193,47 @@ def test_anchor_without_fractions_seeds_nothing():
 
     refine_segment_forward(seg, _frames(7), runner)
     assert seen == ["UNSET", "UNSET", "UNSET"]
+
+
+# --- 重量分率 + esd 貫通 (M10 出版値) ---
+
+def test_forward_pass_carries_weight_fractions_and_esd():
+    """前方パスは AutoRietveldResult の重量分率 + esd + 格子 esd を FrameRietveldResult へ運ぶ。"""
+    left = _anchor(1, phases=("alpha", "new_delta"))
+    right = _anchor(5, phases=("alpha", "new_delta"))
+    seg = build_segments((left, right), 7)[1]  # 中間 (2,3,4)
+
+    def runner(frame, phases, cells):
+        names = [p.phase_name for p in phases]
+        return _result(
+            8.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in names},
+            {"alpha": 0.4, "new_delta": 0.6},
+            wfracs={"alpha": 0.55, "new_delta": 0.45},
+            wfrac_esd={"alpha": 0.006, "new_delta": 0.006},
+            cesd={"alpha": (0.001, 0.001, 0.002, 0.0, 0.0, 0.0),
+                  "new_delta": (0.003, 0.003, 0.004, 0.0, 0.0, 0.0)},
+        )
+
+    sp = refine_segment_forward(seg, _frames(7), runner)
+    fr = sp.results[2]
+    assert fr.phase_weight_fractions == {"alpha": 0.55, "new_delta": 0.45}
+    assert fr.phase_weight_fraction_esd == {"alpha": 0.006, "new_delta": 0.006}
+    assert fr.cell_esd["new_delta"] == (0.003, 0.003, 0.004, 0.0, 0.0, 0.0)
+
+
+def test_frame_result_weight_fractions_empty_when_runner_omits():
+    """重量分率を返さない runner (present-guard) では空 dict に縮退する (0.0 の偽値を捏造しない)。"""
+    left = _anchor(1)
+    right = _anchor(5)
+    seg = build_segments((left, right), 7)[1]
+
+    def runner(frame, phases, cells):
+        return _result(8.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    sp = refine_segment_forward(seg, _frames(7), runner)
+    fr = sp.results[2]
+    assert fr.phase_weight_fractions == {}
+    assert fr.cell_esd == {}
 
 
 def test_three_arg_runner_still_works_in_directional_pass():

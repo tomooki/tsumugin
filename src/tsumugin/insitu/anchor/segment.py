@@ -53,6 +53,14 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
     """runner 結果 → FrameRietveldResult (内側フレーム j 用)。"""
     cells: dict[str, Cell] = {k: tuple(v) for k, v in res.refined_cells.items()}  # type: ignore[misc]
     fracs = {n: float(res.phase_fractions.get(n, 0.0)) for n in phase_names}
+    # 出版値 (重量分率 + esd) を phase_names へキーイングして貫通させる。GSAS が算出した相のみ含め
+    # (present-guard)、非対応 runner/スタブは空 dict に縮退する (0.0 の偽 esd を捏造しない)。
+    wfr = getattr(res, "phase_weight_fractions", {})
+    wfr_esd = getattr(res, "phase_weight_fraction_esd", {})
+    cesd_src = getattr(res, "cell_esd", {})
+    weight_fracs = {n: float(wfr[n]) for n in phase_names if n in wfr}
+    weight_frac_esd = {n: float(wfr_esd[n]) for n in phase_names if n in wfr_esd}
+    cell_esd = {n: tuple(float(x) for x in cesd_src[n]) for n in phase_names if n in cesd_src}
     return FrameRietveldResult(
         frame_index=j, axis_value=frame.axis_value, data_path=frame.data_path,
         rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
@@ -60,6 +68,8 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
         validity_passed=res.validity.passed,
         refine_failed=not (float(res.final_rwp) < float("inf")),
         n_obs=int(getattr(res, "n_obs", 0)),
+        phase_weight_fractions=weight_fracs, phase_weight_fraction_esd=weight_frac_esd,
+        cell_esd=cell_esd,
     )
 
 

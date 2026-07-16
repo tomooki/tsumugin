@@ -224,6 +224,14 @@ class FrameRietveldResult:
         `residual_report_from_result` で畳んで持たせることで、系列結果の消費側 (③ の J2/J3:
         未説明ピーク → 欠落相 / 強度比異常 → 対称性低下) が**再精密化なしに**残差を判断できる。
         既定 None で後方互換 (既存の 3 引数スタブ runner は残差を持たない)。
+    :param phase_weight_fractions: 相名→**重量 (質量) 分率** (`AutoRietveldResult.phase_weight_fractions`
+        由来, GSAS-II `calcMassFracs`)。**定量相分析の出版値はこちら** — `phase_fractions` は Scale 正規化
+        値で単位胞質量が相間で異なると重量分率と乖離する (K₂Mn[Fe(CN)₆] cubic/tetra で ~2.1x)。
+        既定空 dict で後方互換 (重量分率を持たない runner/スタブ・失敗フレームは空)。
+    :param phase_weight_fraction_esd: 相名→重量分率の esd (`AutoRietveldResult.phase_weight_fraction_esd`
+        由来)。出版には esd 必須。既定空 dict で後方互換。
+    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ; `refined_cells` と同一レイアウト,
+        `AutoRietveldResult.cell_esd` 由来)。既定空 dict で後方互換。
     """
 
     frame_index: int
@@ -240,6 +248,9 @@ class FrameRietveldResult:
     refine_failed: bool = False
     n_obs: int = 0
     residual_report: "ResidualReport | None" = None
+    phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
+    phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
+    cell_esd: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tsumugin.insitu.model import (
@@ -108,6 +110,48 @@ def test_fraction_series_zero_when_absent():
     # delta は frame0,1 で不在 → 0.0
     assert axes == (300.0, 320.0, 340.0, 360.0)
     assert fracs == pytest.approx((0.0, 0.0, 0.3, 1.0))
+
+
+def test_frame_result_esd_fields_default_empty():
+    """新設 esd/重量分率フィールドは既定空 dict (後方互換: 既存構築サイトは指定不要)。"""
+    fr = _frame(0, 300.0, {"a": (5.0, 5.0, 5.0, 90, 90, 90)}, {"a": 1.0}, ("a",))
+    assert fr.phase_weight_fractions == {}
+    assert fr.phase_weight_fraction_esd == {}
+    assert fr.cell_esd == {}
+
+
+def test_frame_result_esd_fields_carry_values():
+    """明示指定した重量分率/esd/格子 esd が保持される。"""
+    fr = FrameRietveldResult(
+        frame_index=0, axis_value=300.0, data_path="f0.xrdml", rwp=9.0, gof=1.0,
+        refined_cells={"a": (5.0, 5.0, 5.0, 90, 90, 90)}, phase_fractions={"a": 1.0},
+        phase_names=("a",),
+        phase_weight_fractions={"a": 0.63}, phase_weight_fraction_esd={"a": 0.004},
+        cell_esd={"a": (0.001, 0.001, 0.002, 0.0, 0.0, 0.0)},
+    )
+    assert fr.phase_weight_fractions["a"] == 0.63
+    assert fr.phase_weight_fraction_esd["a"] == 0.004
+    assert fr.cell_esd["a"][2] == 0.002
+
+
+def test_frame_result_esd_fields_json_safe():
+    """新フィールドは JSON シリアライズ可能 (② MCP 境界を越えられる)。"""
+    fr = FrameRietveldResult(
+        frame_index=1, axis_value=320.0, data_path="f1.xrdml", rwp=8.0, gof=1.1,
+        refined_cells={"cubic": (10.0, 10.0, 10.0, 90, 90, 90)},
+        phase_fractions={"cubic": 0.5, "tetra": 0.5}, phase_names=("cubic", "tetra"),
+        phase_weight_fractions={"cubic": 0.68, "tetra": 0.32},
+        phase_weight_fraction_esd={"cubic": 0.005, "tetra": 0.005},
+        cell_esd={"cubic": (0.001, 0.001, 0.001, 0.0, 0.0, 0.0)},
+    )
+    payload = {
+        "phase_weight_fractions": dict(fr.phase_weight_fractions),
+        "phase_weight_fraction_esd": dict(fr.phase_weight_fraction_esd),
+        "cell_esd": {k: list(v) for k, v in fr.cell_esd.items()},
+    }
+    round_trip = json.loads(json.dumps(payload))
+    assert round_trip["phase_weight_fractions"]["cubic"] == 0.68
+    assert round_trip["cell_esd"]["cubic"] == [0.001, 0.001, 0.001, 0.0, 0.0, 0.0]
 
 
 def test_phase_appearance_fields():

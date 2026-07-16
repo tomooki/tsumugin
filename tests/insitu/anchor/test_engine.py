@@ -14,10 +14,12 @@ ALPHA = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
 DELTA = PhaseSpec(structure_path="delta.cif", phase_name="new_delta")
 
 
-def _res(rwp, cells, fracs, *, gof=1.0, valid=True, n_obs=2000):
+def _res(rwp, cells, fracs, *, gof=1.0, valid=True, n_obs=2000,
+         wfracs=None, wfrac_esd=None, cesd=None):
     return AutoRietveldResult(stage_results=(), final_rwp=rwp, final_gof=gof, refined_cells=cells,
                               validity=ValidityReport(passed=valid), phase_fractions=fracs,
-                              n_obs=n_obs)
+                              n_obs=n_obs, phase_weight_fractions=wfracs or {},
+                              phase_weight_fraction_esd=wfrac_esd or {}, cell_esd=cesd or {})
 
 
 def _frames(n):
@@ -118,6 +120,35 @@ def test_deterministic_bit_identical():
     assert [f.rwp for f in a.frames] == [f.rwp for f in b.frames]
     assert [f.phase_names for f in a.frames] == [f.phase_names for f in b.frames]
     assert [ap.frame_index for ap in a.appearances] == [ap.frame_index for ap in b.appearances]
+
+
+def test_anchor_frames_carry_weight_fraction_esd_end_to_end():
+    """アンカーフレームの出力に重量分率 + esd + 格子 esd が届く (段階B→Anchor→出力フレーム)。"""
+    def identifier(frame):
+        return (0.9, (ALPHA,))
+
+    def runner(frame, phases, cells):
+        return _res(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0},
+                    wfracs={"alpha": 1.0}, wfrac_esd={"alpha": 0.0},
+                    cesd={"alpha": (0.001, 0.001, 0.001, 0.0, 0.0, 0.0)})
+
+    res = run_anchored_sequential(_frames(3), [ALPHA], runner=runner, identifier=identifier)
+    # 全フレームがアンカー (単相高信頼) → 各フレームに esd が乗る
+    for f in res.frames:
+        assert f.phase_weight_fractions == {"alpha": 1.0}
+        assert f.phase_weight_fraction_esd == {"alpha": 0.0}
+        assert f.cell_esd["alpha"] == (0.001, 0.001, 0.001, 0.0, 0.0, 0.0)
+
+
+def test_failed_frame_has_empty_esd():
+    """欠測フレーム (どのパスにも現れない) は esd なしで構築される。"""
+    from tsumugin.insitu.anchor.engine import _failed_frame
+
+    fr = _failed_frame(FrameSpec(data_path="x.xye", axis_value=1.0), 3)
+    assert fr.refine_failed
+    assert fr.phase_weight_fractions == {}
+    assert fr.phase_weight_fraction_esd == {}
+    assert fr.cell_esd == {}
 
 
 def test_empty_frames_returns_empty():
