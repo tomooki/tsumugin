@@ -90,13 +90,24 @@ sequential_rietveld(
 ```python
 check_phase_set(result)
 # -> {"is_complete": false, "union": [...], "frames_with_missing": [...],
-#     "phases": [{"phase": "tetra", "turning_points": 4, "flagged": true}]}
+#     "phases": [{"phase": "tetra", "turning_points": 4, "flagged": true}],
+#     "seed_pinned": true,
+#     "seed_pinned_frames": [{"frame": 125, "rwp": 8.4, "n_phases": 2, "seed_value": 0.5,
+#                             "phase_fractions": {"cubic": 0.5, "tetra": 0.5}}]}
 ```
 
 - **`is_complete=False`** → 「**除外した相の強度を、計量の近い別の相が肩代わりしていないか**」
   を疑う。**和集合で再フィットし相分率を比較**する。**Rwp が良くても信じない**。
 - **`flagged=True` (分率が非単調に振動)** → 物理的に妥当かを問う。単調な転移 (A→B→C) が
   自然な系で分率が増減を繰り返すなら、**まず artifact を疑う**。実データではこれが唯一の手がかり。
+- **`seed_pinned=True` (相分率が seed に張り付き)** → **そのフレームの分率を報告に使わない**。
+  分率が等分 seed (1/相数; 2 相なら 0.500/0.500) に**厳密に一致** = 分率精密化がそのフレームで
+  一度も動いていない。**Rwp は平凡なまま** (実測 8.4-8.5%) で `is_complete` にも非単調フラグにも
+  出ない (張り付きは「平坦」であって振動ではない) — **厳密な seed 一致が唯一の指紋**。実測
+  (K2Mn[Fe(CN)6] 247 フレーム) で 9 フレームが張り付き、**うち 6 連続が転移ドーム頂点の直前**に
+  あったため報告したドームの位置と高さが信用できなくなった。→ `repair_frames` で近傍から
+  ウォームスタート再フィット (`seed_pinned_frames[].frame` が対象)。**黙って捨てない**
+  (可視化して解釈対象から外す判断をユーザーに示す)。
 
 #### J2/J3 残差から欠落相・対称性低下を仮説化
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 from tsumugin.insitu.model import FrameRietveldResult, SequentialRietveldResult
 from tsumugin.insitu.phaseset import (
     flag_nonmonotonic_fraction,
+    flag_seed_pinned_frames,
+    is_seed_pinned,
     suggest_phase_set_completion,
 )
 
@@ -131,3 +133,80 @@ def test_missing_phase_treated_as_zero_fraction():
     result = SequentialRietveldResult(frames=frames)
     report = flag_nonmonotonic_fraction(result, "beta")
     assert report.fractions == (0.0, 0.5, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# flag_seed_pinned_frames (Issue #96)
+# ---------------------------------------------------------------------------
+
+
+def test_is_seed_pinned_two_phase_exact_half():
+    """2 相で厳密に 50/50 = GSAS の等分 seed のまま = 分率が一度も動いていない。"""
+    assert is_seed_pinned({"cubic": 0.5, "tetra": 0.5}) is True
+
+
+def test_is_seed_pinned_two_phase_60_40_is_not_pinned():
+    assert is_seed_pinned({"cubic": 0.6, "tetra": 0.4}) is False
+
+
+def test_is_seed_pinned_single_phase_is_never_pinned():
+    """単相の 1.0 は seed でなく物理的必然 (和=1)。偽陽性にしない。"""
+    assert is_seed_pinned({"alpha": 1.0}) is False
+
+
+def test_is_seed_pinned_three_phase_exact_thirds():
+    third = 1.0 / 3.0
+    assert is_seed_pinned({"a": third, "b": third, "c": third}) is True
+
+
+def test_is_seed_pinned_tolerance_is_strict():
+    """わずかでも動いていれば張り付きではない (指紋は**厳密一致**)。"""
+    assert is_seed_pinned({"cubic": 0.5001, "tetra": 0.4999}) is False
+
+
+def test_is_seed_pinned_ignores_empty_and_nonfinite():
+    assert is_seed_pinned({}) is False
+    assert is_seed_pinned({"a": float("nan"), "b": float("nan")}) is False
+
+
+def test_flag_seed_pinned_frames_reports_pinned_frames_only():
+    """seed 張り付きフレームだけを報告する (Rwp は平凡なので唯一の指紋)。"""
+    frames = (
+        _frame(0, {"cubic": 0.42, "tetra": 0.58}),
+        _frame(1, {"cubic": 0.5, "tetra": 0.5}),  # 張り付き
+        _frame(2, {"cubic": 0.31, "tetra": 0.69}),
+        _frame(3, {"cubic": 0.5, "tetra": 0.5}),  # 張り付き
+    )
+    report = flag_seed_pinned_frames(SequentialRietveldResult(frames=frames))
+    assert report.flagged is True
+    assert [f.frame_index for f in report.frames] == [1, 3]
+    assert report.frames[0].n_phases == 2
+    assert report.frames[0].seed_value == 0.5
+    assert "seed" in report.recommendation or "張り付" in report.recommendation
+
+
+def test_flag_seed_pinned_frames_clean_series_not_flagged():
+    frames = tuple(_frame(i, {"cubic": 0.31 + 0.05 * i, "tetra": 0.69 - 0.05 * i}) for i in range(4))
+    report = flag_seed_pinned_frames(SequentialRietveldResult(frames=frames))
+    assert report.flagged is False
+    assert report.frames == ()
+
+
+def test_flag_seed_pinned_frames_single_phase_series_not_flagged():
+    frames = tuple(_frame(i, {"alpha": 1.0}) for i in range(4))
+    report = flag_seed_pinned_frames(SequentialRietveldResult(frames=frames))
+    assert report.flagged is False
+
+
+def test_flag_seed_pinned_frames_skips_failed_frames():
+    """失敗フレームは既に refine_failed で可視なので張り付き判定の対象外。"""
+    frames = (
+        _frame(0, {"cubic": 0.42, "tetra": 0.58}),
+        FrameRietveldResult(
+            frame_index=1, axis_value=1.0, data_path="f1.xrdml", rwp=float("inf"),
+            gof=float("inf"), refined_cells={}, phase_fractions={"cubic": 0.5, "tetra": 0.5},
+            phase_names=("cubic", "tetra"), refine_failed=True,
+        ),
+    )
+    report = flag_seed_pinned_frames(SequentialRietveldResult(frames=frames))
+    assert report.flagged is False

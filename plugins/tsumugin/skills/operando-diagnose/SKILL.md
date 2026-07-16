@@ -32,7 +32,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 |---|---|---|
 | `assess_data_quality` | データ品質 | `is_subtracted`/`confidence`/`reasons`/`suggested_two_theta_limit` |
 | `sequential_rietveld` | 系列実行 | フレーム別 Rwp/格子/相分率 + **`residual_report`** (フレーム毎に同梱) |
-| `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` |
+| `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` + `seed_pinned`/`seed_pinned_frames` |
 | `repair_frames` | 不連続の修復 | `repairs` (採用のみ)/`needs_model_revision`/`ledger_entries` |
 | `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `auto_rietveld` | 単一フレーム再フィット | `residual_report` 同梱 |
@@ -93,6 +93,15 @@ sequential_rietveld(
 - **`flagged=True` (分率が非単調に振動)** → **J7**: 物理的に妥当かを問う。
   単調な転移 (A→B→C) が自然な系で分率が増減を繰り返すなら、**まず artifact を疑う**。
   実データではこれが唯一の手がかりだった。
+- **`seed_pinned=True` (相分率が seed に張り付き)** → **そのフレームの分率を報告に使わない**。
+  相分率が等分 seed (1/相数; 2 相なら 0.500/0.500) に**厳密に一致**している = 分率精密化が
+  そのフレームで一度も動いていない。**Rwp は平凡なまま** (実測 8.4-8.5%) で、`is_complete` にも
+  非単調フラグにも出ない (張り付きは「平坦」であって振動ではない) — **厳密な seed 一致が唯一の
+  指紋**である。実測 (K2Mn[Fe(CN)6] 247 フレーム) では 9 フレームが張り付き、**うち 6 連続が
+  転移ドーム頂点の直前**にあったため、報告したドームの位置と高さが信用できなくなった。
+  → `repair_frames` で近傍からウォームスタートして再フィットする (`seed_pinned_frames[].frame`
+  が対象)。**張り付いたフレームを黙って捨てない** — 可視化して物理的解釈の対象から外す判断を
+  ユーザーに示すこと。
 
 #### J2/J3 残差から欠落相・対称性低下を仮説化
 

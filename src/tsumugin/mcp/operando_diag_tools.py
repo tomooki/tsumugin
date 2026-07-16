@@ -5,7 +5,8 @@
 
 - ``assess_data_quality``: 観測ファイル (+esd) → 背景減算検出 + 2θ 上限提案 (計器)。
 - ``residual_report``: (x, yobs, ycalc[, weight]) → baseline/peak 分解 + 上位未説明特徴 (計器)。
-- ``check_phase_set``: 系列結果 (JSON) → 相集合完全性 + 相ごとの非単調性フラグ (計器)。
+- ``check_phase_set``: 系列結果 (JSON) → 相集合完全性 + 相ごとの非単調性フラグ + **seed 張り付き**
+  (相分率が等分 seed に厳密一致 = 分率精密化が動いていない; Rwp では検出不能, Issue #96) (計器)。
 - ``repair_frames``: 系列結果 + frames + phases → 不連続検出 + 近傍 warm-start 修復 (Rwp 改善時のみ
   採用の自己検証可能な規則なので①/②に置ける安全部分集合)。改善しなかったものは
   ``needs_model_revision`` として③へ上げる。入力の整合性 (フレーム数一致・相集合の完全性) は
@@ -353,15 +354,26 @@ def check_phase_set(
     (``repairs``/``needs_model_revision``) であり ``frames`` キーを持たない (architecture.md §2)。
 
     :param result: ``sequential_rietveld`` 等が返す系列結果 (JSON dict)
+    **seed 張り付き (Issue #96)**: 相分率が等分 seed (1/相数) に**厳密に**一致したままのフレームを
+    ``seed_pinned_frames`` で併せて返す。分率精密化がそのフレームで一度も動かなかった徴候で、
+    **Rwp は平凡なまま** (実測 8.4-8.5%) なので ``is_complete`` にも非単調性フラグにも出ない
+    (張り付きは「平坦」であって振動ではない)。厳密な seed 一致が唯一の指紋である。
+
     :param min_amplitude: ``flag_nonmonotonic_fraction`` の振幅フィルタ (既定 0.1)
     :param max_turning_points: 同上の turning point 上限 (既定 2; 単一ドームまでは正常)
     :returns: ``is_complete``/``union``/``frames_with_missing``/``recommendation``/``phases``
-        (和集合の全相について ``{phase, turning_points, flagged, reason}``)。
+        (和集合の全相について ``{phase, turning_points, flagged, reason}``)/``seed_pinned``/
+        ``seed_pinned_frames`` (``{frame, axis_value, rwp, n_phases, seed_value, phase_fractions}``)/
+        ``seed_pinning_recommendation``。
         系列結果が空/不正 (``frames`` 無し・空・必須キー欠落) または復元失敗のときは
         ``{"error", "error_type"}`` (``repair_frames`` と同じ縮退契約)。
         **「相集合は完全」という判定はこの場合返らない** (``_validate_seq_result`` 参照)
     """
-    from ..insitu.phaseset import flag_nonmonotonic_fraction, suggest_phase_set_completion
+    from ..insitu.phaseset import (
+        flag_nonmonotonic_fraction,
+        flag_seed_pinned_frames,
+        suggest_phase_set_completion,
+    )
 
     # 【縮退契約の統一】: 本モジュールの 4 ツールは例外を送出せず error dict へ縮退する
     #   (module docstring)。`_result_from_dict` は壊れた系列結果で KeyError/ValueError/TypeError を
@@ -390,6 +402,10 @@ def check_phase_set(
             }
         )
 
+    # 【seed 張り付き (Issue #96)】: 相分率が seed から一度も動いていないフレーム。Rwp/is_complete/
+    #   非単調性のどれにも出ないため、この検出器が無いと ③ は張り付いた分率を正常値として読む。
+    pinning = flag_seed_pinned_frames(seq)
+
     return {
         "is_complete": bool(completion.is_complete),
         "union": list(completion.union),
@@ -398,6 +414,19 @@ def check_phase_set(
         ],
         "recommendation": completion.recommendation,
         "phases": phases,
+        "seed_pinned": bool(pinning.flagged),
+        "seed_pinned_frames": [
+            {
+                "frame": f.frame_index,
+                "axis_value": finite_or_none(f.axis_value) if f.axis_value is not None else None,
+                "rwp": finite_or_none(f.rwp),
+                "n_phases": f.n_phases,
+                "seed_value": finite_or_none(f.seed_value),
+                "phase_fractions": {k: finite_or_none(v) for k, v in f.phase_fractions.items()},
+            }
+            for f in pinning.frames
+        ],
+        "seed_pinning_recommendation": pinning.recommendation,
         "reason": reason,
     }
 

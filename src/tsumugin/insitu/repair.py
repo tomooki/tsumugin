@@ -36,6 +36,7 @@ from typing import Mapping, Sequence
 
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
 from ..store.ledger import Ledger
+from ._warmstart import call_runner, seed_fractions
 from .engine import Runner
 from .model import Cell, FrameRietveldResult, FrameSpec, SequentialRietveldResult
 
@@ -300,7 +301,16 @@ def repair_isolated(
             if not neighbour_phases:
                 continue
             initial_cells: dict[str, Cell] = dict(neighbour.refined_cells)
-            trial = runner(frames[i], neighbour_phases, initial_cells)
+            # 【分率も warm-start する (Issue #96)】: セルだけを引き継ぐと相分率は GSAS の等分 seed
+            #   (2 相なら 0.50/0.50) から再出発し、修復試行そのものが seed に張り付いて Rwp が改善
+            #   しない → 採用されない。近傍の分率を種にすると実測で修復採用が 0/14 → 8/14 になった。
+            #   渡す分率は**実際に渡す相集合の分だけ** (name_to_spec で引けなかった相は除かれる)。
+            initial_fractions = seed_fractions(
+                neighbour.phase_fractions, [p.phase_name for p in neighbour_phases]
+            )
+            trial = call_runner(
+                runner, frames[i], neighbour_phases, initial_cells, initial_fractions
+            )
             if math.isfinite(float(trial.final_rwp)) and (
                 best is None or float(trial.final_rwp) < float(best[1].final_rwp)
             ):

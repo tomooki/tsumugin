@@ -24,7 +24,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 |---|---|---|
 | `assess_data_quality` | 計器 (データ品質) | 観測ファイル → 背景減算検出 + 2θ 上限提案 |
 | `sequential_rietveld` | 計器+アクチュエータ | frames + initial_phases spec (JSON) → フレーム別 Rwp/格子/相分率/残差レポート・変化点・自動出現相 |
-| `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ |
+| `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ + seed 張り付き |
 | `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases → 不連続フレームの近傍 warm-start 修復 |
 | `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
@@ -103,6 +103,11 @@ Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を�
   和集合で再フィットして**相分率を比較**する。**Rwp が良くても信じない**。
 - **`flagged=True` (相分率が非単調に振動)**: 物理的に妥当かを問う。単調な転移
   (A → B → C) が自然な系で分率が増減を繰り返すなら、**まず artifact を疑う**。
+- **`seed_pinned=True`**: そのフレームの相分率が等分 seed (2 相なら 0.500/0.500) に**厳密に一致**
+  = 分率精密化が一度も動いていない。**Rwp は平凡なまま**なので他のどの指標にも出ない
+  (実測: 247 フレーム中 9 フレームが Rwp 8.4-8.5% のまま張り付き、うち 6 連続が転移ドーム頂点の
+  直前だった)。`seed_pinned_frames[].frame` を `repair_frames` で近傍からウォームスタート再フィット
+  し、**張り付いたままの分率は報告に使わない**。
 - 各フレームの `residual_report.top_features` の **+ 残差**位置は未説明ピーク = 欠落相の候補
   (実データではここから d 比で cubic 相を独立同定できた)。`baseline_numerator_fraction` が
   大きければ「モデルでは下げられない」= データ側の問題 → **手順 0 に戻る**。

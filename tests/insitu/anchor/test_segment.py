@@ -19,10 +19,11 @@ def _frames(n):
     return [FrameSpec(data_path=f"f{i}.xye", axis_value=float(i)) for i in range(n)]
 
 
-def _anchor(frame, phases=("alpha",), cell=(5.0, 5.0, 5.0, 90, 90, 90)):
+def _anchor(frame, phases=("alpha",), cell=(5.0, 5.0, 5.0, 90, 90, 90), fractions=None):
     specs = tuple(ALPHA if p == "alpha" else DELTA for p in phases)
     return Anchor(frame_index=frame, axis_value=float(frame), phase_specs=specs,
-                  refined_cells={p: cell for p in phases}, rwp=9.0, gof=1.0)
+                  refined_cells={p: cell for p in phases}, rwp=9.0, gof=1.0,
+                  phase_fractions=fractions if fractions is not None else {})
 
 
 def _result(rwp, cells, fracs):
@@ -124,3 +125,84 @@ def test_backward_empty_when_no_right_anchor():
     """末尾端点区間 (右アンカーなし) は後方パス空。"""
     seg = build_segments((_anchor(1),), 5)[1]  # 末尾端点 (2,3,4), right=None
     assert refine_segment_backward(seg, _frames(5), lambda *a: None).results == {}
+
+
+# --- 相分率ウォームスタート (Issue #96) ---
+
+def test_forward_carries_phase_fractions_like_cells():
+    """前方パスは**セルと同様に相分率も**引き継ぐ (Issue #96)。
+
+    Issue #82 の分率ウォームスタートは M9 逐次経路にしか配線されておらず、M10 双方向パスは
+    セルしか運んでいなかった。実測 (K2Mn[Fe(CN)6] 247 フレーム) で 9 フレームが seed 値
+    (2 相の 50/50) に厳密に張り付き、うち 6 連続がドーム頂点直前にあった。
+    """
+    left = _anchor(1, phases=("alpha", "new_delta"), fractions={"alpha": 0.7, "new_delta": 0.3})
+    right = _anchor(5, phases=("alpha", "new_delta"))
+    seg = build_segments((left, right), 7)[1]  # 中間 (2,3,4)
+    seen = []
+    call = {"n": 0}
+
+    def runner(frame, phases, cells, initial_fractions=None):
+        seen.append((int(frame.axis_value), initial_fractions))
+        i = call["n"]
+        call["n"] += 1
+        frac = 0.4 + 0.1 * i  # 0.4, 0.5, 0.6
+        return _result(8.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in ("alpha", "new_delta")},
+                       {"alpha": 1.0 - frac, "new_delta": frac})
+
+    refine_segment_forward(seg, _frames(7), runner)
+    # frame2 は左アンカーの分率を種にする
+    assert seen[0] == (2, {"alpha": 0.7, "new_delta": 0.3})
+    # frame3 以降は直前フレームの精密化分率を引き継ぐ (セルと同時進行)
+    assert seen[1] == (3, {"alpha": 0.6, "new_delta": 0.4})
+    assert seen[2] == (4, {"alpha": 0.5, "new_delta": 0.5})
+
+
+def test_backward_carries_phase_fractions_from_right_anchor():
+    """後方パスも右アンカーの分率を種に降順で引き継ぐ (Issue #96)。"""
+    left = _anchor(1)
+    right = _anchor(5, phases=("alpha", "new_delta"), fractions={"alpha": 0.2, "new_delta": 0.8})
+    seg = build_segments((left, right), 7)[1]
+    seen = []
+
+    def runner(frame, phases, cells, initial_fractions=None):
+        seen.append((int(frame.axis_value), initial_fractions))
+        return _result(8.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in ("alpha", "new_delta")},
+                       {"alpha": 0.3, "new_delta": 0.7})
+
+    refine_segment_backward(seg, _frames(7), runner)
+    assert seen[0] == (4, {"alpha": 0.2, "new_delta": 0.8})  # 右アンカーの分率
+    assert seen[1] == (3, {"alpha": 0.3, "new_delta": 0.7})  # frame4 の精密化分率
+    assert seen[2] == (2, {"alpha": 0.3, "new_delta": 0.7})
+
+
+def test_anchor_without_fractions_seeds_nothing():
+    """分率を持たないアンカー (単相 GSAS 結果は phase_fractions 空) は種を渡さない。"""
+    left = _anchor(1)  # phase_fractions={}
+    right = _anchor(5)
+    seg = build_segments((left, right), 7)[1]
+    seen = []
+
+    def runner(frame, phases, cells, initial_fractions="UNSET"):
+        seen.append(initial_fractions)
+        return _result(8.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {})
+
+    refine_segment_forward(seg, _frames(7), runner)
+    assert seen == ["UNSET", "UNSET", "UNSET"]
+
+
+def test_three_arg_runner_still_works_in_directional_pass():
+    """3 引数 runner (既存スタブ/カスタム) は TypeError なく従来通り動く (非破壊)。"""
+    left = _anchor(1, phases=("alpha", "new_delta"), fractions={"alpha": 0.7, "new_delta": 0.3})
+    right = _anchor(5, phases=("alpha", "new_delta"))
+    seg = build_segments((left, right), 7)[1]
+    arities = []
+
+    def runner(frame, phases, cells):  # 3 引数のみ
+        arities.append(3)
+        return _result(8.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in ("alpha", "new_delta")},
+                       {"alpha": 0.5, "new_delta": 0.5})
+
+    sp = refine_segment_forward(seg, _frames(7), runner)
+    assert arities == [3, 3, 3]
+    assert sorted(sp.results) == [2, 3, 4]

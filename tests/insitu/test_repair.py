@@ -433,3 +433,89 @@ def test_first_frame_has_no_left_neighbour_uses_right_only():
     assert len(report.repairs) == 1
     assert report.repairs[0].source == "R"
     assert seen_initial == [right_cell]  # 左隣がないので右隣のみ 1 回試す
+
+
+# ---------------------------------------------------------------------------
+# 相分率ウォームスタート (Issue #96)
+# ---------------------------------------------------------------------------
+
+BETA = PhaseSpec(structure_path="beta.cif", phase_name="beta")
+TWO_PHASE_CELL = {
+    "alpha": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0),
+    "beta": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0),
+}
+
+
+def test_repair_passes_neighbour_fractions_as_initial_fractions():
+    """近傍の相分率を `initial_fractions` として渡す (Issue #96)。
+
+    セルだけを warm-start しても分率は毎回 GSAS の等分 seed (2 相なら 0.50/0.50) から
+    再出発するため、修復試行が seed に張り付いて Rwp が改善せず採用されない。
+    """
+    frames = _base_frames(5)
+    left_fracs = {"alpha": 0.7, "beta": 0.3}
+    right_fracs = {"alpha": 0.6, "beta": 0.4}
+    fr_results = (
+        _frame(0, 8.0, left_fracs, cells=TWO_PHASE_CELL),
+        _frame(1, 8.0, left_fracs, cells=TWO_PHASE_CELL),
+        _frame(2, 15.0, {"alpha": 0.5, "beta": 0.5}, cells=TWO_PHASE_CELL),
+        _frame(3, 8.0, right_fracs, cells=TWO_PHASE_CELL),
+        _frame(4, 8.0, right_fracs, cells=TWO_PHASE_CELL),
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+    assert [d.frame_index for d in disc] == [2]
+
+    seen = []
+
+    def runner(frame, phases, initial_cells, initial_fractions=None):
+        seen.append(initial_fractions)
+        return _result(rwp=7.0, cells=TWO_PHASE_CELL, fractions={"alpha": 0.65, "beta": 0.35})
+
+    repair_isolated(frames, result, [ALPHA, BETA], runner, disc)
+
+    assert left_fracs in seen  # 左隣 (frame1) の分率
+    assert right_fracs in seen  # 右隣 (frame3) の分率
+
+
+def test_repair_fractions_restricted_to_neighbour_phase_set():
+    """渡す分率は実際に渡す相集合の分だけ (相名の取り違えを持ち込まない)。"""
+    frames = _base_frames(3)
+    fr_results = (
+        _frame(0, 15.0, {"alpha": 0.5, "beta": 0.5}, cells=TWO_PHASE_CELL),
+        _frame(1, 8.0, {"alpha": 1.0}, cells=GOOD_CELL, phase_names=("alpha",)),
+        _frame(2, 8.0, {"alpha": 1.0}, cells=GOOD_CELL, phase_names=("alpha",)),
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = (Discontinuity(frame_index=0, axis_value=0.0, rwp=15.0, reasons=("rwp_abs",)),)
+
+    seen = []
+
+    def runner(frame, phases, initial_cells, initial_fractions=None):
+        seen.append((tuple(p.phase_name for p in phases), initial_fractions))
+        return _result(rwp=7.0, cells=GOOD_CELL, fractions={"alpha": 1.0})
+
+    repair_isolated(frames, result, [ALPHA, BETA], runner, disc)
+
+    assert seen == [(("alpha",), {"alpha": 1.0})]
+
+
+def test_repair_three_arg_runner_still_works():
+    """3 引数 runner は従来通り (TypeError を起こさない = 非破壊)。"""
+    frames = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 0.5, "beta": 0.5}, cells=TWO_PHASE_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+    arities = []
+
+    def runner(frame, phases, initial_cells):  # 3 引数のみ
+        arities.append(3)
+        return _result(rwp=7.0, cells=TWO_PHASE_CELL, fractions={"alpha": 0.6, "beta": 0.4})
+
+    report = repair_isolated(frames, result, [ALPHA, BETA], runner, disc)
+
+    assert arities == [3, 3]  # 左右 2 回
+    assert len(report.repairs) == 1

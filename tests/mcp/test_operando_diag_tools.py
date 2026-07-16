@@ -318,6 +318,37 @@ def test_check_phase_set_empty_or_malformed_result_is_never_clean(bad):
     json.dumps(out, allow_nan=False)
 
 
+def test_check_phase_set_reports_seed_pinned_frames():
+    """seed 張り付き (2 相で厳密 50/50) を ③ へ露出する (Issue #96)。
+
+    実測 (K2Mn[Fe(CN)6] 247 フレーム) で 9 フレームが seed 値に張り付いたが Rwp は 8.4-8.5% と
+    平凡で、`is_complete`/非単調性フラグのどれにも出なかった。**厳密な seed 一致が唯一の指紋**。
+    """
+    fractions = [0.42, 0.5, 0.5, 0.69]
+    frames = tuple(
+        _frame(i, 8.4, {"tetra": f, "cubic": 1.0 - f}) for i, f in enumerate(fractions)
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+    assert [f["frame"] for f in out["seed_pinned_frames"]] == [1, 2]
+    assert out["seed_pinned_frames"][0]["n_phases"] == 2
+    assert out["seed_pinned_frames"][0]["seed_value"] == 0.5
+    assert out["seed_pinned"] is True
+    json.dumps(out, allow_nan=False)
+
+
+def test_check_phase_set_single_phase_series_has_no_seed_pinning():
+    """単相 (1.0) は seed 張り付きではない (偽陽性にしない)。"""
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(4))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+    assert out["seed_pinned"] is False
+    assert out["seed_pinned_frames"] == []
+    json.dumps(out, allow_nan=False)
+
+
 def test_check_phase_set_flags_oscillating_fraction():
     fractions = [0.5, 0.15, 0.55, 0.1, 0.6, 0.05]
     frames = tuple(

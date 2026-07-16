@@ -22,7 +22,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import Mapping
 
 from .model import SequentialRietveldResult
 
@@ -62,6 +64,124 @@ class NonMonotonicReport:
     flagged: bool
     fractions: tuple[float, ...]
     reason: str
+
+
+@dataclass(frozen=True)
+class SeedPinnedFrame:
+    """相分率が初期 seed に張り付いたまま動かなかったフレーム 1 つの記録。
+
+    :param frame_index: 0 始まりのフレーム番号
+    :param axis_value: 軸値 (温度/時間, None 可)
+    :param rwp: そのフレームの Rwp (%)。**平凡な値である**ことが本欠陥の質の悪さ (実測 8.4-8.5%)
+    :param n_phases: そのフレームの相数 (2 以上のみ判定対象)
+    :param seed_value: 等分 seed の値 (= 1/n_phases)
+    :param phase_fractions: そのフレームの相名→相分率 (全て seed_value に一致している)
+    """
+
+    frame_index: int
+    axis_value: float | None
+    rwp: float
+    n_phases: int
+    seed_value: float
+    phase_fractions: Mapping[str, float]
+
+
+@dataclass(frozen=True)
+class SeedPinningReport:
+    """系列全体の seed 張り付き検査結果 (**提案のみ**: 該当フレームを落としも直しもしない)。
+
+    :param frames: 張り付きと判定されたフレーム (フレーム番号昇順)
+    :param flagged: 1 つ以上該当したか
+    :param recommendation: 第3層への提案文 (`flagged` 時は原因と再フィット手順を促す)
+    """
+
+    frames: tuple[SeedPinnedFrame, ...] = ()
+    flagged: bool = False
+    recommendation: str = ""
+
+
+def is_seed_pinned(fractions: Mapping[str, float], *, tol: float = 1e-6) -> bool:
+    """相分率が**厳密に**等分 seed (1/n) のままか判定する (= 分率精密化が一度も動いていない)。
+
+    GSAS は多相の HAP Scale を等分 (和=1 制約下で 1/n) から始める。精密化が局所的に動かなかった
+    フレームは分率が seed 値のまま返り、**Rwp は平凡なので統計量からは検出できない**
+    (実測 K₂Mn[Fe(CN)₆]: 張り付き 9 フレームの Rwp は 8.4-8.5%、系列平均 7.29%)。
+    「厳密に seed と一致する」ことだけが指紋である。
+
+    - **単相 (n=1) は判定しない**: 1.0 は seed ではなく和=1 の物理的必然であり、偽陽性にしない。
+    - **非有限が混じる分率は判定しない** (精密化失敗の別経路で可視化される)。
+    - 許容差は既定 1e-6 = 「厳密一致」。実際に動いた分率が偶然この幅で 1/n に一致する確率は
+      無視できる (逆に緩めると正常な等分近傍のフレームを偽陽性にする)。
+
+    :param fractions: 相名→相分率 (和=1 正規化済みの HAP Scale)
+    :param tol: seed との一致とみなす許容差
+    :returns: 全相が |w − 1/n| < tol なら True
+    """
+    n = len(fractions)
+    if n < 2:
+        return False
+    values = [float(v) for v in fractions.values()]
+    if not all(math.isfinite(v) for v in values):
+        return False
+    seed = 1.0 / n
+    return all(abs(v - seed) < tol for v in values)
+
+
+def flag_seed_pinned_frames(
+    result: SequentialRietveldResult, *, tol: float = 1e-6
+) -> SeedPinningReport:
+    """系列から相分率が seed に張り付いたフレームを検出する (**提案のみ・自動修正しない**)。
+
+    実測動機 (Issue #96): K₂Mn[Fe(CN)₆] の M10 実行 (247 フレーム) で 9 フレーム
+    (`[34, 35, 125, 126, 127, 128, 129, 130, 206]`) が 2 相の seed 値 50/50 に張り付いた。
+    **うち 125-130 の 6 連続が tetragonal ドーム頂点の直前**にあり、報告した頂点の位置と高さが
+    信用できなくなった。原因は相分率ウォームスタート (Issue #82) が M10 双方向パス/repair に
+    配線されておらず、分率が毎フレーム seed から再出発していたこと。
+
+    **黙って落とさない** (提案≠適用): 張り付きフレームは「精密化が動かなかった」証拠であって
+    データが悪いとは限らない。可視化して第3層 (人間/エージェント) の判断に委ねる。
+
+    :param result: 検査対象の逐次精密化結果 (変更しない)
+    :param tol: `is_seed_pinned` の許容差
+    :returns: `SeedPinningReport`
+    """
+    pinned: list[SeedPinnedFrame] = []
+    for f in result.frames:
+        # 失敗フレームは refine_failed で既に可視 (張り付きとして二重に報告しない)
+        if f.refine_failed:
+            continue
+        if not is_seed_pinned(f.phase_fractions, tol=tol):
+            continue
+        n = len(f.phase_fractions)
+        pinned.append(
+            SeedPinnedFrame(
+                frame_index=f.frame_index,
+                axis_value=f.axis_value,
+                rwp=f.rwp,
+                n_phases=n,
+                seed_value=1.0 / n,
+                phase_fractions=dict(f.phase_fractions),
+            )
+        )
+
+    if not pinned:
+        return SeedPinningReport(
+            frames=(),
+            flagged=False,
+            recommendation="相分率が初期 seed に張り付いたフレームはありません。",
+        )
+
+    indices = [f.frame_index for f in pinned]
+    recommendation = (
+        f"{len(pinned)} フレームの相分率が等分 seed (1/相数) に**厳密に**一致しています "
+        f"(フレーム {indices})。これは分率精密化がそのフレームで一度も動かなかった (局所解/"
+        "ウォームスタート欠落) 徴候であり、**Rwp は平凡なままなので統計量からは検出できません** "
+        "(実測 K2Mn[Fe(CN)6]: 張り付き 9 フレームの Rwp は 8.4-8.5%、うち 6 連続が転移ドーム頂点の"
+        "直前にあり頂点の位置と高さを信用できなくした)。該当フレームの分率は**採用せず**、"
+        "近傍の良好フレームからウォームスタートして再フィットしてください "
+        "(repair_frames、または相分率ウォームスタートを有効にした系列の再実行)。"
+    )
+    return SeedPinningReport(frames=tuple(pinned), flagged=True, recommendation=recommendation)
 
 
 def suggest_phase_set_completion(result: SequentialRietveldResult) -> PhaseSetCompletionReport:

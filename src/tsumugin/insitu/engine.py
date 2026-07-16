@@ -15,7 +15,6 @@ GSAS 駆動は既定 runner (`_default_gsas_runner`) 内の `run_auto_rietveld` 
 
 from __future__ import annotations
 
-import inspect
 import math
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
 from ..reference.model import ReferencePhase
 from ..sequential.changepoint import ChangepointConfig, detect_changepoint
 from ..store.ledger import Ledger
+from ._warmstart import call_runner, runner_accepts_initial_fractions
 from .model import (
     Cell,
     FrameRietveldResult,
@@ -83,40 +83,12 @@ def _fractions_of(result: AutoRietveldResult, phase_names: Sequence[str]) -> dic
     return {name: float(fr.get(name, 0.0)) for name in phase_names}
 
 
-def _runner_accepts_initial_fractions(runner: "Runner") -> bool:
-    """runner が ``initial_fractions`` キーワード引数を受け付けるか判定する (Issue #82)。
-
-    ``Runner`` は ``(frame, phases, initial_cells)`` の 3 引数プロトコルを保つ (`make_gsas_runner`・
-    `insitu.anchor`・既存テストが依存する公開 API のため破壊しない)。相分率ウォームスタートは対応済み
-    runner (`make_gsas_runner` が生成するもの) にのみ、シグネチャ検査 (inspect) で検出して渡す。
-    3 引数のみの runner (大半のテストスタブ・カスタム runner) には一切渡さず、Runner 型自体は不変
-    のまま TypeError を起こさない (非破壊)。
-    """
-    try:
-        sig = inspect.signature(runner)
-    except (TypeError, ValueError):
-        return False
-    params = sig.parameters
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return True
-    return "initial_fractions" in params
-
-
-def _call_runner(
-    runner: "Runner",
-    frame: FrameSpec,
-    phases: Sequence[PhaseSpec],
-    initial_cells: "dict[str, Cell] | None",
-    initial_fractions: "dict[str, float] | None",
-) -> AutoRietveldResult:
-    """runner を呼ぶ。initial_fractions は対応 runner のみへキーワード引数で渡す (Issue #82)。
-
-    Runner の 3 引数プロトコル自体は変更しない。initial_fractions が None、または runner が
-    受け付けないシグネチャの場合は従来通り 3 引数で呼ぶ (非回帰)。
-    """
-    if initial_fractions is not None and _runner_accepts_initial_fractions(runner):
-        return runner(frame, phases, initial_cells, initial_fractions=initial_fractions)
-    return runner(frame, phases, initial_cells)
+#: 相分率ウォームスタートの受け渡しは `_warmstart` に一元化する (Issue #96)。M9 逐次 (本モジュール) /
+#: M10 双方向区間 (`anchor.segment`) / 修復 (`repair`) の 3 経路が**同じ**機構を使う — Issue #82 が
+#: ここにしか配線されず他 2 経路が seed に張り付いた実害の再発防止 (経路ごとの実装は取り残される)。
+#: 旧 private 名は既存の呼び出し元/テスト互換のため別名として残す。
+_runner_accepts_initial_fractions = runner_accepts_initial_fractions
+_call_runner = call_runner
 
 
 def run_sequential_rietveld(
