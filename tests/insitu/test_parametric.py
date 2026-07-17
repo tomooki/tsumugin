@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from tsumugin.insitu.model import FrameRietveldResult, SequentialRietveldResult
+from tsumugin.insitu.model import (
+    FractionBasisUnavailableError,
+    FrameRietveldResult,
+    SequentialRietveldResult,
+)
 from tsumugin.insitu.parametric import (
     analyze_phase,
     lattice_baseline,
@@ -81,3 +85,70 @@ def test_analyze_phase_bundles():
     assert pa.phase == "alpha"
     assert pa.baseline.coefficients[1] == pytest.approx(0.001, abs=1e-6)
     assert pa.transition is None  # 定数分率 (単相)
+
+
+# ===========================================================================
+# 転移の basis (Issue #96 レビュー第4巡 HIGH)
+# ---------------------------------------------------------------------------
+# `estimate_transition` は**絶対レベル** (0.50 / 0.10) の交差軸値を返す。y 軸を Scale から
+# wt% に替えると答えが動く — つまり Scale は「相対比較のみ」で済む用途ではない。
+# ===========================================================================
+
+
+def _divergent_result():
+    """実測 K2Mn[Fe(CN)6] tetra (fr96-126) の縮図: Scale は 0.50 を横切るが wt% は横切らない。"""
+    rows = [(0.0, 0.0, 0.0), (1.0, 0.30, 0.19), (2.0, 0.50, 0.34), (3.0, 0.656, 0.472)]
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i, axis_value=ax, data_path=f"f{i}", rwp=8.0, gof=1.0,
+            refined_cells={"tetra": (10.0, 10.0, 10.0, 90, 90, 90)},
+            phase_fractions={"tetra": s}, phase_names=("tetra",),
+            phase_weight_fractions={"tetra": w},
+        )
+        for i, (ax, s, w) in enumerate(rows)
+    )
+    return SequentialRietveldResult(frames=frames, phase_names=("tetra",))
+
+
+def test_transition_from_fractions_default_basis_is_scale_backcompat():
+    """① の既定は Scale (既存呼び出し側の意味を変えない)。"""
+    tr = transition_from_fractions(_divergent_result(), "tetra")
+    assert tr is not None and tr.midpoint == pytest.approx(2.0, abs=1e-6)
+
+
+def test_transition_from_fractions_weight_basis_differs_from_scale():
+    """★同じ精密化が Scale では「転移あり」、wt% では「転移なし」になる (本 HIGH の核心)。
+
+    実測: Scale 0→0.656 は 0.50 を横切り midpoint を出すが、wt% 0→0.472 は横切らない。
+    Scale=0.50 の点は実際には 34.0 wt% であって「半分」ではない。
+    """
+    r = _divergent_result()
+    scale_tr = transition_from_fractions(r, "tetra", basis="scale")
+    weight_tr = transition_from_fractions(r, "tetra", basis="weight")
+    assert scale_tr is not None and scale_tr.midpoint is not None
+    assert weight_tr is None  # wt% は 0.50 に到達しない = 転移なし
+
+
+def test_transition_from_fractions_weight_raises_when_unavailable():
+    """重量分率が無ければ **Scale へ黙って落ちず** 例外 (呼び出し側に決めさせる)。"""
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i, axis_value=float(i), data_path=f"f{i}", rwp=8.0, gof=1.0,
+            refined_cells={"p": (5.0, 5.0, 5.0, 90, 90, 90)},
+            phase_fractions={"p": 0.2 + 0.4 * i}, phase_names=("p",),
+        )
+        for i in range(3)
+    )
+    r = SequentialRietveldResult(frames=frames)
+    with pytest.raises(FractionBasisUnavailableError):
+        transition_from_fractions(r, "p", basis="weight")
+
+
+def test_analyze_phase_records_fraction_basis():
+    """`ParametricAnalysis` が **どの基準で転移を出したか**を明示する。
+
+    basis を持たない返り値は「Scale 由来の数字」を出版値と取り違える余地を残す。
+    """
+    r = _divergent_result()
+    assert analyze_phase(r, "tetra").fraction_basis == "scale"
+    assert analyze_phase(r, "tetra", basis="weight").fraction_basis == "weight"

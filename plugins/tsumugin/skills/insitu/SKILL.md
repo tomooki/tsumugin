@@ -144,10 +144,25 @@ repair_frames(result, frames, phases,
 `sequential_rietveld` を再実行する (相追加は**あなたの判断 + ユーザー承認**を挟む)。
 DFT (MP) 由来の構造は格子が軸別にずれることがあり、異方セル補正が自動で入る (#20)。
 
-### 7. パラメトリック解析
+### 7. パラメトリック解析 — **転移温度は重量分率基準で取る**
 
 `parametric_fit(result, phase, component)` で格子 vs 温度の熱膨張係数、相分率シグモイドの
 転移温度 (onset/midpoint±σ) を抽出し報告する。b/c 比等の擬変数で 2 次転移も追う。
+
+**転移温度は `basis` で答えが変わる。既定 (`basis="weight"` = 重量分率) のまま使うこと。**
+転移推定は「曲線が**絶対レベル** 0.50 (midpoint) / 0.10 (onset) を横切る軸値」を返すので、
+y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fractions` (Scale) は転移の追跡に
+使えない** — 「相対比較だから安全」は転移推定には当てはまらない (絶対レベルを使うため)。
+
+> 実測 (K₂Mn[Fe(CN)₆] tetra 充電域): **同じ精密化**から Scale は「midpoint 9.515 h」を出し、
+> wt% は「**転移なし**」を出した (Scale 0→0.656 は 0.50 を横切るが wt% は 0→0.472 で届かない)。
+> Scale が midpoint と呼んだ点は実際には **34.0 wt%** であって「半分」ではない。
+
+- 返り値の **`fraction_basis`** にどちらで出したかが必ず入る。**`"weight"` でなければ報告しない**。
+- `basis="scale"` は**診断専用** (相対的な立ち上がりの目視)。その数値は出版・報告に使わない。
+- `{"error_type": "FractionBasisUnavailableError"}` が返ったら、その系列には重量分率が無い
+  (スタブ/非 GSAS 経路)。**Scale で代用して報告しない** — 実データを `sequential_rietveld` で
+  精密化し直す。どうしても相対比較が要るなら `basis="scale"` を明示し、Scale 由来と明記する。
 
 ### 8. 報告 — **`phase_fractions` は wt% ではない**
 
@@ -162,8 +177,8 @@ DFT (MP) 由来の構造は格子が軸別にずれることがあり、異方�
 
 | キー | 何か | 使いどころ |
 |---|---|---|
-| `phase_fractions` | **Scale** の正規化値 | 相対比較のみ (新相の有意性・転移の追跡) |
-| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら** |
+| `phase_fractions` | **Scale** の正規化値 | **同一 basis 内の相対比較のみ** (新相の有意性・張り付き検出)。**転移の追跡には使えない** — 転移推定は絶対レベル 0.50/0.10 の交差なので basis で答えが変わる (手順 7) |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら**。転移温度もこちら基準 (`parametric_fit` の既定) |
 | `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
 | `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない) |
 

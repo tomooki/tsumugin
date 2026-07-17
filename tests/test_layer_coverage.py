@@ -17,11 +17,12 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import importlib
 import inspect
 import pkgutil
-import re
+import textwrap
 from typing import Callable, Iterator, Mapping
 
 import pytest
@@ -36,7 +37,7 @@ from tsumugin.autorietveld.model import (
     ValidityReport,
 )
 from tsumugin.insitu.model import FrameRietveldResult, FrameSpec, SequentialRietveldResult
-from tsumugin.mcp.insitu_tools import seq_result_to_dict, sequential_rietveld
+from tsumugin.mcp.insitu_tools import parametric_fit, seq_result_to_dict, sequential_rietveld
 from tsumugin.mcp.operando_diag_tools import repair_frames
 from tsumugin.mcp.rietveld_tools import auto_rietveld
 from tsumugin.mcp.tools import MCP_TOOLS
@@ -246,7 +247,14 @@ FRAME_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "rwp": ("rwp", "最終 Rwp"),
     "gof": ("gof", "最終 GOF"),
     "refined_cells": ("refined_cells", "精密化格子"),
-    "phase_fractions": ("phase_fractions", "**Scale**。相対比較専用 (新相の有意性・転移の追跡)"),
+    # ⚠ 「転移の追跡」は**この行から削除された** (Issue #96 レビュー第4巡 HIGH): 転移推定
+    #   (`estimate_transition`) は**絶対レベル 0.50/0.10 の交差軸値**を返すため、Scale か wt% かで
+    #   答えが動く = 相対比較ではない。転移は `parametric_fit` の既定 (重量分率基準) で取ること。
+    "phase_fractions": (
+        "phase_fractions",
+        "**Scale**。新相の有意性・張り付き検出など**同一 basis 内の相対比較専用**。"
+        "転移推定 (onset/midpoint) には使えない — 絶対レベル交差なので basis で答えが変わる",
+    ),
     "phase_names": ("phase_names", "このフレームで有効な相"),
     "changepoint": ("changepoint", "変化点フラグ"),
     "changepoint_reasons": ("changepoint_reasons", "発火した指標"),
@@ -423,31 +431,120 @@ _PUBLICATION_SURFACE_PROBES["tsumugin.mcp.operando_diag_tools.repair_frames"] = 
     _probe_repair_frames
 )
 
-#: dict のキーとして `phase_fractions` を**直列化している**箇所 (`phase_fractions=` の復元側や
-#: docstring 中の言及は拾わない)。
-_FRACTION_KEY = re.compile(r'"phase_fractions"\s*:')
+#: 監査対象キー (per-frame 相分率 = Scale)。
+_FRACTION_KEY_NAME = "phase_fractions"
+
+#: 系列結果 dict → `SequentialRietveldResult` の**唯一の入口**。これを呼ぶ関数は per-frame
+#: 相分率を**消費する** (下の消費者ネットの捕捉条件)。
+_DESERIALIZER_NAME = "_result_from_dict"
 
 
-def _fraction_emitting_functions() -> dict[str, str]:
-    """`tsumugin.mcp` 配下で per-frame 相分率を直列化している関数 → そのソース。
+def _iter_mcp_functions() -> Iterator[tuple[str, ast.AST]]:
+    """`tsumugin.mcp` 配下 (**サブパッケージ含む**) の全関数 → (完全名, その AST)。
+
+    `iter_modules` でなく `walk_packages` を使う: 前者はサブパッケージへ再帰せず、`mcp` に
+    サブパッケージが追加された途端に**網が黙って穴だらけになる** (現状 mcp はフラットなので
+    実害は無いが、網の穴は「無いこと」が保証されて初めて網である)。
+    """
+    for mod_info in pkgutil.walk_packages(mcp_pkg.__path__, f"{mcp_pkg.__name__}."):
+        module = importlib.import_module(mod_info.name)
+        for name, obj in vars(module).items():
+            if not inspect.isfunction(obj) or obj.__module__ != module.__name__:
+                continue
+            try:
+                src = textwrap.dedent(inspect.getsource(obj))
+            except OSError:  # pragma: no cover - 動的定義の保険
+                continue
+            yield f"{module.__name__}.{name}", ast.parse(src)
+
+
+def _emits_fraction_key(tree: ast.AST) -> bool:
+    """dict のキーとして `phase_fractions` を**書き出している**か (AST 判定)。
+
+    **正規表現をやめた理由** (第4巡 LOW): 旧実装の `r'"phase_fractions"\\s*:'` は dict リテラル中の
+    キーしか見ておらず、``d["phase_fractions"] = ...`` の添字代入・キー定数・別クォート・
+    行折り返しを**取りこぼす**。現行の 3 emitter が全てリテラル形なので実害は無かったが、
+    「たまたま今の書き方に一致していただけ」の網であり、書き方を変えた瞬間に黙って外れる。
+
+    AST なら**構文の形**で捕まえられる (書式・クォート・改行に非依存):
+      (a) dict リテラルのキー   : ``{"phase_fractions": ...}``
+      (b) 添字代入のターゲット  : ``d["phase_fractions"] = ...``
+    ``fd.get("phase_fractions")`` (復元側の**読み取り**) や docstring 中の言及は**拾わない** —
+    これらは直列化点ではないため (この区別は旧正規表現も意図して行っていた)。
+    """
+    for node in ast.walk(tree):
+        # (a) dict リテラルのキー
+        if isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and key.value == _FRACTION_KEY_NAME:
+                    return True
+        # (b) 添字代入 (`d["phase_fractions"] = ...` / `d["phase_fractions"] += ...`)
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        for target in targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == _FRACTION_KEY_NAME
+            ):
+                return True
+    return False
+
+
+def _calls(tree: ast.AST, func_name: str) -> bool:
+    """`func_name` を呼び出しているか (``f(...)`` / ``mod.f(...)`` の両形)。"""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else None
+        )
+        if name == func_name:
+            return True
+    return False
+
+
+def _fraction_emitting_functions() -> dict[str, ast.AST]:
+    """`tsumugin.mcp` 配下で per-frame 相分率を**直列化している**関数 → その AST。
 
     **ツール関数の source だけを見ない**: `sequential_rietveld` は `seq_result_to_dict` へ委譲する
     ため、ツール単位の grep では**素通りする** (実際に落ちた 3 経路のうち 1 つがこの形)。
     パッケージ内の全関数を走査して**直列化点そのもの**を捕まえる。
     """
-    found: dict[str, str] = {}
-    for mod_info in pkgutil.iter_modules(mcp_pkg.__path__):
-        module = importlib.import_module(f"{mcp_pkg.__name__}.{mod_info.name}")
-        for name, obj in vars(module).items():
-            if not inspect.isfunction(obj) or obj.__module__ != module.__name__:
-                continue
-            try:
-                src = inspect.getsource(obj)
-            except OSError:  # pragma: no cover - 動的定義の保険
-                continue
-            if _FRACTION_KEY.search(src):
-                found[f"{module.__name__}.{name}"] = src
-    return found
+    return {name: tree for name, tree in _iter_mcp_functions() if _emits_fraction_key(tree)}
+
+
+def _fraction_consuming_functions() -> dict[str, ast.AST]:
+    """`tsumugin.mcp` 配下で系列結果を**復元する** (= per-frame 相分率を消費する) 関数 → その AST。
+
+    **なぜ emitter ネットでは足りないか** (第4巡 HIGH): emitter ネットは
+    ``"phase_fractions":`` を**再送出する**表面しか見つけない。`parametric_fit` は相分率を
+    **消費して** onset/midpoint という**別の数字を導出**する — 自身のソースに
+    `phase_fractions` は 1 度も現れず (`_result_from_dict` → `analyze_phase` へ委譲するだけ)、
+    emitter ネットからは**完全に不可視**だった (実測: discovered? False)。
+    そして導出される onset/midpoint こそが**論文に載る数字**である。
+
+    捕捉条件は「`_result_from_dict` を呼ぶこと」: 系列結果 dict を
+    `SequentialRietveldResult` に戻す**唯一の入口**であり、相分率を消費する ② の関数は必ず
+    ここを通る。名前ベースの grep (相分率を読む関数を探す) と違い、**委譲の先で読んでいても
+    捕まる**。
+
+    **網の限界 (正直に言う)**: (i) `frames` dict を復元せず直接読む消費者は上の emitter ネット
+    側 (添字/リテラル) で捕まるが、(ii) `tsumugin.mcp` の**外**に導出ロジックを置き、その結果
+    だけを ② が返す形は、どちらの網にも掛からない。① 側の全 API を静的に追う call-graph 解析が
+    要るため、ここでは追わない — 代わりに **① の `fraction_series` に basis 必須の分岐と
+    `FractionBasisUnavailableError` を置き**、Scale への暗黙フォールバックを**型と例外で**
+    不可能にしてある (網より手前の設計で塞ぐ)。
+    """
+    return {name: tree for name, tree in _iter_mcp_functions() if _calls(tree, _DESERIALIZER_NAME)}
 
 
 def _entries_with_key(obj: object, key: str) -> Iterator[Mapping[str, object]]:
@@ -534,6 +631,153 @@ def test_every_per_frame_fraction_entry_carries_publication_values(emitter):
                 f"① → ② のどこかで落ちている (空 dict は「値が得られなかった」の意味であり、"
                 f"値がある精密化で空になってはならない)"
             )
+
+
+# ===========================================================================
+# 粒度④: **再送出だけでなく「導出」を監査する** (Issue #96 レビュー第4巡 HIGH)
+# ---------------------------------------------------------------------------
+# 上の emitter ネットは `phase_fractions` を **再送出する**表面しか見つけない。第1〜3巡は
+# 「Scale を再送出する ② 表面」を全て監査したが、**Scale から出版値を導出する**表面
+# (`parametric_fit` → 転移 onset/midpoint) を誰も見なかった。
+#
+# `estimate_transition` が返すのは「曲線が**絶対レベル** 0.50 / 0.10 を横切る軸値」であり、
+# y 軸が Scale か wt% かで**答えが動く**。実測 K2Mn[Fe(CN)6] tetra 充電域では、同じ精密化から
+# Scale は「midpoint 9.515 h」を、wt% は「**転移なし**」を出した。`parametric_fit` が midpoint と
+# 呼んでいた点は実際には **34.0 wt%** であって「半分」ではない。
+#
+# 「Scale は相対比較なら安全」は**偽**である — 転移推定は相対比較ではない。
+# ===========================================================================
+
+DERIVES_FROM_FRACTIONS = "DERIVES_FROM_FRACTIONS"
+NO_FRACTION_DERIVED_NUMBER = "NO_FRACTION_DERIVED_NUMBER"
+
+#: 系列結果を復元する (= per-frame 相分率を消費する) ② 関数 → (相分率から数字を導出するか, 理由)。
+#: **`tsumugin.mcp` に新しい消費者を作ったら、ここへ 1 行足すこと** (足さないと網羅テストが fail)。
+PER_FRAME_FRACTION_CONSUMERS: dict[str, tuple[str, str]] = {
+    "tsumugin.mcp.insitu_tools.parametric_fit": (
+        DERIVES_FROM_FRACTIONS,
+        "相分率系列から転移 onset/midpoint±σ を**導出する** = 論文に載る数字を作る表面。"
+        "`estimate_transition` は絶対レベル 0.50/0.10 の交差軸値を返すため basis で答えが変わる。"
+        "既定 basis='weight' (出版値) + 結果に `fraction_basis` を明示 + 重量分率が無ければ "
+        "error dict (Scale へも「転移なし」へも縮退しない)",
+    ),
+    "tsumugin.mcp.operando_diag_tools.check_phase_set": (
+        NO_FRACTION_DERIVED_NUMBER,
+        "意図的: 相分率を **Scale の指紋**として使う診断器 (等分 seed 1/n との厳密一致で張り付きを"
+        "検出する)。返すのは flag されたフレーム番号であって出版値ではない — flag されたフレームは"
+        "定義上壊れており報告対象ではない (だから repair_frames へ送る)",
+    ),
+    "tsumugin.mcp.operando_diag_tools.repair_frames": (
+        NO_FRACTION_DERIVED_NUMBER,
+        "意図的: 相分率からは**数字を導出しない** (不連続の検出は Rwp/格子で行う)。再精密化した"
+        "フレームの出版値は `repairs[]` にそのまま再送出する — その経路は上の "
+        "PER_FRAME_FRACTION_EMITTERS 側で CARRIES_PUBLICATION として監査済み",
+    ),
+    "tsumugin.mcp.rietveld_tools.propose_next_actions": (
+        NO_FRACTION_DERIVED_NUMBER,
+        "意図的: `AutoRietveldResult` (単一フレーム) を復元して**次の操作を提案**するだけで、"
+        "相分率から報告値を導出しない。提案は ③ が採否を判断する (提案≠適用)",
+    ),
+}
+
+
+def test_every_layer2_fraction_consumer_is_declared():
+    """★系列結果を復元する**全ての** ② 関数が「相分率から数字を導出するか」を宣言していること。
+
+    emitter ネット (`"phase_fractions":` の再送出) では `parametric_fit` は**捕まらなかった**
+    — 自身のソースに `phase_fractions` が 1 度も現れないためである。しかしそれが出版値
+    (転移温度) を作っていた。**再送出だけでなく導出を監査する**のがこの網の役目。
+    """
+    actual = set(_fraction_consuming_functions())
+    declared = set(PER_FRAME_FRACTION_CONSUMERS)
+    assert actual == declared, (
+        f"② の per-frame 相分率 消費者と宣言が食い違う。"
+        f"未宣言 (相分率から数字を導出するか決めること — Scale から導出した数字は出版できない): "
+        f"{sorted(actual - declared)} / "
+        f"実在しない宣言 (削除/改名された?): {sorted(declared - actual)}"
+    )
+
+
+def test_fraction_consumers_state_a_reason():
+    """相分率から数字を導出しないと宣言した消費者は理由の明示を必須にする (§4.5 規則④-3)。"""
+    for consumer, (kind, why) in PER_FRAME_FRACTION_CONSUMERS.items():
+        if kind != NO_FRACTION_DERIVED_NUMBER:
+            continue
+        assert why and len(why) > 20, f"{consumer}: 導出しない理由が書かれていない"
+        assert ("Issue #" in why) or ("意図的" in why), (
+            f"{consumer}: Issue 番号か「意図的」+理由が要る (現在: {why!r})"
+        )
+
+
+def _divergent_series_dict() -> dict:
+    """★Scale と wt% で**答えが変わる**系列 (実測 K2Mn[Fe(CN)6] tetra fr96-126 の縮図)。
+
+    Scale 0→0.656 は 0.50 を横切る (→ midpoint が出る) が、同じ fit の wt% は 0→0.472 で
+    横切らない (→ 転移なし)。**両者が一致する系列でテストしても basis の取り違えは検出できない**。
+    """
+    rows = [(0.0, 0.0, 0.0), (1.0, 0.30, 0.19), (2.0, 0.50, 0.34), (3.0, 0.656, 0.472)]
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i, axis_value=ax, data_path=f"f{i}.xrdml", rwp=8.0, gof=1.0,
+            refined_cells={"tetra": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)},
+            phase_fractions={"tetra": s}, phase_names=("tetra",),
+            phase_weight_fractions={"tetra": w}, phase_weight_fraction_esd={"tetra": 0.006},
+            cell_esd={"tetra": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+        )
+        for i, (ax, s, w) in enumerate(rows)
+    )
+    return seq_result_to_dict(SequentialRietveldResult(frames=frames, phase_names=("tetra",)))
+
+
+def test_fraction_deriving_consumers_default_to_the_publication_basis():
+    """★相分率から数字を導出する ② は、**既定で重量分率**を使い basis を明示すること。
+
+    非トートロジー: Scale と wt% で答えが変わる系列を実際に流し、**どちらの答えが返るか**で
+    判定する。`parametric_fit` の既定を "scale" に戻せば fail する (実証済)。
+
+    既定が Scale だと ③ は「出版できる転移温度」だと信じて Scale 由来の数字を受け取る —
+    それが本 HIGH の実害そのものである (skills/insitu が `parametric_fit` の onset/midpoint を
+    「報告せよ」と ③ に指示している)。
+    """
+    assert PER_FRAME_FRACTION_CONSUMERS["tsumugin.mcp.insitu_tools.parametric_fit"][0] == (
+        DERIVES_FROM_FRACTIONS
+    )
+    seq = _divergent_series_dict()
+
+    out = parametric_fit(seq, "tetra")
+    assert out["fraction_basis"] == "weight", (
+        "既定が重量分率でない — ③ は Scale 由来の転移温度を出版値と信じて報告する"
+    )
+    assert out["transition"] is None, (
+        "既定で Scale 由来の midpoint が返っている (wt% は 0.50 に到達しないので転移なしが正)"
+    )
+
+    scale_out = parametric_fit(seq, "tetra", basis="scale")
+    assert scale_out["fraction_basis"] == "scale"  # 明示要求時は Scale 由来と**明記**する
+    assert scale_out["transition"]["midpoint"] == pytest.approx(2.0, abs=1e-6)
+
+
+def test_fraction_deriving_consumers_never_silently_fall_back_to_scale():
+    """★重量分率が無いとき、Scale へ**黙って落ちない**こと (落ちたらこのバグの再来)。
+
+    「転移なし」を返すのも禁止 — 本物の「転移なし」と区別が付かない静かな嘘になる。
+    ② は例外を送出しない契約なので error dict へ縮退する。
+    """
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i, axis_value=float(i), data_path=f"f{i}.xrdml", rwp=8.0, gof=1.0,
+            refined_cells={"tetra": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)},
+            phase_fractions={"tetra": 0.3 * i}, phase_names=("tetra",),
+        )
+        for i in range(4)
+    )
+    seq = seq_result_to_dict(SequentialRietveldResult(frames=frames, phase_names=("tetra",)))
+
+    out = parametric_fit(seq, "tetra")
+    assert out.get("error_type") == "FractionBasisUnavailableError", (
+        f"重量分率が無いのに数字が返っている (Scale へ落ちた?): {sorted(out)}"
+    )
+    assert "transition" not in out
 
 
 def test_anchor_is_still_unexposed_or_the_note_is_stale():

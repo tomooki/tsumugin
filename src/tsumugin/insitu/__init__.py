@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from .model import (
     Cell,
+    FractionBasis,
+    FractionBasisUnavailableError,
     FrameRietveldResult,
     FrameSpec,
     PhaseAppearance,
@@ -58,6 +60,8 @@ __all__ = [
     "AnchorConfig",
     "Cell",
     "Discontinuity",
+    "FractionBasis",
+    "FractionBasisUnavailableError",
     "FrameRepair",
     "FrameRietveldResult",
     "FrameSpec",

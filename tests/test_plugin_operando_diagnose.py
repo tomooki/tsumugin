@@ -309,6 +309,68 @@ def test_docs_state_that_phase_fractions_is_scale_not_weight_percent(doc):
         assert key in src, f"② の seq_result_to_dict が {key} を返していないのに文書が指示している"
 
 
+# 「Scale は転移の追跡に使ってよい」という**誤った指示**の指紋 (Issue #96 レビュー第4巡 HIGH)。
+# 3 文書すべてのキー表に `| phase_fractions | **Scale** の正規化値 | 相対比較のみ (新相の有意性・
+# **転移の追跡**) |` と書かれていた。これは**偽**である: 転移推定 (`estimate_transition`) は
+# 絶対レベル 0.50/0.10 の交差軸値を返すため、y 軸を Scale から wt% に替えると答えが動く。
+# 実測では同じ精密化から Scale が「midpoint 9.515 h」、wt% が「転移なし」を出した。
+#
+# 否定語の探索だけ `[\s\S]` (改行可) なのは、否定が次行に折り返しても**否定は否定**だから。
+# 前方の距離は `[^\n]` (同一行) — 表の行も散文も `phase_fractions` と「転移の追跡」は同じ行に
+# あり、改行を跨がせると無関係な段落同士が誤って結び付く。
+_SCALE_FOR_TRANSITION_OK = re.compile(
+    r"phase_fractions[^\n]{0,160}転移の追跡(?![\s\S]{0,40}(?:使えない|使わない|不可))"
+)
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_do_not_bless_scale_for_transition_tracking(doc):
+    """ガード8: `phase_fractions` (Scale) を**転移の追跡に使ってよい**と書いていないこと。
+
+    `parametric_fit` は Scale を消費して onset/midpoint という**出版値を導出する**。転移推定は
+    絶対レベル (0.50/0.10) の交差軸値を返すので、「Scale は相対比較なら安全」は**転移には
+    当てはまらない**。3 文書のキー表がそろって「相対比較のみ (…転移の追跡)」と Scale を
+    祝福しており、③ はそれを信じて Scale 由来の転移温度を報告できてしまった。
+
+    **誤った手順書は実装バグと同等に有害** (CLAUDE.md) — ② を直しても手順書が Scale を
+    勧めていれば ③ は `basis="scale"` を明示的に選びに行ける。
+    """
+    text = doc.read_text(encoding="utf-8")
+    bad = _SCALE_FOR_TRANSITION_OK.search(text)
+    assert bad is None, (
+        f"{doc}: `phase_fractions` (Scale) を「転移の追跡」に使ってよいと書いている "
+        f"({bad.group(0)!r})。転移推定は絶対レベル 0.50/0.10 の交差なので basis で答えが変わる "
+        "(実測: 同じ fit で Scale=midpoint 9.515 h / wt%=転移なし)"
+    )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_tell_which_basis_to_report_transitions_from(doc):
+    """ガード9: 転移温度を**どの基準で取り・報告するか**が書かれていること。
+
+    「Scale を使うな」だけでは ③ は代わりに何をすべきか分からない。② に `basis` があっても
+    手順書に無ければ ③ は使わない (Issue #97: 露出していない機能は無いのと同じ)。
+    """
+    text = doc.read_text(encoding="utf-8")
+    if "parametric_fit" not in text:
+        pytest.skip(f"{doc}: parametric_fit に言及していない")
+    assert "fraction_basis" in text, (
+        f"{doc}: `parametric_fit` を教えているが返り値の `fraction_basis` "
+        "(どの基準で出したか) の確認を指示していない — ③ は Scale 由来の数字を出版値と信じる"
+    )
+    assert re.search(r'basis\s*=\s*"weight"|basis="weight"|既定[^\n]{0,30}weight', text), (
+        f"{doc}: 転移を重量分率基準で取ること (`basis=\"weight\"` が既定) の指示が無い"
+    )
+    # ② が実際にその引数/キーを持つこと (文書だけ先行して「呼べない指示」にしない)
+    from tsumugin.mcp.insitu_tools import parametric_fit as _pf  # noqa: PLC0415
+
+    sig = inspect.signature(_pf)
+    assert "basis" in sig.parameters, "② parametric_fit に basis 引数が無いのに文書が指示している"
+    assert sig.parameters["basis"].default == "weight", (
+        "② parametric_fit の basis 既定が 'weight' でない — 文書の「既定で出版値」が嘘になる"
+    )
+
+
 @pytest.mark.parametrize("skill", (_SKILL, _INSITU_SKILL), ids=lambda p: p.as_posix())
 def test_skill_authority_tables_agree_on_autonomous_phase_addition(skill):
     """ガード2: 2 つの skill の権限境界表が「新相の自動追加」で矛盾しないこと。

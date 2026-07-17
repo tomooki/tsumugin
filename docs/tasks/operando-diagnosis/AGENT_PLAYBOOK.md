@@ -209,10 +209,26 @@ rep["frame"], rep["phase_weight_fractions"], rep["phase_weight_fraction_esd"], r
 
 | キー | 何か | 使いどころ |
 |---|---|---|
-| `phase_fractions` | **Scale** の正規化値 | 相対比較のみ (新相の有意性・転移の追跡) |
-| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら** |
+| `phase_fractions` | **Scale** の正規化値 | **同一 basis 内の相対比較のみ** (新相の有意性・張り付き検出)。**転移の追跡には使えない** (下記) |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら**。転移温度もこちら基準 |
 | `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
 | `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 |
+
+**転移温度を Scale から出さない**: `parametric_fit` の onset/midpoint は「曲線が**絶対レベル**
+0.50 / 0.10 を横切る軸値」であり、y 軸が Scale か wt% かで**答えが動く**。「Scale は相対比較なら
+安全」は転移推定には当てはまらない。
+
+> 実測 (K₂Mn[Fe(CN)₆] tetra 充電域): **同じ精密化**から Scale は「midpoint 9.515 h」を、wt% は
+> 「**転移なし**」を出した (Scale 0→0.656 は 0.50 を横切るが wt% は 0→0.472 で届かない)。
+> Scale が midpoint と呼んだ点は実際には **34.0 wt%**。
+
+```python
+# 転移温度は既定 (basis="weight" = 重量分率) のまま取る。fraction_basis を必ず確認する。
+pf = parametric_fit(result=seq, phase="tetra", component="a")
+assert pf["fraction_basis"] == "weight"   # "weight" でなければ報告しない
+# 重量分率が無い系列は error dict ("FractionBasisUnavailableError") -> Scale で代用しない
+# basis="scale" は診断専用 (相対的な立ち上がりの目視)。その数値は出版しない
+```
 
 同じキー名を `sequential_rietveld` は `frames[i]` に、**`repair_frames` は `repairs[j]` に
 (修復したフレーム毎)**、`auto_rietveld` は結果直下に返す。空 dict = 値が得られなかった

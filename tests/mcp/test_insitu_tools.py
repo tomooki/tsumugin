@@ -13,6 +13,7 @@ from tsumugin.autorietveld.model import AutoRietveldResult, PhaseSpec, ValidityR
 from tsumugin.insitu.model import FrameRietveldResult, FrameSpec, SequentialRietveldResult
 from tsumugin.mcp.insitu_tools import (
     INSITU_TOOLS,
+    _result_from_dict,
     parametric_fit,
     seq_result_to_dict,
     sequential_rietveld,
@@ -284,7 +285,13 @@ def test_sequential_rietveld_bad_instrument_spec_returns_error_dict(monkeypatch,
 
 
 def test_parametric_fit_from_result_dict():
-    # sequential_rietveld の出力を parametric_fit に渡す往復
+    """sequential_rietveld の出力を parametric_fit に渡す往復 (格子ベースライン)。
+
+    **basis="scale" を明示**するようになった (Issue #96 レビュー第4巡): ② の既定は重量分率で、
+    このスタブ runner は重量分率を返さないため既定では error dict に縮退する
+    (`test_parametric_fit_errors_when_weight_fractions_unavailable` がその契約を固定する)。
+    ここで見たいのは格子 vs 軸の回帰なので、診断用の Scale 基準を明示して呼ぶ。
+    """
     frames = [
         FrameSpec(f"f{k}.xrdml", axis_value=T).to_dict()
         for k, T in enumerate([300.0, 320.0, 340.0, 360.0, 380.0])
@@ -296,10 +303,91 @@ def test_parametric_fit_from_result_dict():
         return _result(9.0, {"alpha": (a, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
 
     seq = sequential_rietveld(frames, initial, runner=runner)
-    pf = parametric_fit(seq, "alpha", component="a", degree=1)
+    pf = parametric_fit(seq, "alpha", component="a", degree=1, basis="scale")
     assert pf["phase"] == "alpha"
     assert pf["baseline"]["coefficients"][1] == pytest.approx(0.002, abs=1e-5)
     assert pf["transition"] is None  # 単相
+    json.dumps(pf, allow_nan=False)
+
+
+# --- parametric_fit の basis (Issue #96 レビュー第4巡 HIGH) --------------------------------
+#
+# `parametric_fit` は `phase_fractions` (Scale) を**消費して** onset/midpoint という
+# **出版値を導出する** ② 表面である。`estimate_transition` は絶対レベル 0.50/0.10 の交差軸値を
+# 返すため、y 軸が Scale か wt% かで答えが変わる (実測: Scale なら midpoint 9.515 h、同じ fit の
+# wt% なら「転移なし」)。
+
+
+def _divergent_seq_dict():
+    """Scale は 0.50 を横切るが wt% は横切らない系列 dict (実測 tetra fr96-126 の縮図)。"""
+    rows = [(0.0, 0.0, 0.0), (1.0, 0.30, 0.19), (2.0, 0.50, 0.34), (3.0, 0.656, 0.472)]
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i, axis_value=ax, data_path=f"f{i}.xrdml", rwp=8.0, gof=1.0,
+            refined_cells={"tetra": (10.0, 10.0, 10.0, 90, 90, 90)},
+            phase_fractions={"tetra": s}, phase_names=("tetra",),
+            phase_weight_fractions={"tetra": w}, phase_weight_fraction_esd={"tetra": 0.006},
+        )
+        for i, (ax, s, w) in enumerate(rows)
+    )
+    return seq_result_to_dict(SequentialRietveldResult(frames=frames, phase_names=("tetra",)))
+
+
+def test_result_from_dict_carries_weight_fractions():
+    """★系列 dict → 復元で重量分率が落ちないこと (② の到達可能性の前提)。
+
+    落ちていると `parametric_fit(basis="weight")` は「重量分率が無い」と答えるほかなく、
+    ③ から見て**重量分率基準の転移は原理的に到達不能**になる (実際に落ちていた)。
+    """
+    seq = _result_from_dict(_divergent_seq_dict())
+    assert dict(seq.frames[3].phase_weight_fractions) == {"tetra": 0.472}
+
+
+def test_parametric_fit_defaults_to_weight_basis():
+    """★② の既定は**重量分率** — 同じ入力で Scale なら出る midpoint が既定では出ない。
+
+    既定が Scale だと、③ は「出版できる転移温度」だと信じて Scale 由来の数字を受け取る
+    (それが本 HIGH の実害そのもの)。
+    """
+    pf = parametric_fit(_divergent_seq_dict(), "tetra")
+    assert pf["fraction_basis"] == "weight"
+    assert pf["transition"] is None  # wt% は 0.50 に到達しない = 転移なし
+    json.dumps(pf, allow_nan=False)
+
+
+def test_parametric_fit_scale_basis_is_explicitly_labelled():
+    """Scale 基準を明示要求したら数字は返るが、**Scale 由来と明記**される。"""
+    pf = parametric_fit(_divergent_seq_dict(), "tetra", basis="scale")
+    assert pf["fraction_basis"] == "scale"
+    assert pf["transition"]["midpoint"] == pytest.approx(2.0, abs=1e-6)
+    json.dumps(pf, allow_nan=False)
+
+
+def test_parametric_fit_errors_when_weight_fractions_unavailable():
+    """★重量分率が無ければ **Scale へ黙って落ちず** error dict (② は例外を送出しない)。
+
+    「転移なし」と答えるのも禁止 — それは本物の「転移なし」と区別が付かない静かな嘘になる。
+    """
+    frames = (
+        FrameRietveldResult(
+            frame_index=i, axis_value=float(i), data_path=f"f{i}.xrdml", rwp=8.0, gof=1.0,
+            refined_cells={"p": (5.0, 5.0, 5.0, 90, 90, 90)},
+            phase_fractions={"p": 0.2 + 0.4 * i}, phase_names=("p",),
+        )
+        for i in range(3)
+    )
+    seq = seq_result_to_dict(SequentialRietveldResult(frames=frames, phase_names=("p",)))
+    pf = parametric_fit(seq, "p")
+    assert pf["error_type"] == "FractionBasisUnavailableError"
+    assert "basis" in pf["error"]  # 復旧方法 (basis="scale") を示す
+    assert "transition" not in pf  # 数字を返さない
+    json.dumps(pf, allow_nan=False)
+
+
+def test_parametric_fit_unknown_basis_is_error_dict():
+    """未知 basis は例外でなく error dict へ縮退する (② は例外を送出しない)。"""
+    pf = parametric_fit(_divergent_seq_dict(), "tetra", basis="wt%")
+    assert pf["error_type"] == "ValueError"
     json.dumps(pf, allow_nan=False)
 
 

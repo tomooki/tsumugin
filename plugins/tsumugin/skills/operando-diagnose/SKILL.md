@@ -199,10 +199,20 @@ Scale は単位胞の散乱能に対する比例係数であり、**単位胞質
 
 | キー | 何か | 使いどころ |
 |---|---|---|
-| `phase_fractions` | **Scale** の正規化値 | 相対比較のみ (新相の有意性・転移の追跡) |
-| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs` が精密化占有率込みで算出) | **出版値・定量相分析はこちら** |
+| `phase_fractions` | **Scale** の正規化値 | **同一 basis 内の相対比較のみ** (新相の有意性・張り付き検出)。**転移の追跡には使えない** (下記) |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs` が精密化占有率込みで算出) | **出版値・定量相分析はこちら**。転移温度もこちら基準 |
 | `phase_weight_fraction_esd` | 重量分率の esd (共分散から伝播) | **出版には esd 必須** |
 | `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない) |
+
+**「Scale は相対比較なら安全」は転移推定には当てはまらない**: `parametric_fit` の転移温度は
+「曲線が**絶対レベル** 0.50 (midpoint) / 0.10 (onset) を横切る軸値」であり、y 軸が Scale か
+wt% かで交差位置が動く。**Scale から転移温度を出さないこと**。
+
+> 実測 (K₂Mn[Fe(CN)₆] tetra 充電域): **同じ精密化**から Scale は「midpoint 9.515 h」を、
+> wt% は「**転移なし**」を出した。Scale が midpoint と呼んだ点は実際には **34.0 wt%** だった。
+
+`parametric_fit` は既定で重量分率基準 (`basis="weight"`)、返り値の **`fraction_basis`** に
+どちらで出したかが入る。**`"weight"` でなければ報告しない**。`basis="scale"` は診断専用。
 
 これらを返すツール (**どれも同じキー名**):
 

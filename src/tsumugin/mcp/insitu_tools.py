@@ -10,6 +10,8 @@ M8 の `rietveld_tools` と同じ設計 (二重反転回避): 閉ループ丸ご
 - ``identify_and_add_phase``: 残差/生パターン + elements → MP で新相を同定・CIF 物質化し PhaseSpec を返す
   (相追加の候補提示; 実際の採否・再精密化は ③ が sequential_rietveld/refine で行う)。
 - ``parametric_fit``: 系列結果 (JSON) + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ。
+  転移は **既定で重量分率基準** (``basis="weight"`` = 出版値)。Scale 基準は明示要求時のみで、
+  結果は常に ``fraction_basis`` にどちらで出したかを明示する (Scale 由来の転移値は出版不可)。
 
 **SDK 非依存**: 素の型 dict のみ (json.dumps allow_nan=False 安全)。GSAS/MP は runner/finder 内で
 遅延 import。runner/finder/provider/materializer は注入可能 (テストは決定論スタブ)。
@@ -137,6 +139,13 @@ def _result_from_dict(d: Mapping[str, object]) -> SequentialRietveldResult:
 
     ``residual_report`` は復元しない (往復先の消費者 — parametric_fit / check_phase_set /
     repair_frames — はいずれも残差を見ない。③ は同梱された dict を直接読む)。
+
+    **``phase_weight_fractions`` は復元する** (Issue #96 レビュー第4巡 HIGH): `parametric_fit` は
+    ここで復元した系列から転移 onset/midpoint を**導出する** = 出版値を作る表面であり、往復で
+    重量分率が落ちると `basis="weight"` は「重量分率が無い」と答えるほかなく、③ から見て
+    **重量分率基準の転移は原理的に到達不能**になる (実際に落ちていた: `seq_result_to_dict` は
+    出力していたが本関数が捨てていたため、② の配線は片道しか繋がっていなかった)。
+    esd は復元しない (転移推定は値のみを使い、esd が要る ③ は元の dict を直接読む)。
     """
     frames = []
     for fd in d.get("frames", []):  # type: ignore[union-attr]
@@ -158,6 +167,11 @@ def _result_from_dict(d: Mapping[str, object]) -> SequentialRietveldResult:
                 },
                 phase_names=tuple(fd.get("phase_names", ())),
                 refine_failed=bool(fd.get("refine_failed", False)),
+                phase_weight_fractions={
+                    k: float(v)
+                    for k, v in (fd.get("phase_weight_fractions") or {}).items()
+                    if v is not None
+                },
             )
         )
     return SequentialRietveldResult(
@@ -419,17 +433,47 @@ def parametric_fit(
     *,
     component: str = "a",
     degree: int = 1,
+    basis: str = "weight",
     reason: str = "",
 ) -> dict:
-    """系列結果 (JSON) の相 phase について 格子 vs 軸の熱膨張多項式 + 相分率転移を返す。"""
+    """系列結果 (JSON) の相 phase について 格子 vs 軸の熱膨張多項式 + 相分率転移を返す。
+
+    :param basis: 転移推定に使う相分率の基準。**既定 ``"weight"`` (重量分率 = 出版値)**。
+        ``"scale"`` は HAP Scale 由来で**診断・相対比較専用** (出版不可)。
+    :returns: ``fraction_basis`` に**どちらで出したかを明示**した結果。重量分率が系列に無ければ
+        ``{"error", "error_type"}`` dict (Scale へも「転移なし」へも縮退しない)。
+
+    ⚠ **転移 onset/midpoint は basis で答えが変わる**: `sequential.thermal.estimate_transition` が
+    返すのは「曲線が**絶対レベル** 0.50 / 0.10 を横切る軸値」であり、y 軸が Scale か wt% かで
+    交差位置が動く。実測 K₂Mn[Fe(CN)₆] tetra 充電域では、同じ精密化から Scale は
+    「midpoint 9.515 h」を、wt% は「**転移なし**」を出した (Scale 0→0.656 は 0.50 を横切るが
+    wt% は 0→0.472 で届かない。Scale=0.50 のフレームは実際には 34.0 wt%)。
+
+    **既定を "weight" にした理由** (① `parametric.transition_from_fractions` の既定 "scale" と
+    異なる): ② は JSON しか送れない LLM (③) が呼ぶ表面であり、**既定がそのまま ③ にとっての
+    実質的な振る舞い**になる (architecture.md §4.5)。既定を Scale にすると ③ は「出版できる
+    転移温度」だと信じて Scale 由来の数字を受け取る — それが本 HIGH の実害そのものである。
+    ① は Python の呼び出し側が call site で意図を書ける層なので後方互換を優先している。
+    """
     from ..insitu.parametric import analyze_phase
 
-    seq = _result_from_dict(result)
-    pa = analyze_phase(seq, phase, component=component, degree=degree)  # type: ignore[arg-type]
+    # 【縮退契約】: ② は例外を送出しない (③ は LLM なので例外は回復不能なハード失敗)。
+    #   重量分率の欠如 (`FractionBasisUnavailableError`, ValueError の派生) と未知 basis は
+    #   error dict にして**復旧方法を示す** — ここで Scale に落ちたり「転移なし」を返したり
+    #   すると、③ は静かに違う数字を出版する (CLAUDE.md ② 不変条件)。`error_type` に
+    #   例外クラス名が入るので ③ は「重量分率が無い」と「入力が壊れている」を区別できる。
+    try:
+        seq = _result_from_dict(result)
+        pa = analyze_phase(seq, phase, component=component, degree=degree, basis=basis)  # type: ignore[arg-type]
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
     tr = pa.transition
     return {
         "phase": phase,
         "component": component,
+        # 【basis の明示】: Scale 由来の数字が出版値と取り違えられないよう、**常に**どちらで
+        #   出したかを返す (③ が見落としても既定が weight なので安全側に倒れる) 🔵 §4.5
+        "fraction_basis": pa.fraction_basis,
         "baseline": {
             "parameter": pa.baseline.parameter,
             "coefficients": [finite_or_none(c) for c in pa.baseline.coefficients],
