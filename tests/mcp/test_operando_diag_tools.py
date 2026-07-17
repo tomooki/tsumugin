@@ -776,3 +776,187 @@ def test_check_phase_set_error_does_not_suggest_an_impossible_chain():
     msg = out["error"]
     assert "sequential_rietveld" in msg, "実際に通る入力元を案内していない"
     assert "渡せません" in msg, "repair_frames の戻り値が渡せないことを案内していない"
+
+
+# ===========================================================================
+# repair_frames(target_frames=...) — 検出統計に映らない欠陥の修復経路
+# (Issue #96 レビュー HIGH-1: seed 張り付きは「平坦」なので detect_discontinuities では
+#  原理的に到達できず、③ への指示「seed_pinned_frames[].frame を repair_frames で直す」が
+#  **実行不能**だった)
+# ===========================================================================
+
+
+def _pinned_series():
+    """f1,f2 が seed 張り付き (Rwp は全フレーム平凡 = ジャンプ検出には映らない) の系列。"""
+    fr = [
+        {"alpha": 0.42, "beta": 0.58},
+        {"alpha": 0.5, "beta": 0.5},
+        {"alpha": 0.5, "beta": 0.5},
+        {"alpha": 0.61, "beta": 0.39},
+    ]
+    cells = {"alpha": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0), "beta": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)}
+    frames = tuple(_frame(i, 8.4, f, cells=cells) for i, f in enumerate(fr))
+    return SequentialRietveldResult(frames=frames), cells
+
+
+def test_repair_frames_default_detection_cannot_see_seed_pinning():
+    """★回帰の据え付け: 既定の検出は張り付きフレームを 1 つも拾えない (欠陥の再現)。
+
+    これが `target_frames` の存在理由である。張り付きは Rwp/分率の**ジャンプではない**ため、
+    ② は「不連続なし」= 「直すものは無い」と答えてしまう — ③ が直前に「信用するな」と
+    告げられたフレームに対して、である。
+    """
+    seq, _cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    out = repair_frames(result, frames, phases, runner=lambda *a, **k: None)
+
+    assert out["discontinuities"] == []
+    assert out["repairs"] == []
+
+
+def test_repair_frames_target_frames_repairs_exactly_those_frames():
+    """`target_frames` で指定したフレームだけを修復する (検出を迂回する)。"""
+    seq, cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+    seen = []
+
+    def runner(frame, phases_, initial_cells, initial_fractions=None):
+        seen.append((frame.data_path, initial_fractions))
+        return _autorietveld_result(6.0, cells, {"alpha": 0.7, "beta": 0.3})
+
+    out = repair_frames(result, frames, phases, target_frames=[1, 2], runner=runner)
+
+    assert [d["frame"] for d in out["discontinuities"]] == [1, 2]
+    assert all(d["reasons"] == ["targeted"] for d in out["discontinuities"])
+    assert [r["frame"] for r in out["repairs"]] == [1, 2]  # Rwp 8.4 → 6.0 で採用
+    assert {p for p, _ in seen} == {"f1.xrdml", "f2.xrdml"}
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_target_frames_never_warm_starts_from_a_targeted_frame():
+    """★両隣も同欠陥の罠: 指定フレーム同士は warm-start 元にならない。
+
+    実測では張り付きが 6 連続した (125-130)。隣も張り付いているのにそこから種を貰えば、
+    欠陥をそのまま引き継いで「修復した」と報告する。
+    """
+    seq, cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+    seeds = []
+
+    def runner(frame, phases_, initial_cells, initial_fractions=None):
+        seeds.append(initial_fractions)
+        return _autorietveld_result(6.0, cells, {"alpha": 0.7, "beta": 0.3})
+
+    repair_frames(result, frames, phases, target_frames=[1, 2], runner=runner)
+
+    assert seeds
+    for s in seeds:
+        assert s != {"alpha": 0.5, "beta": 0.5}, f"張り付きフレームから warm-start した: {s}"
+
+
+def test_repair_frames_target_frames_out_of_range_is_error():
+    seq, _cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    out = repair_frames(result, frames, phases, target_frames=[1, 99], runner=lambda *a, **k: None)
+
+    assert "error" in out
+    assert out["error_type"] == "ValueError"
+    assert "repairs" not in out, "エラー時に「修復なし」と誤読される形を返さない"
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_empty_target_frames_is_error_not_a_silent_noop():
+    """空の `target_frames` を「異常なし」と答えない (② の最悪の失敗様態)。"""
+    seq, _cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    out = repair_frames(result, frames, phases, target_frames=[], runner=lambda *a, **k: None)
+
+    assert "error" in out
+    assert "repairs" not in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_target_frames_end_to_end_from_check_phase_set():
+    """★到達可能性 (§4.5): `check_phase_set` の出力だけから `repair_frames` を組めること。
+
+    ③ は JSON しか持たない。`seed_pinned_frames[].frame` → `target_frames` が実際に繋がることを
+    **両ツールを繋いで**確かめる (片方ずつのテストでは経路の断絶を見逃す — それが本 PR の欠陥だった)。
+    """
+    seq, cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    diag = check_phase_set(result)
+    targets = [f["frame"] for f in diag["seed_pinned_frames"]]
+    assert targets == [1, 2]
+
+    out = repair_frames(
+        result, frames, phases, target_frames=targets,
+        runner=lambda f, p, c, initial_fractions=None: _autorietveld_result(
+            6.0, cells, {"alpha": 0.7, "beta": 0.3}
+        ),
+    )
+
+    assert [r["frame"] for r in out["repairs"]] == [1, 2]
+
+
+# ===========================================================================
+# check_phase_set: 分率凍結 (Issue #96 レビュー MEDIUM-3)
+# ===========================================================================
+
+
+def test_check_phase_set_reports_frozen_fraction_frames():
+    """分率 warm-start 下で「直前フレームの値のまま」凍結したフレームを露出する。
+
+    1/n 検査 (`seed_pinned`) は warm-start が効いていないことの canary。warm-start が効いた後の
+    死んだ分率精密化は **1/n ではなく直前フレームの値**に張り付くため 1/n 検査の視野の外に出る。
+    """
+    fr = [0.42, 0.42, 0.42, 0.69]
+    frames = tuple(_frame(i, 8.4, {"tetra": f, "cubic": 1.0 - f}) for i, f in enumerate(fr))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+
+    assert out["fractions_frozen"] is True
+    assert [f["frame"] for f in out["frozen_fraction_frames"]] == [1, 2]
+    assert out["frozen_fraction_frames"][0]["previous_frame"] == 0
+    assert out["seed_pinned"] is False, "1/n ではないので seed 検査には出ない (別シグナル)"
+    assert "target_frames" in out["frozen_fraction_recommendation"]
+    json.dumps(out, allow_nan=False)
+
+
+def test_check_phase_set_static_plateau_is_not_frozen():
+    """★偽陽性ガード: 揺らぎのある静止プラトー (実在の物理) を欠陥と報告しない。"""
+    fr = [0.4000, 0.4003, 0.3998, 0.4001]
+    frames = tuple(_frame(i, 8.0, {"tetra": f, "cubic": 1.0 - f}) for i, f in enumerate(fr))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+
+    assert out["fractions_frozen"] is False
+    assert out["frozen_fraction_frames"] == []
+    json.dumps(out, allow_nan=False)
+
+
+def test_check_phase_set_frozen_keys_always_present_for_stable_schema():
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(3))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+
+    for key in ("fractions_frozen", "frozen_fraction_frames", "frozen_fraction_recommendation"):
+        assert key in out

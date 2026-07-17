@@ -10,10 +10,11 @@ import json
 import pytest
 
 from tsumugin.autorietveld.model import AutoRietveldResult, PhaseSpec, ValidityReport
-from tsumugin.insitu.model import FrameSpec
+from tsumugin.insitu.model import FrameRietveldResult, FrameSpec, SequentialRietveldResult
 from tsumugin.mcp.insitu_tools import (
     INSITU_TOOLS,
     parametric_fit,
+    seq_result_to_dict,
     sequential_rietveld,
 )
 
@@ -409,4 +410,103 @@ def test_sequential_rietveld_bad_two_theta_limits_returns_error_dict(monkeypatch
     out = sequential_rietveld(frames, initial, runner=runner, two_theta_limits=[2.0])
     assert out["error_type"] == "ValueError"
     assert "two_theta_limits" in out["error"]
+    json.dumps(out, allow_nan=False)
+
+
+# ===========================================================================
+# 出版値の露出 (Issue #96 レビュー HIGH-2) — フレーム毎
+# ---------------------------------------------------------------------------
+# operando の主要な報告値は「相分率 vs 時間」である。③ が受け取れるのが Scale だけなら、
+# 報告される定量値は **2.1x 誤る** (実測 K2Mn[Fe(CN)6]: tetra ドーム頂点 65.6 Scale% は
+# 実際には 47.2 wt%)。esd 無しでは出版もできない。
+# ===========================================================================
+
+
+def test_seq_result_exposes_per_frame_publication_values():
+    """フレーム毎に重量分率 ± esd と格子 esd が載ること。"""
+    frame = FrameRietveldResult(
+        frame_index=0,
+        axis_value=1.0,
+        data_path="f0.xrdml",
+        rwp=7.0,
+        gof=1.1,
+        refined_cells={"cubic": (10.4, 10.4, 10.4, 90.0, 90.0, 90.0)},
+        phase_fractions={"cubic": 0.656, "tetra": 0.344},
+        phase_names=("cubic", "tetra"),
+        phase_weight_fractions={"cubic": 0.472, "tetra": 0.528},
+        phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+        cell_esd={"cubic": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+    )
+    out = seq_result_to_dict(SequentialRietveldResult(frames=(frame,)))
+    f0 = out["frames"][0]
+
+    assert f0["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
+    assert f0["phase_weight_fraction_esd"] == {"cubic": 0.006, "tetra": 0.006}
+    assert f0["cell_esd"] == {"cubic": [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]}
+    # Scale 値も従来通り残る (相対比較用) — 出版値と**両方**見えることが要点
+    assert f0["phase_fractions"] == {"cubic": 0.656, "tetra": 0.344}
+    json.dumps(out, allow_nan=False)
+
+
+def test_seq_result_publication_keys_present_even_when_unavailable():
+    """スタブ runner/失敗フレームでもキーは存在 (欠落と esd=0 を取り違えさせない)。"""
+    frame = FrameRietveldResult(
+        frame_index=0, axis_value=1.0, data_path="f0.xrdml", rwp=7.0, gof=1.1,
+        refined_cells={}, phase_fractions={"alpha": 1.0}, phase_names=("alpha",),
+    )
+    out = seq_result_to_dict(SequentialRietveldResult(frames=(frame,)))
+    f0 = out["frames"][0]
+
+    assert f0["phase_weight_fractions"] == {}
+    assert f0["phase_weight_fraction_esd"] == {}
+    assert f0["cell_esd"] == {}
+    json.dumps(out, allow_nan=False)
+
+
+def test_seq_result_publication_values_are_json_safe():
+    frame = FrameRietveldResult(
+        frame_index=0, axis_value=1.0, data_path="f0.xrdml", rwp=7.0, gof=1.1,
+        refined_cells={}, phase_fractions={}, phase_names=("cubic",),
+        phase_weight_fractions={"cubic": float("nan")},
+        phase_weight_fraction_esd={"cubic": float("inf")},
+        cell_esd={"cubic": (float("nan"), 0.1, 0.1, 0.0, 0.0, 0.0)},
+    )
+    out = seq_result_to_dict(SequentialRietveldResult(frames=(frame,)))
+    f0 = out["frames"][0]
+
+    assert f0["phase_weight_fractions"]["cubic"] is None
+    assert f0["phase_weight_fraction_esd"]["cubic"] is None
+    assert f0["cell_esd"]["cubic"][0] is None
+    json.dumps(out, allow_nan=False)
+
+
+def test_sequential_rietveld_end_to_end_delivers_publication_values_to_layer3():
+    """★到達可能性 (§4.5): ③ が実際に呼ぶ経路で出版値が届くこと。
+
+    serializer 単体のテストは「フレームが値を持っていれば出せる」ことしか言わない。**エンジンが
+    フレームに詰めていなければ**、② の配線があっても ③ には空 dict しか届かない (= 無いのと同じ)。
+    ツールの入口から出口まで通して初めて到達可能性が言える。
+    """
+    cells = {"cubic": (10.4, 10.4, 10.4, 90.0, 90.0, 90.0)}
+
+    def runner(frame, phases, initial_cells):
+        return AutoRietveldResult(
+            stage_results=(), final_rwp=7.0, final_gof=1.1,
+            refined_cells=cells, validity=ValidityReport(passed=True),
+            phase_fractions={"cubic": 0.656, "tetra": 0.344},
+            phase_weight_fractions={"cubic": 0.472, "tetra": 0.528},
+            phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+            cell_esd={"cubic": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+        )
+
+    out = sequential_rietveld(
+        [FrameSpec(data_path="f0.xrdml", axis_value=0.0).to_dict()],
+        [PhaseSpec(structure_path="c.cif", phase_name="cubic").to_dict()],
+        runner=runner,
+    )
+    f0 = out["frames"][0]
+
+    assert f0["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
+    assert f0["phase_weight_fraction_esd"] == {"cubic": 0.006, "tetra": 0.006}
+    assert f0["cell_esd"] == {"cubic": [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]}
     json.dumps(out, allow_nan=False)

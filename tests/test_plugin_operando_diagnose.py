@@ -9,12 +9,14 @@ skill/command が存在し、参照する ② MCP ツールが実在し、権限
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from pathlib import Path
 
 import pytest
 
+from tsumugin.mcp.operando_diag_tools import repair_frames
 from tsumugin.mcp.tools import MCP_TOOLS
 
 _PLUGIN = Path("plugins/tsumugin")
@@ -161,6 +163,126 @@ def test_repair_frames_examples_always_pass_two_theta_limits(doc):
         f"{doc}: two_theta_limits の無い repair_frames 呼び出し例がある: {bad}。"
         "系列を精密化したのと同じレンジを必ず渡すこと (異なるデータ域の Rwp 比較は無効)。"
     )
+
+
+def _top_level_kwargs(site: str) -> list[str]:
+    """呼び出し例の**トップレベル** kwarg 名を抜く (入れ子の dict/list 内は見ない)。"""
+    names: list[str] = []
+    depth = 0
+    for m in re.finditer(r"[\(\[\{\)\]\}]|(\w+)\s*=(?!=)", site):
+        tok = m.group(0)
+        if tok in "([{":
+            depth += 1
+        elif tok in ")]}":
+            depth -= 1
+        elif depth == 0 and m.group(1):
+            names.append(m.group(1))
+    return names
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_repair_frames_documented_kwargs_exist_in_the_real_signature(doc):
+    """ガード4: 呼び出し例の kwarg がすべて `repair_frames` の実シグネチャに在ること。
+
+    **文書が「ツールが提供できない呼び出し」を指示してはならない**。③ は例をそのまま真似するので、
+    実在しない引数を書けば `TypeError` が MCP 境界を越える (= ③ にとって回復不能なハード失敗)。
+
+    実際に起きた (Issue #96 レビュー HIGH-1): 3 文書すべてが「`seed_pinned_frames[].frame` を
+    `repair_frames` で再フィット」と指示していたが、**当時の `repair_frames` にフレームを指定する
+    引数は無かった**。しかも省略時の自動検出は Rwp/分率のジャンプしか見ず、seed 張り付きは
+    定義上「平坦」なのでどの閾値でも拾えない — ③ は「直すものは無い」と告げられる。
+    """
+    text = doc.read_text(encoding="utf-8")
+    params = inspect.signature(repair_frames).parameters
+    sites = _call_sites(text, "repair_frames")
+    assert sites, f"{doc}: repair_frames の呼び出し例が無い"
+    for site in sites:
+        for kw in _top_level_kwargs(site):
+            assert kw in params, (
+                f"{doc}: repair_frames の呼び出し例が実在しない引数 {kw!r} を指示している "
+                f"(実シグネチャ: {sorted(params)})。③ は例をそのまま真似する — "
+                "呼べない指示は TypeError を境界へ漏らす。"
+            )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_pinned_frame_instruction_is_executable_via_target_frames(doc):
+    """ガード5: 張り付き/凍結フレームの修復指示が**実行可能**であること (Issue #96 レビュー HIGH-1)。
+
+    `check_phase_set` の `seed_pinned_frames`/`frozen_fraction_frames` に言及して修復を促す文書は、
+    **`target_frames` を使う呼び出し例**を持たねばならない。自動検出 (`rwp_delta`/`frac_delta`) は
+    張り付きに**原理的に到達できない**:
+
+    - 張り付き区間の Rwp は平凡 (実測 8.4-8.5%) → `rwp_abs` では拾えない。
+    - 区間内では局所中央値が当該フレームの Rwp そのもの → `rwp_delta` をどれだけ下げても届かない。
+    - 分率も平坦 → `frac_delta` は逆に**健全な**近傍を拾う。
+
+    よって `target_frames` 無しの指示は「呼べるが黙って何もしない」= ③ に「異常なし」と
+    答えることになる (② の最悪の失敗様態)。
+    """
+    text = doc.read_text(encoding="utf-8")
+    if "seed_pinned" not in text and "frozen_fraction" not in text:
+        pytest.skip(f"{doc}: 張り付き/凍結に言及していない")
+
+    assert "target_frames" in inspect.signature(repair_frames).parameters, (
+        "repair_frames に target_frames が無い — 文書の指示が実行不能になる"
+    )
+    targeted = [s for s in _call_sites(text, "repair_frames") if "target_frames" in s]
+    assert targeted, (
+        f"{doc}: 張り付き/凍結フレームに言及しながら `target_frames` を使う repair_frames の"
+        "呼び出し例が無い。自動検出は「平坦」な張り付きに原理的に到達できないため、"
+        "この指示は実行不能 (③ は repairs=[] を「直すものは無い」と読む)。"
+    )
+    # 対象の出所 (check_phase_set の出力) が例に現れていること = §4.5 到達可能性。
+    # 例が複数行にまたがるため `[\s\S]` で改行を跨いで探す (`[^\n]` では re.S でも跨げない)。
+    assert re.search(r"seed_pinned_frames|frozen_fraction_frames", "\n".join(targeted)) or re.search(
+        r"(seed_pinned_frames|frozen_fraction_frames)[\s\S]{0,400}target_frames", text
+    ), (
+        f"{doc}: `target_frames` に渡す値が check_phase_set の出力から来ることが例から読めない "
+        "(③ は各引数を『どの ② ツールの出力から作るか』が言えなければ組み立てられない)。"
+    )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_warn_against_repairing_pinned_frames_one_at_a_time(doc):
+    """ガード6: 「疑わしいフレームは 1 回で全て渡す」旨があること (両隣も同欠陥の罠)。
+
+    指定フレームは互いに warm-start 元から除外される (`repair._nearest_good`)。裏を返せば
+    **1 フレームずつ呼ぶと除外が効かず**、両隣も張り付いた区間 (実測 125-130 の 6 連続) で
+    欠陥を持つ隣から種を貰い、欠陥を引き継いだまま「修復成功」を報告する。
+    """
+    text = doc.read_text(encoding="utf-8")
+    if "target_frames" not in text:
+        pytest.skip(f"{doc}: target_frames に言及していない")
+    assert re.search(r"1 回の?呼び出しで(全て|すべて)渡す|1 回で(全て|すべて)渡す", text), (
+        f"{doc}: `target_frames` を教えながら「1 回の呼び出しで全て渡す」注意が無い。"
+        "1 つずつ呼ぶと両隣も同欠陥の区間で欠陥を持つ隣から warm-start する。"
+    )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_state_that_phase_fractions_is_scale_not_weight_percent(doc):
+    """ガード7: `phase_fractions` を wt% と取り違えない指示があること (Issue #96 レビュー HIGH-2)。
+
+    `phase_fractions` は **Scale** であって重量分率ではない。単位胞質量が相間で異なると乖離する
+    (実測 K2Mn[Fe(CN)6]: cubic 1103.4 / tetra 517.8 amu → **65.6 Scale% は実は 47.2 wt% = 2.1x**)。
+    ③ が知らなければ**報告する定量値がそのまま 2.1x 誤る** — Rwp も validity も何も言わない。
+    ② が値を返すだけでは足りず、「どちらを出版値に使うか」が手順書に無ければ ③ は Scale を使う。
+    """
+    text = doc.read_text(encoding="utf-8")
+    assert "phase_weight_fractions" in text, (
+        f"{doc}: 出版値 `phase_weight_fractions` に言及していない (③ は Scale を wt% として報告する)"
+    )
+    assert "phase_weight_fraction_esd" in text, f"{doc}: 重量分率の esd に言及していない (出版に必須)"
+    assert re.search(r"phase_fractions[^\n]{0,120}(Scale|scale)", text), (
+        f"{doc}: `phase_fractions` が Scale であることの明示が無い"
+    )
+    # ② が実際にそのキーを返すこと (文書だけ先行して「呼べない指示」にしない)
+    from tsumugin.mcp.insitu_tools import seq_result_to_dict as _seq  # noqa: PLC0415
+
+    src = inspect.getsource(_seq)
+    for key in ("phase_weight_fractions", "phase_weight_fraction_esd", "cell_esd"):
+        assert key in src, f"② の seq_result_to_dict が {key} を返していないのに文書が指示している"
 
 
 @pytest.mark.parametrize("skill", (_SKILL, _INSITU_SKILL), ids=lambda p: p.as_posix())

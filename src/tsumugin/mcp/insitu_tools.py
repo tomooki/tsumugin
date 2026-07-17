@@ -61,6 +61,9 @@ def _frame_residual_report(f: "FrameRietveldResult") -> dict[str, object] | None
 def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
     """SequentialRietveldResult を素の型 dict へ (③ の判断入力・parametric_fit 入力)。
 
+    ⚠ **``phase_fractions`` は Scale であって重量分率ではない**。定量相分析・出版値には
+    ``phase_weight_fractions`` (± ``phase_weight_fraction_esd``) を使うこと (Issue #96 レビュー)。
+
     各フレームには ``residual_report`` を同梱する (architecture.md §4.5 到達可能性 #3): 単独の
     ``residual_report`` ツールは配列入力を要し、``auto_rietveld`` フォールバックは ``FrameSpec``
     から作れない ``HistogramSpec`` を要するため、**同梱しないと系列フレームの J2/J3 (未説明ピーク
@@ -86,6 +89,20 @@ def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
                 # 【残差レポート同梱】: 残差なし (スタブ runner 等) でもキーは None で存在させ、
                 #   ③ から見たスキーマを安定させる (auto_rietveld 経路と同一規律) 🔵 §4.5
                 "residual_report": _frame_residual_report(f),
+                # 【出版値 (Issue #96 レビュー)】: operando の主要な報告値は「相分率 vs 時間」だが、
+                #   上の `phase_fractions` は **Scale** であって重量分率ではない (単位胞質量が相間で
+                #   異なると乖離。実測 K2Mn[Fe(CN)6]: 65.6 Scale% は実は **47.2 wt%** = 2.1x)。
+                #   ③ が Scale しか受け取れなければ報告する定量値がそのまま誤る。esd 無しでは出版も
+                #   できない。キーは常に存在 (欠落と esd=0 の取り違えを防ぐ; 上と同一規律) 🔵
+                "phase_weight_fractions": {
+                    k: finite_or_none(v) for k, v in f.phase_weight_fractions.items()
+                },
+                "phase_weight_fraction_esd": {
+                    k: finite_or_none(v) for k, v in f.phase_weight_fraction_esd.items()
+                },
+                "cell_esd": {
+                    k: [finite_or_none(x) for x in esd] for k, esd in f.cell_esd.items()
+                },
             }
             for f in result.frames
         ],

@@ -26,7 +26,7 @@ import math
 from dataclasses import dataclass
 from typing import Mapping
 
-from .model import SequentialRietveldResult
+from .model import FrameRietveldResult, SequentialRietveldResult
 
 
 @dataclass(frozen=True)
@@ -96,6 +96,40 @@ class SeedPinningReport:
     """
 
     frames: tuple[SeedPinnedFrame, ...] = ()
+    flagged: bool = False
+    recommendation: str = ""
+
+
+@dataclass(frozen=True)
+class FrozenFractionFrame:
+    """相分率が**直前フレームの値**のまま動かなかったフレーム 1 つの記録 (Issue #96 レビュー)。
+
+    :param frame_index: 0 始まりのフレーム番号
+    :param previous_frame_index: 比較した直前の**成功**フレーム番号 (warm-start の種の出所)
+    :param axis_value: 軸値 (温度/時間, None 可)
+    :param rwp: そのフレームの Rwp (%)。**平凡な値である**ことが本欠陥の質の悪さ
+    :param n_phases: そのフレームの相数 (2 以上のみ判定対象)
+    :param phase_fractions: そのフレームの相名→相分率 (直前フレームと厳密一致している)
+    """
+
+    frame_index: int
+    previous_frame_index: int
+    axis_value: float | None
+    rwp: float
+    n_phases: int
+    phase_fractions: Mapping[str, float]
+
+
+@dataclass(frozen=True)
+class FrozenFractionReport:
+    """系列全体の分率凍結検査結果 (**提案のみ**: 該当フレームを落としも直しもしない)。
+
+    :param frames: 凍結と判定されたフレーム (フレーム番号昇順)
+    :param flagged: 1 つ以上該当したか
+    :param recommendation: 第3層への提案文
+    """
+
+    frames: tuple[FrozenFractionFrame, ...] = ()
     flagged: bool = False
     recommendation: str = ""
 
@@ -178,10 +212,115 @@ def flag_seed_pinned_frames(
         "ウォームスタート欠落) 徴候であり、**Rwp は平凡なままなので統計量からは検出できません** "
         "(実測 K2Mn[Fe(CN)6]: 張り付き 9 フレームの Rwp は 8.4-8.5%、うち 6 連続が転移ドーム頂点の"
         "直前にあり頂点の位置と高さを信用できなくした)。該当フレームの分率は**採用せず**、"
-        "近傍の良好フレームからウォームスタートして再フィットしてください "
-        "(repair_frames、または相分率ウォームスタートを有効にした系列の再実行)。"
+        "近傍の良好フレームからウォームスタートして再フィットしてください: `repair_frames` の "
+        "`target_frames` にこのフレーム番号を渡す (**張り付きは「平坦」なので自動検出では"
+        "拾えません** — `target_frames` を省くと「不連続なし」が返ります。系列を精密化したのと"
+        "同じ `two_theta_limits` も必ず渡すこと)、または相分率ウォームスタート "
+        "(`warm_start_fractions=True`) を有効にした系列の再実行。**疑わしいフレームは 1 回の"
+        "呼び出しで全て渡すこと** (1 つずつ呼ぶと両隣も張り付いた区間で欠陥を持つ隣から"
+        "warm-start します)。"
     )
     return SeedPinningReport(frames=tuple(pinned), flagged=True, recommendation=recommendation)
+
+
+def _fractions_identical(
+    a: Mapping[str, float], b: Mapping[str, float], tol: float
+) -> bool:
+    """2 フレームの相分率が**厳密一致**か (相集合が違う/非有限が混じる場合は False)。"""
+    if set(a) != set(b):
+        return False  # 相集合が変わった = 新相追加等。凍結の話ではない
+    values = [float(v) for v in a.values()] + [float(v) for v in b.values()]
+    if not all(math.isfinite(v) for v in values):
+        return False
+    return all(abs(float(a[k]) - float(b[k])) < tol for k in a)
+
+
+def flag_frozen_fraction_frames(
+    result: SequentialRietveldResult, *, tol: float = 1e-6
+) -> FrozenFractionReport:
+    """相分率が**直前フレームの値のまま**動かなかったフレームを検出する (**提案のみ**)。
+
+    **`is_seed_pinned` (1/n 一致) との役割分担** (Issue #96 レビュー MEDIUM-3):
+
+    - `is_seed_pinned` = 「**分率ウォームスタートが効いていない**」canary。分率が GSAS の等分
+      seed (1/相数) のままなら、そのフレームは種を受け取っていないか、受け取った上で 1 度も
+      動いていない。
+    - **本関数** = 「**ウォームスタート下で分率精密化が死んでいる**」検出器。分率 warm-start を
+      配線した後 (本 PR)、フレーム >=1 は**直前フレームの精密化値**から出発する。したがって分率
+      精密化が動かなかったフレームは 1/n ではなく**直前フレームの値**に張り付き、**1/n 検査の
+      視野の外に出る**。同じ欠陥が warm-start の有無で別の指紋を残すため、両方が要る。
+
+    **なぜ「厳密一致」だけを指紋にするか (偽陽性の回避)**: 実データには**本当に分率が動かない
+    静止プラトー**が存在する (二相共存域など)。これを欠陥と report するのは物理を欠陥と呼ぶこと
+    であり、③ に誤った改訂を促す。しかし**精密化された**分率は計数統計ゆえ必ず 1e-3〜1e-4 の
+    揺らぎを持ち、全相が `tol=1e-6` 以内で直前フレームと一致することは実質起こらない。一方
+    **精密化が動かなかった**フレームは種の値を**そのまま**返す。「動いていない」ではなく
+    「**ビット一致で動いていない**」ことだけが凍結の指紋である (`is_seed_pinned` の 1e-6 と同じ規律)。
+
+    **`seed_pinned` との重複は意図的**: 連続張り付き (実測 125-130) では 2 フレーム目以降が
+    「1/n のまま」かつ「直前と同じ」の両方に該当し、両リストに載る。どちらの主張も真であり、
+    片方を抑制すると**どちらの指紋で引っかかったのかが ③ から見えなくなる** (原因が違えば次の手も
+    違う: 前者は warm-start 設定、後者はそのフレームの精密化)。③ には両者を union して
+    `repair_frames(target_frames=)` へ渡すよう指示してある (二重修復は起きない)。
+
+    判定から除くもの (いずれも偽陽性源):
+
+    - **単相 (n<2)**: 1.0 は毎フレーム同一で当然 (和=1 の必然)。
+    - **精密化失敗フレーム**: `refine_failed` で既に可視。報告もせず、比較の種にもしない。
+      これは**エンジンの種選びと一致させている**: `engine.run_sequential_rietveld` は
+      ``if not refine_failed: prev_fractions = ...`` で**直近の成功フレーム**だけを次の種にする。
+      比較相手がエンジンの実際の種と食い違うと、この検出器は嘘をつく (失敗フレームを挟んだ
+      健全フレームを凍結と誤報する)。
+    - **相集合が変わったフレーム**: 新相追加/消失は凍結ではない。
+    - **非有限が混じる分率**: 別経路で可視化される。
+
+    :param result: 検査対象の逐次精密化結果 (変更しない)
+    :param tol: 直前フレームとの一致とみなす許容差 (既定 1e-6 = 「厳密一致」)
+    :returns: `FrozenFractionReport`
+    """
+    frozen: list[FrozenFractionFrame] = []
+    prev: FrameRietveldResult | None = None  # 直近の **成功** フレーム (失敗フレームは種にならない)
+    for f in result.frames:
+        if f.refine_failed:
+            continue
+        if (
+            prev is not None
+            and len(f.phase_fractions) >= 2
+            and _fractions_identical(f.phase_fractions, prev.phase_fractions, tol)
+        ):
+            frozen.append(
+                FrozenFractionFrame(
+                    frame_index=f.frame_index,
+                    previous_frame_index=prev.frame_index,
+                    axis_value=f.axis_value,
+                    rwp=f.rwp,
+                    n_phases=len(f.phase_fractions),
+                    phase_fractions=dict(f.phase_fractions),
+                )
+            )
+        prev = f
+
+    if not frozen:
+        return FrozenFractionReport(
+            frames=(),
+            flagged=False,
+            recommendation="相分率が直前フレームの値のまま凍結したフレームはありません。",
+        )
+
+    indices = [f.frame_index for f in frozen]
+    recommendation = (
+        f"{len(frozen)} フレームの相分率が**直前フレームの値と厳密に一致**しています "
+        f"(フレーム {indices})。相分率ウォームスタート下でそのフレームの分率精密化が一度も"
+        "動かなかった徴候です (種の値をそのまま返している)。**Rwp は平凡なままなので統計量からは"
+        "検出できず**、値が seed (1/相数) ではないため `seed_pinned` にも出ません。"
+        "該当フレームの分率は**採用せず**、`repair_frames` の `target_frames` に渡して近傍から"
+        "再フィットしてください (**系列を精密化したのと同じ `two_theta_limits` を必ず渡すこと** — "
+        "異なるデータ域の Rwp を比較すると採否の判断が無効になります)。"
+        "**疑わしいフレームは 1 回の呼び出しで全て渡すこと** — "
+        "1 フレームずつ呼ぶと、両隣も凍結している区間では欠陥を持つ隣から warm-start して"
+        "欠陥をそのまま引き継ぎます。"
+    )
+    return FrozenFractionReport(frames=tuple(frozen), flagged=True, recommendation=recommendation)
 
 
 def suggest_phase_set_completion(result: SequentialRietveldResult) -> PhaseSetCompletionReport:

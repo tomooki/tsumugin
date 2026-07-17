@@ -23,9 +23,9 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | ツール | 役割 | 入出力 |
 |---|---|---|
 | `assess_data_quality` | 計器 (データ品質) | 観測ファイル → 背景減算検出 + 2θ 上限提案 |
-| `sequential_rietveld` | 計器+アクチュエータ | frames + initial_phases spec (JSON) → フレーム別 Rwp/格子/相分率/残差レポート・変化点・自動出現相 |
-| `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ + seed 張り付き |
-| `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases → 不連続フレームの近傍 warm-start 修復 |
+| `sequential_rietveld` | 計器+アクチュエータ | frames + initial_phases spec (JSON) → フレーム別 Rwp/格子/相分率/残差レポート/**出版値 (重量分率±esd・格子 esd)**・変化点・自動出現相 |
+| `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ + seed 張り付き + 分率凍結 |
+| `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復 |
 | `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
 
@@ -91,6 +91,23 @@ Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を�
 - **`phases` には系列で使われている全相を渡すこと** — `appearances` の自動追加相を
   含め忘れると相が黙って落ちる (ツールが検出してエラーにするが、意味を理解して渡すこと)。
 
+**`target_frames` で対象を明示指定する** (手順 5 の張り付き/凍結フレームはこれでしか直せない):
+
+```python
+cps = check_phase_set(result)
+suspect = sorted({f["frame"] for f in cps["seed_pinned_frames"]}
+                 | {f["frame"] for f in cps["frozen_fraction_frames"]})
+repair_frames(result, frames, phases,
+              target_frames=suspect,          # ★省略すると張り付きには到達できない
+              instrument={...}, two_theta_limits=[2.4, 18.0])
+```
+
+- 既定 (指定なし) の検出は Rwp/分率の**ジャンプ**しか見ない。**張り付き/凍結は「平坦」**なので
+  どの閾値でも拾えず、`repairs=[]` = 「直すものは無い」が返る — 直前に「信用するな」と
+  言われたフレームに対して、である。
+- **疑わしいフレームは 1 回の呼び出しで全て渡す**。指定フレームは互いに warm-start 元から
+  除外されるため、1 つずつ呼ぶと**両隣も張り付いた区間で欠陥を持つ隣から種を貰う**。
+
 - `repairs` は Rwp 改善時のみ採用済 (自己検証可能な規則なので自律)。
 - **`needs_model_revision` はモデルの欠陥**であり、近傍 warm-start では直らない
   (両隣も同じ欠陥を持つため)。手順 5 と `operando-diagnose` skill へ回す。
@@ -103,11 +120,17 @@ Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を�
   和集合で再フィットして**相分率を比較**する。**Rwp が良くても信じない**。
 - **`flagged=True` (相分率が非単調に振動)**: 物理的に妥当かを問う。単調な転移
   (A → B → C) が自然な系で分率が増減を繰り返すなら、**まず artifact を疑う**。
-- **`seed_pinned=True`**: そのフレームの相分率が等分 seed (2 相なら 0.500/0.500) に**厳密に一致**
-  = 分率精密化が一度も動いていない。**Rwp は平凡なまま**なので他のどの指標にも出ない
-  (実測: 247 フレーム中 9 フレームが Rwp 8.4-8.5% のまま張り付き、うち 6 連続が転移ドーム頂点の
-  直前だった)。`seed_pinned_frames[].frame` を `repair_frames` で近傍からウォームスタート再フィット
-  し、**張り付いたままの分率は報告に使わない**。
+- **`seed_pinned=True` / `fractions_frozen=True`**: そのフレームの分率精密化が一度も動いていない。
+  **Rwp は平凡なまま**なので他のどの指標にも出ない (実測: 247 フレーム中 9 フレームが Rwp
+  8.4-8.5% のまま張り付き、うち 6 連続が転移ドーム頂点の直前だった)。2 つは**同じ欠陥の別の指紋**:
+
+  - **`seed_pinned`**: 分率が等分 seed (2 相なら 0.500/0.500) に**厳密に一致** =
+    **分率ウォームスタートが効いていない** (手順 3 の `warm_start_fractions` 参照)。
+  - **`fractions_frozen`**: 分率が**直前フレームの値**に**厳密に一致** = ウォームスタート下で
+    分率精密化が死んでいる。値が 1/n でないので `seed_pinned` には**出ない**。
+
+  → **両方のフレーム番号を集めて 1 回で修復する** (手順 4 の `target_frames`)。
+  **張り付いたままの分率は報告に使わない**。
 - 各フレームの `residual_report.top_features` の **+ 残差**位置は未説明ピーク = 欠落相の候補
   (実データではここから d 比で cubic 相を独立同定できた)。`baseline_numerator_fraction` が
   大きければ「モデルでは下げられない」= データ側の問題 → **手順 0 に戻る**。
@@ -126,14 +149,31 @@ DFT (MP) 由来の構造は格子が軸別にずれることがあり、異方�
 `parametric_fit(result, phase, component)` で格子 vs 温度の熱膨張係数、相分率シグモイドの
 転移温度 (onset/midpoint±σ) を抽出し報告する。b/c 比等の擬変数で 2 次転移も追う。
 
-### 8. 報告
+### 8. 報告 — **`phase_fractions` は wt% ではない**
 
 全フレーム収束・転移特性・最良結果・相の出現/消失・転移温度・申し送り。
 **Rwp と併せて、相集合の完全性をどう確認したかを必ず書く**。
 
+**定量値は Scale ではなく重量分率で報告する**。`phase_fractions` は HAP Scale の正規化値であり、
+**単位胞質量が相間で異なると重量分率と乖離する**。
+
+> 実測 (K₂Mn[Fe(CN)₆]): cubic 1103.4 amu vs tetra 517.8 amu → **同じ fit で 65.6 Scale% が
+> 実際には 47.2 wt%。2.1x の差**である。
+
+| キー | 何か | 使いどころ |
+|---|---|---|
+| `phase_fractions` | **Scale** の正規化値 | 相対比較のみ (新相の有意性・転移の追跡) |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら** |
+| `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
+| `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない) |
+
+空 dict = その精密化から値が得られなかった (共分散なし/未収束)。**esd=0 の意味ではない**。
+
 ## 禁止事項
 
 - **Rwp が良いことを根拠に相集合を正しいと結論しない**。実データの失敗は Rwp 8% で起きた。
+- **`phase_fractions` (Scale) を wt% として報告しない** (実測 2.1x 誤る)。出版値は
+  `phase_weight_fractions` ± `phase_weight_fraction_esd`。
 - **閾値を「期待した数字」に合わせて調整しない**。②/① の助言器は提案のみ、実測値を報告する。
 - **系統ブロックを近傍 warm-start で「直そう」としない** (両隣も同欠陥 = 無効)。
 - **「対策を入れたら直った」で因果を確定させない**。**単一変数の統制実験**で真因を特定する

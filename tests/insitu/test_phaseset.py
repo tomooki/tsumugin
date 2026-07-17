@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from tsumugin.insitu.model import FrameRietveldResult, SequentialRietveldResult
 from tsumugin.insitu.phaseset import (
+    flag_frozen_fraction_frames,
     flag_nonmonotonic_fraction,
     flag_seed_pinned_frames,
     is_seed_pinned,
@@ -210,3 +211,152 @@ def test_flag_seed_pinned_frames_skips_failed_frames():
     )
     report = flag_seed_pinned_frames(SequentialRietveldResult(frames=frames))
     assert report.flagged is False
+
+
+# ---------------------------------------------------------------------------
+# flag_frozen_fraction_frames (Issue #96 レビュー MEDIUM-3)
+# ---------------------------------------------------------------------------
+#
+# `is_seed_pinned` (1/n 一致) は **分率ウォームスタートが効いていない**ことの canary である。
+# 分率 warm-start を配線した後 (本 PR)、フレーム >=1 は **直前フレームの値**から出発するため、
+# 分率精密化が死んでいるフレームは 1/n ではなく**直前フレームの値**に張り付く — 1/n 検査の
+# 視野の外に出る。これを別シグナルとして検出する。
+
+
+def test_flag_frozen_fraction_frames_detects_identical_to_previous():
+    """直前フレームと**厳密一致**する分率 = warm-start 種から一度も動いていない。"""
+    frames = (
+        _frame(0, {"cubic": 0.42, "tetra": 0.58}),
+        _frame(1, {"cubic": 0.42, "tetra": 0.58}),  # ← 種のまま凍結
+        _frame(2, {"cubic": 0.31, "tetra": 0.69}),
+    )
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    assert report.flagged is True
+    assert [f.frame_index for f in report.frames] == [1]
+    assert report.frames[0].previous_frame_index == 0
+    assert report.frames[0].phase_fractions == {"cubic": 0.42, "tetra": 0.58}
+
+
+def test_flag_frozen_fraction_frames_detects_consecutive_run():
+    """実測 125-130 の 6 連続に相当する凍結 run を全て報告する。"""
+    seeded = {"cubic": 0.42, "tetra": 0.58}
+    frames = (
+        _frame(0, {"cubic": 0.30, "tetra": 0.70}),
+        _frame(1, seeded),
+        _frame(2, seeded),
+        _frame(3, seeded),
+        _frame(4, {"cubic": 0.55, "tetra": 0.45}),
+    )
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    # f1 は f0 と違うので凍結ではない (種は動いた)。f2,f3 が f1 の値のまま凍結。
+    assert [f.frame_index for f in report.frames] == [2, 3]
+
+
+def test_flag_frozen_fraction_frames_static_plateau_is_not_flagged():
+    """★偽陽性ガード: 物理的に本当に静止した平坦域を欠陥として報告しない。
+
+    実データの静止プラトーは計数統計ゆえ 1e-3〜1e-4 の揺らぎを持ち、**厳密一致はしない**。
+    凍結の指紋は「動いていない」ではなく「**ビット一致で動いていない**」である。
+    物理を欠陥と呼ばないため、この区別だけが偽陽性を防ぐ。
+    """
+    frames = (
+        _frame(0, {"cubic": 0.4000, "tetra": 0.6000}),
+        _frame(1, {"cubic": 0.4003, "tetra": 0.5997}),  # 精密化はした (揺らいでいる)
+        _frame(2, {"cubic": 0.3998, "tetra": 0.6002}),
+        _frame(3, {"cubic": 0.4001, "tetra": 0.5999}),
+    )
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    assert report.flagged is False
+    assert report.frames == ()
+
+
+def test_flag_frozen_fraction_frames_single_phase_never_flagged():
+    """単相の 1.0 は毎フレーム同一で当然 (和=1 の必然)。偽陽性にしない。"""
+    frames = tuple(_frame(i, {"alpha": 1.0}) for i in range(4))
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    assert report.flagged is False
+
+
+def test_flag_frozen_fraction_frames_ignores_phase_set_change():
+    """相集合が変わったフレームは比較対象にしない (新相追加は凍結ではない)。"""
+    frames = (
+        _frame(0, {"cubic": 0.42, "tetra": 0.58}),
+        _frame(1, {"cubic": 0.42, "tetra": 0.58, "mono": 0.0}),
+    )
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    assert report.flagged is False
+
+
+def test_flag_frozen_fraction_frames_skips_failed_frames():
+    """精密化失敗フレームは refine_failed で既に可視 (二重報告しない・種にもしない)。"""
+    frames = (
+        _frame(0, {"cubic": 0.42, "tetra": 0.58}),
+        FrameRietveldResult(
+            frame_index=1, axis_value=1.0, data_path="f1.xrdml", rwp=float("inf"), gof=float("inf"),
+            refined_cells={}, phase_fractions={"cubic": 0.42, "tetra": 0.58},
+            phase_names=("cubic", "tetra"), refine_failed=True,
+        ),
+        _frame(2, {"cubic": 0.42, "tetra": 0.58}),
+    )
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    # f1 は失敗なので報告しない。f2 は「直前の**成功**フレーム」が f0 で値が一致 → 凍結。
+    assert [f.frame_index for f in report.frames] == [2]
+
+
+def test_flag_frozen_fraction_frames_nonfinite_not_flagged():
+    frames = (
+        _frame(0, {"cubic": float("nan"), "tetra": float("nan")}),
+        _frame(1, {"cubic": float("nan"), "tetra": float("nan")}),
+    )
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    assert report.flagged is False
+
+
+def test_flag_frozen_fraction_frames_clean_series_recommendation():
+    frames = tuple(_frame(i, {"cubic": 0.1 * i, "tetra": 1.0 - 0.1 * i}) for i in range(4))
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    assert report.flagged is False
+    assert report.recommendation
+
+
+def test_flag_frozen_fraction_frames_recommendation_names_repair_route():
+    """③ が次に何をすべきか (target_frames での修復) を提案文が名指しすること。"""
+    frames = (
+        _frame(0, {"cubic": 0.42, "tetra": 0.58}),
+        _frame(1, {"cubic": 0.42, "tetra": 0.58}),
+    )
+    report = flag_frozen_fraction_frames(SequentialRietveldResult(frames=frames))
+
+    assert "target_frames" in report.recommendation
+
+
+def test_seed_pinned_and_frozen_can_overlap_intentionally():
+    """2 指紋の**重複は意図的**: 「1/n のまま」かつ「直前と同じ」は両方とも真である。
+
+    実測の 125-130 のような連続張り付きでは、2 フレーム目以降が両方のリストに載る。③ には
+    「両方のフレーム番号を**集合として union して** repair_frames に渡す」と指示してあり
+    (SKILL/PLAYBOOK)、重複しても二重修復は起きない。片方を黙って抑制すると、どちらの指紋で
+    引っかかったのかが ③ から見えなくなる (原因が違えば次の手も違う) ため抑制しない。
+    """
+    frames = (
+        _frame(0, {"cubic": 0.42, "tetra": 0.58}),  # 健全
+        _frame(1, {"cubic": 0.5, "tetra": 0.5}),  # 1/n 張り付き (直前とは違う)
+        _frame(2, {"cubic": 0.5, "tetra": 0.5}),  # 1/n 張り付き **かつ** 直前と同一
+    )
+    result = SequentialRietveldResult(frames=frames)
+
+    pinned = {f.frame_index for f in flag_seed_pinned_frames(result).frames}
+    frozen = {f.frame_index for f in flag_frozen_fraction_frames(result).frames}
+
+    assert pinned == {1, 2}
+    assert frozen == {2}
+    assert pinned & frozen == {2}, "重複は意図的 (両方の主張が真)"
+    assert sorted(pinned | frozen) == [1, 2], "③ は union して repair_frames へ渡す"

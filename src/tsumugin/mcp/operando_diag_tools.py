@@ -5,9 +5,12 @@
 
 - ``assess_data_quality``: 観測ファイル (+esd) → 背景減算検出 + 2θ 上限提案 (計器)。
 - ``residual_report``: (x, yobs, ycalc[, weight]) → baseline/peak 分解 + 上位未説明特徴 (計器)。
-- ``check_phase_set``: 系列結果 (JSON) → 相集合完全性 + 相ごとの非単調性フラグ + **seed 張り付き**
-  (相分率が等分 seed に厳密一致 = 分率精密化が動いていない; Rwp では検出不能, Issue #96) (計器)。
-- ``repair_frames``: 系列結果 + frames + phases → 不連続検出 + 近傍 warm-start 修復 (Rwp 改善時のみ
+- ``check_phase_set``: 系列結果 (JSON) → 相集合完全性 + 相ごとの非単調性フラグ + **分率が動かなかった
+  フレームの 2 指紋** (``seed_pinned``= 等分 seed に厳密一致 = warm-start が効いていない /
+  ``fractions_frozen``= 直前フレームの値に厳密一致 = warm-start 下で分率精密化が死んでいる)。
+  いずれも Rwp では検出不能 (Issue #96) (計器)。
+- ``repair_frames``: 系列結果 + frames + phases → 不連続検出 (or ``target_frames`` で明示指定) +
+  近傍 warm-start 修復 (Rwp 改善時のみ
   採用の自己検証可能な規則なので①/②に置ける安全部分集合)。改善しなかったものは
   ``needs_model_revision`` として③へ上げる。入力の整合性 (フレーム数一致・相集合の完全性) は
   **精密化前に**検証し、破れていれば error dict を返す (相を黙って落とした fit を「修復成功」と
@@ -353,23 +356,36 @@ def check_phase_set(
     **``repair_frames`` の戻り値は渡せない** — あれは系列結果ではなく修復レポート
     (``repairs``/``needs_model_revision``) であり ``frames`` キーを持たない (architecture.md §2)。
 
-    :param result: ``sequential_rietveld`` 等が返す系列結果 (JSON dict)
-    **seed 張り付き (Issue #96)**: 相分率が等分 seed (1/相数) に**厳密に**一致したままのフレームを
-    ``seed_pinned_frames`` で併せて返す。分率精密化がそのフレームで一度も動かなかった徴候で、
-    **Rwp は平凡なまま** (実測 8.4-8.5%) なので ``is_complete`` にも非単調性フラグにも出ない
-    (張り付きは「平坦」であって振動ではない)。厳密な seed 一致が唯一の指紋である。
+    **分率が動かなかったフレームの 2 つの指紋 (Issue #96)**: どちらも **Rwp は平凡なまま**
+    (実測 8.4-8.5%) で ``is_complete`` にも非単調性フラグにも出ない (**張り付きは「平坦」であって
+    振動ではない**)。両者は同じ欠陥が warm-start の有無で残す別の痕跡であり、**両方を見る**こと。
 
+    - ``seed_pinned`` / ``seed_pinned_frames``: 分率が等分 seed (1/相数) に**厳密に**一致。
+      = **分率ウォームスタートが効いていない** canary。
+    - ``fractions_frozen`` / ``frozen_fraction_frames``: 分率が**直前フレームの値**と**厳密に**一致。
+      = ウォームスタート下で**そのフレームの分率精密化が死んでいる**。種が 1/n ではないため
+      上の seed 検査には**出ない**。
+
+    いずれも ``[].frame`` を集めて ``repair_frames`` の ``target_frames`` へ渡すのが修復経路
+    (**疑わしいフレームは 1 回の呼び出しで全て渡すこと** — 1 つずつ呼ぶと、両隣も同欠陥の区間で
+    欠陥を持つ隣から warm-start してしまう)。張り付きは「平坦」なので ``target_frames`` 無しの
+    自動検出では**原理的に到達できない**。
+
+    :param result: ``sequential_rietveld`` 等が返す系列結果 (JSON dict)
     :param min_amplitude: ``flag_nonmonotonic_fraction`` の振幅フィルタ (既定 0.1)
     :param max_turning_points: 同上の turning point 上限 (既定 2; 単一ドームまでは正常)
     :returns: ``is_complete``/``union``/``frames_with_missing``/``recommendation``/``phases``
         (和集合の全相について ``{phase, turning_points, flagged, reason}``)/``seed_pinned``/
         ``seed_pinned_frames`` (``{frame, axis_value, rwp, n_phases, seed_value, phase_fractions}``)/
-        ``seed_pinning_recommendation``。
+        ``seed_pinning_recommendation``/``fractions_frozen``/``frozen_fraction_frames``
+        (``{frame, previous_frame, axis_value, rwp, n_phases, phase_fractions}``)/
+        ``frozen_fraction_recommendation``。
         系列結果が空/不正 (``frames`` 無し・空・必須キー欠落) または復元失敗のときは
         ``{"error", "error_type"}`` (``repair_frames`` と同じ縮退契約)。
         **「相集合は完全」という判定はこの場合返らない** (``_validate_seq_result`` 参照)
     """
     from ..insitu.phaseset import (
+        flag_frozen_fraction_frames,
         flag_nonmonotonic_fraction,
         flag_seed_pinned_frames,
         suggest_phase_set_completion,
@@ -405,6 +421,9 @@ def check_phase_set(
     # 【seed 張り付き (Issue #96)】: 相分率が seed から一度も動いていないフレーム。Rwp/is_complete/
     #   非単調性のどれにも出ないため、この検出器が無いと ③ は張り付いた分率を正常値として読む。
     pinning = flag_seed_pinned_frames(seq)
+    # 【分率凍結 (Issue #96 レビュー)】: 分率 warm-start 下では死んだ分率精密化が **1/n ではなく
+    #   直前フレームの値** に張り付き、上の seed 検査の視野の外に出る。同じ欠陥の別の指紋。
+    frozen = flag_frozen_fraction_frames(seq)
 
     return {
         "is_complete": bool(completion.is_complete),
@@ -427,6 +446,19 @@ def check_phase_set(
             for f in pinning.frames
         ],
         "seed_pinning_recommendation": pinning.recommendation,
+        "fractions_frozen": bool(frozen.flagged),
+        "frozen_fraction_frames": [
+            {
+                "frame": f.frame_index,
+                "previous_frame": f.previous_frame_index,
+                "axis_value": finite_or_none(f.axis_value) if f.axis_value is not None else None,
+                "rwp": finite_or_none(f.rwp),
+                "n_phases": f.n_phases,
+                "phase_fractions": {k: finite_or_none(v) for k, v in f.phase_fractions.items()},
+            }
+            for f in frozen.frames
+        ],
+        "frozen_fraction_recommendation": frozen.recommendation,
         "reason": reason,
     }
 
@@ -441,12 +473,13 @@ def repair_frames(
     frac_delta: float = 0.15,
     rwp_tol: float = 0.1,
     min_block: int = 2,
+    target_frames: Sequence[int] | None = None,
     two_theta_limits: Sequence[float] | None = None,
     instrument: Mapping[str, object] | None = None,
     runner: Callable | None = None,
     reason: str = "",
 ) -> dict:
-    """不連続フレームを検出し近傍 warm-start で修復する (① ``insitu.repair`` へ委譲)。
+    """不連続フレームを検出 (or 明示指定) し近傍 warm-start で修復する (① ``insitu.repair`` へ委譲)。
 
     ``repairs`` は Rwp が ``rwp_tol`` 超改善した場合のみ採用 (自己検証可能な規則なので①/②に
     置ける安全部分集合)。改善しなかった/試せなかったフレームは ``needs_model_revision`` として
@@ -457,6 +490,22 @@ def repair_frames(
         精密化せず error dict を返す** (``repair_isolated`` は ``frames[i]`` を位置で引くため)
     :param phases: 系列で使われている全相の ``PhaseSpec.to_dict()`` 列 (相名で引く辞書のソース)。
         **系列に現れる相を 1 つでも欠くと精密化せず error dict を返す** (下記 相集合ガード)
+    :param target_frames: **修復するフレーム番号を明示指定する** (指定時は ``rwp_abs``/``rwp_delta``/
+        ``frac_delta`` による自動検出を行わない)。``check_phase_set`` の
+        ``seed_pinned_frames[].frame`` / ``frozen_fraction_frames[].frame`` をそのまま渡す経路
+        (§4.5 到達可能性: 各引数が「どの ② ツールの出力から来るか」を言えること)。
+
+        **なぜ必要か**: 自動検出は Rwp/相分率の**ジャンプ**でしか発火しないが、**分率の張り付き
+        /凍結は定義上「平坦」**であり、Rwp も平凡 (実測 8.4-8.5%) なので**どの閾値を選んでも
+        到達できない** (``rwp_delta`` は張り付き区間の内側で局所中央値が当該フレームの Rwp
+        そのものになるため届かず、``frac_delta`` は逆に**健全な**近傍を拾う)。指定なしでは
+        ``discontinuities=[]``/``repairs=[]` = 「直すものは無い」を、③ が直前に「信用するな」と
+        告げられたフレームに対して返してしまう。
+
+        **1 回の呼び出しで疑わしいフレームを全て渡すこと**: 指定したフレームは互いに warm-start
+        元から除外される (``repair._nearest_good``)。1 フレームずつ呼ぶと、両隣も同欠陥の区間
+        (実測 125-130 の 6 連続) で**欠陥を持つ隣から種を貰い**、欠陥を引き継いだまま「修復成功」
+        になる。空リストは error (「異常なし」と誤読させないため; 自動検出は None で指定なし)
     :param two_theta_limits: 修復試行の精密化レンジ ``[lo, hi]``。**系列を精密化したのと同じレンジを
         渡すこと**: 採用規則 ``rwp_after < rwp_before - rwp_tol`` は系列側の Rwp と比較するため、
         レンジが違うと**別のデータ域どうしの Rwp を比べる**ことになり採否の判断が無効になる
@@ -474,12 +523,17 @@ def repair_frames(
         明示指定時は ``instrument`` より優先する (``sequential_rietveld`` と同じ優先順)
     :returns: ``repairs``/``needs_model_revision``/``systematic_hint``/``discontinuities``/
         ``ledger_entries``。失敗 (系列結果が空/不正・フレーム数不一致・相集合の欠落・spec 復元
-        失敗・instrument spec 不正・レンジ不正) は ``{"error", "error_type"}``
+        失敗・instrument spec 不正・レンジ不正・``target_frames`` が空/範囲外/非整数) は
+        ``{"error", "error_type"}``
         (この場合 ``repairs`` 等のキーは返らない = 「不連続なし」と誤読されない)
     """
     from ..insitu.engine import _default_gsas_runner
     from ..insitu.model import SequentialConfig
-    from ..insitu.repair import detect_discontinuities, repair_isolated
+    from ..insitu.repair import (
+        detect_discontinuities,
+        discontinuities_from_frames,
+        repair_isolated,
+    )
     from ..store.ledger import Ledger
 
     # 【前段の入力検証】: 空/壊れた系列結果は `_result_from_dict` を素通りして空の系列になり、
@@ -525,6 +579,20 @@ def repair_frames(
             "error_type": "ValueError",
         }
 
+    # 【明示ターゲット (§4.5 到達可能性)】: 張り付き/凍結は「平坦」なので自動検出には**原理的に**
+    #   映らない。③ が check_phase_set の seed_pinned_frames/frozen_fraction_frames から直接
+    #   フレームを指定する経路。指定時は検出閾値を一切使わない (無関係な統計で対象を上書きしない)。
+    #   **runner を組む前に**検証する (対象が不正なら精密化は走らせない = GSAS を起こさない)。
+    try:
+        if target_frames is not None:
+            discontinuities = discontinuities_from_frames(seq, target_frames)
+        else:
+            discontinuities = detect_discontinuities(
+                seq, rwp_abs=rwp_abs, rwp_delta=rwp_delta, frac_delta=frac_delta
+            )
+    except (ValueError, TypeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
     # 【実運用設定への到達可能性 (architecture.md §4.5 #2)】: 旧実装は `_default_gsas_runner(
     #   SequentialConfig())` 決め打ちで、③ (JSON しか送れない) からは放射源も背景項数もレンジも
     #   届かなかった。結果 (a) 2θ≤18° で回した系列を**全域**で修復試行し、採用規則が異なるデータ域の
@@ -540,10 +608,6 @@ def repair_frames(
             run = _default_gsas_runner(SequentialConfig(two_theta_limits=limits))
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
-
-    discontinuities = detect_discontinuities(
-        seq, rwp_abs=rwp_abs, rwp_delta=rwp_delta, frac_delta=frac_delta
-    )
 
     # 【P2 非破壊・監査可能性】: repair_isolated は採用/棄却/近傍なしを ledger へ追記する
     #   (architecture.md §1「P2 非破壊・ledger 追記」)。実 GSAS 精密化が走る以上、その試行記録は

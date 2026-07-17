@@ -168,6 +168,67 @@ def detect_discontinuities(
     return tuple(out)
 
 
+def discontinuities_from_frames(
+    result: SequentialRietveldResult,
+    frame_indices: Sequence[int],
+    *,
+    reason: str = "targeted",
+) -> tuple[Discontinuity, ...]:
+    """フレーム番号を明示して `Discontinuity` を組む (**検出統計に映らない欠陥**の修復経路)。
+
+    `detect_discontinuities` は Rwp/相分率の**ジャンプ**でしか発火しない。しかし修復を要する
+    欠陥がすべてジャンプとして現れるとは限らない — **seed 張り付き (`phaseset.is_seed_pinned`) と
+    分率凍結 (`phaseset.flag_frozen_fraction_frames`) は定義上「平坦」**であり、
+
+    - Rwp は平凡なまま (実測 8.4-8.5%) なので ``rwp_abs`` では拾えない、
+    - 張り付き区間内では局所中央値が当該フレームの Rwp そのものになるため ``rwp_delta`` を
+      どれだけ下げても内側に到達できない、
+    - 分率も平坦なので ``frac_delta`` は逆に**健全な**近傍フレームの方を拾ってしまう
+
+    という三重の理由で、**どの閾値を選んでも検出できない**。よって「何を直すか」を呼び出し側
+    (③ が `check_phase_set` の `seed_pinned_frames[].frame` / `frozen_fraction_frames[].frame`
+    から組む) が指定する経路が要る。
+
+    **`flagged` 集合としての役割**: 返した `Discontinuity` のフレーム番号は `repair_isolated` で
+    warm-start 元から除外される (`_nearest_good`)。**疑わしいフレームは 1 回の呼び出しで全て渡すこと** —
+    1 フレームずつ呼ぶと、両隣も同じ欠陥を持つ場合 (実測 125-130 の 6 連続) に**欠陥を持つ隣から
+    warm-start して欠陥を引き継ぐ**。
+
+    :param result: 対象の逐次精密化結果 (変更しない)
+    :param frame_indices: 修復対象のフレーム番号 (重複・順不同可; 昇順に正規化する)
+    :param reason: 記録する判定理由名 (既定 "targeted"; 例 "seed_pinned")
+    :returns: フレーム番号昇順の `Discontinuity` タプル
+    :raises ValueError: `frame_indices` が空・整数でない・範囲外のとき (② は error dict へ縮退する)
+    """
+    n = len(result.frames)
+    if not frame_indices:
+        raise ValueError(
+            "frame_indices が空です。修復対象が無い呼び出しは「不連続なし」と区別できないため"
+            "打ち切ります (自動検出に任せるなら target_frames を渡さないでください)。"
+        )
+    indices: set[int] = set()
+    for raw in frame_indices:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError(
+                f"frame_indices の要素は整数のフレーム番号です: {raw!r} ({type(raw).__name__})"
+            )
+        if not (0 <= raw < n):
+            raise ValueError(
+                f"frame_indices のフレーム番号が範囲外です: {raw} (系列は 0..{n - 1} の {n} フレーム)"
+            )
+        indices.add(raw)
+
+    return tuple(
+        Discontinuity(
+            frame_index=i,
+            axis_value=result.frames[i].axis_value,
+            rwp=result.frames[i].rwp,
+            reasons=(reason,),
+        )
+        for i in sorted(indices)
+    )
+
+
 def classify(
     discontinuities: tuple[Discontinuity, ...],
     n_frames: int,

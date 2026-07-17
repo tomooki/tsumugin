@@ -93,21 +93,43 @@ check_phase_set(result)
 #     "phases": [{"phase": "tetra", "turning_points": 4, "flagged": true}],
 #     "seed_pinned": true,
 #     "seed_pinned_frames": [{"frame": 125, "rwp": 8.4, "n_phases": 2, "seed_value": 0.5,
-#                             "phase_fractions": {"cubic": 0.5, "tetra": 0.5}}]}
+#                             "phase_fractions": {"cubic": 0.5, "tetra": 0.5}}],
+#     "fractions_frozen": true,
+#     "frozen_fraction_frames": [{"frame": 126, "previous_frame": 125, "rwp": 8.5, "n_phases": 2,
+#                                 "phase_fractions": {"cubic": 0.42, "tetra": 0.58}}]}
 ```
 
 - **`is_complete=False`** → 「**除外した相の強度を、計量の近い別の相が肩代わりしていないか**」
   を疑う。**和集合で再フィットし相分率を比較**する。**Rwp が良くても信じない**。
 - **`flagged=True` (分率が非単調に振動)** → 物理的に妥当かを問う。単調な転移 (A→B→C) が
   自然な系で分率が増減を繰り返すなら、**まず artifact を疑う**。実データではこれが唯一の手がかり。
-- **`seed_pinned=True` (相分率が seed に張り付き)** → **そのフレームの分率を報告に使わない**。
-  分率が等分 seed (1/相数; 2 相なら 0.500/0.500) に**厳密に一致** = 分率精密化がそのフレームで
-  一度も動いていない。**Rwp は平凡なまま** (実測 8.4-8.5%) で `is_complete` にも非単調フラグにも
-  出ない (張り付きは「平坦」であって振動ではない) — **厳密な seed 一致が唯一の指紋**。実測
-  (K2Mn[Fe(CN)6] 247 フレーム) で 9 フレームが張り付き、**うち 6 連続が転移ドーム頂点の直前**に
-  あったため報告したドームの位置と高さが信用できなくなった。→ `repair_frames` で近傍から
-  ウォームスタート再フィット (`seed_pinned_frames[].frame` が対象)。**黙って捨てない**
-  (可視化して解釈対象から外す判断をユーザーに示す)。
+- **分率が動かなかったフレーム (2 つの指紋)** → **そのフレームの分率を報告に使わない**。
+  いずれも分率精密化がそのフレームで一度も動いていないことを意味し、**Rwp は平凡なまま**
+  (実測 8.4-8.5%) で `is_complete` にも非単調フラグにも出ない (**張り付きは「平坦」であって
+  振動ではない**) — **厳密な一致だけが指紋**。実測 (K2Mn[Fe(CN)6] 247 フレーム) で 9 フレームが
+  張り付き、**うち 6 連続が転移ドーム頂点の直前**にあったため報告したドームの位置と高さが
+  信用できなくなった。**両方を見る**:
+
+  | フラグ | 意味 | いつ出るか |
+  |---|---|---|
+  | `seed_pinned` / `seed_pinned_frames` | 分率が等分 seed (1/相数) に厳密一致 | **分率ウォームスタートが効いていない** |
+  | `fractions_frozen` / `frozen_fraction_frames` | 分率が**直前フレームの値**に厳密一致 | ウォームスタート下で**分率精密化が死んでいる**。1/n でないので `seed_pinned` には出ない |
+
+  → **両方のフレーム番号を集めて 1 回の `repair_frames` 呼び出しで修復する** (`target_frames`):
+
+  ```python
+  cps = check_phase_set(result)
+  suspect = sorted({f["frame"] for f in cps["seed_pinned_frames"]}
+                   | {f["frame"] for f in cps["frozen_fraction_frames"]})
+  repair_frames(result, frames, phases, target_frames=suspect,
+                instrument={...}, two_theta_limits=[2.4, 18.0])
+  ```
+
+  - **`target_frames` 必須**: 省略時の自動検出は Rwp/分率の**ジャンプ**しか見ず、張り付きは
+    「平坦」なので**どの閾値でも拾えない** → `repairs=[]` = 「直すものは無い」が返る。
+  - **1 回の呼び出しで全て渡す**: 指定フレームは互いに warm-start 元から除外される。1 つずつ
+    呼ぶと両隣も張り付いた区間 (実測 125-130 の 6 連続) で**欠陥を持つ隣から種を貰う**。
+  - **黙って捨てない** (可視化して解釈対象から外す判断をユーザーに示す)。
 
 #### J2/J3 残差から欠落相・対称性低下を仮説化
 
@@ -167,6 +189,30 @@ V-t / dQ/dV を人間に要求する。
 > 正しい CIF は W=1→**19.94%** / W=180→26.14%、壊れた CIF は W=1→75.10% / W=180→72.48%。
 > **手で入れた W=180 はむしろ悪化させていた**。→ Issue #79 は前提否定で close。
 
+### 2.6 定量値を報告する — **`phase_fractions` は wt% ではない**
+
+**`phase_fractions` は Scale (HAP Scale の正規化値) であって重量分率ではない**。Scale は単位胞の
+散乱能に対する比例係数で、**単位胞質量が相間で異なると重量分率と乖離する**。
+
+> 実測 (K₂Mn[Fe(CN)₆]): cubic 1103.4 amu vs tetra 517.8 amu → **同じ fit で 65.6 Scale% が
+> 実際には 47.2 wt%。2.1x の差**。「tetra ドーム頂点 65.6%」の報告は誤りだった。
+
+```python
+result["frames"][i]["phase_weight_fractions"]      # -> {"cubic": 0.472, "tetra": 0.528}  出版値
+result["frames"][i]["phase_weight_fraction_esd"]   # -> {"cubic": 0.006, "tetra": 0.006}  esd 必須
+result["frames"][i]["cell_esd"]                    # -> {"cubic": [0.0002, ..., 0.0]}     格子 esd
+```
+
+| キー | 何か | 使いどころ |
+|---|---|---|
+| `phase_fractions` | **Scale** の正規化値 | 相対比較のみ (新相の有意性・転移の追跡) |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら** |
+| `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
+| `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 |
+
+`auto_rietveld` は結果直下に同じキーを返す。空 dict = 値が得られなかった (共分散なし/未収束)
+の意味で、**esd=0 ではない**。
+
 ## 3. 禁止事項
 
 - **Rwp が良いことを根拠に相集合を正しいと結論しない** (失敗は Rwp 8% で起きた)。
@@ -174,6 +220,8 @@ V-t / dQ/dV を人間に要求する。
 - **系統ブロックを近傍 warm-start で「直そう」としない** (両隣も同欠陥 = 無効)。
 - **「対策を入れたら直った」で因果を確定させない**。
 - **残差を説明するためだけに相を足さない** (`baseline_numerator_fraction` 大 = データ側の問題)。
+- **`phase_fractions` (Scale) を wt% として報告しない** (実測 2.1x 誤る)。出版値は
+  `phase_weight_fractions` ± `phase_weight_fraction_esd`。
 
 ## 4. 権限境界
 
