@@ -467,6 +467,9 @@ class AutoRietveldResult:
     #   mass は精密化された占有率を反映するため**フレーム毎に GSAS が算出**する (静的 CIF 質量では不可)。
     #   単相は {name: 1.0} (自明)。定量相分析の**出版値はこちら** (`phase_fractions` ではない)。
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
-    # 相名→重量分率の esd。calcMassFracs が Jacobian + 共分散行列から伝播した値。単相は {name: 0.0}
-    #   (自明な 1.0 に不確かさはない)。分率非精密化/共分散なしなら空 dict。
-    phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
+    # 相名→重量分率の esd。calcMassFracs が Jacobian + 共分散行列から伝播した値。**3 状態を区別する**
+    #   (レビュー第6巡 HIGH; cell_esd と同型): ``>0.0`` = 分率を精密化した相の su / 単相は {name: 0.0}
+    #   (自明な 1.0 に不確かさはない) / ``None`` = **多相なのにこの精密化から決まっていない**
+    #   (相 Scale が最終共分散に無い = 全段 revert 等 → calcMassFracs が全相 su を厳密 0.0 にする)。
+    #   相ごと欠落/空 dict = 分率非精密化・共分散なし。**多相の 0.0 を捏造しない** (無限精度の偽 su)。
+    phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)

@@ -85,3 +85,18 @@ def test_uncertainty_fields_are_json_safe():
         "phase_weight_fraction_esd": dict(res.phase_weight_fraction_esd),
     }
     assert json.loads(json.dumps(payload)) == payload
+
+
+def test_weight_fraction_esd_accepts_none_and_is_json_safe():
+    """★レビュー第6巡: 多相で未決定の重量分率 esd は ``None`` を保持し JSON では null に落ちる。
+
+    ``None`` = 「この精密化からは決まっていない」(捏造の 0.0 と別物)。単相の 0.0 (真の陳述) と
+    多相の None が**同一フィールドで共存**できること。
+    """
+    res = _result(
+        phase_weight_fractions={"mono": 0.71, "cubic": 0.29},
+        phase_weight_fraction_esd={"mono": None, "cubic": None},
+    )
+    assert res.phase_weight_fraction_esd == {"mono": None, "cubic": None}
+    payload = {"esd": dict(res.phase_weight_fraction_esd)}
+    assert json.loads(json.dumps(payload)) == {"esd": {"mono": None, "cubic": None}}

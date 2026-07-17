@@ -78,7 +78,8 @@ class FrameRepair:
         (実測 K₂Mn[Fe(CN)₆]: 1.39-1.62 倍。**単一の換算係数は存在しない**ので Scale に係数を掛けて
         wt% にはできない。`AutoRietveldResult.phase_weight_fractions` の docstring 参照)。
         既定空 dict で後方互換 (重量分率を持たない runner/スタブ・共分散なしの精密化は空)。
-    :param phase_weight_fraction_esd: 相名→重量分率の esd。出版には esd 必須。既定空 dict
+    :param phase_weight_fraction_esd: 相名→重量分率の esd。出版には esd 必須。要素 ``None`` = 多相なのに
+        この精密化から決まっていない (レビュー第6巡)・単相は ``0.0`` (自明)。既定空 dict
     :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ)。要素 ``None`` = 格子を解放していない
         (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定。既定空 dict
     """
@@ -89,7 +90,7 @@ class FrameRepair:
     source: str
     phase_fractions: Mapping[str, float]
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
-    phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
+    phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
     cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
 
 

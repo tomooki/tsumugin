@@ -59,7 +59,12 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
     wfr_esd = getattr(res, "phase_weight_fraction_esd", {})
     cesd_src = getattr(res, "cell_esd", {})
     weight_fracs = {n: float(wfr[n]) for n in phase_names if n in wfr}
-    weight_frac_esd = {n: float(wfr_esd[n]) for n in phase_names if n in wfr_esd}
+    # 重量分率 esd は ``None`` (多相で未決定 = 捏造回避) を潰さず貫通させる (レビュー第6巡)。
+    weight_frac_esd = {
+        n: (None if wfr_esd[n] is None else float(wfr_esd[n]))
+        for n in phase_names
+        if n in wfr_esd
+    }
     # 要素 None (格子未解放 = 値が決まっていない) を潰さない (`coerce_cell_esd` の docstring 参照)。
     cell_esd = {n: coerce_cell_esd(cesd_src[n]) for n in phase_names if n in cesd_src}
     return FrameRietveldResult(

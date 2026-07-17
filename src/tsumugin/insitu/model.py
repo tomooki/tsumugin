@@ -262,7 +262,8 @@ class FrameRietveldResult:
         **単一の換算係数は無い** — Scale に係数を掛けて wt% にはできない。
         既定空 dict で後方互換 (重量分率を持たない runner/スタブ・失敗フレームは空)。
     :param phase_weight_fraction_esd: 相名→重量分率の esd (`AutoRietveldResult.phase_weight_fraction_esd`
-        由来)。出版には esd 必須。既定空 dict で後方互換。
+        由来)。出版には esd 必須。要素 ``None`` = **多相なのにこの精密化から決まっていない** (相 Scale が
+        最終共分散に無い; レビュー第6巡)・単相は ``0.0`` (自明)。既定空 dict で後方互換。
     :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ; `refined_cells` と同一レイアウト,
         `AutoRietveldResult.cell_esd` 由来)。要素 ``None`` = **そのフレームで格子を解放していない**
         (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定 (真の陳述)。
@@ -284,7 +285,7 @@ class FrameRietveldResult:
     n_obs: int = 0
     residual_report: "ResidualReport | None" = None
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
-    phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
+    phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
     cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
 
 

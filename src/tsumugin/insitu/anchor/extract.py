@@ -68,7 +68,11 @@ def _refine_anchor(
     # 出版値 (重量分率 + esd) は段階 B の AutoRietveldResult から Anchor へ貫通させる
     # (Anchor 経由でしか出力フレームに届かないため; 空/非対応 runner は既定空 dict に縮退)。
     wfracs = {k: float(v) for k, v in getattr(res, "phase_weight_fractions", {}).items()}
-    wfrac_esd = {k: float(v) for k, v in getattr(res, "phase_weight_fraction_esd", {}).items()}
+    # esd の ``None`` (多相で未決定 = 捏造回避) を潰さず貫通させる (レビュー第6巡)。
+    wfrac_esd = {
+        k: (None if v is None else float(v))
+        for k, v in getattr(res, "phase_weight_fraction_esd", {}).items()
+    }
     # 要素 None (格子未解放 = 値が決まっていない) を潰さない (`coerce_cell_esd` の docstring 参照)。
     cesd = {k: coerce_cell_esd(v) for k, v in getattr(res, "cell_esd", {}).items()}
     return Anchor(

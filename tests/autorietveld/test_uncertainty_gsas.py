@@ -30,6 +30,7 @@ import pytest
 
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
 from tsumugin.autorietveld.engine import run_auto_rietveld
+from tsumugin.autorietveld.model import RefinementStage
 from tsumugin.autorietveld.recipe import build_recipe
 
 pytestmark = pytest.mark.gsas
@@ -152,12 +153,57 @@ def test_weight_fractions_differ_from_scale_fractions_and_sum_to_one(frame124_re
 
 
 def test_weight_fraction_esd_is_reported(frame124_result):
-    """重量分率の esd が相分率を解放した相で立つこと (出版値には su が必須)。"""
+    """重量分率の esd が相分率を解放した相で立つこと (出版値には su が必須)。
+
+    frame 124 は 3 相とも Scale を解放して精密化するため、esd は全相 ``>0.0`` で ``None`` は出ない。
+    """
     res = frame124_result
     esd = res.phase_weight_fraction_esd
     assert set(esd) == set(res.phase_weight_fractions)
-    assert all(math.isfinite(v) and v >= 0.0 for v in esd.values())
-    assert any(v > 0.0 for v in esd.values()), f"重量分率 esd が全て 0: {dict(esd)}"
+    assert all(v is not None and math.isfinite(v) and v > 0.0 for v in esd.values()), (
+        f"分率を解放した 3 相の重量分率 esd に 0/None が混じる: {dict(esd)}"
+    )
+
+
+def test_multiphase_weight_esd_is_none_when_scale_not_refined():
+    """★レビュー第6巡 HIGH の実 GSAS 再現: 分率 (Scale) を精密化しない多相フレームで esd を捏造しない。
+
+    frame 124 (test_weight_fraction_esd_is_reported が使う fixture) は**全 3 相の Scale を解放する**
+    ため、この病理を**構造的に見られない** (規則⑥: fixture が作らない条件はそのテストが見ない)。
+    ここでは Scale を一切解放しないレシピ (背景のみ) で 2 相を精密化する。GSAS-II の
+    `calcMassFracs` は Scale が最終共分散の varyList に無いと**全相の su を厳密 0.0** にする
+    (`GSASIIstrMath.calcMassFracs`: `used` 空 → `Avec`=0 → sqrt(0))。
+
+    重量分率の**値は present** (分率は既定値から計算される) が、esd は ``None`` (この精密化からは
+    決まっていない) であること。旧実装 (`_finite_or_zero`) はここで ``0.0`` を返し、`publication_m10.csv`
+    の fr32/fr213/fr224 (直前フレームと分率一致・su=0.0) のような無限精度の捏造を出版経路へ流していた。
+    """
+    if not _data_present():
+        pytest.skip("K₂Mn[Fe(CN)₆] operando 実データ未取得")
+    hist = HistogramSpec(
+        data_path=str(_DATA),
+        instrument_path=str(_INSTPRM),
+        radiation=Radiation.XRAY_SYNCHROTRON,
+        geometry=Geometry.DEBYE_SCHERRER,
+        data_format="XYE",
+        two_theta_limits=(2.4, 18.0),
+    )
+    phases = (
+        PhaseSpec(structure_path=str(_MONO), phase_name="mono"),
+        PhaseSpec(structure_path=str(_MODELS / "cubic_pba.cif"), phase_name="cubic",
+                  refine_cell=False),
+    )
+    # Scale を解放しないレシピ (背景のみ) → 最終共分散に Scale が入らない = calcMassFracs su=0.0。
+    recipe = (RefinementStage(label="bg", flags={"background": {"coeffs": 6}}, note=""),)
+    res = run_auto_rietveld(list([hist]), list(phases), recipe=recipe)
+    wf = res.phase_weight_fractions
+    esd = res.phase_weight_fraction_esd
+    assert set(wf) == {"mono", "cubic"}, f"多相の重量分率値は present のはず: {dict(wf)}"
+    assert set(esd) == set(wf)
+    assert all(esd[name] is None for name in esd), (
+        f"Scale 未解放の多相フレームで su を捏造している: {dict(esd)} — "
+        f"0.0 なら wt = {wf['cubic']:.3f}(0) と読める無限精度の偽 su"
+    )
 
 
 def test_single_phase_weight_fraction_is_unity():

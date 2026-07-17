@@ -221,6 +221,33 @@ def test_forward_pass_carries_weight_fractions_and_esd():
     assert fr.cell_esd["new_delta"] == (0.003, 0.003, 0.004, 0.0, 0.0, 0.0)
 
 
+def test_forward_pass_preserves_none_weight_esd_without_crashing():
+    """★レビュー第6巡: 重量分率 esd の ``None`` (多相で未決定 = 捏造回避) を貫通させる。
+
+    段階 B が su=0.0 の共分散 (全段 revert 等) を返すと `run_auto_rietveld` は
+    `phase_weight_fraction_esd={n: None}` を出す。旧 plumbing は ``float(None)`` で
+    TypeError を出す (= M10 経路が丸ごと落ちる) か、None を握り潰していた。分率値は残しつつ
+    esd は None のまま FrameRietveldResult へ運ぶこと。
+    """
+    left = _anchor(1, phases=("alpha", "new_delta"))
+    right = _anchor(5, phases=("alpha", "new_delta"))
+    seg = build_segments((left, right), 7)[1]
+
+    def runner(frame, phases, cells):
+        names = [p.phase_name for p in phases]
+        return _result(
+            8.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in names},
+            {"alpha": 0.4, "new_delta": 0.6},
+            wfracs={"alpha": 0.71, "new_delta": 0.29},
+            wfrac_esd={"alpha": None, "new_delta": None},  # 多相・未決定
+        )
+
+    sp = refine_segment_forward(seg, _frames(7), runner)
+    fr = sp.results[2]
+    assert fr.phase_weight_fractions == {"alpha": 0.71, "new_delta": 0.29}
+    assert fr.phase_weight_fraction_esd == {"alpha": None, "new_delta": None}
+
+
 def test_frame_result_weight_fractions_empty_when_runner_omits():
     """重量分率を返さない runner (present-guard) では空 dict に縮退する (0.0 の偽値を捏造しない)。"""
     left = _anchor(1)

@@ -194,6 +194,28 @@ def test_anchor_carries_weight_fractions_and_esd():
     assert a.cell_esd["new_delta"] == (0.002, 0.002, 0.002, 0.0, 0.0, 0.0)
 
 
+def test_anchor_preserves_none_weight_esd_without_crashing():
+    """★レビュー第6巡: 段階 B が su=None (多相で未決定) を返しても ``float(None)`` で落ちず貫通する。"""
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0)
+
+    def identifier(frame):
+        return (0.8, (ALPHA, DELTA))
+
+    def runner(frame, phases, cells):
+        names = [p.phase_name for p in phases]
+        return _result(
+            9.0, {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in names},
+            {"alpha": 0.3, "new_delta": 0.7},
+            wfracs={"alpha": 0.42, "new_delta": 0.58},
+            wfrac_esd={"alpha": None, "new_delta": None},  # 多相・未決定 = 捏造回避
+        )
+
+    anchors = extract_anchors(_frames(1), [ALPHA], runner=runner, identifier=identifier, cfg=cfg)
+    a = anchors[0]
+    assert a.phase_weight_fractions == {"alpha": 0.42, "new_delta": 0.58}
+    assert a.phase_weight_fraction_esd == {"alpha": None, "new_delta": None}
+
+
 def test_anchor_esd_empty_when_runner_omits():
     """重量分率/esd を返さない runner では Anchor の該当フィールドは空 dict。"""
     cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0)

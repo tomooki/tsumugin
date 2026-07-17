@@ -741,6 +741,32 @@ def _finite_or_zero(x: object) -> float:
     return v if math.isfinite(v) else 0.0
 
 
+def _weight_esd_or_none(x: object) -> float | None:
+    """多相の重量分率 esd を純化する。**0.0 / 非有限 / 負は `None`**、正のみ値を残す (捏造防止)。
+
+    **0.0 を捏造しない** (レビュー第6巡 HIGH — R5 の cell_esd と同型の再発): GSAS-II の
+    `calcMassFracs` は相分率 (HAP Scale) が**最終精密化の共分散 varyList に無い**とき、当該
+    ヒストグラムの**全相**の su を厳密に ``0.0`` にする (導関数ベクトル `Avec` が全 0 → sqrt(0))。
+    これは「精密化して 0 に決まった」ではなく「**この精密化からは決まっていない**」を意味する。
+
+    実測 (K₂Mn[Fe(CN)₆] M10 双方向解析 `publication_m10.csv`): fr213 は直前 fr212 と重量分率が
+    **完全一致** (0.80115/0.19885) で su だけ 0.0、fr224 も fr223 と一致で su 0.0 — 全段 revert
+    (warm-start 種のまま) で共分散に Scale が残らなかったフレームである。素通しすると
+    ``wt = 0.199(0)`` = 無限精度の捏造が出版経路 (`phase_weight_fraction_esd`) へ流れる。
+
+    **多相の real な決定では su>0 が保証される** (両分率が (0,1) にあれば `Avec` は非零・共分散の
+    Scale 部分は正定値) ため、多相で su==0.0 は一意に「未決定」を指す。単相の自明な ``0.0``
+    (`_weight_fraction_maps` の早期 return) は本関数を通さないので影響しない。
+    """
+    try:
+        v = float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v) or v <= 0.0:
+        return None
+    return v
+
+
 #: `G2Phase.get_cell_and_esd()` の esd dict のキー (`refined_cells` と同じ a,b,c,α,β,γ 順)。
 _CELL_ESD_KEYS = (
     "length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma",
@@ -813,7 +839,7 @@ def _cell_esd_map(g2phases) -> dict[str, CellEsd]:
     return out
 
 
-def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str, float]]:
+def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str, float | None]]:
     """相名→(重量分率, その esd) を GSAS-II 自身の質量分率計算から抽出する。
 
     出典 `G2PwdrData.ComputeMassFracs()` → `GSASIIstrMath.calcMassFracs(varyList, covMatrix,
@@ -827,6 +853,12 @@ def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str
     先頭ヒストグラム基準 (`phase_fractions` と同じ規約)。単相は calcMassFracs が空を返す仕様
     (``len(valDict)==1`` で早期 return) なので、自明な ({name: 1.0}, {name: 0.0}) を返す。
     共分散が無い/取得不能なら空 dict へ縮退し**例外は送出しない**。
+
+    **esd の 3 状態を区別する** (レビュー第6巡 HIGH; R5 の cell_esd と同型): 分率精密化 (相 Scale) が
+    最終共分散に残った相は ``>0.0`` (calcMassFracs の伝播 su)、単相は自明な ``{name: 0.0}`` (真の
+    陳述; 早期 return)、**多相で su==0.0 は「決まっていない」**ので ``None`` に倒す
+    (`_weight_esd_or_none`)。旧実装は `_finite_or_zero` で全段 revert フレームの su を ``0.0`` として
+    出版経路へ流していた (実測 fr213/fr224 が直前フレームと分率一致・su=0.0 = 無限精度の捏造)。
     """
     if not g2phases or not g2hists:
         return {}, {}
@@ -837,10 +869,10 @@ def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str
     except Exception:  # noqa: BLE001 — 共分散なし (未収束/未精密化) 等は空へ縮退
         return {}, {}
     fracs: dict[str, float] = {}
-    esds: dict[str, float] = {}
+    esds: dict[str, float | None] = {}
     for name, pair in dict(vals).items():
         fracs[str(name)] = _finite_or_zero(pair[0])
-        esds[str(name)] = _finite_or_zero(pair[1])
+        esds[str(name)] = _weight_esd_or_none(pair[1])
     return fracs, esds
 
 
