@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Mapping
 
 from ..autorietveld.absorption import AbsorberLayer
+from ..autorietveld.model import CellEsd
 
 if TYPE_CHECKING:
     from ..autorietveld.residual_report import ResidualReport
@@ -110,7 +111,11 @@ class PhaseIdConfig:
     """系列途中の新相自動同定の設定。
 
     :param elements: 相同定に許す元素系 (既知相の元素 + 想定元素)。空なら同定を行わない
-    :param frac_min: 新相の採用に要する最小相分率 (受理基準①)
+    :param frac_min: 新相の採用に要する最小相分率 (受理基準①)。⚠ **basis は `phase_fractions`
+        (= HAP Scale の Σ=1 正規化値) であり `phase_weight_fractions` (wt%) ではない**
+        (`engine._accept_new_phase` が `AutoRietveldResult.phase_fractions` と比較する)。
+        質量の重い相ほど Scale は wt% より小さく出るため、wt% の直感で決めた下限は
+        **同じ精密化で別の答えを出す** (`autorietveld.engine._should_refine_cell` の警告と同型)
     :param rwp_eps: 新相採用に要する最小 Rwp 改善 (受理基準②, %ポイント)
     :param top_k: 各変化点で試す候補相の数 (Dara ランキング上位)
     :param hull_cutoff_ev: MP 安定性フィルタ (energy above hull, eV/atom)
@@ -259,7 +264,9 @@ class FrameRietveldResult:
     :param phase_weight_fraction_esd: 相名→重量分率の esd (`AutoRietveldResult.phase_weight_fraction_esd`
         由来)。出版には esd 必須。既定空 dict で後方互換。
     :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ; `refined_cells` と同一レイアウト,
-        `AutoRietveldResult.cell_esd` 由来)。既定空 dict で後方互換。
+        `AutoRietveldResult.cell_esd` 由来)。要素 ``None`` = **そのフレームで格子を解放していない**
+        (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定 (真の陳述)。
+        相ごと欠落 = 抽出できなかった。既定空 dict で後方互換。
     """
 
     frame_index: int
@@ -278,7 +285,7 @@ class FrameRietveldResult:
     residual_report: "ResidualReport | None" = None
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
     phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
-    cell_esd: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
+    cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

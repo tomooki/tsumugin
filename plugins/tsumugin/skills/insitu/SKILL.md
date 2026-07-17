@@ -67,13 +67,29 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `radiation` | `xray_lab` / `xray_synchrotron` / `neutron_cw` / `neutron_tof` |
 | `geometry` | `bragg_brentano` / `debye_scherrer` |
 | `background_coeffs` | 背景項数 (既定 6)。実測で **18 が最良** の系があった (12/24 は劣る) |
-| `auto_freeze_minor_cells` | **相分率の閾値 (float, 例 0.2)。bool ではない** — 分率が閾値未満の相のセルを自動凍結する。少数相のセルを解放すると計量相関で発散し分率が崩壊する (#80)。個別に凍結するなら `PhaseSpec.refine_cell=False` (手動が自動に優先) |
+| `auto_freeze_minor_cells` | **`phase_fractions` (= Scale) 基準の閾値 (float, 例 0.2)。bool ではない** — **Scale** が閾値未満の相のセルを自動凍結する。少数相のセルを解放すると計量相関で発散し分率が崩壊する (#80)。個別に凍結するなら `PhaseSpec.refine_cell=False` (手動が自動に優先)。⚠ **wt% ではない → 下記** |
+
+> ### ⚠ 分率の閾値は**すべて Scale 基準** — wt% で考えて数字を決めない
+>
+> `auto_freeze_minor_cells` と `phase_id.frac_min` が比較する相分率は `phase_fractions`
+> (**HAP Scale の Σ=1 正規化値**) であり、**`phase_weight_fractions` (wt%) ではない**。
+> 出版値は wt% なので、あなたが系を wt% で考えているとき**閾値だけが別の座標系にある**。
+>
+> 実測 K₂Mn[Fe(CN)₆] (cubic 1103.4 / tetra 517.8 amu):
+> `Scale {cubic 0.75, tetra 0.25}` は `wt% {cubic 86.5, tetra 13.5}` である。
+> 「tetra は 13.5 wt% で少数相だから `auto_freeze_minor_cells=0.15`」と決めると、
+> 実際に比較されるのは **Scale 0.25 ≥ 0.15** なので **tetra のセルは解放されたまま**になり、
+> #80 の発散がそのまま起きる (凍結したいなら Scale 基準で 0.3 等)。
+>
+> **閾値を決める前に `result["frames"][i]["phase_fractions"]` (Scale) を実際に見ること。**
+> 質量の重い相ほど Scale は wt% より小さく出る。
 
 ### 2. 新相自動同定を設定する
 
 `phase_id = {"elements": [既知+想定元素], "frac_min": 0.02, "top_k": 1}`。
 これで系列途中の変化点/Rwp ジャンプで Materials Project から新相を探し、**受理基準 (相分率有意 ∧
 Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を空にすると相追加を行わない。
+`frac_min` は**新相の Scale の下限** (上の警告と同じ basis。wt% ではない)。
 
 ### 3. `sequential_rietveld` を呼ぶ
 
@@ -185,7 +201,7 @@ y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fracti
 | `phase_fractions` | **Scale** の正規化値 | **同一 basis 内の相対比較のみ** (新相の有意性・張り付き検出)。**転移の追跡には使えない** — 転移推定は絶対レベル 0.50/0.10 の交差なので basis で答えが変わる (手順 7) |
 | `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら**。転移温度もこちら基準 (`parametric_fit` の既定) |
 | `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
-| `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない) |
+| `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない)。**3 状態を区別する → 下記** |
 
 `sequential_rietveld` は `result["frames"][i]` に、`repair_frames` は `out["repairs"][j]` に
 (**修復したフレーム毎**)、`auto_rietveld` は結果直下に、同じキー名で返す。
@@ -193,6 +209,25 @@ y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fracti
 (`repair_frames` は非破壊で元の系列を書き換えない)。
 
 空 dict = その精密化から値が得られなかった (共分散なし/未収束)。**esd=0 の意味ではない**。
+
+#### `cell_esd` の 3 状態 — `0.0` と `null` は**意味が違う**
+
+```json
+"cell_esd": {"mono":  [0.0133, 0.0177, 0.0109, 0.0, 0.1300, 0.0],
+             "cubic": [null, null, null, null, null, null]}
+```
+
+| 値 | 意味 | どう報告するか |
+|---|---|---|
+| `>0` | 解放して精密化した項の su | `a = 10.0316(133)` |
+| `0.0` | **対称拘束で厳密に固定** (monoclinic の α/γ = 90° 等) | 90° は定義値。esd を付けない |
+| `null` | **そのフレームで格子を解放していない** — `refine_cell=False` / `auto_freeze_minor_cells` による凍結・セル段の revert・未精密化 | 「参照値に固定 (not refined)」と書く。**esd を付けてはならない** (値は入力 CIF 由来であってこのデータから決まっていない) |
+| 相ごと欠落 | 抽出できなかった (共分散構造の異常) | 出版せず原因を調べる |
+
+⚠ **「0 なら固定」と推論しないこと** — 解放した相の中にも真の `0.0` (対称拘束) がある。
+凍結は `null` でしか判らない。`auto_freeze_minor_cells` は**あなたが相を名指ししなくても**
+分率が閾値未満の相を凍結するので、**どの相が凍結されたかは `cell_esd` の `null` で読む**
+(`auto_rietveld` の `stages[].note` の `auto_frozen_cells=` にも出る)。
 
 ## 禁止事項
 

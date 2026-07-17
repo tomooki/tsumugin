@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
 
+from .._json import finite_or_none
 from .absorption import AbsorberLayer
 
 
@@ -380,6 +381,32 @@ class ValidityReport:
     warnings: tuple[str, ...] = ()
 
 
+#: 格子の標準不確かさ (a,b,c,α,β,γ)。``refined_cells`` と同一レイアウト (体積は含まない)。
+#: **要素の `None` は「この精密化では決まっていない」** (格子を解放していない相・非有限値) を意味し、
+#: ``0.0`` は「対称拘束で厳密に固定」(mono の α/γ = 90°) を意味する — 両者を潰さないための `| None`。
+CellEsd = tuple[
+    float | None, float | None, float | None, float | None, float | None, float | None
+]
+
+
+def coerce_cell_esd(values: object) -> CellEsd:
+    """任意の 6 要素列を `CellEsd` へ正規化する (``None`` と非有限を潰さない共有ヘルパ)。
+
+    **`float(x)` を直接使わないための関数**: `cell_esd` の要素は「格子を解放していない/値が無い」を
+    表す ``None`` を取り得るため、素朴な ``tuple(float(x) for x in esd)`` は ``TypeError`` になる。
+    貫通経路 (M10 `anchor.extract`/`anchor.segment`) が各自で float 化していると、**その TypeError を
+    避けるために 0.0 へ丸める**誘惑が生まれる — それが本 esd の捏造そのものである。
+
+    :param values: 6 要素の数値/None 列 (長さ 6 以外・非数値は `ValueError`/`TypeError`)
+    :returns: 有限値は float、``None``/非有限は ``None``
+    """
+    items = list(values)  # type: ignore[call-overload]
+    if len(items) != 6:
+        raise ValueError(f"cell_esd は 6 要素 (a,b,c,α,β,γ) である必要があります: {values!r}")
+    out = tuple(finite_or_none(x) for x in items)
+    return out  # type: ignore[return-value]
+
+
 @dataclass(frozen=True)
 class AutoRietveldResult:
     """自動 Rietveld 解析の総合結果。"""
@@ -428,10 +455,13 @@ class AutoRietveldResult:
     #   共分散が得られない場合 (未収束/精密化未実行) も空 dict へ縮退し**例外を送出しない**
     #   (「バックエンド失敗は例外でなく結果に縮退」の不変条件)。🔵
     # 相名→格子 esd。`refined_cells` と**同一レイアウト** (a,b,c,α,β,γ の 6 要素; 体積は含まない)。
-    #   出典 `G2Phase.get_cell_and_esd()` (第 2 要素)。固定パラメータ (対称拘束された角度等) は 0.0。
-    cell_esd: Mapping[str, tuple[float, float, float, float, float, float]] = field(
-        default_factory=dict
-    )
+    #   出典 `G2Phase.get_cell_and_esd()` (第 2 要素)。**3 状態を区別する** (レビュー第5巡 HIGH):
+    #   ``>0.0`` = 解放して精密化した項の su / ``0.0`` = **対称拘束で厳密に固定** (mono の α/γ=90°;
+    #   真の陳述) / ``None`` = **この精密化では決まっていない** (格子を解放していない相 —
+    #   `PhaseSpec.refine_cell=False`・`auto_freeze_minor_cells`・セル段の revert・未精密化)。
+    #   相ごと欠落 = 抽出できなかった。**凍結セルに 0.0 を捏造しない** — GSAS は凍結セルでも例外を
+    #   出さず 0.0 を返すため、素通しすると `a = 10.5200(0)` と読める値が出版経路へ流れる。
+    cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
     # 相名→**重量 (質量) 分率**。出典 `G2PwdrData.ComputeMassFracs()` → GSAS-II
     #   `GSASIIstrMath.calcMassFracs` (wtSum=Σ mass[p]*Scale[p]; WgtFrac[j]=mass[j]*Scale[j]/wtSum)。
     #   mass は精密化された占有率を反映するため**フレーム毎に GSAS が算出**する (静的 CIF 質量では不可)。

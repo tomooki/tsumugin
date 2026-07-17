@@ -34,7 +34,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
-from ..autorietveld.model import AutoRietveldResult, PhaseSpec
+from ..autorietveld.model import AutoRietveldResult, CellEsd, PhaseSpec
 from ..store.ledger import Ledger
 from ._warmstart import call_runner, seed_fractions
 from .engine import Runner, _publication_of
@@ -79,7 +79,8 @@ class FrameRepair:
         wt% にはできない。`AutoRietveldResult.phase_weight_fractions` の docstring 参照)。
         既定空 dict で後方互換 (重量分率を持たない runner/スタブ・共分散なしの精密化は空)。
     :param phase_weight_fraction_esd: 相名→重量分率の esd。出版には esd 必須。既定空 dict
-    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ)。既定空 dict
+    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ)。要素 ``None`` = 格子を解放していない
+        (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定。既定空 dict
     """
 
     frame_index: int
@@ -89,7 +90,7 @@ class FrameRepair:
     phase_fractions: Mapping[str, float]
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
     phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
-    cell_esd: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
+    cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

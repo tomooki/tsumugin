@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
-from ...autorietveld.model import PhaseSpec
+from ...autorietveld.model import CellEsd, PhaseSpec
 from ..model import Cell, FrameRietveldResult
 
 __all__ = [
@@ -84,7 +84,8 @@ class Anchor:
         由来)。出力フレーム (`engine._anchor_frame_result`) に esd 付き出版値を運ぶための貫通フィールド。
         既定空 dict で後方互換。
     :param phase_weight_fraction_esd: 相名→重量分率 esd (段階 B 由来)。既定空 dict。
-    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ; 段階 B 由来)。既定空 dict。
+    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ; 段階 B 由来)。要素 ``None`` = 格子を解放して
+        いない (凍結セル/未精密化)。``0.0`` は対称拘束で厳密に固定。既定空 dict。
     """
 
     frame_index: int
@@ -100,7 +101,7 @@ class Anchor:
     fallback: bool = False
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
     phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
-    cell_esd: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
+    cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
 
     @property
     def phase_names(self) -> tuple[str, ...]:

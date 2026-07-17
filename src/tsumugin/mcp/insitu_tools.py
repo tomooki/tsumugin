@@ -374,7 +374,10 @@ def sequential_rietveld(
 
     :param frames: FrameSpec.to_dict の列
     :param initial_phases: PhaseSpec.to_dict の列 (フレーム 0 の既知相)
-    :param phase_id: {"elements": [...], "frac_min": .., "top_k": .., ...} (新相自動同定, None で無効)
+    :param phase_id: {"elements": [...], "frac_min": .., "top_k": .., ...} (新相自動同定, None で無効)。
+        ⚠ ``frac_min`` (既定 0.02) は新相採用に要する**最小 Scale** — `phase_fractions` (HAP Scale の
+        Σ=1 正規化値) と比較する。**wt% (`phase_weight_fractions`) ではない** (下の
+        ``auto_freeze_minor_cells`` と同じ basis 注意)
     :param warm_start_fractions: 直前フレームの精密化相分率も次フレームの初期値に引き継ぐか
         (Issue #82; 分率が seed に張り付くフレームの是正。``warm_start`` 有効時のみ効く)
     :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
@@ -390,7 +393,12 @@ def sequential_rietveld(
         - ``background_coeffs``: Chebyshev 背景項数 (int, 既定 6。実験室 X 線/放射光は 18-24 推奨)
         - ``max_cyc``: 各段階の最大精密化サイクル (int, 既定 12)
         - ``auto_freeze_minor_cells``: 分率連動の自動セル凍結**閾値** (float|None, 既定 None=無効。
-          Issue #80: 例 0.2 なら相分率 0.2 未満の相のセルを解放しない)
+          Issue #80: 例 0.2 なら相分率 0.2 未満の相のセルを解放しない)。⚠ **basis は
+          `phase_fractions` (= HAP Scale の Σ=1 正規化値) で `phase_weight_fractions` (wt%) では
+          ない** — 実測 ``Scale {cubic .75, tetra .25}`` = ``wt% {cubic .865, tetra .135}`` なので
+          0.2 は **Scale では tetra を解放し wt% では凍結する**。出版値は wt% なので wt% の直感で
+          数字を決めると静かに外れる (③ 向けの警告は skills/insitu・skills/operando-diagnose・
+          AGENT_PLAYBOOK の「分率の閾値は Scale 基準」節)
 
         ``two_theta_limits`` は本引数の runner にも転送される (フレーム側指定が優先)。
     :param runner: **注入/テスト用**の Python callable ((frame, phases, initial_cells)→

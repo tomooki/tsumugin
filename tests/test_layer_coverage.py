@@ -23,6 +23,7 @@ import importlib
 import inspect
 import pkgutil
 import textwrap
+from pathlib import Path
 from typing import Callable, Iterator, Mapping
 
 import pytest
@@ -41,6 +42,8 @@ from tsumugin.mcp.insitu_tools import (
     _result_from_dict as _series_deserializer,
 )
 from tsumugin.mcp.insitu_tools import (
+    _instrument_path_resolver,
+    _runner_from_instrument,
     parametric_fit,
     seq_result_to_dict,
     sequential_rietveld,
@@ -966,6 +969,220 @@ def test_fraction_deriving_consumers_never_silently_fall_back_to_scale():
         f"重量分率が無いのに数字が返っている (Scale へ落ちた?): {sorted(out)}"
     )
     assert "transition" not in out
+
+
+# ===========================================================================
+# 粒度⑤: **basis 依存なのは出力だけではない — ② の *入力* 閾値も basis を持つ**
+# ---------------------------------------------------------------------------
+# 【第5巡 MEDIUM】粒度④ の 2 つの網 (emitter / consumer) は**系列 dict を再送出・消費する**表面を
+# 監査する。しかし `sequential_rietveld` はどちらの網にも掛からない — 受け取った閾値は ① の中で
+# **live な GSAS Scale と直接**比較され、系列 dict を一度も経由しないためである。構造的に不可視。
+#
+#   - `instrument["auto_freeze_minor_cells"]` → `autorietveld.engine._should_refine_cell`
+#     (`_phase_fraction_map` = 「先頭ヒストグラムの HAP **Scale**、和=1 正規化」と比較)。
+#   - `phase_id["frac_min"]` → `insitu.engine._accept_new_phase` (`res.phase_fractions` = 同上)。
+#
+# **答えは basis で割れる**: 実測 K₂Mn[Fe(CN)₆] (cubic 1103.4 / tetra 517.8 amu) で
+# `Scale {cubic .75, tetra .25}` は `wt% {cubic .865, tetra .135}`。文書化されている 0.2 は
+# **Scale なら tetra を解放し、wt% なら凍結する**。同じ ③ ドキュメントが「本当の分率は wt%」
+# 「Scale を wt% として報告するな」と教えているので、③ が「tetra は 13.5 wt% の少数相だから 0.15」
+# と考えると**実際には Scale 0.15 を設定し tetra のセルは解放されたまま** = #80 の発散が進む。
+# **これが F1 の原因でもある**: label されていない Scale 閾値が「どの相のセルが esd 無しになるか」
+# を決めている。
+#
+# 【網の設計と限界 — 正直に言う】
+#   (a) **できる**: ② の JSON spec dict (`instrument` / `phase_id`) が読むキーを AST で**発見**し、
+#       basis の宣言を強制する。③ のツマミはこの 2 つの spec に集中しているので、新しい閾値が
+#       spec に入れば必ずここに掛かる。宣言した basis 依存キーには ② docstring と ③ 3 文書での
+#       label を実際のテキストで確かめる。
+#   (b) **できない**: 「この float が ① で分率と比較されるか」の**自動判定**。比較は ②→① の
+#       関数境界をまたぐ (`_apply_stage` → `_should_refine_cell(info, fraction, threshold)` は
+#       Compare ではなく Call) ため、健全に解くには call-graph 解析が要る。名前ヒューリスティクス
+#       (`*frac*` 等) は**現在の綴りにしか一致しない網** = このファイルが既に 2 度捨てた欠陥なので
+#       採らない。よって「新しい spec キーが basis 依存か否か」の判断は人間が宣言する。
+#   (c) **できない**: ツールの kwarg として直接足された閾値 (spec dict の外)。現状 0 件。
+#
+#   加えて**振る舞い側の固定**として `tests/autorietveld/test_auto_freeze.py` に
+#   `test_documented_threshold_compares_scale_not_weight_fraction` を置き、実測の Scale/wt% ペアで
+#   「0.2 が tetra を解放する (= Scale 基準)」を pin してある。宣言と実装が割れたらそちらが落ちる。
+# ===========================================================================
+
+#: 分率 basis を持たない入力 (装置設定・探索設定など)。
+BASIS_FREE = "BASIS_FREE"
+
+#: ② の JSON spec dict が読むキー → (basis or BASIS_FREE, 理由)。
+#: **`instrument` / `phase_id` spec にキーを足したら、ここへ 1 行足すこと** (足さないと網羅テストが fail)。
+SPEC_INPUT_BASIS: dict[str, tuple[str, str]] = {
+    # --- instrument spec (`_runner_from_instrument` / `_instrument_path_resolver`) ---
+    "instrument.auto_freeze_minor_cells": (
+        "scale",
+        "① `autorietveld.engine._should_refine_cell` が `_phase_fraction_map` (先頭ヒストグラムの "
+        "HAP **Scale**・和=1 正規化) と比較する。wt% ではない: 実測 Scale{cubic .75,tetra .25} = "
+        "wt%{cubic .865,tetra .135} なので閾値 0.2 は **Scale なら tetra を解放・wt% なら凍結** = "
+        "答えが basis で割れる。Scale が正しい basis である — 凍結したいのは「計量が近い相同士の"
+        "相関でセルが発散する」相であり、相関の強さは GSAS が実際に動かすパラメータ (Scale) の"
+        "大きさで決まる (質量は無関係)",
+    ),
+    "instrument.path": (BASIS_FREE, "instprm ファイルパス (系列共通)。相分率と比較しない"),
+    "instrument.paths": (BASIS_FREE, "instprm パス列 (frames と 1:1)。相分率と比較しない"),
+    "instrument.radiation": (BASIS_FREE, "放射源 (Radiation enum の値)。相分率と比較しない"),
+    "instrument.geometry": (BASIS_FREE, "測定幾何 (Geometry enum の値)。相分率と比較しない"),
+    "instrument.max_cyc": (BASIS_FREE, "各段階の最大精密化サイクル数 (int)。相分率と比較しない"),
+    "instrument.background_coeffs": (
+        BASIS_FREE, "Chebyshev 背景項数 (int)。相分率と比較しない"
+    ),
+    # --- phase_id spec (`sequential_rietveld`) ---
+    "phase_id.frac_min": (
+        "scale",
+        "① `insitu.engine._accept_new_phase` が `AutoRietveldResult.phase_fractions` (**Scale**) と"
+        "比較する新相採用の下限。wt% ではない — 質量の重い相ほど Scale は wt% より小さく出るため、"
+        "wt% の直感で決めた下限は同じ精密化で別の答えを出す。Scale が正しい basis である: 新相が"
+        "「残差を説明しているか」の問いであり、説明しているのは散乱寄与 = Scale そのもの "
+        "(重量分率は Scale×単位胞質量の派生量)。加えて重量分率は共分散の無い精密化では空で、"
+        "wt% 基準の受理判定は定義できない試行が多い",
+    ),
+    "phase_id.elements": (BASIS_FREE, "相同定に許す元素系 (元素記号の列)。相分率と比較しない"),
+    "phase_id.rwp_eps": (
+        BASIS_FREE, "新相採用に要する最小 Rwp 改善 (%ポイント)。Rwp 基準であり相分率と比較しない"
+    ),
+    "phase_id.top_k": (BASIS_FREE, "各変化点で試す候補相の数 (int)。相分率と比較しない"),
+    "phase_id.hull_cutoff_ev": (
+        BASIS_FREE, "MP 安定性フィルタ (energy above hull, eV/atom)。相分率と比較しない"
+    ),
+    "phase_id.subtract_bg": (BASIS_FREE, "同定前の背景減算フラグ (bool)。相分率と比較しない"),
+    "phase_id.trigger_rwp_ratio": (
+        BASIS_FREE, "同定を起動する Rwp 比。Rwp 基準であり相分率と比較しない"
+    ),
+}
+
+#: spec 名 → (spec dict を受ける変数名, その dict からキーを**読む** ② 関数群)。発見の網。
+_SPEC_READERS: dict[str, tuple[str, tuple[Callable, ...]]] = {
+    "instrument": ("spec", (_runner_from_instrument, _instrument_path_resolver)),
+    "phase_id": ("phase_id", (sequential_rietveld,)),
+}
+
+#: spec 名 → その spec を ③ に**説明する** ② の表面。③ は ② の docstring しか仕様書を持たない
+#: ので、キーを読む関数とは別に「どこに書いてあるか」を持つ (実運用の入口は tool 関数の docstring)。
+_SPEC_DOC_SURFACES: dict[str, tuple[Callable, ...]] = {
+    "instrument": (sequential_rietveld, _runner_from_instrument),
+    "phase_id": (sequential_rietveld,),
+}
+
+#: basis を label しているべき ③ の手順書 (skill 2 種 + 非 Claude ハーネス用 PLAYBOOK)。
+_LAYER3_DOCS = (
+    Path("plugins/tsumugin/skills/insitu/SKILL.md"),
+    Path("plugins/tsumugin/skills/operando-diagnose/SKILL.md"),
+    Path("docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md"),
+)
+
+
+def _spec_keys_read(func: Callable, var: str) -> set[str]:
+    """``<var>.get("key", ...)`` の形で読まれている spec キーを AST で列挙する。
+
+    受け手の変数名で絞る (``spec``/``phase_id``) ため、同関数内の他 dict の ``.get`` は拾わない。
+    """
+    tree = _source_ast(func)
+    if tree is None:  # pragma: no cover - 動的定義の保険
+        return set()
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and f.attr == "get"):
+            continue
+        if not (isinstance(f.value, ast.Name) and f.value.id == var):
+            continue
+        if node.args and isinstance(node.args[0], ast.Constant):
+            keys.add(str(node.args[0].value))
+    return keys
+
+
+def _discovered_spec_inputs() -> set[str]:
+    """② の JSON spec dict が実際に読むキーを ``<spec>.<key>`` 形で発見する。"""
+    found: set[str] = set()
+    for spec, (var, funcs) in _SPEC_READERS.items():
+        for func in funcs:
+            found |= {f"{spec}.{key}" for key in _spec_keys_read(func, var)}
+    return found
+
+
+def test_every_layer2_spec_input_declares_its_fraction_basis():
+    """★② の JSON spec が読む**全ての**キーが分率 basis を宣言していること。
+
+    非トートロジー: 表を grep せず、`_runner_from_instrument` / `_instrument_path_resolver` /
+    `sequential_rietveld` のソースを AST で走査して ``spec.get("...")`` を発見する。
+    新しい閾値を spec に足したら本テストが fail し、「これは分率と比較されるのか / どの basis か」
+    を一度考えさせる。**出力の basis (粒度④) を全部 label しても、入力の basis は誰も見ていなかった**。
+    """
+    actual = _discovered_spec_inputs()
+    declared = set(SPEC_INPUT_BASIS)
+    assert actual == declared, (
+        f"② の JSON spec 入力キーと宣言が食い違う。"
+        f"未宣言 (分率と比較されるなら basis を決め、② docstring と ③ 3 文書に label すること): "
+        f"{sorted(actual - declared)} / "
+        f"実在しない宣言 (削除/改名された?): {sorted(declared - actual)}"
+    )
+
+
+def test_spec_input_basis_declarations_use_the_known_vocabulary():
+    """宣言が `FractionBasis` 語彙か `BASIS_FREE` であり、理由が書かれていること。"""
+    for key, (basis, why) in SPEC_INPUT_BASIS.items():
+        assert basis in (*_VALID_BASES, BASIS_FREE), (
+            f"{key}: basis 宣言 {basis!r} は {_VALID_BASES} か {BASIS_FREE!r} であること"
+        )
+        assert why and len(why) > 20, f"{key}: 理由が書かれていない"
+
+
+@pytest.mark.parametrize(
+    "key", sorted(k for k, (b, _) in SPEC_INPUT_BASIS.items() if b != BASIS_FREE)
+)
+def test_basis_dependent_spec_inputs_are_labelled_in_the_layer2_docstring(key):
+    """★basis 依存の入力は ② の docstring で basis を label していること。
+
+    ③ は ② の JSON しか持たない。① が知っていて ② が言わない事実は ③ にとって存在しない
+    (§4.5 到達可能性)。閾値の basis を言わない ② は「呼べるが黙って間違う」を再導入する。
+    """
+    spec, name = key.split(".", 1)
+    docs = {
+        f.__name__: inspect.getdoc(f) or "" for f in _SPEC_DOC_SURFACES[spec]
+    }
+    describing = {n: d for n, d in docs.items() if name in d}
+    assert describing, (
+        f"{key}: ② の docstring ({sorted(docs)}) がこのキーを説明していない — "
+        f"③ は ② の docstring しか仕様書を持たない"
+    )
+    labelled = [n for n, d in describing.items() if "Scale" in d]
+    assert labelled, (
+        f"{key}: {sorted(describing)} の docstring が basis (Scale) を label していない — "
+        f"③ は wt% だと思って閾値を決める (出版値は wt% だと ① の model.py と ③ skill が教える)"
+    )
+
+
+@pytest.mark.parametrize(
+    "key", sorted(k for k, (b, _) in SPEC_INPUT_BASIS.items() if b != BASIS_FREE)
+)
+@pytest.mark.parametrize("doc", _LAYER3_DOCS, ids=lambda p: p.name)
+def test_basis_dependent_spec_inputs_are_labelled_in_every_layer3_doc(key, doc):
+    """★basis 依存の入力は **③ の 3 文書すべて**で basis を label していること。
+
+    非トートロジー: 実際のファイルを読み、**閾値名と `Scale` が同じ行に現れる**ことを求める。
+    label を落とせば fail する。3 文書は「本当の分率は wt%」「Scale を wt% として報告するな」と
+    教えているので、**閾値だけ Scale であることを言わないと積極的に誤らせる**。
+
+    ⚠ 本テストは label の**有無**しか見ない (散文の正しさは検証できない)。実装が本当に Scale で
+    比較していることは `tests/autorietveld/test_auto_freeze.py::
+    test_documented_threshold_compares_scale_not_weight_fraction` が振る舞いで pin する。
+    """
+    _spec, name = key.split(".", 1)
+    text = doc.read_text(encoding="utf-8")
+    assert name in text, f"{doc}: {name} に言及していない (③ はこのツマミを知らない)"
+    hits = [line for line in text.splitlines() if name in line and "Scale" in line]
+    assert hits, (
+        f"{doc}: {name} の basis (Scale) を label している行が無い。"
+        f"③ は同じ文書で「出版値は wt%」と教わっているため、label が無い閾値は wt% だと解釈する "
+        f"— 実測 Scale{{tetra .25}} = wt%{{tetra .135}} で 0.15 という指定は**答えが割れる**"
+    )
 
 
 def test_anchor_is_still_unexposed_or_the_note_is_stale():

@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from ...autorietveld.model import PhaseSpec
+from ...autorietveld.model import PhaseSpec, coerce_cell_esd
 from .._warmstart import call_runner, seed_fractions
 from ..model import Cell, FrameRietveldResult, FrameSpec
 from .extract import AnchorRunner
@@ -60,7 +60,8 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
     cesd_src = getattr(res, "cell_esd", {})
     weight_fracs = {n: float(wfr[n]) for n in phase_names if n in wfr}
     weight_frac_esd = {n: float(wfr_esd[n]) for n in phase_names if n in wfr_esd}
-    cell_esd = {n: tuple(float(x) for x in cesd_src[n]) for n in phase_names if n in cesd_src}
+    # 要素 None (格子未解放 = 値が決まっていない) を潰さない (`coerce_cell_esd` の docstring 参照)。
+    cell_esd = {n: coerce_cell_esd(cesd_src[n]) for n in phase_names if n in cesd_src}
     return FrameRietveldResult(
         frame_index=j, axis_value=frame.axis_value, data_path=frame.data_path,
         rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,

@@ -162,6 +162,45 @@ def test_apply_stage_single_phase_never_auto_frozen():
     assert auto_frozen == []
 
 
+def test_documented_threshold_compares_scale_not_weight_fraction():
+    """★閾値の basis は **Scale** であり wt% ではないことを実測ペアで pin する (第5巡 MEDIUM)。
+
+    実測 K₂Mn[Fe(CN)₆] (単位胞質量 cubic 1103.4 / tetra 517.8 amu):
+
+        Scale {cubic 0.75, tetra 0.25}  ==  wt% {cubic 0.865, tetra 0.135}
+
+    ③ の 3 文書に載っている `auto_freeze_minor_cells=0.2` は、**Scale 基準なら tetra を解放し、
+    wt% 基準なら凍結する** — つまり同じ精密化から**答えが割れる**。実装は `_phase_fraction_map`
+    (HAP Scale の和=1 正規化) と比較するので Scale が正解であり、`tests/test_layer_coverage.py`
+    の `SPEC_INPUT_BASIS["instrument.auto_freeze_minor_cells"] = "scale"` 宣言と、③ 3 文書の
+    「分率の閾値は Scale 基準」警告はこの振る舞いを指している。
+
+    **本テストが落ちたら宣言と手順書も一緒に直すこと** (basis を変えるのは ③ から見た挙動の変更)。
+    """
+    cubic, tetra = _RecPhase("cubic", 0.75), _RecPhase("tetra", 0.25)
+    auto_frozen = _apply_stage(
+        gpx=None, hists=[object()], phases=[cubic, tetra],
+        phase_infos=_phase_infos(2), atom_flag_maps=[{}, {}],
+        radiations=[Radiation.XRAY_SYNCHROTRON], stage=_stage(),
+        auto_freeze_minor_cells=0.2,
+    )
+    assert tetra.cell_refined() is True, (
+        "tetra の Scale 0.25 は閾値 0.2 以上なので解放されるはず。凍結したなら比較対象が "
+        "wt% (0.135) に変わっている — ③ の手順書・SPEC_INPUT_BASIS の宣言と食い違う"
+    )
+    assert cubic.cell_refined() is True
+    assert auto_frozen == []
+    # wt% 基準の直感で決めた閾値 (0.15) は「少数相 tetra を凍結する」つもりで**解放したまま**にする。
+    tetra2 = _RecPhase("tetra", 0.25)
+    _apply_stage(
+        gpx=None, hists=[object()], phases=[_RecPhase("cubic", 0.75), tetra2],
+        phase_infos=_phase_infos(2), atom_flag_maps=[{}, {}],
+        radiations=[Radiation.XRAY_SYNCHROTRON], stage=_stage(),
+        auto_freeze_minor_cells=0.15,
+    )
+    assert tetra2.cell_refined() is True, "Scale 0.25 ≥ 0.15 なので解放される (#80 の発散が進む)"
+
+
 def test_apply_stage_fraction_unavailable_fails_open():
     # hists=[] → _phase_fraction_map が空 dict を返し、全相の分率が None (fail open)。
     dominant, minor = _RecPhase("dominant", 0.9), _RecPhase("minor", 0.1)

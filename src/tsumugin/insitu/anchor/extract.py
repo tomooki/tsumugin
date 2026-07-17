@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
-from ...autorietveld.model import AutoRietveldResult, PhaseSpec
+from ...autorietveld.model import AutoRietveldResult, PhaseSpec, coerce_cell_esd
 from ..model import Cell, FrameSpec
 from .model import Anchor, AnchorConfig
 
@@ -69,8 +69,8 @@ def _refine_anchor(
     # (Anchor 経由でしか出力フレームに届かないため; 空/非対応 runner は既定空 dict に縮退)。
     wfracs = {k: float(v) for k, v in getattr(res, "phase_weight_fractions", {}).items()}
     wfrac_esd = {k: float(v) for k, v in getattr(res, "phase_weight_fraction_esd", {}).items()}
-    cesd = {k: tuple(float(x) for x in v)
-            for k, v in getattr(res, "cell_esd", {}).items()}
+    # 要素 None (格子未解放 = 値が決まっていない) を潰さない (`coerce_cell_esd` の docstring 参照)。
+    cesd = {k: coerce_cell_esd(v) for k, v in getattr(res, "cell_esd", {}).items()}
     return Anchor(
         frame_index=i, axis_value=frame.axis_value, phase_specs=tuple(specs),
         refined_cells=cells, rwp=float(res.final_rwp), gof=float(res.final_gof),

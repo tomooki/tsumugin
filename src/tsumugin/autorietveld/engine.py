@@ -21,10 +21,12 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from .._json import finite_or_none
 from ..store import Ledger
 from .absorption import apply_absorption_correction
 from .model import (
     AutoRietveldResult,
+    CellEsd,
     HistogramSpec,
     PhaseSpec,
     Radiation,
@@ -335,6 +337,13 @@ def _seed_instrument_profile(g2hist, profile) -> None:
 def _should_refine_cell(info: dict, fraction: float | None, threshold: float | None) -> bool:
     """相のセル (格子) 解放可否を判定する (Issue #47 手動凍結 + Issue #80 自動閾値凍結)。
 
+    ⚠ **`fraction`/`threshold` の basis は `phase_fractions` (= HAP Scale の Σ=1 正規化値) であり、
+    `phase_weight_fractions` (wt%) ではない** (`_phase_fraction_map` 由来)。**答えは basis で割れる**:
+    実測 K₂Mn[Fe(CN)₆] (cubic 1103.4 / tetra 517.8 amu) の `Scale {cubic .75, tetra .25}` は
+    `wt% {cubic .865, tetra .135}` であり、`threshold=0.2` は **Scale では tetra を解放し wt% では
+    凍結する**。出版値は wt% なので、閾値を wt% の直感で決めると静かに外れる (③ 側の警告は
+    `skills/insitu`・`skills/operando-diagnose`・`AGENT_PLAYBOOK` の「分率の閾値は Scale 基準」節)。
+
     判定優先順位 (手動 > 自動 > 既定解放):
 
     1. 明示 ``PhaseSpec.refine_cell=False`` (手動, Issue #47) は常に優先し凍結する。
@@ -364,7 +373,8 @@ def _apply_stage(
     原子フラグは GSAS-II が「置換」セマンティクスのため、per-atom の累積マップを毎回設定する。
     `fixed_profile[i]=True` のヒストグラムは装置プロファイル (U,V,W/X,Y/SH·L) を解放しない (Issue #38)。
 
-    :param auto_freeze_minor_cells: 分率連動の自動セル凍結閾値 (Issue #80)。None で無効
+    :param auto_freeze_minor_cells: 分率連動の自動セル凍結閾値 (Issue #80)。**basis は Scale**
+        (``_phase_fraction_map``; wt% ではない — `_should_refine_cell` 参照)。None で無効
         (従来動作)。有効時は "cell" 段の適用時点で ``_phase_fraction_map`` により**その時点の
         live な** g2phases/g2hists から相分率を取得し (フラグ解放前の直近値; 分率段が未実行の
         単相/初期状態では 1.0 または初期 Scale)、閾値未満の相のみ自動凍結する。
@@ -731,28 +741,73 @@ def _finite_or_zero(x: object) -> float:
     return v if math.isfinite(v) else 0.0
 
 
-def _cell_esd_map(g2phases) -> dict[str, tuple[float, float, float, float, float, float]]:
+#: `G2Phase.get_cell_and_esd()` の esd dict のキー (`refined_cells` と同じ a,b,c,α,β,γ 順)。
+_CELL_ESD_KEYS = (
+    "length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma",
+)
+#: 逆格子計量テンソル項 `<pId>::A0..A5`。GSAS が格子を精密化するときの**実際の変数名**。
+_CELL_A_TERMS = tuple(f"A{i}" for i in range(6))
+
+
+def _cell_was_refined(ph) -> bool:
+    """この相の格子が**最後に受理された精密化で実際に変数だったか**を Covariance から判定する。
+
+    **典拠**: GSAS は格子を逆格子計量テンソル項 ``<pId>::A0..A5`` として精密化し、その名前は
+    ``Covariance/data/varyList`` に載る。esd を作る `G2lat.getCellEsd` 自身が
+    ``getVCov(RMnames, varyList, covMatrix)`` を引く — つまり **varyList に無い A 項の分散は 0** に
+    なる。よって「varyList に A 項があるか」は「GSAS が esd を計算し得たか」と**厳密に同値**であり、
+    `_cell_esd_map` の 0.0 が「精密化して 0」なのか「精密化していない」なのかを分ける authoritative
+    な情報源である。
+
+    **エンジン側の記録 (`refine_cell` / `auto_frozen`) を使わない理由**: 段階が revert されると
+    gpx はセル解放前のスナップショットへ戻る (= 報告されるセルは入力 CIF 値のまま) が、
+    エンジン側の「解放しようとした」という記録は残る。varyList は**報告するセルを実際に作った
+    精密化**を指すため、revert を自動的に正しく扱う。
+
+    判定不能 (Covariance 無し・構造差・未精密化) は **False** (= esd を主張しない) に倒す。
+    捏造を防ぐのが目的なので、疑わしきは「無い」側が安全である。
+    """
+    try:
+        cov = ph.proj["Covariance"]["data"]
+        vary = {str(v) for v in (cov.get("varyList") or ())}
+        pfx = f"{ph.id}::"
+    except Exception:  # noqa: BLE001 — 共分散/構造差は「精密化していない」に縮退
+        return False
+    return any(f"{pfx}{term}" in vary for term in _CELL_A_TERMS)
+
+
+def _cell_esd_map(g2phases) -> dict[str, CellEsd]:
     """相名→格子の標準不確かさ (a,b,c,α,β,γ) を GSAS-II の共分散から抽出する。
 
     出典 `G2Phase.get_cell_and_esd()` → (cellDict, esdDict)。両者は length_a/b/c・angle_alpha/beta/
     gamma・volume をキーに持つが、``refined_cells`` は**体積を含まない 6 要素**なので同一レイアウトへ
-    揃える (体積 esd は落とす)。対称拘束された角度や未精密化パラメータは 0.0 になる。
+    揃える (体積 esd は落とす)。
 
-    共分散が無い場合 (未収束/精密化未実行) GSAS 側が全 0.0 の dict へ縮退するため本関数も 0.0 を返す。
+    **0.0 を捏造しない** (レビュー第5巡 HIGH): `get_cell_and_esd()` は**凍結した格子でも例外を出さず
+    全 0.0 を返す**ため、素通しすると「精密化して 0 に決まった」と読める値が出版経路へ流れる
+    (実測: 論文用 CSV の `mono_a_esd=0.0` 192/192 フレーム・`cubic` 34/211 = `auto_freeze_minor_cells`
+    が凍結した分)。よって `_cell_was_refined` で解放の有無を分け、**③ が 3 状態を区別できる**表現にする:
+
+    | 状態 | 表現 |
+    |---|---|
+    | 解放して精密化した項 | ``>0.0`` (共分散由来の su) |
+    | 解放したセルの**対称拘束項** | ``0.0`` — mono の α/γ は厳密に 90°。**真の陳述なので残す** |
+    | 格子を解放していない相 | ``None`` × 6 (手動 `refine_cell=False` / `auto_freeze_minor_cells` / |
+    |  | セル段が revert された / そもそも未精密化)。このデータからは決まっていない |
+    | 抽出できなかった相 | **キーごと欠落** (`get_cell_and_esd()` が例外) |
+
+    非有限 (NaN/inf) も ``None`` にする — 「値が無い」であって「厳密に 0」ではない。
     抽出不能な相はキーごと落とし、**例外は送出しない** (バックエンド失敗は結果へ縮退する不変条件)。
     """
-    out: dict[str, tuple[float, float, float, float, float, float]] = {}
+    out: dict[str, CellEsd] = {}
     for ph in g2phases:
         try:
             _cell, esd = ph.get_cell_and_esd()
-            out[ph.name] = (
-                _finite_or_zero(esd["length_a"]),
-                _finite_or_zero(esd["length_b"]),
-                _finite_or_zero(esd["length_c"]),
-                _finite_or_zero(esd["angle_alpha"]),
-                _finite_or_zero(esd["angle_beta"]),
-                _finite_or_zero(esd["angle_gamma"]),
-            )
+            if not _cell_was_refined(ph):
+                out[ph.name] = (None, None, None, None, None, None)
+                continue
+            values = tuple(finite_or_none(esd[key]) for key in _CELL_ESD_KEYS)
+            out[ph.name] = values  # type: ignore[assignment]
         except Exception:  # noqa: BLE001 — 共分散欠落/キー欠落は当該相をスキップし継続
             continue
     return out
@@ -922,7 +977,11 @@ def run_auto_rietveld(
         引き継ぐ。相分率和=1 制約 (多相のみ) が精密化開始時に正規化するため絶対値である必要はない。
         未知の相名は無視、全値が非有限/ゼロなら fail-open でシーディングを丸ごとスキップする。
     :param auto_freeze_minor_cells: 分率連動の自動セル凍結閾値 (opt-in, Issue #80: #47/#50 の
-        自動化)。None (既定) なら従来動作 (非回帰): "cell" 段は ``PhaseSpec.refine_cell`` の
+        自動化)。⚠ **basis は `phase_fractions` (= HAP Scale の Σ=1 正規化値) であり
+        `phase_weight_fractions` (wt%) ではない** — 実測 K₂Mn[Fe(CN)₆] で ``Scale {cubic .75,
+        tetra .25}`` = ``wt% {cubic .865, tetra .135}`` なので **0.2 は Scale では tetra を解放し
+        wt% では凍結する** (`_should_refine_cell` 参照)。出版値は wt% なので wt% の直感で数字を
+        決めると静かに外れる。None (既定) なら従来動作 (非回帰): "cell" 段は ``PhaseSpec.refine_cell`` の
         明示指定のみに従う。float (例 0.2) を与えると、"cell" 段の適用時点で live な
         ``g2phases``/``g2hists`` から ``_phase_fraction_map`` により取得した現在の相分率が
         閾値未満の相は、その段階の Cell 解放をスキップする (計量が近い相同士の相関で少数相
