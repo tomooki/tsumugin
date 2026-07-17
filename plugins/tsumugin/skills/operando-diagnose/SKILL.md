@@ -33,7 +33,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | `assess_data_quality` | データ品質 | `is_subtracted`/`confidence`/`reasons`/`suggested_two_theta_limit` |
 | `sequential_rietveld` | 系列実行 | フレーム別 Rwp/格子/相分率 + **`residual_report`** + **出版値** (`phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd`) をフレーム毎に同梱 |
 | `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` + `seed_pinned`/`seed_pinned_frames` + `fractions_frozen`/`frozen_fraction_frames` |
-| `repair_frames` | 不連続の修復 | `repairs` (採用のみ)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない) |
+| `repair_frames` | 不連続の修復 | `repairs` (採用のみ; **修復後の出版値** `phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd` を修復フレーム毎に同梱)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない) |
 | `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `auto_rietveld` | 単一フレーム再フィット | `residual_report` + 出版値 (重量分率 ± esd・`cell_esd`) 同梱 |
 
@@ -204,7 +204,19 @@ Scale は単位胞の散乱能に対する比例係数であり、**単位胞質
 | `phase_weight_fraction_esd` | 重量分率の esd (共分散から伝播) | **出版には esd 必須** |
 | `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない) |
 
-`sequential_rietveld` は**フレーム毎に**、`auto_rietveld` は結果直下にこれらを返す。
+これらを返すツール (**どれも同じキー名**):
+
+| ツール | どこに |
+|---|---|
+| `sequential_rietveld` | `result["frames"][i]` (フレーム毎) |
+| `repair_frames` | `out["repairs"][j]` (**修復したフレーム毎**) |
+| `auto_rietveld` | 結果直下 |
+
+> **修復したフレームは `repairs[]` の値で置き換えて報告する** — `result["frames"][i]` は
+> **修復前**の値のままである (`repair_frames` は非破壊で元の系列を書き換えない)。
+> `target_frames` で名指しするのは `check_phase_set` が「信用するな」と言ったフレームであり、
+> 実測ではそれが**転移ドーム頂点の直前 (125-130) = 報告の主要値そのもの**だった。
+
 空 dict = その精密化から値が得られなかった (共分散なし/未収束) の意味で、**esd=0 ではない**。
 
 ## 禁止事項

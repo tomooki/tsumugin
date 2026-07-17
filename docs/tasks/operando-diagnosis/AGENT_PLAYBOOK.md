@@ -201,6 +201,10 @@ V-t / dQ/dV を人間に要求する。
 result["frames"][i]["phase_weight_fractions"]      # -> {"cubic": 0.472, "tetra": 0.528}  出版値
 result["frames"][i]["phase_weight_fraction_esd"]   # -> {"cubic": 0.006, "tetra": 0.006}  esd 必須
 result["frames"][i]["cell_esd"]                    # -> {"cubic": [0.0002, ..., 0.0]}     格子 esd
+
+# 修復したフレームは repairs[] の値で置き換える (frames[i] は修復前のまま = 非破壊)
+rep = repaired["repairs"][j]
+rep["frame"], rep["phase_weight_fractions"], rep["phase_weight_fraction_esd"], rep["cell_esd"]
 ```
 
 | キー | 何か | 使いどころ |
@@ -210,8 +214,14 @@ result["frames"][i]["cell_esd"]                    # -> {"cubic": [0.0002, ..., 
 | `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
 | `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 |
 
-`auto_rietveld` は結果直下に同じキーを返す。空 dict = 値が得られなかった (共分散なし/未収束)
-の意味で、**esd=0 ではない**。
+同じキー名を `sequential_rietveld` は `frames[i]` に、**`repair_frames` は `repairs[j]` に
+(修復したフレーム毎)**、`auto_rietveld` は結果直下に返す。空 dict = 値が得られなかった
+(共分散なし/未収束) の意味で、**esd=0 ではない**。
+
+> **修復フレームの出版値を落とさない**: `target_frames` で名指しするのは `check_phase_set` が
+> 「信用するな」と言ったフレームであり、実測ではそれが**転移ドーム頂点の直前 (125-130) =
+> 報告の主要値そのもの**だった。`repairs[]` を読まずに `frames[i]` を報告すると、
+> **修復前の (張り付いた) 値**を出版することになる。
 
 ## 3. 禁止事項
 

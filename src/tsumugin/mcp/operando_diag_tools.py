@@ -522,7 +522,12 @@ def repair_frames(
         ``(frame, phases, initial_cells) -> AutoRietveldResult``。JSON 境界越しには渡せない。
         明示指定時は ``instrument`` より優先する (``sequential_rietveld`` と同じ優先順)
     :returns: ``repairs``/``needs_model_revision``/``systematic_hint``/``discontinuities``/
-        ``ledger_entries``。失敗 (系列結果が空/不正・フレーム数不一致・相集合の欠落・spec 復元
+        ``ledger_entries``。``repairs[]`` は ``{frame, rwp_before, rwp_after, source,
+        phase_fractions, phase_weight_fractions, phase_weight_fraction_esd, cell_esd}`` —
+        ⚠ ``phase_fractions`` は **Scale** であって wt% ではない。**修復後の出版値は
+        ``phase_weight_fractions`` ± ``phase_weight_fraction_esd``** (実測 2.1x 乖離)。
+        出版値の 3 キーは常に存在し、値が得られなかった精密化では空 dict (esd=0 ではない)。
+        失敗 (系列結果が空/不正・フレーム数不一致・相集合の欠落・spec 復元
         失敗・instrument spec 不正・レンジ不正・``target_frames`` が空/範囲外/非整数) は
         ``{"error", "error_type"}``
         (この場合 ``repairs`` 等のキーは返らない = 「不連続なし」と誤読されない)
@@ -634,6 +639,24 @@ def repair_frames(
                 "rwp_after": finite_or_none(r.rwp_after),
                 "source": r.source,
                 "phase_fractions": {k: finite_or_none(v) for k, v in r.phase_fractions.items()},
+                # 【出版値 (Issue #96 レビュー 第2巡)】: 上の `phase_fractions` は **Scale** であって
+                #   重量分率ではない (実測 K2Mn[Fe(CN)6]: 65.6 Scale% は実は 47.2 wt% = 2.1x)。
+                #   **修復したフレームこそ出版値が要る**: ③ が `target_frames` で名指しするのは
+                #   `check_phase_set` が張り付き/凍結を報告したフレームであり、張り付きは分率が
+                #   動く転移域で起きやすい = 定量相分析の要求が最も高い区間である。Scale だけ返すと
+                #   ③ は「wt% として誤って報告する」(skills/operando-diagnose の禁止事項) か
+                #   「直したフレームの出版値が無い」の二択に追い込まれる。
+                #   キーは常に存在させる (欠落と esd=0 の取り違え防止; auto_rietveld /
+                #   seq_result_to_dict と同一規律) 🔵
+                "phase_weight_fractions": {
+                    k: finite_or_none(v) for k, v in r.phase_weight_fractions.items()
+                },
+                "phase_weight_fraction_esd": {
+                    k: finite_or_none(v) for k, v in r.phase_weight_fraction_esd.items()
+                },
+                "cell_esd": {
+                    k: [finite_or_none(x) for x in esd] for k, esd in r.cell_esd.items()
+                },
             }
             for r in report.repairs
         ],

@@ -31,13 +31,13 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
 from ..store.ledger import Ledger
 from ._warmstart import call_runner, seed_fractions
-from .engine import Runner
+from .engine import Runner, _publication_of
 from .model import Cell, FrameRietveldResult, FrameSpec, SequentialRietveldResult
 
 
@@ -65,7 +65,20 @@ class FrameRepair:
     :param rwp_before: 修復前 (元系列) の Rwp
     :param rwp_after: warm-start 再精密化後の Rwp (採用値)
     :param source: warm-start の起点方向 ("L"=左隣/"R"=右隣)
-    :param phase_fractions: 修復後の相名→相分率
+    :param phase_fractions: 修復後の相名→相分率 (**Scale**)。相対比較専用 — 出版値ではない
+    :param phase_weight_fractions: 相名→**重量 (質量) 分率** (`AutoRietveldResult.phase_weight_fractions`
+        由来, GSAS-II `calcMassFracs`)。**修復後の定量相分析の出版値はこちら**。
+
+        **修復フレームでこそ要る** (Issue #96 レビュー 第2巡): ③ は `check_phase_set` が名指しした
+        フレーム (張り付き/凍結) を `target_frames` で修復する。**張り付きは相転移の途中で起きやすく**
+        (分率が動く区間ほど前フレームの seed から遠い)、そこは定量相分析の要求が最も高い区間でもある。
+        Scale しか持ち帰らなければ、③ は「wt% として誤って報告する」か「直したばかりのフレームの
+        出版値が無い」の二択になる (`skills/operando-diagnose` 禁止事項は前者を禁じている)。
+        Scale と重量分率の差は相の単位胞質量比で決まり、実データで 2 倍を超えた例がある
+        (`AutoRietveldResult.phase_weight_fractions` の docstring 参照)。
+        既定空 dict で後方互換 (重量分率を持たない runner/スタブ・共分散なしの精密化は空)。
+    :param phase_weight_fraction_esd: 相名→重量分率の esd。出版には esd 必須。既定空 dict
+    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ)。既定空 dict
     """
 
     frame_index: int
@@ -73,6 +86,9 @@ class FrameRepair:
     rwp_after: float
     source: str
     phase_fractions: Mapping[str, float]
+    phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
+    phase_weight_fraction_esd: Mapping[str, float] = field(default_factory=dict)
+    cell_esd: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -397,6 +413,14 @@ def repair_isolated(
                     rwp_after=rwp_after,
                     source=source,
                     phase_fractions=dict(trial.phase_fractions),
+                    # 【出版値も持ち帰る (Issue #96 レビュー 第2巡)】: 試行結果は重量分率 ± esd と
+                    #   格子 esd を持っているのに、ここで Scale だけ写して捨てていた。修復対象は
+                    #   ③ が `check_phase_set` で名指ししたフレーム = 定量相分析の要求が最も高い
+                    #   転移域であり、Scale だけでは相の単位胞質量比の分だけ誤る。抽出は
+                    #   `engine._publication_of` に一元化する (M9 逐次 / 修復の 2 経路で同一の規律 —
+                    #   相名フィルタも 0.0 埋めもしない: 部分集合の重量分率は和=1 にならず、0.0 埋めは
+                    #   「その相は 0 wt%」という測定していない主張になる)。
+                    **_publication_of(trial),  # type: ignore[arg-type]
                 )
             )
             if ledger is not None:

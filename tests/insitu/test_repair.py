@@ -268,6 +268,71 @@ def test_repair_rwp_tol_gate():
     assert report.needs_model_revision == (2,)
 
 
+# ---------------------------------------------------------------------------
+# 出版値 (重量分率 ± esd・格子 esd) の引き継ぎ (Issue #96 レビュー 第2巡 HIGH)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_carries_publication_values_from_the_trial_result():
+    """★修復したフレームの**出版値**が `FrameRepair` に載ること。
+
+    **修復対象のフレームこそ出版値が要る**: ③ は `check_phase_set` の seed_pinned/frozen から
+    `target_frames` を組んで修復する — 実測では**転移ドーム頂点の直前 6 フレーム (125-130)**、
+    つまり論文の主要値そのものである。修復後に Scale (`phase_fractions`) しか持たなければ、
+    ③ は「2.1x 誤る値を報告する」か「直したばかりのフレームの出版値が無い」の二択に追い込まれる。
+    """
+    frames = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL) for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+
+    def runner(frame, phases, initial_cells):
+        return AutoRietveldResult(
+            stage_results=(),
+            final_rwp=7.0,
+            final_gof=1.0,
+            refined_cells=GOOD_CELL,
+            validity=ValidityReport(passed=True),
+            phase_fractions={"cubic": 0.656, "tetra": 0.344},
+            phase_weight_fractions={"cubic": 0.472, "tetra": 0.528},
+            phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+            cell_esd={"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+        )
+
+    report = repair_isolated(frames, result, [ALPHA], runner, disc)
+
+    rep = report.repairs[0]
+    assert rep.phase_fractions == {"cubic": 0.656, "tetra": 0.344}  # Scale は従来通り
+    assert rep.phase_weight_fractions == {"cubic": 0.472, "tetra": 0.528}
+    assert rep.phase_weight_fraction_esd == {"cubic": 0.006, "tetra": 0.006}
+    assert rep.cell_esd == {"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)}
+
+
+def test_repair_publication_values_degrade_to_empty_when_the_trial_has_none():
+    """出版値を持たない runner (スタブ/共分散なし) では空 dict へ縮退する (後方互換)。
+
+    **0.0 で埋めない**: 重量分率は GSAS が全相まとめて算出した比であり、欠測を 0.0 で埋めると
+    「その相は 0 wt%」という**測定していない主張**になる (`engine._publication_of` と同一規律)。
+    """
+    frames = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL) for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+
+    def runner(frame, phases, initial_cells):
+        return _result(rwp=7.0, cells=GOOD_CELL, fractions={"alpha": 1.0})
+
+    rep = repair_isolated(frames, result, [ALPHA], runner, disc).repairs[0]
+
+    assert rep.phase_weight_fractions == {}
+    assert rep.phase_weight_fraction_esd == {}
+    assert rep.cell_esd == {}
+
+
 def test_consecutive_run_is_still_attempted_and_repaired():
     """連続フラグ区間も run の外側の良好フレームから修復を試みる (実測 f160-172 の回帰テスト)。
 

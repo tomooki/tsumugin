@@ -25,7 +25,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `assess_data_quality` | 計器 (データ品質) | 観測ファイル → 背景減算検出 + 2θ 上限提案 |
 | `sequential_rietveld` | 計器+アクチュエータ | frames + initial_phases spec (JSON) → フレーム別 Rwp/格子/相分率/残差レポート/**出版値 (重量分率±esd・格子 esd)**・変化点・自動出現相 |
 | `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ + seed 張り付き + 分率凍結 |
-| `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復 |
+| `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復。`repairs[]` に**修復後の出版値** (重量分率 ± esd・`cell_esd`) を同梱 |
 | `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
 
@@ -166,6 +166,11 @@ DFT (MP) 由来の構造は格子が軸別にずれることがあり、異方�
 | `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら** |
 | `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
 | `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない) |
+
+`sequential_rietveld` は `result["frames"][i]` に、`repair_frames` は `out["repairs"][j]` に
+(**修復したフレーム毎**)、`auto_rietveld` は結果直下に、同じキー名で返す。
+**修復したフレームは `repairs[]` の値で報告する** — `result["frames"][i]` は修復前のままである
+(`repair_frames` は非破壊で元の系列を書き換えない)。
 
 空 dict = その精密化から値が得られなかった (共分散なし/未収束)。**esd=0 の意味ではない**。
 

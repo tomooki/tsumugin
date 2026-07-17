@@ -165,6 +165,30 @@ def test_repair_frames_examples_always_pass_two_theta_limits(doc):
     )
 
 
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_sequential_rietveld_examples_always_pass_warm_start_fractions(doc):
+    """ガード8: `sequential_rietveld` の呼び出し例は必ず `warm_start_fractions=True` を伴うこと。
+
+    **既定は False** (`SequentialConfig.warm_start_fractions`)。省略した例をそのまま真似すると、
+    相分率が等分 seed (2 相なら 0.500/0.500) に張り付いたまま系列が回る (Issue #82/#96)。
+    しかも **Rwp は平凡なまま** (実測 8.4-8.5%) で、GOF も validity も何も言わない —
+    `check_phase_set` の `seed_pinned` でしか見えない。例から欠けることが即ちこの失敗の再導入で
+    あり、②「呼べるが黙って間違う」の再生産になる (ガード1 の `two_theta_limits` と同じ規律)。
+
+    呼び出し例を持たない文書 (散文で言及するのみ) は対象外 — 検証するのは「③ がそのまま真似する例」。
+    """
+    text = doc.read_text(encoding="utf-8")
+    sites = _call_sites(text, "sequential_rietveld")
+    if not sites:
+        pytest.skip(f"{doc}: sequential_rietveld の呼び出し例が無い (散文の言及のみ)")
+    bad = [s for s in sites if not re.search(r"warm_start_fractions\s*=\s*True", s)]
+    assert not bad, (
+        f"{doc}: warm_start_fractions=True の無い sequential_rietveld 呼び出し例がある: {bad}。"
+        "既定 False なので、省略した例を真似した ③ は分率が seed に張り付いた系列を"
+        "「正常」として読む (Rwp は平凡なまま = 気づけない)。"
+    )
+
+
 def _top_level_kwargs(site: str) -> list[str]:
     """呼び出し例の**トップレベル** kwarg 名を抜く (入れ子の dict/list 内は見ない)。"""
     names: list[str] = []

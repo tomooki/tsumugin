@@ -587,6 +587,113 @@ def test_repair_frames_no_discontinuities_is_a_noop():
 
 
 # ===========================================================================
+# 出版値の直列化 (Issue #96 レビュー 第2巡 HIGH)
+# ===========================================================================
+
+
+def _publication_result(rwp=7.0):
+    """出版値 (重量分率 ± esd・格子 esd) を実際に持つ試行結果。"""
+    return AutoRietveldResult(
+        stage_results=(),
+        final_rwp=rwp,
+        final_gof=1.0,
+        refined_cells=GOOD_CELL,
+        validity=ValidityReport(passed=True),
+        phase_fractions={"cubic": 0.656, "tetra": 0.344},
+        phase_weight_fractions={"cubic": 0.472, "tetra": 0.528},
+        phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+        cell_esd={"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+    )
+
+
+def _spike_series(n=5):
+    frame_specs = _base_frames(n)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0] + [8.0] * (n - 3))
+    )
+    return frame_specs, seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+
+
+def test_repair_frames_serializes_publication_values_per_repair():
+    """★修復したフレームの出版値が ② の `repairs[]` に**値ごと**載ること。
+
+    ③ が修復するのは `check_phase_set` が名指ししたフレーム = 実測では転移ドーム頂点の直前
+    (125-130) = 論文の主要値。Scale だけ返せば ③ は 2.1x 誤る値を報告するしかなくなる。
+    """
+    frame_specs, result = _spike_series()
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=lambda frame, phases, initial_cells: _publication_result(),
+    )
+
+    rep = out["repairs"][0]
+    assert rep["phase_fractions"] == {"cubic": 0.656, "tetra": 0.344}  # Scale は従来通り
+    assert rep["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
+    assert rep["phase_weight_fraction_esd"] == {"cubic": 0.006, "tetra": 0.006}
+    assert rep["cell_esd"] == {"alpha": [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]}
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_publication_keys_exist_even_when_the_trial_has_none():
+    """出版値が無くてもキーは存在させる (③ から見たスキーマを安定させる; 他経路と同一規律)。
+
+    空 dict = 「その精密化から値が得られなかった」であって esd=0 ではない。
+    """
+    frame_specs, result = _spike_series()
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=lambda frame, phases, initial_cells: _autorietveld_result(
+            7.0, GOOD_CELL, {"alpha": 1.0}
+        ),
+    )
+
+    rep = out["repairs"][0]
+    for key in ("phase_weight_fractions", "phase_weight_fraction_esd", "cell_esd"):
+        assert key in rep, f"{key} のキーが無い (③ が欠落と esd=0 を取り違える)"
+        assert rep[key] == {}
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_publication_values_are_json_safe():
+    """非有限の出版値は None へ落ちる (json.dumps allow_nan=False 安全)。"""
+    frame_specs, result = _spike_series()
+    trial = AutoRietveldResult(
+        stage_results=(),
+        final_rwp=7.0,
+        final_gof=1.0,
+        refined_cells=GOOD_CELL,
+        validity=ValidityReport(passed=True),
+        phase_fractions={"alpha": 1.0},
+        phase_weight_fractions={"alpha": float("nan")},
+        phase_weight_fraction_esd={"alpha": float("inf")},
+        cell_esd={"alpha": (float("nan"), 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+    )
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=lambda frame, phases, initial_cells: trial,
+    )
+
+    rep = out["repairs"][0]
+    assert rep["phase_weight_fractions"] == {"alpha": None}
+    assert rep["phase_weight_fraction_esd"] == {"alpha": None}
+    assert rep["cell_esd"]["alpha"][0] is None
+    json.dumps(out, allow_nan=False)
+
+
+# ===========================================================================
 # G2: repair_frames の instrument spec / two_theta_limits (§4.5 到達可能性 #2)
 # ===========================================================================
 

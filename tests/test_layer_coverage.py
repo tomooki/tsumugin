@@ -18,8 +18,15 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib
 import inspect
+import pkgutil
+import re
+from typing import Callable, Iterator, Mapping
 
+import pytest
+
+import tsumugin.mcp as mcp_pkg
 from tsumugin.autorietveld.model import (
     AutoRietveldResult,
     Geometry,
@@ -28,8 +35,9 @@ from tsumugin.autorietveld.model import (
     Radiation,
     ValidityReport,
 )
-from tsumugin.insitu.model import FrameRietveldResult, SequentialRietveldResult
-from tsumugin.mcp.insitu_tools import seq_result_to_dict
+from tsumugin.insitu.model import FrameRietveldResult, FrameSpec, SequentialRietveldResult
+from tsumugin.mcp.insitu_tools import seq_result_to_dict, sequential_rietveld
+from tsumugin.mcp.operando_diag_tools import repair_frames
 from tsumugin.mcp.rietveld_tools import auto_rietveld
 from tsumugin.mcp.tools import MCP_TOOLS
 
@@ -228,6 +236,78 @@ def test_publication_values_survive_the_layer2_boundary_with_their_values():
     assert out["cell_esd"] == {"ph": [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]}
 
 
+#: `FrameRietveldResult` (M9 逐次の per-frame 型) の各フィールド → ② `sequential_rietveld` の
+#: フレーム出力キー or UNEXPOSED(理由)。`AutoRietveldResult` と**同じ粒度の宣言**を M9 側にも置く
+#: (operando の報告値はこの型を通る — 単一フレーム型だけ守っても系列側が抜ける)。
+FRAME_RESULT_FIELDS: dict[str, tuple[str, str]] = {
+    "frame_index": ("frame_index", "フレーム番号"),
+    "axis_value": ("axis_value", "軸値 (温度/時間)"),
+    "data_path": ("data_path", "観測データ"),
+    "rwp": ("rwp", "最終 Rwp"),
+    "gof": ("gof", "最終 GOF"),
+    "refined_cells": ("refined_cells", "精密化格子"),
+    "phase_fractions": ("phase_fractions", "**Scale**。相対比較専用 (新相の有意性・転移の追跡)"),
+    "phase_names": ("phase_names", "このフレームで有効な相"),
+    "changepoint": ("changepoint", "変化点フラグ"),
+    "changepoint_reasons": ("changepoint_reasons", "発火した指標"),
+    "validity_passed": ("validity_passed", "物理妥当性ゲート"),
+    "refine_failed": ("refine_failed", "精密化失敗フレーム"),
+    "residual_report": ("residual_report", "残差分解 (① 側で畳んだ小さな報告)"),
+    "phase_weight_fractions": ("phase_weight_fractions", "**定量相分析の出版値** (実測 2.1x 乖離)"),
+    "phase_weight_fraction_esd": ("phase_weight_fraction_esd", "重量分率 esd (出版に必須)"),
+    "cell_esd": ("cell_esd", "格子 esd (出版に必須)"),
+    # --- 未露出 (宣言することで「忘れた」ではなく「既知の穴」であることを示す) ---
+    "n_obs": (
+        UNEXPOSED,
+        "Issue #97: M10 `anchor.select.frame_bic` が相数抑制に使う ① 内省フィールド。"
+        "anchor 自体が ② 未露出 (上の LAYER1_FEATURES 参照) なので ③ から使い道が無い — "
+        "anchor を ② へ出す際に一緒に配線すること",
+    ),
+}
+
+
+def test_every_frame_result_field_is_declared():
+    """`FrameRietveldResult` の全フィールドが露出状況を宣言していること (M9 側の粒度の穴を塞ぐ)。
+
+    `AutoRietveldResult` にしか宣言表が無いと、**operando の報告値が通る per-frame 型**に
+    フィールドを足しても表は緑のままになる。出版値の粒度盲点は「型ごと・② 表面ごと」に再発する。
+    """
+    actual = {f.name for f in dataclasses.fields(FrameRietveldResult)}
+    declared = set(FRAME_RESULT_FIELDS)
+    assert actual == declared, (
+        f"FrameRietveldResult のフィールドと宣言が食い違う。"
+        f"未宣言 (② への露出を決めること): {sorted(actual - declared)} / "
+        f"実在しない宣言 (削除された?): {sorted(declared - actual)}"
+    )
+
+
+def test_unexposed_frame_result_fields_state_a_reason():
+    """未露出フィールドは理由の明示を必須にする (黙って未露出にしない = §4.5 規則④-3)。"""
+    for field, (key, why) in FRAME_RESULT_FIELDS.items():
+        if key != UNEXPOSED:
+            continue
+        assert why and len(why) > 20, f"{field}: 未露出の理由が書かれていない"
+        assert ("Issue #" in why) or ("意図的" in why), (
+            f"{field}: 未露出は Issue 番号か「意図的」+理由が要る (現在: {why!r})"
+        )
+
+
+def test_declared_exposed_frame_result_fields_appear_in_tool_output():
+    """露出ありと宣言したフレームフィールドが ② の**実際の出力**にキーとして在ること。
+
+    非トートロジー: ソースを grep せず、実際に ``sequential_rietveld`` を呼んで frames[0] を見る。
+    """
+    out = _probe_sequential_rietveld()
+    frame = out["frames"][0]  # type: ignore[index,call-overload]
+    for field, (key, why) in FRAME_RESULT_FIELDS.items():
+        if key == UNEXPOSED:
+            continue
+        assert key in frame, (
+            f"{field}: ② のフレーム出力キー {key!r} を宣言しているが "
+            f"sequential_rietveld の frames[] に無い ({why})"
+        )
+
+
 def test_publication_values_are_reachable_per_frame_in_sequential_results():
     """operando (M9 逐次) の per-frame 経路でも出版値が ③ に届くこと。
 
@@ -249,6 +329,211 @@ def test_publication_values_are_reachable_per_frame_in_sequential_results():
     for key in PUBLICATION_FIELDS:
         assert key in f0, f"per-frame に {key} が無い (③ は Scale しか読めない)"
     assert f0["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
+
+
+# ===========================================================================
+# 粒度③: **粒度盲点は「② の表面」ごとに再発する** (Issue #96 レビュー 第2巡 HIGH)
+# ---------------------------------------------------------------------------
+# 上の 2 つの表は `AutoRietveldResult` → `auto_rietveld` という **1 本の経路**しか見ていない。
+# 第1巡はその経路 (`_result_to_dict` / `seq_result_to_dict` / `engine._publication_of`) を直して
+# 「粒度盲点を塞いだ」としたが、**3 つ目の ② 表面** — `repair_frames` の `repairs[]` — は
+# Scale だけを返し続けていた。誰も監査しなかったためである。
+#
+# しかもそれが最悪の場所だった: ③ が修復するのは `check_phase_set` が名指ししたフレームであり、
+# 実測 K2Mn[Fe(CN)6] ではそれが**転移ドーム頂点の直前 6 フレーム (125-130) = 論文の主要値**。
+# 修復後に Scale しか無ければ ③ は「2.1x 誤って報告する」(skills/operando-diagnose の禁止事項)
+# か「直したばかりのフレームの出版値が無い」の二択に追い込まれる。
+#
+# **設計**: 表面を列挙して塞ぐのではなく、**発見して宣言を強制する** (列挙は必ず取り残す)。
+#   (a) `tsumugin.mcp` 配下で per-frame 相分率を**直列化している関数**をソースから発見し、
+#       宣言が無ければ fail (将来のツールも網に掛かる)。
+#   (b) 出版値を運ぶと宣言した表面は、**実際に呼んで**出力を再帰走査し、`phase_fractions` を
+#       持つ全エントリが出版値も**値ごと**持つことを確かめる (grep でなく振る舞いで見る)。
+# ===========================================================================
+
+CARRIES_PUBLICATION = "CARRIES_PUBLICATION"
+DIAGNOSTIC_ONLY = "DIAGNOSTIC_ONLY"
+
+#: per-frame 相分率を ② へ直列化する関数 → (出版値も運ぶか, 根拠/理由)。
+#: **`tsumugin.mcp` に新しい直列化点を作ったら、ここへ 1 行足すこと** (足さないと下の網羅テストが fail)。
+PER_FRAME_FRACTION_EMITTERS: dict[str, tuple[str, str]] = {
+    "tsumugin.mcp.insitu_tools.seq_result_to_dict": (
+        CARRIES_PUBLICATION,
+        "sequential_rietveld の per-frame。operando の主要な報告値 (相分率 vs 時間) が通る経路",
+    ),
+    "tsumugin.mcp.operando_diag_tools.repair_frames": (
+        CARRIES_PUBLICATION,
+        "repairs[] の per-frame。**修復対象は ③ が check_phase_set で名指ししたフレーム** = "
+        "実測では転移ドーム頂点の直前 (125-130) = 論文の主要値そのもの",
+    ),
+    "tsumugin.mcp.operando_diag_tools.check_phase_set": (
+        DIAGNOSTIC_ONLY,
+        "意図的: seed_pinned_frames/frozen_fraction_frames が返す分率は **Scale であることに意味が"
+        "ある指紋** (等分 seed 1/n との厳密一致 / 直前フレームとの厳密一致で張り付きを検出する)。"
+        "重量分率に換算すると 1/n との一致が壊れて検出器そのものが成立しない。加えて**flag された"
+        "フレームは定義上壊れており出版対象ではない** (だから repair_frames へ送る)。"
+        "なお入力の系列 dict を `_result_from_dict` で復元する経路であり、往復で出版値は落ちる — "
+        "出版値が要るなら sequential_rietveld / repair_frames の出力を直接読むこと",
+    ),
+}
+
+#: 出版値を運ぶと宣言した表面の**実物プローブ** (grep でなく実際の出力を見るため)。
+#: `_populated_result()` を返すスタブ runner で ② ツールを呼び、出力 dict を返す。
+_PUBLICATION_SURFACE_PROBES: dict[str, Callable[[], object]] = {}
+
+
+def _probe_sequential_rietveld() -> object:
+    """② `sequential_rietveld` を決定論スタブ runner で実行した出力。"""
+    return sequential_rietveld(
+        [FrameSpec(data_path="f0.xrdml", axis_value=0.0).to_dict()],
+        [_P],
+        runner=lambda frame, phases, initial_cells: _populated_result(),
+    )
+
+
+def _probe_repair_frames() -> object:
+    """② `repair_frames` を孤立スパイク系列 + スタブ runner で実行した出力 (修復が採用される)。"""
+    cells = {"ph": (10.4, 10.4, 10.4, 90.0, 90.0, 90.0)}
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i,
+            axis_value=float(i),
+            data_path=f"f{i}.xrdml",
+            rwp=rwp,
+            gof=1.0,
+            refined_cells=cells,
+            phase_fractions={"ph": 1.0},
+            phase_names=("ph",),
+        )
+        for i, rwp in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    return repair_frames(
+        seq_result_to_dict(SequentialRietveldResult(frames=frames)),
+        [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(5)],
+        [_P],
+        rwp_delta=1.8,
+        runner=lambda frame, phases, initial_cells: _populated_result(),
+    )
+
+
+_PUBLICATION_SURFACE_PROBES["tsumugin.mcp.insitu_tools.seq_result_to_dict"] = (
+    _probe_sequential_rietveld
+)
+_PUBLICATION_SURFACE_PROBES["tsumugin.mcp.operando_diag_tools.repair_frames"] = (
+    _probe_repair_frames
+)
+
+#: dict のキーとして `phase_fractions` を**直列化している**箇所 (`phase_fractions=` の復元側や
+#: docstring 中の言及は拾わない)。
+_FRACTION_KEY = re.compile(r'"phase_fractions"\s*:')
+
+
+def _fraction_emitting_functions() -> dict[str, str]:
+    """`tsumugin.mcp` 配下で per-frame 相分率を直列化している関数 → そのソース。
+
+    **ツール関数の source だけを見ない**: `sequential_rietveld` は `seq_result_to_dict` へ委譲する
+    ため、ツール単位の grep では**素通りする** (実際に落ちた 3 経路のうち 1 つがこの形)。
+    パッケージ内の全関数を走査して**直列化点そのもの**を捕まえる。
+    """
+    found: dict[str, str] = {}
+    for mod_info in pkgutil.iter_modules(mcp_pkg.__path__):
+        module = importlib.import_module(f"{mcp_pkg.__name__}.{mod_info.name}")
+        for name, obj in vars(module).items():
+            if not inspect.isfunction(obj) or obj.__module__ != module.__name__:
+                continue
+            try:
+                src = inspect.getsource(obj)
+            except OSError:  # pragma: no cover - 動的定義の保険
+                continue
+            if _FRACTION_KEY.search(src):
+                found[f"{module.__name__}.{name}"] = src
+    return found
+
+
+def _entries_with_key(obj: object, key: str) -> Iterator[Mapping[str, object]]:
+    """入れ子の JSON 風構造から `key` を持つ dict を全て取り出す (出力の形に依存しない走査)。"""
+    if isinstance(obj, Mapping):
+        if key in obj:
+            yield obj
+        for value in obj.values():
+            yield from _entries_with_key(value, key)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _entries_with_key(value, key)
+
+
+def test_every_layer2_fraction_emitter_is_declared():
+    """per-frame 相分率を ② へ出す**全ての**直列化点が露出方針を宣言していること。
+
+    新しいツール/ヘルパが Scale を返し始めたら本テストが fail し、「出版値も返すのか / なぜ
+    返さないのか」の宣言を強制する。**列挙した表面を守るのではなく、表面の追加を検出する**
+    (第1巡は 3 経路を直したが 4 つ目を誰も探さなかった)。
+    """
+    actual = set(_fraction_emitting_functions())
+    declared = set(PER_FRAME_FRACTION_EMITTERS)
+    assert actual == declared, (
+        f"② の per-frame 相分率 直列化点と宣言が食い違う。"
+        f"未宣言 (出版値も返すか決めること — Scale だけ返すと ③ は 2.1x 誤る): "
+        f"{sorted(actual - declared)} / "
+        f"実在しない宣言 (削除/改名された?): {sorted(declared - actual)}"
+    )
+
+
+def test_diagnostic_only_fraction_emitters_state_a_reason():
+    """出版値を返さない表面は理由の明示を必須にする (黙って Scale のみにしない = §4.5 規則④-3)。"""
+    for emitter, (kind, why) in PER_FRAME_FRACTION_EMITTERS.items():
+        if kind != DIAGNOSTIC_ONLY:
+            continue
+        assert why and len(why) > 20, f"{emitter}: 出版値を返さない理由が書かれていない"
+        assert ("Issue #" in why) or ("意図的" in why), (
+            f"{emitter}: Issue 番号か「意図的」+理由が要る (現在: {why!r})"
+        )
+
+
+def test_publication_carrying_emitters_are_all_probed():
+    """出版値を運ぶと宣言した表面には**実物プローブ**があること (宣言だけで緑にしない)。
+
+    プローブが無ければ下の振る舞いテストはその表面を黙って飛ばす = 宣言が実質無検査になる。
+    """
+    declared = {
+        e for e, (kind, _) in PER_FRAME_FRACTION_EMITTERS.items() if kind == CARRIES_PUBLICATION
+    }
+    assert declared == set(_PUBLICATION_SURFACE_PROBES), (
+        f"プローブ未整備: {sorted(declared - set(_PUBLICATION_SURFACE_PROBES))} / "
+        f"宣言に無いプローブ: {sorted(set(_PUBLICATION_SURFACE_PROBES) - declared)}"
+    )
+
+
+@pytest.mark.parametrize("emitter", sorted(_PUBLICATION_SURFACE_PROBES))
+def test_every_per_frame_fraction_entry_carries_publication_values(emitter):
+    """★per-frame の Scale を返す ② のエントリは、出版値も**値ごと**返すこと。
+
+    非トートロジー: ソースを grep せず、実際に ② ツールを呼んで出力を再帰走査し、
+    ``phase_fractions`` を持つ全エントリを検査する。`repair_frames`/`seq_result_to_dict` から
+    出版値の直列化を落とせば fail する (実証済; 出力の形を変えても走査は追随する)。
+
+    **空 dict も不合格にする**: プローブは出版値を持つ結果を runner に返させているので、空なら
+    ① → ② のどこかで値が落ちている (実際 `repair.FrameRepair` が Scale しか持たず落としていた)。
+    """
+    out = _PUBLICATION_SURFACE_PROBES[emitter]()
+    entries = list(_entries_with_key(out, "phase_fractions"))
+
+    assert entries, (
+        f"{emitter}: プローブが `phase_fractions` を持つエントリを 1 つも返さない。"
+        "プローブが陳腐化している (このテストは何も検査していない) か、表面が per-frame 分率を"
+        "返さなくなった — どちらでも宣言の更新が要る"
+    )
+    for entry in entries:
+        for key in PUBLICATION_FIELDS:
+            assert key in entry, (
+                f"{emitter}: per-frame エントリに {key!r} が無い — ③ は Scale しか読めず、"
+                f"報告する定量値が 2.1x 誤る (実測 K2Mn[Fe(CN)6]): {sorted(entry)}"
+            )
+            assert entry[key], (
+                f"{emitter}: {key!r} が空 — プローブは値を持つ結果を渡しているので、"
+                f"① → ② のどこかで落ちている (空 dict は「値が得られなかった」の意味であり、"
+                f"値がある精密化で空になってはならない)"
+            )
 
 
 def test_anchor_is_still_unexposed_or_the_note_is_stale():
