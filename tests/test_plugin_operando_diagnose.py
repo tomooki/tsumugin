@@ -289,8 +289,10 @@ def test_docs_state_that_phase_fractions_is_scale_not_weight_percent(doc):
     """ガード7: `phase_fractions` を wt% と取り違えない指示があること (Issue #96 レビュー HIGH-2)。
 
     `phase_fractions` は **Scale** であって重量分率ではない。単位胞質量が相間で異なると乖離する
-    (実測 K2Mn[Fe(CN)6]: cubic 1103.4 / tetra 517.8 amu → **65.6 Scale% は実は 47.2 wt% = 2.1x**)。
-    ③ が知らなければ**報告する定量値がそのまま 2.1x 誤る** — Rwp も validity も何も言わない。
+    (実測 K2Mn[Fe(CN)6] tetra: **65.6 Scale% は同じ fit で 47.2 wt%** = この点で 1.39 倍の誤り。
+    乖離はフレーム毎に違い [系列全体で 1.39-1.62 倍]、大きさは単位胞質量比 [cubic 1103.4 /
+    tetra 517.8 amu = 2.13 倍] と分率で決まる = **換算係数は無い**)。
+    ③ が知らなければ**報告する定量値がそのまま誤る** — Rwp も validity も何も言わない。
     ② が値を返すだけでは足りず、「どちらを出版値に使うか」が手順書に無ければ ③ は Scale を使う。
     """
     text = doc.read_text(encoding="utf-8")

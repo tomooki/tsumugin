@@ -251,7 +251,10 @@ class FrameRietveldResult:
         既定 None で後方互換 (既存の 3 引数スタブ runner は残差を持たない)。
     :param phase_weight_fractions: 相名→**重量 (質量) 分率** (`AutoRietveldResult.phase_weight_fractions`
         由来, GSAS-II `calcMassFracs`)。**定量相分析の出版値はこちら** — `phase_fractions` は Scale 正規化
-        値で単位胞質量が相間で異なると重量分率と乖離する (K₂Mn[Fe(CN)₆] cubic/tetra で ~2.1x)。
+        値で単位胞質量が相間で異なると重量分率と乖離する。乖離は**フレーム毎に違う** (実測
+        K₂Mn[Fe(CN)₆] tetra: 65.6 Scale% が 47.2 wt% [1.39 倍]、系列全体で 1.39-1.62 倍)。
+        大きさは単位胞質量比 (cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と分率で決まるので
+        **単一の換算係数は無い** — Scale に係数を掛けて wt% にはできない。
         既定空 dict で後方互換 (重量分率を持たない runner/スタブ・失敗フレームは空)。
     :param phase_weight_fraction_esd: 相名→重量分率の esd (`AutoRietveldResult.phase_weight_fraction_esd`
         由来)。出版には esd 必須。既定空 dict で後方互換。

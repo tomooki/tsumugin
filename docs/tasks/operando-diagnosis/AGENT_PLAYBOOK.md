@@ -195,7 +195,12 @@ V-t / dQ/dV を人間に要求する。
 散乱能に対する比例係数で、**単位胞質量が相間で異なると重量分率と乖離する**。
 
 > 実測 (K₂Mn[Fe(CN)₆]): cubic 1103.4 amu vs tetra 517.8 amu → **同じ fit で 65.6 Scale% が
-> 実際には 47.2 wt%。2.1x の差**。「tetra ドーム頂点 65.6%」の報告は誤りだった。
+> 実際には 47.2 wt%** (この点で 1.39 倍の誤り)。「tetra ドーム頂点 65.6%」の報告は誤りだった。
+>
+> **乖離の大きさはフレーム毎に違う** (実測: fr112 1.62 / fr120 1.48 / fr124 1.41 / fr126 1.39 倍)。
+> 大きさを決めるのは相の**単位胞質量比** (ここでは 2.13 倍) と**そのフレームの分率**である。
+> ⚠ **単一の換算係数は存在しない — Scale に係数を掛けて wt% を作ってはならない**。
+> 必ず `phase_weight_fractions` を読むこと。
 
 ```python
 result["frames"][i]["phase_weight_fractions"]      # -> {"cubic": 0.472, "tetra": 0.528}  出版値
@@ -246,7 +251,8 @@ assert pf["fraction_basis"] == "weight"   # "weight" でなければ報告しな
 - **系統ブロックを近傍 warm-start で「直そう」としない** (両隣も同欠陥 = 無効)。
 - **「対策を入れたら直った」で因果を確定させない**。
 - **残差を説明するためだけに相を足さない** (`baseline_numerator_fraction` 大 = データ側の問題)。
-- **`phase_fractions` (Scale) を wt% として報告しない** (実測 2.1x 誤る)。出版値は
+- **`phase_fractions` (Scale) を wt% として報告しない** (実測 1.39-1.62 倍誤る。**倍率はフレーム
+  毎に違うので換算係数で直せない**)。出版値は
   `phase_weight_fractions` ± `phase_weight_fraction_esd`。
 
 ## 4. 権限境界

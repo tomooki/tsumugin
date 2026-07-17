@@ -196,7 +196,9 @@ def test_refine_with_model_action_setlimits():
 # 出版値の露出 (Issue #96 レビュー HIGH-2)
 # ---------------------------------------------------------------------------
 # `phase_fractions` は **Scale** であって重量分率ではない。単位胞質量が相間で異なると乖離する
-# (実測 K2Mn[Fe(CN)6]: cubic 1103.4 vs tetra 517.8 amu → 47.2 wt% と 65.6 Scale% で **2.1x**)。
+# (実測 K2Mn[Fe(CN)6] tetra: 同じ fit で 65.6 Scale% が 47.2 wt% = この点で 1.39 倍。乖離は
+# フレーム毎に違い [1.39-1.62 倍]、大きさは単位胞質量比 [cubic 1103.4 / tetra 517.8 amu = 2.13 倍]
+# と分率で決まる = **単一の換算係数は無い**)。
 # `autorietveld/model.py` は「出版値には phase_weight_fractions を使うこと」と言うが、② に載って
 # いなければ ③ は**受け取れない** = その指示は実行不能である (★ 実行者から見えない実装は「無い」と同じ)。
 # esd を伴わない精密化値は出版できないため、cell_esd / phase_weight_fraction_esd も同経路で出す。

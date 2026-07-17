@@ -87,8 +87,11 @@ def _publication_of(result: AutoRietveldResult) -> dict[str, object]:
     """精密化結果の**出版値** (重量分率 ± esd・格子 esd) をフレーム構築 kwargs へ写す。
 
     **`phase_fractions` (Scale) では出版できない** (Issue #96 レビュー): Scale は単位胞の散乱能に
-    対する比例係数で、単位胞質量が相間で異なると重量分率と大きく乖離する (実測 K₂Mn[Fe(CN)₆]:
-    cubic 1103.4 / tetra 517.8 amu → **65.6 Scale% は実際には 47.2 wt% = 2.1x**)。operando の
+    対する比例係数で、単位胞質量が相間で異なると重量分率と大きく乖離する (実測 K₂Mn[Fe(CN)₆]
+    tetra: **65.6 Scale% は同じ fit で 47.2 wt%** = この点で 1.39 倍の誤り)。**乖離はフレーム毎に
+    違い** (実測 fr112 1.62 / fr120 1.48 / fr124 1.41 / fr126 1.39 倍)、その大きさは相の単位胞質量比
+    (cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と各フレームの分率で決まる — **単一の換算係数は
+    存在しない**ので Scale に係数を掛けて wt% にはできない。operando の
     主要な報告値 (相分率 vs 時間) はここを通るため、**フレームに引き継がないと**
     `seq_result_to_dict` が幾ら serialize しても ③ には空 dict しか届かない
     (= ② に配線があっても ③ にとっては「無い」のと同じ)。esd も同様で、esd を伴わない精密化値は

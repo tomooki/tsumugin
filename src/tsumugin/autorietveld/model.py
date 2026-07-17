@@ -395,7 +395,10 @@ class AutoRietveldResult:
     n_obs: int = 0
     # 【相分率】: 相名→**HAP Scale を和=1 に正規化した値** (先頭ヒストグラム)。単相は {name: 1.0}。
     #   ⚠ これは**重量分率ではない**。Scale は単位胞の散乱能に対する比例係数であり、相間で単位胞質量
-    #   が異なると重量分率と大きく乖離する (例 K₂Mn[Fe(CN)₆] の cubic 1103.4 vs tetra 517.8 で ~2.1x)。
+    #   が異なると重量分率と乖離する。乖離の**大きさ**は単位胞質量比 (例 K₂Mn[Fe(CN)₆] の
+    #   cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と**各フレームの分率**で決まるため**フレーム毎に
+    #   違い**、単一の換算係数は無い (実測 tetra: 65.6 Scale% → 47.2 wt% [1.39 倍]、系列全体で
+    #   1.39-1.62 倍)。**Scale に係数を掛けて wt% にはできない**。
     #   **出版値には `phase_weight_fractions` (GSAS-II calcMassFracs 由来の質量重み分率) を使うこと**。
     #   本フィールドは逐次解析 (M9) の新相の有意性判定・転移推定という**相対比較**用途に限る 🔵 M9
     phase_fractions: Mapping[str, float] = field(default_factory=dict)

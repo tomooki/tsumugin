@@ -54,8 +54,11 @@ class NonMonotonicReport:
 
     :param phase_name: 対象の相名
     :param turning_points: 振幅フィルタ後の方向転換 (turning point) 数
-    :param flagged: `turning_points > max_turning_points` で振動疑いとして発火したか
-    :param fractions: フレーム順の分率系列 (欠測相は 0.0)
+    :param flagged: `turning_points > max_turning_points` で振動疑いとして発火したか。
+        **「Scale 振幅が閾値を超えた」の意味であって「相量が動いた/動いていない」ではない**
+        (`flag_nonmonotonic_fraction` の basis 注意を参照)
+    :param fractions: フレーム順の分率系列 (**Scale**; 欠測相は 0.0)。**判定に使った系列そのもの**
+        であり、閾値際の `flagged` を呼び出し側が見直すための根拠として必ず伝播させること
     :param reason: 判定理由の説明文 (人間可読)
     """
 
@@ -445,12 +448,31 @@ def flag_nonmonotonic_fraction(
     外れている。ノイズによる小刻みな増減を `min_amplitude` の振幅フィルタで無視した上で
     turning point 数を数え、`max_turning_points` を超えたら `flagged=True` とする。
 
+    **判定は `phase_fractions` (Scale) 基準** (Issue #96 レビュー第4巡 HIGH)。**意図的**である:
+    J7 で検出したい病理は「計量の近い相が互いの**強度**を吸収し合う」ことであり、振動するのは
+    その相へ割り付けられた散乱寄与 = Scale そのものである。wt% は Scale × 単位胞質量の**派生量**
+    であって検出対象ではない (加えて重量分率は共分散の無い精密化では空であり判定不能になる)。
+
+    ⚠ **`min_amplitude` は Scale 単位の絶対閾値であり、等価な wt% 感度は相の単位胞質量と分率
+    レベルで変わる**。Scale→wt% は単調写像なので turning point の**位置**は basis に依らないが、
+    **振幅フィルタの通過可否は依る**。重い相が低 Scale 域にあるとき wt% 側の振幅は最大で質量比倍に
+    拡大する (実測 K₂Mn[Fe(CN)₆]: cubic 1103.4 / tetra 517.8 amu = 質量比 2.13。cubic Scale
+    0.02↔0.11 の振幅 0.09 は既定 `min_amplitude=0.1` を通らず `flagged=False` になるが、同じ系列の
+    wt% は 0.042↔0.209 = 振幅 0.167 で **turning point 5 = flagged**)。逆に重い相が高 Scale 域に
+    あれば wt% 側は圧縮され、Scale で flag された振動が wt% では閾値未満になる。
+
+    したがって **`flagged=False` は「Scale 振幅が閾値未満」であって「相量が動いていない」では
+    ない**。呼び出し側 (② `check_phase_set`) は `NonMonotonicReport.fractions` (判定した系列
+    そのもの) を ③ へ返し、閾値際の判定を人間/エージェントが見直せるようにすること。少数相・
+    重い相の微小振動を疑うときは `min_amplitude` を下げて再実行する。
+
     :param result: 検査対象の逐次精密化結果
     :param phase_name: 対象の相名 (存在しないフレームは分率 0.0 として扱う)
-    :param min_amplitude: ノイズ抑制用の振幅フィルタ閾値 (ピーク-トラフ振幅)。既定 0.1
+    :param min_amplitude: ノイズ抑制用の振幅フィルタ閾値 (ピーク-トラフ振幅)。既定 0.1。
+        **Scale 単位の絶対値** (上記 basis 注意)
     :param max_turning_points: これを超える turning point 数で発火。既定 2
         (単一ドーム = 1 turning point までは正常とみなす)
-    :returns: `NonMonotonicReport`
+    :returns: `NonMonotonicReport` (`fractions` に判定した Scale 系列を含む)
     """
     fractions = tuple(float(f.phase_fractions.get(phase_name, 0.0)) for f in result.frames)
 

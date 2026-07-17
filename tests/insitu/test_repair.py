@@ -279,7 +279,8 @@ def test_repair_carries_publication_values_from_the_trial_result():
     **修復対象のフレームこそ出版値が要る**: ③ は `check_phase_set` の seed_pinned/frozen から
     `target_frames` を組んで修復する — 実測では**転移ドーム頂点の直前 6 フレーム (125-130)**、
     つまり論文の主要値そのものである。修復後に Scale (`phase_fractions`) しか持たなければ、
-    ③ は「2.1x 誤る値を報告する」か「直したばかりのフレームの出版値が無い」の二択に追い込まれる。
+    ③ は「1.39-1.62 倍誤る値を報告する」か「直したばかりのフレームの出版値が無い」の二択に
+    追い込まれる。
     """
     frames = _base_frames(5)
     fr_results = tuple(

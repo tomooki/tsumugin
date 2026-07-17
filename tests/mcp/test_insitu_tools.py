@@ -505,8 +505,10 @@ def test_sequential_rietveld_bad_two_theta_limits_returns_error_dict(monkeypatch
 # 出版値の露出 (Issue #96 レビュー HIGH-2) — フレーム毎
 # ---------------------------------------------------------------------------
 # operando の主要な報告値は「相分率 vs 時間」である。③ が受け取れるのが Scale だけなら、
-# 報告される定量値は **2.1x 誤る** (実測 K2Mn[Fe(CN)6]: tetra ドーム頂点 65.6 Scale% は
-# 実際には 47.2 wt%)。esd 無しでは出版もできない。
+# 報告される定量値がそのまま誤る (実測 K2Mn[Fe(CN)6]: tetra ドーム頂点 65.6 Scale% は
+# 実際には 47.2 wt% = この点で 1.39 倍。**乖離はフレーム毎に違い** [系列全体で 1.39-1.62 倍]、
+# 大きさは単位胞質量比 [cubic 1103.4 / tetra 517.8 amu = 2.13 倍] と分率で決まるので
+# **単一の換算係数は無い**)。esd 無しでは出版もできない。
 # ===========================================================================
 
 
@@ -598,3 +600,120 @@ def test_sequential_rietveld_end_to_end_delivers_publication_values_to_layer3():
     assert f0["phase_weight_fraction_esd"] == {"cubic": 0.006, "tetra": 0.006}
     assert f0["cell_esd"] == {"cubic": [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]}
     json.dumps(out, allow_nan=False)
+
+
+# ===========================================================================
+# ② の縮退契約 (Issue #96 レビュー第4巡 MEDIUM / MEDIUM-HIGH)
+# ---------------------------------------------------------------------------
+# `parametric_fit` は `check_phase_set`/`repair_frames` と**同じ復元器** (`_result_from_dict`) を
+# 呼びながら、縮退契約だけが食い違っていた:
+#   (a) `AttributeError` を捕らえず、壊れた入力で例外が MCP 境界を貫いていた。
+#   (b) `_validate_seq_result` を通らず、`{}` を「重量分率基準で見て転移なし」と**断言**していた。
+# (b) は最悪の失敗様態である: ③ に指示してある検算 `assert pf["fraction_basis"] == "weight"`
+# (skills/insitu:161 / AGENT_PLAYBOOK:228) が**素通りする**ため、③ は無データの答えを出版する。
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        pytest.param("x", id="result が str"),
+        pytest.param(["frames"], id="result が list"),
+        pytest.param({"frames": {"a": 1}}, id="frames が dict"),
+        pytest.param({"frames": ["not-a-frame"]}, id="フレーム要素が str"),
+        pytest.param({"frames": [None]}, id="フレーム要素が None"),
+    ],
+)
+def test_parametric_fit_never_raises_across_the_layer2_boundary(malformed):
+    """★② は例外を送出しない (③ は LLM なので例外は回復不能なハード失敗)。
+
+    旧実装ではこれらの入力で `_result_from_dict` の `d.get(...)` / `fd.get(...)` が
+    **AttributeError** を投げ、MCP 境界を貫いていた (except は (ValueError, TypeError, KeyError,
+    IndexError) で AttributeError を含まず、兄弟の `check_phase_set` — 同じ復元器を呼び
+    AttributeError も捕らえる — と契約が食い違っていた)。
+
+    現在は `_validate_seq_result` が**先に** ValueError で弾くため経路は変わったが、
+    ③ から見た契約 (error dict へ縮退) は同じ。AttributeError 経路そのものの回帰は
+    `test_parametric_fit_catches_attribute_error_from_the_deserializer` が固定する。
+    """
+    out = parametric_fit(malformed, "tetra")
+
+    assert isinstance(out, dict), f"dict でない: {out!r}"
+    assert "error" in out and "error_type" in out, f"error dict へ縮退していない: {sorted(out)}"
+    # 「答え」を返していないこと (③ が結果と誤読しない)
+    assert "transition" not in out and "fraction_basis" not in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_parametric_fit_catches_attribute_error_from_the_deserializer():
+    """★復元器が投げる `AttributeError` も error dict へ縮退すること。
+
+    ⚠ **レビューが示した 5 入力 (result が str/list・frames が dict・フレーム要素が str/None) は、
+    いずれも `_validate_seq_result` が先に ValueError で弾くようになったため、AttributeError 経路の
+    証拠にはならない** (変異検査で判明: except から AttributeError を外しても上のテストは緑のまま)。
+    それでも catch は**空振りではない** — 検証を通過してから復元器の `.items()` で落ちる形が残る:
+    `refined_cells` / `phase_fractions` が dict でなく list のとき、`_result_from_dict` の
+    ``(fd.get("refined_cells") or {}).items()`` が AttributeError を投げる。③ が組む JSON では
+    dict と list の取り違えは現実的な誤りであり、これが MCP 境界を貫けば ③ は回復できない。
+    """
+    seq = {
+        "frames": [
+            {"frame_index": 0, "rwp": 8.0, "phase_names": ["tetra"], "refined_cells": [1, 2]}
+        ]
+    }
+
+    out = parametric_fit(seq, "tetra")
+
+    assert out.get("error_type") == "AttributeError", (
+        f"AttributeError が error dict へ縮退していない: {sorted(out)}"
+    )
+    assert "fraction_basis" not in out and "transition" not in out
+    json.dumps(out, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "empty",
+    [
+        pytest.param({}, id="frames キーが無い"),
+        pytest.param({"frames": []}, id="frames が空"),
+    ],
+)
+def test_parametric_fit_refuses_to_certify_an_empty_series(empty):
+    """★空/不正な系列を「重量分率基準で転移なし」と**断言しない** (最悪の失敗様態)。
+
+    0 フレームなら `fraction_series(basis="weight")` の欠測検査は **0 件** = 素通りするため、
+    `FractionBasisUnavailableError` すら出ずに `fraction_basis="weight"` + `transition=None` が
+    返っていた。これは `insitu.model.FractionBasisUnavailableError` が明文で禁じている
+    「『転移なし』へ縮退する」= **本物の「転移なし」と区別が付かない**そのものである。
+    さらに ③ への指示 `assert pf["fraction_basis"] == "weight"` が素通りするため、
+    **自分で定めた妥当性チェックが無データの答えを承認する**。
+    """
+    out = parametric_fit(empty, "tetra")
+
+    assert out.get("error_type") == "ValueError", f"error dict へ縮退していない: {sorted(out)}"
+    assert "fraction_basis" not in out, (
+        "空の系列に `fraction_basis` を付けて返している — ③ の "
+        '`assert pf["fraction_basis"] == "weight"` が素通りし、無データの答えが出版される'
+    )
+    assert "transition" not in out, "「転移なし」へ縮退している (本物の転移なしと区別が付かない)"
+    json.dumps(out, allow_nan=False)
+
+
+def test_parametric_fit_still_answers_for_a_valid_series():
+    """縮退契約の追加で**正常系を殺していない**こと (検証が厳しすぎれば ③ は使えない)。"""
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i, axis_value=float(i), data_path=f"f{i}.xrdml", rwp=8.0, gof=1.0,
+            refined_cells={"tetra": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)},
+            phase_fractions={"tetra": 0.25 * i}, phase_names=("tetra",),
+            phase_weight_fractions={"tetra": 0.25 * i},
+        )
+        for i in range(4)
+    )
+    seq = seq_result_to_dict(SequentialRietveldResult(frames=frames, phase_names=("tetra",)))
+
+    out = parametric_fit(seq, "tetra")
+
+    assert "error" not in out
+    assert out["fraction_basis"] == "weight"
+    assert out["transition"]["midpoint"] == pytest.approx(2.0, abs=1e-6)

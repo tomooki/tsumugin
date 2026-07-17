@@ -74,8 +74,9 @@ class FrameRepair:
         (分率が動く区間ほど前フレームの seed から遠い)、そこは定量相分析の要求が最も高い区間でもある。
         Scale しか持ち帰らなければ、③ は「wt% として誤って報告する」か「直したばかりのフレームの
         出版値が無い」の二択になる (`skills/operando-diagnose` 禁止事項は前者を禁じている)。
-        Scale と重量分率の差は相の単位胞質量比で決まり、実データで 2 倍を超えた例がある
-        (`AutoRietveldResult.phase_weight_fractions` の docstring 参照)。
+        Scale と重量分率の差は相の単位胞質量比と各フレームの分率で決まり、**フレーム毎に異なる**
+        (実測 K₂Mn[Fe(CN)₆]: 1.39-1.62 倍。**単一の換算係数は存在しない**ので Scale に係数を掛けて
+        wt% にはできない。`AutoRietveldResult.phase_weight_fractions` の docstring 参照)。
         既定空 dict で後方互換 (重量分率を持たない runner/スタブ・共分散なしの精密化は空)。
     :param phase_weight_fraction_esd: 相名→重量分率の esd。出版には esd 必須。既定空 dict
     :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ)。既定空 dict
@@ -144,10 +145,22 @@ def detect_discontinuities(
     - いずれかの相分率が両隣 2 フレームの平均から ``frac_delta`` 超乖離 (先頭/末尾フレームは
       両隣が揃わないため本基準は適用しない — Rwp 系の基準のみ)
 
+    **⚠ 3 つ目の基準は `phase_fractions` (Scale) から発火する — 格子を見る基準は無い**
+    (Issue #96 レビュー第4巡 HIGH: 「不連続の検出は Rwp/格子で行う」という記述は**偽**だった)。
+    `frac_delta` は **Scale 単位の絶対閾値**であり、Scale→wt% は相ごとの単位胞質量で伸縮する
+    非線形写像なので、**同じ系列でも basis を替えると選ばれるフレーム集合が変わる**
+    (実測: Scale `[0.10, 0.12, 0.45, 0.16, 0.18]` は 3 フレーム、同じ系列の wt% は 1 フレーム)。
+
+    **Scale を基準にするのは意図的**: (a) 検出したいのは「そのフレームの**精密化**が近傍と
+    食い違う」ことで、Scale は GSAS が実際に動かすパラメータそのものである。(b) `repair_isolated`
+    は近傍の **Scale** を warm-start の種として GSAS へ戻す (`_warmstart.seed_fractions`) ため、
+    検出器と作動器は同じ座標で喋る必要がある。(c) 重量分率は共分散の無い精密化では空であり、
+    wt% 基準の検出器は定義できない系列が多い。
+
     :param result: 検査対象の逐次精密化結果
     :param rwp_abs: Rwp 絶対閾値 (None なら無効)
     :param rwp_delta: 局所中央値からの許容超過幅 (%ポイント)
-    :param frac_delta: 相分率の両隣補間からの許容乖離
+    :param frac_delta: 相分率 (**Scale**) の両隣補間からの許容乖離。**絶対値であり basis 依存**
     :returns: フレーム順の `Discontinuity` タプル
     """
     frames = result.frames

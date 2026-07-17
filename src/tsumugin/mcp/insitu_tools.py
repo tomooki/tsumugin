@@ -93,7 +93,9 @@ def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
                 "residual_report": _frame_residual_report(f),
                 # 【出版値 (Issue #96 レビュー)】: operando の主要な報告値は「相分率 vs 時間」だが、
                 #   上の `phase_fractions` は **Scale** であって重量分率ではない (単位胞質量が相間で
-                #   異なると乖離。実測 K2Mn[Fe(CN)6]: 65.6 Scale% は実は **47.2 wt%** = 2.1x)。
+                #   異なると乖離。実測 K2Mn[Fe(CN)6] tetra: 65.6 Scale% は同じ fit で **47.2 wt%**)。
+                #   乖離はフレーム毎に違い (実測 1.39-1.62 倍)、大きさは相の単位胞質量比
+                #   (cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と分率で決まる = **換算係数は無い**。
                 #   ③ が Scale しか受け取れなければ報告する定量値がそのまま誤る。esd 無しでは出版も
                 #   できない。キーは常に存在 (欠落と esd=0 の取り違えを防ぐ; 上と同一規律) 🔵
                 "phase_weight_fractions": {
@@ -177,6 +179,74 @@ def _result_from_dict(d: Mapping[str, object]) -> SequentialRietveldResult:
     return SequentialRietveldResult(
         frames=tuple(frames), phase_names=tuple(d.get("phase_names", ()))
     )
+
+
+#: 系列結果の各フレームが**判断に足る**ために最低限持つべきキー。``seq_result_to_dict`` は常に
+#: この 3 つを出す (値が None でも可)。欠けた dict は ``_result_from_dict`` が既定値
+#: (rwp=inf / phase_names=()) で黙って埋めるため、**キーの有無でしか欠落を検出できない**。
+_REQUIRED_FRAME_KEYS = ("frame_index", "rwp", "phase_names")
+
+
+def _validate_seq_result(result: Mapping[str, object]) -> None:
+    """系列結果 dict が判断に足る形かを**判定/精密化/導出の前に**検証する。
+
+    **``_result_from_dict`` の寛容さの対**であるため本モジュール (復元器の隣) に置く。復元器は
+    ``d.get("frames", [])`` で **``frames`` キーの無い dict を例外にせず空の系列**へ復元する。
+    そのため検証を挟まない消費者は**ゴミ入力から自信のある答えを出す**:
+
+    - ``check_phase_set({"nope": 1})`` → ``is_complete=True`` / ``union=[]`` (「相集合は完全」)。
+    - ``parametric_fit({}, "tetra")`` → ``fraction_basis="weight"`` / ``transition=None``
+      (「重量分率基準で見て転移なし」)。**0 フレームなら重量分率の欠測も 0 件**なので
+      `FractionBasisUnavailableError` すら出ず、③ の
+      ``assert pf["fraction_basis"] == "weight"`` (skills/insitu・AGENT_PLAYBOOK が指示する
+      検算) は**素通りする**。
+
+    どちらも **③ に「疑わなくてよい」と告げる**最悪の失敗様態である (CLAUDE.md ② 不変条件:
+    空/不正入力を「正常」と答えない)。何も判断できないときは判断を返してはならず、error dict へ
+    縮退する (``insitu.model.FractionBasisUnavailableError`` の「『転移なし』へ縮退するのも禁止 —
+    本物の『転移なし』と区別が付かなくなる」と同じ規律)。
+
+    ``frames`` が空の系列も**エラーとする**: 判断の対象が存在しない以上「完全」とも「転移なし」
+    とも言えず、黙ってそう答えるのは上と同じ不安全である (系列結果は必ず 1 フレーム以上を持つ)。
+
+    :raises ValueError: ``result`` が Mapping でない、``frames`` が無い/空/列でない、
+        フレームが dict でない、フレームが ``_REQUIRED_FRAME_KEYS`` を欠くとき
+    """
+    if not isinstance(result, Mapping):
+        raise ValueError(
+            f"result は系列結果 dict である必要があります: {type(result).__name__}"
+        )
+    if "frames" not in result:
+        raise ValueError(
+            "result に 'frames' キーがありません。**sequential_rietveld** が返す系列結果 dict を"
+            "そのまま渡してください (空の系列を「相集合は完全」/「転移なし」と判定しないため"
+            "打ち切ります)。"
+            "注: repair_frames の戻り値は系列結果ではない (repairs/needs_model_revision のみ) ので"
+            "渡せません — 修復後の系列が要るなら sequential_rietveld を再実行してください。"
+        )
+    frames = result["frames"]
+    if isinstance(frames, (str, bytes)) or not isinstance(frames, Sequence):
+        raise ValueError(
+            f"result['frames'] はフレーム dict の列である必要があります: {type(frames).__name__}"
+        )
+    if not frames:
+        raise ValueError(
+            "result['frames'] が空です。判断の対象が無い系列を「相集合は完全」「転移なし」とは"
+            "報告できません (系列を実行できていない可能性があります — sequential_rietveld の"
+            "結果を確認してください)。"
+        )
+    for i, fd in enumerate(frames):
+        if not isinstance(fd, Mapping):
+            raise ValueError(
+                f"result['frames'][{i}] がフレーム dict ではありません: {type(fd).__name__}"
+            )
+        missing = [key for key in _REQUIRED_FRAME_KEYS if key not in fd]
+        if missing:
+            raise ValueError(
+                f"result['frames'][{i}] に必須キーがありません: {missing}。"
+                "欠けたキーは既定値 (rwp=inf / phase_names=()) で黙って埋まり、判定が"
+                "入力の不備を反映しない誤った結論になります。"
+            )
 
 
 def _enum_from_value(enum_cls: type, value: object, key: str) -> object:
@@ -438,10 +508,15 @@ def parametric_fit(
 ) -> dict:
     """系列結果 (JSON) の相 phase について 格子 vs 軸の熱膨張多項式 + 相分率転移を返す。
 
+    :param result: ``sequential_rietveld`` が返す系列結果 (JSON dict)。**空/不正 (``frames`` 無し・
+        空・必須キー欠落・フレームが dict でない) は判断せず error dict** — 0 フレームの
+        「転移なし」は本物の「転移なし」と区別が付かない (``_validate_seq_result``)
     :param basis: 転移推定に使う相分率の基準。**既定 ``"weight"`` (重量分率 = 出版値)**。
         ``"scale"`` は HAP Scale 由来で**診断・相対比較専用** (出版不可)。
-    :returns: ``fraction_basis`` に**どちらで出したかを明示**した結果。重量分率が系列に無ければ
-        ``{"error", "error_type"}`` dict (Scale へも「転移なし」へも縮退しない)。
+    :returns: ``fraction_basis`` に**どちらで出したかを明示**した結果。重量分率が系列に無い/
+        系列結果が空・不正/未知 basis は ``{"error", "error_type"}`` dict (Scale へも
+        「転移なし」へも縮退しない)。この場合 ``transition``/``fraction_basis`` キーは返らない
+        (③ の ``assert pf["fraction_basis"] == "weight"`` が**素通りしない**)
 
     ⚠ **転移 onset/midpoint は basis で答えが変わる**: `sequential.thermal.estimate_transition` が
     返すのは「曲線が**絶対レベル** 0.50 / 0.10 を横切る軸値」であり、y 軸が Scale か wt% かで
@@ -462,10 +537,22 @@ def parametric_fit(
     #   error dict にして**復旧方法を示す** — ここで Scale に落ちたり「転移なし」を返したり
     #   すると、③ は静かに違う数字を出版する (CLAUDE.md ② 不変条件)。`error_type` に
     #   例外クラス名が入るので ③ は「重量分率が無い」と「入力が壊れている」を区別できる。
+    # 【入力検証を先に (レビュー第4巡 MEDIUM-HIGH)】: `_result_from_dict` は寛容で、`frames` の
+    #   無い dict を空の系列へ黙って復元する。0 フレームなら重量分率の**欠測も 0 件**なので
+    #   `FractionBasisUnavailableError` すら出ず、`{}` に対して `fraction_basis="weight"` +
+    #   `transition=None` = 「重量分率基準で見て転移なし」という**自信のある嘘**を返していた。
+    #   ③ に指示してある検算 (`assert pf["fraction_basis"] == "weight"`) も素通りする。
+    #   `model.FractionBasisUnavailableError` が「『転移なし』へ縮退するのも禁止」と定めた当の
+    #   失敗様態そのものなので、判断の前に形を検証する (`check_phase_set` と同じ縮退契約)。
+    # 【AttributeError も捕らえる】: `_result_from_dict` は `d.get(...)` / `fd.get(...)` を呼ぶため、
+    #   result が str/list、frames が dict、フレーム要素が str/None のとき AttributeError が
+    #   MCP 境界を貫いていた (② は例外を送出しない契約に反する)。`check_phase_set` は同じ復元器を
+    #   呼びながら AttributeError を捕らえており、兄弟ツール間で縮退契約が食い違っていた。
     try:
+        _validate_seq_result(result)
         seq = _result_from_dict(result)
         pa = analyze_phase(seq, phase, component=component, degree=degree, basis=basis)  # type: ignore[arg-type]
-    except (ValueError, TypeError, KeyError, IndexError) as exc:
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
     tr = pa.transition
     return {

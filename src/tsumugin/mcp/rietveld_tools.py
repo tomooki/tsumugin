@@ -105,8 +105,10 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         #   サーバ側で算出して返す。残差フィールドが空 (既定/スタブ) なら None (キーは常に存在) 🔵
         "residual_report": _residual_report_dict(result),
         # 【出版値 (Issue #96 レビュー)】: `phase_fractions` は **Scale** であって重量分率ではない。
-        #   単位胞質量が相間で異なると乖離する (実測 K2Mn[Fe(CN)6] cubic 1103.4 / tetra 517.8 amu →
-        #   47.2 wt% vs 65.6 Scale% で **2.1x**)。定量相分析の出版値は重量分率であり、esd を伴わない
+        #   単位胞質量が相間で異なると乖離する (実測 K2Mn[Fe(CN)6] tetra: 同じ fit で 65.6 Scale%
+        #   が 47.2 wt%。乖離はフレーム毎に違い [実測 1.39-1.62 倍]、大きさは単位胞質量比
+        #   [cubic 1103.4 / tetra 517.8 amu = 2.13 倍] と分率で決まる = **換算係数は無い**)。
+        #   定量相分析の出版値は重量分率であり、esd を伴わない
         #   精密化値は出版できない。① にあっても ② に無ければ ③ は受け取れない (★ 規則)。
         #   キーは常に存在させる (欠落と「esd=0」を ③ が取り違えないため; residual_report と同一規律)。
         "phase_weight_fractions": {
