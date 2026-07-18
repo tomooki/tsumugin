@@ -168,7 +168,8 @@ def _synthetic_pattern(centers, *, fwhm=0.15):
 
 def test_eight_tools_registered_in_mcp_tools():
     # 【テスト目的】: M4 8 + M6 相同定 2 + M8 実構造 Rietveld 3 + M9 in situ 逐次 3 + M8-③ MEM 3
-    #   + operando 診断 4 + M10 anchor 1 (anchored_sequential, Issue #97) = 24 ツール登録
+    #   + operando 診断 4 + M10 anchor 1 (anchored_sequential, #97)
+    #   + 構造モデル比較 1 (compare_structure_models, #100) = 25 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -194,6 +195,7 @@ def test_eight_tools_registered_in_mcp_tools():
         "check_phase_set",
         "repair_frames",
         "anchored_sequential",
+        "compare_structure_models",
     }
     assert set(MCP_TOOLS.keys()) == expected
 

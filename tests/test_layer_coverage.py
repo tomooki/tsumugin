@@ -79,7 +79,11 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "Issue #97: compare_hypotheses は rank へ委譲し nested を参照しない",
     ),
     "chem (FR-412)": (UNEXPOSED, "Issue #97: identify_phases は chem を参照しない"),
-    "compare_models (XND)": (UNEXPOSED, "Issue #97: 構造モデル比較 (BIC)。③ から呼べない"),
+    "compare_models (XND)": (
+        "compare_structure_models",
+        "Issue #100 解決: callable 制約が無い (runner 既定=実装関数) 単純配線漏れだった。"
+        "variants [{name, phases:[PhaseSpec]}] を JSON で受け BIC/AIC 序列化 (Ow 要否の ΔBIC 判定)",
+    ),
     "interop (XND)": (
         UNEXPOSED,
         "Issue #108: 外部形式→GSAS 変換。当初「変換済みパスを渡せば足りる」と意図的非露出に"
@@ -511,6 +515,14 @@ PER_FRAME_FRACTION_EMITTERS: dict[str, tuple[str, str]] = {
         CARRIES_PUBLICATION,
         "repairs[] の per-frame。**修復対象は ③ が check_phase_set で名指ししたフレーム** = "
         "実測では転移ドーム頂点の直前 (125-130) = 論文の主要値そのもの",
+    ),
+    "tsumugin.mcp.compare_tools.compare_structure_models": (
+        DIAGNOSTIC_ONLY,
+        "意図的: scores[].phase_fractions は**モデル毎** (per-frame ではない) の Scale で、どの相集合で"
+        "どのモデルが勝ったかの**文脈**。本ツールの決定値は BIC/delta_bic であって分率ではない。"
+        "定量相分析 (wt% ± esd) が要るなら、選ばれた best モデルを auto_rietveld で精密化し直す "
+        "(そちらは phase_weight_fractions を CARRIES_PUBLICATION として運ぶ)。モデル比較の出力に "
+        "wt% を混ぜると『どのモデルの wt% か』が曖昧になり、確定前の値を出版値と取り違えさせる",
     ),
     "tsumugin.mcp.operando_diag_tools.check_phase_set": (
         DIAGNOSTIC_ONLY,
