@@ -13,6 +13,7 @@ from tsumugin.autorietveld.model import AutoRietveldResult, PhaseSpec, ValidityR
 from tsumugin.insitu.model import FrameRietveldResult, FrameSpec, SequentialRietveldResult
 from tsumugin.mcp.insitu_tools import (
     INSITU_TOOLS,
+    _instrument_path_resolver,
     _result_from_dict,
     parametric_fit,
     seq_result_to_dict,
@@ -717,3 +718,64 @@ def test_parametric_fit_still_answers_for_a_valid_series():
     assert "error" not in out
     assert out["fraction_basis"] == "weight"
     assert out["transition"]["midpoint"] == pytest.approx(2.0, abs=1e-6)
+
+
+# ===========================================================================
+# _instrument_path_resolver: id() を鍵にしない (間欠失敗の根治)
+# ---------------------------------------------------------------------------
+# 旧実装は `by_id = {id(fs): path}` の fast-path を持ち、`resolve(frame)` が最初に
+# `id(frame) in by_id` を見た。テスト/③ は新規 FrameSpec を渡して data_path 経路を検証するが、
+# CPython の id() 再利用 (GC された別オブジェクトの id を新規 FrameSpec が再取得) で稀に
+# by_id の stale entry にヒットし、data_path に落ちる前に**誤ったパス**を返していた
+# (full suite で間欠失敗 = tests/mcp/test_operando_diag_tools.py の per-frame テスト)。
+# 根治は id() を鍵にしないこと: フレームの**内容** (data_path / frozen dataclass の値) で解決する。
+# ===========================================================================
+
+
+def test_instrument_path_resolver_resolves_a_fresh_frame_by_data_path():
+    """★新規生成した (= 元 frame_specs と id が異なる) フレームを data_path で正しく引く。
+
+    ③ / runner は元オブジェクトと同一 id を持つとは限らない。id() 一致を前提にすると、
+    id() 再利用で stale entry に当たったフレームだけ静かに誤ったパスへ解決される。
+    """
+    frame_specs = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)) for i in range(3)]
+    resolver = _instrument_path_resolver(
+        {"paths": ["a.instprm", "b.instprm", "c.instprm"]}, frame_specs
+    )
+    assert callable(resolver)
+    # id の異なる新規オブジェクト (元 frame_specs とは別インスタンス)
+    assert resolver(FrameSpec(data_path="f1.xrdml", axis_value=1.0)) == "b.instprm"
+    assert resolver(FrameSpec(data_path="f0.xrdml", axis_value=0.0)) == "a.instprm"
+
+
+def test_instrument_path_resolver_duplicate_data_path_resolves_by_position():
+    """★同一 data_path が複数フレームにある系列は data_path では区別できない → 値 (位置) で解決。
+
+    旧 `by_data = {data_path: path}` は最後のパスで上書きされ、id fast-path を外れた
+    (新規生成) フレームは全て**最後のパス**に解決されていた。frozen dataclass の値
+    (axis_value 等で区別) を鍵にすれば位置ごとに正しく引ける。
+    """
+    frame_specs = [
+        FrameSpec(data_path="same.xye", axis_value=0.0),
+        FrameSpec(data_path="same.xye", axis_value=1.0),
+    ]
+    resolver = _instrument_path_resolver(
+        {"paths": ["a.instprm", "b.instprm"]}, frame_specs
+    )
+    # id の異なる値等価コピー: 位置で区別され正しいパスへ
+    assert resolver(FrameSpec(data_path="same.xye", axis_value=0.0)) == "a.instprm"
+    assert resolver(FrameSpec(data_path="same.xye", axis_value=1.0)) == "b.instprm"
+
+
+def test_instrument_path_resolver_unknown_frame_raises_never_stale_path():
+    """★系列に無いフレームは ValueError を上げる (stale entry の誤ったパスを黙って返さない)。"""
+    frame_specs = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)) for i in range(2)]
+    resolver = _instrument_path_resolver({"paths": ["a.instprm", "b.instprm"]}, frame_specs)
+    with pytest.raises(ValueError, match="no instrument path"):
+        resolver(FrameSpec(data_path="unknown.xrdml", axis_value=9.0))
+
+
+def test_instrument_path_resolver_single_path_is_str():
+    """`path` (単一) はそのまま str を返す (callable を組まない)。"""
+    frame_specs = [FrameSpec(data_path="f0.xrdml", axis_value=0.0)]
+    assert _instrument_path_resolver({"path": "one.instprm"}, frame_specs) == "one.instprm"
