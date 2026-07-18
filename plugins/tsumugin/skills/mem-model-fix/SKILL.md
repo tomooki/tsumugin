@@ -22,6 +22,7 @@ description: MEM (最大エントロピー法) 電子/核密度から構造モ�
 | `edit_cif` | アクチュエータ | CIF + `AtomEdit[]` (add/move/set_occupancy/set_uiso/remove) → 新 CIF ハンドル |
 | `refine_with_revisions` | アクチュエータ | spec + `ReviseStructure(edits={"structure_path": 新CIF})` → 再精密化 |
 | `compare_structure_models` | 計器 (モデル選択) | histograms + `variants[{name, phases:[PhaseSpec]}]` → BIC/AIC 序列 + `best`/`best_is_valid`/各 `delta_bic`。**構造の差 (サイトの有無・空間群) を客観的に比べる** |
+| `mem_rietveld_iterate` | 計器 (MPF 反復) | 精密化済み gpx → **Rietveld ⇄ MEM を交互反復** (子スナップショット gpx・ledger)。`cycles[]` (反復毎 rwp/密度/未モデルピーク数) + `stop_reason`。**単発 mem_density で改善が止まったとき**に自己無撞着へ向かうか見る |
 
 Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnavailableError"}` を返す。その旨と
 導入先 (jp-minerals.org/dysnomia を `~/.GSASII/Dysnomia` 等へ) をユーザーに案内する。
@@ -59,6 +60,11 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
      `best_is_valid=False` はどの候補も物理妥当でない = モデル空間を広げること。
 9. 未モデル密度が閾値以下 (局在ピークが消える) か、改善が停滞したら終了し、確定モデル・組成・妥当性・
    残った未モデル密度 (説明できない残差) を報告する。
+   - **単発の `mem_density` → 編集 → 再精密化を 1 巡しても未モデル密度が残る / 改善が微妙なときは、
+     `mem_rietveld_iterate` で MPF (Rietveld ⇄ MEM 交互反復) を回す**。密度と構造が同時に自己無撞着へ
+     向かうか (`stop_reason="converged"` かつ `cycles[].n_unmodeled` が減る) を見る。`"diverged"` は
+     反復が悪化 = そのモデル改訂は筋が悪い。各反復は子スナップショット gpx なので**提案のみ** (元 gpx
+     は不変)、採用は Rwp 改善 ∧ 妥当性維持で ③ が判断する。
 
 ## 権限境界 (architecture.md §4.5 — 厳守)
 

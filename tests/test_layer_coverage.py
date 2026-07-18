@@ -95,10 +95,10 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     # 完全に欠けていたパッケージ (operando) であり、パッケージ網 (PACKAGE_COVERAGE) だけでは
     # 捕まらない。能力単位で明示宣言することで「既知の穴」に格上げする。
     "mem.mpf (FR-603)": (
-        UNEXPOSED,
-        "Issue #99/#100: 実データ MEM-Rietveld 反復 (run_mem_rietveld_gpx)。callable 完全不要・"
-        "全引数 JSON 互換なのに ② 未配線。mem パッケージは mem_density で露出済みだが反復ループは"
-        "その内側で見えていなかった (mem-model-fix skill も単発のみ)",
+        "mem_rietveld_iterate",
+        "Issue #100 解決: 実データ MEM-Rietveld 反復 (run_mem_rietveld_gpx) を露出。callable 不要・"
+        "全引数 JSON 互換の単純配線漏れだった。ツール呼び出し自体が反復の opt-in (① enabled 既定 "
+        "False は安全弁)。子スナップショット gpx (P2) + ledger",
     ),
     "reference.identify_pattern (M11)": (
         UNEXPOSED,

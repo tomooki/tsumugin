@@ -12,6 +12,7 @@ from tsumugin.mcp.mem_tools import (
     MEM_MODEL_TOOLS,
     edit_cif,
     mem_density,
+    mem_rietveld_iterate,
     propose_structure_revisions,
 )
 
@@ -35,8 +36,13 @@ Cu1 Cu 0.0 0.5 0.5 1.0 0.018
 """
 
 
-def test_registry_has_three_tools():
-    assert set(MEM_MODEL_TOOLS) == {"mem_density", "propose_structure_revisions", "edit_cif"}
+def test_registry_has_four_tools():
+    assert set(MEM_MODEL_TOOLS) == {
+        "mem_density",
+        "propose_structure_revisions",
+        "edit_cif",
+        "mem_rietveld_iterate",
+    }
 
 
 # ---- propose_structure_revisions (pure) ----
@@ -115,3 +121,60 @@ def test_mem_density_registered_in_mcp_tools():
 
     for name in ("mem_density", "propose_structure_revisions", "edit_cif"):
         assert name in MCP_TOOLS
+
+
+# ---- mem_rietveld_iterate (MPF 反復, Issue #100; run_mem_rietveld_gpx を monkeypatch で決定論化) ----
+
+
+def test_mem_rietveld_iterate_builds_enabled_config_and_serializes(monkeypatch):
+    """ツールを呼ぶこと自体が反復の opt-in (enabled=True) で、cycles/stop_reason を素の型で返す。"""
+    from tsumugin.mem.mpf import MPFConfig, MPFCycle, MPFResult
+
+    captured: dict = {}
+
+    def fake_run(gpx_path, *, phase_name, hist_name, config, snapshot_dir, ledger):
+        captured["config"] = config
+        captured["gpx"] = gpx_path
+        ledger.append("mpf_probe", {"n": 1})  # ledger 検証が True になるよう 1 件追記
+        return MPFResult(
+            cycles=(
+                MPFCycle(iteration=0, gpx_path="mpf_iter0.gpx", rwp=8.0, density_max=5.0,
+                         density_min=-1.0, mem_r_factor=0.03, n_unmodeled=2),
+            ),
+            stop_reason="converged",
+            warnings=("w1",),
+        )
+
+    monkeypatch.setattr("tsumugin.mem.mpf.run_mem_rietveld_gpx", fake_run)
+    out = mem_rietveld_iterate("done.gpx", max_iter=3, dmin=1.1)
+
+    assert isinstance(captured["config"], MPFConfig)
+    assert captured["config"].enabled is True  # ★ ツール呼び出し = opt-in
+    assert captured["config"].max_iter == 3
+    assert captured["config"].mem.dmin == 1.1  # 入れ子 MEMRunConfig へ伝播
+    assert out["stop_reason"] == "converged"
+    assert out["n_cycles"] == 1
+    assert out["cycles"][0]["n_unmodeled"] == 2
+    assert out["ledger_verified"] is True
+    assert out["warnings"] == ["w1"]
+    json.dumps(out, allow_nan=False)
+
+
+def test_mem_rietveld_iterate_unavailable_returns_error_dict(monkeypatch):
+    """Dysnomia/GSAS 未解決は例外でなく error dict へ縮退する (③ は LLM)。"""
+    from tsumugin.errors import MEMUnavailableError
+
+    def boom(*a, **k):
+        raise MEMUnavailableError("Dysnomia 未解決")
+
+    monkeypatch.setattr("tsumugin.mem.mpf.run_mem_rietveld_gpx", boom)
+    out = mem_rietveld_iterate("done.gpx")
+    assert "error" in out
+    assert out["error_type"] == "MEMUnavailableError"
+    json.dumps(out, allow_nan=False)
+
+
+def test_mem_rietveld_iterate_registered_in_mcp_tools():
+    from tsumugin.mcp.tools import MCP_TOOLS
+
+    assert "mem_rietveld_iterate" in MCP_TOOLS
