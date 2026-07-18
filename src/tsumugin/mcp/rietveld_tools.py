@@ -24,6 +24,7 @@ from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld import AutoRietveldResult, HistogramSpec, PhaseSpec, ValidityReport
+from ._degrade import degrade_oserror
 from ..refine_loop.action import AnalysisInput
 from ..refine_loop.diagnostics import propose_next_actions as _propose
 from ..refine_loop.orchestrator import _default_gsas_runner
@@ -161,6 +162,7 @@ def _build_input(
     )
 
 
+@degrade_oserror
 def auto_rietveld(
     histograms: Sequence[Mapping[str, object]],
     phases: Sequence[Mapping[str, object]],
@@ -196,6 +198,7 @@ def propose_next_actions(
     return {"proposals": [proposal_to_dict(p) for p in proposals]}
 
 
+@degrade_oserror
 def refine_with_revisions(
     histograms: Sequence[Mapping[str, object]],
     phases: Sequence[Mapping[str, object]],

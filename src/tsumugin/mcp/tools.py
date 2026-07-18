@@ -44,7 +44,11 @@ from ..sequential.trajectory import Trajectory
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
 from . import mem as _mem
+from .anchor_tools import ANCHOR_TOOLS as _ANCHOR_TOOLS
+from .compare_tools import COMPARE_TOOLS as _COMPARE_TOOLS
+from .echem_tools import ECHEM_TOOLS as _ECHEM_TOOLS
 from .insitu_tools import INSITU_TOOLS as _INSITU_TOOLS
+from .interop_tools import INTEROP_TOOLS as _INTEROP_TOOLS
 from .mem_tools import MEM_MODEL_TOOLS as _MEM_MODEL_TOOLS
 from .operando_diag_tools import OPERANDO_DIAG_TOOLS as _OPERANDO_DIAG_TOOLS
 from .rietveld_tools import RIETVELD_TOOLS as _RIETVELD_TOOLS
@@ -56,9 +60,11 @@ __all__ = [
     "compare_hypotheses",
     "export_gpx",
     "get_trajectory",
+    "identify_pattern",
     "identify_phase_mixtures",
     "identify_phases",
     "list_hypotheses",
+    "propose_discriminating_measurements",
     "revert",
     "run_mem",
     "submit_analysis",
@@ -209,14 +215,28 @@ def list_hypotheses(session: AnalysisSession) -> dict:
     return session.search_result.to_summary()
 
 
-def compare_hypotheses(session: AnalysisSession, hypothesis_ids: Sequence[str]) -> dict:
-    """指定仮説を evidence/確率で比較する。rank へ委譲。🔵 REQ-021/022
+def compare_hypotheses(
+    session: AnalysisSession,
+    hypothesis_ids: Sequence[str],
+    *,
+    chem_context: Mapping[str, object] | None = None,
+) -> dict:
+    """指定仮説を evidence/確率で比較する。rank へ委譲。🔵 REQ-021/022/FR-412
 
     【委譲】: ``session.search_result.hypotheses`` から指定 ID の仮説を取り出し、
       ``evidence.ranking.rank`` で evidence/確率を再計算した比較 dict を返す。
     【決定論】: 未知 ID はスキップ (誤操作防御)。evidence backend は session の注入 (既定 BIC)。
-    【テスト対応】: test_compare_hypotheses_delegates_to_rank。
-    🔵 信頼性レベル: interfaces.py mcp/tools 節 / evidence/ranking.rank に依拠。
+    【化学的妥当性の降格 (FR-412, chem_context 指定時)】: ``chem_context`` (合成条件) を渡すと、
+      ``chem.rank_with_plausibility`` で **ChemPlausibility 降格**を配線する (例: 酸化雰囲気での
+      単体アルカリ金属は非妥当として確率を下げる)。**降格のみ・候補除外はしない** (Dara 教訓):
+      低スコア仮説も compared に残り件数は不変。``chem_context`` のキー:
+
+      - ``atmosphere``: 合成雰囲気 ("air"/"O2"/"Ar"/"N2" 等)。酸化性判定に使う
+      - ``element_system`` / ``precursors``: 合成の元素系/前駆体 (任意)
+      - ``phase_compositions``: ``{phase_ref: {"formula": str, "element_system": [str]}}``。**相の
+        組成メタ**。Hypothesis の相 (PhaseInstance) は phase_ref 文字列しか持たず組成を運ばないため、
+        降格を効かせるには ③ が同定結果 (``identify_phases``/``identify_pattern`` の formula) から
+        供給する。未供給の相は phase_ref から組成を導出できず降格対象外になる (静かに効かない)
     """
     if session.search_result is None:
         return {"compared": []}
@@ -230,8 +250,43 @@ def compare_hypotheses(session: AnalysisSession, hypothesis_ids: Sequence[str]) 
     # 【evidence 再ランク (F5)】: session 注入 evidence を単一情報源で既定 BIC へフォールバック
     #   (既存パターン ``session.evidence or BICBackend()`` に統一・関数内 import を除去) 🔵
     backend = session.evidence or BICBackend()
-    ranked = rank(hypotheses, backend)
+    if chem_context is not None:
+        from ..chem import AlkaliMetalInAirRule, SynthesisContext, rank_with_plausibility
+        from ..model.phase import PhaseRef
+
+        ctx = SynthesisContext(
+            element_system=tuple(str(e) for e in chem_context.get("element_system", ())),
+            precursors=tuple(str(p) for p in chem_context.get("precursors", ())),
+            atmosphere=(
+                str(chem_context["atmosphere"])
+                if chem_context.get("atmosphere") is not None
+                else None
+            ),
+        )
+        # 相の組成メタを ③ 供給の phase_compositions から PhaseRef へ (phase_ref 文字列は組成を
+        # 運ばないため; 未供給なら None で from_phase_ref フォールバック = 降格は効かない)。
+        # 【頑健化】: ③ 供給 JSON なので不正形 (comps が dict でない・値が dict でない) を許容し、
+        #   例外を境界に貫かせない (② は例外を送出しない契約)。不正な相はスキップ = 降格対象外。
+        raw_comps = chem_context.get("phase_compositions")
+        comps = raw_comps if isinstance(raw_comps, Mapping) else {}
+        phase_refs = {
+            str(pid): PhaseRef(
+                id=str(pid),
+                formula=(str(c["formula"]) if c.get("formula") is not None else None),
+                element_system=tuple(str(e) for e in c.get("element_system", ())),
+            )
+            for pid, c in comps.items()
+            if isinstance(c, Mapping)
+        } or None
+        ranked = rank_with_plausibility(
+            hypotheses, backend, modules=(AlkaliMetalInAirRule(),), context=ctx,
+            phase_refs=phase_refs, ledger=session.ledger,
+        )
+    else:
+        ranked = rank(hypotheses, backend)
     return {
+        # ChemPlausibility を配線したかを ③ に明示 (降格の有無で数字の解釈が変わる)
+        "chem_demotion_applied": chem_context is not None,
         "compared": [
             {
                 "id": rk.hypothesis.id,
@@ -245,7 +300,7 @@ def compare_hypotheses(session: AnalysisSession, hypothesis_ids: Sequence[str]) 
                 "close_competitor": bool(rk.close_competitor),
             }
             for rk in ranked
-        ]
+        ],
     }
 
 
@@ -376,6 +431,38 @@ def run_mem(session: AnalysisSession, **params: object) -> dict:
     return _mem.run_mem_boundary(session, **params)
 
 
+def propose_discriminating_measurements(
+    session: AnalysisSession, *, close_threshold: float = 10.0, reason: str = ""
+) -> dict:
+    """僅差競合の仮説を判別する追加測定を情報利得順に提案する (OED, FR-700)。🔵
+
+    【なぜ session 経由か】: OED は木探索/裁定の中間生成物 ``RankedHypothesis`` を入力に取る。
+      これを JSON で受け渡すのは §4.5 的に不自然なので、``compare_hypotheses`` と同じく **session 内の
+      探索結果を入力に取る** (RankedHypothesis を境界に晒さない)。
+    【委譲】: session の直近探索結果を ``evidence.ranking.rank`` で順位付け → ``oed.propose_measurements``
+      で僅差競合 (最良との BIC 差 < close_threshold) の判別測定を情報利得順に提案する。
+    【非破壊・提案のみ (FR-700)】: 測定の実行・データ変更はしない。提案を ledger に追記するのみ。
+      僅差競合が無ければ空提案 (措置不要のシグナル)。
+
+    :param close_threshold: 僅差競合とみなす最良仮説との evidence (BIC) 差の上限
+    :returns: ``proposals[]`` (kind/target_hypothesis_ids/rationale/estimated_information_gain/
+      parameters) + ``n_proposals``。探索結果が無ければ空提案
+    """
+    if session.search_result is None:
+        return {"proposals": [], "n_proposals": 0}
+    from ..oed import propose_measurements, proposals_to_json
+
+    hypotheses = list(session.search_result.hypotheses.values())
+    if not hypotheses:
+        return {"proposals": [], "n_proposals": 0}
+    backend = session.evidence or BICBackend()
+    ranked = rank(hypotheses, backend, close_threshold=close_threshold)
+    proposals = propose_measurements(
+        ranked, close_threshold=close_threshold, ledger=session.ledger
+    )
+    return {"proposals": proposals_to_json(proposals), "n_proposals": len(proposals)}
+
+
 def identify_phases(
     session: AnalysisSession,
     two_theta: np.ndarray,
@@ -466,14 +553,85 @@ def identify_phase_mixtures(
     return response
 
 
+def identify_pattern(
+    session: AnalysisSession,
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    elements: Sequence[str],
+    *,
+    max_phases: int = 5,
+    snr_stop: float = 5.0,
+    subtract_bg: bool = True,
+    refine_lattice: bool = True,
+    hull_cutoff_ev: float | None = 0.1,
+    reason: str = "",
+) -> dict:
+    """未知パターン + 元素から相集合を**逐次減算で統一同定**する (M11, FR-118)。🔵
+
+    【単相/多相統一】: ``identify_phases`` (単相ランキング) と ``identify_phase_mixtures`` (木探索) を
+      統合したエントリ。1 相受理するごとに残差からその寄与を減算し、**残差 S/N が閾値 (snr_stop σ)
+      未満**になるまで反復する。単相なら 1 相で停止、多相なら複数相を積み上げる (相数を事前に
+      指定しない)。過剰適合は受理ゲート (未説明強度の相対減少 ∧ 最小スケール) が抑える。
+    【委譲】: ``session.reference_provider`` を供給元に ``reference.iterative.identify_pattern`` へ。
+      供給元未設定は error dict。深段 Rietveld 裁定 (``refiner``) は本経路では省略 (提案のみ)。
+    【残差配列非跨ぎ】: ``residual_two_theta``/``residual_intensity`` は境界を越えさせず、受理相の
+      要約のみ返す (§4.5)。
+
+    :param max_phases: 反復上限 (安全網; 実際は snr_stop が停止を決める)
+    :param snr_stop: 残差 S/N がこの未満で停止 (5σ = 結晶学の標準検出閾値)
+    :param subtract_bg: 同定前の SNIP 背景減算
+    :param refine_lattice: 提案時の等方格子整合 (DFT 格子ズレ吸収)
+    :returns: ``accepted[]`` (受理相: phase_id/formula/element_system/scale/score/strain) +
+      ``n_accepted``。破壊的操作なし (提案のみ)
+    """
+    provider = session.reference_provider
+    if provider is None:
+        return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    from ..reference.iterative import IdentifyConfig
+    from ..reference.iterative import identify_pattern as _identify_pattern
+
+    two_theta = np.asarray(two_theta, dtype=float)
+    intensity = np.asarray(intensity, dtype=float)
+    cfg = IdentifyConfig(
+        max_phases=int(max_phases),
+        snr_stop=float(snr_stop),
+        subtract_bg=bool(subtract_bg),
+        refine_lattice=bool(refine_lattice),
+        hull_cutoff_ev=hull_cutoff_ev,
+    )
+    result = _identify_pattern(
+        two_theta, intensity, provider, elements=list(elements), cfg=cfg, ledger=session.ledger
+    )
+    session.ledger.append(
+        "mcp_identify", {"mode": "iterative", "n_elements": len(elements), "reason": reason}
+    )
+    return {
+        "mode": "iterative",
+        "accepted": [
+            {
+                "phase_id": a.reference.phase_id,
+                "formula": a.reference.formula,
+                "element_system": list(a.reference.element_system),
+                "scale": finite_or_none(a.scale),
+                "score": finite_or_none(a.score),
+                "strain": finite_or_none(a.strain),
+                "source": a.source,
+            }
+            for a in result.accepted
+        ],
+        "n_accepted": len(result.accepted),
+    }
+
+
 # 【ツールレジストリ】: 10 ツール (M4 8 + M6 相同定 2) + M8 実構造 Rietveld 3 + M9 in situ 逐次 3
-#   + M8-③ MEM model-fix 3 + operando 診断 4 = 23 ツール名 → 実処理関数。アダプタ層 (server.py) が
-#   配線に使う単一情報源 🔵 REQ-021。M8 の 3 ツール (auto_rietveld/propose_next_actions/
+#   + M8-③ MEM model-fix 3 + operando 診断 4 + M10 anchor 1 = 24 ツール名 → 実処理関数。アダプタ層
+#   (server.py) が配線に使う単一情報源 🔵 REQ-021。M8 の 3 ツール (auto_rietveld/propose_next_actions/
 #   refine_with_revisions)・M9 の 3 ツール (sequential_rietveld/identify_and_add_phase/
 #   parametric_fit)・M8-③ の 3 ツール (mem_density/propose_structure_revisions/edit_cif)・operando
-#   診断の 4 ツール (assess_data_quality/residual_report/check_phase_set/repair_frames) は session を
-#   取らない計器+アクチュエータ (rietveld_tools.py / insitu_tools.py / mem_tools.py /
-#   operando_diag_tools.py, 閉ループ丸ごとは出さない = ③ が回す, architecture.md §2/§6)。
+#   診断の 4 ツール (assess_data_quality/residual_report/check_phase_set/repair_frames)・M10 anchor の
+#   1 ツール (anchored_sequential, Issue #97) は session を取らない計器+アクチュエータ
+#   (rietveld_tools.py / insitu_tools.py / mem_tools.py / operando_diag_tools.py / anchor_tools.py,
+#   閉ループ丸ごとは出さない = ③ が回す, architecture.md §2/§6)。
 MCP_TOOLS: Mapping[str, object] = {
     "submit_analysis": submit_analysis,
     "list_hypotheses": list_hypotheses,
@@ -485,8 +643,14 @@ MCP_TOOLS: Mapping[str, object] = {
     "run_mem": run_mem,
     "identify_phases": identify_phases,
     "identify_phase_mixtures": identify_phase_mixtures,
+    "identify_pattern": identify_pattern,
+    "propose_discriminating_measurements": propose_discriminating_measurements,
     **_RIETVELD_TOOLS,
     **_INSITU_TOOLS,
     **_MEM_MODEL_TOOLS,
     **_OPERANDO_DIAG_TOOLS,
+    **_ANCHOR_TOOLS,
+    **_COMPARE_TOOLS,
+    **_ECHEM_TOOLS,
+    **_INTEROP_TOOLS,
 }

@@ -22,15 +22,18 @@ from typing import Mapping, Sequence
 
 from .._json import finite_or_none
 from ..errors import MEMUnavailableError
+from ._degrade import degrade_oserror
 
 __all__ = [
     "MEM_MODEL_TOOLS",
     "edit_cif",
     "mem_density",
+    "mem_rietveld_iterate",
     "propose_structure_revisions",
 ]
 
 
+@degrade_oserror
 def mem_density(
     gpx_path: str,
     *,
@@ -172,9 +175,107 @@ def edit_cif(
     return {"cif_path": path, "n_edits": len(aedits)}
 
 
-# 【ツールレジストリ断片】: tools.py の MCP_TOOLS へ合流する 3 ツール (M8-③ Phase C)。
+@degrade_oserror
+def mem_rietveld_iterate(
+    gpx_path: str,
+    *,
+    max_iter: int = 5,
+    refine_max_cyc: int = 5,
+    unmodeled_distance: float = 0.8,
+    rwp_tol: float = 1e-3,
+    density_tol: float = 1e-3,
+    worsen_eps: float = 1e-3,
+    phase: str | None = None,
+    hist: str | None = None,
+    dmin: float = 0.9,
+    grid_step: float = 0.25,
+    density_kind: str | None = None,
+    cutoff: float = 30.0,
+    top_peaks: int = 8,
+    map_type: str = "Fobs",
+    binary_path: str | None = None,
+    extra_search_dirs: Sequence[str] = (),
+    snapshot_dir: str | None = None,
+    reason: str = "",
+) -> dict:
+    """精密化済み gpx に MEM-Rietveld (MPF) 反復を回す — 単発 mem_density で改善が止まったとき (計器, FR-603)。
+
+    ``mem_density`` は 1 回の MEM を見るだけ。MPF は **Rietveld 再精密化 ⇄ 実 Dysnomia MEM** を
+    交互反復し、密度と構造が同時に自己無撞着へ向かうかを見る。各反復は**独立の子スナップショット
+    gpx** を書き (P2: 前反復を上書きしない)、ledger に追記する。収束/発散/max_iter で停止する。
+
+    **このツールを呼ぶこと自体が反復の opt-in** (① `MPFConfig.enabled` の既定 False は安全弁で、
+    ③ が明示的に本ツールを呼んだ時点で有効化する)。**提案のみ**: 反復結果 (未モデル密度が残るか・
+    Rwp が下がり続けるか) を ③ が読み、構造改訂 (mem-model-fix skill) の要否を判断する。
+
+    :param gpx_path: ``auto_rietveld`` が返した精密化済み gpx ハンドル
+    :param max_iter: 最大反復数。``refine_max_cyc`` は各反復の Rietveld 再精密化サイクル数
+    :param unmodeled_distance: 未モデル密度ピークとみなす最近接原子距離 (Å) 下限
+    :param rwp_tol/density_tol: Rwp / 密度 max の相対変化がこれ未満で収束。``worsen_eps``: Rwp 悪化
+        (発散) 判定閾値
+    :param phase/hist: 対象相/ヒスト。``dmin``〜``map_type`` は各反復の MEM 設定 (mem_density と同義)
+    :param snapshot_dir: 子スナップショット gpx (``mpf_iter{i}.gpx``) の出力先。**呼び出しごとに固有の
+        ディレクトリを渡すこと** (再利用すると別実行の gpx を上書きする)
+    :returns: ``cycles[]`` (反復毎の gpx/rwp/密度/未モデルピーク数) + ``stop_reason``
+        ("converged"/"max_iter"/"diverged") + ``warnings`` + ``ledger_verified``。GSAS/Dysnomia
+        未解決は ``{"error", "error_type"}`` (③ は LLM なので例外は回復不能)
+    """
+    from ..errors import GSASUnavailableError
+    from ..mem.gsas import MEMRunConfig
+    from ..mem.mpf import MPFConfig, run_mem_rietveld_gpx
+    from ..store.ledger import Ledger
+
+    mem_cfg = MEMRunConfig(
+        dmin=dmin, grid_step=grid_step, density_kind=density_kind, cutoff=cutoff,
+        top_peaks=top_peaks, map_type=map_type, binary_path=binary_path,
+        extra_search_dirs=tuple(extra_search_dirs),
+    )
+    config = MPFConfig(
+        enabled=True,  # ツールを呼ぶこと自体が opt-in (① 既定 False は安全弁)
+        max_iter=int(max_iter),
+        rwp_tol=float(rwp_tol),
+        density_tol=float(density_tol),
+        worsen_eps=float(worsen_eps),
+        refine_max_cyc=int(refine_max_cyc),
+        mem=mem_cfg,
+        unmodeled_distance=float(unmodeled_distance),
+    )
+    ledger = Ledger()
+    try:
+        result = run_mem_rietveld_gpx(
+            gpx_path, phase_name=phase, hist_name=hist, config=config,
+            snapshot_dir=snapshot_dir, ledger=ledger,
+        )
+    except (MEMUnavailableError, GSASUnavailableError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
+    return {
+        "stop_reason": result.stop_reason,
+        "n_cycles": len(result.cycles),
+        "cycles": [
+            {
+                "iteration": c.iteration,
+                "gpx_path": c.gpx_path,
+                "rwp": finite_or_none(c.rwp),
+                "density_max": finite_or_none(c.density_max),
+                "density_min": finite_or_none(c.density_min),
+                "mem_r_factor": (
+                    finite_or_none(c.mem_r_factor) if c.mem_r_factor is not None else None
+                ),
+                "n_unmodeled": c.n_unmodeled,
+            }
+            for c in result.cycles
+        ],
+        "warnings": list(result.warnings),
+        "ledger_verified": ledger.verify(),
+        "reason": reason,
+    }
+
+
+# 【ツールレジストリ断片】: tools.py の MCP_TOOLS へ合流する 4 ツール (M8-③ Phase C + FR-603 反復)。
 MEM_MODEL_TOOLS: Mapping[str, object] = {
     "mem_density": mem_density,
     "propose_structure_revisions": propose_structure_revisions,
     "edit_cif": edit_cif,
+    "mem_rietveld_iterate": mem_rietveld_iterate,
 }

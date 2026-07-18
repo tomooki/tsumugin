@@ -21,6 +21,8 @@ description: MEM (最大エントロピー法) 電子/核密度から構造モ�
 | `propose_structure_revisions` | 計器 (診断) | MEM ピーク + phase → `ReviseStructure` 候補 (具体 evidence: frac/suggested_edit) |
 | `edit_cif` | アクチュエータ | CIF + `AtomEdit[]` (add/move/set_occupancy/set_uiso/remove) → 新 CIF ハンドル |
 | `refine_with_revisions` | アクチュエータ | spec + `ReviseStructure(edits={"structure_path": 新CIF})` → 再精密化 |
+| `compare_structure_models` | 計器 (モデル選択) | histograms + `variants[{name, phases:[PhaseSpec]}]` → BIC/AIC 序列 + `best`/`best_is_valid`/各 `delta_bic`。**構造の差 (サイトの有無・空間群) を客観的に比べる** |
+| `mem_rietveld_iterate` | 計器 (MPF 反復) | 精密化済み gpx → **Rietveld ⇄ MEM を交互反復** (子スナップショット gpx・ledger)。`cycles[]` (反復毎 rwp/密度/未モデルピーク数) + `stop_reason`。**単発 mem_density で改善が止まったとき**に自己無撞着へ向かうか見る |
 
 Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnavailableError"}` を返す。その旨と
 導入先 (jp-minerals.org/dysnomia を `~/.GSASII/Dysnomia` 等へ) をユーザーに案内する。
@@ -49,8 +51,20 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
    `ReviseStructure(phase, {"structure_path": 新CIF})` を渡して再精密化する。
 8. **受理判定**: **Rwp 改善 ∧ `validity.passed` 維持** なら採用。悪化・妥当性を壊すなら**棄却**し
    (元 CIF に戻す)、別の読み (分割/占有/水素) を試す。
+   - **編集候補が複数あるとき / サイトの有無そのものを問うとき (例 ゼオライト水 Ow は要るか) は、
+     Rwp 単独でなく `compare_structure_models` で BIC 比較する**。Rwp は母数 (原子/占有) を増やすほど
+     単調に下がるので、「Ow を足したら Rwp が下がった」だけでは Ow の実在を主張できない — 母数罰を
+     入れた BIC で初めて客観的に言える。`variants` に編集前後の相集合を渡し、`delta_bic` と
+     `best_is_valid` を読む (実測 XND NaCuHCF: model6[+Ow] は model5 に **ΔBIC≈2.6e5** で支持され、
+     かつ **model6 のみ物理妥当** [model5 は占有率が [0,1] を逸脱] だった → Ow は必要と結論)。
+     `best_is_valid=False` はどの候補も物理妥当でない = モデル空間を広げること。
 9. 未モデル密度が閾値以下 (局在ピークが消える) か、改善が停滞したら終了し、確定モデル・組成・妥当性・
    残った未モデル密度 (説明できない残差) を報告する。
+   - **単発の `mem_density` → 編集 → 再精密化を 1 巡しても未モデル密度が残る / 改善が微妙なときは、
+     `mem_rietveld_iterate` で MPF (Rietveld ⇄ MEM 交互反復) を回す**。密度と構造が同時に自己無撞着へ
+     向かうか (`stop_reason="converged"` かつ `cycles[].n_unmodeled` が減る) を見る。`"diverged"` は
+     反復が悪化 = そのモデル改訂は筋が悪い。各反復は子スナップショット gpx なので**提案のみ** (元 gpx
+     は不変)、採用は Rwp 改善 ∧ 妥当性維持で ③ が判断する。
 
 ## 権限境界 (architecture.md §4.5 — 厳守)
 

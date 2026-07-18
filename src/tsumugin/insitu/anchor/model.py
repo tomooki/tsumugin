@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Mapping
 
@@ -63,6 +64,36 @@ class AnchorConfig:
     bond_tol_lo: float = 0.7
     bond_tol_hi: float = 1.3
     hysteresis_frames: int = 2
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "AnchorConfig":
+        """JSON 由来 dict から `AnchorConfig` を構成する (② `anchored_sequential` の JSON 経路)。
+
+        全フィールドが単純型 (bool/int/float) なので、既定インスタンスの各値の型に強制する。
+        **未知キーは ValueError** — ③ (JSON しか送れない LLM) の typo を黙って無視すると、
+        設定したつもりのツマミが効かず「呼べるが黙って間違う」を再導入するため (§4.5)。
+        空 dict は全既定。② 側は ValueError を error dict へ縮退させる。
+
+        :raises ValueError: `data` に AnchorConfig に無いキーが含まれるとき
+        """
+        known = {f.name for f in dataclasses.fields(cls)}
+        unknown = set(data) - known
+        if unknown:
+            raise ValueError(
+                f"unknown AnchorConfig keys: {sorted(unknown)} (known: {sorted(known)})"
+            )
+        defaults = cls()
+        kwargs: dict[str, object] = {}
+        for name, value in data.items():
+            current = getattr(defaults, name)
+            # bool は int のサブクラスなので先に判定する
+            if isinstance(current, bool):
+                kwargs[name] = bool(value)
+            elif isinstance(current, int):
+                kwargs[name] = int(value)  # type: ignore[arg-type]
+            else:
+                kwargs[name] = float(value)  # type: ignore[arg-type]
+        return cls(**kwargs)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

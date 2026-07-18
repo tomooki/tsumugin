@@ -26,7 +26,8 @@
 
 - GSAS-II (GSASIIscriptable) 導入済。未導入なら該当ツールが error dict を返す。
 - ② の全ツールは**例外を送出せず** `{"error", "error_type"}` へ縮退する。error dict は
-  読んで直すこと (**存在しないパスを渡した場合を除く** → Issue #94)。
+  読んで直すこと (存在しないファイルパスも `{"error_type": "FileNotFoundError"}` へ縮退する
+  — Issue #94 解決済。`error_type` で「入力ファイルが無い」と他の失敗を区別できる)。
 - 相同定は MP キー (`.env` の `MATERIALS_PROJECT_API` を自動読込, #51)。無ければ CIF 直接指定。
 
 ## 2. 手順
@@ -179,6 +180,22 @@ repair_frames(result, frames, phases, instrument={...}, two_theta_limits=[2.4, 1
 - **`needs_model_revision` はモデルの欠陥**。近傍 warm-start では直らない (**両隣も同欠陥**)。
   相集合/セル解放を**再構成**する (実データ: pure-mono ブロックは単相 mono+セル解放で
   9.1-10.7% → **6.5-8.1%**)。
+- **系全体が前方単一パス由来の系統ブロックで汚染 (偽相が全域に湧く・分率 0 近傍で esd 発散・
+  `check_phase_set` が全相 flagged) されているときは、フレーム単位修復でなく `anchored_sequential`
+  (M10) で解き直す**。
+
+```python
+anchored_sequential(frames, phases,
+                    anchor_table={"0": ["mono"], "124": ["cubic", "tetra"], "246": ["mono"]},
+                    instrument={...}, two_theta_limits=[2.4, 18.0])
+# -> 系列結果 + "anchors" + "crossovers" (crossovers[].total_bic で相数を bic 選定)
+```
+
+  前方単一パスは初期フレーム依存 + 転移域セル汚染で脆く、上記病理は**その脆さの帰結**である。M10 は
+  信頼フレーム (アンカー) 起点の双方向精密化 + **相集合の違う区間を Rwp でなく bic で選定** (相数を
+  抑制) して根治する。`anchor_table` は信頼フレーム→相集合。`instrument`/`two_theta_limits` は必須
+  (省略時は無音の既定に落とさず error dict)。実データで per-frame 3 相固定が Rwp 8% のまま生成した
+  「tetra が増減する」偽描像は、当時 M10 が ② 未露出 (Issue #97) で使えなかったことが原因だった。
 
 #### J4 参照構造の供給
 
@@ -188,8 +205,18 @@ repair_frames(result, frames, phases, instrument={...}, two_theta_limits=[2.4, 1
 
 #### J8 電気化学との突合
 
-分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**。未確定なら**未確定と書き**、
-V-t / dQ/dV を人間に要求する。
+BioLogic `.mpr` があるなら **`align_echem`** で回折フレームを充放電曲線へ整列し、転移点 (`parametric_fit`
+の onset/midpoint) を電気化学イベントと突合する (相転移が充放電と整合するかが物理的妥当性の傍証。
+実測: tetra JT ドーム頂点 = 充電カットオフ 2.100 V のフレームと一致)。
+
+```python
+align_echem("K-10.mpr", offset_s=22.1, interval_s=283.0, n_frames=247)
+# -> frames[]{frame, time_h, voltage_v, state, in_span} + curve 概要
+```
+
+フレーム時刻は `frame_epoch_s` (POSIX 秒明示) か一定ケイデンス `offset_s`+`interval_s`+`n_frames`。
+**`.mpr` が無い**とき、分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**ので
+**未確定と書き**、V-t / dQ/dV を人間に要求する (電圧を捏造しない)。
 
 ### 2.4 改訂は承認を挟む
 

@@ -68,23 +68,159 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     "operando diag (M8-③)": ("check_phase_set", "相集合の完全性"),
     # --- 未露出 (Issue #97): 宣言することで「忘れた」ではなく「既知の穴」であることを示す ---
     "insitu.anchor (M10/FR-330)": (
-        UNEXPOSED,
-        "Issue #97: ② ツール 0・skill 言及 0。実 operando 解析で使われず病理を再生産した。"
-        "run_anchored_sequential(runner=, identifier=) が callable のため #93 と同型の JSON spec が要る。"
-        "**operando の既定手順に含めるべき最優先の穴**",
+        "anchored_sequential",
+        "Issue #97 解決: run_anchored_sequential(runner=, identifier=) の callable を #93 と同型の "
+        "JSON spec で露出した — runner→instrument spec (sequential_rietveld と共有)・identifier→"
+        "anchor_table {frame_index: [phase_name]}。crossovers[].total_bic で「BIC 相数抑制」も可視化",
     ),
-    "oed (M5/FR-700)": (UNEXPOSED, "Issue #97: 判別測定の提案。③ から呼べない"),
+    "oed (M5/FR-700)": (
+        "propose_discriminating_measurements",
+        "Issue #104 解決: 僅差競合の判別測定を情報利得順に提案 (非破壊)。session 内の探索結果を "
+        "入力に取る session ツール (RankedHypothesis を境界に晒さない)。nested はスコープ外 (#76)",
+    ),
     "nested (M5/FR-500)": (
         UNEXPOSED,
-        "Issue #97: compare_hypotheses は rank へ委譲し nested を参照しない",
+        "Issue #76 と同時設計のため待機 (2026-07-17 スコープ判断)。EvidenceProblem.log_likelihood が "
+        "callable 必須で原理的に JSON 化不可 = 露出単位の再設計が要る。物理尤度配線 (FR-313) と一体で",
     ),
-    "chem (FR-412)": (UNEXPOSED, "Issue #97: identify_phases は chem を参照しない"),
-    "compare_models (XND)": (UNEXPOSED, "Issue #97: 構造モデル比較 (BIC)。③ から呼べない"),
+    "chem (FR-412)": (
+        "compare_hypotheses",
+        "Issue #100 解決: ChemPlausibility 降格を compare_hypotheses の chem_context 引数で配線 "
+        "(降格のみ・除外しない = Dara 教訓)。相の組成メタは ③ が同定結果から phase_compositions で供給",
+    ),
+    "compare_models (XND)": (
+        "compare_structure_models",
+        "Issue #100 解決: callable 制約が無い (runner 既定=実装関数) 単純配線漏れだった。"
+        "variants [{name, phases:[PhaseSpec]}] を JSON で受け BIC/AIC 序列化 (Ow 要否の ΔBIC 判定)",
+    ),
     "interop (XND)": (
-        UNEXPOSED,
-        "意図的: 外部形式→GSAS 変換は前処理であり、変換済みパスを auto_rietveld に渡せば足りる",
+        "convert_pattern",
+        "Issue #108 解決: 外部形式→GSAS 変換を ② 露出 (当初意図的非露出→2026-07-17 方針転換)。"
+        "convert_pattern (RIETAN .int / Z-Code Igor TOF → xye/FXYE) + write_instrument_params "
+        "(.zDiffractometer → instprm。出力は instrument spec の path へ往復)。numpy-only",
+    ),
+    # --- 未宣言だった穴 (Issue #99): 宣言リスト自体に載っておらず「忘れ」が再発していた ---
+    # これらは既に宣言済みパッケージ (mem/reference) の**内側**の能力、または宣言リストに
+    # 完全に欠けていたパッケージ (operando) であり、パッケージ網 (PACKAGE_COVERAGE) だけでは
+    # 捕まらない。能力単位で明示宣言することで「既知の穴」に格上げする。
+    "mem.mpf (FR-603)": (
+        "mem_rietveld_iterate",
+        "Issue #100 解決: 実データ MEM-Rietveld 反復 (run_mem_rietveld_gpx) を露出。callable 不要・"
+        "全引数 JSON 互換の単純配線漏れだった。ツール呼び出し自体が反復の opt-in (① enabled 既定 "
+        "False は安全弁)。子スナップショット gpx (P2) + ledger",
+    ),
+    "reference.identify_pattern (M11)": (
+        "identify_pattern",
+        "Issue #100 解決: 単相/多相統一の残差減算反復同定を session ツールとして露出 "
+        "(identify_phases と同じ reference_provider 経路)。相数を事前指定せず残差 S/N < 5σ まで"
+        "積み上げる。トップレベル __all__ 未 re-export は #105 で別途 (② 到達性には影響なし)",
+    ),
+    "echem sync (M3/FR-311)": (
+        "align_echem",
+        "Issue #103 解決: 電気化学同期 (interop.biologic parse_mpr/align_frames) を露出。callable "
+        "不要の単純配線漏れだった。mpr_path + 一定ケイデンス (offset_s/interval_s/n_frames) or 明示 "
+        "epoch 列 → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合",
     ),
 }
+
+
+# ===========================================================================
+# 粒度⓪: **宣言リスト自体に載っていないパッケージは誰も見ていない** (Issue #99)
+# ---------------------------------------------------------------------------
+# 上の `LAYER1_FEATURES` は「宣言されたもの」の露出しか見ない。そのため **src/tsumugin に
+# パッケージが丸ごと存在するのに宣言表に 1 行も無い**場合、露出テストは緑のまま通る。
+# 実際に起きた (Issue #99): `operando` (M3 電気化学; parse_mpr/align_frames) はどの宣言表にも
+# 無く、`mem.mpf` (反復 MEM-Rietveld) は `mem` パッケージの内側に隠れ、`identify_pattern` (M11) は
+# `reference` の陰に隠れていた — Issue #97 の恒久ガードを入れた後もこの「忘れ」が再発した。
+#
+# **設計**: 全サブパッケージを列挙し、各々が (a) LAYER1_FEATURES のいずれかの機能の ① 実装元か、
+# (b) FOUNDATIONAL (③ に露出する独立能力ではないインフラ) を**明示宣言**することを強制する。
+# 新パッケージを足したら本網が fail し、「これは ③ 向け能力か / インフラか」を一度考えさせる。
+# パッケージより細かい能力 (`mem.mpf` 等) は網では捕まらないので LAYER1_FEATURES に能力単位で
+# 明示宣言する (上記参照) — 網は「丸ごと忘れられたパッケージ」を、明示宣言は「粒度の穴」を塞ぐ。
+# ===========================================================================
+
+FOUNDATIONAL = "FOUNDATIONAL"
+
+#: 全 `tsumugin` サブパッケージ → LAYER1_FEATURES のキー or FOUNDATIONAL。
+#: **新しいサブパッケージを足したら、ここへ 1 行足すこと** (足さないと下の網羅テストが fail)。
+PACKAGE_COVERAGE: dict[str, str] = {
+    # --- ③ 向け能力パッケージ (露出/未露出は LAYER1_FEATURES で管理) ---
+    "autorietveld": "autorietveld (M7)",
+    "joint": "joint (M4/FR-240)",
+    "reference": "reference (M6)",
+    "refine_loop": "refine_loop (M8)",
+    "insitu": "insitu (M9)",  # insitu.anchor (M10) は同パッケージ内の能力として別途宣言
+    "mem": "mem (M8-③)",  # mem.mpf (反復) は同パッケージ内の能力として別途宣言
+    "chem": "chem (FR-412)",
+    "oed": "oed (M5/FR-700)",
+    "nested": "nested (M5/FR-500)",
+    "interop": "interop (XND)",
+    "operando": "echem sync (M3/FR-311)",  # ← Issue #99: これまで宣言リストに 1 行も無かった
+    # --- 基盤 (③ に露出する独立能力ではない — 露出済みツールが内部で使うインフラ) ---
+    "model": (FOUNDATIONAL, "不変 dataclass 群 (§4)。全層が共有する型であり単独能力ではない"),
+    "backends": (FOUNDATIONAL, "RefinementBackend Protocol + Simulated (P7)。精密化の内部境界"),
+    "refinement": (FOUNDATIONAL, "段階解放エンジン + ガードレール (FR-200)。autorietveld が内包"),
+    "evidence": (FOUNDATIONAL, "BIC/AIC backend (FR-120)。M4 session 系 compare_hypotheses の裏方"),
+    "store": (FOUNDATIONAL, "Ledger/Snapshot (P2/NFR-105)。全状態変更の追記基盤"),
+    "search": (FOUNDATIONAL, "多仮説木探索 (FR-110)。M4 session 系 submit_analysis の裏方"),
+    "selection": (FOUNDATIONAL, "最終選択 + エスカレーション (M2)。accept/revert の裏方"),
+    "sequential": (FOUNDATIONAL, "時系列基盤 (変化点/熱ベースライン, M2)。insitu/parametric が内包"),
+    "export": (FOUNDATIONAL, "gpx 書き出し (FR-505)。export_gpx ツールの裏方"),
+    "multistart": (FOUNDATIONAL, "マルチスタート大域最適確認 (FR-230)。autorietveld が内包・単独 ② 未露出は M-later"),
+    "absorption": (FOUNDATIONAL, "平板透過吸収補正 (FR-317)。refinement/autorietveld が内部適用"),
+    "mp": (FOUNDATIONAL, "Materials Project 供給元 (FR-101)。reference/insitu.phaseid が内部利用"),
+    "mcp": (FOUNDATIONAL, "これ自体が ② 層。露出する能力ではなく露出する機構"),
+    "webui": (FOUNDATIONAL, "WebUI は ③ skill ではなくブラウザ UI の別系統"),
+    # --- トップレベルモジュール (パッケージではないが ③ 向け能力/インフラを持ちうる) ---
+    "pipeline": (FOUNDATIONAL, "単一パターン自動多相精密化 (M0)。submit_analysis の裏方"),
+    "errors": (FOUNDATIONAL, "例外型の集約。全層が共有するインフラ"),
+}
+
+
+def test_every_subpackage_is_declared_in_package_coverage():
+    """★全 `tsumugin` サブパッケージ + 非私有モジュールが `PACKAGE_COVERAGE` に現れること。
+
+    非トートロジー: 表を grep せず `pkgutil.iter_modules` で実際のサブパッケージとモジュールを
+    列挙する。新パッケージ/モジュールを足したら本テストが fail し、「③ 向け能力か / インフラか」
+    の宣言を強制する。**これが Issue #99 の核心**: LAYER1_FEATURES/*_FIELDS は「宣言済みのもの」
+    しか見ず、`operando` のように**丸ごと載っていない**パッケージは誰も見ていなかった。
+
+    私有モジュール (`_` 始まり、例: `_json`) は内部実装として除外する — ③ 向け能力ではない。
+    """
+    import tsumugin
+
+    actual = {
+        m.name
+        for m in pkgutil.iter_modules(tsumugin.__path__)
+        if not m.name.startswith("_")
+    }
+    declared = set(PACKAGE_COVERAGE)
+    assert actual == declared, (
+        f"tsumugin サブパッケージ/モジュールと PACKAGE_COVERAGE が食い違う。"
+        f"未宣言 (③ 向け能力か FOUNDATIONAL か決めること): {sorted(actual - declared)} / "
+        f"実在しない宣言 (削除/改名された?): {sorted(declared - actual)}"
+    )
+
+
+def test_package_coverage_values_are_valid():
+    """`PACKAGE_COVERAGE` の各値が実在の LAYER1_FEATURES キーか、理由付き FOUNDATIONAL であること。
+
+    LAYER1_FEATURES のキーへ写像する宣言はタイポで無効な機能を指せない (存在確認)。
+    FOUNDATIONAL は理由の明示を必須にする (黙ってインフラ扱いにしない = §4.5 規則④-3)。
+    """
+    for pkg, value in PACKAGE_COVERAGE.items():
+        if isinstance(value, tuple):
+            marker, why = value
+            assert marker == FOUNDATIONAL, (
+                f"{pkg}: tuple 宣言のマーカーは FOUNDATIONAL のみ (現在: {marker!r})"
+            )
+            assert why and len(why) > 15, f"{pkg}: FOUNDATIONAL の理由が書かれていない"
+        else:
+            assert value in LAYER1_FEATURES, (
+                f"{pkg}: LAYER1_FEATURES に無い機能キー {value!r} を指している "
+                f"(タイポか、機能宣言の追加漏れ)"
+            )
 
 
 def test_declared_exposure_tools_actually_exist():
@@ -282,9 +418,10 @@ FRAME_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     # --- 未露出 (宣言することで「忘れた」ではなく「既知の穴」であることを示す) ---
     "n_obs": (
         UNEXPOSED,
-        "Issue #97: M10 `anchor.select.frame_bic` が相数抑制に使う ① 内省フィールド。"
-        "anchor 自体が ② 未露出 (上の LAYER1_FEATURES 参照) なので ③ から使い道が無い — "
-        "anchor を ② へ出す際に一緒に配線すること",
+        "意図的: M10 `anchor.select.frame_bic` が相数抑制に使う ① 内省フィールド。anchor は "
+        "② 露出済み (anchored_sequential) だが、bic は per-frame の生 n_obs でなく **区間総 bic** "
+        "として `crossovers[].total_bic` に畳んで出す (③ が見るのは相数選定結果であって観測点数"
+        "そのものではない)。raw n_obs を per-frame で出す価値は薄いので内省フィールドに留める",
     ),
 }
 
@@ -389,6 +526,14 @@ PER_FRAME_FRACTION_EMITTERS: dict[str, tuple[str, str]] = {
         "repairs[] の per-frame。**修復対象は ③ が check_phase_set で名指ししたフレーム** = "
         "実測では転移ドーム頂点の直前 (125-130) = 論文の主要値そのもの",
     ),
+    "tsumugin.mcp.compare_tools.compare_structure_models": (
+        DIAGNOSTIC_ONLY,
+        "意図的: scores[].phase_fractions は**モデル毎** (per-frame ではない) の Scale で、どの相集合で"
+        "どのモデルが勝ったかの**文脈**。本ツールの決定値は BIC/delta_bic であって分率ではない。"
+        "定量相分析 (wt% ± esd) が要るなら、選ばれた best モデルを auto_rietveld で精密化し直す "
+        "(そちらは phase_weight_fractions を CARRIES_PUBLICATION として運ぶ)。モデル比較の出力に "
+        "wt% を混ぜると『どのモデルの wt% か』が曖昧になり、確定前の値を出版値と取り違えさせる",
+    ),
     "tsumugin.mcp.operando_diag_tools.check_phase_set": (
         DIAGNOSTIC_ONLY,
         "意図的: seed_pinned_frames/frozen_fraction_frames が返す分率は **Scale であることに意味が"
@@ -489,15 +634,21 @@ def _iter_mcp_functions() -> Iterator[tuple[str, Callable, ast.AST]]:
                     func = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
                     if not inspect.isfunction(func):
                         continue
+                    func = inspect.unwrap(func)  # デコレータ (@degrade_oserror 等) を貫通
                     tree = _source_ast(func)
                     if tree is not None:
                         yield f"{module.__name__}.{name}.{meth_name}", func, tree
                 continue
             if not inspect.isfunction(obj) or obj.__module__ != module.__name__:
                 continue
-            tree = _source_ast(obj)
+            # 【デコレータ貫通 (Issue #94)】: @degrade_oserror でラップされた実行系ツールは、
+            #   getsource/__globals__ が wrapper (別モジュール) を指すため、unwrap しないと
+            #   emitter/consumer 網から**黙って消える** (repair_frames が phase_fractions を出す・
+            #   _result_from_dict を呼ぶ事実が見えなくなる)。unwrap で元関数の source と globals を見る。
+            unwrapped = inspect.unwrap(obj)
+            tree = _source_ast(unwrapped)
             if tree is not None:
-                yield f"{module.__name__}.{name}", obj, tree
+                yield f"{module.__name__}.{name}", unwrapped, tree
 
 
 def _emits_fraction_key(tree: ast.AST) -> bool:
@@ -1191,8 +1342,10 @@ def test_anchor_is_still_unexposed_or_the_note_is_stale():
     Issue #97 が解決して ② に anchor ツールが入ったら、このテストが fail して
     `LAYER1_FEATURES` の更新を強制する — **宣言が実態から遅れるのを防ぐ**。
     """
+    # unwrap で @degrade_oserror 等のデコレータを貫通する (wrapper の source には "anchor" が無く、
+    # unwrap しないと露出済みの anchored_sequential を見落として宣言と食い違う; Issue #94)。
     exposed = [
-        t for t in MCP_TOOLS if "anchor" in inspect.getsource(MCP_TOOLS[t]).lower()
+        t for t in MCP_TOOLS if "anchor" in inspect.getsource(inspect.unwrap(MCP_TOOLS[t])).lower()
     ]
     declared_unexposed = LAYER1_FEATURES["insitu.anchor (M10/FR-330)"][0] == UNEXPOSED
     if exposed:
