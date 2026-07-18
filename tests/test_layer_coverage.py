@@ -85,10 +85,10 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "variants [{name, phases:[PhaseSpec]}] を JSON で受け BIC/AIC 序列化 (Ow 要否の ΔBIC 判定)",
     ),
     "interop (XND)": (
-        UNEXPOSED,
-        "Issue #108: 外部形式→GSAS 変換。当初「変換済みパスを渡せば足りる」と意図的非露出に"
-        "していたが、③ が生の RIETAN/Z-Code データを受けたとき変換手順の案内が無く手作業を"
-        "強いていた。convert_pattern/write_instrument_params で ② 露出する方針に転換 (2026-07-17)",
+        "convert_pattern",
+        "Issue #108 解決: 外部形式→GSAS 変換を ② 露出 (当初意図的非露出→2026-07-17 方針転換)。"
+        "convert_pattern (RIETAN .int / Z-Code Igor TOF → xye/FXYE) + write_instrument_params "
+        "(.zDiffractometer → instprm。出力は instrument spec の path へ往復)。numpy-only",
     ),
     # --- 未宣言だった穴 (Issue #99): 宣言リスト自体に載っておらず「忘れ」が再発していた ---
     # これらは既に宣言済みパッケージ (mem/reference) の**内側**の能力、または宣言リストに

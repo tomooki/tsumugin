@@ -54,6 +54,10 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 - **`two_theta_limits` を必ず設定する**。ノイズ域は最小二乗を支配して遅く不正確になる
   (**30°→18° で 369s→8s** かつ収束改善)。
 - **`excluded_regions`** に寄生ピーク (セル/装置由来) を入れる。
+- **外部ソフト形式は先に変換する** (XND): 生の RIETAN-FP `.int` / Z-Code Igor TOF は
+  `convert_pattern(input_path, out_path, input_format=...)` で `.xye`/FXYE にし、その `path` を
+  `data_path` に渡す。Z-Code `.zDiffractometer` は `write_instrument_params(zdiff_path, out_instprm)`
+  で `.instprm` にし、その `path` を上記 `instrument` spec の `path` に渡す (変換は前処理・提案のみ)。
 - **`instrument` spec を渡す** (下記)。省略すると**実験室 X 線 Bragg-Brentano・背景 6 項**の
   便宜既定が使われる。放射光データでは必ず明示すること。
 
