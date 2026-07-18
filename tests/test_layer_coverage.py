@@ -106,10 +106,10 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "だが M11 の統一エントリはその陰に隠れ、トップレベル __all__ にも無い二重漏れ (#105)",
     ),
     "echem sync (M3/FR-311)": (
-        UNEXPOSED,
-        "Issue #99/#103: 電気化学同期 (operando.echem + interop.biologic の parse_mpr/align_frames)。"
-        "callable 不要なのに ② 未露出で、K2Mn[Fe(CN)6] 実解析では毎回 ① を直叩き。③ の J8 は"
-        "「未確定と書け」の消極的指示のみ。align_echem で露出予定",
+        "align_echem",
+        "Issue #103 解決: 電気化学同期 (interop.biologic parse_mpr/align_frames) を露出。callable "
+        "不要の単純配線漏れだった。mpr_path + 一定ケイデンス (offset_s/interval_s/n_frames) or 明示 "
+        "epoch 列 → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合",
     ),
 }
 

@@ -46,6 +46,7 @@ from ..store.snapshot import SnapshotStore
 from . import mem as _mem
 from .anchor_tools import ANCHOR_TOOLS as _ANCHOR_TOOLS
 from .compare_tools import COMPARE_TOOLS as _COMPARE_TOOLS
+from .echem_tools import ECHEM_TOOLS as _ECHEM_TOOLS
 from .insitu_tools import INSITU_TOOLS as _INSITU_TOOLS
 from .mem_tools import MEM_MODEL_TOOLS as _MEM_MODEL_TOOLS
 from .operando_diag_tools import OPERANDO_DIAG_TOOLS as _OPERANDO_DIAG_TOOLS
@@ -494,4 +495,5 @@ MCP_TOOLS: Mapping[str, object] = {
     **_OPERANDO_DIAG_TOOLS,
     **_ANCHOR_TOOLS,
     **_COMPARE_TOOLS,
+    **_ECHEM_TOOLS,
 }

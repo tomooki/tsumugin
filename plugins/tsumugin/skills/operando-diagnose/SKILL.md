@@ -35,6 +35,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` + `seed_pinned`/`seed_pinned_frames` + `fractions_frozen`/`frozen_fraction_frames` |
 | `repair_frames` | 不連続の修復 | `repairs` (採用のみ; **修復後の出版値** `phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd` を修復フレーム毎に同梱)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない) |
 | `anchored_sequential` | 系統ブロックの解き直し (M10) | アンカー起点の双方向精密化 + `crossovers[].total_bic` で相集合を **bic 選定** (相数を抑制)。前方単一パス由来の系統汚染 (偽相全域・esd 発散・全相 flagged) を根治する → J6 |
+| `align_echem` | 電気化学突合 (J8) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス or 明示 epoch) → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合 |
 | `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `auto_rietveld` | 単一フレーム再フィット | `residual_report` + 出版値 (重量分率 ± esd・`cell_esd`) 同梱 |
 
@@ -193,8 +194,22 @@ repair_frames(result, frames, phases,
 
 #### J8 電気化学との突合
 
-分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**。
-未確定なら**未確定と書く**。必要なら V-t / dQ/dV をユーザーに要求する。
+BioLogic `.mpr` があるなら **`align_echem` で回折フレームを充放電曲線へ整列**し、各フレームの
+電位・状態 (rest/charge/discharge) を得る。転移点 (相分率シグモイド onset/midpoint, 手順 3 の
+`parametric_fit`) を電気化学イベントと突合する — **相転移が充放電と整合するか**が物理的妥当性の
+決定的な傍証になる (実測 K₂Mn[Fe(CN)₆]: tetra JT ドームの頂点フレームが**充電カットオフ 2.100 V**
+のフレームと一致し、転移の実在を裏付けた)。
+
+```python
+align_echem("K-10.mpr", offset_s=22.1, interval_s=283.0, n_frames=247)
+# -> frames[]{frame, time_h, voltage_v, state, in_span} + curve 概要
+```
+
+- フレーム時刻は (a) `frame_epoch_s` (POSIX 秒の明示列)、または (b) **一定ケイデンス**
+  `offset_s`+`interval_s`+`n_frames` で与える。operando は固定間隔取得が普通なので (b) が既定。
+- `state` は Ns ステップ毎の正味 ΔQ から導出 (電流列不要)。範囲外フレームは `in_span=False`。
+- **`.mpr` が無いとき**は分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**ので
+  **未確定と書く**。V-t / dQ/dV をユーザーに要求する (電圧を捏造しない)。
 
 ### 4. 改訂は必ず承認を挟む (ModelAction)
 

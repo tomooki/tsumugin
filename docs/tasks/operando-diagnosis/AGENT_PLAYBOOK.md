@@ -204,8 +204,18 @@ anchored_sequential(frames, phases,
 
 #### J8 電気化学との突合
 
-分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**。未確定なら**未確定と書き**、
-V-t / dQ/dV を人間に要求する。
+BioLogic `.mpr` があるなら **`align_echem`** で回折フレームを充放電曲線へ整列し、転移点 (`parametric_fit`
+の onset/midpoint) を電気化学イベントと突合する (相転移が充放電と整合するかが物理的妥当性の傍証。
+実測: tetra JT ドーム頂点 = 充電カットオフ 2.100 V のフレームと一致)。
+
+```python
+align_echem("K-10.mpr", offset_s=22.1, interval_s=283.0, n_frames=247)
+# -> frames[]{frame, time_h, voltage_v, state, in_span} + curve 概要
+```
+
+フレーム時刻は `frame_epoch_s` (POSIX 秒明示) か一定ケイデンス `offset_s`+`interval_s`+`n_frames`。
+**`.mpr` が無い**とき、分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**ので
+**未確定と書き**、V-t / dQ/dV を人間に要求する (電圧を捏造しない)。
 
 ### 2.4 改訂は承認を挟む
 
