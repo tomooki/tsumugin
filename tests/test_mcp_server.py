@@ -233,9 +233,9 @@ def test_create_mcp_server_wires_all_eight_tools():
     # 低レベル SDK: list_tools ハンドラを request_handlers 経由で駆動し登録ツール名を収集する。
     tools = _collect_tool_names(server)
     assert set(tools) == set(MCP_TOOLS)  # 【検証項目】: 全ツール配線 🔵
-    # 【検証項目】: ツール総数 23 (M4 8 + M6 2 + M8 実構造 3 + M9 in situ 逐次 3 + M8-③ MEM 3
-    #   + operando 診断 4) 🔵
-    assert len(MCP_TOOLS) == 23
+    # 【検証項目】: ツール総数 24 (M4 8 + M6 2 + M8 実構造 3 + M9 in situ 逐次 3 + M8-③ MEM 3
+    #   + operando 診断 4 + M10 anchor 1 [anchored_sequential, Issue #97]) 🔵
+    assert len(MCP_TOOLS) == 24
 
 
 def _collect_tool_names(server: object) -> list[str]:

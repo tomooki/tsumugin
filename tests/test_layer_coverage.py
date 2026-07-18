@@ -68,10 +68,10 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     "operando diag (M8-③)": ("check_phase_set", "相集合の完全性"),
     # --- 未露出 (Issue #97): 宣言することで「忘れた」ではなく「既知の穴」であることを示す ---
     "insitu.anchor (M10/FR-330)": (
-        UNEXPOSED,
-        "Issue #97: ② ツール 0・skill 言及 0。実 operando 解析で使われず病理を再生産した。"
-        "run_anchored_sequential(runner=, identifier=) が callable のため #93 と同型の JSON spec が要る。"
-        "**operando の既定手順に含めるべき最優先の穴**",
+        "anchored_sequential",
+        "Issue #97 解決: run_anchored_sequential(runner=, identifier=) の callable を #93 と同型の "
+        "JSON spec で露出した — runner→instrument spec (sequential_rietveld と共有)・identifier→"
+        "anchor_table {frame_index: [phase_name]}。crossovers[].total_bic で「BIC 相数抑制」も可視化",
     ),
     "oed (M5/FR-700)": (UNEXPOSED, "Issue #97: 判別測定の提案。③ から呼べない"),
     "nested (M5/FR-500)": (
@@ -404,9 +404,10 @@ FRAME_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     # --- 未露出 (宣言することで「忘れた」ではなく「既知の穴」であることを示す) ---
     "n_obs": (
         UNEXPOSED,
-        "Issue #97: M10 `anchor.select.frame_bic` が相数抑制に使う ① 内省フィールド。"
-        "anchor 自体が ② 未露出 (上の LAYER1_FEATURES 参照) なので ③ から使い道が無い — "
-        "anchor を ② へ出す際に一緒に配線すること",
+        "意図的: M10 `anchor.select.frame_bic` が相数抑制に使う ① 内省フィールド。anchor は "
+        "② 露出済み (anchored_sequential) だが、bic は per-frame の生 n_obs でなく **区間総 bic** "
+        "として `crossovers[].total_bic` に畳んで出す (③ が見るのは相数選定結果であって観測点数"
+        "そのものではない)。raw n_obs を per-frame で出す価値は薄いので内省フィールドに留める",
     ),
 }
 
