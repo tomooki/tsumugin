@@ -50,26 +50,37 @@ def _identifier_from_table(
     """anchor_table {frame_index: [phase_name]} から M10 identifier を組む。
 
     identifier は「フレーム → (信頼度, 相集合 specs) or None」。**frames リスト位置 (frame_index)**
-    で引く (id ベース; `_instrument_path_resolver` と同じ設計) — axis_value は実 operando では
-    時間/温度であって index ではないため、位置キーが唯一頑健な指定である。
+    で引く — axis_value は実 operando では時間/温度であって index ではないため、位置キーが唯一
+    頑健な指定である。
+
+    **``id()`` を鍵にしない** (`_instrument_path_resolver` と同じ根治): 実運用では engine が同一
+    ``FrameSpec`` オブジェクトを渡すため id ベースでも安全だが、``id()`` は GC 後に再利用される
+    ため、テスト注入や再構築フレームでは stale ヒットの脆さがある。フレームの内容で解決する:
+    data_path が一意なら data_path 索引、重複系列は ``FrameSpec`` 全体 (frozen dataclass =
+    値ハッシュ/値等価) を鍵にした位置解決へ落ちる。
 
     アンカーフレームには ``confidence`` (既定 1.0, 段階 A スクリーニングを通す値) を返し、
     非アンカーフレームは None (信頼度 0 で段階 A を通らない)。相名が catalog に無ければ KeyError
     (呼び出し側が error dict へ縮退させる — ③ の typo を黙って無視しない)。
     """
     table = {int(k): tuple(v) for k, v in anchor_table.items()}
-    by_id: dict[int, tuple[PhaseSpec, ...]] = {}
-    by_data: dict[str, tuple[PhaseSpec, ...]] = {}
+    by_frame: dict[FrameSpec, tuple[PhaseSpec, ...]] = {}
+    data_paths: list[str] = []
+    anchored_data: dict[str, tuple[PhaseSpec, ...]] = {}
     for idx, fs in enumerate(frame_specs):
+        data_paths.append(fs.data_path)
         if idx not in table:
             continue
         specs = tuple(catalog[name] for name in table[idx])  # KeyError → 呼び出し側で縮退
-        by_id[id(fs)] = specs
-        by_data[fs.data_path] = specs
+        by_frame[fs] = specs
+        anchored_data[fs.data_path] = specs
+    # data_path が一意なときのみ data_path 索引を使う (重複時は最後のアンカーで上書きされ静かに
+    # 誤るため無効化し、値キーの位置解決に委ねる)。
+    by_data = anchored_data if len(set(data_paths)) == len(data_paths) else None
 
     def identify(frame: FrameSpec):
-        specs = by_id.get(id(frame))
-        if specs is None:
+        specs = by_frame.get(frame)  # 完全一致 (最も特定的)
+        if specs is None and by_data is not None:
             specs = by_data.get(frame.data_path)
         return (confidence, specs) if specs else None
 

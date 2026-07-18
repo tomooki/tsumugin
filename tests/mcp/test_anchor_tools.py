@@ -199,3 +199,58 @@ def test_anchor_config_from_dict_rejects_unknown_keys():
 
     with pytest.raises(ValueError, match="unknown"):
         AnchorConfig.from_dict({"not_a_field": 1})
+
+
+# ===========================================================================
+# _identifier_from_table: id() を鍵にしない (_instrument_path_resolver と同型の根治)
+# ---------------------------------------------------------------------------
+# 実運用では engine が同一 FrameSpec を渡すため id ベースでも安全だが、id() は GC 後に再利用
+# されるため、テスト注入や再構築フレームでは stale ヒットの脆さがある。フレームの内容で解決する。
+# ===========================================================================
+
+
+def _catalog(*names):
+    return {n: PhaseSpec(structure_path=f"{n}.cif", phase_name=n) for n in names}
+
+
+def test_identifier_from_table_resolves_fresh_frame_by_content():
+    """★新規生成した (元 frame_specs と id が異なる) フレームでもアンカー相集合を引ける。"""
+    from tsumugin.mcp.anchor_tools import _identifier_from_table
+
+    frame_specs = [FrameSpec(data_path=f"f{i}.xye", axis_value=float(i)) for i in range(3)]
+    catalog = _catalog("mono", "cubic")
+    identify = _identifier_from_table(
+        {"0": ["mono"], "2": ["mono", "cubic"]}, frame_specs, catalog, 1.0
+    )
+    # 元 frame_specs とは別インスタンス (id が異なる)
+    conf, specs = identify(FrameSpec(data_path="f0.xye", axis_value=0.0))
+    assert conf == 1.0
+    assert [s.phase_name for s in specs] == ["mono"]
+    conf2, specs2 = identify(FrameSpec(data_path="f2.xye", axis_value=2.0))
+    assert [s.phase_name for s in specs2] == ["mono", "cubic"]
+    # アンカーでないフレームは None
+    assert identify(FrameSpec(data_path="f1.xye", axis_value=1.0)) is None
+
+
+def test_identifier_from_table_duplicate_data_path_resolves_by_position():
+    """★同一 data_path が複数フレームにある系列でも位置ごとに正しいアンカー相集合を引く。
+
+    id fast-path を外れた新規フレームが最後のアンカーへ潰れず、値 (axis_value 等) で区別される。
+    """
+    from tsumugin.mcp.anchor_tools import _identifier_from_table
+
+    frame_specs = [
+        FrameSpec(data_path="same.xye", axis_value=0.0),
+        FrameSpec(data_path="same.xye", axis_value=2.0),
+    ]
+    catalog = _catalog("mono", "cubic")
+    identify = _identifier_from_table(
+        {"0": ["mono"], "1": ["mono", "cubic"]}, frame_specs, catalog, 1.0
+    )
+    assert [s.phase_name for s in identify(FrameSpec(data_path="same.xye", axis_value=0.0))[1]] == [
+        "mono"
+    ]
+    assert [s.phase_name for s in identify(FrameSpec(data_path="same.xye", axis_value=2.0))[1]] == [
+        "mono",
+        "cubic",
+    ]

@@ -301,8 +301,18 @@ def _instrument_path_resolver(
     """instrument spec の ``path``/``paths`` を make_gsas_runner の instrument_path へ写す。
 
     ``paths`` は frames と 1:1 の列 (フレーム毎に instprm が異なる系列)。JSON からは callable を
-    渡せないため、ここでフレーム→パスの解決関数を組み立てる (同一 FrameSpec オブジェクトが
-    runner へ渡るため id で引き、保険として data_path でも引く)。
+    渡せないため、ここでフレーム→パスの解決関数を組み立てる。
+
+    **``id()`` を鍵にしない** (間欠失敗の根治): 以前は ``by_id = {id(fs): path}`` を先に引く
+    fast-path を持っていたが、CPython の ``id()`` は GC 後に再利用されるため、runner へ渡る
+    フレームが元 ``frame_specs`` と別オブジェクト (③ が組み直した/新規生成した) のとき、
+    別オブジェクトの再利用 id が stale entry に稀に当たり **誤ったパス**を返していた。
+
+    フレームの**内容**で解決する:
+
+    - data_path が系列で**一意**なら ``data_path → path`` で引く (新規生成フレームでも頑健)。
+    - 一意でない (同一ファイルを複数フレームで使う) 系列は data_path では位置を区別できないため、
+      ``FrameSpec`` 全体 (frozen dataclass = 値ハッシュ/値等価) を鍵にした位置解決へ落ちる。
     """
     paths = spec.get("paths")
     if paths is not None:
@@ -311,14 +321,26 @@ def _instrument_path_resolver(
             raise ValueError(
                 f"instrument paths length {len(path_list)} != frames length {len(frame_specs)}"
             )
-        by_id = {id(fs): p for fs, p in zip(frame_specs, path_list)}
-        by_data = {fs.data_path: p for fs, p in zip(frame_specs, path_list)}
+        # 値等価キー (frozen dataclass): 同一 data_path で axis_value 等が異なるフレームを位置ごと
+        # に区別できる。id() と違い GC 再利用の stale ヒットが原理的に起きない。
+        by_frame = {fs: p for fs, p in zip(frame_specs, path_list)}
+        data_paths = [fs.data_path for fs in frame_specs]
+        # data_path が一意なときのみ data_path 索引を使う (重複時は最後のパスで上書きされ静かに
+        # 誤るため無効化し、値キーの位置解決に委ねる)。
+        by_data = (
+            {dp: p for dp, p in zip(data_paths, path_list)}
+            if len(set(data_paths)) == len(data_paths)
+            else None
+        )
 
         def resolve(frame: FrameSpec) -> str:
-            if id(frame) in by_id:
-                return by_id[id(frame)]
-            if frame.data_path in by_data:
-                return by_data[frame.data_path]
+            p = by_frame.get(frame)  # 完全一致 (最も特定的)
+            if p is not None:
+                return p
+            if by_data is not None:  # 一部フィールドが再構築で既定化しても data_path で救う
+                p = by_data.get(frame.data_path)
+                if p is not None:
+                    return p
             raise ValueError(f"no instrument path for frame {frame.data_path!r}")
 
         return resolve
