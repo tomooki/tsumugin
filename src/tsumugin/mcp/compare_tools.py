@@ -20,10 +20,12 @@ from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld import HistogramSpec, PhaseSpec
+from ._degrade import degrade_oserror
 
 __all__ = ["COMPARE_TOOLS", "compare_structure_models"]
 
 
+@degrade_oserror
 def compare_structure_models(
     histograms: Sequence[Mapping[str, object]],
     variants: Sequence[Mapping[str, object]],

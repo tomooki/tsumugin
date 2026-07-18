@@ -31,6 +31,7 @@ from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ..insitu.anchor.model import AnchorConfig
 from ..insitu.model import FrameSpec
+from ._degrade import degrade_oserror
 from .insitu_tools import (
     _parse_two_theta_limits,
     _runner_from_instrument,
@@ -108,6 +109,7 @@ def _anchor_summary(ledger) -> tuple[list[dict], list[dict]]:
     return anchors, crossovers
 
 
+@degrade_oserror
 def anchored_sequential(
     frames: Sequence[Mapping[str, object]],
     phases: Sequence[Mapping[str, object]],

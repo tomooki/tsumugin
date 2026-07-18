@@ -25,6 +25,7 @@ from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
+from ._degrade import degrade_oserror
 from ..insitu.model import (
     FrameRietveldResult,
     FrameSpec,
@@ -355,6 +356,7 @@ def _runner_from_instrument(
     )
 
 
+@degrade_oserror
 def sequential_rietveld(
     frames: Sequence[Mapping[str, object]],
     initial_phases: Sequence[Mapping[str, object]],
@@ -446,6 +448,7 @@ def sequential_rietveld(
     return out
 
 
+@degrade_oserror
 def identify_and_add_phase(
     two_theta: Sequence[float],
     intensity: Sequence[float],

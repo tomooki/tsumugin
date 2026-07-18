@@ -624,15 +624,21 @@ def _iter_mcp_functions() -> Iterator[tuple[str, Callable, ast.AST]]:
                     func = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
                     if not inspect.isfunction(func):
                         continue
+                    func = inspect.unwrap(func)  # デコレータ (@degrade_oserror 等) を貫通
                     tree = _source_ast(func)
                     if tree is not None:
                         yield f"{module.__name__}.{name}.{meth_name}", func, tree
                 continue
             if not inspect.isfunction(obj) or obj.__module__ != module.__name__:
                 continue
-            tree = _source_ast(obj)
+            # 【デコレータ貫通 (Issue #94)】: @degrade_oserror でラップされた実行系ツールは、
+            #   getsource/__globals__ が wrapper (別モジュール) を指すため、unwrap しないと
+            #   emitter/consumer 網から**黙って消える** (repair_frames が phase_fractions を出す・
+            #   _result_from_dict を呼ぶ事実が見えなくなる)。unwrap で元関数の source と globals を見る。
+            unwrapped = inspect.unwrap(obj)
+            tree = _source_ast(unwrapped)
             if tree is not None:
-                yield f"{module.__name__}.{name}", obj, tree
+                yield f"{module.__name__}.{name}", unwrapped, tree
 
 
 def _emits_fraction_key(tree: ast.AST) -> bool:
@@ -1326,8 +1332,10 @@ def test_anchor_is_still_unexposed_or_the_note_is_stale():
     Issue #97 が解決して ② に anchor ツールが入ったら、このテストが fail して
     `LAYER1_FEATURES` の更新を強制する — **宣言が実態から遅れるのを防ぐ**。
     """
+    # unwrap で @degrade_oserror 等のデコレータを貫通する (wrapper の source には "anchor" が無く、
+    # unwrap しないと露出済みの anchored_sequential を見落として宣言と食い違う; Issue #94)。
     exposed = [
-        t for t in MCP_TOOLS if "anchor" in inspect.getsource(MCP_TOOLS[t]).lower()
+        t for t in MCP_TOOLS if "anchor" in inspect.getsource(inspect.unwrap(MCP_TOOLS[t])).lower()
     ]
     declared_unexposed = LAYER1_FEATURES["insitu.anchor (M10/FR-330)"][0] == UNEXPOSED
     if exposed:

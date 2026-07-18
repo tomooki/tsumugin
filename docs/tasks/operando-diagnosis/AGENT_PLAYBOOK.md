@@ -26,7 +26,8 @@
 
 - GSAS-II (GSASIIscriptable) 導入済。未導入なら該当ツールが error dict を返す。
 - ② の全ツールは**例外を送出せず** `{"error", "error_type"}` へ縮退する。error dict は
-  読んで直すこと (**存在しないパスを渡した場合を除く** → Issue #94)。
+  読んで直すこと (存在しないファイルパスも `{"error_type": "FileNotFoundError"}` へ縮退する
+  — Issue #94 解決済。`error_type` で「入力ファイルが無い」と他の失敗を区別できる)。
 - 相同定は MP キー (`.env` の `MATERIALS_PROJECT_API` を自動読込, #51)。無ければ CIF 直接指定。
 
 ## 2. 手順

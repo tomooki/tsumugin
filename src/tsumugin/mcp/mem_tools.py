@@ -22,6 +22,7 @@ from typing import Mapping, Sequence
 
 from .._json import finite_or_none
 from ..errors import MEMUnavailableError
+from ._degrade import degrade_oserror
 
 __all__ = [
     "MEM_MODEL_TOOLS",
@@ -32,6 +33,7 @@ __all__ = [
 ]
 
 
+@degrade_oserror
 def mem_density(
     gpx_path: str,
     *,
@@ -173,6 +175,7 @@ def edit_cif(
     return {"cif_path": path, "n_edits": len(aedits)}
 
 
+@degrade_oserror
 def mem_rietveld_iterate(
     gpx_path: str,
     *,

@@ -33,6 +33,7 @@ import numpy as np
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ..insitu.model import FrameSpec
+from ._degrade import degrade_oserror
 from .insitu_tools import (
     _parse_two_theta_limits,
     _result_from_dict,
@@ -447,6 +448,7 @@ def check_phase_set(
     }
 
 
+@degrade_oserror
 def repair_frames(
     result: Mapping[str, object],
     frames: Sequence[Mapping[str, object]],
