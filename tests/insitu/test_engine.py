@@ -888,3 +888,53 @@ def test_rebuilt_frame_recomputes_residual_report():
     rebuilt = _rebuild_frame(res, fr_before, ("alpha",))
     assert rebuilt.residual_report is not None
     assert rebuilt.residual_report.top_features[0].residual == pytest.approx(500.0)
+
+
+# ---------------------------------------------------------------------------
+# 出版値の引き継ぎ (Issue #96 レビュー HIGH-2)
+# ---------------------------------------------------------------------------
+# `AutoRietveldResult` は GSAS から重量分率 ± esd と格子 esd を持ち帰るが、フレームへ**引き継が
+# なければ** `seq_result_to_dict` が幾ら serialize しても空 dict しか出ない (② に配線しても
+# 中身が無ければ ③ にとって「無い」のと同じ)。operando の主要な報告値がここを通る。
+
+
+def test_frame_carries_publication_values_from_result():
+    """精密化結果の重量分率 ± esd / 格子 esd がフレームに引き継がれること。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    beta = PhaseSpec(structure_path="beta.cif", phase_name="beta")
+    cells = {"alpha": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0), "beta": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)}
+
+    def runner(frame, phases, initial_cells):
+        return AutoRietveldResult(
+            stage_results=(), final_rwp=7.0, final_gof=1.1,
+            refined_cells=cells, validity=ValidityReport(passed=True),
+            phase_fractions={"alpha": 0.656, "beta": 0.344},
+            phase_weight_fractions={"alpha": 0.472, "beta": 0.528},
+            phase_weight_fraction_esd={"alpha": 0.006, "beta": 0.006},
+            cell_esd={"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+        )
+
+    out = run_sequential_rietveld(_frames(2), [alpha, beta], runner=runner)
+
+    for fr in out.frames:
+        assert fr.phase_weight_fractions == {"alpha": 0.472, "beta": 0.528}
+        assert fr.phase_weight_fraction_esd == {"alpha": 0.006, "beta": 0.006}
+        assert fr.cell_esd == {"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)}
+        # Scale 値 (相対比較用) は従来通り別に持つ
+        assert fr.phase_fractions == {"alpha": 0.656, "beta": 0.344}
+
+
+def test_frame_publication_values_default_empty_for_stub_runner():
+    """出版値を持たない runner (スタブ/旧構築) は空 dict へ縮退する (後方互換)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    cells = {"alpha": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)}
+
+    def runner(frame, phases, initial_cells):
+        return _result(8.0, cells, {"alpha": 1.0})
+
+    out = run_sequential_rietveld(_frames(2), [alpha], runner=runner)
+
+    for fr in out.frames:
+        assert fr.phase_weight_fractions == {}
+        assert fr.phase_weight_fraction_esd == {}
+        assert fr.cell_esd == {}

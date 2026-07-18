@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
 
+from .._json import finite_or_none
 from .absorption import AbsorberLayer
 
 
@@ -380,6 +381,32 @@ class ValidityReport:
     warnings: tuple[str, ...] = ()
 
 
+#: 格子の標準不確かさ (a,b,c,α,β,γ)。``refined_cells`` と同一レイアウト (体積は含まない)。
+#: **要素の `None` は「この精密化では決まっていない」** (格子を解放していない相・非有限値) を意味し、
+#: ``0.0`` は「対称拘束で厳密に固定」(mono の α/γ = 90°) を意味する — 両者を潰さないための `| None`。
+CellEsd = tuple[
+    float | None, float | None, float | None, float | None, float | None, float | None
+]
+
+
+def coerce_cell_esd(values: object) -> CellEsd:
+    """任意の 6 要素列を `CellEsd` へ正規化する (``None`` と非有限を潰さない共有ヘルパ)。
+
+    **`float(x)` を直接使わないための関数**: `cell_esd` の要素は「格子を解放していない/値が無い」を
+    表す ``None`` を取り得るため、素朴な ``tuple(float(x) for x in esd)`` は ``TypeError`` になる。
+    貫通経路 (M10 `anchor.extract`/`anchor.segment`) が各自で float 化していると、**その TypeError を
+    避けるために 0.0 へ丸める**誘惑が生まれる — それが本 esd の捏造そのものである。
+
+    :param values: 6 要素の数値/None 列 (長さ 6 以外・非数値は `ValueError`/`TypeError`)
+    :returns: 有限値は float、``None``/非有限は ``None``
+    """
+    items = list(values)  # type: ignore[call-overload]
+    if len(items) != 6:
+        raise ValueError(f"cell_esd は 6 要素 (a,b,c,α,β,γ) である必要があります: {values!r}")
+    out = tuple(finite_or_none(x) for x in items)
+    return out  # type: ignore[return-value]
+
+
 @dataclass(frozen=True)
 class AutoRietveldResult:
     """自動 Rietveld 解析の総合結果。"""
@@ -393,8 +420,14 @@ class AutoRietveldResult:
     # 【観測点数】: 精密化に用いた実観測点数 (全ヒストグラム総和, レンジ制限反映)。chi2/BIC の
     #   dof・n 罰に用いる。末尾・既定 0 で後方互換 (0=未設定; 利用側は代替源へフォールバック) 🔵 Issue #16
     n_obs: int = 0
-    # 【相分率】: 相名→相分率 (先頭ヒストグラムの HAP Scale 和=1 正規化)。単相は {name: 1.0}。
-    #   逐次解析 (M9) が新相の有意性判定・転移推定に用いる。末尾・既定空 dict で後方互換 🔵 M9
+    # 【相分率】: 相名→**HAP Scale を和=1 に正規化した値** (先頭ヒストグラム)。単相は {name: 1.0}。
+    #   ⚠ これは**重量分率ではない**。Scale は単位胞の散乱能に対する比例係数であり、相間で単位胞質量
+    #   が異なると重量分率と乖離する。乖離の**大きさ**は単位胞質量比 (例 K₂Mn[Fe(CN)₆] の
+    #   cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と**各フレームの分率**で決まるため**フレーム毎に
+    #   違い**、単一の換算係数は無い (実測 tetra: 65.6 Scale% → 47.2 wt% [1.39 倍]、系列全体で
+    #   1.39-1.62 倍)。**Scale に係数を掛けて wt% にはできない**。
+    #   **出版値には `phase_weight_fractions` (GSAS-II calcMassFracs 由来の質量重み分率) を使うこと**。
+    #   本フィールドは逐次解析 (M9) の新相の有意性判定・転移推定という**相対比較**用途に限る 🔵 M9
     phase_fractions: Mapping[str, float] = field(default_factory=dict)
     # 【残差パターン】: 先頭ヒストグラムの (2θ, Yobs−Ycalc, σ)。精密化レンジ内のみ。既存相で説明でき
     #   ない未モデル強度 = 未同定の少数相の寄与。σ は計数統計の標準偏差 (GSAS 重み由来)。逐次解析の
@@ -417,3 +450,26 @@ class AutoRietveldResult:
     asymmetry_metric: tuple[float, ...] = ()
     intensity_bias_metric: tuple[float, ...] = ()
     bg_extrema: tuple[int, ...] = ()
+    # 【出版用の標準不確かさ (esd)】: esd を伴わない精密化値は出版できないため、GSAS-II が共分散行列
+    #   から算出した su を露出する。すべて末尾追加・既定空 dict で後方互換 (旧構築サイトは空に縮退)。
+    #   共分散が得られない場合 (未収束/精密化未実行) も空 dict へ縮退し**例外を送出しない**
+    #   (「バックエンド失敗は例外でなく結果に縮退」の不変条件)。🔵
+    # 相名→格子 esd。`refined_cells` と**同一レイアウト** (a,b,c,α,β,γ の 6 要素; 体積は含まない)。
+    #   出典 `G2Phase.get_cell_and_esd()` (第 2 要素)。**3 状態を区別する** (レビュー第5巡 HIGH):
+    #   ``>0.0`` = 解放して精密化した項の su / ``0.0`` = **対称拘束で厳密に固定** (mono の α/γ=90°;
+    #   真の陳述) / ``None`` = **この精密化では決まっていない** (格子を解放していない相 —
+    #   `PhaseSpec.refine_cell=False`・`auto_freeze_minor_cells`・セル段の revert・未精密化)。
+    #   相ごと欠落 = 抽出できなかった。**凍結セルに 0.0 を捏造しない** — GSAS は凍結セルでも例外を
+    #   出さず 0.0 を返すため、素通しすると `a = 10.5200(0)` と読める値が出版経路へ流れる。
+    cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
+    # 相名→**重量 (質量) 分率**。出典 `G2PwdrData.ComputeMassFracs()` → GSAS-II
+    #   `GSASIIstrMath.calcMassFracs` (wtSum=Σ mass[p]*Scale[p]; WgtFrac[j]=mass[j]*Scale[j]/wtSum)。
+    #   mass は精密化された占有率を反映するため**フレーム毎に GSAS が算出**する (静的 CIF 質量では不可)。
+    #   単相は {name: 1.0} (自明)。定量相分析の**出版値はこちら** (`phase_fractions` ではない)。
+    phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
+    # 相名→重量分率の esd。calcMassFracs が Jacobian + 共分散行列から伝播した値。**3 状態を区別する**
+    #   (レビュー第6巡 HIGH; cell_esd と同型): ``>0.0`` = 分率を精密化した相の su / 単相は {name: 0.0}
+    #   (自明な 1.0 に不確かさはない) / ``None`` = **多相なのにこの精密化から決まっていない**
+    #   (相 Scale が最終共分散に無い = 全段 revert 等 → calcMassFracs が全相 su を厳密 0.0 にする)。
+    #   相ごと欠落/空 dict = 分率非精密化・共分散なし。**多相の 0.0 を捏造しない** (無限精度の偽 su)。
+    phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)

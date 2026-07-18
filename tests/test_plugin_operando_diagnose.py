@@ -9,12 +9,14 @@ skill/command が存在し、参照する ② MCP ツールが実在し、権限
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from pathlib import Path
 
 import pytest
 
+from tsumugin.mcp.operando_diag_tools import repair_frames
 from tsumugin.mcp.tools import MCP_TOOLS
 
 _PLUGIN = Path("plugins/tsumugin")
@@ -160,6 +162,214 @@ def test_repair_frames_examples_always_pass_two_theta_limits(doc):
     assert not bad, (
         f"{doc}: two_theta_limits の無い repair_frames 呼び出し例がある: {bad}。"
         "系列を精密化したのと同じレンジを必ず渡すこと (異なるデータ域の Rwp 比較は無効)。"
+    )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_sequential_rietveld_examples_always_pass_warm_start_fractions(doc):
+    """ガード8: `sequential_rietveld` の呼び出し例は必ず `warm_start_fractions=True` を伴うこと。
+
+    **既定は False** (`SequentialConfig.warm_start_fractions`)。省略した例をそのまま真似すると、
+    相分率が等分 seed (2 相なら 0.500/0.500) に張り付いたまま系列が回る (Issue #82/#96)。
+    しかも **Rwp は平凡なまま** (実測 8.4-8.5%) で、GOF も validity も何も言わない —
+    `check_phase_set` の `seed_pinned` でしか見えない。例から欠けることが即ちこの失敗の再導入で
+    あり、②「呼べるが黙って間違う」の再生産になる (ガード1 の `two_theta_limits` と同じ規律)。
+
+    呼び出し例を持たない文書 (散文で言及するのみ) は対象外 — 検証するのは「③ がそのまま真似する例」。
+    """
+    text = doc.read_text(encoding="utf-8")
+    sites = _call_sites(text, "sequential_rietveld")
+    if not sites:
+        pytest.skip(f"{doc}: sequential_rietveld の呼び出し例が無い (散文の言及のみ)")
+    bad = [s for s in sites if not re.search(r"warm_start_fractions\s*=\s*True", s)]
+    assert not bad, (
+        f"{doc}: warm_start_fractions=True の無い sequential_rietveld 呼び出し例がある: {bad}。"
+        "既定 False なので、省略した例を真似した ③ は分率が seed に張り付いた系列を"
+        "「正常」として読む (Rwp は平凡なまま = 気づけない)。"
+    )
+
+
+def _top_level_kwargs(site: str) -> list[str]:
+    """呼び出し例の**トップレベル** kwarg 名を抜く (入れ子の dict/list 内は見ない)。"""
+    names: list[str] = []
+    depth = 0
+    for m in re.finditer(r"[\(\[\{\)\]\}]|(\w+)\s*=(?!=)", site):
+        tok = m.group(0)
+        if tok in "([{":
+            depth += 1
+        elif tok in ")]}":
+            depth -= 1
+        elif depth == 0 and m.group(1):
+            names.append(m.group(1))
+    return names
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_repair_frames_documented_kwargs_exist_in_the_real_signature(doc):
+    """ガード4: 呼び出し例の kwarg がすべて `repair_frames` の実シグネチャに在ること。
+
+    **文書が「ツールが提供できない呼び出し」を指示してはならない**。③ は例をそのまま真似するので、
+    実在しない引数を書けば `TypeError` が MCP 境界を越える (= ③ にとって回復不能なハード失敗)。
+
+    実際に起きた (Issue #96 レビュー HIGH-1): 3 文書すべてが「`seed_pinned_frames[].frame` を
+    `repair_frames` で再フィット」と指示していたが、**当時の `repair_frames` にフレームを指定する
+    引数は無かった**。しかも省略時の自動検出は Rwp/分率のジャンプしか見ず、seed 張り付きは
+    定義上「平坦」なのでどの閾値でも拾えない — ③ は「直すものは無い」と告げられる。
+    """
+    text = doc.read_text(encoding="utf-8")
+    params = inspect.signature(repair_frames).parameters
+    sites = _call_sites(text, "repair_frames")
+    assert sites, f"{doc}: repair_frames の呼び出し例が無い"
+    for site in sites:
+        for kw in _top_level_kwargs(site):
+            assert kw in params, (
+                f"{doc}: repair_frames の呼び出し例が実在しない引数 {kw!r} を指示している "
+                f"(実シグネチャ: {sorted(params)})。③ は例をそのまま真似する — "
+                "呼べない指示は TypeError を境界へ漏らす。"
+            )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_pinned_frame_instruction_is_executable_via_target_frames(doc):
+    """ガード5: 張り付き/凍結フレームの修復指示が**実行可能**であること (Issue #96 レビュー HIGH-1)。
+
+    `check_phase_set` の `seed_pinned_frames`/`frozen_fraction_frames` に言及して修復を促す文書は、
+    **`target_frames` を使う呼び出し例**を持たねばならない。自動検出 (`rwp_delta`/`frac_delta`) は
+    張り付きに**原理的に到達できない**:
+
+    - 張り付き区間の Rwp は平凡 (実測 8.4-8.5%) → `rwp_abs` では拾えない。
+    - 区間内では局所中央値が当該フレームの Rwp そのもの → `rwp_delta` をどれだけ下げても届かない。
+    - 分率も平坦 → `frac_delta` は逆に**健全な**近傍を拾う。
+
+    よって `target_frames` 無しの指示は「呼べるが黙って何もしない」= ③ に「異常なし」と
+    答えることになる (② の最悪の失敗様態)。
+    """
+    text = doc.read_text(encoding="utf-8")
+    if "seed_pinned" not in text and "frozen_fraction" not in text:
+        pytest.skip(f"{doc}: 張り付き/凍結に言及していない")
+
+    assert "target_frames" in inspect.signature(repair_frames).parameters, (
+        "repair_frames に target_frames が無い — 文書の指示が実行不能になる"
+    )
+    targeted = [s for s in _call_sites(text, "repair_frames") if "target_frames" in s]
+    assert targeted, (
+        f"{doc}: 張り付き/凍結フレームに言及しながら `target_frames` を使う repair_frames の"
+        "呼び出し例が無い。自動検出は「平坦」な張り付きに原理的に到達できないため、"
+        "この指示は実行不能 (③ は repairs=[] を「直すものは無い」と読む)。"
+    )
+    # 対象の出所 (check_phase_set の出力) が例に現れていること = §4.5 到達可能性。
+    # 例が複数行にまたがるため `[\s\S]` で改行を跨いで探す (`[^\n]` では re.S でも跨げない)。
+    assert re.search(r"seed_pinned_frames|frozen_fraction_frames", "\n".join(targeted)) or re.search(
+        r"(seed_pinned_frames|frozen_fraction_frames)[\s\S]{0,400}target_frames", text
+    ), (
+        f"{doc}: `target_frames` に渡す値が check_phase_set の出力から来ることが例から読めない "
+        "(③ は各引数を『どの ② ツールの出力から作るか』が言えなければ組み立てられない)。"
+    )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_warn_against_repairing_pinned_frames_one_at_a_time(doc):
+    """ガード6: 「疑わしいフレームは 1 回で全て渡す」旨があること (両隣も同欠陥の罠)。
+
+    指定フレームは互いに warm-start 元から除外される (`repair._nearest_good`)。裏を返せば
+    **1 フレームずつ呼ぶと除外が効かず**、両隣も張り付いた区間 (実測 125-130 の 6 連続) で
+    欠陥を持つ隣から種を貰い、欠陥を引き継いだまま「修復成功」を報告する。
+    """
+    text = doc.read_text(encoding="utf-8")
+    if "target_frames" not in text:
+        pytest.skip(f"{doc}: target_frames に言及していない")
+    assert re.search(r"1 回の?呼び出しで(全て|すべて)渡す|1 回で(全て|すべて)渡す", text), (
+        f"{doc}: `target_frames` を教えながら「1 回の呼び出しで全て渡す」注意が無い。"
+        "1 つずつ呼ぶと両隣も同欠陥の区間で欠陥を持つ隣から warm-start する。"
+    )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_state_that_phase_fractions_is_scale_not_weight_percent(doc):
+    """ガード7: `phase_fractions` を wt% と取り違えない指示があること (Issue #96 レビュー HIGH-2)。
+
+    `phase_fractions` は **Scale** であって重量分率ではない。単位胞質量が相間で異なると乖離する
+    (実測 K2Mn[Fe(CN)6] tetra: **65.6 Scale% は同じ fit で 47.2 wt%** = この点で 1.39 倍の誤り。
+    乖離はフレーム毎に違い [系列全体で 1.39-1.62 倍]、大きさは単位胞質量比 [cubic 1103.4 /
+    tetra 517.8 amu = 2.13 倍] と分率で決まる = **換算係数は無い**)。
+    ③ が知らなければ**報告する定量値がそのまま誤る** — Rwp も validity も何も言わない。
+    ② が値を返すだけでは足りず、「どちらを出版値に使うか」が手順書に無ければ ③ は Scale を使う。
+    """
+    text = doc.read_text(encoding="utf-8")
+    assert "phase_weight_fractions" in text, (
+        f"{doc}: 出版値 `phase_weight_fractions` に言及していない (③ は Scale を wt% として報告する)"
+    )
+    assert "phase_weight_fraction_esd" in text, f"{doc}: 重量分率の esd に言及していない (出版に必須)"
+    assert re.search(r"phase_fractions[^\n]{0,120}(Scale|scale)", text), (
+        f"{doc}: `phase_fractions` が Scale であることの明示が無い"
+    )
+    # ② が実際にそのキーを返すこと (文書だけ先行して「呼べない指示」にしない)
+    from tsumugin.mcp.insitu_tools import seq_result_to_dict as _seq  # noqa: PLC0415
+
+    src = inspect.getsource(_seq)
+    for key in ("phase_weight_fractions", "phase_weight_fraction_esd", "cell_esd"):
+        assert key in src, f"② の seq_result_to_dict が {key} を返していないのに文書が指示している"
+
+
+# 「Scale は転移の追跡に使ってよい」という**誤った指示**の指紋 (Issue #96 レビュー第4巡 HIGH)。
+# 3 文書すべてのキー表に `| phase_fractions | **Scale** の正規化値 | 相対比較のみ (新相の有意性・
+# **転移の追跡**) |` と書かれていた。これは**偽**である: 転移推定 (`estimate_transition`) は
+# 絶対レベル 0.50/0.10 の交差軸値を返すため、y 軸を Scale から wt% に替えると答えが動く。
+# 実測では同じ精密化から Scale が「midpoint 9.515 h」、wt% が「転移なし」を出した。
+#
+# 否定語の探索だけ `[\s\S]` (改行可) なのは、否定が次行に折り返しても**否定は否定**だから。
+# 前方の距離は `[^\n]` (同一行) — 表の行も散文も `phase_fractions` と「転移の追跡」は同じ行に
+# あり、改行を跨がせると無関係な段落同士が誤って結び付く。
+_SCALE_FOR_TRANSITION_OK = re.compile(
+    r"phase_fractions[^\n]{0,160}転移の追跡(?![\s\S]{0,40}(?:使えない|使わない|不可))"
+)
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_do_not_bless_scale_for_transition_tracking(doc):
+    """ガード8: `phase_fractions` (Scale) を**転移の追跡に使ってよい**と書いていないこと。
+
+    `parametric_fit` は Scale を消費して onset/midpoint という**出版値を導出する**。転移推定は
+    絶対レベル (0.50/0.10) の交差軸値を返すので、「Scale は相対比較なら安全」は**転移には
+    当てはまらない**。3 文書のキー表がそろって「相対比較のみ (…転移の追跡)」と Scale を
+    祝福しており、③ はそれを信じて Scale 由来の転移温度を報告できてしまった。
+
+    **誤った手順書は実装バグと同等に有害** (CLAUDE.md) — ② を直しても手順書が Scale を
+    勧めていれば ③ は `basis="scale"` を明示的に選びに行ける。
+    """
+    text = doc.read_text(encoding="utf-8")
+    bad = _SCALE_FOR_TRANSITION_OK.search(text)
+    assert bad is None, (
+        f"{doc}: `phase_fractions` (Scale) を「転移の追跡」に使ってよいと書いている "
+        f"({bad.group(0)!r})。転移推定は絶対レベル 0.50/0.10 の交差なので basis で答えが変わる "
+        "(実測: 同じ fit で Scale=midpoint 9.515 h / wt%=転移なし)"
+    )
+
+
+@pytest.mark.parametrize("doc", _REPAIR_FRAMES_DOCS, ids=lambda p: p.as_posix())
+def test_docs_tell_which_basis_to_report_transitions_from(doc):
+    """ガード9: 転移温度を**どの基準で取り・報告するか**が書かれていること。
+
+    「Scale を使うな」だけでは ③ は代わりに何をすべきか分からない。② に `basis` があっても
+    手順書に無ければ ③ は使わない (Issue #97: 露出していない機能は無いのと同じ)。
+    """
+    text = doc.read_text(encoding="utf-8")
+    if "parametric_fit" not in text:
+        pytest.skip(f"{doc}: parametric_fit に言及していない")
+    assert "fraction_basis" in text, (
+        f"{doc}: `parametric_fit` を教えているが返り値の `fraction_basis` "
+        "(どの基準で出したか) の確認を指示していない — ③ は Scale 由来の数字を出版値と信じる"
+    )
+    assert re.search(r'basis\s*=\s*"weight"|basis="weight"|既定[^\n]{0,30}weight', text), (
+        f"{doc}: 転移を重量分率基準で取ること (`basis=\"weight\"` が既定) の指示が無い"
+    )
+    # ② が実際にその引数/キーを持つこと (文書だけ先行して「呼べない指示」にしない)
+    from tsumugin.mcp.insitu_tools import parametric_fit as _pf  # noqa: PLC0415
+
+    sig = inspect.signature(_pf)
+    assert "basis" in sig.parameters, "② parametric_fit に basis 引数が無いのに文書が指示している"
+    assert sig.parameters["basis"].default == "weight", (
+        "② parametric_fit の basis 既定が 'weight' でない — 文書の「既定で出版値」が嘘になる"
     )
 
 

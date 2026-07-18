@@ -138,9 +138,40 @@ plugins/tsumugin/
 ## 4.5 ② 層の設計規則 — **到達可能性 (reachability)**
 
 > 本節は段1 実装中に**同一クラスの欠陥が 3 件**出たため追加した。単発のミスではなく再発パターン。
+> その後、**規則④ (カバレッジ)** を実データでの実害 (Issue #97) を受けて追加した。
+
+### 規則①〜③: 引数の到達可能性
 
 **規則: MCP ツールの各引数について「これはどの MCP ツールの出力から来るのか」を言えること。**
 言えない引数があるツールは、テストが全部 green でも ③ からは**呼び手が存在しない (dead on arrival)**。
+
+### 規則④: **機能のカバレッジ** — 実行者から見えない実装は「無い」と同じ (Issue #97)
+
+**規則①〜③は*新ツールの引数*を見るが、「① の機能が ② に露出しているか」は誰も見ていない。**
+これは別種の検査であり、**マイルストーン丸ごとが不可視になり得る**。
+
+**① に機能を足す PR は、同じ PR で次を満たすこと**:
+
+1. **② MCP ツールを追加する** (または既存ツールの JSON 引数として到達可能にする)。
+2. **③ の手順書** (`skills/*/SKILL.md` + 該当 `AGENT_PLAYBOOK.md`) に**「いつ使うか」を書く**。
+   ツールがあっても手順書に無ければ ③ は使わない。
+3. 露出しないと決めたなら、**「非露出」と理由を明示的に宣言する** (黙って未露出にしない)。
+
+**完了の定義は「テストが green」ではなく「③ が実際に呼べる」**。① のテストは Python から
+呼べることしか確かめておらず、実運用の呼び手 (JSON しか持たない LLM) を見ていない。
+
+**実害 (K₂Mn[Fe(CN)₆] 全 247 フレーム operando, 2026-07-15)**:
+**M10 anchor (FR-330, 715 行/6 モジュール/実 GSAS テスト 3) は ② ツール 0・skill/PLAYBOOK
+6 文書すべて言及 0** だったため、実解析で**使われなかった** (失念ではなく手順に存在しなかった)。
+結果、**M10 が設計上すでに解いている病理を ③ が再生産**した — 偽 tetra が全域に湧く/分率 0 近傍で
+esd 発散/`check_phase_set` が全相 flagged — 上、それを「モデルの欠陥 (J6)」と報告した。さらに
+**ユーザーが「BIC で相数を抑制する機構が必要」と独立に再導出**したが、それは `anchor/select.py` の
+`frame_bic` (`= chi2 + n_params·ln(n_obs)`) そのもの = **実装済みの設計を、見えないという理由で
+再発明させた**。**本節 (§4) は operando の診断設計でありながら M10 への言及が 0 件だった**ことも
+併せて記録する (設計者自身が既存マイルストーンを見落とした)。
+
+現在 ② 未露出 (実測): `insitu.anchor`(M10) / `oed`(FR-700) / `nested`(FR-500) / `chem`(FR-412) /
+`compare_models`。※ `joint`(FR-240) は `auto_rietveld(histograms=[...])` で到達可能 (誤検出だった)。
 
 実際に出た 3 件:
 
@@ -153,6 +184,53 @@ plugins/tsumugin/
 > #2 の `repair_frames` は**採否の判断を壊す**形で顕在化していた: 2θ≤18° で精密化した系列に対し
 > 修復試行が全域で走り、採用規則 `rwp_after < rwp_before - rwp_tol` が**異なるデータ域の Rwp を
 > 比較**していた。「呼べるが黙って間違う」は「呼べない」より悪い。
+
+### 規則⑤: **入力**の basis を label する — 出力だけ label しても半分 (第5巡 MEDIUM)
+
+規則①〜④ と粒度④ (`fraction_basis`) は ② の**出力**を見る。だが `sequential_rietveld` が受け取る
+**閾値**も basis を持ち、それは系列 dict を一度も経由せず ① の中で live な GSAS Scale と直接
+比較されるため、出力側の網には**構造的に映らない**:
+
+| ② 入力 | ① の比較先 | 実測の割れ方 |
+|---|---|---|
+| `instrument["auto_freeze_minor_cells"]` | `engine._should_refine_cell` ← `_phase_fraction_map` (**Scale**) | `Scale{cubic .75,tetra .25}` = `wt%{cubic .865,tetra .135}` → 文書化された **0.2 は Scale なら tetra を解放・wt% なら凍結** |
+| `phase_id["frac_min"]` (既定 0.02) | `insitu.engine._accept_new_phase` ← `phase_fractions` (**Scale**) | 同上 (質量の重い相ほど Scale は wt% より小さい) |
+
+**同じ ③ 文書が「本当の分率は wt%」「Scale を wt% として報告するな」と教えている**ので、label の
+無い閾値は wt% と解釈される。「tetra は 13.5 wt% の少数相だから 0.15」→ 実際に設定されるのは
+**Scale 0.15** → tetra のセルは解放されたまま → #80 の発散が進む。**これが F1 の原因でもある**:
+label されていない Scale 閾値が「どの相のセルが esd 無しになるか」を決めていた。
+
+**規則**: 分率と比較される ② 入力は、**① docstring・② docstring・③ 3 文書すべて**で basis を label する。
+
+> **網の限界 (正直に言う)**: 「この float が ① で分率と比較されるか」は ②→① の関数境界を跨ぐ
+> (`_apply_stage` → `_should_refine_cell(info, fraction, threshold)` は Compare ではなく Call) ため
+> **自動判定できない**。名前ヒューリスティクス (`*frac*`) は現在の綴りにしか一致しない網なので採らない。
+> 実装したのは (a) ② の JSON spec (`instrument`/`phase_id`) が読むキーの **AST 発見 + basis 宣言の強制**、
+> (b) 宣言した basis 依存キーの label を ② docstring と ③ 3 文書の**実テキスト**で確認、
+> (c) 振る舞いの pin (`test_documented_threshold_compares_scale_not_weight_fraction`)。
+> **spec dict の外**にツールの kwarg として閾値を足す経路は網に掛からない (現状 0 件)。
+> 恒久ガード: `tests/test_layer_coverage.py` 粒度⑤ / `tests/autorietveld/test_auto_freeze.py`。
+
+### 規則⑥: **宣言した保証は、それを反証できるテストで守る** (第5巡 HIGH)
+
+第4巡で「散文は嘘をつける」と学び、宣言を**ツールの出力**で検証するようにした。第5巡で判ったのは
+**その一段下**である: PR 本文が *「GSAS が計算していない相に esd=0.0 を捏造しない (present-guard)」*
+と宣言したが、**凍結セルでは偽**だった (`get_cell_and_esd()` は凍結セルでも例外を出さず `(0.0,)*6`
+を返すため、例外時のみ相を落とす present-guard を素通りする)。実データに到達していた
+(論文用 CSV の `tetra_a_esd=0.0` 63/63 フレーム)。
+
+**その条件を作った fixture が、その条件を assert していなかった**: `test_uncertainty_gsas.py` は
+`refine_cell=False` で cubic/tetra を凍結した上で、`mono` だけを見て「esd が立つ」と確認していた。
+
+**規則**: **fixture が用意した条件は、そのテストが assert すること**。特に、fixture が
+「正常系ではない側」(凍結・欠測・失敗) を作っているなら、その側の振る舞いこそが検査対象である。
+
+> 一般形の機械検査 (「fixture の全条件を assert せよ」) は「条件」を定義できないため実装しない。
+> 代わりに**当該テストに条件そのものの assert を置く**
+> (`test_frozen_phase_cell_esd_is_none_not_fabricated_zero` / `test_symmetry_fixed_angles_...`)。
+> 変異実証: `_cell_esd_map` を旧実装 (0.0 素通し) に戻すと**実 GSAS で 2 件 fail する**一方、
+> 旧テスト `test_cell_esd_is_nonzero_and_physically_sane` は**素通りしたまま**である。
 
 **なぜ見落とすか**: ① に実装し Python API でテストが通ると完成に見える。だが ① を直接叩けるのは
 Python スクリプトだけで、③ は ② の JSON しか持たない。本解析自体が `make_gsas_runner` を注入した

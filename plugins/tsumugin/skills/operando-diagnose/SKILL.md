@@ -31,11 +31,11 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | ツール | 役割 | 出力 |
 |---|---|---|
 | `assess_data_quality` | データ品質 | `is_subtracted`/`confidence`/`reasons`/`suggested_two_theta_limit` |
-| `sequential_rietveld` | 系列実行 | フレーム別 Rwp/格子/相分率 + **`residual_report`** (フレーム毎に同梱) |
-| `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` |
-| `repair_frames` | 不連続の修復 | `repairs` (採用のみ)/`needs_model_revision`/`ledger_entries` |
+| `sequential_rietveld` | 系列実行 | フレーム別 Rwp/格子/相分率 + **`residual_report`** + **出版値** (`phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd`) をフレーム毎に同梱 |
+| `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` + `seed_pinned`/`seed_pinned_frames` + `fractions_frozen`/`frozen_fraction_frames` |
+| `repair_frames` | 不連続の修復 | `repairs` (採用のみ; **修復後の出版値** `phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd` を修復フレーム毎に同梱)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない) |
 | `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
-| `auto_rietveld` | 単一フレーム再フィット | `residual_report` 同梱 |
+| `auto_rietveld` | 単一フレーム再フィット | `residual_report` + 出版値 (重量分率 ± esd・`cell_esd`) 同梱 |
 
 **②は判断しない・返すだけ**。判断はあなたがする。
 
@@ -77,10 +77,27 @@ sequential_rietveld(
 | `radiation` | `xray_lab` / `xray_synchrotron` / `neutron_cw` / `neutron_tof` |
 | `geometry` | `bragg_brentano` / `debye_scherrer` |
 | `background_coeffs` | 背景項数 (既定 6)。実測で **18 が最良** の系があった (26%→6.7% の一部) |
-| `auto_freeze_minor_cells` | **相分率の閾値 (float, 例 0.2)。bool ではない** — 分率が閾値未満の相のセルを自動凍結する (解放すると計量相関で発散・分率崩壊)。`True` は `float(True)==1.0` = 全相凍結になるため ② が拒否する。**`instrument` の中に置く** (tool の kwarg ではない) |
+| `auto_freeze_minor_cells` | **`phase_fractions` (= Scale) 基準の閾値 (float, 例 0.2)。bool ではない** — **Scale** が閾値未満の相のセルを自動凍結する (解放すると計量相関で発散・分率崩壊)。`True` は `float(True)==1.0` = 全相凍結になるため ② が拒否する。**`instrument` の中に置く** (tool の kwarg ではない)。⚠ **wt% ではない → 下記** |
 
 > `refine_cell=False` は **`PhaseSpec` のキー** (相ごとの手動凍結。手動が自動に優先)。
 > `auto_freeze_minor_cells` とは階層が違うので混同しないこと。
+
+> ### ⚠ 分率の閾値は**すべて Scale 基準** — wt% で考えて数字を決めない
+>
+> `auto_freeze_minor_cells` (`instrument` spec) と `phase_id.frac_min` が比較する相分率は
+> `phase_fractions` (**HAP Scale の Σ=1 正規化値**) であり、**`phase_weight_fractions` (wt%) では
+> ない**。この skill は「出版値は wt%・Scale を wt% として報告するな」と繰り返し言うが、
+> **閾値の座標系だけは Scale のまま**である。
+>
+> 実測 K₂Mn[Fe(CN)₆] (cubic 1103.4 / tetra 517.8 amu):
+> `Scale {cubic 0.75, tetra 0.25}` = `wt% {cubic 86.5, tetra 13.5}`。
+> 「tetra は 13.5 wt% で少数相だから `auto_freeze_minor_cells=0.15`」と決めると、実際の比較は
+> **Scale 0.25 ≥ 0.15** → **tetra のセルは解放されたまま**で #80 の発散が起きる。
+> **答えが basis で割れる**ので、閾値を決める前に `frames[i]["phase_fractions"]` (Scale) を見ること。
+>
+> `phase_id` の `frac_min` (新相採用の最小分率, 既定 0.02) も **Scale** 基準である。
+> `check_phase_set` / `repair_frames` の分率系の閾値 (`min_amplitude` / `frac_delta`) も同じく
+> Scale 基準である (各ツールの出力 `fraction_basis` がそれを明示する)。
 
 ### 3. 疑う — **ここからが本 skill の主眼**
 
@@ -93,6 +110,38 @@ sequential_rietveld(
 - **`flagged=True` (分率が非単調に振動)** → **J7**: 物理的に妥当かを問う。
   単調な転移 (A→B→C) が自然な系で分率が増減を繰り返すなら、**まず artifact を疑う**。
   実データではこれが唯一の手がかりだった。
+- **分率が動かなかったフレーム (2 つの指紋)** → **そのフレームの分率を報告に使わない**。
+  どちらも「分率精密化がそのフレームで一度も動いていない」ことを意味し、**Rwp は平凡なまま**
+  (実測 8.4-8.5%) で `is_complete` にも非単調フラグにも出ない (**張り付きは「平坦」であって
+  振動ではない**)。**厳密な一致だけが指紋**である。実測 (K2Mn[Fe(CN)6] 247 フレーム) では
+  9 フレームが張り付き、**うち 6 連続が転移ドーム頂点の直前**にあったため、報告したドームの
+  位置と高さが信用できなくなった。**両方を見ること**:
+
+  | フラグ | 意味 | いつ出るか |
+  |---|---|---|
+  | `seed_pinned` / `seed_pinned_frames` | 分率が等分 seed (1/相数; 2 相なら 0.500/0.500) に厳密一致 | **分率ウォームスタートが効いていない** (`warm_start_fractions=False`・フレーム 0・種が渡らなかった) |
+  | `fractions_frozen` / `frozen_fraction_frames` | 分率が**直前フレームの値**に厳密一致 | ウォームスタート下で**そのフレームの分率精密化が死んでいる** (種の値をそのまま返した)。値が 1/n でないので `seed_pinned` には**出ない** |
+
+  → **両方のフレーム番号を集めて 1 回の `repair_frames` 呼び出しで修復する** (`target_frames`):
+
+  ```python
+  cps = check_phase_set(result)
+  suspect = sorted({f["frame"] for f in cps["seed_pinned_frames"]}
+                   | {f["frame"] for f in cps["frozen_fraction_frames"]})
+  repair_frames(result, frames, phases,
+                target_frames=suspect,          # ★これが無いと張り付きには到達できない
+                instrument={...},               # 系列と同じ装置設定
+                two_theta_limits=[2.4, 18.0])   # ★系列を精密化したのと同じレンジ
+  ```
+
+  - **`target_frames` は必須**。省略すると `repair_frames` は Rwp/分率の**ジャンプ**を探すが、
+    張り付きは定義上「平坦」なので**どの閾値でも拾えない** — `discontinuities=[]`/`repairs=[]`
+    = 「直すものは無い」が返る。**直前に「信用するな」と言われたフレームに対して、である**。
+  - **疑わしいフレームは 1 回の呼び出しで全て渡す**。指定フレームは互いに warm-start 元から
+    除外されるため、**1 つずつ呼ぶと両隣も張り付いた区間 (実測 125-130 の 6 連続) で欠陥を
+    持つ隣から種を貰い**、欠陥を引き継いだまま「修復成功」になる。
+  - **張り付いたフレームを黙って捨てない** — 可視化して物理的解釈の対象から外す判断を
+    ユーザーに示すこと。
 
 #### J2/J3 残差から欠落相・対称性低下を仮説化
 
@@ -154,9 +203,78 @@ repair_frames(result, frames, phases,
 
 **Rwp と併せて、相集合の完全性をどう確認したかを必ず書く**。未確定は未確定と書く。
 
+> ⚠ **`phase_fractions` は Scale であって重量分率 (wt%) ではない** — 出版値・定量相分析には
+> **`phase_weight_fractions` ± `phase_weight_fraction_esd`** を使う (手順 7)。
+
+### 7. 定量値を報告する — **`phase_fractions` は wt% ではない**
+
+**`phase_fractions` は Scale (HAP Scale を和=1 に正規化した値) であって重量分率ではない**。
+Scale は単位胞の散乱能に対する比例係数であり、**単位胞質量が相間で異なると重量分率と乖離する**。
+
+> 実測 (K₂Mn[Fe(CN)₆]): cubic 1103.4 amu vs tetra 517.8 amu → **同じ fit で 65.6 Scale% が
+> 実際には 47.2 wt%** (この点で 1.39 倍の誤り)。「tetra ドーム頂点 65.6%」と報告した数値は誤りだった。
+>
+> **乖離の大きさはフレーム毎に違う** (実測: fr112 1.62 / fr120 1.48 / fr124 1.41 / fr126 1.39 倍)。
+> 大きさを決めるのは相の**単位胞質量比** (ここでは 2.13 倍) と**そのフレームの分率**である。
+> ⚠ **単一の換算係数は存在しない — Scale に係数を掛けて wt% を作ってはならない**。
+> 必ず `phase_weight_fractions` を読むこと。
+
+| キー | 何か | 使いどころ |
+|---|---|---|
+| `phase_fractions` | **Scale** の正規化値 | **同一 basis 内の相対比較のみ** (新相の有意性・張り付き検出)。**転移の追跡には使えない** (下記) |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs` が精密化占有率込みで算出) | **出版値・定量相分析はこちら**。転移温度もこちら基準 |
+| `phase_weight_fraction_esd` | 重量分率の esd (共分散から伝播) | **出版には esd 必須** |
+| `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない)。**3 状態を区別する → 下記** |
+
+#### `cell_esd` の 3 状態 — `0.0` と `null` は**意味が違う**
+
+```json
+"cell_esd": {"mono":  [0.0133, 0.0177, 0.0109, 0.0, 0.1300, 0.0],
+             "cubic": [null, null, null, null, null, null]}
+```
+
+| 値 | 意味 | どう報告するか |
+|---|---|---|
+| `>0` | 解放して精密化した項の su | `a = 10.0316(133)` |
+| `0.0` | **対称拘束で厳密に固定** (monoclinic の α/γ = 90° 等) | 90° は定義値。esd を付けない |
+| `null` | **そのフレームで格子を解放していない** — `refine_cell=False` / `auto_freeze_minor_cells` による凍結・セル段の revert・未精密化 | 「参照値に固定 (not refined)」と書く。**esd を付けてはならない** |
+| 相ごと欠落 | 抽出できなかった (共分散構造の異常) | 出版せず原因を調べる |
+
+⚠ **「0 なら固定」と推論しないこと** — 解放した相の中にも真の `0.0` (対称拘束) がある。
+凍結は `null` でしか判らない。`auto_freeze_minor_cells` は**あなたが相を名指ししなくても**
+Scale が閾値未満の相を凍結するので、**どの相が凍結されたかは `cell_esd` の `null` で読む**。
+
+**「Scale は相対比較なら安全」は転移推定には当てはまらない**: `parametric_fit` の転移温度は
+「曲線が**絶対レベル** 0.50 (midpoint) / 0.10 (onset) を横切る軸値」であり、y 軸が Scale か
+wt% かで交差位置が動く。**Scale から転移温度を出さないこと**。
+
+> 実測 (K₂Mn[Fe(CN)₆] tetra 充電域): **同じ精密化**から Scale は「midpoint 9.515 h」を、
+> wt% は「**転移なし**」を出した。Scale が midpoint と呼んだ点は実際には **34.0 wt%** だった。
+
+`parametric_fit` は既定で重量分率基準 (`basis="weight"`)、返り値の **`fraction_basis`** に
+どちらで出したかが入る。**`"weight"` でなければ報告しない**。`basis="scale"` は診断専用。
+
+これらを返すツール (**どれも同じキー名**):
+
+| ツール | どこに |
+|---|---|
+| `sequential_rietveld` | `result["frames"][i]` (フレーム毎) |
+| `repair_frames` | `out["repairs"][j]` (**修復したフレーム毎**) |
+| `auto_rietveld` | 結果直下 |
+
+> **修復したフレームは `repairs[]` の値で置き換えて報告する** — `result["frames"][i]` は
+> **修復前**の値のままである (`repair_frames` は非破壊で元の系列を書き換えない)。
+> `target_frames` で名指しするのは `check_phase_set` が「信用するな」と言ったフレームであり、
+> 実測ではそれが**転移ドーム頂点の直前 (125-130) = 報告の主要値そのもの**だった。
+
+空 dict = その精密化から値が得られなかった (共分散なし/未収束) の意味で、**esd=0 ではない**。
+
 ## 禁止事項
 
 - **Rwp が良いことを根拠に相集合を正しいと結論しない** (J5/J7 の失敗は Rwp 8% で起きた)。
+- **`phase_fractions` (Scale) を wt% として報告しない** (実測 1.39-1.62 倍誤る。**倍率はフレーム
+  毎に違うので換算係数で直せない**)。定量相分析の出版値は
+  `phase_weight_fractions` ± `phase_weight_fraction_esd`。
 - **閾値を「期待した数字」に合わせて調整しない**。②/① の助言器は提案のみ、実測値を報告する。
 - **系統ブロックを近傍 warm-start で「直そう」としない** (両隣も同欠陥 = 無効)。
 - **「対策を入れたら直った」で因果を確定させない**。

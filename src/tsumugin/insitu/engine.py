@@ -15,7 +15,6 @@ GSAS 駆動は既定 runner (`_default_gsas_runner`) 内の `run_auto_rietveld` 
 
 from __future__ import annotations
 
-import inspect
 import math
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
 from ..reference.model import ReferencePhase
 from ..sequential.changepoint import ChangepointConfig, detect_changepoint
 from ..store.ledger import Ledger
+from ._warmstart import call_runner, runner_accepts_initial_fractions
 from .model import (
     Cell,
     FrameRietveldResult,
@@ -83,40 +83,38 @@ def _fractions_of(result: AutoRietveldResult, phase_names: Sequence[str]) -> dic
     return {name: float(fr.get(name, 0.0)) for name in phase_names}
 
 
-def _runner_accepts_initial_fractions(runner: "Runner") -> bool:
-    """runner が ``initial_fractions`` キーワード引数を受け付けるか判定する (Issue #82)。
+def _publication_of(result: AutoRietveldResult) -> dict[str, object]:
+    """精密化結果の**出版値** (重量分率 ± esd・格子 esd) をフレーム構築 kwargs へ写す。
 
-    ``Runner`` は ``(frame, phases, initial_cells)`` の 3 引数プロトコルを保つ (`make_gsas_runner`・
-    `insitu.anchor`・既存テストが依存する公開 API のため破壊しない)。相分率ウォームスタートは対応済み
-    runner (`make_gsas_runner` が生成するもの) にのみ、シグネチャ検査 (inspect) で検出して渡す。
-    3 引数のみの runner (大半のテストスタブ・カスタム runner) には一切渡さず、Runner 型自体は不変
-    のまま TypeError を起こさない (非破壊)。
+    **`phase_fractions` (Scale) では出版できない** (Issue #96 レビュー): Scale は単位胞の散乱能に
+    対する比例係数で、単位胞質量が相間で異なると重量分率と大きく乖離する (実測 K₂Mn[Fe(CN)₆]
+    tetra: **65.6 Scale% は同じ fit で 47.2 wt%** = この点で 1.39 倍の誤り)。**乖離はフレーム毎に
+    違い** (実測 fr112 1.62 / fr120 1.48 / fr124 1.41 / fr126 1.39 倍)、その大きさは相の単位胞質量比
+    (cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と各フレームの分率で決まる — **単一の換算係数は
+    存在しない**ので Scale に係数を掛けて wt% にはできない。operando の
+    主要な報告値 (相分率 vs 時間) はここを通るため、**フレームに引き継がないと**
+    `seq_result_to_dict` が幾ら serialize しても ③ には空 dict しか届かない
+    (= ② に配線があっても ③ にとっては「無い」のと同じ)。esd も同様で、esd を伴わない精密化値は
+    出版できない。
+
+    `_fractions_of` と違い**相名でのフィルタ/0.0 埋めをしない**: 重量分率は GSAS 自身が
+    `calcMassFracs` で全相まとめて算出した比であり、部分集合を取り出しても和=1 が保たれず、
+    欠測を 0.0 で埋めると「その相は 0 wt%」という**測定していない主張**になる。持ち帰った値を
+    そのまま渡し、無ければ空 dict へ縮退させる (後方互換: 3 引数スタブ runner/旧構築は空)。
     """
-    try:
-        sig = inspect.signature(runner)
-    except (TypeError, ValueError):
-        return False
-    params = sig.parameters
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return True
-    return "initial_fractions" in params
+    return {
+        "phase_weight_fractions": dict(result.phase_weight_fractions),
+        "phase_weight_fraction_esd": dict(result.phase_weight_fraction_esd),
+        "cell_esd": {name: tuple(esd) for name, esd in result.cell_esd.items()},
+    }
 
 
-def _call_runner(
-    runner: "Runner",
-    frame: FrameSpec,
-    phases: Sequence[PhaseSpec],
-    initial_cells: "dict[str, Cell] | None",
-    initial_fractions: "dict[str, float] | None",
-) -> AutoRietveldResult:
-    """runner を呼ぶ。initial_fractions は対応 runner のみへキーワード引数で渡す (Issue #82)。
-
-    Runner の 3 引数プロトコル自体は変更しない。initial_fractions が None、または runner が
-    受け付けないシグネチャの場合は従来通り 3 引数で呼ぶ (非回帰)。
-    """
-    if initial_fractions is not None and _runner_accepts_initial_fractions(runner):
-        return runner(frame, phases, initial_cells, initial_fractions=initial_fractions)
-    return runner(frame, phases, initial_cells)
+#: 相分率ウォームスタートの受け渡しは `_warmstart` に一元化する (Issue #96)。M9 逐次 (本モジュール) /
+#: M10 双方向区間 (`anchor.segment`) / 修復 (`repair`) の 3 経路が**同じ**機構を使う — Issue #82 が
+#: ここにしか配線されず他 2 経路が seed に張り付いた実害の再発防止 (経路ごとの実装は取り残される)。
+#: 旧 private 名は既存の呼び出し元/テスト互換のため別名として残す。
+_runner_accepts_initial_fractions = runner_accepts_initial_fractions
+_call_runner = call_runner
 
 
 def run_sequential_rietveld(
@@ -276,6 +274,9 @@ def run_sequential_rietveld(
                 # 【残差レポート同梱】: 新相追加トライアル後の最終 `result` から畳む (採用時は
                 #   追加後モデルの残差 = 実際に報告する fit と一致させる) 🔵 §4.5
                 residual_report=_residual_report_of(result),
+                # 【出版値の引き継ぎ】: 重量分率 ± esd・格子 esd。残差レポートと同じく最終 `result`
+                #   から取る (報告する fit と一致させる)。無ければ空 dict へ縮退 🔵 Issue #96 レビュー
+                **_publication_of(result),  # type: ignore[arg-type]
             )
         )
         ledger.append(
@@ -350,6 +351,9 @@ def _rebuild_frame(res, fr, names) -> "FrameRietveldResult":
         # 再精密化結果の残差で**再計算**する (元 fr の古い報告を持ち越すと、③ が差し替え済みの
         # fit に対して陳腐化した未説明ピークを読むことになる)。
         residual_report=_residual_report_of(res),
+        # 出版値も**再精密化結果のもの**で差し替える (同上: 古い wt%/esd の持ち越しは、
+        # 差し替えた fit に対して陳腐化した定量値を報告させる) 🔵 Issue #96 レビュー
+        **_publication_of(res),  # type: ignore[arg-type]
     )
 
 

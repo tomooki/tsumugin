@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
-from ...autorietveld.model import AutoRietveldResult, PhaseSpec
+from ...autorietveld.model import AutoRietveldResult, PhaseSpec, coerce_cell_esd
 from ..model import Cell, FrameSpec
 from .model import Anchor, AnchorConfig
 
@@ -65,11 +65,22 @@ def _refine_anchor(
     res = runner(frame, specs, None)
     cells: dict[str, Cell] = {k: tuple(v) for k, v in res.refined_cells.items()}  # type: ignore[misc]
     fracs = {k: float(v) for k, v in res.phase_fractions.items()}
+    # 出版値 (重量分率 + esd) は段階 B の AutoRietveldResult から Anchor へ貫通させる
+    # (Anchor 経由でしか出力フレームに届かないため; 空/非対応 runner は既定空 dict に縮退)。
+    wfracs = {k: float(v) for k, v in getattr(res, "phase_weight_fractions", {}).items()}
+    # esd の ``None`` (多相で未決定 = 捏造回避) を潰さず貫通させる (レビュー第6巡)。
+    wfrac_esd = {
+        k: (None if v is None else float(v))
+        for k, v in getattr(res, "phase_weight_fraction_esd", {}).items()
+    }
+    # 要素 None (格子未解放 = 値が決まっていない) を潰さない (`coerce_cell_esd` の docstring 参照)。
+    cesd = {k: coerce_cell_esd(v) for k, v in getattr(res, "cell_esd", {}).items()}
     return Anchor(
         frame_index=i, axis_value=frame.axis_value, phase_specs=tuple(specs),
         refined_cells=cells, rwp=float(res.final_rwp), gof=float(res.final_gof),
         phase_fractions=fracs, confidence=float(confidence), validity_passed=res.validity.passed,
         n_obs=int(getattr(res, "n_obs", 0)), fallback=fallback,
+        phase_weight_fractions=wfracs, phase_weight_fraction_esd=wfrac_esd, cell_esd=cesd,
     )
 
 

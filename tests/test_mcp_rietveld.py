@@ -190,3 +190,81 @@ def test_refine_with_model_action_setlimits():
     actions = [{"type": "SetLimits", "hist_id": 0, "low": 2.5, "high": 32.0}]
     out = refine_with_revisions([_H], [_P], actions, background_coeffs=6, runner=_stub_runner)
     assert out["specs"]["histograms"][0]["two_theta_limits"] == [2.5, 32.0]
+
+
+# ===========================================================================
+# 出版値の露出 (Issue #96 レビュー HIGH-2)
+# ---------------------------------------------------------------------------
+# `phase_fractions` は **Scale** であって重量分率ではない。単位胞質量が相間で異なると乖離する
+# (実測 K2Mn[Fe(CN)6] tetra: 同じ fit で 65.6 Scale% が 47.2 wt% = この点で 1.39 倍。乖離は
+# フレーム毎に違い [1.39-1.62 倍]、大きさは単位胞質量比 [cubic 1103.4 / tetra 517.8 amu = 2.13 倍]
+# と分率で決まる = **単一の換算係数は無い**)。
+# `autorietveld/model.py` は「出版値には phase_weight_fractions を使うこと」と言うが、② に載って
+# いなければ ③ は**受け取れない** = その指示は実行不能である (★ 実行者から見えない実装は「無い」と同じ)。
+# esd を伴わない精密化値は出版できないため、cell_esd / phase_weight_fraction_esd も同経路で出す。
+# ===========================================================================
+
+
+def _publication_runner(inp: AnalysisInput) -> AutoRietveldResult:
+    return AutoRietveldResult(
+        stage_results=(),
+        final_rwp=7.0,
+        final_gof=1.2,
+        refined_cells={"ph": (10.4, 10.4, 10.4, 90.0, 90.0, 90.0)},
+        validity=ValidityReport(passed=True),
+        phase_fractions={"cubic": 0.656, "tetra": 0.344},
+        phase_weight_fractions={"cubic": 0.472, "tetra": 0.528},
+        phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+        cell_esd={"ph": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+    )
+
+
+def test_auto_rietveld_exposes_publication_weight_fractions_and_esd():
+    """出版値 (重量分率 ± esd) と格子 esd が ② の出力に載ること。"""
+    out = auto_rietveld([_H], [_P], runner=_publication_runner)
+
+    assert out["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
+    assert out["phase_weight_fraction_esd"] == {"cubic": 0.006, "tetra": 0.006}
+    assert out["cell_esd"] == {"ph": [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]}
+    json.dumps(out, allow_nan=False)
+
+
+def test_auto_rietveld_publication_keys_present_even_when_unavailable():
+    """キーは常に存在させスキーマを安定させる (residual_report と同一規律)。
+
+    キーの**欠落**と「値が空」を ③ が区別できないと、esd 不明を「esd=0」と読む余地が残る。
+    """
+    out = auto_rietveld([_H], [_P], runner=_stub_runner)  # esd/重量分率を持たない runner
+
+    assert out["phase_weight_fractions"] == {}
+    assert out["phase_weight_fraction_esd"] == {}
+    assert out["cell_esd"] == {}
+    json.dumps(out, allow_nan=False)
+
+
+def test_auto_rietveld_publication_values_are_json_safe():
+    """非有限 (共分散が壊れた精密化) は None へ落とす (allow_nan=False クラッシュを防ぐ)。"""
+
+    def runner(inp: AnalysisInput) -> AutoRietveldResult:
+        return AutoRietveldResult(
+            stage_results=(), final_rwp=7.0, final_gof=1.2,
+            refined_cells={}, validity=ValidityReport(passed=True),
+            phase_weight_fractions={"cubic": float("nan")},
+            phase_weight_fraction_esd={"cubic": float("inf")},
+            cell_esd={"cubic": (float("nan"), 0.1, 0.1, 0.0, 0.0, 0.0)},
+        )
+
+    out = auto_rietveld([_H], [_P], runner=runner)
+
+    assert out["phase_weight_fractions"]["cubic"] is None
+    assert out["phase_weight_fraction_esd"]["cubic"] is None
+    assert out["cell_esd"]["cubic"][0] is None
+    json.dumps(out, allow_nan=False)
+
+
+def test_refine_with_revisions_exposes_publication_values():
+    """アクチュエータ経路でも同じ (③ が改訂後の出版値を読めなければ改訂の意味がない)。"""
+    out = refine_with_revisions([_H], [_P], [], runner=_publication_runner)
+
+    assert out["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
+    assert out["cell_esd"]["ph"] == [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]

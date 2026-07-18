@@ -10,12 +10,15 @@ tests/insitu/test_engine.py に倣う。
 
 from __future__ import annotations
 
+import pytest
+
 from tsumugin.autorietveld.model import AutoRietveldResult, PhaseSpec, ValidityReport
 from tsumugin.insitu.model import FrameRietveldResult, FrameSpec, SequentialRietveldResult
 from tsumugin.insitu.repair import (
     Discontinuity,
     classify,
     detect_discontinuities,
+    discontinuities_from_frames,
     repair_isolated,
 )
 from tsumugin.store.ledger import Ledger
@@ -265,6 +268,72 @@ def test_repair_rwp_tol_gate():
     assert report.needs_model_revision == (2,)
 
 
+# ---------------------------------------------------------------------------
+# 出版値 (重量分率 ± esd・格子 esd) の引き継ぎ (Issue #96 レビュー 第2巡 HIGH)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_carries_publication_values_from_the_trial_result():
+    """★修復したフレームの**出版値**が `FrameRepair` に載ること。
+
+    **修復対象のフレームこそ出版値が要る**: ③ は `check_phase_set` の seed_pinned/frozen から
+    `target_frames` を組んで修復する — 実測では**転移ドーム頂点の直前 6 フレーム (125-130)**、
+    つまり論文の主要値そのものである。修復後に Scale (`phase_fractions`) しか持たなければ、
+    ③ は「1.39-1.62 倍誤る値を報告する」か「直したばかりのフレームの出版値が無い」の二択に
+    追い込まれる。
+    """
+    frames = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL) for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+
+    def runner(frame, phases, initial_cells):
+        return AutoRietveldResult(
+            stage_results=(),
+            final_rwp=7.0,
+            final_gof=1.0,
+            refined_cells=GOOD_CELL,
+            validity=ValidityReport(passed=True),
+            phase_fractions={"cubic": 0.656, "tetra": 0.344},
+            phase_weight_fractions={"cubic": 0.472, "tetra": 0.528},
+            phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+            cell_esd={"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+        )
+
+    report = repair_isolated(frames, result, [ALPHA], runner, disc)
+
+    rep = report.repairs[0]
+    assert rep.phase_fractions == {"cubic": 0.656, "tetra": 0.344}  # Scale は従来通り
+    assert rep.phase_weight_fractions == {"cubic": 0.472, "tetra": 0.528}
+    assert rep.phase_weight_fraction_esd == {"cubic": 0.006, "tetra": 0.006}
+    assert rep.cell_esd == {"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)}
+
+
+def test_repair_publication_values_degrade_to_empty_when_the_trial_has_none():
+    """出版値を持たない runner (スタブ/共分散なし) では空 dict へ縮退する (後方互換)。
+
+    **0.0 で埋めない**: 重量分率は GSAS が全相まとめて算出した比であり、欠測を 0.0 で埋めると
+    「その相は 0 wt%」という**測定していない主張**になる (`engine._publication_of` と同一規律)。
+    """
+    frames = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL) for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+
+    def runner(frame, phases, initial_cells):
+        return _result(rwp=7.0, cells=GOOD_CELL, fractions={"alpha": 1.0})
+
+    rep = repair_isolated(frames, result, [ALPHA], runner, disc).repairs[0]
+
+    assert rep.phase_weight_fractions == {}
+    assert rep.phase_weight_fraction_esd == {}
+    assert rep.cell_esd == {}
+
+
 def test_consecutive_run_is_still_attempted_and_repaired():
     """連続フラグ区間も run の外側の良好フレームから修復を試みる (実測 f160-172 の回帰テスト)。
 
@@ -433,3 +502,192 @@ def test_first_frame_has_no_left_neighbour_uses_right_only():
     assert len(report.repairs) == 1
     assert report.repairs[0].source == "R"
     assert seen_initial == [right_cell]  # 左隣がないので右隣のみ 1 回試す
+
+
+# ---------------------------------------------------------------------------
+# 相分率ウォームスタート (Issue #96)
+# ---------------------------------------------------------------------------
+
+BETA = PhaseSpec(structure_path="beta.cif", phase_name="beta")
+TWO_PHASE_CELL = {
+    "alpha": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0),
+    "beta": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0),
+}
+
+
+def test_repair_passes_neighbour_fractions_as_initial_fractions():
+    """近傍の相分率を `initial_fractions` として渡す (Issue #96)。
+
+    セルだけを warm-start しても分率は毎回 GSAS の等分 seed (2 相なら 0.50/0.50) から
+    再出発するため、修復試行が seed に張り付いて Rwp が改善せず採用されない。
+    """
+    frames = _base_frames(5)
+    left_fracs = {"alpha": 0.7, "beta": 0.3}
+    right_fracs = {"alpha": 0.6, "beta": 0.4}
+    fr_results = (
+        _frame(0, 8.0, left_fracs, cells=TWO_PHASE_CELL),
+        _frame(1, 8.0, left_fracs, cells=TWO_PHASE_CELL),
+        _frame(2, 15.0, {"alpha": 0.5, "beta": 0.5}, cells=TWO_PHASE_CELL),
+        _frame(3, 8.0, right_fracs, cells=TWO_PHASE_CELL),
+        _frame(4, 8.0, right_fracs, cells=TWO_PHASE_CELL),
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+    assert [d.frame_index for d in disc] == [2]
+
+    seen = []
+
+    def runner(frame, phases, initial_cells, initial_fractions=None):
+        seen.append(initial_fractions)
+        return _result(rwp=7.0, cells=TWO_PHASE_CELL, fractions={"alpha": 0.65, "beta": 0.35})
+
+    repair_isolated(frames, result, [ALPHA, BETA], runner, disc)
+
+    assert left_fracs in seen  # 左隣 (frame1) の分率
+    assert right_fracs in seen  # 右隣 (frame3) の分率
+
+
+def test_repair_fractions_restricted_to_neighbour_phase_set():
+    """渡す分率は実際に渡す相集合の分だけ (相名の取り違えを持ち込まない)。"""
+    frames = _base_frames(3)
+    fr_results = (
+        _frame(0, 15.0, {"alpha": 0.5, "beta": 0.5}, cells=TWO_PHASE_CELL),
+        _frame(1, 8.0, {"alpha": 1.0}, cells=GOOD_CELL, phase_names=("alpha",)),
+        _frame(2, 8.0, {"alpha": 1.0}, cells=GOOD_CELL, phase_names=("alpha",)),
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = (Discontinuity(frame_index=0, axis_value=0.0, rwp=15.0, reasons=("rwp_abs",)),)
+
+    seen = []
+
+    def runner(frame, phases, initial_cells, initial_fractions=None):
+        seen.append((tuple(p.phase_name for p in phases), initial_fractions))
+        return _result(rwp=7.0, cells=GOOD_CELL, fractions={"alpha": 1.0})
+
+    repair_isolated(frames, result, [ALPHA, BETA], runner, disc)
+
+    assert seen == [(("alpha",), {"alpha": 1.0})]
+
+
+def test_repair_three_arg_runner_still_works():
+    """3 引数 runner は従来通り (TypeError を起こさない = 非破壊)。"""
+    frames = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 0.5, "beta": 0.5}, cells=TWO_PHASE_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    disc = detect_discontinuities(result, rwp_delta=1.8)
+    arities = []
+
+    def runner(frame, phases, initial_cells):  # 3 引数のみ
+        arities.append(3)
+        return _result(rwp=7.0, cells=TWO_PHASE_CELL, fractions={"alpha": 0.6, "beta": 0.4})
+
+    report = repair_isolated(frames, result, [ALPHA, BETA], runner, disc)
+
+    assert arities == [3, 3]  # 左右 2 回
+    assert len(report.repairs) == 1
+
+
+# ---------------------------------------------------------------------------
+# discontinuities_from_frames (明示ターゲット指定, Issue #96 レビュー HIGH-1)
+# ---------------------------------------------------------------------------
+
+
+def test_discontinuities_from_frames_builds_records_from_indices():
+    """フレーム番号から `Discontinuity` を組める (seed 張り付きは検出統計に映らないため)。
+
+    `detect_discontinuities` は Rwp ジャンプ/分率ジャンプでしか発火せず、**seed 張り付きは
+    定義上「平坦」**なのでどの閾値でも拾えない。③ が `check_phase_set` の
+    `seed_pinned_frames[].frame` を直接ターゲットにできる経路が要る。
+    """
+    frames = tuple(_frame(i, 8.0, {"alpha": 0.5, "beta": 0.5}) for i in range(5))
+    result = SequentialRietveldResult(frames=frames)
+
+    disc = discontinuities_from_frames(result, [3, 1])
+
+    assert [d.frame_index for d in disc] == [1, 3]  # 昇順に正規化
+    assert all(d.reasons == ("targeted",) for d in disc)
+    assert [d.rwp for d in disc] == [8.0, 8.0]
+    assert [d.axis_value for d in disc] == [1.0, 3.0]
+
+
+def test_discontinuities_from_frames_dedupes():
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(4))
+    result = SequentialRietveldResult(frames=frames)
+
+    disc = discontinuities_from_frames(result, [2, 2, 2])
+
+    assert [d.frame_index for d in disc] == [2]
+
+
+def test_discontinuities_from_frames_custom_reason():
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(3))
+    result = SequentialRietveldResult(frames=frames)
+
+    disc = discontinuities_from_frames(result, [1], reason="seed_pinned")
+
+    assert disc[0].reasons == ("seed_pinned",)
+
+
+def test_discontinuities_from_frames_rejects_out_of_range():
+    """範囲外は例外 (② が error dict へ縮退する)。黙って無視すると「修復対象なし」に化ける。"""
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(3))
+    result = SequentialRietveldResult(frames=frames)
+
+    with pytest.raises(ValueError, match="範囲外"):
+        discontinuities_from_frames(result, [0, 7])
+
+
+def test_discontinuities_from_frames_rejects_empty():
+    """空リストは「対象なし」= 呼ぶ意味がない。黙って repairs=[] を返さない。"""
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(3))
+    result = SequentialRietveldResult(frames=frames)
+
+    with pytest.raises(ValueError, match="空"):
+        discontinuities_from_frames(result, [])
+
+
+def test_discontinuities_from_frames_rejects_non_integer():
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(3))
+    result = SequentialRietveldResult(frames=frames)
+
+    with pytest.raises(ValueError, match="整数"):
+        discontinuities_from_frames(result, ["1"])  # type: ignore[list-item]
+
+
+def test_repair_targeted_frames_are_not_warm_start_sources():
+    """★両隣も同欠陥の罠: ターゲット指定したフレーム同士は warm-start 元にならない。
+
+    seed 張り付きは連続することがある (実測 125-130 の 6 連続)。張り付いたフレームから
+    warm-start すると欠陥をそのまま引き継ぐため、`repair_isolated` の `flagged` 集合
+    (= 渡した `Discontinuity` のフレーム番号) が warm-start 元から除外することを担保する。
+    """
+    frames = _base_frames(6)
+    # f2,f3,f4 が 3 連続で張り付き (Rwp は平凡 8.0 — 検出統計には映らない)。
+    # 健全な両外側 (f0,f1 / f5) は張り付き値と**区別できる**分率を持たせる。
+    pinned = {"alpha": 0.5, "beta": 0.5}
+    healthy_l = {"alpha": 0.42, "beta": 0.58}
+    healthy_r = {"alpha": 0.61, "beta": 0.39}
+    fr_results = tuple(
+        _frame(i, 8.0, fr, cells=TWO_PHASE_CELL)
+        for i, fr in enumerate([healthy_l, healthy_l, pinned, pinned, pinned, healthy_r])
+    )
+    result = SequentialRietveldResult(frames=fr_results)
+    sources = []
+
+    def runner(frame, phases, initial_cells, initial_fractions=None):
+        sources.append((frame.data_path, initial_fractions))
+        return _result(rwp=6.0, cells=TWO_PHASE_CELL, fractions={"alpha": 0.7, "beta": 0.3})
+
+    disc = discontinuities_from_frames(result, [2, 3, 4])
+    report = repair_isolated(frames, result, [ALPHA, BETA], runner, disc)
+
+    # 3 フレームすべて修復された (Rwp 8.0 → 6.0)
+    assert [r.frame_index for r in report.repairs] == [2, 3, 4]
+    # warm-start 元は **必ず** 健全な f1/f5 の分率であり、張り付き 0.5/0.5 ではない
+    assert sources, "runner が呼ばれていない"
+    for _path, fracs in sources:
+        assert fracs != pinned, f"張り付きフレームから warm-start している: {fracs}"
+        assert fracs in (healthy_l, healthy_r), f"想定外の warm-start 元: {fracs}"

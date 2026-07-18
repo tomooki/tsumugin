@@ -318,6 +318,37 @@ def test_check_phase_set_empty_or_malformed_result_is_never_clean(bad):
     json.dumps(out, allow_nan=False)
 
 
+def test_check_phase_set_reports_seed_pinned_frames():
+    """seed 張り付き (2 相で厳密 50/50) を ③ へ露出する (Issue #96)。
+
+    実測 (K2Mn[Fe(CN)6] 247 フレーム) で 9 フレームが seed 値に張り付いたが Rwp は 8.4-8.5% と
+    平凡で、`is_complete`/非単調性フラグのどれにも出なかった。**厳密な seed 一致が唯一の指紋**。
+    """
+    fractions = [0.42, 0.5, 0.5, 0.69]
+    frames = tuple(
+        _frame(i, 8.4, {"tetra": f, "cubic": 1.0 - f}) for i, f in enumerate(fractions)
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+    assert [f["frame"] for f in out["seed_pinned_frames"]] == [1, 2]
+    assert out["seed_pinned_frames"][0]["n_phases"] == 2
+    assert out["seed_pinned_frames"][0]["seed_value"] == 0.5
+    assert out["seed_pinned"] is True
+    json.dumps(out, allow_nan=False)
+
+
+def test_check_phase_set_single_phase_series_has_no_seed_pinning():
+    """単相 (1.0) は seed 張り付きではない (偽陽性にしない)。"""
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(4))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+    assert out["seed_pinned"] is False
+    assert out["seed_pinned_frames"] == []
+    json.dumps(out, allow_nan=False)
+
+
 def test_check_phase_set_flags_oscillating_fraction():
     fractions = [0.5, 0.15, 0.55, 0.1, 0.6, 0.05]
     frames = tuple(
@@ -556,6 +587,113 @@ def test_repair_frames_no_discontinuities_is_a_noop():
 
 
 # ===========================================================================
+# 出版値の直列化 (Issue #96 レビュー 第2巡 HIGH)
+# ===========================================================================
+
+
+def _publication_result(rwp=7.0):
+    """出版値 (重量分率 ± esd・格子 esd) を実際に持つ試行結果。"""
+    return AutoRietveldResult(
+        stage_results=(),
+        final_rwp=rwp,
+        final_gof=1.0,
+        refined_cells=GOOD_CELL,
+        validity=ValidityReport(passed=True),
+        phase_fractions={"cubic": 0.656, "tetra": 0.344},
+        phase_weight_fractions={"cubic": 0.472, "tetra": 0.528},
+        phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+        cell_esd={"alpha": (0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+    )
+
+
+def _spike_series(n=5):
+    frame_specs = _base_frames(n)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL)
+        for i, r in enumerate([8.0, 8.0, 15.0] + [8.0] * (n - 3))
+    )
+    return frame_specs, seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+
+
+def test_repair_frames_serializes_publication_values_per_repair():
+    """★修復したフレームの出版値が ② の `repairs[]` に**値ごと**載ること。
+
+    ③ が修復するのは `check_phase_set` が名指ししたフレーム = 実測では転移ドーム頂点の直前
+    (125-130) = 論文の主要値。Scale だけ返せば ③ は 1.39-1.62 倍誤る値を報告するしかなくなる。
+    """
+    frame_specs, result = _spike_series()
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=lambda frame, phases, initial_cells: _publication_result(),
+    )
+
+    rep = out["repairs"][0]
+    assert rep["phase_fractions"] == {"cubic": 0.656, "tetra": 0.344}  # Scale は従来通り
+    assert rep["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
+    assert rep["phase_weight_fraction_esd"] == {"cubic": 0.006, "tetra": 0.006}
+    assert rep["cell_esd"] == {"alpha": [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]}
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_publication_keys_exist_even_when_the_trial_has_none():
+    """出版値が無くてもキーは存在させる (③ から見たスキーマを安定させる; 他経路と同一規律)。
+
+    空 dict = 「その精密化から値が得られなかった」であって esd=0 ではない。
+    """
+    frame_specs, result = _spike_series()
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=lambda frame, phases, initial_cells: _autorietveld_result(
+            7.0, GOOD_CELL, {"alpha": 1.0}
+        ),
+    )
+
+    rep = out["repairs"][0]
+    for key in ("phase_weight_fractions", "phase_weight_fraction_esd", "cell_esd"):
+        assert key in rep, f"{key} のキーが無い (③ が欠落と esd=0 を取り違える)"
+        assert rep[key] == {}
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_publication_values_are_json_safe():
+    """非有限の出版値は None へ落ちる (json.dumps allow_nan=False 安全)。"""
+    frame_specs, result = _spike_series()
+    trial = AutoRietveldResult(
+        stage_results=(),
+        final_rwp=7.0,
+        final_gof=1.0,
+        refined_cells=GOOD_CELL,
+        validity=ValidityReport(passed=True),
+        phase_fractions={"alpha": 1.0},
+        phase_weight_fractions={"alpha": float("nan")},
+        phase_weight_fraction_esd={"alpha": float("inf")},
+        cell_esd={"alpha": (float("nan"), 0.0002, 0.0002, 0.0, 0.0, 0.0)},
+    )
+
+    out = repair_frames(
+        result,
+        [f.to_dict() for f in frame_specs],
+        [ALPHA.to_dict()],
+        rwp_delta=1.8,
+        runner=lambda frame, phases, initial_cells: trial,
+    )
+
+    rep = out["repairs"][0]
+    assert rep["phase_weight_fractions"] == {"alpha": None}
+    assert rep["phase_weight_fraction_esd"] == {"alpha": None}
+    assert rep["cell_esd"]["alpha"][0] is None
+    json.dumps(out, allow_nan=False)
+
+
+# ===========================================================================
 # G2: repair_frames の instrument spec / two_theta_limits (§4.5 到達可能性 #2)
 # ===========================================================================
 
@@ -745,3 +883,291 @@ def test_check_phase_set_error_does_not_suggest_an_impossible_chain():
     msg = out["error"]
     assert "sequential_rietveld" in msg, "実際に通る入力元を案内していない"
     assert "渡せません" in msg, "repair_frames の戻り値が渡せないことを案内していない"
+
+
+# ===========================================================================
+# repair_frames(target_frames=...) — 検出統計に映らない欠陥の修復経路
+# (Issue #96 レビュー HIGH-1: seed 張り付きは「平坦」なので detect_discontinuities では
+#  原理的に到達できず、③ への指示「seed_pinned_frames[].frame を repair_frames で直す」が
+#  **実行不能**だった)
+# ===========================================================================
+
+
+def _pinned_series():
+    """f1,f2 が seed 張り付き (Rwp は全フレーム平凡 = ジャンプ検出には映らない) の系列。"""
+    fr = [
+        {"alpha": 0.42, "beta": 0.58},
+        {"alpha": 0.5, "beta": 0.5},
+        {"alpha": 0.5, "beta": 0.5},
+        {"alpha": 0.61, "beta": 0.39},
+    ]
+    cells = {"alpha": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0), "beta": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)}
+    frames = tuple(_frame(i, 8.4, f, cells=cells) for i, f in enumerate(fr))
+    return SequentialRietveldResult(frames=frames), cells
+
+
+def test_repair_frames_default_detection_cannot_see_seed_pinning():
+    """★回帰の据え付け: 既定の検出は張り付きフレームを 1 つも拾えない (欠陥の再現)。
+
+    これが `target_frames` の存在理由である。張り付きは Rwp/分率の**ジャンプではない**ため、
+    ② は「不連続なし」= 「直すものは無い」と答えてしまう — ③ が直前に「信用するな」と
+    告げられたフレームに対して、である。
+    """
+    seq, _cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    out = repair_frames(result, frames, phases, runner=lambda *a, **k: None)
+
+    assert out["discontinuities"] == []
+    assert out["repairs"] == []
+
+
+def test_repair_frames_target_frames_repairs_exactly_those_frames():
+    """`target_frames` で指定したフレームだけを修復する (検出を迂回する)。"""
+    seq, cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+    seen = []
+
+    def runner(frame, phases_, initial_cells, initial_fractions=None):
+        seen.append((frame.data_path, initial_fractions))
+        return _autorietveld_result(6.0, cells, {"alpha": 0.7, "beta": 0.3})
+
+    out = repair_frames(result, frames, phases, target_frames=[1, 2], runner=runner)
+
+    assert [d["frame"] for d in out["discontinuities"]] == [1, 2]
+    assert all(d["reasons"] == ["targeted"] for d in out["discontinuities"])
+    assert [r["frame"] for r in out["repairs"]] == [1, 2]  # Rwp 8.4 → 6.0 で採用
+    assert {p for p, _ in seen} == {"f1.xrdml", "f2.xrdml"}
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_target_frames_never_warm_starts_from_a_targeted_frame():
+    """★両隣も同欠陥の罠: 指定フレーム同士は warm-start 元にならない。
+
+    実測では張り付きが 6 連続した (125-130)。隣も張り付いているのにそこから種を貰えば、
+    欠陥をそのまま引き継いで「修復した」と報告する。
+    """
+    seq, cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+    seeds = []
+
+    def runner(frame, phases_, initial_cells, initial_fractions=None):
+        seeds.append(initial_fractions)
+        return _autorietveld_result(6.0, cells, {"alpha": 0.7, "beta": 0.3})
+
+    repair_frames(result, frames, phases, target_frames=[1, 2], runner=runner)
+
+    assert seeds
+    for s in seeds:
+        assert s != {"alpha": 0.5, "beta": 0.5}, f"張り付きフレームから warm-start した: {s}"
+
+
+def test_repair_frames_target_frames_out_of_range_is_error():
+    seq, _cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    out = repair_frames(result, frames, phases, target_frames=[1, 99], runner=lambda *a, **k: None)
+
+    assert "error" in out
+    assert out["error_type"] == "ValueError"
+    assert "repairs" not in out, "エラー時に「修復なし」と誤読される形を返さない"
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_empty_target_frames_is_error_not_a_silent_noop():
+    """空の `target_frames` を「異常なし」と答えない (② の最悪の失敗様態)。"""
+    seq, _cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    out = repair_frames(result, frames, phases, target_frames=[], runner=lambda *a, **k: None)
+
+    assert "error" in out
+    assert "repairs" not in out
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_target_frames_end_to_end_from_check_phase_set():
+    """★到達可能性 (§4.5): `check_phase_set` の出力だけから `repair_frames` を組めること。
+
+    ③ は JSON しか持たない。`seed_pinned_frames[].frame` → `target_frames` が実際に繋がることを
+    **両ツールを繋いで**確かめる (片方ずつのテストでは経路の断絶を見逃す — それが本 PR の欠陥だった)。
+    """
+    seq, cells = _pinned_series()
+    result = seq_result_to_dict(seq)
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(4)]
+    phases = [ALPHA.to_dict(), PhaseSpec(structure_path="beta.cif", phase_name="beta").to_dict()]
+
+    diag = check_phase_set(result)
+    targets = [f["frame"] for f in diag["seed_pinned_frames"]]
+    assert targets == [1, 2]
+
+    out = repair_frames(
+        result, frames, phases, target_frames=targets,
+        runner=lambda f, p, c, initial_fractions=None: _autorietveld_result(
+            6.0, cells, {"alpha": 0.7, "beta": 0.3}
+        ),
+    )
+
+    assert [r["frame"] for r in out["repairs"]] == [1, 2]
+
+
+# ===========================================================================
+# check_phase_set: 分率凍結 (Issue #96 レビュー MEDIUM-3)
+# ===========================================================================
+
+
+def test_check_phase_set_reports_frozen_fraction_frames():
+    """分率 warm-start 下で「直前フレームの値のまま」凍結したフレームを露出する。
+
+    1/n 検査 (`seed_pinned`) は warm-start が効いていないことの canary。warm-start が効いた後の
+    死んだ分率精密化は **1/n ではなく直前フレームの値**に張り付くため 1/n 検査の視野の外に出る。
+    """
+    fr = [0.42, 0.42, 0.42, 0.69]
+    frames = tuple(_frame(i, 8.4, {"tetra": f, "cubic": 1.0 - f}) for i, f in enumerate(fr))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+
+    assert out["fractions_frozen"] is True
+    assert [f["frame"] for f in out["frozen_fraction_frames"]] == [1, 2]
+    assert out["frozen_fraction_frames"][0]["previous_frame"] == 0
+    assert out["seed_pinned"] is False, "1/n ではないので seed 検査には出ない (別シグナル)"
+    assert "target_frames" in out["frozen_fraction_recommendation"]
+    json.dumps(out, allow_nan=False)
+
+
+def test_check_phase_set_static_plateau_is_not_frozen():
+    """★偽陽性ガード: 揺らぎのある静止プラトー (実在の物理) を欠陥と報告しない。"""
+    fr = [0.4000, 0.4003, 0.3998, 0.4001]
+    frames = tuple(_frame(i, 8.0, {"tetra": f, "cubic": 1.0 - f}) for i, f in enumerate(fr))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+
+    assert out["fractions_frozen"] is False
+    assert out["frozen_fraction_frames"] == []
+    json.dumps(out, allow_nan=False)
+
+
+def test_check_phase_set_frozen_keys_always_present_for_stable_schema():
+    frames = tuple(_frame(i, 8.0, {"alpha": 1.0}) for i in range(3))
+    result = seq_result_to_dict(SequentialRietveldResult(frames=frames))
+
+    out = check_phase_set(result)
+
+    for key in ("fractions_frozen", "frozen_fraction_frames", "frozen_fraction_recommendation"):
+        assert key in out
+
+
+# ===========================================================================
+# 相分率の basis 表明 (Issue #96 レビュー第4巡 HIGH)
+# ---------------------------------------------------------------------------
+# `check_phase_set`/`repair_frames` は「相分率からは数字を導出しない」と宣言されていたが**偽**
+# だった。両者とも `phase_fractions` (Scale) から判断を作る:
+#   - `check_phase_set` → `phases[].flagged` (J7 のトリガ; `min_amplitude` は Scale 単位の絶対閾値)
+#   - `repair_frames`   → `fraction_deviation` 基準 (格子基準は存在しない) → 再精密化するフレーム集合
+# どちらも basis で答えが変わるため、**どちらの基準で判断したかを出力に label する**。
+# Scale を選ぶのは意図的 (J7 の病理は散乱寄与 = Scale に現れ、seed 指紋は Scale でしか定義できず、
+# 検出器と warm-start の作動器は同じ座標で喋る必要がある) — 詳細は各 docstring / test_layer_coverage。
+# ===========================================================================
+
+
+def _oscillating_seq(scales):
+    """cubic の Scale 系列を持つ 2 相系列 (tetra は補数)。"""
+    frames = tuple(
+        FrameRietveldResult(
+            frame_index=i, axis_value=float(i), data_path=f"f{i}.xrdml", rwp=8.0, gof=1.0,
+            refined_cells={
+                "cubic": (10.4, 10.4, 10.4, 90.0, 90.0, 90.0),
+                "tetra": (10.0, 10.0, 10.2, 90.0, 90.0, 90.0),
+            },
+            phase_fractions={"cubic": s, "tetra": 1.0 - s},
+            phase_names=("cubic", "tetra"),
+        )
+        for i, s in enumerate(scales)
+    )
+    return seq_result_to_dict(
+        SequentialRietveldResult(frames=frames, phase_names=("cubic", "tetra"))
+    )
+
+
+def test_check_phase_set_labels_its_fraction_basis():
+    """★判断の基準 (Scale) を出力に明示すること。
+
+    label が無ければ ③ は wt% の話だと読みうる (`parametric_fit` は `fraction_basis` を返すので、
+    返さないツールは「basis 非依存」と誤読される)。**Scale か wt% かで `flagged` は変わる**。
+    """
+    out = check_phase_set(_oscillating_seq([0.02, 0.11, 0.02, 0.11, 0.02, 0.11, 0.02]))
+
+    assert out["fraction_basis"] == "scale"
+    json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_labels_its_detection_fraction_basis():
+    """★不連続**検出**の基準 (Scale) を出力に明示すること。
+
+    `frac_delta` は Scale 単位の絶対閾値であり、**再精密化されるフレーム集合は basis 依存**
+    (ledger に残る状態変化)。実測: Scale `[0.10,0.12,0.45,0.16,0.18]` は 3 フレーム、
+    同じ系列の wt% は 1 フレームを選ぶ。
+    """
+    seq = _oscillating_seq([0.10, 0.12, 0.45, 0.16, 0.18])
+    frames = [FrameSpec(data_path=f"f{i}.xrdml", axis_value=float(i)).to_dict() for i in range(5)]
+    phases = [
+        PhaseSpec(structure_path="c.cif", phase_name="cubic").to_dict(),
+        PhaseSpec(structure_path="t.cif", phase_name="tetra").to_dict(),
+    ]
+
+    def runner(frame, phases_, initial_cells):
+        return AutoRietveldResult(
+            stage_results=(), final_rwp=7.0, final_gof=1.0,
+            refined_cells=dict(initial_cells), validity=ValidityReport(passed=True),
+            phase_fractions={"cubic": 0.5, "tetra": 0.5},
+            phase_weight_fractions={"cubic": 0.68, "tetra": 0.32},
+            phase_weight_fraction_esd={"cubic": 0.006, "tetra": 0.006},
+            cell_esd={"cubic": (0.0002,) * 6, "tetra": (0.0002,) * 6},
+        )
+
+    out = repair_frames(seq, frames, phases, runner=runner)
+
+    assert out["fraction_basis"] == "scale"
+    # 分率由来の基準が実在すること (「Rwp/格子で検出する」は偽だった)
+    assert any("fraction_deviation" in d["reasons"] for d in out["discontinuities"]), (
+        "fraction_deviation 基準が発火していない — この系列は Rwp/セル一定で分率だけが飛ぶ"
+    )
+    json.dumps(out, allow_nan=False)
+
+
+def test_check_phase_set_returns_the_series_it_judged():
+    """★`flagged` の根拠となった系列そのものを返すこと (boolean を信じるしかない状態にしない)。
+
+    `min_amplitude=0.1` は **Scale 単位の絶対**振幅フィルタなので、`flagged=False` は
+    「Scale 振幅が閾値未満」であって「相量が動いていない」ではない。実測 K2Mn[Fe(CN)6]
+    (cubic 1103.4 / tetra 517.8 amu = 質量比 2.13) では、cubic Scale 0.02↔0.11 の振幅 0.09 は
+    既定閾値を通らず `flagged=False` になるが、同じ系列の wt% は 0.042↔0.209 = 振幅 0.167 で
+    **flagged=True** 相当になる。① の `NonMonotonicReport` は判定系列を持っているのに ② が
+    捨てていたため、③ は閾値際の偽陰性を**自分で見直す材料が無かった** (① にあっても ② に
+    無ければ ③ にとって「無い」= ★ 規則)。
+    """
+    scales = [0.02, 0.11, 0.02, 0.11, 0.02, 0.11, 0.02]
+    out = check_phase_set(_oscillating_seq(scales))
+
+    cubic = next(p for p in out["phases"] if p["phase"] == "cubic")
+    assert cubic["fractions"] == pytest.approx(scales), (
+        "判定に使った Scale 系列が返っていない — ③ は flagged の boolean を信じるしかなくなる"
+    )
+    # この系列は既定閾値では発火しない (= 偽陰性が起こりうる閾値際であることの回帰固定)
+    assert cubic["flagged"] is False
+    # しかし振幅を下げれば発火する = ③ には再判定の手段がある
+    lowered = check_phase_set(_oscillating_seq(scales), min_amplitude=0.05)
+    assert next(p for p in lowered["phases"] if p["phase"] == "cubic")["flagged"] is True
+    json.dumps(out, allow_nan=False)

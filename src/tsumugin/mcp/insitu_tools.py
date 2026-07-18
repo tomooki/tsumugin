@@ -10,6 +10,8 @@ M8 の `rietveld_tools` と同じ設計 (二重反転回避): 閉ループ丸ご
 - ``identify_and_add_phase``: 残差/生パターン + elements → MP で新相を同定・CIF 物質化し PhaseSpec を返す
   (相追加の候補提示; 実際の採否・再精密化は ③ が sequential_rietveld/refine で行う)。
 - ``parametric_fit``: 系列結果 (JSON) + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ。
+  転移は **既定で重量分率基準** (``basis="weight"`` = 出版値)。Scale 基準は明示要求時のみで、
+  結果は常に ``fraction_basis`` にどちらで出したかを明示する (Scale 由来の転移値は出版不可)。
 
 **SDK 非依存**: 素の型 dict のみ (json.dumps allow_nan=False 安全)。GSAS/MP は runner/finder 内で
 遅延 import。runner/finder/provider/materializer は注入可能 (テストは決定論スタブ)。
@@ -61,6 +63,9 @@ def _frame_residual_report(f: "FrameRietveldResult") -> dict[str, object] | None
 def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
     """SequentialRietveldResult を素の型 dict へ (③ の判断入力・parametric_fit 入力)。
 
+    ⚠ **``phase_fractions`` は Scale であって重量分率ではない**。定量相分析・出版値には
+    ``phase_weight_fractions`` (± ``phase_weight_fraction_esd``) を使うこと (Issue #96 レビュー)。
+
     各フレームには ``residual_report`` を同梱する (architecture.md §4.5 到達可能性 #3): 単独の
     ``residual_report`` ツールは配列入力を要し、``auto_rietveld`` フォールバックは ``FrameSpec``
     から作れない ``HistogramSpec`` を要するため、**同梱しないと系列フレームの J2/J3 (未説明ピーク
@@ -86,6 +91,22 @@ def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
                 # 【残差レポート同梱】: 残差なし (スタブ runner 等) でもキーは None で存在させ、
                 #   ③ から見たスキーマを安定させる (auto_rietveld 経路と同一規律) 🔵 §4.5
                 "residual_report": _frame_residual_report(f),
+                # 【出版値 (Issue #96 レビュー)】: operando の主要な報告値は「相分率 vs 時間」だが、
+                #   上の `phase_fractions` は **Scale** であって重量分率ではない (単位胞質量が相間で
+                #   異なると乖離。実測 K2Mn[Fe(CN)6] tetra: 65.6 Scale% は同じ fit で **47.2 wt%**)。
+                #   乖離はフレーム毎に違い (実測 1.39-1.62 倍)、大きさは相の単位胞質量比
+                #   (cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と分率で決まる = **換算係数は無い**。
+                #   ③ が Scale しか受け取れなければ報告する定量値がそのまま誤る。esd 無しでは出版も
+                #   できない。キーは常に存在 (欠落と esd=0 の取り違えを防ぐ; 上と同一規律) 🔵
+                "phase_weight_fractions": {
+                    k: finite_or_none(v) for k, v in f.phase_weight_fractions.items()
+                },
+                "phase_weight_fraction_esd": {
+                    k: finite_or_none(v) for k, v in f.phase_weight_fraction_esd.items()
+                },
+                "cell_esd": {
+                    k: [finite_or_none(x) for x in esd] for k, esd in f.cell_esd.items()
+                },
             }
             for f in result.frames
         ],
@@ -120,6 +141,13 @@ def _result_from_dict(d: Mapping[str, object]) -> SequentialRietveldResult:
 
     ``residual_report`` は復元しない (往復先の消費者 — parametric_fit / check_phase_set /
     repair_frames — はいずれも残差を見ない。③ は同梱された dict を直接読む)。
+
+    **``phase_weight_fractions`` は復元する** (Issue #96 レビュー第4巡 HIGH): `parametric_fit` は
+    ここで復元した系列から転移 onset/midpoint を**導出する** = 出版値を作る表面であり、往復で
+    重量分率が落ちると `basis="weight"` は「重量分率が無い」と答えるほかなく、③ から見て
+    **重量分率基準の転移は原理的に到達不能**になる (実際に落ちていた: `seq_result_to_dict` は
+    出力していたが本関数が捨てていたため、② の配線は片道しか繋がっていなかった)。
+    esd は復元しない (転移推定は値のみを使い、esd が要る ③ は元の dict を直接読む)。
     """
     frames = []
     for fd in d.get("frames", []):  # type: ignore[union-attr]
@@ -141,11 +169,84 @@ def _result_from_dict(d: Mapping[str, object]) -> SequentialRietveldResult:
                 },
                 phase_names=tuple(fd.get("phase_names", ())),
                 refine_failed=bool(fd.get("refine_failed", False)),
+                phase_weight_fractions={
+                    k: float(v)
+                    for k, v in (fd.get("phase_weight_fractions") or {}).items()
+                    if v is not None
+                },
             )
         )
     return SequentialRietveldResult(
         frames=tuple(frames), phase_names=tuple(d.get("phase_names", ()))
     )
+
+
+#: 系列結果の各フレームが**判断に足る**ために最低限持つべきキー。``seq_result_to_dict`` は常に
+#: この 3 つを出す (値が None でも可)。欠けた dict は ``_result_from_dict`` が既定値
+#: (rwp=inf / phase_names=()) で黙って埋めるため、**キーの有無でしか欠落を検出できない**。
+_REQUIRED_FRAME_KEYS = ("frame_index", "rwp", "phase_names")
+
+
+def _validate_seq_result(result: Mapping[str, object]) -> None:
+    """系列結果 dict が判断に足る形かを**判定/精密化/導出の前に**検証する。
+
+    **``_result_from_dict`` の寛容さの対**であるため本モジュール (復元器の隣) に置く。復元器は
+    ``d.get("frames", [])`` で **``frames`` キーの無い dict を例外にせず空の系列**へ復元する。
+    そのため検証を挟まない消費者は**ゴミ入力から自信のある答えを出す**:
+
+    - ``check_phase_set({"nope": 1})`` → ``is_complete=True`` / ``union=[]`` (「相集合は完全」)。
+    - ``parametric_fit({}, "tetra")`` → ``fraction_basis="weight"`` / ``transition=None``
+      (「重量分率基準で見て転移なし」)。**0 フレームなら重量分率の欠測も 0 件**なので
+      `FractionBasisUnavailableError` すら出ず、③ の
+      ``assert pf["fraction_basis"] == "weight"`` (skills/insitu・AGENT_PLAYBOOK が指示する
+      検算) は**素通りする**。
+
+    どちらも **③ に「疑わなくてよい」と告げる**最悪の失敗様態である (CLAUDE.md ② 不変条件:
+    空/不正入力を「正常」と答えない)。何も判断できないときは判断を返してはならず、error dict へ
+    縮退する (``insitu.model.FractionBasisUnavailableError`` の「『転移なし』へ縮退するのも禁止 —
+    本物の『転移なし』と区別が付かなくなる」と同じ規律)。
+
+    ``frames`` が空の系列も**エラーとする**: 判断の対象が存在しない以上「完全」とも「転移なし」
+    とも言えず、黙ってそう答えるのは上と同じ不安全である (系列結果は必ず 1 フレーム以上を持つ)。
+
+    :raises ValueError: ``result`` が Mapping でない、``frames`` が無い/空/列でない、
+        フレームが dict でない、フレームが ``_REQUIRED_FRAME_KEYS`` を欠くとき
+    """
+    if not isinstance(result, Mapping):
+        raise ValueError(
+            f"result は系列結果 dict である必要があります: {type(result).__name__}"
+        )
+    if "frames" not in result:
+        raise ValueError(
+            "result に 'frames' キーがありません。**sequential_rietveld** が返す系列結果 dict を"
+            "そのまま渡してください (空の系列を「相集合は完全」/「転移なし」と判定しないため"
+            "打ち切ります)。"
+            "注: repair_frames の戻り値は系列結果ではない (repairs/needs_model_revision のみ) ので"
+            "渡せません — 修復後の系列が要るなら sequential_rietveld を再実行してください。"
+        )
+    frames = result["frames"]
+    if isinstance(frames, (str, bytes)) or not isinstance(frames, Sequence):
+        raise ValueError(
+            f"result['frames'] はフレーム dict の列である必要があります: {type(frames).__name__}"
+        )
+    if not frames:
+        raise ValueError(
+            "result['frames'] が空です。判断の対象が無い系列を「相集合は完全」「転移なし」とは"
+            "報告できません (系列を実行できていない可能性があります — sequential_rietveld の"
+            "結果を確認してください)。"
+        )
+    for i, fd in enumerate(frames):
+        if not isinstance(fd, Mapping):
+            raise ValueError(
+                f"result['frames'][{i}] がフレーム dict ではありません: {type(fd).__name__}"
+            )
+        missing = [key for key in _REQUIRED_FRAME_KEYS if key not in fd]
+        if missing:
+            raise ValueError(
+                f"result['frames'][{i}] に必須キーがありません: {missing}。"
+                "欠けたキーは既定値 (rwp=inf / phase_names=()) で黙って埋まり、判定が"
+                "入力の不備を反映しない誤った結論になります。"
+            )
 
 
 def _enum_from_value(enum_cls: type, value: object, key: str) -> object:
@@ -273,7 +374,10 @@ def sequential_rietveld(
 
     :param frames: FrameSpec.to_dict の列
     :param initial_phases: PhaseSpec.to_dict の列 (フレーム 0 の既知相)
-    :param phase_id: {"elements": [...], "frac_min": .., "top_k": .., ...} (新相自動同定, None で無効)
+    :param phase_id: {"elements": [...], "frac_min": .., "top_k": .., ...} (新相自動同定, None で無効)。
+        ⚠ ``frac_min`` (既定 0.02) は新相採用に要する**最小 Scale** — `phase_fractions` (HAP Scale の
+        Σ=1 正規化値) と比較する。**wt% (`phase_weight_fractions`) ではない** (下の
+        ``auto_freeze_minor_cells`` と同じ basis 注意)
     :param warm_start_fractions: 直前フレームの精密化相分率も次フレームの初期値に引き継ぐか
         (Issue #82; 分率が seed に張り付くフレームの是正。``warm_start`` 有効時のみ効く)
     :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
@@ -289,7 +393,12 @@ def sequential_rietveld(
         - ``background_coeffs``: Chebyshev 背景項数 (int, 既定 6。実験室 X 線/放射光は 18-24 推奨)
         - ``max_cyc``: 各段階の最大精密化サイクル (int, 既定 12)
         - ``auto_freeze_minor_cells``: 分率連動の自動セル凍結**閾値** (float|None, 既定 None=無効。
-          Issue #80: 例 0.2 なら相分率 0.2 未満の相のセルを解放しない)
+          Issue #80: 例 0.2 なら相分率 0.2 未満の相のセルを解放しない)。⚠ **basis は
+          `phase_fractions` (= HAP Scale の Σ=1 正規化値) で `phase_weight_fractions` (wt%) では
+          ない** — 実測 ``Scale {cubic .75, tetra .25}`` = ``wt% {cubic .865, tetra .135}`` なので
+          0.2 は **Scale では tetra を解放し wt% では凍結する**。出版値は wt% なので wt% の直感で
+          数字を決めると静かに外れる (③ 向けの警告は skills/insitu・skills/operando-diagnose・
+          AGENT_PLAYBOOK の「分率の閾値は Scale 基準」節)
 
         ``two_theta_limits`` は本引数の runner にも転送される (フレーム側指定が優先)。
     :param runner: **注入/テスト用**の Python callable ((frame, phases, initial_cells)→
@@ -402,17 +511,64 @@ def parametric_fit(
     *,
     component: str = "a",
     degree: int = 1,
+    basis: str = "weight",
     reason: str = "",
 ) -> dict:
-    """系列結果 (JSON) の相 phase について 格子 vs 軸の熱膨張多項式 + 相分率転移を返す。"""
+    """系列結果 (JSON) の相 phase について 格子 vs 軸の熱膨張多項式 + 相分率転移を返す。
+
+    :param result: ``sequential_rietveld`` が返す系列結果 (JSON dict)。**空/不正 (``frames`` 無し・
+        空・必須キー欠落・フレームが dict でない) は判断せず error dict** — 0 フレームの
+        「転移なし」は本物の「転移なし」と区別が付かない (``_validate_seq_result``)
+    :param basis: 転移推定に使う相分率の基準。**既定 ``"weight"`` (重量分率 = 出版値)**。
+        ``"scale"`` は HAP Scale 由来で**診断・相対比較専用** (出版不可)。
+    :returns: ``fraction_basis`` に**どちらで出したかを明示**した結果。重量分率が系列に無い/
+        系列結果が空・不正/未知 basis は ``{"error", "error_type"}`` dict (Scale へも
+        「転移なし」へも縮退しない)。この場合 ``transition``/``fraction_basis`` キーは返らない
+        (③ の ``assert pf["fraction_basis"] == "weight"`` が**素通りしない**)
+
+    ⚠ **転移 onset/midpoint は basis で答えが変わる**: `sequential.thermal.estimate_transition` が
+    返すのは「曲線が**絶対レベル** 0.50 / 0.10 を横切る軸値」であり、y 軸が Scale か wt% かで
+    交差位置が動く。実測 K₂Mn[Fe(CN)₆] tetra 充電域では、同じ精密化から Scale は
+    「midpoint 9.515 h」を、wt% は「**転移なし**」を出した (Scale 0→0.656 は 0.50 を横切るが
+    wt% は 0→0.472 で届かない。Scale=0.50 のフレームは実際には 34.0 wt%)。
+
+    **既定を "weight" にした理由** (① `parametric.transition_from_fractions` の既定 "scale" と
+    異なる): ② は JSON しか送れない LLM (③) が呼ぶ表面であり、**既定がそのまま ③ にとっての
+    実質的な振る舞い**になる (architecture.md §4.5)。既定を Scale にすると ③ は「出版できる
+    転移温度」だと信じて Scale 由来の数字を受け取る — それが本 HIGH の実害そのものである。
+    ① は Python の呼び出し側が call site で意図を書ける層なので後方互換を優先している。
+    """
     from ..insitu.parametric import analyze_phase
 
-    seq = _result_from_dict(result)
-    pa = analyze_phase(seq, phase, component=component, degree=degree)  # type: ignore[arg-type]
+    # 【縮退契約】: ② は例外を送出しない (③ は LLM なので例外は回復不能なハード失敗)。
+    #   重量分率の欠如 (`FractionBasisUnavailableError`, ValueError の派生) と未知 basis は
+    #   error dict にして**復旧方法を示す** — ここで Scale に落ちたり「転移なし」を返したり
+    #   すると、③ は静かに違う数字を出版する (CLAUDE.md ② 不変条件)。`error_type` に
+    #   例外クラス名が入るので ③ は「重量分率が無い」と「入力が壊れている」を区別できる。
+    # 【入力検証を先に (レビュー第4巡 MEDIUM-HIGH)】: `_result_from_dict` は寛容で、`frames` の
+    #   無い dict を空の系列へ黙って復元する。0 フレームなら重量分率の**欠測も 0 件**なので
+    #   `FractionBasisUnavailableError` すら出ず、`{}` に対して `fraction_basis="weight"` +
+    #   `transition=None` = 「重量分率基準で見て転移なし」という**自信のある嘘**を返していた。
+    #   ③ に指示してある検算 (`assert pf["fraction_basis"] == "weight"`) も素通りする。
+    #   `model.FractionBasisUnavailableError` が「『転移なし』へ縮退するのも禁止」と定めた当の
+    #   失敗様態そのものなので、判断の前に形を検証する (`check_phase_set` と同じ縮退契約)。
+    # 【AttributeError も捕らえる】: `_result_from_dict` は `d.get(...)` / `fd.get(...)` を呼ぶため、
+    #   result が str/list、frames が dict、フレーム要素が str/None のとき AttributeError が
+    #   MCP 境界を貫いていた (② は例外を送出しない契約に反する)。`check_phase_set` は同じ復元器を
+    #   呼びながら AttributeError を捕らえており、兄弟ツール間で縮退契約が食い違っていた。
+    try:
+        _validate_seq_result(result)
+        seq = _result_from_dict(result)
+        pa = analyze_phase(seq, phase, component=component, degree=degree, basis=basis)  # type: ignore[arg-type]
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
     tr = pa.transition
     return {
         "phase": phase,
         "component": component,
+        # 【basis の明示】: Scale 由来の数字が出版値と取り違えられないよう、**常に**どちらで
+        #   出したかを返す (③ が見落としても既定が weight なので安全側に倒れる) 🔵 §4.5
+        "fraction_basis": pa.fraction_basis,
         "baseline": {
             "parameter": pa.baseline.parameter,
             "coefficients": [finite_or_none(c) for c in pa.baseline.coefficients],

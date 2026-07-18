@@ -10,7 +10,8 @@
 
 from __future__ import annotations
 
-from ...autorietveld.model import PhaseSpec
+from ...autorietveld.model import PhaseSpec, coerce_cell_esd
+from .._warmstart import call_runner, seed_fractions
 from ..model import Cell, FrameRietveldResult, FrameSpec
 from .extract import AnchorRunner
 from .model import Anchor, Segment, SegmentPass
@@ -52,6 +53,20 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
     """runner 結果 → FrameRietveldResult (内側フレーム j 用)。"""
     cells: dict[str, Cell] = {k: tuple(v) for k, v in res.refined_cells.items()}  # type: ignore[misc]
     fracs = {n: float(res.phase_fractions.get(n, 0.0)) for n in phase_names}
+    # 出版値 (重量分率 + esd) を phase_names へキーイングして貫通させる。GSAS が算出した相のみ含め
+    # (present-guard)、非対応 runner/スタブは空 dict に縮退する (0.0 の偽 esd を捏造しない)。
+    wfr = getattr(res, "phase_weight_fractions", {})
+    wfr_esd = getattr(res, "phase_weight_fraction_esd", {})
+    cesd_src = getattr(res, "cell_esd", {})
+    weight_fracs = {n: float(wfr[n]) for n in phase_names if n in wfr}
+    # 重量分率 esd は ``None`` (多相で未決定 = 捏造回避) を潰さず貫通させる (レビュー第6巡)。
+    weight_frac_esd = {
+        n: (None if wfr_esd[n] is None else float(wfr_esd[n]))
+        for n in phase_names
+        if n in wfr_esd
+    }
+    # 要素 None (格子未解放 = 値が決まっていない) を潰さない (`coerce_cell_esd` の docstring 参照)。
+    cell_esd = {n: coerce_cell_esd(cesd_src[n]) for n in phase_names if n in cesd_src}
     return FrameRietveldResult(
         frame_index=j, axis_value=frame.axis_value, data_path=frame.data_path,
         rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
@@ -59,23 +74,36 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
         validity_passed=res.validity.passed,
         refine_failed=not (float(res.final_rwp) < float("inf")),
         n_obs=int(getattr(res, "n_obs", 0)),
+        phase_weight_fractions=weight_fracs, phase_weight_fraction_esd=weight_frac_esd,
+        cell_esd=cell_esd,
     )
 
 
 def _run_directional(
     anchor: Anchor, order: "list[int]", frames: "list[FrameSpec]", runner: AnchorRunner,
 ) -> dict[int, FrameRietveldResult]:
-    """アンカーの相集合/セルを初期値に order 順で warm-start 逐次精密化する。"""
+    """アンカーの相集合/セル/**相分率**を初期値に order 順で warm-start 逐次精密化する。
+
+    **セルと相分率は同時に進む** (Issue #96): 本パスは長らくセルしか運んでおらず、相分率は毎フレーム
+    GSAS の等分 seed (2 相なら 0.50/0.50) から再出発していた。実測 (K₂Mn[Fe(CN)₆] 247 フレーム) では
+    9 フレームが seed に**厳密に**張り付き (Rwp は 8.4-8.5% と平凡なので統計量には出ない)、うち 6 連続が
+    tetragonal ドーム頂点の直前にあった。種はアンカーの `phase_fractions`、以降は直前フレームの精密化
+    分率。分率を持たない runner (3 引数スタブ) には渡らない (`call_runner` が縮退, 非破壊)。
+    """
     phases: tuple[PhaseSpec, ...] = anchor.phase_specs
     names = anchor.phase_names
     warm: dict[str, Cell] = dict(anchor.refined_cells)
+    warm_fracs = seed_fractions(anchor.phase_fractions, names)
     out: dict[int, FrameRietveldResult] = {}
     for j in order:
-        res = runner(frames[j], phases, dict(warm))
+        res = call_runner(runner, frames[j], phases, dict(warm), warm_fracs)
         fr = _frame_result(res, frames[j], j, names)
         out[j] = fr
-        if not fr.refine_failed and fr.refined_cells:
-            warm = {**warm, **fr.refined_cells}  # 次フレームへ引き継ぎ (warm-start)
+        if not fr.refine_failed:
+            # 次フレームへ引き継ぎ (warm-start)。失敗フレームは据え置き (M9 逐次と同じ規律)。
+            if fr.refined_cells:
+                warm = {**warm, **fr.refined_cells}
+            warm_fracs = seed_fractions(fr.phase_fractions, names) or warm_fracs
     return out
 
 

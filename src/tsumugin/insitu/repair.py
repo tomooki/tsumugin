@@ -31,12 +31,13 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
-from ..autorietveld.model import AutoRietveldResult, PhaseSpec
+from ..autorietveld.model import AutoRietveldResult, CellEsd, PhaseSpec
 from ..store.ledger import Ledger
-from .engine import Runner
+from ._warmstart import call_runner, seed_fractions
+from .engine import Runner, _publication_of
 from .model import Cell, FrameRietveldResult, FrameSpec, SequentialRietveldResult
 
 
@@ -64,7 +65,23 @@ class FrameRepair:
     :param rwp_before: 修復前 (元系列) の Rwp
     :param rwp_after: warm-start 再精密化後の Rwp (採用値)
     :param source: warm-start の起点方向 ("L"=左隣/"R"=右隣)
-    :param phase_fractions: 修復後の相名→相分率
+    :param phase_fractions: 修復後の相名→相分率 (**Scale**)。相対比較専用 — 出版値ではない
+    :param phase_weight_fractions: 相名→**重量 (質量) 分率** (`AutoRietveldResult.phase_weight_fractions`
+        由来, GSAS-II `calcMassFracs`)。**修復後の定量相分析の出版値はこちら**。
+
+        **修復フレームでこそ要る** (Issue #96 レビュー 第2巡): ③ は `check_phase_set` が名指しした
+        フレーム (張り付き/凍結) を `target_frames` で修復する。**張り付きは相転移の途中で起きやすく**
+        (分率が動く区間ほど前フレームの seed から遠い)、そこは定量相分析の要求が最も高い区間でもある。
+        Scale しか持ち帰らなければ、③ は「wt% として誤って報告する」か「直したばかりのフレームの
+        出版値が無い」の二択になる (`skills/operando-diagnose` 禁止事項は前者を禁じている)。
+        Scale と重量分率の差は相の単位胞質量比と各フレームの分率で決まり、**フレーム毎に異なる**
+        (実測 K₂Mn[Fe(CN)₆]: 1.39-1.62 倍。**単一の換算係数は存在しない**ので Scale に係数を掛けて
+        wt% にはできない。`AutoRietveldResult.phase_weight_fractions` の docstring 参照)。
+        既定空 dict で後方互換 (重量分率を持たない runner/スタブ・共分散なしの精密化は空)。
+    :param phase_weight_fraction_esd: 相名→重量分率の esd。出版には esd 必須。要素 ``None`` = 多相なのに
+        この精密化から決まっていない (レビュー第6巡)・単相は ``0.0`` (自明)。既定空 dict
+    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ)。要素 ``None`` = 格子を解放していない
+        (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定。既定空 dict
     """
 
     frame_index: int
@@ -72,6 +89,9 @@ class FrameRepair:
     rwp_after: float
     source: str
     phase_fractions: Mapping[str, float]
+    phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
+    phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
+    cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -127,10 +147,22 @@ def detect_discontinuities(
     - いずれかの相分率が両隣 2 フレームの平均から ``frac_delta`` 超乖離 (先頭/末尾フレームは
       両隣が揃わないため本基準は適用しない — Rwp 系の基準のみ)
 
+    **⚠ 3 つ目の基準は `phase_fractions` (Scale) から発火する — 格子を見る基準は無い**
+    (Issue #96 レビュー第4巡 HIGH: 「不連続の検出は Rwp/格子で行う」という記述は**偽**だった)。
+    `frac_delta` は **Scale 単位の絶対閾値**であり、Scale→wt% は相ごとの単位胞質量で伸縮する
+    非線形写像なので、**同じ系列でも basis を替えると選ばれるフレーム集合が変わる**
+    (実測: Scale `[0.10, 0.12, 0.45, 0.16, 0.18]` は 3 フレーム、同じ系列の wt% は 1 フレーム)。
+
+    **Scale を基準にするのは意図的**: (a) 検出したいのは「そのフレームの**精密化**が近傍と
+    食い違う」ことで、Scale は GSAS が実際に動かすパラメータそのものである。(b) `repair_isolated`
+    は近傍の **Scale** を warm-start の種として GSAS へ戻す (`_warmstart.seed_fractions`) ため、
+    検出器と作動器は同じ座標で喋る必要がある。(c) 重量分率は共分散の無い精密化では空であり、
+    wt% 基準の検出器は定義できない系列が多い。
+
     :param result: 検査対象の逐次精密化結果
     :param rwp_abs: Rwp 絶対閾値 (None なら無効)
     :param rwp_delta: 局所中央値からの許容超過幅 (%ポイント)
-    :param frac_delta: 相分率の両隣補間からの許容乖離
+    :param frac_delta: 相分率 (**Scale**) の両隣補間からの許容乖離。**絶対値であり basis 依存**
     :returns: フレーム順の `Discontinuity` タプル
     """
     frames = result.frames
@@ -165,6 +197,67 @@ def detect_discontinuities(
                 )
             )
     return tuple(out)
+
+
+def discontinuities_from_frames(
+    result: SequentialRietveldResult,
+    frame_indices: Sequence[int],
+    *,
+    reason: str = "targeted",
+) -> tuple[Discontinuity, ...]:
+    """フレーム番号を明示して `Discontinuity` を組む (**検出統計に映らない欠陥**の修復経路)。
+
+    `detect_discontinuities` は Rwp/相分率の**ジャンプ**でしか発火しない。しかし修復を要する
+    欠陥がすべてジャンプとして現れるとは限らない — **seed 張り付き (`phaseset.is_seed_pinned`) と
+    分率凍結 (`phaseset.flag_frozen_fraction_frames`) は定義上「平坦」**であり、
+
+    - Rwp は平凡なまま (実測 8.4-8.5%) なので ``rwp_abs`` では拾えない、
+    - 張り付き区間内では局所中央値が当該フレームの Rwp そのものになるため ``rwp_delta`` を
+      どれだけ下げても内側に到達できない、
+    - 分率も平坦なので ``frac_delta`` は逆に**健全な**近傍フレームの方を拾ってしまう
+
+    という三重の理由で、**どの閾値を選んでも検出できない**。よって「何を直すか」を呼び出し側
+    (③ が `check_phase_set` の `seed_pinned_frames[].frame` / `frozen_fraction_frames[].frame`
+    から組む) が指定する経路が要る。
+
+    **`flagged` 集合としての役割**: 返した `Discontinuity` のフレーム番号は `repair_isolated` で
+    warm-start 元から除外される (`_nearest_good`)。**疑わしいフレームは 1 回の呼び出しで全て渡すこと** —
+    1 フレームずつ呼ぶと、両隣も同じ欠陥を持つ場合 (実測 125-130 の 6 連続) に**欠陥を持つ隣から
+    warm-start して欠陥を引き継ぐ**。
+
+    :param result: 対象の逐次精密化結果 (変更しない)
+    :param frame_indices: 修復対象のフレーム番号 (重複・順不同可; 昇順に正規化する)
+    :param reason: 記録する判定理由名 (既定 "targeted"; 例 "seed_pinned")
+    :returns: フレーム番号昇順の `Discontinuity` タプル
+    :raises ValueError: `frame_indices` が空・整数でない・範囲外のとき (② は error dict へ縮退する)
+    """
+    n = len(result.frames)
+    if not frame_indices:
+        raise ValueError(
+            "frame_indices が空です。修復対象が無い呼び出しは「不連続なし」と区別できないため"
+            "打ち切ります (自動検出に任せるなら target_frames を渡さないでください)。"
+        )
+    indices: set[int] = set()
+    for raw in frame_indices:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError(
+                f"frame_indices の要素は整数のフレーム番号です: {raw!r} ({type(raw).__name__})"
+            )
+        if not (0 <= raw < n):
+            raise ValueError(
+                f"frame_indices のフレーム番号が範囲外です: {raw} (系列は 0..{n - 1} の {n} フレーム)"
+            )
+        indices.add(raw)
+
+    return tuple(
+        Discontinuity(
+            frame_index=i,
+            axis_value=result.frames[i].axis_value,
+            rwp=result.frames[i].rwp,
+            reasons=(reason,),
+        )
+        for i in sorted(indices)
+    )
 
 
 def classify(
@@ -300,7 +393,16 @@ def repair_isolated(
             if not neighbour_phases:
                 continue
             initial_cells: dict[str, Cell] = dict(neighbour.refined_cells)
-            trial = runner(frames[i], neighbour_phases, initial_cells)
+            # 【分率も warm-start する (Issue #96)】: セルだけを引き継ぐと相分率は GSAS の等分 seed
+            #   (2 相なら 0.50/0.50) から再出発し、修復試行そのものが seed に張り付いて Rwp が改善
+            #   しない → 採用されない。近傍の分率を種にすると実測で修復採用が 0/14 → 8/14 になった。
+            #   渡す分率は**実際に渡す相集合の分だけ** (name_to_spec で引けなかった相は除かれる)。
+            initial_fractions = seed_fractions(
+                neighbour.phase_fractions, [p.phase_name for p in neighbour_phases]
+            )
+            trial = call_runner(
+                runner, frames[i], neighbour_phases, initial_cells, initial_fractions
+            )
             if math.isfinite(float(trial.final_rwp)) and (
                 best is None or float(trial.final_rwp) < float(best[1].final_rwp)
             ):
@@ -326,6 +428,14 @@ def repair_isolated(
                     rwp_after=rwp_after,
                     source=source,
                     phase_fractions=dict(trial.phase_fractions),
+                    # 【出版値も持ち帰る (Issue #96 レビュー 第2巡)】: 試行結果は重量分率 ± esd と
+                    #   格子 esd を持っているのに、ここで Scale だけ写して捨てていた。修復対象は
+                    #   ③ が `check_phase_set` で名指ししたフレーム = 定量相分析の要求が最も高い
+                    #   転移域であり、Scale だけでは相の単位胞質量比の分だけ誤る。抽出は
+                    #   `engine._publication_of` に一元化する (M9 逐次 / 修復の 2 経路で同一の規律 —
+                    #   相名フィルタも 0.0 埋めもしない: 部分集合の重量分率は和=1 にならず、0.0 埋めは
+                    #   「その相は 0 wt%」という測定していない主張になる)。
+                    **_publication_of(trial),  # type: ignore[arg-type]
                 )
             )
             if ledger is not None:

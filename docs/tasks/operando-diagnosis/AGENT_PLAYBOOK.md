@@ -80,8 +80,24 @@ sequential_rietveld(
 > - `auto_freeze_minor_cells` は **`instrument` spec のキー** (tool のトップレベル kwarg ではない
 >   — 直接渡すと `TypeError` が MCP 境界を越える)。サーバが runner を組むときにのみ効く。
 >
-> `auto_freeze_minor_cells` は**相分率の閾値 (float, 例 0.2)。bool ではない** —
-> `True` は `float(True)==1.0` = 全相凍結になる (② が bool を拒否する)。
+> `auto_freeze_minor_cells` は**`phase_fractions` (= Scale) 基準の閾値であり float。bool ではない**
+> — `True` は `float(True)==1.0` = 全相凍結になる (② が bool を拒否する)。例 0.2。
+>
+> ### ⚠ 分率の閾値は**すべて Scale 基準** — wt% で考えて数字を決めない
+>
+> `auto_freeze_minor_cells` (`instrument` spec) と `phase_id.frac_min` が比較する相分率は
+> `phase_fractions` (**HAP Scale の Σ=1 正規化値**) であり、**`phase_weight_fractions` (wt%) では
+> ない**。本 PLAYBOOK は「出版値は wt%・Scale を wt% として報告するな」と言うが、
+> **閾値の座標系だけは Scale のまま**である。
+>
+> 実測 K₂Mn[Fe(CN)₆] (cubic 1103.4 / tetra 517.8 amu):
+> `Scale {cubic 0.75, tetra 0.25}` = `wt% {cubic 86.5, tetra 13.5}`。
+> 「tetra は 13.5 wt% で少数相だから `auto_freeze_minor_cells=0.15`」と決めると、実際の比較は
+> **Scale 0.25 ≥ 0.15** → **tetra のセルは解放されたまま**で #80 の発散が起きる。
+> **答えが basis で割れる**ので、閾値を決める前に `frames[i]["phase_fractions"]` (Scale) を見ること。
+> `phase_id` の `frac_min` (新相採用の最小分率, 既定 0.02) も **Scale** 基準である。
+> `check_phase_set` / `repair_frames` の分率閾値 (`min_amplitude` / `frac_delta`) も同じく Scale 基準
+> (各ツールの出力 `fraction_basis` がそれを明示する)。
 
 ### 2.3 疑う (**本書の主眼**)
 
@@ -90,13 +106,46 @@ sequential_rietveld(
 ```python
 check_phase_set(result)
 # -> {"is_complete": false, "union": [...], "frames_with_missing": [...],
-#     "phases": [{"phase": "tetra", "turning_points": 4, "flagged": true}]}
+#     "phases": [{"phase": "tetra", "turning_points": 4, "flagged": true}],
+#     "seed_pinned": true,
+#     "seed_pinned_frames": [{"frame": 125, "rwp": 8.4, "n_phases": 2, "seed_value": 0.5,
+#                             "phase_fractions": {"cubic": 0.5, "tetra": 0.5}}],
+#     "fractions_frozen": true,
+#     "frozen_fraction_frames": [{"frame": 126, "previous_frame": 125, "rwp": 8.5, "n_phases": 2,
+#                                 "phase_fractions": {"cubic": 0.42, "tetra": 0.58}}]}
 ```
 
 - **`is_complete=False`** → 「**除外した相の強度を、計量の近い別の相が肩代わりしていないか**」
   を疑う。**和集合で再フィットし相分率を比較**する。**Rwp が良くても信じない**。
 - **`flagged=True` (分率が非単調に振動)** → 物理的に妥当かを問う。単調な転移 (A→B→C) が
   自然な系で分率が増減を繰り返すなら、**まず artifact を疑う**。実データではこれが唯一の手がかり。
+- **分率が動かなかったフレーム (2 つの指紋)** → **そのフレームの分率を報告に使わない**。
+  いずれも分率精密化がそのフレームで一度も動いていないことを意味し、**Rwp は平凡なまま**
+  (実測 8.4-8.5%) で `is_complete` にも非単調フラグにも出ない (**張り付きは「平坦」であって
+  振動ではない**) — **厳密な一致だけが指紋**。実測 (K2Mn[Fe(CN)6] 247 フレーム) で 9 フレームが
+  張り付き、**うち 6 連続が転移ドーム頂点の直前**にあったため報告したドームの位置と高さが
+  信用できなくなった。**両方を見る**:
+
+  | フラグ | 意味 | いつ出るか |
+  |---|---|---|
+  | `seed_pinned` / `seed_pinned_frames` | 分率が等分 seed (1/相数) に厳密一致 | **分率ウォームスタートが効いていない** |
+  | `fractions_frozen` / `frozen_fraction_frames` | 分率が**直前フレームの値**に厳密一致 | ウォームスタート下で**分率精密化が死んでいる**。1/n でないので `seed_pinned` には出ない |
+
+  → **両方のフレーム番号を集めて 1 回の `repair_frames` 呼び出しで修復する** (`target_frames`):
+
+  ```python
+  cps = check_phase_set(result)
+  suspect = sorted({f["frame"] for f in cps["seed_pinned_frames"]}
+                   | {f["frame"] for f in cps["frozen_fraction_frames"]})
+  repair_frames(result, frames, phases, target_frames=suspect,
+                instrument={...}, two_theta_limits=[2.4, 18.0])
+  ```
+
+  - **`target_frames` 必須**: 省略時の自動検出は Rwp/分率の**ジャンプ**しか見ず、張り付きは
+    「平坦」なので**どの閾値でも拾えない** → `repairs=[]` = 「直すものは無い」が返る。
+  - **1 回の呼び出しで全て渡す**: 指定フレームは互いに warm-start 元から除外される。1 つずつ
+    呼ぶと両隣も張り付いた区間 (実測 125-130 の 6 連続) で**欠陥を持つ隣から種を貰う**。
+  - **黙って捨てない** (可視化して解釈対象から外す判断をユーザーに示す)。
 
 #### J2/J3 残差から欠落相・対称性低下を仮説化
 
@@ -156,6 +205,76 @@ V-t / dQ/dV を人間に要求する。
 > 正しい CIF は W=1→**19.94%** / W=180→26.14%、壊れた CIF は W=1→75.10% / W=180→72.48%。
 > **手で入れた W=180 はむしろ悪化させていた**。→ Issue #79 は前提否定で close。
 
+### 2.6 定量値を報告する — **`phase_fractions` は wt% ではない**
+
+**`phase_fractions` は Scale (HAP Scale の正規化値) であって重量分率ではない**。Scale は単位胞の
+散乱能に対する比例係数で、**単位胞質量が相間で異なると重量分率と乖離する**。
+
+> 実測 (K₂Mn[Fe(CN)₆]): cubic 1103.4 amu vs tetra 517.8 amu → **同じ fit で 65.6 Scale% が
+> 実際には 47.2 wt%** (この点で 1.39 倍の誤り)。「tetra ドーム頂点 65.6%」の報告は誤りだった。
+>
+> **乖離の大きさはフレーム毎に違う** (実測: fr112 1.62 / fr120 1.48 / fr124 1.41 / fr126 1.39 倍)。
+> 大きさを決めるのは相の**単位胞質量比** (ここでは 2.13 倍) と**そのフレームの分率**である。
+> ⚠ **単一の換算係数は存在しない — Scale に係数を掛けて wt% を作ってはならない**。
+> 必ず `phase_weight_fractions` を読むこと。
+
+```python
+result["frames"][i]["phase_weight_fractions"]      # -> {"cubic": 0.472, "tetra": 0.528}  出版値
+result["frames"][i]["phase_weight_fraction_esd"]   # -> {"cubic": 0.006, "tetra": 0.006}  esd 必須
+result["frames"][i]["cell_esd"]                    # 格子 esd。0.0 と None は意味が違う (下記)
+# -> {"mono":  [0.0133, 0.0177, 0.0109, 0.0, 0.1300, 0.0],   解放: >0 = su / 0.0 = 対称拘束
+#     "cubic": [None, None, None, None, None, None]}          凍結: 決まっていない = esd 無し
+
+# 修復したフレームは repairs[] の値で置き換える (frames[i] は修復前のまま = 非破壊)
+rep = repaired["repairs"][j]
+rep["frame"], rep["phase_weight_fractions"], rep["phase_weight_fraction_esd"], rep["cell_esd"]
+```
+
+| キー | 何か | 使いどころ |
+|---|---|---|
+| `phase_fractions` | **Scale** の正規化値 | **同一 basis 内の相対比較のみ** (新相の有意性・張り付き検出)。**転移の追跡には使えない** (下記) |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら**。転移温度もこちら基準 |
+| `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
+| `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上。**3 状態を区別する → 下記** |
+
+#### `cell_esd` の 3 状態 — `0.0` と `null` は**意味が違う**
+
+| 値 | 意味 | どう報告するか |
+|---|---|---|
+| `>0` | 解放して精密化した項の su | `a = 10.0316(133)` |
+| `0.0` | **対称拘束で厳密に固定** (monoclinic の α/γ = 90° 等) | 90° は定義値。esd を付けない |
+| `null` | **そのフレームで格子を解放していない** — `refine_cell=False` / `auto_freeze_minor_cells` による凍結・セル段の revert・未精密化 | 「参照値に固定 (not refined)」と書く。**esd を付けてはならない** |
+| 相ごと欠落 | 抽出できなかった (共分散構造の異常) | 出版せず原因を調べる |
+
+⚠ **「0 なら固定」と推論しないこと** — 解放した相の中にも真の `0.0` (対称拘束) がある。
+凍結は `null` でしか判らない。`auto_freeze_minor_cells` は相を名指ししなくても Scale が閾値未満の
+相を凍結するので、**どの相が凍結されたかは `cell_esd` の `null` で読む**。
+
+**転移温度を Scale から出さない**: `parametric_fit` の onset/midpoint は「曲線が**絶対レベル**
+0.50 / 0.10 を横切る軸値」であり、y 軸が Scale か wt% かで**答えが動く**。「Scale は相対比較なら
+安全」は転移推定には当てはまらない。
+
+> 実測 (K₂Mn[Fe(CN)₆] tetra 充電域): **同じ精密化**から Scale は「midpoint 9.515 h」を、wt% は
+> 「**転移なし**」を出した (Scale 0→0.656 は 0.50 を横切るが wt% は 0→0.472 で届かない)。
+> Scale が midpoint と呼んだ点は実際には **34.0 wt%**。
+
+```python
+# 転移温度は既定 (basis="weight" = 重量分率) のまま取る。fraction_basis を必ず確認する。
+pf = parametric_fit(result=seq, phase="tetra", component="a")
+assert pf["fraction_basis"] == "weight"   # "weight" でなければ報告しない
+# 重量分率が無い系列は error dict ("FractionBasisUnavailableError") -> Scale で代用しない
+# basis="scale" は診断専用 (相対的な立ち上がりの目視)。その数値は出版しない
+```
+
+同じキー名を `sequential_rietveld` は `frames[i]` に、**`repair_frames` は `repairs[j]` に
+(修復したフレーム毎)**、`auto_rietveld` は結果直下に返す。空 dict = 値が得られなかった
+(共分散なし/未収束) の意味で、**esd=0 ではない**。
+
+> **修復フレームの出版値を落とさない**: `target_frames` で名指しするのは `check_phase_set` が
+> 「信用するな」と言ったフレームであり、実測ではそれが**転移ドーム頂点の直前 (125-130) =
+> 報告の主要値そのもの**だった。`repairs[]` を読まずに `frames[i]` を報告すると、
+> **修復前の (張り付いた) 値**を出版することになる。
+
 ## 3. 禁止事項
 
 - **Rwp が良いことを根拠に相集合を正しいと結論しない** (失敗は Rwp 8% で起きた)。
@@ -163,6 +282,9 @@ V-t / dQ/dV を人間に要求する。
 - **系統ブロックを近傍 warm-start で「直そう」としない** (両隣も同欠陥 = 無効)。
 - **「対策を入れたら直った」で因果を確定させない**。
 - **残差を説明するためだけに相を足さない** (`baseline_numerator_fraction` 大 = データ側の問題)。
+- **`phase_fractions` (Scale) を wt% として報告しない** (実測 1.39-1.62 倍誤る。**倍率はフレーム
+  毎に違うので換算係数で直せない**)。出版値は
+  `phase_weight_fractions` ± `phase_weight_fraction_esd`。
 
 ## 4. 権限境界
 
@@ -182,12 +304,18 @@ V-t / dQ/dV を人間に要求する。
 見ない。欠落相は**その視野の外**にあり、しかも欠けた相の強度は計量の近い別相が肩代わりして
 Rwp を保つ。**統計量では検出できない。③ が疑う以外に手段が無い。**
 
-## 5. 再現ベンチマーク (K₂Mn[Fe(CN)₆] K-10 0.1C, 247 フレーム)
+## 5. 再現ベンチマーク (K₂Mn[Fe(CN)₆] K-10 0.1C)
 
-| | Rwp |
-|---|---|
-| 学生の手動解析 (RIETAN, frame-1 のみ, 単相) | 16.24% |
-| **本フロー (全 247 フレーム, 3 相)** | **6.02–8.96% (mean 7.47%), 9% 超ゼロ** |
+| | 解析フレーム | Rwp |
+|---|---|---|
+| 学生の手動解析 (RIETAN, 単相) | frame-1 のみ (1/247) | 16.24% |
+| **本フロー (3 相)** | **63/247 (stride 4 の間引き)** | **6.02–8.96% (mean 7.47%), 9% 超ゼロ** |
+
+> ⚠ **間引きである点に注意**。系列は 247 フレームだが、上の Rwp 統計は
+> `range(0, 247, 4) + [246]` = **63 フレーム (25.5%)** に対するもの (`scripts/full_3phase.py` の
+> 既定 `step=4`)。**全フレーム解析は未実施**であり、間引きで見えない短寿命の中間相・
+> 転移端の挙動が残っている可能性がある。全 247 フレームの結果が要る場合は `step=1` で回すこと。
+> (本表は当初「全 247 フレーム」と誤記していた — 実測は 63 フレームだった。)
 
 **結論**: monoclinic P2₁/n (K-rich, 放電) → cubic Fm-3m (充電) → **tetragonal I4/mmm (深充電,
 Mn³⁺ Jahn-Teller)** → cubic → monoclinic の**完全可逆な 3 相転移**。tetragonal は**単一ドーム**

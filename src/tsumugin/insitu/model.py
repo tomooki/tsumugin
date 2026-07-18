@@ -11,15 +11,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Literal, Mapping
 
 from ..autorietveld.absorption import AbsorberLayer
+from ..autorietveld.model import CellEsd
 
 if TYPE_CHECKING:
     from ..autorietveld.residual_report import ResidualReport
 
 # 相ごとの格子: (a, b, c, α, β, γ)
 Cell = tuple[float, float, float, float, float, float]
+
+#: 相分率系列の基準。``"scale"`` = HAP Scale の正規化値 (相対比較・診断用)、
+#: ``"weight"`` = 重量 (質量) 分率 (**定量相分析の出版値**)。
+FractionBasis = Literal["scale", "weight"]
+
+
+class FractionBasisUnavailableError(ValueError):
+    """要求した基準の相分率が系列に無いことを示す (**Scale への暗黙フォールバック禁止**)。
+
+    ``fraction_series(basis="weight")`` が重量分率を持たないフレームに当たったときに送出する。
+    **黙って Scale を返してはならない**: 呼び出し側は「重量分率を要求して受け取った」と信じた
+    まま Scale の数字を出版する — それが Issue #96 レビュー第4巡 HIGH の実害そのものである
+    (実測 K₂Mn[Fe(CN)₆]: Scale 由来の midpoint 9.515 h は、同じ fit の wt% では**転移なし**)。
+
+    「転移なし」へ縮退するのも同様に禁止 — 本物の「転移なし」と区別が付かなくなる。
+
+    ② (MCP) はこれを捕捉して ``{"error", "error_type"}`` dict へ縮退すること (③ は LLM なので
+    例外は回復不能なハード失敗になる)。
+    """
+
+
+# 【0.0 埋めの意味論】: `fraction_series` は当該相を持たないフレームを 0.0 で埋める。これは
+#   「その相は相集合に無い = 寄与 0」という**測定に基づく主張**であり妥当。一方、重量分率 dict
+#   そのものが空のフレームは「重量分率を**算出していない**」であって「0 wt%」ではない
+#   (`engine._publication_of` と同じ規律)。両者を混同すると測定していない値を出版してしまう。
 
 
 @dataclass(frozen=True)
@@ -85,7 +111,11 @@ class PhaseIdConfig:
     """系列途中の新相自動同定の設定。
 
     :param elements: 相同定に許す元素系 (既知相の元素 + 想定元素)。空なら同定を行わない
-    :param frac_min: 新相の採用に要する最小相分率 (受理基準①)
+    :param frac_min: 新相の採用に要する最小相分率 (受理基準①)。⚠ **basis は `phase_fractions`
+        (= HAP Scale の Σ=1 正規化値) であり `phase_weight_fractions` (wt%) ではない**
+        (`engine._accept_new_phase` が `AutoRietveldResult.phase_fractions` と比較する)。
+        質量の重い相ほど Scale は wt% より小さく出るため、wt% の直感で決めた下限は
+        **同じ精密化で別の答えを出す** (`autorietveld.engine._should_refine_cell` の警告と同型)
     :param rwp_eps: 新相採用に要する最小 Rwp 改善 (受理基準②, %ポイント)
     :param top_k: 各変化点で試す候補相の数 (Dara ランキング上位)
     :param hull_cutoff_ev: MP 安定性フィルタ (energy above hull, eV/atom)
@@ -224,6 +254,20 @@ class FrameRietveldResult:
         `residual_report_from_result` で畳んで持たせることで、系列結果の消費側 (③ の J2/J3:
         未説明ピーク → 欠落相 / 強度比異常 → 対称性低下) が**再精密化なしに**残差を判断できる。
         既定 None で後方互換 (既存の 3 引数スタブ runner は残差を持たない)。
+    :param phase_weight_fractions: 相名→**重量 (質量) 分率** (`AutoRietveldResult.phase_weight_fractions`
+        由来, GSAS-II `calcMassFracs`)。**定量相分析の出版値はこちら** — `phase_fractions` は Scale 正規化
+        値で単位胞質量が相間で異なると重量分率と乖離する。乖離は**フレーム毎に違う** (実測
+        K₂Mn[Fe(CN)₆] tetra: 65.6 Scale% が 47.2 wt% [1.39 倍]、系列全体で 1.39-1.62 倍)。
+        大きさは単位胞質量比 (cubic 1103.4 / tetra 517.8 amu = 2.13 倍) と分率で決まるので
+        **単一の換算係数は無い** — Scale に係数を掛けて wt% にはできない。
+        既定空 dict で後方互換 (重量分率を持たない runner/スタブ・失敗フレームは空)。
+    :param phase_weight_fraction_esd: 相名→重量分率の esd (`AutoRietveldResult.phase_weight_fraction_esd`
+        由来)。出版には esd 必須。要素 ``None`` = **多相なのにこの精密化から決まっていない** (相 Scale が
+        最終共分散に無い; レビュー第6巡)・単相は ``0.0`` (自明)。既定空 dict で後方互換。
+    :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ; `refined_cells` と同一レイアウト,
+        `AutoRietveldResult.cell_esd` 由来)。要素 ``None`` = **そのフレームで格子を解放していない**
+        (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定 (真の陳述)。
+        相ごと欠落 = 抽出できなかった。既定空 dict で後方互換。
     """
 
     frame_index: int
@@ -240,6 +284,9 @@ class FrameRietveldResult:
     refine_failed: bool = False
     n_obs: int = 0
     residual_report: "ResidualReport | None" = None
+    phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
+    phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
+    cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -303,13 +350,56 @@ class SequentialRietveldResult:
             vals.append(float(cell[idx]))
         return tuple(axes), tuple(vals)
 
-    def fraction_series(self, phase: str) -> tuple[tuple[float, ...], tuple[float, ...]]:
-        """相 phase の相分率の (軸値, 分率) 系列を返す (存在しないフレームは 0.0)。"""
+    def fraction_series(
+        self, phase: str, *, basis: FractionBasis = "scale"
+    ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        """相 phase の相分率の (軸値, 分率) 系列を返す (相集合に無いフレームは 0.0)。
+
+        :param basis: ``"scale"`` (既定) = HAP Scale の正規化値。``"weight"`` = 重量分率
+            (**定量相分析の出版値**)。
+
+        ⚠ **basis は「相対比較か出版か」以上の意味を持つ**: この系列の主な消費者
+        ``parametric.transition_from_fractions`` → ``sequential.thermal.estimate_transition`` は
+        **絶対レベル 0.50 / 0.10 の交差軸値**を報告する。y 軸を Scale から wt% に替えると
+        **答えそのものが動く** (実測 K₂Mn[Fe(CN)₆] tetra: Scale 0→0.656 は 0.50 を横切り
+        midpoint 9.515 h を出すが、同じ fit の wt% は 0→0.472 で横切らず**転移なし**。
+        Scale=0.50 の点は実際には 34.0 wt% であって「半分」ではない)。
+
+        **既定が ``"scale"`` なのは後方互換のため**であり「Scale が転移推定に妥当だから」では
+        ない。転移温度・相分率など**報告する数値は ``basis="weight"``** で取ること。
+
+        :raises FractionBasisUnavailableError: ``basis="weight"`` だが重量分率を持たない
+            フレームがあるとき。**Scale へは縮退しない** (静かに違う数字を出版させない)。
+            欠測フレームを黙って落とすこともしない — 交差の線形補間が別の隣接対で行われ
+            midpoint が動くため。
+        :raises ValueError: 未知の basis。
+        """
+        if basis not in ("scale", "weight"):
+            raise ValueError(f"unknown basis: {basis!r} (expected 'scale' or 'weight')")
+
+        # 【欠測の先行検出】: 系列を組み立てる前に「重量分率を算出していない」フレームを洗い出す。
+        #   `phase_weight_fractions` が空 = 未算出 (スタブ runner / 非 GSAS 経路 / 共分散なし) で
+        #   あって「0 wt%」ではない。dict が非空なら当該相の欠落は「相集合に無い」= 0.0 が妥当。
+        if basis == "weight":
+            missing = [
+                f.frame_index
+                for f in self.frames
+                if f.axis_value is not None and not f.refine_failed and not f.phase_weight_fractions
+            ]
+            if missing:
+                raise FractionBasisUnavailableError(
+                    f"phase_weight_fractions が無いフレームがあります: {missing} — "
+                    "重量分率を報告できません (Scale へは縮退しません: 静かに違う数字になります)。"
+                    "診断目的の相対比較なら basis='scale' を明示してください "
+                    "(その値は出版できません)"
+                )
+
         axes: list[float] = []
         vals: list[float] = []
         for f in self.frames:
             if f.axis_value is None or f.refine_failed:
                 continue
+            source = f.phase_fractions if basis == "scale" else f.phase_weight_fractions
             axes.append(float(f.axis_value))
-            vals.append(float(f.phase_fractions.get(phase, 0.0)))
+            vals.append(float(source.get(phase, 0.0)))
         return tuple(axes), tuple(vals)

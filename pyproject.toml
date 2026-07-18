@@ -57,6 +57,12 @@ mp = [
 absorption = [
     "periodictable>=1.6",
 ]
+# operando 電気化学同期 (M10): BioLogic EC-Lab .mpr の読み取りに galvani を使う。
+# ``interop.biologic.parse_mpr`` は本 extra を遅延 import し、未導入時は EchemUnavailableError へ
+# 縮退する (曲線の整列 curve_from_mpr_data / align_frames は本 extra に非依存でコアのみで動作する)。
+echem = [
+    "galvani>=0.4",
+]
 
 [dependency-groups]
 dev = [
