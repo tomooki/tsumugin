@@ -82,9 +82,131 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     "compare_models (XND)": (UNEXPOSED, "Issue #97: 構造モデル比較 (BIC)。③ から呼べない"),
     "interop (XND)": (
         UNEXPOSED,
-        "意図的: 外部形式→GSAS 変換は前処理であり、変換済みパスを auto_rietveld に渡せば足りる",
+        "Issue #108: 外部形式→GSAS 変換。当初「変換済みパスを渡せば足りる」と意図的非露出に"
+        "していたが、③ が生の RIETAN/Z-Code データを受けたとき変換手順の案内が無く手作業を"
+        "強いていた。convert_pattern/write_instrument_params で ② 露出する方針に転換 (2026-07-17)",
+    ),
+    # --- 未宣言だった穴 (Issue #99): 宣言リスト自体に載っておらず「忘れ」が再発していた ---
+    # これらは既に宣言済みパッケージ (mem/reference) の**内側**の能力、または宣言リストに
+    # 完全に欠けていたパッケージ (operando) であり、パッケージ網 (PACKAGE_COVERAGE) だけでは
+    # 捕まらない。能力単位で明示宣言することで「既知の穴」に格上げする。
+    "mem.mpf (FR-603)": (
+        UNEXPOSED,
+        "Issue #99/#100: 実データ MEM-Rietveld 反復 (run_mem_rietveld_gpx)。callable 完全不要・"
+        "全引数 JSON 互換なのに ② 未配線。mem パッケージは mem_density で露出済みだが反復ループは"
+        "その内側で見えていなかった (mem-model-fix skill も単発のみ)",
+    ),
+    "reference.identify_pattern (M11)": (
+        UNEXPOSED,
+        "Issue #99/#100: 単相/多相統一の残差減算反復同定。reference は identify_phases で露出済み"
+        "だが M11 の統一エントリはその陰に隠れ、トップレベル __all__ にも無い二重漏れ (#105)",
+    ),
+    "echem sync (M3/FR-311)": (
+        UNEXPOSED,
+        "Issue #99/#103: 電気化学同期 (operando.echem + interop.biologic の parse_mpr/align_frames)。"
+        "callable 不要なのに ② 未露出で、K2Mn[Fe(CN)6] 実解析では毎回 ① を直叩き。③ の J8 は"
+        "「未確定と書け」の消極的指示のみ。align_echem で露出予定",
     ),
 }
+
+
+# ===========================================================================
+# 粒度⓪: **宣言リスト自体に載っていないパッケージは誰も見ていない** (Issue #99)
+# ---------------------------------------------------------------------------
+# 上の `LAYER1_FEATURES` は「宣言されたもの」の露出しか見ない。そのため **src/tsumugin に
+# パッケージが丸ごと存在するのに宣言表に 1 行も無い**場合、露出テストは緑のまま通る。
+# 実際に起きた (Issue #99): `operando` (M3 電気化学; parse_mpr/align_frames) はどの宣言表にも
+# 無く、`mem.mpf` (反復 MEM-Rietveld) は `mem` パッケージの内側に隠れ、`identify_pattern` (M11) は
+# `reference` の陰に隠れていた — Issue #97 の恒久ガードを入れた後もこの「忘れ」が再発した。
+#
+# **設計**: 全サブパッケージを列挙し、各々が (a) LAYER1_FEATURES のいずれかの機能の ① 実装元か、
+# (b) FOUNDATIONAL (③ に露出する独立能力ではないインフラ) を**明示宣言**することを強制する。
+# 新パッケージを足したら本網が fail し、「これは ③ 向け能力か / インフラか」を一度考えさせる。
+# パッケージより細かい能力 (`mem.mpf` 等) は網では捕まらないので LAYER1_FEATURES に能力単位で
+# 明示宣言する (上記参照) — 網は「丸ごと忘れられたパッケージ」を、明示宣言は「粒度の穴」を塞ぐ。
+# ===========================================================================
+
+FOUNDATIONAL = "FOUNDATIONAL"
+
+#: 全 `tsumugin` サブパッケージ → LAYER1_FEATURES のキー or FOUNDATIONAL。
+#: **新しいサブパッケージを足したら、ここへ 1 行足すこと** (足さないと下の網羅テストが fail)。
+PACKAGE_COVERAGE: dict[str, str] = {
+    # --- ③ 向け能力パッケージ (露出/未露出は LAYER1_FEATURES で管理) ---
+    "autorietveld": "autorietveld (M7)",
+    "joint": "joint (M4/FR-240)",
+    "reference": "reference (M6)",
+    "refine_loop": "refine_loop (M8)",
+    "insitu": "insitu (M9)",  # insitu.anchor (M10) は同パッケージ内の能力として別途宣言
+    "mem": "mem (M8-③)",  # mem.mpf (反復) は同パッケージ内の能力として別途宣言
+    "chem": "chem (FR-412)",
+    "oed": "oed (M5/FR-700)",
+    "nested": "nested (M5/FR-500)",
+    "interop": "interop (XND)",
+    "operando": "echem sync (M3/FR-311)",  # ← Issue #99: これまで宣言リストに 1 行も無かった
+    # --- 基盤 (③ に露出する独立能力ではない — 露出済みツールが内部で使うインフラ) ---
+    "model": (FOUNDATIONAL, "不変 dataclass 群 (§4)。全層が共有する型であり単独能力ではない"),
+    "backends": (FOUNDATIONAL, "RefinementBackend Protocol + Simulated (P7)。精密化の内部境界"),
+    "refinement": (FOUNDATIONAL, "段階解放エンジン + ガードレール (FR-200)。autorietveld が内包"),
+    "evidence": (FOUNDATIONAL, "BIC/AIC backend (FR-120)。M4 session 系 compare_hypotheses の裏方"),
+    "store": (FOUNDATIONAL, "Ledger/Snapshot (P2/NFR-105)。全状態変更の追記基盤"),
+    "search": (FOUNDATIONAL, "多仮説木探索 (FR-110)。M4 session 系 submit_analysis の裏方"),
+    "selection": (FOUNDATIONAL, "最終選択 + エスカレーション (M2)。accept/revert の裏方"),
+    "sequential": (FOUNDATIONAL, "時系列基盤 (変化点/熱ベースライン, M2)。insitu/parametric が内包"),
+    "export": (FOUNDATIONAL, "gpx 書き出し (FR-505)。export_gpx ツールの裏方"),
+    "multistart": (FOUNDATIONAL, "マルチスタート大域最適確認 (FR-230)。autorietveld が内包・単独 ② 未露出は M-later"),
+    "absorption": (FOUNDATIONAL, "平板透過吸収補正 (FR-317)。refinement/autorietveld が内部適用"),
+    "mp": (FOUNDATIONAL, "Materials Project 供給元 (FR-101)。reference/insitu.phaseid が内部利用"),
+    "mcp": (FOUNDATIONAL, "これ自体が ② 層。露出する能力ではなく露出する機構"),
+    "webui": (FOUNDATIONAL, "WebUI は ③ skill ではなくブラウザ UI の別系統"),
+    # --- トップレベルモジュール (パッケージではないが ③ 向け能力/インフラを持ちうる) ---
+    "pipeline": (FOUNDATIONAL, "単一パターン自動多相精密化 (M0)。submit_analysis の裏方"),
+    "errors": (FOUNDATIONAL, "例外型の集約。全層が共有するインフラ"),
+}
+
+
+def test_every_subpackage_is_declared_in_package_coverage():
+    """★全 `tsumugin` サブパッケージ + 非私有モジュールが `PACKAGE_COVERAGE` に現れること。
+
+    非トートロジー: 表を grep せず `pkgutil.iter_modules` で実際のサブパッケージとモジュールを
+    列挙する。新パッケージ/モジュールを足したら本テストが fail し、「③ 向け能力か / インフラか」
+    の宣言を強制する。**これが Issue #99 の核心**: LAYER1_FEATURES/*_FIELDS は「宣言済みのもの」
+    しか見ず、`operando` のように**丸ごと載っていない**パッケージは誰も見ていなかった。
+
+    私有モジュール (`_` 始まり、例: `_json`) は内部実装として除外する — ③ 向け能力ではない。
+    """
+    import tsumugin
+
+    actual = {
+        m.name
+        for m in pkgutil.iter_modules(tsumugin.__path__)
+        if not m.name.startswith("_")
+    }
+    declared = set(PACKAGE_COVERAGE)
+    assert actual == declared, (
+        f"tsumugin サブパッケージ/モジュールと PACKAGE_COVERAGE が食い違う。"
+        f"未宣言 (③ 向け能力か FOUNDATIONAL か決めること): {sorted(actual - declared)} / "
+        f"実在しない宣言 (削除/改名された?): {sorted(declared - actual)}"
+    )
+
+
+def test_package_coverage_values_are_valid():
+    """`PACKAGE_COVERAGE` の各値が実在の LAYER1_FEATURES キーか、理由付き FOUNDATIONAL であること。
+
+    LAYER1_FEATURES のキーへ写像する宣言はタイポで無効な機能を指せない (存在確認)。
+    FOUNDATIONAL は理由の明示を必須にする (黙ってインフラ扱いにしない = §4.5 規則④-3)。
+    """
+    for pkg, value in PACKAGE_COVERAGE.items():
+        if isinstance(value, tuple):
+            marker, why = value
+            assert marker == FOUNDATIONAL, (
+                f"{pkg}: tuple 宣言のマーカーは FOUNDATIONAL のみ (現在: {marker!r})"
+            )
+            assert why and len(why) > 15, f"{pkg}: FOUNDATIONAL の理由が書かれていない"
+        else:
+            assert value in LAYER1_FEATURES, (
+                f"{pkg}: LAYER1_FEATURES に無い機能キー {value!r} を指している "
+                f"(タイポか、機能宣言の追加漏れ)"
+            )
 
 
 def test_declared_exposure_tools_actually_exist():
