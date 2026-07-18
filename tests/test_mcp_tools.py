@@ -53,6 +53,7 @@ from tsumugin.mcp.tools import (
     identify_phase_mixtures,
     identify_phases,
     list_hypotheses,
+    propose_discriminating_measurements,
     revert,
     run_mem,
     submit_analysis,
@@ -169,10 +170,11 @@ def _synthetic_pattern(centers, *, fwhm=0.15):
 
 def test_eight_tools_registered_in_mcp_tools():
     # 【テスト目的】: M4 8 + M6 相同定 2 + M11 identify_pattern 1 (#100) + M8 実構造 Rietveld 3
+    #   + M11 identify_pattern 1 + M5 oed 1 (propose_discriminating_measurements #104)
     #   + M9 in situ 逐次 3 + M8-③ MEM 4 (mem_rietveld_iterate #100 含む) + operando 診断 4
     #   + M10 anchor 1 (anchored_sequential, #97) + 構造モデル比較 1 (compare_structure_models, #100)
     #   + 電気化学同期 1 (align_echem, #103)
-    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108) = 30 ツール登録
+    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108) = 31 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -185,6 +187,7 @@ def test_eight_tools_registered_in_mcp_tools():
         "identify_phases",
         "identify_phase_mixtures",
         "identify_pattern",
+        "propose_discriminating_measurements",
         "auto_rietveld",
         "propose_next_actions",
         "refine_with_revisions",
@@ -301,6 +304,58 @@ def test_identify_pattern_tool_without_provider_returns_error():
 
 def test_identify_pattern_registered_in_mcp_tools():
     assert MCP_TOOLS["identify_pattern"] is identify_pattern
+
+
+# ===========================================================================
+# FR-412: chem 降格 (compare_hypotheses chem_context) / FR-700: oed
+# ===========================================================================
+
+
+def test_compare_hypotheses_chem_context_demotes_alkali_metal_in_air():
+    """chem_context 指定で単体アルカリ金属仮説が酸化雰囲気下で降格される (除外はしない)。"""
+    session = _session(ranked=[_ranked("Na", 10.0), _ranked("NaCl", 10.0)])
+    plain = compare_hypotheses(session, ["Na", "NaCl"])
+    # 相の組成は phase_ref 文字列に無いので ③ が同定結果から供給する
+    chem_ctx = {
+        "atmosphere": "air",
+        "phase_compositions": {
+            "Na": {"formula": "Na", "element_system": ["Na"]},
+            "NaCl": {"formula": "NaCl", "element_system": ["Na", "Cl"]},
+        },
+    }
+    demoted = compare_hypotheses(session, ["Na", "NaCl"], chem_context=chem_ctx)
+
+    assert plain["chem_demotion_applied"] is False
+    assert demoted["chem_demotion_applied"] is True
+    na_plain = next(c["probability"] for c in plain["compared"] if c["id"] == "Na")
+    na_demoted = next(c["probability"] for c in demoted["compared"] if c["id"] == "Na")
+    assert na_demoted < na_plain  # 単体 Na は air で降格
+    # 降格のみ・除外しない: 件数は不変で Na も残る (Dara 教訓)
+    assert len(demoted["compared"]) == len(plain["compared"]) == 2
+    assert {c["id"] for c in demoted["compared"]} == {"Na", "NaCl"}
+
+
+def test_propose_discriminating_measurements_for_close_competitors():
+    """僅差競合に判別測定を情報利得順に提案する (非破壊・提案のみ)。"""
+    import json
+
+    session = _session(ranked=[_ranked("h1", 10.0), _ranked("h2", 10.0)])
+    out = propose_discriminating_measurements(session, close_threshold=10.0)
+    assert out["n_proposals"] == len(out["proposals"])
+    assert out["n_proposals"] >= 1  # 同一 evidence = 僅差 → 提案あり
+    for p in out["proposals"]:
+        assert {"kind", "target_hypothesis_ids", "estimated_information_gain"} <= set(p)
+    json.dumps(out, allow_nan=False)
+
+
+def test_propose_discriminating_measurements_without_search_result():
+    session = _session()  # 探索結果なし
+    out = propose_discriminating_measurements(session)
+    assert out == {"proposals": [], "n_proposals": 0}
+
+
+def test_propose_discriminating_measurements_registered_in_mcp_tools():
+    assert MCP_TOOLS["propose_discriminating_measurements"] is propose_discriminating_measurements
 
 
 def test_mcp_tools_values_are_the_actual_functions():

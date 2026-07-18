@@ -233,12 +233,11 @@ def test_create_mcp_server_wires_all_eight_tools():
     # 低レベル SDK: list_tools ハンドラを request_handlers 経由で駆動し登録ツール名を収集する。
     tools = _collect_tool_names(server)
     assert set(tools) == set(MCP_TOOLS)  # 【検証項目】: 全ツール配線 🔵
-    # 【検証項目】: ツール総数 30 (M4 8 + M6 2 + M11 identify_pattern 1 [#100] + M8 実構造 3
-    #   + M9 in situ 逐次 3 + M8-③ MEM 4 [+ mem_rietveld_iterate #100] + operando 診断 4
-    #   + M10 anchor 1 [anchored_sequential, #97] + 構造モデル比較 1 [compare_structure_models, #100]
-    #   + 電気化学同期 1 [align_echem, #103]
-    #   + interop 変換 2 [convert_pattern/write_instrument_params, #108]) 🔵
-    assert len(MCP_TOOLS) == 30
+    # 【検証項目】: ツール総数 31 (M4 8 + M6 2 + M11 identify_pattern 1 + M5 oed 1
+    #   [propose_discriminating_measurements #104] + M8 実構造 3 + M9 in situ 逐次 3
+    #   + M8-③ MEM 4 + operando 診断 4 + M10 anchor 1 + 構造モデル比較 1 + 電気化学同期 1
+    #   + interop 変換 2。※ chem 降格は compare_hypotheses の chem_context 引数で露出 [#100/#104]) 🔵
+    assert len(MCP_TOOLS) == 31
 
 
 def _collect_tool_names(server: object) -> list[str]:

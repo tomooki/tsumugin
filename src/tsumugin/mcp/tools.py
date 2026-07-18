@@ -64,6 +64,7 @@ __all__ = [
     "identify_phase_mixtures",
     "identify_phases",
     "list_hypotheses",
+    "propose_discriminating_measurements",
     "revert",
     "run_mem",
     "submit_analysis",
@@ -214,14 +215,28 @@ def list_hypotheses(session: AnalysisSession) -> dict:
     return session.search_result.to_summary()
 
 
-def compare_hypotheses(session: AnalysisSession, hypothesis_ids: Sequence[str]) -> dict:
-    """指定仮説を evidence/確率で比較する。rank へ委譲。🔵 REQ-021/022
+def compare_hypotheses(
+    session: AnalysisSession,
+    hypothesis_ids: Sequence[str],
+    *,
+    chem_context: Mapping[str, object] | None = None,
+) -> dict:
+    """指定仮説を evidence/確率で比較する。rank へ委譲。🔵 REQ-021/022/FR-412
 
     【委譲】: ``session.search_result.hypotheses`` から指定 ID の仮説を取り出し、
       ``evidence.ranking.rank`` で evidence/確率を再計算した比較 dict を返す。
     【決定論】: 未知 ID はスキップ (誤操作防御)。evidence backend は session の注入 (既定 BIC)。
-    【テスト対応】: test_compare_hypotheses_delegates_to_rank。
-    🔵 信頼性レベル: interfaces.py mcp/tools 節 / evidence/ranking.rank に依拠。
+    【化学的妥当性の降格 (FR-412, chem_context 指定時)】: ``chem_context`` (合成条件) を渡すと、
+      ``chem.rank_with_plausibility`` で **ChemPlausibility 降格**を配線する (例: 酸化雰囲気での
+      単体アルカリ金属は非妥当として確率を下げる)。**降格のみ・候補除外はしない** (Dara 教訓):
+      低スコア仮説も compared に残り件数は不変。``chem_context`` のキー:
+
+      - ``atmosphere``: 合成雰囲気 ("air"/"O2"/"Ar"/"N2" 等)。酸化性判定に使う
+      - ``element_system`` / ``precursors``: 合成の元素系/前駆体 (任意)
+      - ``phase_compositions``: ``{phase_ref: {"formula": str, "element_system": [str]}}``。**相の
+        組成メタ**。Hypothesis の相 (PhaseInstance) は phase_ref 文字列しか持たず組成を運ばないため、
+        降格を効かせるには ③ が同定結果 (``identify_phases``/``identify_pattern`` の formula) から
+        供給する。未供給の相は phase_ref から組成を導出できず降格対象外になる (静かに効かない)
     """
     if session.search_result is None:
         return {"compared": []}
@@ -235,8 +250,39 @@ def compare_hypotheses(session: AnalysisSession, hypothesis_ids: Sequence[str]) 
     # 【evidence 再ランク (F5)】: session 注入 evidence を単一情報源で既定 BIC へフォールバック
     #   (既存パターン ``session.evidence or BICBackend()`` に統一・関数内 import を除去) 🔵
     backend = session.evidence or BICBackend()
-    ranked = rank(hypotheses, backend)
+    if chem_context is not None:
+        from ..chem import AlkaliMetalInAirRule, SynthesisContext, rank_with_plausibility
+        from ..model.phase import PhaseRef
+
+        ctx = SynthesisContext(
+            element_system=tuple(str(e) for e in chem_context.get("element_system", ())),
+            precursors=tuple(str(p) for p in chem_context.get("precursors", ())),
+            atmosphere=(
+                str(chem_context["atmosphere"])
+                if chem_context.get("atmosphere") is not None
+                else None
+            ),
+        )
+        # 相の組成メタを ③ 供給の phase_compositions から PhaseRef へ (phase_ref 文字列は組成を
+        # 運ばないため; 未供給なら None で from_phase_ref フォールバック = 降格は効かない)。
+        comps = chem_context.get("phase_compositions") or {}
+        phase_refs = {
+            str(pid): PhaseRef(
+                id=str(pid),
+                formula=(str(c["formula"]) if c.get("formula") is not None else None),
+                element_system=tuple(str(e) for e in c.get("element_system", ())),
+            )
+            for pid, c in comps.items()
+        } or None
+        ranked = rank_with_plausibility(
+            hypotheses, backend, modules=(AlkaliMetalInAirRule(),), context=ctx,
+            phase_refs=phase_refs, ledger=session.ledger,
+        )
+    else:
+        ranked = rank(hypotheses, backend)
     return {
+        # ChemPlausibility を配線したかを ③ に明示 (降格の有無で数字の解釈が変わる)
+        "chem_demotion_applied": chem_context is not None,
         "compared": [
             {
                 "id": rk.hypothesis.id,
@@ -250,7 +296,7 @@ def compare_hypotheses(session: AnalysisSession, hypothesis_ids: Sequence[str]) 
                 "close_competitor": bool(rk.close_competitor),
             }
             for rk in ranked
-        ]
+        ],
     }
 
 
@@ -379,6 +425,38 @@ def run_mem(session: AnalysisSession, **params: object) -> dict:
     """
     # 【委譲】: M5 実体化境界へ params 透過 (mem_backend 供給時のみ実処理・破壊的追記なし) 🔵 REQ-034
     return _mem.run_mem_boundary(session, **params)
+
+
+def propose_discriminating_measurements(
+    session: AnalysisSession, *, close_threshold: float = 10.0, reason: str = ""
+) -> dict:
+    """僅差競合の仮説を判別する追加測定を情報利得順に提案する (OED, FR-700)。🔵
+
+    【なぜ session 経由か】: OED は木探索/裁定の中間生成物 ``RankedHypothesis`` を入力に取る。
+      これを JSON で受け渡すのは §4.5 的に不自然なので、``compare_hypotheses`` と同じく **session 内の
+      探索結果を入力に取る** (RankedHypothesis を境界に晒さない)。
+    【委譲】: session の直近探索結果を ``evidence.ranking.rank`` で順位付け → ``oed.propose_measurements``
+      で僅差競合 (最良との BIC 差 < close_threshold) の判別測定を情報利得順に提案する。
+    【非破壊・提案のみ (FR-700)】: 測定の実行・データ変更はしない。提案を ledger に追記するのみ。
+      僅差競合が無ければ空提案 (措置不要のシグナル)。
+
+    :param close_threshold: 僅差競合とみなす最良仮説との evidence (BIC) 差の上限
+    :returns: ``proposals[]`` (kind/target_hypothesis_ids/rationale/estimated_information_gain/
+      parameters) + ``n_proposals``。探索結果が無ければ空提案
+    """
+    if session.search_result is None:
+        return {"proposals": [], "n_proposals": 0}
+    from ..oed import propose_measurements, proposals_to_json
+
+    hypotheses = list(session.search_result.hypotheses.values())
+    if not hypotheses:
+        return {"proposals": [], "n_proposals": 0}
+    backend = session.evidence or BICBackend()
+    ranked = rank(hypotheses, backend, close_threshold=close_threshold)
+    proposals = propose_measurements(
+        ranked, close_threshold=close_threshold, ledger=session.ledger
+    )
+    return {"proposals": proposals_to_json(proposals), "n_proposals": len(proposals)}
 
 
 def identify_phases(
@@ -562,6 +640,7 @@ MCP_TOOLS: Mapping[str, object] = {
     "identify_phases": identify_phases,
     "identify_phase_mixtures": identify_phase_mixtures,
     "identify_pattern": identify_pattern,
+    "propose_discriminating_measurements": propose_discriminating_measurements,
     **_RIETVELD_TOOLS,
     **_INSITU_TOOLS,
     **_MEM_MODEL_TOOLS,

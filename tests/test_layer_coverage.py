@@ -73,12 +73,21 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "JSON spec で露出した — runner→instrument spec (sequential_rietveld と共有)・identifier→"
         "anchor_table {frame_index: [phase_name]}。crossovers[].total_bic で「BIC 相数抑制」も可視化",
     ),
-    "oed (M5/FR-700)": (UNEXPOSED, "Issue #97: 判別測定の提案。③ から呼べない"),
+    "oed (M5/FR-700)": (
+        "propose_discriminating_measurements",
+        "Issue #104 解決: 僅差競合の判別測定を情報利得順に提案 (非破壊)。session 内の探索結果を "
+        "入力に取る session ツール (RankedHypothesis を境界に晒さない)。nested はスコープ外 (#76)",
+    ),
     "nested (M5/FR-500)": (
         UNEXPOSED,
-        "Issue #97: compare_hypotheses は rank へ委譲し nested を参照しない",
+        "Issue #76 と同時設計のため待機 (2026-07-17 スコープ判断)。EvidenceProblem.log_likelihood が "
+        "callable 必須で原理的に JSON 化不可 = 露出単位の再設計が要る。物理尤度配線 (FR-313) と一体で",
     ),
-    "chem (FR-412)": (UNEXPOSED, "Issue #97: identify_phases は chem を参照しない"),
+    "chem (FR-412)": (
+        "compare_hypotheses",
+        "Issue #100 解決: ChemPlausibility 降格を compare_hypotheses の chem_context 引数で配線 "
+        "(降格のみ・除外しない = Dara 教訓)。相の組成メタは ③ が同定結果から phase_compositions で供給",
+    ),
     "compare_models (XND)": (
         "compare_structure_models",
         "Issue #100 解決: callable 制約が無い (runner 既定=実装関数) 単純配線漏れだった。"
