@@ -335,6 +335,21 @@ def test_compare_hypotheses_chem_context_demotes_alkali_metal_in_air():
     assert {c["id"] for c in demoted["compared"]} == {"Na", "NaCl"}
 
 
+def test_compare_hypotheses_chem_context_tolerates_malformed_compositions():
+    """★不正形 phase_compositions (dict でない値) を例外でなく縮退で扱う (② 契約: 例外を送出しない)。
+
+    ③ 供給 JSON なので値が dict でない等の不正形がありうる。素朴な c.get(...) は AttributeError を
+    MCP 境界に貫かせるため、不正な相はスキップして降格対象外にする (self-review 指摘)。
+    """
+    session = _session(ranked=[_ranked("Na", 10.0), _ranked("NaCl", 10.0)])
+    out = compare_hypotheses(
+        session, ["Na", "NaCl"],
+        chem_context={"atmosphere": "air", "phase_compositions": {"Na": "NOT_A_DICT"}},
+    )
+    assert out["chem_demotion_applied"] is True
+    assert len(out["compared"]) == 2  # 例外にならず件数不変
+
+
 def test_propose_discriminating_measurements_for_close_competitors():
     """僅差競合に判別測定を情報利得順に提案する (非破壊・提案のみ)。"""
     import json

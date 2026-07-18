@@ -265,7 +265,10 @@ def compare_hypotheses(
         )
         # 相の組成メタを ③ 供給の phase_compositions から PhaseRef へ (phase_ref 文字列は組成を
         # 運ばないため; 未供給なら None で from_phase_ref フォールバック = 降格は効かない)。
-        comps = chem_context.get("phase_compositions") or {}
+        # 【頑健化】: ③ 供給 JSON なので不正形 (comps が dict でない・値が dict でない) を許容し、
+        #   例外を境界に貫かせない (② は例外を送出しない契約)。不正な相はスキップ = 降格対象外。
+        raw_comps = chem_context.get("phase_compositions")
+        comps = raw_comps if isinstance(raw_comps, Mapping) else {}
         phase_refs = {
             str(pid): PhaseRef(
                 id=str(pid),
@@ -273,6 +276,7 @@ def compare_hypotheses(
                 element_system=tuple(str(e) for e in c.get("element_system", ())),
             )
             for pid, c in comps.items()
+            if isinstance(c, Mapping)
         } or None
         ranked = rank_with_plausibility(
             hypotheses, backend, modules=(AlkaliMetalInAirRule(),), context=ctx,
