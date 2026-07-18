@@ -101,9 +101,10 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "False は安全弁)。子スナップショット gpx (P2) + ledger",
     ),
     "reference.identify_pattern (M11)": (
-        UNEXPOSED,
-        "Issue #99/#100: 単相/多相統一の残差減算反復同定。reference は identify_phases で露出済み"
-        "だが M11 の統一エントリはその陰に隠れ、トップレベル __all__ にも無い二重漏れ (#105)",
+        "identify_pattern",
+        "Issue #100 解決: 単相/多相統一の残差減算反復同定を session ツールとして露出 "
+        "(identify_phases と同じ reference_provider 経路)。相数を事前指定せず残差 S/N < 5σ まで"
+        "積み上げる。トップレベル __all__ 未 re-export は #105 で別途 (② 到達性には影響なし)",
     ),
     "echem sync (M3/FR-311)": (
         "align_echem",

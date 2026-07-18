@@ -49,6 +49,7 @@ from tsumugin.mcp.tools import (
     compare_hypotheses,
     export_gpx,
     get_trajectory,
+    identify_pattern,
     identify_phase_mixtures,
     identify_phases,
     list_hypotheses,
@@ -167,11 +168,11 @@ def _synthetic_pattern(centers, *, fwhm=0.15):
 
 
 def test_eight_tools_registered_in_mcp_tools():
-    # 【テスト目的】: M4 8 + M6 相同定 2 + M8 実構造 Rietveld 3 + M9 in situ 逐次 3
-    #   + M8-③ MEM 4 (mem_rietveld_iterate #100 含む) + operando 診断 4
+    # 【テスト目的】: M4 8 + M6 相同定 2 + M11 identify_pattern 1 (#100) + M8 実構造 Rietveld 3
+    #   + M9 in situ 逐次 3 + M8-③ MEM 4 (mem_rietveld_iterate #100 含む) + operando 診断 4
     #   + M10 anchor 1 (anchored_sequential, #97) + 構造モデル比較 1 (compare_structure_models, #100)
     #   + 電気化学同期 1 (align_echem, #103)
-    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108) = 29 ツール登録
+    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108) = 30 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -183,6 +184,7 @@ def test_eight_tools_registered_in_mcp_tools():
         "run_mem",
         "identify_phases",
         "identify_phase_mixtures",
+        "identify_pattern",
         "auto_rietveld",
         "propose_next_actions",
         "refine_with_revisions",
@@ -262,6 +264,43 @@ def test_identify_phase_mixtures_tool_without_provider_returns_error():
     tt, y = _synthetic_pattern([20.0])
     out = identify_phase_mixtures(session, tt, y, ["Fe", "O"])
     assert "error" in out
+
+
+# ===========================================================================
+# M11: identify_pattern (単相/多相統一の逐次減算同定, Issue #100)
+# ===========================================================================
+
+
+def test_identify_pattern_tool_accepts_phases_and_returns_plain_dict():
+    import json
+
+    prov = _FakeRefProvider([
+        _ref_phase("mp-A", [20.0, 40.0]),
+        _ref_phase("mp-B", [30.0, 50.0]),
+    ])
+    session = _session(reference_provider=prov)
+    # 逐次減算同定は残差 S/N ≥ 5σ を受理条件にするため、計数統計に耐える高カウントパターンにする
+    # (振幅 1 の合成では sigma=√counts≈1 で S/N が閾値に届かず 0 相で停止する)。
+    tt, y = _synthetic_pattern([20.0, 40.0, 30.0, 50.0])
+    y = y * 5000.0 + 50.0
+    out = identify_pattern(session, tt, y, ["Fe", "O"], snr_stop=5.0)
+    assert out["mode"] == "iterative"
+    assert out["n_accepted"] == len(out["accepted"])
+    assert out["n_accepted"] >= 1  # 少なくとも 1 相受理
+    for a in out["accepted"]:
+        assert {"phase_id", "formula", "scale", "score", "strain"} <= set(a)
+    json.dumps(out, allow_nan=False)
+
+
+def test_identify_pattern_tool_without_provider_returns_error():
+    session = _session()
+    tt, y = _synthetic_pattern([20.0])
+    out = identify_pattern(session, tt, y, ["Fe", "O"])
+    assert "error" in out
+
+
+def test_identify_pattern_registered_in_mcp_tools():
+    assert MCP_TOOLS["identify_pattern"] is identify_pattern
 
 
 def test_mcp_tools_values_are_the_actual_functions():

@@ -60,6 +60,7 @@ __all__ = [
     "compare_hypotheses",
     "export_gpx",
     "get_trajectory",
+    "identify_pattern",
     "identify_phase_mixtures",
     "identify_phases",
     "list_hypotheses",
@@ -470,6 +471,76 @@ def identify_phase_mixtures(
     return response
 
 
+def identify_pattern(
+    session: AnalysisSession,
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    elements: Sequence[str],
+    *,
+    max_phases: int = 5,
+    snr_stop: float = 5.0,
+    subtract_bg: bool = True,
+    refine_lattice: bool = True,
+    hull_cutoff_ev: float | None = 0.1,
+    reason: str = "",
+) -> dict:
+    """未知パターン + 元素から相集合を**逐次減算で統一同定**する (M11, FR-118)。🔵
+
+    【単相/多相統一】: ``identify_phases`` (単相ランキング) と ``identify_phase_mixtures`` (木探索) を
+      統合したエントリ。1 相受理するごとに残差からその寄与を減算し、**残差 S/N が閾値 (snr_stop σ)
+      未満**になるまで反復する。単相なら 1 相で停止、多相なら複数相を積み上げる (相数を事前に
+      指定しない)。過剰適合は受理ゲート (未説明強度の相対減少 ∧ 最小スケール) が抑える。
+    【委譲】: ``session.reference_provider`` を供給元に ``reference.iterative.identify_pattern`` へ。
+      供給元未設定は error dict。深段 Rietveld 裁定 (``refiner``) は本経路では省略 (提案のみ)。
+    【残差配列非跨ぎ】: ``residual_two_theta``/``residual_intensity`` は境界を越えさせず、受理相の
+      要約のみ返す (§4.5)。
+
+    :param max_phases: 反復上限 (安全網; 実際は snr_stop が停止を決める)
+    :param snr_stop: 残差 S/N がこの未満で停止 (5σ = 結晶学の標準検出閾値)
+    :param subtract_bg: 同定前の SNIP 背景減算
+    :param refine_lattice: 提案時の等方格子整合 (DFT 格子ズレ吸収)
+    :returns: ``accepted[]`` (受理相: phase_id/formula/element_system/scale/score/strain) +
+      ``n_accepted``。破壊的操作なし (提案のみ)
+    """
+    provider = session.reference_provider
+    if provider is None:
+        return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    from ..reference.iterative import IdentifyConfig
+    from ..reference.iterative import identify_pattern as _identify_pattern
+
+    two_theta = np.asarray(two_theta, dtype=float)
+    intensity = np.asarray(intensity, dtype=float)
+    cfg = IdentifyConfig(
+        max_phases=int(max_phases),
+        snr_stop=float(snr_stop),
+        subtract_bg=bool(subtract_bg),
+        refine_lattice=bool(refine_lattice),
+        hull_cutoff_ev=hull_cutoff_ev,
+    )
+    result = _identify_pattern(
+        two_theta, intensity, provider, elements=list(elements), cfg=cfg, ledger=session.ledger
+    )
+    session.ledger.append(
+        "mcp_identify", {"mode": "iterative", "n_elements": len(elements), "reason": reason}
+    )
+    return {
+        "mode": "iterative",
+        "accepted": [
+            {
+                "phase_id": a.reference.phase_id,
+                "formula": a.reference.formula,
+                "element_system": list(a.reference.element_system),
+                "scale": finite_or_none(a.scale),
+                "score": finite_or_none(a.score),
+                "strain": finite_or_none(a.strain),
+                "source": a.source,
+            }
+            for a in result.accepted
+        ],
+        "n_accepted": len(result.accepted),
+    }
+
+
 # 【ツールレジストリ】: 10 ツール (M4 8 + M6 相同定 2) + M8 実構造 Rietveld 3 + M9 in situ 逐次 3
 #   + M8-③ MEM model-fix 3 + operando 診断 4 + M10 anchor 1 = 24 ツール名 → 実処理関数。アダプタ層
 #   (server.py) が配線に使う単一情報源 🔵 REQ-021。M8 の 3 ツール (auto_rietveld/propose_next_actions/
@@ -490,6 +561,7 @@ MCP_TOOLS: Mapping[str, object] = {
     "run_mem": run_mem,
     "identify_phases": identify_phases,
     "identify_phase_mixtures": identify_phase_mixtures,
+    "identify_pattern": identify_pattern,
     **_RIETVELD_TOOLS,
     **_INSITU_TOOLS,
     **_MEM_MODEL_TOOLS,
