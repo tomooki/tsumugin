@@ -34,6 +34,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | `sequential_rietveld` | 系列実行 | フレーム別 Rwp/格子/相分率 + **`residual_report`** + **出版値** (`phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd`) をフレーム毎に同梱 |
 | `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` + `seed_pinned`/`seed_pinned_frames` + `fractions_frozen`/`frozen_fraction_frames` |
 | `repair_frames` | 不連続の修復 | `repairs` (採用のみ; **修復後の出版値** `phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd` を修復フレーム毎に同梱)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない) |
+| `anchored_sequential` | 系統ブロックの解き直し (M10) | アンカー起点の双方向精密化 + `crossovers[].total_bic` で相集合を **bic 選定** (相数を抑制)。前方単一パス由来の系統汚染 (偽相全域・esd 発散・全相 flagged) を根治する → J6 |
 | `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `auto_rietveld` | 単一フレーム再フィット | `residual_report` + 出版値 (重量分率 ± esd・`cell_esd`) 同梱 |
 
@@ -173,6 +174,17 @@ repair_frames(result, frames, phases,
 - **`needs_model_revision` はモデルの欠陥**。近傍 warm-start では直らない (両隣も同欠陥)。
   相集合/セル解放を**再構成**する (実データ: pure-mono ブロックは単相 mono+セル解放で
   9.1-10.7% → **6.5-8.1%**)。
+
+**系全体が「前方単一パス由来の系統ブロック」で汚染されているとき (転移域で偽相が全域に湧く・
+分率 0 近傍で esd 発散・`check_phase_set` が全相 flagged) は、フレーム単位の修復でなく
+`anchored_sequential` で解き直す** (M10)。前方単一パスは初期フレーム依存 + 転移域セル汚染で脆く、
+これらは**その脆さが生む病理**であって個別フレームの欠陥ではない。M10 は信頼フレーム (アンカー)
+起点の双方向精密化 + **相集合の違う区間を Rwp でなく bic で選定**するため、相数が抑制され偽相が
+全域に広がらない。`crossovers[].total_bic` で相数選定を検算できる。呼び方は `insitu` skill 手順 3′。
+
+> ⚠ これは実際に起きた: per-frame 3 相固定 fit が **Rwp 8% のまま**、計量の近い tetragonal に
+> 残留 monoclinic の強度を肩代わりさせ「tetra が増減する」非物理描像を生成した。当時 M10 は
+> ② 未露出 (Issue #97) で使えず、③ はこれを「モデルの欠陥」と誤報告した。今は使える。
 
 #### J4 参照構造の供給
 

@@ -179,6 +179,22 @@ repair_frames(result, frames, phases, instrument={...}, two_theta_limits=[2.4, 1
 - **`needs_model_revision` はモデルの欠陥**。近傍 warm-start では直らない (**両隣も同欠陥**)。
   相集合/セル解放を**再構成**する (実データ: pure-mono ブロックは単相 mono+セル解放で
   9.1-10.7% → **6.5-8.1%**)。
+- **系全体が前方単一パス由来の系統ブロックで汚染 (偽相が全域に湧く・分率 0 近傍で esd 発散・
+  `check_phase_set` が全相 flagged) されているときは、フレーム単位修復でなく `anchored_sequential`
+  (M10) で解き直す**。
+
+```python
+anchored_sequential(frames, phases,
+                    anchor_table={"0": ["mono"], "124": ["cubic", "tetra"], "246": ["mono"]},
+                    instrument={...}, two_theta_limits=[2.4, 18.0])
+# -> 系列結果 + "anchors" + "crossovers" (crossovers[].total_bic で相数を bic 選定)
+```
+
+  前方単一パスは初期フレーム依存 + 転移域セル汚染で脆く、上記病理は**その脆さの帰結**である。M10 は
+  信頼フレーム (アンカー) 起点の双方向精密化 + **相集合の違う区間を Rwp でなく bic で選定** (相数を
+  抑制) して根治する。`anchor_table` は信頼フレーム→相集合。`instrument`/`two_theta_limits` は必須
+  (省略時は無音の既定に落とさず error dict)。実データで per-frame 3 相固定が Rwp 8% のまま生成した
+  「tetra が増減する」偽描像は、当時 M10 が ② 未露出 (Issue #97) で使えなかったことが原因だった。
 
 #### J4 参照構造の供給
 

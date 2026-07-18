@@ -23,7 +23,8 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | ツール | 役割 | 入出力 |
 |---|---|---|
 | `assess_data_quality` | 計器 (データ品質) | 観測ファイル → 背景減算検出 + 2θ 上限提案 |
-| `sequential_rietveld` | 計器+アクチュエータ | frames + initial_phases spec (JSON) → フレーム別 Rwp/格子/相分率/残差レポート/**出版値 (重量分率±esd・格子 esd)**・変化点・自動出現相 |
+| `sequential_rietveld` | 計器+アクチュエータ (前方単一パス) | frames + initial_phases spec (JSON) → フレーム別 Rwp/格子/相分率/残差レポート/**出版値 (重量分率±esd・格子 esd)**・変化点・自動出現相 |
+| `anchored_sequential` | 計器+アクチュエータ (M10 双方向) | frames + phases catalog + `anchor_table` {frame_index: [phase]} + instrument → アンカー起点の双方向精密化。`crossovers[].total_bic` で相集合を **Rwp でなく bic** で選定 (相数を抑制し偽相を全域に広げない)。**転移を含む operando の既定**。出力は sequential_rietveld と同型 + `anchors`/`crossovers` |
 | `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ + seed 張り付き + 分率凍結 |
 | `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復。`repairs[]` に**修復後の出版値** (重量分率 ± esd・`cell_esd`) を同梱 |
 | `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
@@ -96,6 +97,35 @@ Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を�
 `warm_start_fractions=True` を検討する (既定 False)。相分率が初期値に張り付いて動かない
 フレームを、直前フレームの分率で warm-start して是正する (#82)。
 フレーム別 Rwp/格子/相分率・変化点・`appearances` (自動追加相) を読む。
+
+### 3′. **転移を含む operando は `anchored_sequential` を既定にする** (M10)
+
+前方単一パス (`sequential_rietveld`) は **初期フレーム依存 + 転移域のセル汚染**で脆い。相が現れ
+消える operando (充放電・脱水・相変態) では、以下を理由に `anchored_sequential` を既定にする:
+
+- **相数は Rwp でなく bic で抑制される**。Rwp は自由パラメータ (相) を増やすほど単調に減るので、
+  「全域を多相で解く」と偽相が必ず勝って全フレームに湧く (実測 K₂Mn[Fe(CN)₆] で per-frame 3 相固定は
+  充電初期に偽 tetra を 20-30 wt% 生成した)。M10 は**相集合の違う前方/後方を区間総 bic で比較**し、
+  相数の少ない側が有利になるよう罰する。結果は `crossovers[].total_bic` で読める。
+- **アンカー**(信頼できるフレーム) の相集合で区間内を双方向 warm-start するので、`{mono}` アンカー
+  近傍は mono のみで解かれ、**0 に張り付く相が存在しない** = esd が発散しない。
+
+呼び方: `phases` は登場しうる全相の catalog、`anchor_table` は信頼フレーム→相集合の指定
+(前回の綺麗な per-frame 結果の最小 Rwp フレーム等を選ぶ; 相同定が計量縮退で効かない系では手で選ぶ)。
+
+```json
+{"anchor_table": {"0": ["mono"], "124": ["cubic", "tetra"], "246": ["mono"]},
+ "instrument": {"path": "kmnfe.instprm", "radiation": "xray_synchrotron",
+                "geometry": "debye_scherrer", "background_coeffs": 18},
+ "two_theta_limits": [2.4, 18.0]}
+```
+
+- **`instrument` と `two_theta_limits` は必ず渡す** (前方パスと同じ理由)。省略すると
+  `anchored_sequential` は無音のラボ X 線既定に落とさず error dict を返す (operando は放射光/中性子が
+  主戦場なので既定に落とすと系統的に誤る)。
+- `anchor_table` を省略すると M9 単一アンカー fallback = 前方単一パス相当に縮退する。
+- 出力の `anchors` (確定アンカー) と `crossovers` (区間選定・onset・total_bic) を読み、相の出現/消失
+  フレームと相数の変化が物理的に妥当かを確認する。以降の手順 4〜8 は前方パスと同じ結果 dict に適用できる。
 
 ### 4. 不連続を修復する
 
