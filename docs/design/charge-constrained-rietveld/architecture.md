@@ -15,7 +15,8 @@ MPR ─parse_mpr→ EchemCurve ─align_frames→ FramePoint(charge_mah, state, 
                                         content_constraint)   ← モードで分岐
                                               │
                                               ▼
-  FrameRietveldResult(alkali_content_*, x_echem, x_xrd, coulometric_residual, …)
+  FrameRietveldResult(alkali_x_echem, alkali_x_xrd±esd, alkali_per_phase,
+                      alkali_residual, alkali_constraint_applied, alkali_feasibility)
 ```
 
 ## ① コア設計
@@ -41,7 +42,7 @@ MPR ─parse_mpr→ EchemCurve ─align_frames→ FramePoint(charge_mah, state, 
 | 機構 | 実装 | 鋳型 |
 |---|---|---|
 | 占有率シーダー | `run_auto_rietveld(initial_occupancies={phase:{label:val}})` — 原子行 col cx+3 に設定。fix では refine フラグも off (sum=1 制約と衝突させない) | `_apply_initial_fractions` (931-966) |
-| soft 拘束 | `_apply_chem_comp_restraints`: `gpx.data['Restraints'][phase]['ChemComp']['Sites']` へ `[ranIds, factors, value, esd]` 直接注入 (ranId = col cia+8)。scriptable 未露出のため gpx.data 直接 — revert 生存は Restraints 共通性質 | `_apply_bond_restraints` (644-683) |
+| soft 拘束 | `_apply_chem_comp_restraints`: `gpx.data['Restraints'][phase]['ChemComp']['Sites']` へ `[ranIds, factors, value, esd]` 直接注入 (ranId = col cia+8)。⚠ **実測で headless 無効** (restraint penalty が最小二乗に入らない — engine docstring の 3 経路 + カナリアテスト)。注入は実装済みだが `plan_frame_constraint` は soft を diagnose へ縮退させる | `_apply_bond_restraints` (644-683) |
 | hard 拘束 | `content_constraint`: `add_EqnConstr(0.0, [Scaleᵢ], [Zᵢ(xᵢ−x_total)])` — Scale について線形 (モル量 ∝ Scale·Z)。相 id 混在 EqnConstr は分率和=1 (640) が前例 | `_setup_constraints` |
 | atom_occupancy 配線 | `_extract_state` 由来の値をラベルキーで `AutoRietveldResult.atom_occupancy/atom_uiso` に格納 (既存フィールド、未配線だった) + 共分散から esd | 構築部 1280 |
 | 初期 Uiso 警告 | 精密化前に妥当帯 [1e-3, 0.05] Å² 検査 + 「占有率と Uiso 同時精密化」警告 | validity.py |
@@ -52,7 +53,7 @@ MPR ─parse_mpr→ EchemCurve ─align_frames→ FramePoint(charge_mah, state, 
 | mode | 単相 | 多相 |
 |---|---|---|
 | diagnose | 占有率自由 + 乖離出力 | Scale 自由・xᵢ アンカー凍結・乖離出力 |
-| soft | ChemComp (単相はネイティブ表現可) | 相間 soft 非ネイティブ → diagnose 縮退+警告 |
+| soft | **無効 → diagnose 縮退+警告** (GSAS-II headless バグ実測; カナリア fail で再有効化) | 同左 (相間はそもそも非ネイティブ) |
 | fix | 占有率を x₀ に凍結 | xᵢ をアンカー値に凍結・Scale 自由 |
 | lock_fractions | n/a | EqnConstr で分率拘束 (2相=完全決定を警告) |
 
@@ -69,19 +70,22 @@ esd: float`。to_dict/from_dict (② JSON 境界を跨ぐ)。
 
 ### アンカー A/B (REQ-318-006)
 
-`anchor/extract.py::_refine_anchor` を拡張: charge_constraint 有効時、
-(A) 制約なし / (B) soft 制約 の 2 回精密化 → ΔRwp > 閾値で警告 +
-`x0_calibration_proposal` payload (精密化 x, 現 x₀, 差)。適用はしない。
+`anchor/extract.py::_refine_anchor` を拡張: charge_constraint 有効時、単相アンカーで
+(A) 制約なし / (B) **fix 制約 (占有率を echem 目標に凍結)** の 2 回精密化 (soft は headless
+無効のため fix を使う。B の fix 計画が組めない場合は A/B 不実施) → ΔRwp > 閾値で警告。
+x₀ 校正の**提案**は A の占有率が実際に精密化された (esd 付き, ab_check の `x_refined`) 場合のみ —
+固定値 (`x_model`) は校正根拠にならず `free_occupancy_labels` への誘導警告を出す。適用はしない。
 
 ## ② MCP
 
 - `alkali_budget(mpr_path, active_mass_mg, formula_weight, *, z=1, x0, sign, offset_s,
   interval_s, n_frames | frame_epoch_s, reason)` → per-frame `{frame, time_h, voltage_v,
   charge_mah, state, in_span, n_e, x_total}` 表。`align_echem` と同居 (echem_tools.py)。
-- `sequential_rietveld` / `anchored_sequential` に `charge_constraint` spec (JSON):
-  `{targets: {frame_index: {total, esd}}, per_phase_content: {phase: x_i}, mode,
-  mobile_sites: {phase: {labels, multiplicity}}, z_formula: {phase: Z}, formula_weights,
-  anchor_ab_threshold}`。targets は **alkali_budget の出力から作れる** (§4.5 到達可能性)。
+- `sequential_rietveld` / `anchored_sequential` に `charge_constraint` spec (JSON, 実装形):
+  `{config: ChargeConstraintConfig.to_dict() (mobile_sites/z_formula/formula_weights/mode/esd/
+  anchor_ab_threshold/...), targets: [alkali_budget 出力の targets そのまま], per_phase_content:
+  {phase: x_i}}`。targets は frames リストの**位置**で対応 (範囲外/負 index・空は ValueError —
+  サブセット解析は re-key 必須)。**alkali_budget の出力から作れる** (§4.5 到達可能性)。
 - `seq_result_to_dict` が新フィールドを出力。
 
 ## ③ skill (第3層判断の明示)
