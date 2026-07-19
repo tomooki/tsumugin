@@ -70,7 +70,8 @@ def align_echem(
         curve = parse_mpr(mpr_path)
     except EchemUnavailableError as exc:
         return {"error": str(exc), "error_type": "EchemUnavailableError"}
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — galvani 内部例外 (NotImplementedError/
+        # AttributeError 等の版差) も ② 境界を貫かせない (レビュー LOW)
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     try:
@@ -88,7 +89,7 @@ def align_echem(
                 "frame_epoch_s か (offset_s + interval_s + n_frames) のいずれかが必要です"
             )
         points = align_frames(curve, epochs, clamp=bool(clamp))
-    except (ValueError, TypeError) as exc:
+    except Exception as exc:  # noqa: BLE001 — ② は例外を送出しない (error dict へ縮退)
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     v = np.asarray(curve.voltage_v, dtype=float)
@@ -175,7 +176,7 @@ def alkali_budget(
         curve = parse_mpr(mpr_path)
     except EchemUnavailableError as exc:
         return {"error": str(exc), "error_type": "EchemUnavailableError"}
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — galvani 内部例外の版差も縮退 (レビュー LOW)
         return {"error": str(exc), "error_type": type(exc).__name__}
     try:
         if frame_epoch_s is not None:
@@ -197,7 +198,7 @@ def alkali_budget(
             formula_weight=float(formula_weight), z=int(z), sign=int(sign),
             x0_source=str(x0_source),
         )
-    except (ValueError, TypeError) as exc:
+    except Exception as exc:  # noqa: BLE001 — ② は例外を送出しない (error dict へ縮退)
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     return {

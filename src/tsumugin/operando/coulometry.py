@@ -100,8 +100,9 @@ class AlkaliBudget:
     :param x0: 基準組成 (charge_mah = 0 の時点の式単位あたりアルカリ量)
     :param x0_source: x₀ の由来 — ``given`` (ユーザー指定) / ``first_frame`` (先頭フレームで
         精密化) / ``anchor`` (アンカー精密化値で校正済み)。REQ-318-002/006
-    :param sign: +1 = 充電 (Q 増) でアルカリ減 (正極規約) / −1 = 逆
-    :param warnings: sign と state の矛盾等 (REQ-318-003)
+    :param sign: +1 = 充電 (Q 増) でアルカリ減 (正極規約) / −1 = 逆 (負極規約)
+    :param warnings: 非既定 sign の明示確認等 (REQ-318-003)。⚠ 電極取り違えの**検出**は
+        原理的に不可能 (state が積算電荷由来のため) — `_sign_consistency_warnings` 参照
     """
 
     targets: tuple[FrameTarget, ...]
@@ -125,13 +126,19 @@ def alkali_targets(
 
     - ``in_span=False`` または ``charge_mah=None`` のフレームには目標を作らない (捏造禁止)。
     - ``state=rest`` は Q 一定なので目標は有効。
-    - **sign 照合**: 充電区間で x が増える (または放電区間で減る) 場合は sign と実測 state が
-      矛盾している (配線ミス・電極取り違えの兆候) ため警告を積む。
+    - **sign の検証限界** (レビューで確定): ``state`` は積算電荷 ΔQ の符号から導かれるため、
+      「x の増減 vs state」の照合は**同語反復**であり電極の取り違えを原理的に検出できない
+      (Q と独立な電極化学の知識が要る)。よって本関数は取り違え検出を**主張しない** —
+      非既定の ``sign=-1`` (負極規約: 充電で挿入) が指定されたときに**明示確認の警告**を
+      積むのみとする (既定 +1 = 正極規約: 充電でアルカリ減)。
     """
     if sign not in (1, -1):
         raise ValueError(f"sign は +1 か -1 であること: {sign}")
     if x0_source not in _X0_SOURCES:
         raise ValueError(f"x0_source は {_X0_SOURCES} のいずれか: {x0_source!r}")
+    # 物理パラメータは in-span フレームの有無に依らず**無条件に**検証する (レビュー LOW:
+    # 全フレーム範囲外だと electron_count が一度も呼ばれず、ゴミ質量でも「正常」を返していた)。
+    electron_count(0.0, active_mass_mg, formula_weight, z=z)
 
     targets: list[FrameTarget] = []
     for pt in frame_points:
@@ -161,29 +168,23 @@ def alkali_targets(
 
 
 def _sign_consistency_warnings(targets: list[FrameTarget], sign: int) -> tuple[str, ...]:
-    """充電区間の正味 Δx > 0 (または放電区間で < 0) なら sign 矛盾警告。🔵
+    """非既定 sign (=-1, 負極規約) の明示確認警告。🔵
 
-    biologic の state は Ns ブロックの正味 ΔQ から導かれるため、この検査は実質
-    「sign が電極の化学 (充電でアルカリ減) と整合しているか」の検証になる。
+    **旧実装は同語反復だった** (レビュー MEDIUM で確定): ``state`` は積算電荷 ΔQ の符号から
+    導かれる (`interop.biologic._sample_states`) ため、「充電区間で x が増えるか」の検査は
+    構造的に「sign == -1 か」と等価であり、**電極の取り違え (sign=+1 のまま負極を解析) は
+    原理的に検出できない** (Q と独立な情報が要る)。検出できない検証を「配線ミス検出」と
+    主張するのは「呼べるが黙って間違う」の亜種なので、主張を能力に合わせる:
+    sign=-1 が指定されたときのみ「負極規約を選択した」ことの明示確認を促す。
     """
-    net: dict[str, float] = {"charge": 0.0, "discharge": 0.0}
-    prev: FrameTarget | None = None
-    for t in targets:
-        if t.x_total is None:
-            prev = None
-            continue
-        if prev is not None and t.state == prev.state and t.state in net:
-            net[t.state] += t.x_total - (prev.x_total or 0.0)
-        prev = t
-    warnings: list[str] = []
-    tol = 1e-12
-    if net["charge"] > tol or net["discharge"] < -tol:
-        warnings.append(
-            f"sign={sign:+d} が実測 state と矛盾: 充電区間の正味 Δx={net['charge']:+.4g}, "
-            f"放電区間の正味 Δx={net['discharge']:+.4g} (充電で減・放電で増が正極の規約)。"
-            "sign の符号か電極の取り違えを確認すること。"
+    if sign == -1 and any(t.x_total is not None for t in targets):
+        return (
+            "sign=-1 (負極規約: 充電でアルカリ挿入) が指定されています。回折側電極が"
+            "負極の場合のみ正しい規約です — 正極 (充電で脱離) なら既定の sign=+1 を"
+            "使ってください。⚠ この選択の正誤はデータからは検証できません "
+            "(state は積算電荷由来のため電極の役割と独立な照合が不可能)。",
         )
-    return tuple(warnings)
+    return ()
 
 
 @dataclass(frozen=True)
@@ -269,6 +270,15 @@ def occupancies_for_content(
     if over:
         raise ValueError(
             f"目標 x={x_target} は占有率 1 超を要求します (物理的に不可能): {over}"
+        )
+    # 負も同様に物理的に不可能 (レビュー HIGH: x₀ 過小/不可逆容量で x_total<0 になる充電末は
+    # **現実に起きる** — ここで raise すれば `_occupancy_targets` が捕捉して診断へ縮退し、
+    # 系列 run が生の ValueError で死なない)。
+    under = {lb: v for lb, v in out.items() if v < -1e-9}
+    if under:
+        raise ValueError(
+            f"目標 x={x_target} は負の占有率を要求します (物理的に不可能 — x₀ の過小/"
+            f"不可逆容量の疑い): {under}"
         )
     return out
 

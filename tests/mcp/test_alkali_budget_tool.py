@@ -80,6 +80,13 @@ class TestChargeConstraintSpec:
         with pytest.raises(ValueError, match="targets"):
             _apply_charge_constraint_spec({"config": _CC_SPEC["config"]}, self._frames())
 
+    def test_out_of_range_target_index_raises(self) -> None:
+        """レビュー MEDIUM: サブセット frames に全系列 targets を渡す位置ずれは、範囲外 index
+        という確実な指紋を持つ — 黙って捨てず ValueError (境界で error dict へ縮退)。"""
+        spec = {**_CC_SPEC, "targets": [{"frame": 246, "x_total": 1.9}]}
+        with pytest.raises(ValueError, match="範囲外"):
+            _apply_charge_constraint_spec(spec, self._frames(3))
+
 
 def _stub_result(rwp: float = 8.0) -> AutoRietveldResult:
     return AutoRietveldResult(

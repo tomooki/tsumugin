@@ -119,6 +119,32 @@ _runner_accepts_initial_fractions = runner_accepts_initial_fractions
 _call_runner = call_runner
 
 
+def _warn_runner_constraint_mismatch(
+    runner: object,
+    charge_constraint: "ChargeConstraintConfig | None",
+    warnings: "list[str]",
+) -> None:
+    """runner が消費する charge_constraint とエンジン設定の不一致を 1 回警告する (レビュー H1)。
+
+    エンジンの alkali 報告 (`_alkali_of`) は plan を**独立に再計算**するため、runner が拘束を
+    消費していなくても `alkali_constraint_applied` が立つ。`make_gsas_runner` は消費する設定を
+    ``_fr318_charge_constraint`` 属性で自己申告する — 属性が無い (カスタム/テスト runner) か
+    設定が異なる場合、報告は「計画」であって「適用の証明」ではない旨を警告する。
+    """
+    if charge_constraint is None or not charge_constraint.enabled:
+        return
+    consumed = getattr(runner, "_fr318_charge_constraint", None)
+    if consumed == charge_constraint:
+        return
+    msg = (
+        "charge_constraint が有効ですが、runner がそれを消費する保証がありません "
+        "(make_gsas_runner(charge_constraint=) 由来でない/設定が異なる)。"
+        "alkali_constraint_applied は**計画**の報告であり、この runner での適用は未確認です"
+    )
+    if msg not in warnings:
+        warnings.append(msg)
+
+
 def _alkali_of(
     frame: FrameSpec,
     charge_constraint: "ChargeConstraintConfig | None",
@@ -195,6 +221,8 @@ def run_sequential_rietveld(
     appearances: list[PhaseAppearance] = []
     frame_results: list[FrameRietveldResult] = []
     warnings: list[str] = []
+    # FR-318 (H1): runner が charge_constraint を消費する保証の照合 (不一致は 1 回警告)。
+    _warn_runner_constraint_mismatch(runner, config.charge_constraint, warnings)
 
     rwp_history: list[float] = []
     lattice_history: list[dict[str, float]] = []
@@ -724,6 +752,11 @@ def make_gsas_runner(
                 **plan_kwargs,
             )
 
+    # FR-318 (レビュー H1): この runner が消費する charge_constraint を自己申告する。エンジンの
+    # 報告側は plan を独立に再計算するため、**別の設定を持つ/消費しない runner** だと
+    # 「報告された拘束 ≠ 実際に適用された拘束」の乖離が黙って起きる — エンジンがこの属性を
+    # 照合して不一致に警告を出す (`_warn_runner_constraint_mismatch`)。
+    runner._fr318_charge_constraint = charge_constraint  # type: ignore[attr-defined]
     return runner
 
 
@@ -740,6 +773,10 @@ def _default_gsas_runner(config: SequentialConfig) -> Runner:
         radiation=Radiation.XRAY_LAB,
         geometry=Geometry.BRAGG_BRENTANO,
         two_theta_limits=config.two_theta_limits,
+        # FR-318 (レビュー H1): 既定 runner にも charge_constraint を渡す。渡し忘れると
+        # 拘束 kwargs が run_auto_rietveld へ届かないのに、エンジンの報告側 (plan 再計算) は
+        # alkali_constraint_applied を立てる = 「呼べるが黙って間違う」の典型になる。
+        charge_constraint=config.charge_constraint,
     )
 
 

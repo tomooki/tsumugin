@@ -93,10 +93,14 @@ def run_anchored_sequential(
 
     base_names = frozenset(p.phase_name for p in base)
     warnings: list[str] = []
+    # FR-318 (H1): runner が charge_constraint を消費する保証の照合 (不一致は 1 回警告)。
+    from ..engine import _warn_runner_constraint_mismatch
+
+    _warn_runner_constraint_mismatch(runner, charge_constraint, warnings)
 
     anchors = extract_anchors(
         frames, base, runner=runner, identifier=identifier, cfg=cfg,
-        charge_constraint=charge_constraint,
+        charge_constraint=charge_constraint, warn_sink=warnings,
     )
     for a in anchors:
         ledger.append("m10_anchor", {
@@ -110,22 +114,35 @@ def run_anchored_sequential(
             ledger.append("fr318_anchor_ab", {"frame": a.frame_index, **dict(a.ab_check)})
             delta = float(a.ab_check.get("delta_rwp", 0.0))
             if abs(delta) > charge_constraint.anchor_ab_threshold:
-                x_ref = a.ab_check.get("x_refined")
+                # x の由来 (レビュー M2): "x_refined" = A の占有率が実際に精密化された (esd 付き)
+                # 場合のみ。既定 (占有率固定) は "x_model" = CIF 由来のモデル値であり、
+                # **x₀ 校正の根拠にはならない** — 提案は精密化済みのときだけ出す。
+                refined = "x_refined" in a.ab_check
+                x_val = a.ab_check.get("x_refined", a.ab_check.get("x_model"))
                 x_ech = a.ab_check.get("x_echem")
-                warnings.append(
-                    f"anchor@{a.frame_index}: 制約有無の ΔRwp={delta:+.2f}%pt が閾値"
-                    f" {charge_constraint.anchor_ab_threshold} を超過 — 不可逆容量/副反応で"
-                    f" echem 由来組成 (x={x_ech}) が回折 (精密化 x={x_ref}) とずれている疑い。"
-                    "x₀ を精密化値で校正する提案を ledger (fr318_x0_calibration_proposal) に"
-                    "記録しました (提案≠適用 — 採用は第3層判断)"
-                )
-                ledger.append("fr318_x0_calibration_proposal", {
-                    "frame": a.frame_index,
-                    "x_echem": x_ech,
-                    "x_refined": x_ref,
-                    "delta_rwp": delta,
-                    "applied": False,  # 提案のみ (P2 非破壊)
-                })
+                if refined:
+                    warnings.append(
+                        f"anchor@{a.frame_index}: 制約有無の ΔRwp={delta:+.2f}%pt が閾値"
+                        f" {charge_constraint.anchor_ab_threshold} を超過 — 不可逆容量/副反応で"
+                        f" echem 由来組成 (x={x_ech}) が回折 (精密化 x={x_val}) とずれている疑い。"
+                        "x₀ を精密化値で校正する提案を ledger (fr318_x0_calibration_proposal) に"
+                        "記録しました (提案≠適用 — 採用は第3層判断)"
+                    )
+                    ledger.append("fr318_x0_calibration_proposal", {
+                        "frame": a.frame_index,
+                        "x_echem": x_ech,
+                        "x_refined": x_val,
+                        "delta_rwp": delta,
+                        "applied": False,  # 提案のみ (P2 非破壊)
+                    })
+                else:
+                    warnings.append(
+                        f"anchor@{a.frame_index}: 制約有無の ΔRwp={delta:+.2f}%pt が閾値"
+                        f" {charge_constraint.anchor_ab_threshold} を超過 (echem x={x_ech} vs "
+                        f"モデル固定値 x={x_val})。**この x は精密化値ではない** (占有率固定) ため"
+                        " x₀ 校正の提案はしません — 校正するにはアンカー相の PhaseSpec に"
+                        " free_occupancy_labels を設定して占有率を精密化してください"
+                    )
 
     segments = build_segments(anchors, n)
 
@@ -134,8 +151,8 @@ def run_anchored_sequential(
     onsets: dict[str, int] = {}  # 新相 → onset フレーム (crossover 由来)
 
     for seg in segments:
-        fwd = refine_segment_forward(seg, frames, runner, charge_constraint)
-        bwd = refine_segment_backward(seg, frames, runner, charge_constraint)
+        fwd = refine_segment_forward(seg, frames, runner, charge_constraint, warnings)
+        bwd = refine_segment_backward(seg, frames, runner, charge_constraint, warnings)
         choice = select_crossover(seg, fwd, bwd, cfg)
         path = assemble_path(seg, fwd, bwd, choice)
         assembled.update(path)

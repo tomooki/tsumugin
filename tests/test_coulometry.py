@@ -114,10 +114,27 @@ class TestAlkaliTargets:
         b = self._budget([_fp(0, _Q1, "rest")])
         assert b.targets[0].x_total == pytest.approx(1.0)
 
-    def test_sign_mismatch_warns(self) -> None:
-        """sign=-1 だと充電区間で x が増える → state と矛盾 → 警告。"""
+    def test_sign_minus_one_gets_explicit_confirmation_warning(self) -> None:
+        """非既定 sign=-1 (負極規約) は明示確認の警告を積む。
+
+        ⚠ 旧仕様「state との矛盾検出」は同語反復だった (state は ΔQ 由来) — 検出できない
+        検証を主張しない (レビュー MEDIUM で要件修正)。
+        """
         b = self._budget([_fp(0, 0.0, "charge"), _fp(1, _Q1, "charge")], sign=-1)
-        assert any("sign" in w for w in b.warnings)
+        assert any("sign" in w and "検証できません" in w for w in b.warnings)
+
+    def test_default_sign_no_warning(self) -> None:
+        b = self._budget([_fp(0, 0.0, "charge"), _fp(1, _Q1, "charge")], sign=1)
+        assert not b.warnings
+
+    def test_invalid_mass_raises_even_all_out_of_span(self) -> None:
+        """物理パラメータは in-span フレームの有無に依らず検証 (レビュー LOW: ゴミ質量を
+        「正常」と答えない)。"""
+        with pytest.raises(ValueError):
+            alkali_targets(
+                [_fp(0, None, "unknown", in_span=False)], x0=2.0,
+                active_mass_mg=0.0, formula_weight=100.0, sign=1,
+            )
 
     def test_x0_source_recorded_and_validated(self) -> None:
         b = self._budget([_fp(0, 0.0, "charge")])
@@ -198,6 +215,15 @@ class TestMobileSites:
         with pytest.raises(ValueError, match="1"):
             occupancies_for_content(
                 3.0, spec, z_formula=2.0, base_occupancies={"K": 0.9}
+            )
+
+    def test_inverse_negative_raises(self) -> None:
+        """負の占有率も物理的に不可能 → ValueError (レビュー HIGH: x₀ 過小/不可逆容量で
+        x_total<0 は現実に起きる — raise すれば `_occupancy_targets` が捕捉し診断へ縮退)。"""
+        spec = MobileSiteSpec(phase_name="p", site_labels=("K",), multiplicities=(4.0,))
+        with pytest.raises(ValueError, match="負"):
+            occupancies_for_content(
+                -0.1, spec, z_formula=2.0, base_occupancies={"K": 0.9}
             )
 
 

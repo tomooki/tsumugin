@@ -1353,11 +1353,13 @@ def run_auto_rietveld(
             _apply_initial_occupancies(g2phases, initial_occupancies)
 
         # --- 初期 Uiso 妥当性 + 占有率/Uiso 結合の事前警告 (FR-318 / REQ-318-005) ---
-        # 占有率を触る解析 (シーダー/組成拘束/占有率段) でのみ検査する — 固定 Uiso が非物理だと
-        # 占有率へ系統誤差が転嫁されるため。通常解析 (占有率不関与) には警告を出さない (非回帰)。
+        # **FR-318 の入力 (シーダー/組成拘束/分率拘束) があるときのみ**検査する。レビュー M4:
+        # 「占有率段があるか」で発火させると、既存の混合占有ワークフロー (T2 garnet /
+        # NaCuHCF は occupancy 段 + uiso 段が正規レシピ) に新警告が出て非回帰契約が破れる。
+        # REQ-318-005 の適用範囲は電気化学制約解析であり、この gate がその範囲そのもの。
         pre_warnings: tuple[str, ...] = ()
-        _touches_occupancy = bool(initial_occupancies or chem_comp_restraints) or any(
-            "occupancy" in st.flags for st in stages
+        _touches_occupancy = bool(
+            initial_occupancies or chem_comp_restraints or content_constraint
         )
         if _touches_occupancy:
             _, uiso_init, _, _ = _atom_result_maps(g2phases)

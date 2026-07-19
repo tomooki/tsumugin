@@ -261,8 +261,11 @@ class ChargeConstraintConfig:
         不一致は警告される (REQ-318-008)
     :param formula_weights: 相名→式量 FW [g/mol]。x_XRD のモル平均換算に使う
         (**FW で割る — セル質量ではない**; `x_xrd_from_weight_fractions`)
-    :param mode: 既定の制約モード (:data:`CONSTRAINT_MODES`)。フレーム個別の
-        ``TargetComposition.mode`` が優先。既定 ``diagnose``
+    :param mode: 既定の制約モード (:data:`CONSTRAINT_MODES`)。⚠ **本フィールドを読むのは
+        ② の spec ビルダーだけ** (`_apply_charge_constraint_spec` が各フレームの
+        ``TargetComposition.mode`` に押印する)。`plan_frame_constraint` は ``tc.mode`` のみを
+        見るため、① を直接呼ぶ場合は **TargetComposition 側に mode を設定すること**
+        (ここに fix を書いても tc が既定 diagnose なら diagnose になる)。既定 ``diagnose``
     :param esd: soft restraint の既定 esd
     :param anchor_ab_threshold: アンカー A/B (制約有無) の ΔRwp 警告閾値 [%ポイント]
         (REQ-318-006。超過で不可逆容量疑いの警告 + x₀ 校正の提案)

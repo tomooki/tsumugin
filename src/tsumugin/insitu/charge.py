@@ -58,6 +58,19 @@ def _sites_by_phase(cfg: ChargeConstraintConfig) -> dict[str, MobileSiteSpec]:
     return {s.phase_name: s for s in cfg.mobile_sites}
 
 
+def _is_zero_content_phase(p: str, cfg: ChargeConstraintConfig) -> bool:
+    """可動イオンを含まない相の規約判定: mobile_sites 未定義 + z_formula/formula_weights 両登録。
+
+    例: 深充電相 tetra は K サイト自体が無い (CIF にラベルが無いので MobileSiteSpec で
+    表現できない)。この相は x_i ≡ 0 として扱い、占有率目標も不要 (シードする原子が無い)。
+    """
+    return (
+        p not in _sites_by_phase(cfg)
+        and p in cfg.z_formula
+        and p in cfg.formula_weights
+    )
+
+
 def _occupancy_targets(
     per_phase: Mapping[str, float],
     cfg: ChargeConstraintConfig,
@@ -69,6 +82,11 @@ def _occupancy_targets(
     for p, x in per_phase.items():
         spec = sites.get(p)
         z = cfg.z_formula.get(p)
+        if spec is None and _is_zero_content_phase(p, cfg) and abs(float(x)) <= 1e-9:
+            # x≡0 規約相 (レビュー MEDIUM: 仕様通りの構成に毎フレーム偽警告を出していた)。
+            # シードする原子が無く、目標も 0 なので何もしないのが正しい。x≠0 なら下の警告
+            # (サイト無しで正の x は物理的に表現不能 = 本物の設定誤り) に落ちる。
+            continue
         if spec is None or z is None:
             warnings.append(
                 f"相 {p}: mobile_sites/z_formula が未定義のため占有率目標を作れません"
@@ -102,6 +120,10 @@ def plan_frame_constraint(
     sites = _sites_by_phase(cfg)
     present = [p for p in phase_names if p in sites]
     if not present:
+        # 全相が x≡0 規約相 (例: 深充電の tetra 単相フレーム) なら仕様通り — 拘束/シードは
+        # 不要で診断 (x_XRD=0) だけが走る。警告しない (レビュー MEDIUM の偽警告と同型)。
+        if all(_is_zero_content_phase(p, cfg) for p in phase_names):
+            return FrameConstraintPlan()
         return FrameConstraintPlan(
             warnings=(
                 "可動イオンサイト定義のある相がこのフレームに存在しません "
@@ -284,7 +306,16 @@ def frame_alkali_report(
                 per_phase[p] = 0.0
             continue
         if z is None or occ is None:
-            continue
+            # サイト**有り**の相のデータ欠測 (レビュー MEDIUM): 黙って落とすと残りの相だけで
+            # モル平均が再規格化され、偏った/捏造同然の x_XRD が診断へ流れる (例: mono の
+            # 抽出失敗 + tetra x≡0 → x_XRD=0.0 が「本物」として infeasible 判定を汚す)。
+            # 警告して x_XRD の算出を**拒否**する (欠測 FW と同じ規律)。
+            warnings.append(
+                f"{p}: {'z_formula' if z is None else '占有率 (atom_occupancy)'} が無く "
+                "xᵢ を算出できません — x_XRD の報告を見送ります (部分平均は偏るため)"
+            )
+            per_phase.clear()
+            break
         total = 0.0
         var = 0.0
         ok = True
@@ -299,7 +330,9 @@ def frame_alkali_report(
             if e is not None:
                 var += (float(e) * m) ** 2
         if not ok:
-            continue
+            # ラベル欠測も上と同じ規律 (部分平均は偏る) — x_XRD の報告を見送る。
+            per_phase.clear()
+            break
         per_phase[p] = total / float(z)
         if var > 0.0:
             per_phase_esd[p] = math.sqrt(var) / float(z)

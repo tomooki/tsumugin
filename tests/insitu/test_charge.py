@@ -130,6 +130,42 @@ class TestPlanMultiPhase:
         )
         assert p.applied == "" and any("per_phase" in w for w in p.warnings)
 
+    def test_zero_content_phase_no_spurious_warning(self) -> None:
+        """x≡0 規約相 (tetra: サイト無し + z/FW **両登録** + per_phase 0.0) に偽警告を出さない
+        (レビュー MEDIUM: 仕様通りの構成へ毎フレーム警告していた)。"""
+        base = _cfg()
+        cfg = ChargeConstraintConfig(
+            mobile_sites=base.mobile_sites,
+            z_formula={**dict(base.z_formula), "tetra": 2.0},
+            formula_weights={**dict(base.formula_weights), "tetra": 258.9},
+        )
+        p = plan_frame_constraint(
+            _tc(0.4, "diagnose", per_phase={"mono": 1.944, "cubic": 0.70, "tetra": 0.0}),
+            cfg, ["mono", "cubic", "tetra"],
+        )
+        assert not any("tetra" in w for w in p.warnings), p.warnings
+        # 占有率シードはサイトのある相のみ (tetra はシード不要 = 正しい)
+        assert set(p.kwargs["initial_occupancies"]) == {"mono", "cubic"}
+
+    def test_pure_zero_content_frame_silent(self) -> None:
+        """全相が x≡0 規約相のフレーム (深充電 tetra 単相など) は警告なしの空計画。"""
+        cfg = ChargeConstraintConfig(
+            mobile_sites=(
+                MobileSiteSpec(phase_name="cubic", site_labels=("K",), multiplicities=(8.0,)),
+            ),
+            z_formula={"cubic": 4.0, "tetra": 2.0},
+            formula_weights={"cubic": 275.85, "tetra": 258.9},
+        )
+        p = plan_frame_constraint(_tc(0.05), cfg, ["tetra"])
+        assert p.kwargs == {} and not p.warnings
+
+    def test_negative_x_total_degrades_not_raises(self) -> None:
+        """レビュー HIGH の縮退確認: x_total<0 の fix は raise せず警告 + 診断へ縮退。"""
+        p = plan_frame_constraint(_tc(-0.1, "fix"), _cfg(), ["mono"])
+        assert p.applied == ""
+        assert "initial_occupancies" not in p.kwargs
+        assert any("配分できません" in w for w in p.warnings)
+
     def test_soft_multi_degrades_to_diagnose(self) -> None:
         p = plan_frame_constraint(
             _tc(1.5, "soft", per_phase=self._PER), _cfg(), ["mono", "cubic"]
@@ -361,3 +397,50 @@ class TestAnchorAB:
         anchor_frame = res.frames[0]
         assert anchor_frame.rwp == pytest.approx(8.0)  # A (free) の Rwp
         assert anchor_frame.alkali_x_xrd == pytest.approx(1.944)
+
+    def test_anchor_report_never_claims_applied(self) -> None:
+        """レビュー M1: A は制約なしで精密化した — 報告も applied='' であること (嘘をつかない)。"""
+        res = self._run(delta_rwp=3.0)
+        assert res.frames[0].alkali_constraint_applied == ""
+
+    def test_x_model_when_occupancy_not_refined(self) -> None:
+        """レビュー M2: 占有率が精密化されていない (esd なし) なら x は `x_model` と報告し、
+        x₀ 校正の提案は出さない (モデル固定値は校正根拠にならない)。"""
+        from tsumugin.insitu.anchor import run_anchored_sequential
+        import dataclasses as _dc
+
+        spec = PhaseSpec(structure_path="mono.cif", phase_name="mono")
+        cfg = ChargeConstraintConfig(
+            mobile_sites=(
+                MobileSiteSpec(phase_name="mono", site_labels=("K",), multiplicities=(4.0,)),
+            ),
+            z_formula={"mono": 2.0}, formula_weights={"mono": 339.4},
+            anchor_ab_threshold=1.0,
+        )
+        frames = [
+            FrameSpec(data_path=f"f{i}.xye", axis_value=float(i), data_format="XYE",
+                      target_composition=TargetComposition(total=1.8))
+            for i in range(2)
+        ]
+
+        def runner(frame, phases, initial_cells):
+            r = _stub_result(8.0)
+            tc = frame.target_composition
+            if tc is not None and tc.mode == "fix":
+                r = _stub_result(11.0)
+            # esd なし = 占有率未精密化のスタブ
+            return _dc.replace(r, atom_occupancy_esd={"mono": {"K": None}})
+
+        res = run_anchored_sequential(
+            frames, [spec], runner=runner, identifier=None, charge_constraint=cfg,
+        )
+        ab = next(e for e in res.ledger.entries if e.kind == "fr318_anchor_ab")
+        assert "x_model" in ab.payload and "x_refined" not in ab.payload
+        kinds = [e.kind for e in res.ledger.entries]
+        assert "fr318_x0_calibration_proposal" not in kinds
+        assert any("free_occupancy_labels" in w for w in res.warnings)
+
+    def test_runner_mismatch_warning_present(self) -> None:
+        """レビュー H1: charge_constraint 有効 + 消費保証のない注入 runner → 明示警告。"""
+        res = self._run(delta_rwp=0.2)
+        assert any("消費する保証" in w for w in res.warnings)

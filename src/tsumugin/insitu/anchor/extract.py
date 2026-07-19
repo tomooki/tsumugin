@@ -62,6 +62,7 @@ def _refine_anchor(
     i: int, frame: FrameSpec, specs: tuple[PhaseSpec, ...], runner: AnchorRunner,
     *, confidence: float, fallback: bool = False,
     charge_constraint: "ChargeConstraintConfig | None" = None,
+    warn_sink: "list[str] | None" = None,
 ) -> Anchor:
     """段階 B: フレーム i を specs で実構造 Rietveld し Anchor 値を組む。
 
@@ -94,25 +95,44 @@ def _refine_anchor(
     alkali: dict[str, object] = {}
     ab_check: dict[str, float] | None = None
     if use_charge:
-        from ..charge import alkali_fields  # 遅延 import (循環回避の保険; charge は numpy-only)
+        from ..charge import alkali_fields, plan_frame_constraint  # 遅延 import (numpy-only)
 
         names = tuple(s.phase_name for s in specs)
-        alkali, _warns = alkali_fields(tc, charge_constraint, names, res)
+        # A は**制約なし**で精密化した — 報告もそれに合わせ mode=diagnose で作る (レビュー M1:
+        # tc.mode が fix/lock だと plan 再計算が「適用済み」を立て、docstring と矛盾する嘘になる)。
+        tc_report = dataclasses.replace(tc, mode="diagnose")
+        alkali, warns = alkali_fields(tc_report, charge_constraint, names, res)
+        if warn_sink is not None:
+            for w in warns:
+                if w not in warn_sink:
+                    warn_sink.append(w)
         if len(specs) == 1 and float(res.final_rwp) < float("inf"):
-            frame_fixed = dataclasses.replace(
-                frame, target_composition=dataclasses.replace(tc, mode="fix")
-            )
-            res_b = runner(frame_fixed, specs, None)
-            if float(res_b.final_rwp) < float("inf"):
-                ab_check = {
-                    "rwp_free": float(res.final_rwp),
-                    "rwp_constrained": float(res_b.final_rwp),
-                    "delta_rwp": float(res_b.final_rwp) - float(res.final_rwp),
-                }
-                x_ref = alkali.get("alkali_x_xrd")
-                if isinstance(x_ref, (int, float)):
-                    ab_check["x_refined"] = float(x_ref)
-                ab_check["x_echem"] = float(tc.total)
+            tc_fix = dataclasses.replace(tc, mode="fix")
+            # B の fix 計画が実際に組める場合のみ A/B を実施する (レビュー #8: 計画が縮退
+            # [x 範囲外→占有率不能等] すると B ≡ A の空比較を「実施済み」と記録してしまう)。
+            plan_b = plan_frame_constraint(tc_fix, charge_constraint, names)
+            if plan_b.applied == "fix":
+                frame_fixed = dataclasses.replace(frame, target_composition=tc_fix)
+                res_b = runner(frame_fixed, specs, None)
+                if float(res_b.final_rwp) < float("inf"):
+                    ab_check = {
+                        "rwp_free": float(res.final_rwp),
+                        "rwp_constrained": float(res_b.final_rwp),
+                        "delta_rwp": float(res_b.final_rwp) - float(res.final_rwp),
+                    }
+                    x_a = alkali.get("alkali_x_xrd")
+                    if isinstance(x_a, (int, float)):
+                        # 【x の由来を偽らない】(レビュー M2): A の占有率が実際に精密化された
+                        # (esd が付いた) ときのみ "x_refined"。既定 (占有率グループ非宣言) では
+                        # 占有率は CIF 固定値なので "x_model" — x₀ 校正の根拠にはならない
+                        # (校正したいなら anchor 相の PhaseSpec に free_occupancy_labels を設定)。
+                        refined = alkali.get("alkali_x_xrd_esd") is not None
+                        ab_check["x_refined" if refined else "x_model"] = float(x_a)
+                    ab_check["x_echem"] = float(tc.total)
+            elif warn_sink is not None:
+                for w in plan_b.warnings:
+                    if w not in warn_sink:
+                        warn_sink.append(w)
 
     return Anchor(
         frame_index=i, axis_value=frame.axis_value, phase_specs=tuple(specs),
@@ -132,6 +152,7 @@ def extract_anchors(
     identifier: Identifier | None = None,
     cfg: AnchorConfig = AnchorConfig(),
     charge_constraint: "ChargeConstraintConfig | None" = None,
+    warn_sink: "list[str] | None" = None,
 ) -> tuple[Anchor, ...]:
     """確定アンカー列 (フレーム順) を返す。
 
@@ -152,7 +173,7 @@ def extract_anchors(
         return (
             _refine_anchor(
                 0, frames[0], base, runner, confidence=0.0, fallback=True,
-                charge_constraint=charge_constraint,
+                charge_constraint=charge_constraint, warn_sink=warn_sink,
             ),
         )
 
@@ -174,7 +195,7 @@ def extract_anchors(
             continue
         a = _refine_anchor(
             i, frames[i], specs, runner, confidence=conf,
-            charge_constraint=charge_constraint,
+            charge_constraint=charge_constraint, warn_sink=warn_sink,
         )
         # 高温/時間系列では室温 CIF 基準の validity が正当な格子伸長を fail するため既定で課さない
         # (M9 H1 と同根)。Rwp + 信頼度でアンカーを確定する。
@@ -188,5 +209,5 @@ def extract_anchors(
     return (
         _refine_anchor(best_i, frames[best_i], best_specs, runner,
                        confidence=best_conf, fallback=True,
-                       charge_constraint=charge_constraint),
+                       charge_constraint=charge_constraint, warn_sink=warn_sink),
     )

@@ -423,6 +423,18 @@ def _apply_charge_constraint_spec(
             continue  # echem 範囲外 → 目標なし (拘束しない; 捏造禁止)
         by_frame[idx] = float(x)  # type: ignore[arg-type]
 
+    # 【位置ずれの厳格検出】(レビュー MEDIUM): targets は frames リストの**位置**で突き合わせる。
+    # サブセット解析 (実測 K-10: 247 中 63 フレーム stride 抽出) に全系列の alkali_budget 出力を
+    # そのまま渡すと、位置 4 に「元フレーム 4」の目標が付く = 全フレームの x_echem が静かに誤る。
+    # 範囲外 index はその確実な指紋なので**黙って捨てず**エラーにする (境界で error dict へ縮退)。
+    if by_frame and max(by_frame) >= len(frame_specs):
+        raise ValueError(
+            f"charge_constraint.targets の frame index (max {max(by_frame)}) が frames リスト"
+            f" ({len(frame_specs)} 件) の範囲外です。targets は frames の**位置**で対応させます — "
+            "サブセット解析では targets を frames と同じ列挙に re-key するか、alkali_budget を"
+            " frames と同じフレーム時刻 (frame_epoch_s) で回してください"
+        )
+
     out: "list[FrameSpec]" = []
     for i, fs in enumerate(frame_specs):
         x = by_frame.get(i)
