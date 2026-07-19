@@ -29,6 +29,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復。`repairs[]` に**修復後の出版値** (重量分率 ± esd・`cell_esd`) を同梱 |
 | `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
+| `alkali_budget` | 計器 (クーロメトリー, FR-318) | MPR + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標 x_total(t) の表 (`targets[]`)。出力を `sequential_rietveld`/`anchored_sequential` の `charge_constraint.targets` へそのまま渡す |
 
 閉ループ丸ごとは MCP に**無い**。回すのはあなた。
 
@@ -130,6 +131,47 @@ Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を�
 - `anchor_table` を省略すると M9 単一アンカー fallback = 前方単一パス相当に縮退する。
 - 出力の `anchors` (確定アンカー) と `crossovers` (区間選定・onset・total_bic) を読み、相の出現/消失
   フレームと相数の変化が物理的に妥当かを確認する。以降の手順 4〜8 は前方パスと同じ結果 dict に適用できる。
+
+### 3″. 電気化学 operando では**クーロメトリーを独立測定として使う** (FR-318)
+
+定電流充放電では反応電気量 Q(t) が電極中の可動アルカリ量の**独立した化学量測定**になる。
+X 線単独の占有率精密化は Uiso 縮退で不安定なので、これを診断/制約に使う。
+
+**手順**: (1) `alkali_budget(mpr_path, active_mass_mg, formula_weight, x0=…, offset_s=…,
+interval_s=…, n_frames=…)` で per-frame 目標表を作る → (2) その `targets` を
+`charge_constraint` spec に入れて系列ツールへ渡す:
+
+```json
+{"charge_constraint": {
+   "config": {"mobile_sites": [{"phase_name": "mono", "site_labels": ["K"], "multiplicities": [4.0]}],
+              "z_formula": {"mono": 2.0}, "formula_weights": {"mono": 678.8},
+              "mode": "diagnose"},
+   "targets": "← alkali_budget の出力 targets をそのまま",
+   "per_phase_content": {"mono": 1.944, "cubic": 1.0}}}
+```
+
+- **モードは `diagnose` 既定で始める** (拘束せず per-frame の `alkali_x_xrd` vs `alkali_x_echem`
+  乖離を出力)。`alkali_residual` の系統的ドリフト = 不可逆容量/副反応の診断量 — これ自体が
+  出版価値のある閉ループ検証図になる。
+- **`lock_fractions` は明示 opt-in・あなたの判断事項**: 2 相では相分率和=1 と合わせ**相分率が
+  完全決定され、XRD は分率に寄与しなくなる** (Rwp が一致度の検定量に変わる)。採用するのは
+  「XRD 単独で分率が決まらない (計量縮退が深い) 系」に限る。
+- **`soft` (ChemComp restraint) は使わない** — 現行 GSAS-II の headless 精密化では restraint
+  penalty が最小二乗に取り込まれない (実測バグ; 自動で diagnose に縮退し警告が出る)。
+- **`per_phase_content` (相ごと xᵢ) は単相アンカーの精密化結果から取る** (要件: 多相域では各相の
+  x を単相域の値に固定して総量を拘束する)。`anchored_sequential` の `anchors[].alkali` を参照。
+- **sign の警告が出たら止まって確認する** (「sign が実測 state と矛盾」= 配線ミス/電極取り違え。
+  充電で正極のアルカリは減るのが規約)。
+- **`x_total` が null のフレーム (echem 範囲外) は拘束されない** (外挿値の捏造禁止 — 仕様)。
+- Na/K ハイブリッド電解液では**電子数 = 総アルカリ挿入量 (Na+K 和)** しか拘束できない。
+  `site_labels` に両元素のサイトを列挙し合算で扱う。Na/K 分配は XRD 側の精密化に任せる。
+- **U/Uiso は精密化しない** (占有率と縮退し導出組成を汚染する)。初期 Uiso が妥当帯
+  [1e-3, 0.05] Å² を外れると精密化前に警告が出る — 値を直すか根拠を持って帯を緩める。
+
+**アンカー A/B (自動)**: `anchored_sequential` に `charge_constraint` を渡すと、単相アンカーで
+制約有無の 2 精密化を自動比較し、ΔRwp が `anchor_ab_threshold` (既定 1.0%pt) を超えると
+**不可逆容量疑いの警告 + x₀ 校正の提案** (`fr318_x0_calibration_proposal`, applied=False) が出る。
+**提案≠適用** — x₀ を精密化値へ校正して再実行するかは**あなたがユーザーと合意して**決める。
 
 ### 4. 不連続を修復する
 
@@ -285,6 +327,8 @@ y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fracti
 | **新相の採否** (相追加) | 🟡 受理基準で自律採用も可 (frac∧Rwp∧validity) | ✅ 化学妥当性を確認・疑わしきはユーザー承認 |
 | **相集合の完全性** (相の**欠落**) | ❌ **原理的に不可** | ✅ **あなたが `check_phase_set` で疑う** |
 | 構造改訂・空間群・データリミット精密化 | ❌ | ✅ 判断・実行 |
+| **電気化学制約のモード選択** (diagnose/fix/lock_fractions) | ✅ diagnose の乖離出力・実行不能の縮退+警告は自律 | ✅ **lock_fractions の採用** (2相=分率が完全決定・XRD は分率に寄与しなくなる) と **占有率精密化スコープ** (可動イオンのみ/フレームワーク込み) はあなたの判断 |
+| **x₀ 校正** (アンカー A/B の ΔRwp 超過時) | ✅ 提案 + ledger 記録のみ (`applied=False`) | ✅ **採用はあなた + ユーザー合意** (提案≠適用; 不可逆容量の解釈が要る) |
 
 **なぜ受理基準で自動採用が許されるか**: 相追加は「未指数ピークを説明し ∧ 相分率が有意 ∧ 全体 Rwp を
 改善し ∧ 妥当性を壊さない」ときのみ受理し、外れれば可逆に棄却される (提案≠適用)。ただし化学的に

@@ -205,6 +205,7 @@ def test_eight_tools_registered_in_mcp_tools():
         "compare_structure_models",
         "mem_rietveld_iterate",
         "align_echem",
+        "alkali_budget",
         "convert_pattern",
         "write_instrument_params",
     }

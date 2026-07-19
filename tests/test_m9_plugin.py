@@ -122,3 +122,57 @@ def test_insitu_skill_documents_auto_freeze_as_threshold_not_bool():
     if "auto_freeze_minor_cells" in text:
         assert "閾値" in text, "auto_freeze_minor_cells を閾値と説明していない"
         assert "bool ではない" in text, "bool と取り違える誤用への注意が無い"
+
+
+# --------------------------------------------------------------------------------------
+# FR-318 電気化学制約 (charge_constraint) の恒久ガード
+# --------------------------------------------------------------------------------------
+
+_M9_PLAYBOOK = Path("docs/tasks/m9-insitu-sequential/AGENT_PLAYBOOK.md")
+
+
+def test_insitu_skill_documents_charge_constraint():
+    """FR-318: skill が alkali_budget → charge_constraint の導線と安全指示を持つこと。
+
+    ツールがあっても手順書に無ければ ③ は使わない (カバレッジ規則④-2)。
+    """
+    text = _SKILL.read_text(encoding="utf-8")
+    assert "alkali_budget" in text, "insitu SKILL が alkali_budget に言及していない"
+    assert "alkali_budget" in MCP_TOOLS
+    assert "charge_constraint" in text
+    # 安全指示: diagnose 既定 / lock は明示 opt-in / soft は headless で無効
+    assert "diagnose" in text
+    assert "lock_fractions" in text
+    assert "完全決定" in text, "2相 lock の自由度ゼロ警告が無い (採用判断を誤らせる)"
+    assert re.search(r"soft.{0,80}(使わない|無効)", text, flags=re.DOTALL), (
+        "soft (ChemComp) が headless で無効である旨の指示が無い — 呼べるが黙って効かない"
+    )
+    # x₀ 校正は提案のみ (提案≠適用)
+    assert "提案≠適用" in text
+
+
+def test_insitu_playbook_mirrors_charge_constraint_safety():
+    """skill と PLAYBOOK は安全上重要な指示を同内容で持つ (ガード規約と同じ規律)。"""
+    text = _M9_PLAYBOOK.read_text(encoding="utf-8")
+    assert "alkali_budget" in text
+    assert "lock_fractions" in text
+    assert re.search(r"soft.{0,80}(使わない|無効)", text, flags=re.DOTALL)
+    assert "提案≠適用" in text
+    # echem 範囲外フレームに拘束しない (捏造禁止)
+    assert "拘束されない" in text or "拘束しない" in text
+
+
+def test_charge_constraint_spec_keys_exist_in_real_signature():
+    """skill の JSON 例が実署名に無いキーを教えない (呼べない指示の検出)。"""
+    import inspect
+
+    from tsumugin.mcp.insitu_tools import sequential_rietveld
+
+    sig = inspect.signature(sequential_rietveld)
+    assert "charge_constraint" in sig.parameters, (
+        "skill は charge_constraint を教えるが sequential_rietveld に実在しない"
+    )
+    from tsumugin.mcp.anchor_tools import anchored_sequential
+
+    sig2 = inspect.signature(anchored_sequential)
+    assert "charge_constraint" in sig2.parameters

@@ -218,6 +218,24 @@ align_echem("K-10.mpr", offset_s=22.1, interval_s=283.0, n_frames=247)
 **`.mpr` が無い**とき、分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**ので
 **未確定と書き**、V-t / dQ/dV を人間に要求する (電圧を捏造しない)。
 
+#### J9 クーロメトリー整合 (FR-318) — **アルカリ量収支で相集合と分率を検算する**
+
+`alkali_budget` (MPR + 活物質質量 + 式量 + x₀) で per-frame の総アルカリ量目標を作り、
+`charge_constraint` spec を系列ツール (`sequential_rietveld`/`anchored_sequential`) に渡すと、
+各フレームに `alkali_x_xrd` (XRD 由来モル平均)・`alkali_x_echem` (クーロメトリー目標)・
+`alkali_residual` (差) が付く。**電気量は独立測定**なので:
+
+- **`alkali_residual` の系統的ドリフト** = 不可逆容量/副反応の兆候。Rwp には出ない誤りの独立検出器。
+- **`alkali_feasibility="infeasible"`** = 目標が相組成の凸包の外 = **相集合か x₀ が誤っている**強い
+  シグナル (J5 の相欠落仮説と突合する)。
+- アンカー `ab_check.delta_rwp` の超過警告 → x₀ 校正の**提案** (`fr318_x0_calibration_proposal`,
+  applied=False) が ledger に出る。**採用は人間の承認** (提案≠適用)。
+- **`soft` (ChemComp restraint) モードは使わない** — 現行 GSAS-II の headless 精密化では restraint
+  penalty が最小二乗に取り込まれない (実測バグ; 自動で diagnose に縮退し警告が出る)。
+- **lock_fractions は明示 opt-in**: 2 相では相分率が完全決定され XRD は分率に寄与しなくなる
+  (Rwp が一致度の検定量に変わる)。採用判断は人間と合意する。
+- `alkali_x_xrd` の basis は**重量分率を式量で割ったモル平均** (Scale でも wt% 単純平均でもない)。
+
 ### 2.4 改訂は承認を挟む
 
 相の追加/除外・対称性変更・セル解放方針の変更は**人間の承認後に適用**し、

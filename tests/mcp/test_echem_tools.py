@@ -36,7 +36,9 @@ def patched_parse(monkeypatch):
 
 
 def test_registry():
-    assert ECHEM_TOOLS == {"align_echem": align_echem}
+    from tsumugin.mcp.echem_tools import alkali_budget
+
+    assert ECHEM_TOOLS == {"align_echem": align_echem, "alkali_budget": alkali_budget}
 
 
 def test_align_echem_constant_cadence(patched_parse):

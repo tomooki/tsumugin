@@ -33,6 +33,7 @@ from ..insitu.anchor.model import AnchorConfig
 from ..insitu.model import FrameSpec
 from ._degrade import degrade_oserror
 from .insitu_tools import (
+    _apply_charge_constraint_spec,
     _parse_two_theta_limits,
     _runner_from_instrument,
     seq_result_to_dict,
@@ -120,6 +121,7 @@ def anchored_sequential(
     anchor_config: Mapping[str, object] | None = None,
     two_theta_limits: Sequence[float] | None = None,
     instrument: Mapping[str, object] | None = None,
+    charge_constraint: Mapping[str, object] | None = None,
     runner: Callable | None = None,
     reason: str = "",
 ) -> dict:
@@ -144,6 +146,11 @@ def anchored_sequential(
     :param instrument: **実運用の runner を組む JSON spec** (#93 と共有; sequential_rietveld と同一キー
         path/paths/radiation/geometry/background_coeffs/max_cyc/auto_freeze_minor_cells)。runner 未指定
         時のみ使う。None かつ runner も None なら engine 既定 GSAS runner (実験室 X 線)
+    :param charge_constraint: **FR-318 電気化学制約の JSON spec** (sequential_rietveld と同一形:
+        ``config`` + ``targets`` [= ``alkali_budget`` 出力] + ``per_phase_content``)。有効時は
+        (1) 単相アンカーで制約有無 A/B → ΔRwp 超過で不可逆容量疑いの警告 + **x₀ 校正の提案**
+        (提案≠適用; ledger ``fr318_x0_calibration_proposal``)、(2) per-frame の alkali_* 診断。
+        出力に ``anchors[].ab_check`` が付く。None で従来動作
     :param runner: **注入/テスト用** callable ((frame, phases, initial_cells)→AutoRietveldResult)。
         JSON 越しには渡せない。明示指定時は instrument より優先
     :returns: M9 と同型の系列結果 dict (frames/phase_names/appearances/warnings; per-frame に出版値
@@ -166,9 +173,12 @@ def anchored_sequential(
             else tuple(catalog.values())
         )
         cfg = AnchorConfig.from_dict(anchor_config or {})
+        cc_cfg = None
+        if charge_constraint is not None:
+            cc_cfg, frame_specs = _apply_charge_constraint_spec(charge_constraint, frame_specs)
         limits = _parse_two_theta_limits(two_theta_limits)
         if runner is None and instrument is not None:
-            runner = _runner_from_instrument(instrument, frame_specs, limits)
+            runner = _runner_from_instrument(instrument, frame_specs, limits, cc_cfg)
         identifier = (
             _identifier_from_table(anchor_table, frame_specs, catalog, anchor_confidence)
             if anchor_table is not None
@@ -194,15 +204,36 @@ def anchored_sequential(
 
     ledger = Ledger()
     result = run_anchored_sequential(
-        frame_specs, base, runner=runner, identifier=identifier, cfg=cfg, ledger=ledger
+        frame_specs, base, runner=runner, identifier=identifier, cfg=cfg, ledger=ledger,
+        charge_constraint=cc_cfg,
     )
     out = seq_result_to_dict(result)
     anchors, crossovers = _anchor_summary(ledger)
+    _attach_ab_checks(anchors, ledger)
     out["anchors"] = anchors
     out["crossovers"] = crossovers
     out["ledger_verified"] = ledger.verify()
     out["reason"] = reason
     return out
+
+
+def _attach_ab_checks(anchors: "list[dict]", ledger) -> None:
+    """FR-318 アンカー A/B 検証 (fr318_anchor_ab) を anchors 要約へ付す (無ければ何もしない)。
+
+    ``ab_check`` = {rwp_free, rwp_constrained, delta_rwp, x_refined, x_echem}。x₀ 校正の**提案**は
+    ledger ``fr318_x0_calibration_proposal`` (applied=False) と系列 warnings に出る (提案≠適用)。
+    """
+    by_frame: dict[int, dict] = {}
+    for e in ledger.entries:
+        if e.kind == "fr318_anchor_ab":
+            p = dict(e.payload)
+            frame = int(p.pop("frame"))
+            by_frame[frame] = {k: finite_or_none(v) if isinstance(v, float) else v
+                               for k, v in p.items()}
+    for a in anchors:
+        ab = by_frame.get(int(a["frame"]))
+        if ab is not None:
+            a["ab_check"] = ab
 
 
 #: MCP_TOOLS へマージする M10 ツール (Issue #97: ①→② カバレッジ規則④)。
