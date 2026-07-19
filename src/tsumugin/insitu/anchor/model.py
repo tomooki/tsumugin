@@ -118,6 +118,14 @@ class Anchor:
         この精密化から決まっていない (レビュー第6巡)・単相は ``0.0`` (自明)。既定空 dict。
     :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ; 段階 B 由来)。要素 ``None`` = 格子を解放して
         いない (凍結セル/未精密化)。``0.0`` は対称拘束で厳密に固定。既定空 dict。
+    :param alkali: FR-318 の alkali_* フィールド (`insitu.charge.alkali_fields` の出力を段階 B で
+        事前計算した貫通 dict; `engine._anchor_frame_result` が FrameRietveldResult へ展開する)。
+        既定空 dict (機能無効/後方互換)。
+    :param ab_check: FR-318 アンカー A/B 検証 (REQ-318-006)。単相アンカーで
+        制約なし (A=本アンカー) vs 占有率を echem 目標に凍結 (B) の 2 精密化を比較した
+        ``{"rwp_free", "rwp_constrained", "delta_rwp", "x_refined", "x_echem"}``。
+        None = 未実施 (機能無効/多相/echem 範囲外)。ΔRwp 大 = 不可逆容量の疑い →
+        x₀ 校正の**提案** (適用は第3層判断)。
     """
 
     frame_index: int
@@ -134,6 +142,8 @@ class Anchor:
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
     phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
     cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
+    alkali: Mapping[str, object] = field(default_factory=dict)
+    ab_check: Mapping[str, float] | None = None
 
     @property
     def phase_names(self) -> tuple[str, ...]:

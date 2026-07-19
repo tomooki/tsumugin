@@ -15,6 +15,7 @@ from __future__ import annotations
 from ...autorietveld.model import PhaseSpec
 from ...store.ledger import Ledger
 from ..model import (
+    ChargeConstraintConfig,
     FrameRietveldResult,
     FrameSpec,
     PhaseAppearance,
@@ -40,6 +41,8 @@ def _anchor_frame_result(anchor: Anchor) -> FrameRietveldResult:
         phase_weight_fractions=dict(anchor.phase_weight_fractions),
         phase_weight_fraction_esd=dict(anchor.phase_weight_fraction_esd),
         cell_esd={k: tuple(v) for k, v in anchor.cell_esd.items()},
+        # FR-318: 段階 B で事前計算した alkali 診断を展開 (機能無効なら空 = 既定値)。
+        **dict(anchor.alkali),  # type: ignore[arg-type]
     )
 
 
@@ -68,6 +71,7 @@ def run_anchored_sequential(
     identifier: Identifier | None = None,
     cfg: AnchorConfig = AnchorConfig(),
     ledger: Ledger | None = None,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> SequentialRietveldResult:
     """アンカー基準双方向解析を実行し `SequentialRietveldResult` を返す。
 
@@ -75,6 +79,10 @@ def run_anchored_sequential(
     2. `build_segments` で区間列。
     3. 各区間で前方/後方パス → `select_crossover` (bic) → `assemble_path`。
     4. アンカー + 採用内側フレームを frame 順に組み立て、新相 onset を `PhaseAppearance` に記録。
+
+    ``charge_constraint`` (FR-318): 有効なら (1) アンカーで制約有無 A/B を実施し ΔRwp が
+    ``anchor_ab_threshold`` 超のアンカーに**不可逆容量疑いの警告 + x₀ 校正の提案** (提案≠適用,
+    ledger 追記のみ — 採用判断は第3層)、(2) 内側フレームに alkali 診断を付す。
     """
     frames = list(frames)
     base = tuple(base_phases)
@@ -86,7 +94,10 @@ def run_anchored_sequential(
     base_names = frozenset(p.phase_name for p in base)
     warnings: list[str] = []
 
-    anchors = extract_anchors(frames, base, runner=runner, identifier=identifier, cfg=cfg)
+    anchors = extract_anchors(
+        frames, base, runner=runner, identifier=identifier, cfg=cfg,
+        charge_constraint=charge_constraint,
+    )
     for a in anchors:
         ledger.append("m10_anchor", {
             "frame": a.frame_index, "phases": list(a.phase_names), "rwp": a.rwp,
@@ -94,6 +105,27 @@ def run_anchored_sequential(
         })
         if a.fallback:
             warnings.append(f"fallback_anchor@{a.frame_index}")
+        # FR-318 REQ-318-006: アンカー A/B の ΔRwp 検証 → 不可逆容量疑いの警告 + x₀ 校正提案。
+        if a.ab_check is not None and charge_constraint is not None:
+            ledger.append("fr318_anchor_ab", {"frame": a.frame_index, **dict(a.ab_check)})
+            delta = float(a.ab_check.get("delta_rwp", 0.0))
+            if abs(delta) > charge_constraint.anchor_ab_threshold:
+                x_ref = a.ab_check.get("x_refined")
+                x_ech = a.ab_check.get("x_echem")
+                warnings.append(
+                    f"anchor@{a.frame_index}: 制約有無の ΔRwp={delta:+.2f}%pt が閾値"
+                    f" {charge_constraint.anchor_ab_threshold} を超過 — 不可逆容量/副反応で"
+                    f" echem 由来組成 (x={x_ech}) が回折 (精密化 x={x_ref}) とずれている疑い。"
+                    "x₀ を精密化値で校正する提案を ledger (fr318_x0_calibration_proposal) に"
+                    "記録しました (提案≠適用 — 採用は第3層判断)"
+                )
+                ledger.append("fr318_x0_calibration_proposal", {
+                    "frame": a.frame_index,
+                    "x_echem": x_ech,
+                    "x_refined": x_ref,
+                    "delta_rwp": delta,
+                    "applied": False,  # 提案のみ (P2 非破壊)
+                })
 
     segments = build_segments(anchors, n)
 
@@ -102,8 +134,8 @@ def run_anchored_sequential(
     onsets: dict[str, int] = {}  # 新相 → onset フレーム (crossover 由来)
 
     for seg in segments:
-        fwd = refine_segment_forward(seg, frames, runner)
-        bwd = refine_segment_backward(seg, frames, runner)
+        fwd = refine_segment_forward(seg, frames, runner, charge_constraint)
+        bwd = refine_segment_backward(seg, frames, runner, charge_constraint)
         choice = select_crossover(seg, fwd, bwd, cfg)
         path = assemble_path(seg, fwd, bwd, choice)
         assembled.update(path)

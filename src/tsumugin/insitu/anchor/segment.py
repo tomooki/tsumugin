@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from ...autorietveld.model import PhaseSpec, coerce_cell_esd
 from .._warmstart import call_runner, seed_fractions
-from ..model import Cell, FrameRietveldResult, FrameSpec
+from ..charge import alkali_fields
+from ..model import Cell, ChargeConstraintConfig, FrameRietveldResult, FrameSpec
 from .extract import AnchorRunner
 from .model import Anchor, Segment, SegmentPass
 
@@ -49,7 +50,10 @@ def build_segments(anchors: "tuple[Anchor, ...]", n_frames: int) -> tuple[Segmen
     return tuple(segs)
 
 
-def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -> FrameRietveldResult:
+def _frame_result(
+    res, frame: FrameSpec, j: int, phase_names: tuple[str, ...],
+    charge_constraint: "ChargeConstraintConfig | None" = None,
+) -> FrameRietveldResult:
     """runner 結果 → FrameRietveldResult (内側フレーム j 用)。"""
     cells: dict[str, Cell] = {k: tuple(v) for k, v in res.refined_cells.items()}  # type: ignore[misc]
     fracs = {n: float(res.phase_fractions.get(n, 0.0)) for n in phase_names}
@@ -67,6 +71,8 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
     }
     # 要素 None (格子未解放 = 値が決まっていない) を潰さない (`coerce_cell_esd` の docstring 参照)。
     cell_esd = {n: coerce_cell_esd(cesd_src[n]) for n in phase_names if n in cesd_src}
+    # FR-318: alkali 診断 (機能無効なら空 = 既定値のまま)。
+    alkali, _ = alkali_fields(frame.target_composition, charge_constraint, phase_names, res)
     return FrameRietveldResult(
         frame_index=j, axis_value=frame.axis_value, data_path=frame.data_path,
         rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
@@ -76,11 +82,13 @@ def _frame_result(res, frame: FrameSpec, j: int, phase_names: tuple[str, ...]) -
         n_obs=int(getattr(res, "n_obs", 0)),
         phase_weight_fractions=weight_fracs, phase_weight_fraction_esd=weight_frac_esd,
         cell_esd=cell_esd,
+        **alkali,  # type: ignore[arg-type]
     )
 
 
 def _run_directional(
     anchor: Anchor, order: "list[int]", frames: "list[FrameSpec]", runner: AnchorRunner,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> dict[int, FrameRietveldResult]:
     """アンカーの相集合/セル/**相分率**を初期値に order 順で warm-start 逐次精密化する。
 
@@ -97,7 +105,7 @@ def _run_directional(
     out: dict[int, FrameRietveldResult] = {}
     for j in order:
         res = call_runner(runner, frames[j], phases, dict(warm), warm_fracs)
-        fr = _frame_result(res, frames[j], j, names)
+        fr = _frame_result(res, frames[j], j, names, charge_constraint)
         out[j] = fr
         if not fr.refine_failed:
             # 次フレームへ引き継ぎ (warm-start)。失敗フレームは据え置き (M9 逐次と同じ規律)。
@@ -109,6 +117,7 @@ def _run_directional(
 
 def refine_segment_forward(
     seg: Segment, frames: "list[FrameSpec] | tuple[FrameSpec, ...]", runner: AnchorRunner,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> SegmentPass:
     """区間内側を左アンカーの相集合/セルで前方 (L→R, 昇順) に warm-start 逐次精密化する。
 
@@ -118,11 +127,15 @@ def refine_segment_forward(
     if seg.left is None or not seg.frame_indices:
         return SegmentPass(direction="forward", results={})
     order = sorted(seg.frame_indices)
-    return SegmentPass(direction="forward", results=_run_directional(seg.left, order, frames, runner))
+    return SegmentPass(
+        direction="forward",
+        results=_run_directional(seg.left, order, frames, runner, charge_constraint),
+    )
 
 
 def refine_segment_backward(
     seg: Segment, frames: "list[FrameSpec] | tuple[FrameSpec, ...]", runner: AnchorRunner,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> SegmentPass:
     """区間内側を右アンカーの相集合/セルで後方 (R→L, 降順) に warm-start 逐次精密化する。
 
@@ -132,4 +145,7 @@ def refine_segment_backward(
     if seg.right is None or not seg.frame_indices:
         return SegmentPass(direction="backward", results={})
     order = sorted(seg.frame_indices, reverse=True)
-    return SegmentPass(direction="backward", results=_run_directional(seg.right, order, frames, runner))
+    return SegmentPass(
+        direction="backward",
+        results=_run_directional(seg.right, order, frames, runner, charge_constraint),
+    )
