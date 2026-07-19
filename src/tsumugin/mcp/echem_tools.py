@@ -146,8 +146,10 @@ def alkali_budget(
     :param formula_weight: 活物質の式量 M [g/mol]
     :param x0: 基準組成 (Q=0 時点の式単位あたりアルカリ量)。例 K₂Mn[Fe(CN)₆] 満充填 ≈ 1.94
     :param z: イオン価数 (アルカリ金属は 1)
-    :param sign: +1 = 充電 (Q 増) でアルカリ減 (正極規約)。実測 state と矛盾すると warnings に出る
-        (配線ミス・電極取り違え検出; REQ-318-003)
+    :param sign: +1 = 充電 (Q 増) でアルカリ減 (正極規約, 既定) / -1 = 負極規約 (in-span
+        フレームが 1 つでもあれば明示確認の警告が出る)。⚠ 電極取り違えの自動検出は
+        **原理的に不可能** (state が積算電荷由来のため独立な照合軸が無い; REQ-318-003) —
+        回折側電極の役割は自分で確認すること
     :param x0_source: x₀ の由来 ``given``/``first_frame``/``anchor`` (REQ-318-002/006 の来歴記録)
     :param frame_epoch_s: 明示 POSIX 秒列 (`align_echem` と同じ排他規則)
     :param offset_s: 一定ケイデンス経路 (`align_echem` と同じ)

@@ -87,6 +87,20 @@ class TestChargeConstraintSpec:
         with pytest.raises(ValueError, match="範囲外"):
             _apply_charge_constraint_spec(spec, self._frames(3))
 
+    def test_negative_target_index_raises(self) -> None:
+        """負 index も手組み spec の不備 — 黙って無視しない (第3巡ピン)。"""
+        spec = {**_CC_SPEC, "targets": [{"frame": -1, "x_total": 1.9}]}
+        with pytest.raises(ValueError, match="範囲外"):
+            _apply_charge_constraint_spec(spec, self._frames(3))
+
+    def test_empty_targets_raises(self) -> None:
+        """空 targets は正規の alkali_budget 出力ではあり得ない (範囲外フレームも
+        x_total=null で列挙される) — 「拘束ゼロで有効」に黙って縮退しない (第3巡ピン)。"""
+        with pytest.raises(ValueError, match="空"):
+            _apply_charge_constraint_spec({**_CC_SPEC, "targets": []}, self._frames(3))
+        with pytest.raises(ValueError, match="空"):
+            _apply_charge_constraint_spec({**_CC_SPEC, "targets": {}}, self._frames(3))
+
 
 def _stub_result(rwp: float = 8.0) -> AutoRietveldResult:
     return AutoRietveldResult(

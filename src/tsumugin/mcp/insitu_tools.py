@@ -407,10 +407,13 @@ def _apply_charge_constraint_spec(
         for k, v in (spec.get("per_phase_content") or {}).items()  # type: ignore[union-attr]
     }
     raw = spec.get("targets")
-    if raw is None:
+    if raw is None or len(raw) == 0:
+        # alkali_budget は範囲外フレームも x_total=None のエントリとして必ず返すため、
+        # 空の targets は正規の出力ではあり得ない (= 手組み spec の不備) — 黙って
+        # 「拘束ゼロで有効」にしない (レビュー第2巡 F5)。
         raise ValueError(
-            "charge_constraint.targets がありません — alkali_budget の出力 targets を"
-            "そのまま渡してください"
+            "charge_constraint.targets が空/欠落です — alkali_budget の出力 targets を"
+            "そのまま渡してください (範囲外フレームも x_total=null で列挙されます)"
         )
     by_frame: dict[int, float] = {}
     if isinstance(raw, Mapping):
@@ -427,12 +430,13 @@ def _apply_charge_constraint_spec(
     # サブセット解析 (実測 K-10: 247 中 63 フレーム stride 抽出) に全系列の alkali_budget 出力を
     # そのまま渡すと、位置 4 に「元フレーム 4」の目標が付く = 全フレームの x_echem が静かに誤る。
     # 範囲外 index はその確実な指紋なので**黙って捨てず**エラーにする (境界で error dict へ縮退)。
-    if by_frame and max(by_frame) >= len(frame_specs):
+    if by_frame and (max(by_frame) >= len(frame_specs) or min(by_frame) < 0):
         raise ValueError(
-            f"charge_constraint.targets の frame index (max {max(by_frame)}) が frames リスト"
-            f" ({len(frame_specs)} 件) の範囲外です。targets は frames の**位置**で対応させます — "
-            "サブセット解析では targets を frames と同じ列挙に re-key するか、alkali_budget を"
-            " frames と同じフレーム時刻 (frame_epoch_s) で回してください"
+            f"charge_constraint.targets の frame index (範囲 {min(by_frame)}..{max(by_frame)}) "
+            f"が frames リスト ({len(frame_specs)} 件) の範囲外です。targets は frames の"
+            "**位置**で対応させます — サブセット解析では targets を frames と同じ列挙に "
+            "re-key するか、alkali_budget を frames と同じフレーム時刻 (frame_epoch_s) で"
+            "回してください"
         )
 
     out: "list[FrameSpec]" = []

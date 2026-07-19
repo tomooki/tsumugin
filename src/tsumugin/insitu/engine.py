@@ -131,16 +131,34 @@ def _warn_runner_constraint_mismatch(
     ``_fr318_charge_constraint`` 属性で自己申告する — 属性が無い (カスタム/テスト runner) か
     設定が異なる場合、報告は「計画」であって「適用の証明」ではない旨を警告する。
     """
-    if charge_constraint is None or not charge_constraint.enabled:
-        return
     consumed = getattr(runner, "_fr318_charge_constraint", None)
-    if consumed == charge_constraint:
+    engine_on = charge_constraint is not None and charge_constraint.enabled
+    runner_on = consumed is not None and bool(getattr(consumed, "enabled", False))
+    if not engine_on and not runner_on:
         return
-    msg = (
-        "charge_constraint が有効ですが、runner がそれを消費する保証がありません "
-        "(make_gsas_runner(charge_constraint=) 由来でない/設定が異なる)。"
-        "alkali_constraint_applied は**計画**の報告であり、この runner での適用は未確認です"
-    )
+    if engine_on and runner_on and consumed == charge_constraint:
+        return
+    if engine_on and not runner_on:
+        msg = (
+            "charge_constraint が有効ですが、runner がそれを消費する保証がありません "
+            "(make_gsas_runner(charge_constraint=) 由来でない/設定が異なる)。"
+            "alkali_constraint_applied は**計画**の報告であり、この runner での適用は未確認です"
+        )
+    elif runner_on and not engine_on:
+        # 逆方向 (レビュー第2巡 F1): runner は拘束を適用するのにエンジン設定が無効 —
+        # alkali 報告が一切出ないまま拘束だけが効く。アンカー A/B の「制約なし A」も
+        # use_charge=False で目標を剥がさないため静かに汚染される。
+        msg = (
+            "runner は charge_constraint を消費しますが、エンジン側の設定が無効です — "
+            "拘束が適用される一方で alkali_* 報告は出ず、アンカー A/B の『制約なし』も"
+            "成立しません。run_sequential_rietveld/run_anchored_sequential にも同じ"
+            " charge_constraint を渡してください"
+        )
+    else:
+        msg = (
+            "runner が消費する charge_constraint とエンジン設定が**異なります** — "
+            "適用される拘束と報告される計画が食い違います。同一の設定を両方へ渡してください"
+        )
     if msg not in warnings:
         warnings.append(msg)
 

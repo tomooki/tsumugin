@@ -123,9 +123,12 @@ class Anchor:
         既定空 dict (機能無効/後方互換)。
     :param ab_check: FR-318 アンカー A/B 検証 (REQ-318-006)。単相アンカーで
         制約なし (A=本アンカー) vs 占有率を echem 目標に凍結 (B) の 2 精密化を比較した
-        ``{"rwp_free", "rwp_constrained", "delta_rwp", "x_refined", "x_echem"}``。
-        None = 未実施 (機能無効/多相/echem 範囲外)。ΔRwp 大 = 不可逆容量の疑い →
-        x₀ 校正の**提案** (適用は第3層判断)。
+        ``{"rwp_free", "rwp_constrained", "delta_rwp", "x_refined"|"x_model", "x_echem"}``。
+        **x のキーは由来で変わる**: ``x_refined`` = A の占有率が実際に精密化された (esd 付き) /
+        ``x_model`` = 占有率固定 (既定) の CIF 由来モデル値 — **x₀ 校正の根拠にならない**
+        (校正提案は x_refined のときのみ出る)。x_XRD が算出不能なフレームでは x キー自体が
+        欠落する。None = 未実施 (機能無効/多相/echem 範囲外/B の fix 計画が組めない)。
+        ΔRwp 大 = 不可逆容量の疑い (提案≠適用)。
     """
 
     frame_index: int

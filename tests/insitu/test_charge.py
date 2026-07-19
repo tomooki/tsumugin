@@ -260,6 +260,27 @@ class TestFrameAlkaliReport:
         expected = n_c * 0.70 / (n_c + n_t)
         assert r.x_xrd == pytest.approx(expected, rel=1e-9)
 
+    def test_multiphase_partial_average_refused(self) -> None:
+        """レビュー第2巡 F4 ピン: 多相でサイト有り相の占有率が欠測なら、残りの相だけの
+        偏った部分平均を返さず x_XRD を拒否する (x≡0 相が先に登録済みでも wipes)。"""
+        base = _cfg()
+        cfg = ChargeConstraintConfig(
+            mobile_sites=base.mobile_sites,
+            z_formula={**dict(base.z_formula), "tetra": 2.0},
+            formula_weights={**dict(base.formula_weights), "tetra": 258.9},
+        )
+        r = frame_alkali_report(
+            tc=_tc(1.0),
+            cfg=cfg,
+            phase_names=["tetra", "mono", "cubic"],  # tetra(x≡0) が先に per_phase に載る順
+            atom_occupancy={"cubic": {"K": 0.5}},  # mono の占有率が欠測
+            atom_multiplicity={"cubic": {"K": 8.0}},
+            phase_weight_fractions={"mono": 0.4, "cubic": 0.4, "tetra": 0.2},
+        )
+        assert r.x_xrd is None and r.residual is None
+        assert r.per_phase == {}
+        assert any("見送ります" in w for w in r.warnings)
+
     def test_disabled_cfg_empty(self) -> None:
         r = frame_alkali_report(
             tc=_tc(1.0), cfg=ChargeConstraintConfig(), phase_names=["mono"],
@@ -444,3 +465,16 @@ class TestAnchorAB:
         """レビュー H1: charge_constraint 有効 + 消費保証のない注入 runner → 明示警告。"""
         res = self._run(delta_rwp=0.2)
         assert any("消費する保証" in w for w in res.warnings)
+
+    def test_runner_mismatch_reverse_direction_warns(self) -> None:
+        """レビュー第2巡 F1: runner が拘束を消費するのにエンジン設定が無効 → 逆方向警告
+        (拘束が適用される一方で alkali 報告が出ない乖離)。"""
+        spec = PhaseSpec(structure_path="mono.cif", phase_name="mono")
+        frames = [FrameSpec(data_path="f0.xye", axis_value=0.0, data_format="XYE")]
+
+        def runner(frame, phases, initial_cells):
+            return _stub_result(8.0)
+
+        runner._fr318_charge_constraint = _cfg()  # type: ignore[attr-defined]
+        res = run_sequential_rietveld(frames, [spec], runner=runner)  # config に cc なし
+        assert any("エンジン側の設定が無効" in w for w in res.warnings)

@@ -220,8 +220,11 @@ def anchored_sequential(
 def _attach_ab_checks(anchors: "list[dict]", ledger) -> None:
     """FR-318 アンカー A/B 検証 (fr318_anchor_ab) を anchors 要約へ付す (無ければ何もしない)。
 
-    ``ab_check`` = {rwp_free, rwp_constrained, delta_rwp, x_refined, x_echem}。x₀ 校正の**提案**は
-    ledger ``fr318_x0_calibration_proposal`` (applied=False) と系列 warnings に出る (提案≠適用)。
+    ``ab_check`` = {rwp_free, rwp_constrained, delta_rwp, ``x_refined``|``x_model``, x_echem}。
+    **x のキーは由来で変わる**: ``x_refined`` = 占有率が実際に精密化された (esd 付き) /
+    ``x_model`` = 占有率固定 (既定) の CIF 由来モデル値で **x₀ 校正の根拠にならない**。
+    校正の**提案**は x_refined のときのみ ledger ``fr318_x0_calibration_proposal``
+    (applied=False) と系列 warnings に出る (提案≠適用)。
     """
     by_frame: dict[int, dict] = {}
     for e in ledger.entries:

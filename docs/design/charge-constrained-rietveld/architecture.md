@@ -25,8 +25,9 @@ MPR ─parse_mpr→ EchemCurve ─align_frames→ FramePoint(charge_mah, state, 
 - `electron_count(charge_mah, active_mass_mg, formula_weight, z=1) -> float | ndarray`
   n_e = Q/m × M / F_MAH (F_MAH = 26801.5 mAh/mol)。
 - `alkali_targets(frame_points, x0, *, sign, x0_source, esd) -> tuple[FrameTarget, ...]`
-  x_total(t) = x0 − sign·n_e(t)。in_span=False → target なし。state と sign の整合検証
-  (充電区間で x が増えていたら警告)。
+  x_total(t) = x0 − sign·n_e(t)。in_span=False → target なし。⚠ sign の取り違え**検出は
+  原理的に不可能** (state は積算電荷由来 — レビューで確定し設計を修正): 非既定 sign=-1
+  (負極規約) の明示確認警告のみ出す。
 - `MobileSiteSpec(phase, site_labels, multiplicity)` — **site_labels は複数元素対応**
   (同一サイトの Na/K 等を合算)。`content_from_occupancies(occ_map, sites, z_formula)` と
   逆写像 `occupancies_for_content` (等比配分)。
@@ -89,7 +90,7 @@ esd: float`。to_dict/from_dict (② JSON 境界を跨ぐ)。
 - mode 選択 (diagnose 既定 / lock は「XRD が相分率に寄与しなくなる」旨を理解した上での明示判断)
 - 占有率精密化スコープ (可動イオンのみ / フレームワーク込み) — REQ-318-002
 - x₀ 校正の採用 (A/B 警告後) — 提案≠適用
-- sign の確認 (state 照合警告が出たら停止して確認)
+- sign の選択 (電極の役割は③/ユーザーが確認 — データからの自動検証は不能)
 
 ## 設計上の三大リスク
 
