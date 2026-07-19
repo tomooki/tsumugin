@@ -274,7 +274,16 @@ def frame_alkali_report(
         z = cfg.z_formula.get(p)
         occ = atom_occupancy.get(p)
         mult = atom_multiplicity.get(p) or {}
-        if spec is None or z is None or occ is None:
+        if spec is None:
+            # 【可動イオンを含まない相の規約】: mobile_sites にサイトが無く、かつ z_formula と
+            # formula_weights の**両方に登録**されている相は x_i ≡ 0 (可動イオンなし) と扱う。
+            # 例: 深充電相 tetra は K サイト自体が無い — この相をモル平均から**抜くと** x_XRD が
+            # 過大評価になる (K₂Mn[Fe(CN)₆] 実測: cubic+tetra 域で tetra 50wt% を無視すると
+            # x_XRD が ~2 倍化ける)。CIF にラベルが無いので MobileSiteSpec では表現できない。
+            if p in cfg.z_formula and p in cfg.formula_weights:
+                per_phase[p] = 0.0
+            continue
+        if z is None or occ is None:
             continue
         total = 0.0
         var = 0.0

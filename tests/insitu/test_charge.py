@@ -197,6 +197,33 @@ class TestFrameAlkaliReport:
         assert r.per_phase["mono"] == pytest.approx(2.0 / 2.0)
         assert any("不一致" in w for w in r.warnings)
 
+    def test_zero_content_phase_convention(self) -> None:
+        """可動イオンを含まない相 (例: 深充電相 tetra は K サイト自体が無い) の規約:
+
+        mobile_sites 未定義 + z_formula/formula_weights **両方に登録** → x_i ≡ 0 として
+        モル平均に**含める**。抜くと x_XRD が過大評価になる (実測: tetra 50wt% 無視で ~2 倍)。
+        """
+        cfg = ChargeConstraintConfig(
+            mobile_sites=(
+                MobileSiteSpec(phase_name="cubic", site_labels=("K",), multiplicities=(8.0,)),
+            ),
+            z_formula={"cubic": 4.0, "tetra": 2.0},
+            formula_weights={"cubic": 275.85, "tetra": 258.9},
+        )
+        r = frame_alkali_report(
+            tc=_tc(0.3),
+            cfg=cfg,
+            phase_names=["cubic", "tetra"],
+            atom_occupancy={"cubic": {"K": 0.35}},
+            atom_multiplicity={"cubic": {"K": 8.0}},
+            phase_weight_fractions={"cubic": 0.5, "tetra": 0.5},
+        )
+        assert r.per_phase["tetra"] == 0.0
+        # モル平均: n ∝ w/FW, x = (n_c·0.70 + n_t·0)/(n_c+n_t)
+        n_c, n_t = 0.5 / 275.85, 0.5 / 258.9
+        expected = n_c * 0.70 / (n_c + n_t)
+        assert r.x_xrd == pytest.approx(expected, rel=1e-9)
+
     def test_disabled_cfg_empty(self) -> None:
         r = frame_alkali_report(
             tc=_tc(1.0), cfg=ChargeConstraintConfig(), phase_names=["mono"],

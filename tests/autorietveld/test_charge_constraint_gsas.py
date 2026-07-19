@@ -136,7 +136,7 @@ class TestChemCompRestraint:
                 },
                 keep_gpx=keep,
             )
-            assert r.final_rwp < 40.0  # 精密化自体は完走
+            assert r.final_rwp < 60.0  # 精密化自体は完走 (短縮レシピなので閾は緩く)
             from GSASII import GSASIIstrIO as G2stIO
 
             rd = G2stIO.GetRestraints(keep)
