@@ -211,6 +211,22 @@ class MobileSiteSpec:
         if not self.site_labels:
             raise ValueError("site_labels が空です")
 
+    def to_dict(self) -> dict[str, object]:
+        """JSON 直列化 (② MCP 境界用)。"""
+        return {
+            "phase_name": self.phase_name,
+            "site_labels": list(self.site_labels),
+            "multiplicities": list(self.multiplicities),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "MobileSiteSpec":
+        return cls(
+            phase_name=str(d["phase_name"]),
+            site_labels=tuple(str(x) for x in d["site_labels"]),  # type: ignore[union-attr]
+            multiplicities=tuple(float(x) for x in d["multiplicities"]),  # type: ignore[union-attr]
+        )
+
 
 def content_from_occupancies(
     occupancies: Mapping[str, float],
