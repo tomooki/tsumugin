@@ -673,6 +673,15 @@ wheels = [
 ]
 
 [[package]]
+name = "galvani"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/af/3a/8ab1095fb888534540bca21e0c15065819331f3d42a156eac799aa6816ab/galvani-0.5.0.tar.gz", hash = "sha256:da0e3b34b114bf615caf3061fc72ef0ab59d2e175bbfd580a22977c290928270", size = 37371, upload-time = "2025-03-23T12:38:47.984Z" }
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1289,6 +1298,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/31/89/8fc1c268969fac43688d65fd92e67df24bd128d53cb4d2eee534cd307399/pandas-3.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:9c39be2d709d01fa972a0cabc522389fceca4f3969332ba25a7d6c5802cf976a", size = 11828897, upload-time = "2026-05-11T18:54:17.146Z" },
     { url = "https://files.pythonhosted.org/packages/56/3b/e7d20dea247a3e6dc0bd8a6953854afbedc03951def4e7371e05e7263e25/pandas-3.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4db8c527972a821cf5286b40ccc57642a39bc62e62022b42f99f8a67fca8c3a1", size = 10900855, upload-time = "2026-05-11T18:54:19.72Z" },
     { url = "https://files.pythonhosted.org/packages/0f/54/68a0978d1ef8502b8492099beaa6e7a0c1b32e3b5d4f677f5810cb08711c/pandas-3.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:b2c95f8bfc1ee412bf482605d7bfd30c12d1d26bd59fdd91efeef1d4718decb1", size = 9466464, upload-time = "2026-05-11T18:54:22.754Z" },
+]
+
+[[package]]
+name = "periodictable"
+version = "2.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pyparsing" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/0d/f494a2ec62ab56ffd44da4f236db374421fe0cd1e39d9ebc9785751eb432/periodictable-2.1.0-py3-none-any.whl", hash = "sha256:e9155d2bf5ac10050abeff2f99096d4f04312c0c8a6bb432e28744367c5064b3", size = 830749, upload-time = "2026-02-28T00:08:27.135Z" },
 ]
 
 [[package]]
@@ -2139,6 +2160,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+absorption = [
+    { name = "periodictable" },
+]
+echem = [
+    { name = "galvani" },
+]
 gsas = [
     { name = "pycifrw" },
     { name = "requests" },
@@ -2170,16 +2197,18 @@ dev = [
 requires-dist = [
     { name = "dynesty", marker = "extra == 'nested'", specifier = ">=2.1" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
+    { name = "galvani", marker = "extra == 'echem'", specifier = ">=0.4" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
     { name = "mp-api", marker = "extra == 'mp'", specifier = ">=0.41" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "periodictable", marker = "extra == 'absorption'", specifier = ">=1.6" },
     { name = "pycifrw", marker = "extra == 'gsas'", specifier = ">=4.4" },
     { name = "pymatgen", marker = "extra == 'mp'", specifier = ">=2024.3" },
     { name = "requests", marker = "extra == 'gsas'", specifier = ">=2.31" },
     { name = "scipy", marker = "extra == 'gsas'", specifier = ">=1.11" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.29" },
 ]
-provides-extras = ["gsas", "web", "mcp", "nested", "mem", "oed", "mp"]
+provides-extras = ["gsas", "web", "mcp", "nested", "mem", "oed", "mp", "absorption", "echem"]
 
 [package.metadata.requires-dev]
 dev = [

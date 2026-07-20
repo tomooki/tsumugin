@@ -23,7 +23,7 @@ from typing import Sequence
 
 from .._json import finite_or_none
 
-__all__ = ["ECHEM_TOOLS", "align_echem"]
+__all__ = ["ECHEM_TOOLS", "align_echem", "alkali_budget"]
 
 
 def align_echem(
@@ -70,7 +70,8 @@ def align_echem(
         curve = parse_mpr(mpr_path)
     except EchemUnavailableError as exc:
         return {"error": str(exc), "error_type": "EchemUnavailableError"}
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — galvani 内部例外 (NotImplementedError/
+        # AttributeError 等の版差) も ② 境界を貫かせない (レビュー LOW)
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     try:
@@ -88,7 +89,7 @@ def align_echem(
                 "frame_epoch_s か (offset_s + interval_s + n_frames) のいずれかが必要です"
             )
         points = align_frames(curve, epochs, clamp=bool(clamp))
-    except (ValueError, TypeError) as exc:
+    except Exception as exc:  # noqa: BLE001 — ② は例外を送出しない (error dict へ縮退)
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     v = np.asarray(curve.voltage_v, dtype=float)
@@ -118,7 +119,119 @@ def align_echem(
     }
 
 
-#: MCP_TOOLS へマージする電気化学同期ツール (Issue #103)。
+def alkali_budget(
+    mpr_path: str,
+    active_mass_mg: float,
+    formula_weight: float,
+    *,
+    x0: float,
+    z: int = 1,
+    sign: int = 1,
+    x0_source: str = "given",
+    frame_epoch_s: Sequence[float] | None = None,
+    offset_s: float | None = None,
+    interval_s: float | None = None,
+    n_frames: int | None = None,
+    clamp: bool = False,
+    reason: str = "",
+) -> dict:
+    """クーロメトリー → per-frame 総アルカリ量目標 x_total(t) の表を返す (FR-318 計器)。
+
+    実測積算電気量 Q(t) [mAh] を式単位あたり反応電子数 n_e = Q/m × M/F/z に変換し、
+    x_total(t) = x₀ − sign·n_e(t) を各回折フレームへ整列して返す。CC 線形性を仮定しない
+    (CV 保持・rest も実測 Q で正しい)。
+
+    :param mpr_path: BioLogic ``.mpr`` (`align_echem` と同じ)
+    :param active_mass_mg: 活物質質量 [mg] (REQ-318-001)
+    :param formula_weight: 活物質の式量 M [g/mol]
+    :param x0: 基準組成 (Q=0 時点の式単位あたりアルカリ量)。例 K₂Mn[Fe(CN)₆] 満充填 ≈ 1.94
+    :param z: イオン価数 (アルカリ金属は 1)
+    :param sign: +1 = 充電 (Q 増) でアルカリ減 (正極規約, 既定) / -1 = 負極規約 (in-span
+        フレームが 1 つでもあれば明示確認の警告が出る)。⚠ 電極取り違えの自動検出は
+        **原理的に不可能** (state が積算電荷由来のため独立な照合軸が無い; REQ-318-003) —
+        回折側電極の役割は自分で確認すること
+    :param x0_source: x₀ の由来 ``given``/``first_frame``/``anchor`` (REQ-318-002/006 の来歴記録)
+    :param frame_epoch_s: 明示 POSIX 秒列 (`align_echem` と同じ排他規則)
+    :param offset_s: 一定ケイデンス経路 (`align_echem` と同じ)
+    :param interval_s: 同上
+    :param n_frames: 同上
+    :param clamp: 同上
+    :returns: ``targets[]`` ({frame, x_total, n_e, state, in_span}) + ``x0``/``x0_source``/
+        ``sign``/``warnings``。**``x_total`` が None のフレーム (echem 範囲外) には拘束を
+        適用しないこと** (捏造禁止)。出力は ``sequential_rietveld``/``anchored_sequential`` の
+        ``charge_constraint.targets`` へそのまま渡せる (§4.5 到達可能性)
+
+    使い方 (実測 K₂Mn[Fe(CN)₆] K-10): ``alkali_budget("K-10.mpr", active_mass_mg=…,
+    formula_weight=678.8, x0=1.944, offset_s=22.1, interval_s=283.0, n_frames=247)``。
+    Na/K ハイブリッド系では x は**総アルカリ (Na+K 和)** — 電子数は総挿入量しか拘束できない。
+    """
+    from ..interop.biologic import EchemUnavailableError, align_frames, parse_mpr
+    from ..operando.coulometry import alkali_targets
+
+    cadence = (offset_s is not None) or (interval_s is not None) or (n_frames is not None)
+    if frame_epoch_s is not None and cadence:
+        return {
+            "error": "frame_epoch_s と (offset_s/interval_s/n_frames) は排他です。どちらか一方で",
+            "error_type": "ValueError",
+        }
+    try:
+        curve = parse_mpr(mpr_path)
+    except EchemUnavailableError as exc:
+        return {"error": str(exc), "error_type": "EchemUnavailableError"}
+    except Exception as exc:  # noqa: BLE001 — galvani 内部例外の版差も縮退 (レビュー LOW)
+        return {"error": str(exc), "error_type": type(exc).__name__}
+    try:
+        if frame_epoch_s is not None:
+            epochs = [float(e) for e in frame_epoch_s]
+        elif cadence:
+            if offset_s is None or interval_s is None or n_frames is None:
+                raise ValueError(
+                    "一定ケイデンス経路は offset_s・interval_s・n_frames をすべて要します"
+                )
+            base = float(curve.start_timestamp) + float(offset_s)
+            epochs = [base + float(interval_s) * i for i in range(int(n_frames))]
+        else:
+            raise ValueError(
+                "frame_epoch_s か (offset_s + interval_s + n_frames) のいずれかが必要です"
+            )
+        points = align_frames(curve, epochs, clamp=bool(clamp))
+        budget = alkali_targets(
+            points, x0=float(x0), active_mass_mg=float(active_mass_mg),
+            formula_weight=float(formula_weight), z=int(z), sign=int(sign),
+            x0_source=str(x0_source),
+        )
+    except Exception as exc:  # noqa: BLE001 — ② は例外を送出しない (error dict へ縮退)
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
+    return {
+        "targets": [
+            {
+                "frame": t.frame_index,
+                "x_total": finite_or_none(t.x_total) if t.x_total is not None else None,
+                "n_e": finite_or_none(t.n_e) if t.n_e is not None else None,
+                "state": t.state,
+                "in_span": bool(t.in_span),
+                # echem 列も併載 (最終レビュー F5: 設計 doc と一致 + x_XRD vs x_echem 重ね図を
+                # このツール 1 回で作れる)。points と targets は同一列挙 (alkali_targets が
+                # 入力順を保つ) なので zip で安全。
+                "time_h": finite_or_none(pt.time_s / 3600.0),
+                "voltage_v": finite_or_none(pt.voltage_v) if pt.voltage_v is not None else None,
+                "charge_mah": finite_or_none(pt.charge_mah)
+                if pt.charge_mah is not None else None,
+            }
+            for t, pt in zip(budget.targets, points)
+        ],
+        "x0": finite_or_none(budget.x0),
+        "x0_source": budget.x0_source,
+        "sign": budget.sign,
+        "warnings": list(budget.warnings),
+        "n_with_target": sum(1 for t in budget.targets if t.x_total is not None),
+        "reason": reason,
+    }
+
+
+#: MCP_TOOLS へマージする電気化学同期ツール (Issue #103 / FR-318)。
 ECHEM_TOOLS: dict[str, object] = {
     "align_echem": align_echem,
+    "alkali_budget": alkali_budget,
 }

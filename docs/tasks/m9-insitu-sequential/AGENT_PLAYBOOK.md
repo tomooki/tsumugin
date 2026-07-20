@@ -114,6 +114,29 @@ axes, bc = pseudo_variable_series(result, "phase", lambda c: c[1] / c[2])
 `sequential_rietveld` → 結果を読む → (未指数残れば) `identify_and_add_phase` で候補を探し承認の上追加 →
 再実行 → `parametric_fit` で転移特性、を反復駆動する。新相追加はユーザー承認を挟む (権限境界)。
 
+## 7′. 電気化学制約 (FR-318, 電気化学 operando のみ)
+
+skill 手順 3″ と同一 (安全上の指示は skill と本書で同内容を保つ):
+
+- `alkali_budget` (MPR + 活物質質量 + 式量 + x₀) → per-frame 総アルカリ量目標。出力 `targets` を
+  `charge_constraint.targets` へそのまま渡す。
+- **モードは diagnose 既定で始める** (拘束せず `alkali_x_xrd` vs `alkali_x_echem` 乖離を出力)。
+- **`soft` (ChemComp restraint) は使わない** — 現行 GSAS-II の headless 精密化では restraint
+  penalty が最小二乗に取り込まれない (実測バグ; 自動で diagnose に縮退し警告)。
+- **`lock_fractions` は明示 opt-in・ユーザー合意事項**: 2 相では相分率が完全決定され XRD は分率に
+  寄与しなくなる (Rwp が一致度の検定量に変わる)。
+- **sign は自分で正しく選ぶ — データからは検証できない** (state は積算電荷由来のため電極
+  取り違えの自動検出は原理的に不可能)。既定 +1 = 正極規約。負極なら sign=-1 (明示確認警告)。
+- **`x_total` が null のフレーム (echem 範囲外) は拘束されない** (外挿の捏造禁止)。
+- **U/Uiso は精密化しない** (占有率と縮退し導出組成を汚染)。初期 Uiso 妥当帯 [1e-3, 0.05] Å² の
+  事前警告に対処してから回す。
+- アンカー A/B の ΔRwp 超過 → **x₀ 校正の提案** (`fr318_x0_calibration_proposal`, applied=False)。
+  **提案≠適用** — 採用はユーザー承認。⚠ 提案が出るのは**占有率が実際に精密化された (esd 付き)
+  アンカーのみ** — 既定は CIF 固定値 (`x_model`) で校正根拠にならない。校正するには anchor 相の
+  PhaseSpec に `free_occupancy_labels` を設定 (Uiso は固定のまま)。
+- Na/K ハイブリッドでは**電子数 = 総アルカリ (Na+K 和)** しか拘束できない — `site_labels` に
+  両元素サイトを列挙し合算。分配は XRD 側精密化。
+
 ## 8. 再現ベンチマーク
 
 `tests/insitu/test_engine_gsas.py` (`@pytest.mark.gsas`) が実データの合格基準を検証する。

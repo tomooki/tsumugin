@@ -27,8 +27,10 @@ from ..reference.model import ReferencePhase
 from ..sequential.changepoint import ChangepointConfig, detect_changepoint
 from ..store.ledger import Ledger
 from ._warmstart import call_runner, runner_accepts_initial_fractions
+from .charge import alkali_fields, plan_frame_constraint
 from .model import (
     Cell,
+    ChargeConstraintConfig,
     FrameRietveldResult,
     FrameSpec,
     PhaseAppearance,
@@ -117,6 +119,72 @@ _runner_accepts_initial_fractions = runner_accepts_initial_fractions
 _call_runner = call_runner
 
 
+def _warn_runner_constraint_mismatch(
+    runner: object,
+    charge_constraint: "ChargeConstraintConfig | None",
+    warnings: "list[str]",
+) -> None:
+    """runner が消費する charge_constraint とエンジン設定の不一致を 1 回警告する (レビュー H1)。
+
+    エンジンの alkali 報告 (`_alkali_of`) は plan を**独立に再計算**するため、runner が拘束を
+    消費していなくても `alkali_constraint_applied` が立つ。`make_gsas_runner` は消費する設定を
+    ``_fr318_charge_constraint`` 属性で自己申告する — 属性が無い (カスタム/テスト runner) か
+    設定が異なる場合、報告は「計画」であって「適用の証明」ではない旨を警告する。
+    """
+    consumed = getattr(runner, "_fr318_charge_constraint", None)
+    engine_on = charge_constraint is not None and charge_constraint.enabled
+    runner_on = consumed is not None and bool(getattr(consumed, "enabled", False))
+    if not engine_on and not runner_on:
+        return
+    if engine_on and runner_on and consumed == charge_constraint:
+        return
+    if engine_on and not runner_on:
+        msg = (
+            "charge_constraint が有効ですが、runner がそれを消費する保証がありません "
+            "(make_gsas_runner(charge_constraint=) 由来でない/設定が異なる)。"
+            "alkali_constraint_applied は**計画**の報告であり、この runner での適用は未確認です"
+        )
+    elif runner_on and not engine_on:
+        # 逆方向 (レビュー第2巡 F1): runner は拘束を適用するのにエンジン設定が無効 —
+        # alkali 報告が一切出ないまま拘束だけが効く。アンカー A/B の「制約なし A」も
+        # use_charge=False で目標を剥がさないため静かに汚染される。
+        msg = (
+            "runner は charge_constraint を消費しますが、エンジン側の設定が無効です — "
+            "拘束が適用される一方で alkali_* 報告は出ず、アンカー A/B の『制約なし』も"
+            "成立しません。run_sequential_rietveld/run_anchored_sequential にも同じ"
+            " charge_constraint を渡してください"
+        )
+    else:
+        msg = (
+            "runner が消費する charge_constraint とエンジン設定が**異なります** — "
+            "適用される拘束と報告される計画が食い違います。同一の設定を両方へ渡してください"
+        )
+    if msg not in warnings:
+        warnings.append(msg)
+
+
+def _alkali_of(
+    frame: FrameSpec,
+    charge_constraint: "ChargeConstraintConfig | None",
+    phase_names: Sequence[str],
+    result: AutoRietveldResult,
+    warnings: "list[str]",
+) -> dict[str, object]:
+    """FR-318 の alkali_* フィールドを構築 kwargs へ写す (警告は系列 warnings へ重複除去で積む)。
+
+    per-frame の目標は `FrameSpec.target_composition` が運ぶ (runner 第 5 引数を作らない設計 —
+    `_warmstart.call_runner` を迂回する bare ``runner(...)`` 経路でも欠落しない)。機能無効なら
+    空 dict = FrameRietveldResult の既定値のまま (後方互換)。
+    """
+    fields, warns = alkali_fields(
+        frame.target_composition, charge_constraint, phase_names, result
+    )
+    for w in warns:
+        if w not in warnings:
+            warnings.append(w)
+    return fields
+
+
 def run_sequential_rietveld(
     frames: Sequence[FrameSpec],
     initial_phases: Sequence[PhaseSpec],
@@ -171,6 +239,8 @@ def run_sequential_rietveld(
     appearances: list[PhaseAppearance] = []
     frame_results: list[FrameRietveldResult] = []
     warnings: list[str] = []
+    # FR-318 (H1): runner が charge_constraint を消費する保証の照合 (不一致は 1 回警告)。
+    _warn_runner_constraint_mismatch(runner, config.charge_constraint, warnings)
 
     rwp_history: list[float] = []
     lattice_history: list[dict[str, float]] = []
@@ -277,6 +347,9 @@ def run_sequential_rietveld(
                 # 【出版値の引き継ぎ】: 重量分率 ± esd・格子 esd。残差レポートと同じく最終 `result`
                 #   から取る (報告する fit と一致させる)。無ければ空 dict へ縮退 🔵 Issue #96 レビュー
                 **_publication_of(result),  # type: ignore[arg-type]
+                # 【電気化学制約の診断 (FR-318)】: x_XRD vs x_echem・適用拘束・実行可能性。
+                #   機能無効なら空 dict = 既定値のまま (後方互換)。
+                **_alkali_of(frame, config.charge_constraint, active_names, result, warnings),  # type: ignore[arg-type]
             )
         )
         ledger.append(
@@ -304,6 +377,7 @@ def run_sequential_rietveld(
     if config.backward_propagation and pid is not None and pid.enabled and appearances:
         frame_results, appearances = _consolidate_phase_cells(
             frames, n, frame_results, appearances, phases, pid, runner, ledger,
+            charge_constraint=config.charge_constraint, warn_sink=warnings,
         )
 
     all_phase_names = tuple(p.phase_name for p in phases)
@@ -339,9 +413,24 @@ def _best_established_cell(
     return best_cell
 
 
-def _rebuild_frame(res, fr, names) -> "FrameRietveldResult":
+def _rebuild_frame(
+    res, fr, names, frame_spec: "FrameSpec | None" = None,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
+    warn_sink: "list[str] | None" = None,
+) -> "FrameRietveldResult":
     """再精密化結果 res で FrameRietveldResult を作り直す (元 fr のメタは保持)。"""
     cells = {name: _cell6(c) for name, c in res.refined_cells.items()}
+    # FR-318: 差し替え結果に対する alkali 診断も**再計算**する (残差/出版値と同じ規律)。
+    # 警告も捨てない (最終レビュー F6: 再精密化固有の警告が消えていた)。
+    alkali: dict[str, object] = {}
+    if frame_spec is not None and charge_constraint is not None:
+        alkali, warns = alkali_fields(
+            frame_spec.target_composition, charge_constraint, tuple(names), res
+        )
+        if warn_sink is not None:
+            for w in warns:
+                if w not in warn_sink:
+                    warn_sink.append(w)
     return FrameRietveldResult(
         frame_index=fr.frame_index, axis_value=fr.axis_value, data_path=fr.data_path,
         rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
@@ -354,11 +443,14 @@ def _rebuild_frame(res, fr, names) -> "FrameRietveldResult":
         # 出版値も**再精密化結果のもの**で差し替える (同上: 古い wt%/esd の持ち越しは、
         # 差し替えた fit に対して陳腐化した定量値を報告させる) 🔵 Issue #96 レビュー
         **_publication_of(res),  # type: ignore[arg-type]
+        **alkali,  # type: ignore[arg-type]
     )
 
 
 def _consolidate_phase_cells(
     frames, n, frame_results, appearances, all_phases, pid, runner, ledger,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
+    warn_sink: "list[str] | None" = None,
 ):
     """確立した新相の**globally-best セル**で全フレームを再精密化し、onset を逆伝播で捕捉する。
 
@@ -395,7 +487,9 @@ def _consolidate_phase_cells(
             warm[ap.phase_name] = est_cell
             res = runner(frames[j], phases_j, warm)
             if res.final_rwp < float("inf") and float(res.final_rwp) < fr.rwp - 1e-9:
-                updated[j] = _rebuild_frame(res, fr, fr.phase_names)
+                updated[j] = _rebuild_frame(
+                    res, fr, fr.phase_names, frames[j], charge_constraint, warn_sink
+                )
                 ledger.append(
                     "m9_consolidate_forward",
                     {"frame": j, "phase": ap.phase_name, "rwp_before": fr.rwp,
@@ -433,7 +527,9 @@ def _consolidate_phase_cells(
             if not accepted:
                 break  # onset 発見 (これ以上前に P はない)
             names = tuple(fr.phase_names) + (ap.phase_name,)
-            updated[j] = _rebuild_frame(res, fr, names)
+            updated[j] = _rebuild_frame(
+                res, fr, names, frames[j], charge_constraint, warn_sink
+            )
             onset = j
         if onset < k:
             # onset を前へ更新 (逆伝播で捕捉した最も早いフレーム)
@@ -600,6 +696,7 @@ def make_gsas_runner(
     background_coeffs: int = 6,
     recipe: "Sequence[RefinementStage] | None" = None,
     auto_freeze_minor_cells: float | None = None,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> Runner:
     """放射源/ジオメトリ/装置を指定して FrameSpec→run_auto_rietveld の runner を作る (実運用の推奨 API)。
 
@@ -623,6 +720,10 @@ def make_gsas_runner(
     **閾値** (Issue #80; bool ではなく float — 例 0.2 なら "cell" 段適用時点の相分率が 0.2 未満の相の
     セル解放をスキップ)。None (既定) で無効 = 従来動作 (非回帰)。少数相のセル解放で発散する多相
     operando 系列 (#47/#50) の自動化で、M9 系列経路から到達できる唯一の口 (Issue #93)。
+
+    ``charge_constraint`` (FR-318) を渡すと、各フレームの ``FrameSpec.target_composition`` から
+    `insitu.charge.plan_frame_constraint` で拘束 kwargs (占有率凍結シード/相間 EqnConstr) を
+    組み立てて ``run_auto_rietveld`` へ渡す。None (既定) で従来動作 (非回帰)。
     """
     import os
     import tempfile
@@ -661,13 +762,31 @@ def make_gsas_runner(
                 if recipe is not None
                 else build_recipe([hist], list(phases), background_coeffs=background_coeffs)
             )
+            # FR-318: per-frame 目標 (FrameSpec.target_composition) → 拘束 kwargs (モード分岐・
+            # 実行可能性ゲートは plan_frame_constraint の責務)。機能無効なら空 = 従来動作。
+            plan_kwargs: dict = {}
+            if charge_constraint is not None and charge_constraint.enabled:
+                plan = plan_frame_constraint(
+                    frame.target_composition, charge_constraint,
+                    [p.phase_name for p in phases],
+                )
+                plan_kwargs = dict(plan.kwargs)
+                # diagnose (plan kwargs 空) でも占有率から組成を導出する解析なので、
+                # 初期 Uiso/結合の事前警告を有効化する (最終レビュー F3 / REQ-318-005)。
+                plan_kwargs["check_occupancy_uiso"] = True
             return run_auto_rietveld(
                 [hist], list(phases), recipe=recipe_, max_cyc=max_cyc,
                 initial_cells=dict(initial_cells) if initial_cells else None,
                 initial_fractions=dict(initial_fractions) if initial_fractions else None,
                 auto_freeze_minor_cells=auto_freeze_minor_cells,
+                **plan_kwargs,
             )
 
+    # FR-318 (レビュー H1): この runner が消費する charge_constraint を自己申告する。エンジンの
+    # 報告側は plan を独立に再計算するため、**別の設定を持つ/消費しない runner** だと
+    # 「報告された拘束 ≠ 実際に適用された拘束」の乖離が黙って起きる — エンジンがこの属性を
+    # 照合して不一致に警告を出す (`_warn_runner_constraint_mismatch`)。
+    runner._fr318_charge_constraint = charge_constraint  # type: ignore[attr-defined]
     return runner
 
 
@@ -684,6 +803,10 @@ def _default_gsas_runner(config: SequentialConfig) -> Runner:
         radiation=Radiation.XRAY_LAB,
         geometry=Geometry.BRAGG_BRENTANO,
         two_theta_limits=config.two_theta_limits,
+        # FR-318 (レビュー H1): 既定 runner にも charge_constraint を渡す。渡し忘れると
+        # 拘束 kwargs が run_auto_rietveld へ届かないのに、エンジンの報告側 (plan 再計算) は
+        # alkali_constraint_applied を立てる = 「呼べるが黙って間違う」の典型になる。
+        charge_constraint=config.charge_constraint,
     )
 
 

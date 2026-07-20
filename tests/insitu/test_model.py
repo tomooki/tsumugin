@@ -64,6 +64,82 @@ def test_framespec_dict_roundtrip_none_limits():
     assert FrameSpec.from_dict(d) == fs
 
 
+def test_framespec_target_composition_roundtrip():
+    """FR-318 T5: per-frame 組成目標は FrameSpec に載せて JSON 境界を往復する。"""
+    from tsumugin.insitu.model import TargetComposition
+
+    tc = TargetComposition(
+        total=1.25, per_phase={"mono": 1.944, "cubic": 0.7}, mode="lock_fractions", esd=0.03,
+    )
+    fs = FrameSpec(data_path="x.xye", data_format="XYE", target_composition=tc)
+    d = fs.to_dict()
+    assert json.dumps(d)  # JSON 直列化可能 (② 境界)
+    restored = FrameSpec.from_dict(d)
+    assert restored.target_composition is not None
+    assert restored.target_composition.total == pytest.approx(1.25)
+    assert restored.target_composition.per_phase["mono"] == pytest.approx(1.944)
+    assert restored.target_composition.mode == "lock_fractions"
+
+
+def test_framespec_target_composition_default_none_roundtrip():
+    """target_composition 無指定 (既定 None) でも往復同一 (後方互換)。"""
+    fs = FrameSpec(data_path="x.xye", data_format="XYE")
+    assert fs.target_composition is None
+    assert FrameSpec.from_dict(fs.to_dict()) == fs
+
+
+def test_target_composition_invalid_mode_raises():
+    from tsumugin.insitu.model import TargetComposition
+
+    with pytest.raises(ValueError, match="mode"):
+        TargetComposition(total=1.0, per_phase={}, mode="bogus")
+
+
+def test_target_composition_default_mode_is_diagnose():
+    """既定モードは diagnose (ユーザー確定判断: lock は明示 opt-in)。"""
+    from tsumugin.insitu.model import TargetComposition
+
+    assert TargetComposition(total=1.0, per_phase={}).mode == "diagnose"
+
+
+def test_charge_constraint_config_roundtrip_and_enabled():
+    """FR-318 T6: 系列レベル設定。mobile_sites が無ければ disabled。"""
+    from tsumugin.insitu.model import ChargeConstraintConfig
+    from tsumugin.operando.coulometry import MobileSiteSpec
+
+    assert not ChargeConstraintConfig().enabled
+    cfg = ChargeConstraintConfig(
+        mobile_sites=(
+            MobileSiteSpec(phase_name="mono", site_labels=("K",), multiplicities=(4.0,)),
+        ),
+        z_formula={"mono": 2.0},
+        formula_weights={"mono": 678.8},
+        mode="diagnose",
+        esd=0.05,
+        anchor_ab_threshold=1.0,
+    )
+    assert cfg.enabled
+    d = cfg.to_dict()
+    assert json.dumps(d)
+    restored = ChargeConstraintConfig.from_dict(d)
+    assert restored == cfg
+
+
+def test_charge_constraint_config_invalid_mode_raises():
+    from tsumugin.insitu.model import ChargeConstraintConfig
+
+    with pytest.raises(ValueError, match="mode"):
+        ChargeConstraintConfig(mode="hard")  # 旧称 hard は存在しない (lock_fractions)
+
+
+def test_sequential_config_accepts_charge_constraint():
+    from tsumugin.insitu.model import ChargeConstraintConfig, SequentialConfig
+
+    cfg = SequentialConfig(charge_constraint=ChargeConstraintConfig())
+    assert cfg.charge_constraint is not None
+    assert SequentialConfig().charge_constraint is None
+
+
 def test_phaseid_config_enabled():
     assert not PhaseIdConfig().enabled
     assert PhaseIdConfig(elements=("Ca", "Te", "O")).enabled

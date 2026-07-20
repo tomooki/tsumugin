@@ -492,3 +492,24 @@ def test_plugin_manifest_advertises_operando_diagnose():
     assert "operando-diagnose" in desc
     for tool in ("assess_data_quality", "check_phase_set", "repair_frames"):
         assert tool in desc, f"manifest が {tool} を宣伝していない"
+
+
+# --------------------------------------------------------------------------------------
+# FR-318 J9 クーロメトリー整合の恒久ガード
+# --------------------------------------------------------------------------------------
+
+
+def test_skill_and_playbook_document_j9_coulometry():
+    """J9 (alkali_budget → alkali_residual/infeasible の独立検出器) が skill と PLAYBOOK の
+    両方に同内容であること (安全上重要な指示の同期規約)。"""
+    skill = _SKILL.read_text(encoding="utf-8")
+    playbook = _PLAYBOOK.read_text(encoding="utf-8")
+    for text, name in ((skill, "SKILL"), (playbook, "PLAYBOOK")):
+        assert "J9" in text, f"{name} に J9 が無い"
+        assert "alkali_budget" in text, f"{name} が alkali_budget に言及していない"
+        assert "alkali_residual" in text, f"{name} が乖離 (alkali_residual) を教えていない"
+        assert "infeasible" in text, f"{name} が infeasible = 相集合/x0 誤りのシグナルを教えていない"
+        assert "提案≠適用" in text, f"{name} に提案≠適用が無い"
+    from tsumugin.mcp.tools import MCP_TOOLS as _tools
+
+    assert "alkali_budget" in _tools

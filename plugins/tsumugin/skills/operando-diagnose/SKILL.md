@@ -36,6 +36,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | `repair_frames` | 不連続の修復 | `repairs` (採用のみ; **修復後の出版値** `phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd` を修復フレーム毎に同梱)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない) |
 | `anchored_sequential` | 系統ブロックの解き直し (M10) | アンカー起点の双方向精密化 + `crossovers[].total_bic` で相集合を **bic 選定** (相数を抑制)。前方単一パス由来の系統汚染 (偽相全域・esd 発散・全相 flagged) を根治する → J6 |
 | `align_echem` | 電気化学突合 (J8) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス or 明示 epoch) → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合 |
+| `alkali_budget` | クーロメトリー整合 (J9, FR-318) | `.mpr` + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標。`charge_constraint` 経由で `alkali_x_xrd` vs `alkali_x_echem` の乖離 = 不可逆容量/相集合誤りの独立検出器 |
 | `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `auto_rietveld` | 単一フレーム再フィット | `residual_report` + 出版値 (重量分率 ± esd・`cell_esd`) 同梱 |
 
@@ -210,6 +211,21 @@ align_echem("K-10.mpr", offset_s=22.1, interval_s=283.0, n_frames=247)
 - `state` は Ns ステップ毎の正味 ΔQ から導出 (電流列不要)。範囲外フレームは `in_span=False`。
 - **`.mpr` が無いとき**は分率の振動が多段酸化還元か artifact かは **dQ/dV 無しでは決まらない**ので
   **未確定と書く**。V-t / dQ/dV をユーザーに要求する (電圧を捏造しない)。
+
+#### J9 クーロメトリー整合 (FR-318) — **アルカリ量収支で相集合と分率を検算する**
+
+`alkali_budget` (MPR + 活物質質量 + 式量 + x₀) で per-frame の総アルカリ量目標を作り、
+`charge_constraint` を付けて系列を回すと、各フレームに `alkali_x_xrd` (XRD 由来のモル平均) と
+`alkali_x_echem` (クーロメトリー目標)・`alkali_residual` (差) が付く。**電気量は独立測定**なので:
+
+- **`alkali_residual` の系統的ドリフト** = 不可逆容量/副反応 (電子がアルカリ挿抜以外に消費) の兆候。
+  Rwp には出ない誤りの独立検出器 — J5 の「肩代わり」も総アルカリ量では隠しきれないことが多い。
+- **`alkali_feasibility="infeasible"`** = クーロメトリー目標が相組成の凸包の外 = **相集合か x₀ が
+  誤っている**強いシグナル (多相域の不可逆容量検出器)。J5 の相欠落仮説と突き合わせる。
+- **アンカー `ab_check.delta_rwp` の超過警告** → x₀ 校正の**提案**が ledger に出る
+  (`fr318_x0_calibration_proposal`, applied=False)。**採用はユーザー承認** (提案≠適用)。
+- 数値の basis に注意: `alkali_x_xrd` は**重量分率を式量で割ったモル平均** (Scale でも wt% 単純平均
+  でもない)。単相域では占有率×多重度/Z そのもの。
 
 ### 4. 改訂は必ず承認を挟む (ModelAction)
 

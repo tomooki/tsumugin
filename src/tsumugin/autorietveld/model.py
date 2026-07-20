@@ -473,3 +473,11 @@ class AutoRietveldResult:
     #   (相 Scale が最終共分散に無い = 全段 revert 等 → calcMassFracs が全相 su を厳密 0.0 にする)。
     #   相ごと欠落/空 dict = 分率非精密化・共分散なし。**多相の 0.0 を捏造しない** (無限精度の偽 su)。
     phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
+    # 【FR-318 電気化学制約向け (末尾追加・既定空で後方互換)】
+    # 相名→原子ラベル→サイト多重度 (GSAS 原子行 cs+1)。`MobileSiteSpec.multiplicities` の照合材料
+    #   (REQ-318-008: 呼び出し側指定の mult と GSAS 実値の不一致は静かに誤った x を作るため必ず照合する)。
+    atom_multiplicity: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    # 相名→原子ラベル→占有率 esd。**2 状態を区別する** (cell_esd と同型の規律):
+    #   ``>0.0`` = Afrac が最終共分散 varyList に載り精密化された su / ``None`` = この精密化では
+    #   決まっていない (F フラグ無し・段 revert・共分散なし)。**0.0 を捏造しない**。
+    atom_occupancy_esd: Mapping[str, Mapping[str, float | None]] = field(default_factory=dict)

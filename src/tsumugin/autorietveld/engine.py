@@ -35,7 +35,12 @@ from .model import (
     ValidityReport,
 )
 from .recipe import build_recipe
-from .validity import check_profile_physicality, check_validity
+from .validity import (
+    check_initial_uiso,
+    check_profile_physicality,
+    check_validity,
+    warn_occupancy_uiso_coupling,
+)
 
 
 def _g2sc():
@@ -641,6 +646,65 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             gpx.add_EqnConstr(1.0, scales, [1.0] * len(scales))
 
 
+def _apply_content_constraint(gpx, g2phases, g2hists, content_constraint) -> None:
+    """相間の線形 Scale 拘束 Σ cᵢ·Scaleᵢ = 0 を登録する (FR-318 lock_fractions, T12)。🔵
+
+    総アルカリ量拘束はモル量 ∝ Scaleᵢ·Zᵢ を使うと Scale について**線形**:
+    ``Σ Scaleᵢ·Zᵢ·(xᵢ − x_total) = 0``。係数 ``cᵢ = Zᵢ·(xᵢ − x_total)`` を相名キーで受け取り、
+    各ヒストグラムの Scale 変数へ `add_EqnConstr` する (相 id 混在の前例 = 相分率和=1)。
+
+    ⚠ **2 相では和=1 と合わせ相分率が完全決定される** — XRD は分率に寄与しなくなり Rwp が
+    一致度の検定量になる。既定モードにしない理由 (設計 Correction A)。**実行可能性
+    (feasibility) と縮退 (xᵢ 等値) のゲートは呼び出し側の責務** (`operando.coulometry.feasibility`)
+    — 本関数は機械的に登録するだけ。係数が全て ~0 (縮退) の場合のみ安全側で skip する。
+    """
+    if not content_constraint or len(g2phases) < 2:
+        return
+    for hist in g2hists:
+        hid = hist.id
+        variables: list[str] = []
+        mults: list[float] = []
+        for ph in g2phases:
+            c = content_constraint.get(ph.name)
+            if c is None or not math.isfinite(float(c)):
+                continue
+            variables.append(f"{ph.id}:{hid}:Scale")
+            mults.append(float(c))
+        if len(variables) >= 2 and any(abs(m) > 1e-12 for m in mults):
+            gpx.add_EqnConstr(0.0, variables, mults)
+
+
+def _apply_initial_occupancies(g2phases, occupancies: Mapping[str, Mapping[str, float]]) -> None:
+    """原子占有率を initial_occupancies で初期化する (FR-318 fix/warm-start 用, T8)。🔵
+
+    `_apply_initial_fractions` (Scale シーダー) の占有率版。add_phase 直後・制約登録前に呼ぶ。
+    値のみ差し替え、精密化フラグ (F) は触らない — **fix (凍結) は構造的に実現される**:
+    原子がどの占有率グループ (`mixed_occupancy_groups`/`free_occupancy_labels` 等) にも属さなければ
+    `_update_atom_flags` が F フラグを立てず、seed 値のまま固定される。逆に diagnose の
+    warm-start では占有率グループ宣言と併用し、seed から精密化を出発させる。
+
+    fail-open: 未知の相名/ラベル・非有限値は無視 (分率シーダーと同じ規律)。
+    **範囲検証 ([0,1]) は `run_auto_rietveld` 冒頭で実施済み** (GSAS に触れる前に大声で失敗)。
+    """
+    if not occupancies:
+        return
+    for ph in g2phases:
+        vals = occupancies.get(ph.name)
+        if not vals:
+            continue
+        try:
+            atoms = ph.data["Atoms"]
+            cx, ct, _cs, _cia = ph.data["General"]["AtomPtrs"]
+            label_to_idx = {str(row[ct - 1]): i for i, row in enumerate(atoms)}
+        except Exception:  # noqa: BLE001 — 構造差は相ごとスキップ
+            continue
+        for lab, v in vals.items():
+            idx = label_to_idx.get(str(lab))
+            if idx is None or not math.isfinite(float(v)):
+                continue
+            atoms[idx][cx + 3] = float(v)
+
+
 def _apply_bond_restraints(gpx, g2phases, bond_restraints) -> None:
     """相名→結合距離ソフト拘束を GSAS-II Bond restraint として登録する (O–H/D 漂流防止)。
 
@@ -681,6 +745,134 @@ def _apply_bond_restraints(gpx, g2phases, bond_restraints) -> None:
             ph.setDistRestraintWeight(weight)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _apply_chem_comp_restraints(gpx, g2phases, chem_comp_restraints) -> None:
+    """相名→組成 (ChemComp) ソフト拘束を GSAS-II Restraints ツリーへ直接注入する (FR-318 T10)。🔵
+
+    GSAS-II 本体は化学組成拘束を実装している (`GSASIIstrMath` の penalty:
+    ``calc = Σ mult·occ·factor`` vs ``obs`` を ``esd`` 重みで罰し、``Afrac`` 微分も持つ) が、
+    scriptable API は Bond 拘束しか露出していない。そこで `_apply_bond_restraints` と同じ手口で
+    ``gpx.data['Restraints']['data'][phase]['ChemComp']['Sites']`` へ
+    ``[ranIds, factors, obs, esd]`` を直接書く。Restraints ツリーは gpx に保存されるため
+    revert (スナップショット復元) 後も保持される (Bond と同じ性質)。
+
+    ⚠ **本バージョンの GSAS-II では headless 最小二乗で restraint penalty が機能しない**
+    (FR-318 実測, 3 経路で確認):
+
+    1. 既定 (analytic Hessian, dlg=None): `errRefine` が penalty 項を ``if len(pVals) and dlg:``
+       ゲート内で χ² に連結するため **目的関数から除外** — Marquardt は penalty を無視して
+       データ解へ収束する (ChemComp 目標 3.2 [occ 0.8] vs 収束 occ 1.018, 重み 4e8 でも不動)。
+    2. ダミー dlg 注入 (penalty を χ² に含める): `HessRefine` の penalty 勾配符号がデータ側と
+       逆 (`Vec -=` vs データ `Vec +=`, dy=obs−calc は同一) のためステップが**逆方向** (occ
+       1.0→1.2) に出て全ステップ棄却 → `Aborted: True` でロールバック。
+    3. analytic Jacobian + ダミー dlg: shift/esd 0.000 (全パラメータ不動)。
+
+    よって **soft モードは注入まで実装するが実質無効** — `insitu.charge.plan_frame_constraint`
+    は soft を diagnose へ縮退させ警告する。GSAS-II 更新で修復された場合に検知するカナリアが
+    `tests/autorietveld/test_charge_constraint_gsas.py::TestChemCompRestraint` (fail したら
+    soft モードを再有効化する)。既存 `bond_restraints` も同じゲートの影響下にある (Issue 化)。
+
+    **単位**: ``total`` は **セルあたり原子数** (Σ mult·occ·factor の目標値)。式単位あたり量 x を
+    拘束したい場合は呼び出し側が ``x × Z`` に換算して渡す (①コアは GSAS ネイティブ単位)。
+
+    各 spec: ``{"labels": [原子ラベル…], "total": セルあたり目標, "esd": 目標の esd,
+    "factors": ラベル毎係数 (省略時 1.0), "weight": 相単位 wtFactor}``。
+    不正 spec・ラベル不一致は当該拘束のみスキップして継続する (Bond と同じ縮退規律)。
+    """
+    if not chem_comp_restraints:
+        return
+    rroot = gpx.data.setdefault("Restraints", {"data": {}})
+    rdata = rroot.setdefault("data", {})
+    for ph in g2phases:
+        specs = chem_comp_restraints.get(ph.name)
+        if not specs:
+            continue
+        entry = rdata.setdefault(ph.name, {})
+        cc = entry.setdefault("ChemComp", {"wtFactor": 1.0, "Sites": [], "Use": True})
+        try:
+            atoms = ph.data["Atoms"]
+            _cx, ct, _cs, cia = ph.data["General"]["AtomPtrs"]
+            # ChemComp の ids は**原子 ranId** (row[cia+8])。行 index ではない。
+            label_to_ranid = {str(row[ct - 1]): row[cia + 8] for row in atoms}
+        except Exception:  # noqa: BLE001 — 構造差は相ごとスキップ
+            continue
+        weight = 1.0
+        for spec in specs:
+            try:
+                labels = [str(x) for x in spec["labels"]]  # type: ignore[index]
+                total = float(spec["total"])  # type: ignore[index]
+                esd = float(spec.get("esd", 0.1))  # type: ignore[union-attr]
+                factors = [
+                    float(f)
+                    for f in spec.get("factors", [1.0] * len(labels))  # type: ignore[union-attr]
+                ]
+                weight = float(spec.get("weight", weight))  # type: ignore[union-attr]
+                if len(factors) != len(labels):
+                    continue
+                ids = [label_to_ranid[lab] for lab in labels]
+                cc["Sites"].append([ids, factors, total, esd])
+            except Exception:  # noqa: BLE001 — 不正 spec/ラベル不一致はスキップし継続
+                continue
+        cc["wtFactor"] = weight
+        cc["Use"] = True
+
+
+def _atom_result_maps(g2phases):
+    """ラベルキーの原子パラメータ (占有率/Uiso/多重度/占有率 esd) を抽出する (FR-318 T7/T11)。🔵
+
+    `AutoRietveldResult.atom_occupancy`/`atom_uiso` は宣言されながら未配線だった
+    (`_extract_state` は validity 用の位置リストしか作らない)。本関数がラベルキーで充填する。
+
+    占有率 esd は**最終共分散の varyList** に ``<pId>::Afrac:<idx>`` が載っている原子のみ
+    ``sig`` から取り、載っていない原子は **None** (精密化していない — `_cell_was_refined` と
+    同じ規律で 0.0 を捏造しない)。抽出不能は空 dict へ縮退し例外を送出しない。
+    """
+    occ: dict[str, dict[str, float]] = {}
+    uiso: dict[str, dict[str, float]] = {}
+    mult: dict[str, dict[str, float]] = {}
+    occ_esd: dict[str, dict[str, float | None]] = {}
+    for ph in g2phases:
+        try:
+            atoms = ph.data["Atoms"]
+            cx, ct, cs, cia = ph.data["General"]["AtomPtrs"]
+            try:
+                cov = ph.proj["Covariance"]["data"]
+                # ⚠ varyList/sig は numpy 配列のことがある — `arr or ()` は真偽値評価で
+                # ValueError になるため None 判定で分岐する (実測でこの罠を踏んだ)。
+                vary_raw = cov.get("varyList")
+                vary = [str(v) for v in (vary_raw if vary_raw is not None else ())]
+                sig_raw = cov.get("sig")
+                sig = list(sig_raw) if sig_raw is not None else []
+            except Exception:  # noqa: BLE001 — 共分散なしは「未精密化」に縮退
+                vary, sig = [], []
+            pid = ph.id
+            p_occ: dict[str, float] = {}
+            p_uiso: dict[str, float] = {}
+            p_mult: dict[str, float] = {}
+            p_esd: dict[str, float | None] = {}
+            for i, row in enumerate(atoms):
+                label = str(row[ct - 1])
+                p_occ[label] = float(row[cx + 3])
+                p_mult[label] = float(row[cs + 1])
+                if row[cia] == "I":
+                    p_uiso[label] = float(row[cia + 1])
+                var = f"{pid}::Afrac:{i}"
+                esd: float | None = None
+                if var in vary:
+                    j = vary.index(var)
+                    if j < len(sig):
+                        esd = finite_or_none(sig[j])
+                        if esd is not None and esd <= 0.0:
+                            esd = None
+                p_esd[label] = esd
+            occ[ph.name] = p_occ
+            uiso[ph.name] = p_uiso
+            mult[ph.name] = p_mult
+            occ_esd[ph.name] = p_esd
+        except Exception:  # noqa: BLE001 — 構造差/抽出失敗は当該相をスキップし継続
+            continue
+    return occ, uiso, mult, occ_esd
 
 
 def _extract_state(phases):
@@ -981,6 +1173,10 @@ def run_auto_rietveld(
     initial_fractions: Mapping[str, float] | None = None,
     bond_restraints: dict[str, Sequence[Mapping[str, object]]] | None = None,
     auto_freeze_minor_cells: float | None = None,
+    initial_occupancies: Mapping[str, Mapping[str, float]] | None = None,
+    chem_comp_restraints: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
+    content_constraint: Mapping[str, float] | None = None,
+    check_occupancy_uiso: bool = False,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -1022,8 +1218,29 @@ def run_auto_rietveld(
         分率 1.0 のため凍結されない。分率が取得できない場合は fail open (凍結しない) — 全相を
         誤って凍結する事故を避ける。自動凍結された相名は各段の ledger エントリ
         (``m7_stage`` の ``auto_frozen_cells``) に記録され、挙動が監査可能になる。
+    :param initial_occupancies: 相名→{原子ラベル→占有率} の初期値シーダー (FR-318)。値のみ差し替え、
+        精密化フラグは触らない — 占有率グループ非宣言の原子は seed 値のまま**固定**される (fix モード)。
+        範囲外 ([0,1] 超) は GSAS import 前に ValueError (物理的に不可能な要求は大声で失敗)。
+        非有限/未知ラベルは fail-open で無視。既定 None。
+    :param chem_comp_restraints: 相名→組成 (ChemComp) ソフト拘束の列 (FR-318 soft モード)。各 spec は
+        ``{"labels": [...], "total": セルあたり原子数目標, "esd": 目標 esd, "factors": 係数,
+        "weight": 相単位 wtFactor}``。**total はセルあたり** (式単位量 x は呼び出し側で x×Z に換算)。
+        GSAS 本体の ChemComp penalty を Restraints ツリー直接注入で使う。既定 None。
+    :param content_constraint: 相名→係数 cᵢ の相間線形 Scale 拘束 ``Σ cᵢ·Scaleᵢ = 0``
+        (FR-318 lock_fractions)。総アルカリ量拘束は cᵢ = Zᵢ·(xᵢ − x_total)。⚠ 2 相では相分率が
+        完全決定され XRD は分率に寄与しなくなる。実行可能性/縮退ゲートは呼び出し側の責務
+        (`operando.coulometry.feasibility`)。既定 None。
     :returns: AutoRietveldResult
     """
+    # FR-318: 占有率シーダーの範囲検証は GSAS import 前に行う (物理的に不可能な要求は即時失敗)。
+    if initial_occupancies:
+        for _ph_name, _vals in initial_occupancies.items():
+            for _lab, _v in _vals.items():
+                if math.isfinite(float(_v)) and not (0.0 <= float(_v) <= 1.0 + 1e-9):
+                    raise ValueError(
+                        f"初期占有率が物理範囲 [0,1] を外れています: "
+                        f"{_ph_name}/{_lab} = {_v}"
+                    )
     g2sc = _g2sc()
     stages = tuple(recipe) if recipe is not None else build_recipe(histograms, phases)
     ledger = ledger if ledger is not None else Ledger()
@@ -1132,10 +1349,34 @@ def run_auto_rietveld(
         if initial_fractions:
             _apply_initial_fractions(g2phases, g2hists, initial_fractions)
 
+        # --- 初期占有率シーダー (FR-318: fix モード/占有率 warm-start, 任意) ---
+        if initial_occupancies:
+            _apply_initial_occupancies(g2phases, initial_occupancies)
+
+        # --- 初期 Uiso 妥当性 + 占有率/Uiso 結合の事前警告 (FR-318 / REQ-318-005) ---
+        # **FR-318 の入力 (シーダー/組成拘束/分率拘束/明示フラグ) があるときのみ**検査する。
+        # レビュー M4: 「占有率段があるか」で発火させると、既存の混合占有ワークフロー
+        # (T2 garnet / NaCuHCF は occupancy 段 + uiso 段が正規レシピ) に新警告が出て非回帰契約が
+        # 破れる。``check_occupancy_uiso`` は FR-318 の diagnose + 占有率解放 (x₀ 導出) フロー用 —
+        # plan kwargs が空でも組成を占有率から導出する以上この検査が要る (最終レビュー F3;
+        # `make_gsas_runner` が charge_constraint 有効時に立てる)。
+        pre_warnings: tuple[str, ...] = ()
+        _touches_occupancy = bool(
+            initial_occupancies or chem_comp_restraints or content_constraint
+            or check_occupancy_uiso
+        )
+        if _touches_occupancy:
+            _, uiso_init, _, _ = _atom_result_maps(g2phases)
+            pre_warnings = check_initial_uiso(uiso_init) + warn_occupancy_uiso_coupling(stages)
+
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
         _setup_constraints(gpx, g2phases, g2hists, phases)
+        # 相間の総量線形拘束 (FR-318 lock_fractions; feasibility ゲートは呼び出し側)。
+        _apply_content_constraint(gpx, g2phases, g2hists, content_constraint)
         # 結合距離ソフト拘束 (初期座標が理想幾何のうちに登録; O–H/D の漂流防止)。
         _apply_bond_restraints(gpx, g2phases, bond_restraints)
+        # 組成 (ChemComp) ソフト拘束 (FR-318 soft モード; Restraints ツリー直接注入)。
+        _apply_chem_comp_restraints(gpx, g2phases, chem_comp_restraints)
         # 装置パラメータの物理拘束 (profile_bounds; 分解能抽出の U,W,X,Y≥0 等) を登録する (Issue #38)。
         _apply_profile_bounds(gpx, histograms)
         phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
@@ -1258,7 +1499,7 @@ def run_auto_rietveld(
         validity = ValidityReport(
             passed=validity.passed and prof_report.passed,
             checks=validity.checks + prof_report.checks,
-            warnings=validity.warnings + prof_report.warnings,
+            warnings=validity.warnings + prof_report.warnings + pre_warnings,
         )
         hist_profile = tuple({k: v for k, (v, _) in d.items()} for d in prof_full)
 
@@ -1269,6 +1510,8 @@ def run_auto_rietveld(
         # 出版用の不確かさ: 格子 esd と GSAS 自身が算出した重量分率 (±esd)。共分散が無ければ空へ縮退。
         cell_esd = _cell_esd_map(g2phases)
         wt_fracs, wt_frac_esd = _weight_fraction_maps(g2phases, g2hists)
+        # 原子パラメータ (FR-318 T7/T11: ラベルキー占有率/Uiso/多重度 + 占有率 esd の 2 状態)。
+        atom_occ_map, atom_uiso_map, atom_mult_map, atom_occ_esd_map = _atom_result_maps(g2phases)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
         out_gpx = ""
@@ -1293,6 +1536,10 @@ def run_auto_rietveld(
         cell_esd=cell_esd,
         phase_weight_fractions=wt_fracs,
         phase_weight_fraction_esd=wt_frac_esd,
+        atom_uiso=atom_uiso_map,
+        atom_occupancy=atom_occ_map,
+        atom_multiplicity=atom_mult_map,
+        atom_occupancy_esd=atom_occ_esd_map,
     )
 
 

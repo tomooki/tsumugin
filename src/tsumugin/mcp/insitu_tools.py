@@ -26,12 +26,16 @@ from typing import Callable, Mapping, Sequence
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ._degrade import degrade_oserror
+import dataclasses
+
 from ..insitu.model import (
+    ChargeConstraintConfig,
     FrameRietveldResult,
     FrameSpec,
     PhaseIdConfig,
     SequentialConfig,
     SequentialRietveldResult,
+    TargetComposition,
 )
 
 __all__ = [
@@ -108,6 +112,22 @@ def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
                 "cell_esd": {
                     k: [finite_or_none(x) for x in esd] for k, esd in f.cell_esd.items()
                 },
+                # 【FR-318 電気化学制約の診断】: x_XRD vs x_echem・適用拘束・実行可能性。
+                #   機能無効フレームは None/空/"" (キーは常に存在 — スキーマ安定の同一規律)。
+                #   infeasible = クーロメトリー目標が相組成の範囲外 = 不可逆容量/副反応の疑い。
+                "alkali_x_echem": finite_or_none(f.alkali_x_echem)
+                if f.alkali_x_echem is not None else None,
+                "alkali_x_xrd": finite_or_none(f.alkali_x_xrd)
+                if f.alkali_x_xrd is not None else None,
+                "alkali_x_xrd_esd": finite_or_none(f.alkali_x_xrd_esd)
+                if f.alkali_x_xrd_esd is not None else None,
+                "alkali_per_phase": {
+                    k: finite_or_none(v) for k, v in f.alkali_per_phase.items()
+                },
+                "alkali_residual": finite_or_none(f.alkali_residual)
+                if f.alkali_residual is not None else None,
+                "alkali_constraint_applied": str(f.alkali_constraint_applied),
+                "alkali_feasibility": str(f.alkali_feasibility),
             }
             for f in result.frames
         ],
@@ -354,6 +374,7 @@ def _runner_from_instrument(
     spec: Mapping[str, object],
     frame_specs: Sequence[FrameSpec],
     two_theta_limits: tuple[float, float] | None,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> Callable:
     """instrument spec (JSON) から make_gsas_runner で runner を組み立てる (Issue #93)。"""
     from ..autorietveld.model import Geometry, Radiation
@@ -375,7 +396,106 @@ def _runner_from_instrument(
         max_cyc=int(spec.get("max_cyc", 12)),  # type: ignore[arg-type]
         background_coeffs=int(spec.get("background_coeffs", 6)),  # type: ignore[arg-type]
         auto_freeze_minor_cells=None if afmc is None else float(afmc),  # type: ignore[arg-type]
+        charge_constraint=charge_constraint,
     )
+
+
+def _apply_charge_constraint_spec(
+    spec: Mapping[str, object], frame_specs: "list[FrameSpec]"
+) -> "tuple[ChargeConstraintConfig, list[FrameSpec]]":
+    """charge_constraint spec (JSON) → (系列設定, 目標付き FrameSpec 列) (FR-318 の ② 入口)。
+
+    spec キー (§4.5 到達可能性 — 各キーの出所):
+
+    - ``config``: `ChargeConstraintConfig.to_dict` 形 (mobile_sites/z_formula/formula_weights/
+      mode/esd/anchor_ab_threshold/...)。**③ が系の結晶学から書く** (可動イオンサイトのラベル・
+      多重度・Z・式量)
+    - ``targets``: **``alkali_budget`` の出力 ``targets`` をそのまま渡す** (list of
+      {frame, x_total, ...})。または {frame_index(str): x_total} の mapping。x_total が None の
+      フレーム (echem 範囲外) には目標を付けない (拘束されない)
+    - ``per_phase_content``: {相名: xᵢ} — 多相域の相ごとアルカリ量 (**単相アンカーの精密化結果**
+      = anchored_sequential の anchors[].alkali.alkali_x_xrd から取る; REQ-318-004)
+
+    frames リスト位置 = frame_index (alkali_budget と同じ列挙) で突き合わせる。
+    """
+    # 型検証を先に行う (最終レビュー F-final-1): config が Mapping でないと from_dict 内で
+    # AttributeError になり、呼び出し側の catch (ValueError/TypeError/KeyError/IndexError) を
+    # すり抜けて ② 境界を貫通する。具体的なメッセージの ValueError へ正規化する。
+    if not isinstance(spec, Mapping):
+        raise ValueError(
+            f"charge_constraint は dict である必要があります: {type(spec).__name__}"
+        )
+    raw_cfg = spec.get("config") or {}
+    if not isinstance(raw_cfg, Mapping):
+        raise ValueError(
+            f"charge_constraint.config は dict (ChargeConstraintConfig.to_dict 形) である"
+            f"必要があります: {type(raw_cfg).__name__}"
+        )
+    raw_pp = spec.get("per_phase_content") or {}
+    if not isinstance(raw_pp, Mapping):
+        raise ValueError(
+            f"charge_constraint.per_phase_content は {{相名: x}} の dict である必要があります: "
+            f"{type(raw_pp).__name__}"
+        )
+    cfg = ChargeConstraintConfig.from_dict(raw_cfg)
+    # 物理量の正値検証 (F2): z_formula=0 / formula_weights=0 は下流の除算で
+    # ZeroDivisionError となり error-dict 契約を破る — ここ (try 内) で ValueError 化。
+    for _nm, _z in cfg.z_formula.items():
+        if _z <= 0:
+            raise ValueError(f"charge_constraint.config.z_formula[{_nm!r}] は正であること: {_z}")
+    for _nm, _fw in cfg.formula_weights.items():
+        if _fw <= 0:
+            raise ValueError(
+                f"charge_constraint.config.formula_weights[{_nm!r}] は正であること: {_fw}"
+            )
+    if not cfg.enabled:
+        raise ValueError(
+            "charge_constraint.config.mobile_sites が空です — 相ごとの可動イオンサイト "
+            '(例 {"phase_name": "mono", "site_labels": ["K"], "multiplicities": [4.0]}) が必要です'
+        )
+    per_phase = {str(k): float(v) for k, v in raw_pp.items()}  # type: ignore[arg-type]
+    raw = spec.get("targets")
+    if raw is None or len(raw) == 0:
+        # alkali_budget は範囲外フレームも x_total=None のエントリとして必ず返すため、
+        # 空の targets は正規の出力ではあり得ない (= 手組み spec の不備) — 黙って
+        # 「拘束ゼロで有効」にしない (レビュー第2巡 F5)。
+        raise ValueError(
+            "charge_constraint.targets が空/欠落です — alkali_budget の出力 targets を"
+            "そのまま渡してください (範囲外フレームも x_total=null で列挙されます)"
+        )
+    by_frame: dict[int, float] = {}
+    if isinstance(raw, Mapping):
+        items: "list[tuple[int, object]]" = [(int(k), v) for k, v in raw.items()]
+    else:
+        items = [(int(t["frame"]), t) for t in raw]  # type: ignore[index,call-overload]
+    for idx, t in items:
+        x = t.get("x_total") if isinstance(t, Mapping) else t
+        if x is None:
+            continue  # echem 範囲外 → 目標なし (拘束しない; 捏造禁止)
+        by_frame[idx] = float(x)  # type: ignore[arg-type]
+
+    # 【位置ずれの厳格検出】(レビュー MEDIUM): targets は frames リストの**位置**で突き合わせる。
+    # サブセット解析 (実測 K-10: 247 中 63 フレーム stride 抽出) に全系列の alkali_budget 出力を
+    # そのまま渡すと、位置 4 に「元フレーム 4」の目標が付く = 全フレームの x_echem が静かに誤る。
+    # 範囲外 index はその確実な指紋なので**黙って捨てず**エラーにする (境界で error dict へ縮退)。
+    if by_frame and (max(by_frame) >= len(frame_specs) or min(by_frame) < 0):
+        raise ValueError(
+            f"charge_constraint.targets の frame index (範囲 {min(by_frame)}..{max(by_frame)}) "
+            f"が frames リスト ({len(frame_specs)} 件) の範囲外です。targets は frames の"
+            "**位置**で対応させます — サブセット解析では targets を frames と同じ列挙に "
+            "re-key するか、alkali_budget を frames と同じフレーム時刻 (frame_epoch_s) で"
+            "回してください"
+        )
+
+    out: "list[FrameSpec]" = []
+    for i, fs in enumerate(frame_specs):
+        x = by_frame.get(i)
+        if x is None:
+            out.append(fs)
+            continue
+        tc = TargetComposition(total=x, per_phase=per_phase, mode=cfg.mode, esd=cfg.esd)
+        out.append(dataclasses.replace(fs, target_composition=tc))
+    return cfg, out
 
 
 @degrade_oserror
@@ -390,6 +510,7 @@ def sequential_rietveld(
     max_frames: int | None = None,
     workdir: str = ".",
     instrument: Mapping[str, object] | None = None,
+    charge_constraint: Mapping[str, object] | None = None,
     runner: Callable | None = None,
     phase_finder: Callable | None = None,
     reason: str = "",
@@ -425,6 +546,12 @@ def sequential_rietveld(
           AGENT_PLAYBOOK の「分率の閾値は Scale 基準」節)
 
         ``two_theta_limits`` は本引数の runner にも転送される (フレーム側指定が優先)。
+    :param charge_constraint: **FR-318 電気化学制約の JSON spec**。キー: ``config``
+        (`ChargeConstraintConfig.to_dict` 形 — mobile_sites/z_formula/formula_weights/mode/esd
+        等)、``targets`` (**``alkali_budget`` の出力 targets をそのまま**)、``per_phase_content``
+        ({相名: xᵢ}; 多相域用 — 単相アンカーの精密化結果から)。既定モード diagnose は拘束せず
+        x_XRD vs x_echem 乖離を per-frame 出力 (alkali_* キー)。lock_fractions は明示 opt-in
+        (2 相では相分率が完全決定される — 採用は第3層判断)。None で従来動作
     :param runner: **注入/テスト用**の Python callable ((frame, phases, initial_cells)→
         AutoRietveldResult)。JSON 境界越しには渡せない。明示指定時は ``instrument`` より優先する
         (後方互換)。None かつ ``instrument`` も None なら engine 既定 GSAS runner
@@ -433,15 +560,22 @@ def sequential_rietveld(
     """
     from ..insitu.engine import run_sequential_rietveld
 
-    frame_specs = [FrameSpec.from_dict(f) for f in frames]
-    phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
     # 【レンジ検証を縮退契約に載せる】: 旧実装は `two_theta_limits[0]` を直接引いており、1 要素等の
     #   取り違えで IndexError が MCP 境界を貫いていた (error dict へ縮退する契約に反する)。
+    #   FrameSpec/PhaseSpec の解析も try 内 (最終レビュー F4: FrameSpec.from_dict は
+    #   TargetComposition の mode 検証で ValueError を出しうる — anchored_sequential と対称に)。
     try:
+        frame_specs = [FrameSpec.from_dict(f) for f in frames]
+        phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
+        cc_cfg: ChargeConstraintConfig | None = None
+        if charge_constraint is not None:
+            cc_cfg, frame_specs = _apply_charge_constraint_spec(charge_constraint, frame_specs)
         limits = _parse_two_theta_limits(two_theta_limits)
         if runner is None and instrument is not None:
-            runner = _runner_from_instrument(instrument, frame_specs, limits)
-    except (ValueError, TypeError, KeyError, IndexError) as exc:
+            runner = _runner_from_instrument(instrument, frame_specs, limits, cc_cfg)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        # AttributeError も捕捉 (F-final-1 安全網): 深い入れ子のゴミ (例 z_formula: "x") は
+        # `.items()`/`.get()` で AttributeError になる — ② は例外を送出しない。
         return {"error": str(exc), "error_type": type(exc).__name__}
     pid = None
     if phase_id is not None:
@@ -460,6 +594,7 @@ def sequential_rietveld(
         two_theta_limits=limits,
         max_frames=max_frames,
         phase_id=pid,
+        charge_constraint=cc_cfg,
     )
     result = run_sequential_rietveld(
         frame_specs, phase_specs, config=config, runner=runner,

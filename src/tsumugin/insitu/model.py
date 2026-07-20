@@ -18,6 +18,7 @@ from ..autorietveld.model import CellEsd
 
 if TYPE_CHECKING:
     from ..autorietveld.residual_report import ResidualReport
+    from ..operando.coulometry import MobileSiteSpec
 
 # 相ごとの格子: (a, b, c, α, β, γ)
 Cell = tuple[float, float, float, float, float, float]
@@ -48,6 +49,53 @@ class FractionBasisUnavailableError(ValueError):
 #   (`engine._publication_of` と同じ規律)。両者を混同すると測定していない値を出版してしまう。
 
 
+#: 電気化学制約のモード (FR-318, docs/design/charge-constrained-rietveld/architecture.md)。
+#: ``diagnose`` (既定) = 制約なし・x_XRD vs x_echem 乖離を出力 / ``soft`` = ChemComp restraint /
+#: ``fix`` = 占有率を目標に凍結 / ``lock_fractions`` = 相分率を相間 EqnConstr で拘束
+#: (2 相では分率が完全決定され XRD は分率に寄与しなくなる — 明示 opt-in・第3層判断)。
+CONSTRAINT_MODES: tuple[str, ...] = ("diagnose", "soft", "fix", "lock_fractions")
+
+
+@dataclass(frozen=True)
+class TargetComposition:
+    """1 フレームの総アルカリ量目標 (FR-318 / REQ-318-003, 004)。
+
+    per-frame 値は runner が受け取る :class:`FrameSpec` に載せる (第 5 runner 引数を作らない —
+    ``_warmstart.call_runner`` を迂回する bare ``runner(...)`` 経路でも欠落しない設計)。
+
+    :param total: 式単位あたり総アルカリ量目標 x_total(t) (`operando.coulometry.alkali_targets` の出力)
+    :param per_phase: 相名→式単位あたりアルカリ量 x_i (アンカー精密化由来; 多相で使用。単相は {})
+    :param mode: 制約モード (:data:`CONSTRAINT_MODES`)。既定 ``diagnose``
+    :param esd: soft restraint の esd / 乖離判定の許容差
+    """
+
+    total: float
+    per_phase: Mapping[str, float] = field(default_factory=dict)
+    mode: str = "diagnose"
+    esd: float = 0.05
+
+    def __post_init__(self) -> None:
+        if self.mode not in CONSTRAINT_MODES:
+            raise ValueError(f"mode は {CONSTRAINT_MODES} のいずれか: {self.mode!r}")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "total": self.total,
+            "per_phase": dict(self.per_phase),
+            "mode": self.mode,
+            "esd": self.esd,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "TargetComposition":
+        return cls(
+            total=float(d["total"]),  # type: ignore[arg-type]
+            per_phase={str(k): float(v) for k, v in (d.get("per_phase") or {}).items()},  # type: ignore[union-attr]
+            mode=str(d.get("mode", "diagnose")),
+            esd=float(d.get("esd", 0.05)),  # type: ignore[arg-type]
+        )
+
+
 @dataclass(frozen=True)
 class FrameSpec:
     """系列 1 フレームの入力仕様 (観測データ 1 本 + 軸値)。
@@ -63,6 +111,8 @@ class FrameSpec:
     :param absorber_layers: 固定吸収体レイヤー (operando セルの電解液層・窓材, Issue #54)。
         `make_gsas_runner` が構築する `HistogramSpec.absorber_layers` へそのまま引き継がれる。
         既定 () (補正なし; 後方互換)。
+    :param target_composition: このフレームの総アルカリ量目標 (FR-318)。None = 制約/診断なし
+        (echem 範囲外フレームは None にすること — 範囲外の外挿値で拘束しない)。
     """
 
     data_path: str
@@ -72,6 +122,7 @@ class FrameSpec:
     excluded_regions: tuple[tuple[float, float], ...] = ()
     label: str = ""
     absorber_layers: tuple[AbsorberLayer, ...] = ()
+    target_composition: TargetComposition | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -86,11 +137,15 @@ class FrameSpec:
             else [],
             "label": self.label,
             "absorber_layers": [layer.to_dict() for layer in self.absorber_layers],
+            "target_composition": self.target_composition.to_dict()
+            if self.target_composition is not None
+            else None,
         }
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "FrameSpec":
         limits = d.get("two_theta_limits")
+        tc = d.get("target_composition")
         return cls(
             data_path=str(d["data_path"]),
             axis_value=d.get("axis_value"),  # type: ignore[arg-type]
@@ -103,6 +158,7 @@ class FrameSpec:
             absorber_layers=tuple(
                 AbsorberLayer.from_dict(x) for x in (d.get("absorber_layers") or ())  # type: ignore[arg-type]
             ),
+            target_composition=TargetComposition.from_dict(tc) if tc is not None else None,  # type: ignore[arg-type]
         )
 
 
@@ -193,6 +249,86 @@ class PhaseIdConfig:
 
 
 @dataclass(frozen=True)
+class ChargeConstraintConfig:
+    """電気化学制約の系列レベル設定 (FR-318 / REQ-318-002〜008)。
+
+    per-frame の目標値は :class:`TargetComposition` (FrameSpec 搭載) が持ち、本設定は
+    系列を通して不変の定数 (サイト仕様・Z・式量・モード・閾値) を持つ。
+
+    :param mobile_sites: 相ごとの可動イオンサイト仕様 (`operando.coulometry.MobileSiteSpec`,
+        複数元素合算対応)。**空なら機能全体が無効** (後方互換)。
+    :param z_formula: 相名→セルあたり式単位数 Z。GSAS 原子行から自動抽出した値と照合され、
+        不一致は警告される (REQ-318-008)
+    :param formula_weights: 相名→式量 FW [g/mol]。x_XRD のモル平均換算に使う
+        (**FW で割る — セル質量ではない**; `x_xrd_from_weight_fractions`)
+    :param mode: 既定の制約モード (:data:`CONSTRAINT_MODES`)。⚠ **本フィールドを読むのは
+        ② の spec ビルダーだけ** (`_apply_charge_constraint_spec` が各フレームの
+        ``TargetComposition.mode`` に押印する)。`plan_frame_constraint` は ``tc.mode`` のみを
+        見るため、① を直接呼ぶ場合は **TargetComposition 側に mode を設定すること**
+        (ここに fix を書いても tc が既定 diagnose なら diagnose になる)。既定 ``diagnose``
+    :param esd: soft restraint の既定 esd
+    :param anchor_ab_threshold: アンカー A/B (制約有無) の ΔRwp 警告閾値 [%ポイント]
+        (REQ-318-006。超過で不可逆容量疑いの警告 + x₀ 校正の提案)
+    :param restraint_weight: soft モード (ChemComp) の相単位 wtFactor
+    :param base_occupancies: 相名→{原子ラベル→基準占有率}。目標 x を占有率へ配分するときの
+        既存比 (Na:K 等) の源 (`occupancies_for_content` の base)。空なら均等配分。
+        アンカー精密化の `atom_occupancy` を渡すのが推奨 (REQ-318-002 の x₀ 導出結果)
+    """
+
+    mobile_sites: tuple["MobileSiteSpec", ...] = ()
+    z_formula: Mapping[str, float] = field(default_factory=dict)
+    formula_weights: Mapping[str, float] = field(default_factory=dict)
+    mode: str = "diagnose"
+    esd: float = 0.05
+    anchor_ab_threshold: float = 1.0
+    restraint_weight: float = 1000.0
+    base_occupancies: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.mode not in CONSTRAINT_MODES:
+            raise ValueError(f"mode は {CONSTRAINT_MODES} のいずれか: {self.mode!r}")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.mobile_sites)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mobile_sites": [s.to_dict() for s in self.mobile_sites],
+            "z_formula": dict(self.z_formula),
+            "formula_weights": dict(self.formula_weights),
+            "mode": self.mode,
+            "esd": self.esd,
+            "anchor_ab_threshold": self.anchor_ab_threshold,
+            "restraint_weight": self.restraint_weight,
+            "base_occupancies": {k: dict(v) for k, v in self.base_occupancies.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "ChargeConstraintConfig":
+        from ..operando.coulometry import MobileSiteSpec
+
+        return cls(
+            mobile_sites=tuple(
+                MobileSiteSpec.from_dict(x) for x in (d.get("mobile_sites") or ())  # type: ignore[arg-type]
+            ),
+            z_formula={str(k): float(v) for k, v in (d.get("z_formula") or {}).items()},  # type: ignore[union-attr]
+            formula_weights={
+                str(k): float(v)
+                for k, v in (d.get("formula_weights") or {}).items()  # type: ignore[union-attr]
+            },
+            mode=str(d.get("mode", "diagnose")),
+            esd=float(d.get("esd", 0.05)),  # type: ignore[arg-type]
+            anchor_ab_threshold=float(d.get("anchor_ab_threshold", 1.0)),  # type: ignore[arg-type]
+            restraint_weight=float(d.get("restraint_weight", 1000.0)),  # type: ignore[arg-type]
+            base_occupancies={
+                str(k): {str(a): float(x) for a, x in v.items()}
+                for k, v in (d.get("base_occupancies") or {}).items()  # type: ignore[union-attr]
+            },
+        )
+
+
+@dataclass(frozen=True)
 class SequentialConfig:
     """逐次精密化エンジンの設定。
 
@@ -216,6 +352,9 @@ class SequentialConfig:
         1 回の精密化機会を与える。runner が 4 番目の引数 (``initial_fractions`` キーワード) を
         受け付ける場合のみ実際に渡される (``Runner`` 3 引数プロトコルは非破壊; `make_gsas_runner` は
         対応済み、カスタム/テスト用 3 引数 runner は従来通り無視される)。
+    :param charge_constraint: 電気化学制約の系列設定 (FR-318)。None または disabled
+        (mobile_sites 空) なら従来動作 (後方互換)。per-frame の目標値は
+        ``FrameSpec.target_composition`` が持つ。
     """
 
     warm_start: bool = True
@@ -225,6 +364,7 @@ class SequentialConfig:
     phase_id: PhaseIdConfig | None = None
     backward_propagation: bool = True
     warm_start_fractions: bool = False
+    charge_constraint: ChargeConstraintConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -268,6 +408,17 @@ class FrameRietveldResult:
         `AutoRietveldResult.cell_esd` 由来)。要素 ``None`` = **そのフレームで格子を解放していない**
         (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定 (真の陳述)。
         相ごと欠落 = 抽出できなかった。既定空 dict で後方互換。
+    :param alkali_x_echem: クーロメトリー由来の総アルカリ量目標 x_total(t) (FR-318)。
+        None = 目標なし (echem 範囲外/機能無効)。
+    :param alkali_x_xrd: XRD 由来のモル平均アルカリ量 x_XRD (**FW 除算のモル平均**,
+        `insitu.charge.frame_alkali_report`)。None = 算出不能/機能無効。
+    :param alkali_x_xrd_esd: その esd。None = 伝播不能 (0.0 を捏造しない)。
+    :param alkali_per_phase: 相名→精密化占有率由来の xᵢ (GSAS 実 multiplicity 優先)。
+    :param alkali_residual: x_XRD − x_echem (不可逆容量/副反応の診断量)。どちらか欠けたら None。
+    :param alkali_constraint_applied: このフレームで実際に効いた拘束 ("" = 拘束なし/診断のみ,
+        "soft"/"fix"/"lock_fractions")。
+    :param alkali_feasibility: 多相拘束の実行可能性 ("" = 未評価,
+        "feasible"/"infeasible"/"degenerate")。infeasible = 不可逆容量の疑い (REQ-318-004)。
     """
 
     frame_index: int
@@ -287,6 +438,13 @@ class FrameRietveldResult:
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
     phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
     cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
+    alkali_x_echem: float | None = None
+    alkali_x_xrd: float | None = None
+    alkali_x_xrd_esd: float | None = None
+    alkali_per_phase: Mapping[str, float] = field(default_factory=dict)
+    alkali_residual: float | None = None
+    alkali_constraint_applied: str = ""
+    alkali_feasibility: str = ""
 
 
 @dataclass(frozen=True)

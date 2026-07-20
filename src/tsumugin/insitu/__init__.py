@@ -13,7 +13,9 @@ MP/pymatgen は `phaseid` の遅延 import 境界に隔離する (コア import 
 from __future__ import annotations
 
 from .model import (
+    CONSTRAINT_MODES,
     Cell,
+    ChargeConstraintConfig,
     FractionBasis,
     FractionBasisUnavailableError,
     FrameRietveldResult,
@@ -22,6 +24,7 @@ from .model import (
     PhaseIdConfig,
     SequentialConfig,
     SequentialRietveldResult,
+    TargetComposition,
 )
 from .engine import make_gsas_runner, run_sequential_rietveld
 from .parametric import (
@@ -58,7 +61,9 @@ from .phaseset import (
 
 __all__ = [
     "AnchorConfig",
+    "CONSTRAINT_MODES",
     "Cell",
+    "ChargeConstraintConfig",
     "Discontinuity",
     "FractionBasis",
     "FractionBasisUnavailableError",
@@ -78,6 +83,7 @@ __all__ = [
     "SeedPinningReport",
     "SequentialConfig",
     "SequentialRietveldResult",
+    "TargetComposition",
     "analyze_phase",
     "classify",
     "detect_discontinuities",

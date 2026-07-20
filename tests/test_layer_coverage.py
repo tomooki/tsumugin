@@ -121,6 +121,13 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "不要の単純配線漏れだった。mpr_path + 一定ケイデンス (offset_s/interval_s/n_frames) or 明示 "
         "epoch 列 → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合",
     ),
+    "charge-constrained rietveld (FR-318)": (
+        "alkali_budget",
+        "電気化学制約付き operando Rietveld: クーロメトリー (実測 Q) → per-frame 総アルカリ量 "
+        "x_total(t) の表 (alkali_budget) を作り、sequential_rietveld/anchored_sequential の "
+        "charge_constraint spec (JSON) へ渡す。診断 (x_XRD vs x_echem)・fix (占有率凍結)・"
+        "lock_fractions (相間 EqnConstr)。soft (ChemComp) は GSAS headless バグで縮退 (カナリア有)",
+    ),
 }
 
 
@@ -295,6 +302,18 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "propose_next_actions 側で畳むのが筋)",
     ),
     "atom_occupancy": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。占有率 [0,1] 逸脱の検出源)"),
+    "atom_multiplicity": (
+        UNEXPOSED,
+        "意図的 (FR-318): サイト多重度は `insitu.charge` が x = Σ occ·mult/Z の算出と "
+        "MobileSiteSpec 照合に消費する ① 内省フィールド。③ が見るのは畳んだ alkali_* "
+        "(seq_result_to_dict 経由) であって生の多重度ではない",
+    ),
+    "atom_occupancy_esd": (
+        UNEXPOSED,
+        "意図的 (FR-318): 占有率 esd は `insitu.charge.frame_alkali_report` が x_XRD の esd 伝播に"
+        "消費する ① 内省フィールド。③ へは alkali_x_xrd_esd として畳んで届く (生の per-atom esd を"
+        "単体で出す価値は薄い)。None=未精密化 / >0=共分散由来 の 2 状態 (0.0 捏造なし)",
+    ),
     "hist_absorption": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。負吸収の検出源)"),
     "hist_profile": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。プロファイル現値)"),
     "peak_width_ratio": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。幅ずれ)"),
@@ -415,6 +434,14 @@ FRAME_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     ),
     "phase_weight_fraction_esd": ("phase_weight_fraction_esd", "重量分率 esd (出版に必須)"),
     "cell_esd": ("cell_esd", "格子 esd (出版に必須)"),
+    # --- FR-318 電気化学制約の診断 (seq_result_to_dict が同名キーで出力) ---
+    "alkali_x_echem": ("alkali_x_echem", "クーロメトリー由来の総アルカリ量目標 x_total(t)"),
+    "alkali_x_xrd": ("alkali_x_xrd", "XRD 由来のモル平均アルカリ量 (FW 除算)"),
+    "alkali_x_xrd_esd": ("alkali_x_xrd_esd", "x_XRD の esd (None=伝播不能, 0.0 捏造なし)"),
+    "alkali_per_phase": ("alkali_per_phase", "相名→精密化占有率由来の xᵢ"),
+    "alkali_residual": ("alkali_residual", "x_XRD − x_echem (不可逆容量/副反応の診断量)"),
+    "alkali_constraint_applied": ("alkali_constraint_applied", "適用拘束 (''/soft/fix/lock_fractions)"),
+    "alkali_feasibility": ("alkali_feasibility", "多相拘束の実行可能性 (infeasible=不可逆容量疑い)"),
     # --- 未露出 (宣言することで「忘れた」ではなく「既知の穴」であることを示す) ---
     "n_obs": (
         UNEXPOSED,

@@ -383,3 +383,50 @@ def check_bond_validity(
 
     passed = all(ok for _, ok, _ in checks)
     return ValidityReport(passed=passed, checks=tuple(checks), warnings=tuple(warnings))
+
+
+def check_initial_uiso(
+    atom_uiso: Mapping[str, Mapping[str, float]],
+    *,
+    uiso_min: float = 1e-3,
+    uiso_max: float = 0.05,
+) -> tuple[str, ...]:
+    """初期 Uiso の妥当帯検査 (FR-318 / REQ-318-005) — **精密化前**に警告を返す。🔵
+
+    電気化学制約解析では占有率-Uiso 縮退を避けるため Uiso を固定する。固定値が非物理
+    (小さすぎ/大きすぎ) だと占有率へ系統誤差が転嫁されるため、精密化を始める前に警告する
+    (abort はしない — 判断は第3層)。
+
+    :param atom_uiso: 相名→原子ラベル→初期 Uiso [Å²] (ラベルキー)
+    :param uiso_min: 下限 (既定 1e-3 Å²; 室温の熱振動下限の目安)
+    :param uiso_max: 上限 (既定 0.05 Å²; 可動イオンはより大きい値が物理的なこともある —
+        その場合は上限を緩めて呼ぶ)
+    :returns: 警告文の列 (空 = 全原子妥当)
+    """
+    warnings: list[str] = []
+    for phase, atoms in atom_uiso.items():
+        for label, u in atoms.items():
+            if not math.isfinite(u) or u < uiso_min or u > uiso_max:
+                warnings.append(
+                    f"初期 Uiso が妥当帯 [{uiso_min}, {uiso_max}] Å² を外れています: "
+                    f"{phase}/{label} = {u} — 固定値のまま占有率を導出すると系統誤差が"
+                    "組成へ転嫁されます。値を確認するか妥当帯を明示的に緩めてください。"
+                )
+    return tuple(warnings)
+
+
+def warn_occupancy_uiso_coupling(recipe: Sequence[object]) -> tuple[str, ...]:
+    """占有率と Uiso の同時精密化を検出して警告する (FR-318 / REQ-318-005)。🔵
+
+    X 線では占有率と Uiso が強く縮退する (NaCuHCF 実測: X 線単独の占有率解放段は revert)。
+    組成を占有率から導出する解析でこの両方を解放すると、導出組成が Uiso と交換可能になり
+    信頼できない。レシピ (`RefinementStage` 列) に両方の段があれば警告を返す。
+    """
+    has_occ = any("occupancy" in getattr(st, "flags", {}) for st in recipe)
+    has_uiso = any("uiso" in getattr(st, "flags", {}) for st in recipe)
+    if has_occ and has_uiso:
+        return (
+            "レシピに占有率 (occupancy) 段と Uiso (uiso) 段が両方あります — 両者は縮退する"
+            "ため、占有率から組成を導出する場合 Uiso は固定してください (REQ-318-005)。",
+        )
+    return ()
