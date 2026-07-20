@@ -255,3 +255,72 @@ def _collect_tool_names(server: object) -> list[str]:
     result = anyio.run(_run)
     tools = result.root.tools
     return [t.name for t in tools]
+
+
+def _call_tool_via_server(server: object, name: str, arguments: dict) -> object:
+    """SDK 導入環境で Server の call_tool ハンドラを駆動し ``CallToolResult`` を返す (_collect_tool_names 対称)。"""
+    import anyio
+    import mcp.types as mcp_types
+
+    handler = server.request_handlers[mcp_types.CallToolRequest]
+
+    async def _run() -> object:
+        request = mcp_types.CallToolRequest(
+            method="tools/call",
+            params=mcp_types.CallToolRequestParams(name=name, arguments=arguments),
+        )
+        return await handler(request)
+
+    result = anyio.run(_run)
+    return result.root
+
+
+# ===========================================================================
+# _call_tool の境界例外縮退 [CLAUDE.md 不変条件「② ツールは例外を送出しない」]
+# ===========================================================================
+
+
+@pytest.mark.mcp
+def test_call_tool_with_invalid_kwarg_degrades_to_error_dict():
+    # 【テスト目的】: ③ が identify_pattern に存在しない引数を渡しても TypeError が MCP 境界を
+    #   貫通せず、正常経路と同じ TextContent(JSON) で {"error", "error_type"} dict へ縮退する 🔵
+    # 【テスト内容】: 実プローブで確認済みの欠陥 (fn(session, **kwargs) の TypeError 直貫通) を
+    #   再現する不正 kwarg を identify_pattern に渡す
+    # 【期待される動作】: CallToolResult の content が JSON で {"error": ..., "error_type": ...}
+    import json
+
+    server = create_mcp_server(_session())
+    result = _call_tool_via_server(
+        server,
+        "identify_pattern",
+        {"two_theta": [], "intensity": [], "elements": [], "no_such_kwarg": 1},
+    )
+    text = result.content[0].text
+    payload = json.loads(text)  # 【検証項目】: プレーンテキストでなく JSON である 🔵
+    assert "error" in payload and "error_type" in payload  # 【検証項目】: error dict へ縮退 🔵
+    assert payload["error_type"] == "TypeError"  # 【検証項目】: 不正 kwarg → TypeError 種別 🔵
+
+
+@pytest.mark.mcp
+def test_call_tool_with_unknown_tool_name_degrades_to_error_dict():
+    # 【テスト目的】: 未知ツール名も raise でなく同形式の error dict へ縮退する 🔵
+    import json
+
+    server = create_mcp_server(_session())
+    result = _call_tool_via_server(server, "no_such_tool_xyz", {})
+    text = result.content[0].text
+    payload = json.loads(text)
+    assert "error" in payload and "error_type" in payload  # 【検証項目】: error dict へ縮退 🔵
+    assert payload["error_type"] == "ValueError"  # 【検証項目】: unknown tool → ValueError 種別 🔵
+
+
+@pytest.mark.mcp
+def test_call_tool_normal_path_still_returns_plain_json_result():
+    # 【テスト目的】: 正常経路 (既存動作) が非破壊で維持されていることを固定する回帰ピン 🔵
+    import json
+
+    server = create_mcp_server(_session())
+    result = _call_tool_via_server(server, "list_hypotheses", {})
+    text = result.content[0].text
+    payload = json.loads(text)
+    assert "error" not in payload  # 【検証項目】: 正常応答に error キーが混入しない 🔵

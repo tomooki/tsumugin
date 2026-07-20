@@ -26,8 +26,11 @@ description: 未知パターン + 元素一覧から相を同定する (③ 判�
 
 `assess_data_quality(path, excluded_regions=[...])` を掛ける。
 
-- **`is_subtracted`**: 背景減算済みかを見る。同定ツールは既定で SNIP 背景減算 (`subtract_bg=True`)
-  するので、**二重減算にならないよう**既に減算済みなら `subtract_bg=False` を渡す。
+- **`is_subtracted`**: 背景減算済みかを見る。**既定はツール毎に違う**:
+  **`identify_pattern` は既定で SNIP 背景減算する** (`subtract_bg=True`) ので、既に減算済みなら
+  **二重減算にならないよう** `subtract_bg=False` を渡す。**`identify_phases`/
+  `identify_phase_mixtures` は既定で減算しない** (`subtract_bg=False`) ので、逆に**生データを
+  渡すときは `subtract_bg=True` を明示**しないと未減算のまま同定されてしまう。
 - `suggested_two_theta_limit` でノイズ域を除く。寄生ピーク窓は `excluded_regions` に入れる。
 
 ### 1. どの同定ツールを使うか
