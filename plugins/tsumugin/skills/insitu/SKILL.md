@@ -44,7 +44,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | 測定系 | 踏む手順 |
 |---|---|
 | 高温/時間 in situ (温度変化・脱水等) | 手順 0-8 をそのまま |
-| **電気化学 operando (充放電)** | 手順 0-8 に加え **3′ (`anchored_sequential`) と 3″ (`charge_constraint`) が必須**。echem 同期 (`offset_s`/`interval_s`) は 3″ の (0) = `align_echem` で得る |
+| **電気化学 operando (充放電)** | 手順 0-8 に加え、**転移を含むなら 3′ が既定・echem 実測 (`.mpr`) があるなら 3″** を使う (3′ = `anchored_sequential`, 3″ = `charge_constraint`)。echem 同期 (`offset_s`/`interval_s`) は 3″ の (0) = `align_echem` で得る |
 
 ### 0. データ品質を先に問う (**精密化の前に**)
 
