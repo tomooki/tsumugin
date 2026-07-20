@@ -211,8 +211,15 @@ def alkali_budget(
                 "n_e": finite_or_none(t.n_e) if t.n_e is not None else None,
                 "state": t.state,
                 "in_span": bool(t.in_span),
+                # echem 列も併載 (最終レビュー F5: 設計 doc と一致 + x_XRD vs x_echem 重ね図を
+                # このツール 1 回で作れる)。points と targets は同一列挙 (alkali_targets が
+                # 入力順を保つ) なので zip で安全。
+                "time_h": finite_or_none(pt.time_s / 3600.0),
+                "voltage_v": finite_or_none(pt.voltage_v) if pt.voltage_v is not None else None,
+                "charge_mah": finite_or_none(pt.charge_mah)
+                if pt.charge_mah is not None else None,
             }
-            for t in budget.targets
+            for t, pt in zip(budget.targets, points)
         ],
         "x0": finite_or_none(budget.x0),
         "x0_source": budget.x0_source,

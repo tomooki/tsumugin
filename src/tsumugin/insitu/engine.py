@@ -377,7 +377,7 @@ def run_sequential_rietveld(
     if config.backward_propagation and pid is not None and pid.enabled and appearances:
         frame_results, appearances = _consolidate_phase_cells(
             frames, n, frame_results, appearances, phases, pid, runner, ledger,
-            charge_constraint=config.charge_constraint,
+            charge_constraint=config.charge_constraint, warn_sink=warnings,
         )
 
     all_phase_names = tuple(p.phase_name for p in phases)
@@ -416,15 +416,21 @@ def _best_established_cell(
 def _rebuild_frame(
     res, fr, names, frame_spec: "FrameSpec | None" = None,
     charge_constraint: "ChargeConstraintConfig | None" = None,
+    warn_sink: "list[str] | None" = None,
 ) -> "FrameRietveldResult":
     """再精密化結果 res で FrameRietveldResult を作り直す (元 fr のメタは保持)。"""
     cells = {name: _cell6(c) for name, c in res.refined_cells.items()}
     # FR-318: 差し替え結果に対する alkali 診断も**再計算**する (残差/出版値と同じ規律)。
+    # 警告も捨てない (最終レビュー F6: 再精密化固有の警告が消えていた)。
     alkali: dict[str, object] = {}
     if frame_spec is not None and charge_constraint is not None:
-        alkali, _ = alkali_fields(
+        alkali, warns = alkali_fields(
             frame_spec.target_composition, charge_constraint, tuple(names), res
         )
+        if warn_sink is not None:
+            for w in warns:
+                if w not in warn_sink:
+                    warn_sink.append(w)
     return FrameRietveldResult(
         frame_index=fr.frame_index, axis_value=fr.axis_value, data_path=fr.data_path,
         rwp=float(res.final_rwp), gof=float(res.final_gof), refined_cells=cells,
@@ -444,6 +450,7 @@ def _rebuild_frame(
 def _consolidate_phase_cells(
     frames, n, frame_results, appearances, all_phases, pid, runner, ledger,
     charge_constraint: "ChargeConstraintConfig | None" = None,
+    warn_sink: "list[str] | None" = None,
 ):
     """確立した新相の**globally-best セル**で全フレームを再精密化し、onset を逆伝播で捕捉する。
 
@@ -481,7 +488,7 @@ def _consolidate_phase_cells(
             res = runner(frames[j], phases_j, warm)
             if res.final_rwp < float("inf") and float(res.final_rwp) < fr.rwp - 1e-9:
                 updated[j] = _rebuild_frame(
-                    res, fr, fr.phase_names, frames[j], charge_constraint
+                    res, fr, fr.phase_names, frames[j], charge_constraint, warn_sink
                 )
                 ledger.append(
                     "m9_consolidate_forward",
@@ -520,7 +527,9 @@ def _consolidate_phase_cells(
             if not accepted:
                 break  # onset 発見 (これ以上前に P はない)
             names = tuple(fr.phase_names) + (ap.phase_name,)
-            updated[j] = _rebuild_frame(res, fr, names, frames[j], charge_constraint)
+            updated[j] = _rebuild_frame(
+                res, fr, names, frames[j], charge_constraint, warn_sink
+            )
             onset = j
         if onset < k:
             # onset を前へ更新 (逆伝播で捕捉した最も早いフレーム)
@@ -762,6 +771,9 @@ def make_gsas_runner(
                     [p.phase_name for p in phases],
                 )
                 plan_kwargs = dict(plan.kwargs)
+                # diagnose (plan kwargs 空) でも占有率から組成を導出する解析なので、
+                # 初期 Uiso/結合の事前警告を有効化する (最終レビュー F3 / REQ-318-005)。
+                plan_kwargs["check_occupancy_uiso"] = True
             return run_auto_rietveld(
                 [hist], list(phases), recipe=recipe_, max_cyc=max_cyc,
                 initial_cells=dict(initial_cells) if initial_cells else None,

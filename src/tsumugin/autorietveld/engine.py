@@ -1176,6 +1176,7 @@ def run_auto_rietveld(
     initial_occupancies: Mapping[str, Mapping[str, float]] | None = None,
     chem_comp_restraints: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     content_constraint: Mapping[str, float] | None = None,
+    check_occupancy_uiso: bool = False,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -1353,13 +1354,16 @@ def run_auto_rietveld(
             _apply_initial_occupancies(g2phases, initial_occupancies)
 
         # --- 初期 Uiso 妥当性 + 占有率/Uiso 結合の事前警告 (FR-318 / REQ-318-005) ---
-        # **FR-318 の入力 (シーダー/組成拘束/分率拘束) があるときのみ**検査する。レビュー M4:
-        # 「占有率段があるか」で発火させると、既存の混合占有ワークフロー (T2 garnet /
-        # NaCuHCF は occupancy 段 + uiso 段が正規レシピ) に新警告が出て非回帰契約が破れる。
-        # REQ-318-005 の適用範囲は電気化学制約解析であり、この gate がその範囲そのもの。
+        # **FR-318 の入力 (シーダー/組成拘束/分率拘束/明示フラグ) があるときのみ**検査する。
+        # レビュー M4: 「占有率段があるか」で発火させると、既存の混合占有ワークフロー
+        # (T2 garnet / NaCuHCF は occupancy 段 + uiso 段が正規レシピ) に新警告が出て非回帰契約が
+        # 破れる。``check_occupancy_uiso`` は FR-318 の diagnose + 占有率解放 (x₀ 導出) フロー用 —
+        # plan kwargs が空でも組成を占有率から導出する以上この検査が要る (最終レビュー F3;
+        # `make_gsas_runner` が charge_constraint 有効時に立てる)。
         pre_warnings: tuple[str, ...] = ()
         _touches_occupancy = bool(
             initial_occupancies or chem_comp_restraints or content_constraint
+            or check_occupancy_uiso
         )
         if _touches_occupancy:
             _, uiso_init, _, _ = _atom_result_maps(g2phases)

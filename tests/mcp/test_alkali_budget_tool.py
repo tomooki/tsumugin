@@ -149,3 +149,60 @@ class TestSequentialRietveldE2E:
             runner=lambda *a: _stub_result(),
         )
         assert out["error_type"] == "ValueError"
+
+    def test_anchors_expose_alkali_for_per_phase_content(self) -> None:
+        """最終レビュー F1 ピン: ③ の手順 (per_phase_content ← anchors[].alkali) が実行可能
+        であること — anchored_sequential の anchors[] に alkali が実在する。"""
+        from tsumugin.mcp.anchor_tools import anchored_sequential
+
+        frames = [
+            {"data_path": f"f{i}.xye", "axis_value": float(i), "data_format": "XYE"}
+            for i in range(2)
+        ]
+        phases = [{"structure_path": "mono.cif", "phase_name": "mono"}]
+        out = anchored_sequential(
+            frames, phases, anchor_table={"0": ["mono"]},
+            charge_constraint=_CC_SPEC, runner=lambda *a: _stub_result(),
+        )
+        assert "error" not in out
+        a0 = out["anchors"][0]
+        assert "alkali" in a0
+        assert a0["alkali"]["alkali_x_xrd"] == pytest.approx(1.944)
+        assert a0["alkali"]["alkali_per_phase"]["mono"] == pytest.approx(1.944)
+
+    @pytest.mark.parametrize(
+        "bad_cc",
+        [
+            {"config": "garbage", "targets": [{"frame": 0, "x_total": 1.0}]},  # 非 Mapping config
+            {"config": {"mobile_sites": [{"phase_name": "m", "site_labels": ["K"],
+                                          "multiplicities": [4.0]}],
+                        "z_formula": {"m": 0.0}},  # z=0 → 下流 ZeroDivision (F2)
+             "targets": [{"frame": 0, "x_total": 1.0}]},
+            {"config": {"mobile_sites": [{"phase_name": "m", "site_labels": ["K"],
+                                          "multiplicities": [0.0]}]},  # mult=0 (F2)
+             "targets": [{"frame": 0, "x_total": 1.0}]},
+            {"config": {"mobile_sites": [{"phase_name": "m", "site_labels": ["K"],
+                                          "multiplicities": [4.0]}],
+                        "z_formula": "garbage"},  # 深い入れ子のゴミ → AttributeError 系
+             "targets": [{"frame": 0, "x_total": 1.0}]},
+            {"config": {"mobile_sites": [{"phase_name": "m", "site_labels": ["K"],
+                                          "multiplicities": [4.0]}], "mode": "hard"},
+             "targets": [{"frame": 0, "x_total": 1.0}]},  # 不正 mode
+            "not-a-dict",  # spec 自体が dict でない
+        ],
+    )
+    def test_malformed_spec_never_raises_across_boundary(self, bad_cc) -> None:
+        """F-final-1 ピン: どんなゴミ spec でも②は例外を送出せず error dict へ縮退する
+        (両ツール)。旧実装は非 Mapping config の AttributeError が境界を貫通した。"""
+        from tsumugin.mcp.anchor_tools import anchored_sequential
+
+        frames = [{"data_path": "f0.xye", "axis_value": 0.0, "data_format": "XYE"}]
+        phases = [{"structure_path": "mono.cif", "phase_name": "mono"}]
+        out = sequential_rietveld(
+            frames, phases, charge_constraint=bad_cc, runner=lambda *a: _stub_result(),
+        )
+        assert "error" in out and "error_type" in out
+        out2 = anchored_sequential(
+            frames, phases, charge_constraint=bad_cc, runner=lambda *a: _stub_result(),
+        )
+        assert "error" in out2 and "error_type" in out2

@@ -60,8 +60,8 @@ from .phaseset import (
 )
 
 __all__ = [
-    "CONSTRAINT_MODES",
     "AnchorConfig",
+    "CONSTRAINT_MODES",
     "Cell",
     "ChargeConstraintConfig",
     "Discontinuity",

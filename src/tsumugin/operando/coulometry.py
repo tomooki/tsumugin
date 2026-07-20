@@ -211,6 +211,10 @@ class MobileSiteSpec:
             )
         if not self.site_labels:
             raise ValueError("site_labels が空です")
+        # 多重度は正の値 (最終レビュー F2: 0 が入ると uniform 配分で ZeroDivisionError が
+        # ② 境界を貫通する — from_dict 時点 [呼び出し側の try 内] で大声で失敗させる)。
+        if any(m <= 0 for m in self.multiplicities):
+            raise ValueError(f"multiplicities は正であること: {self.multiplicities}")
 
     def to_dict(self) -> dict[str, object]:
         """JSON 直列化 (② MCP 境界用)。"""

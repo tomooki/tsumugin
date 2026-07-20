@@ -289,6 +289,21 @@ def frame_alkali_report(
         return AlkaliFrameReport()
     warnings = list(multiplicity_mismatch_warnings(cfg, atom_multiplicity))
     sites = _sites_by_phase(cfg)
+    # どこにも登録されていない相 (サイトも z/FW も無い) の存在は、その式単位がモル平均から
+    # 抜ける = 部分平均の偏りになる (最終レビュー F6 nit; 部分平均拒否と同じ規律で明示警告)。
+    unregistered = [
+        p for p in phase_names
+        if p not in sites and not (p in cfg.z_formula and p in cfg.formula_weights)
+    ]
+    if unregistered:
+        warnings.append(
+            f"未登録の相 {unregistered} があります (mobile_sites にも z_formula/formula_weights"
+            " にも無い) — モル平均から抜けて x_XRD が偏るため報告を見送ります。可動イオンの"
+            "無い相も z_formula/formula_weights へ登録してください (x≡0 規約)"
+        )
+        return AlkaliFrameReport(
+            x_echem=float(tc.total) if tc is not None else None, warnings=tuple(warnings)
+        )
     per_phase: dict[str, float] = {}
     per_phase_esd: dict[str, float] = {}
     for p in phase_names:
@@ -305,14 +320,18 @@ def frame_alkali_report(
             if p in cfg.z_formula and p in cfg.formula_weights:
                 per_phase[p] = 0.0
             continue
-        if z is None or occ is None:
-            # サイト**有り**の相のデータ欠測 (レビュー MEDIUM): 黙って落とすと残りの相だけで
-            # モル平均が再規格化され、偏った/捏造同然の x_XRD が診断へ流れる (例: mono の
-            # 抽出失敗 + tetra x≡0 → x_XRD=0.0 が「本物」として infeasible 判定を汚す)。
+        if z is None or float(z) <= 0 or occ is None:
+            # サイト**有り**の相のデータ欠測/不正 (レビュー MEDIUM + F2: z≤0 は除算で
+            # ZeroDivisionError になるため同じ拒否経路へ): 黙って落とすと残りの相だけで
+            # モル平均が再規格化され、偏った/捏造同然の x_XRD が診断へ流れる。
             # 警告して x_XRD の算出を**拒否**する (欠測 FW と同じ規律)。
+            reason = (
+                "z_formula" if z is None
+                else ("z_formula が非正" if float(z) <= 0 else "占有率 (atom_occupancy)")
+            )
             warnings.append(
-                f"{p}: {'z_formula' if z is None else '占有率 (atom_occupancy)'} が無く "
-                "xᵢ を算出できません — x_XRD の報告を見送ります (部分平均は偏るため)"
+                f"{p}: {reason} が無く/不正で xᵢ を算出できません — "
+                "x_XRD の報告を見送ります (部分平均は偏るため)"
             )
             per_phase.clear()
             break

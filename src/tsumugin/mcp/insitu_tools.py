@@ -396,16 +396,42 @@ def _apply_charge_constraint_spec(
 
     frames リスト位置 = frame_index (alkali_budget と同じ列挙) で突き合わせる。
     """
-    cfg = ChargeConstraintConfig.from_dict(spec.get("config") or {})  # type: ignore[arg-type]
+    # 型検証を先に行う (最終レビュー F-final-1): config が Mapping でないと from_dict 内で
+    # AttributeError になり、呼び出し側の catch (ValueError/TypeError/KeyError/IndexError) を
+    # すり抜けて ② 境界を貫通する。具体的なメッセージの ValueError へ正規化する。
+    if not isinstance(spec, Mapping):
+        raise ValueError(
+            f"charge_constraint は dict である必要があります: {type(spec).__name__}"
+        )
+    raw_cfg = spec.get("config") or {}
+    if not isinstance(raw_cfg, Mapping):
+        raise ValueError(
+            f"charge_constraint.config は dict (ChargeConstraintConfig.to_dict 形) である"
+            f"必要があります: {type(raw_cfg).__name__}"
+        )
+    raw_pp = spec.get("per_phase_content") or {}
+    if not isinstance(raw_pp, Mapping):
+        raise ValueError(
+            f"charge_constraint.per_phase_content は {{相名: x}} の dict である必要があります: "
+            f"{type(raw_pp).__name__}"
+        )
+    cfg = ChargeConstraintConfig.from_dict(raw_cfg)
+    # 物理量の正値検証 (F2): z_formula=0 / formula_weights=0 は下流の除算で
+    # ZeroDivisionError となり error-dict 契約を破る — ここ (try 内) で ValueError 化。
+    for _nm, _z in cfg.z_formula.items():
+        if _z <= 0:
+            raise ValueError(f"charge_constraint.config.z_formula[{_nm!r}] は正であること: {_z}")
+    for _nm, _fw in cfg.formula_weights.items():
+        if _fw <= 0:
+            raise ValueError(
+                f"charge_constraint.config.formula_weights[{_nm!r}] は正であること: {_fw}"
+            )
     if not cfg.enabled:
         raise ValueError(
             "charge_constraint.config.mobile_sites が空です — 相ごとの可動イオンサイト "
             '(例 {"phase_name": "mono", "site_labels": ["K"], "multiplicities": [4.0]}) が必要です'
         )
-    per_phase = {
-        str(k): float(v)  # type: ignore[arg-type]
-        for k, v in (spec.get("per_phase_content") or {}).items()  # type: ignore[union-attr]
-    }
+    per_phase = {str(k): float(v) for k, v in raw_pp.items()}  # type: ignore[arg-type]
     raw = spec.get("targets")
     if raw is None or len(raw) == 0:
         # alkali_budget は範囲外フレームも x_total=None のエントリとして必ず返すため、
@@ -512,18 +538,22 @@ def sequential_rietveld(
     """
     from ..insitu.engine import run_sequential_rietveld
 
-    frame_specs = [FrameSpec.from_dict(f) for f in frames]
-    phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
     # 【レンジ検証を縮退契約に載せる】: 旧実装は `two_theta_limits[0]` を直接引いており、1 要素等の
     #   取り違えで IndexError が MCP 境界を貫いていた (error dict へ縮退する契約に反する)。
+    #   FrameSpec/PhaseSpec の解析も try 内 (最終レビュー F4: FrameSpec.from_dict は
+    #   TargetComposition の mode 検証で ValueError を出しうる — anchored_sequential と対称に)。
     try:
+        frame_specs = [FrameSpec.from_dict(f) for f in frames]
+        phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
         cc_cfg: ChargeConstraintConfig | None = None
         if charge_constraint is not None:
             cc_cfg, frame_specs = _apply_charge_constraint_spec(charge_constraint, frame_specs)
         limits = _parse_two_theta_limits(two_theta_limits)
         if runner is None and instrument is not None:
             runner = _runner_from_instrument(instrument, frame_specs, limits, cc_cfg)
-    except (ValueError, TypeError, KeyError, IndexError) as exc:
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        # AttributeError も捕捉 (F-final-1 安全網): 深い入れ子のゴミ (例 z_formula: "x") は
+        # `.items()`/`.get()` で AttributeError になる — ② は例外を送出しない。
         return {"error": str(exc), "error_type": type(exc).__name__}
     pid = None
     if phase_id is not None:

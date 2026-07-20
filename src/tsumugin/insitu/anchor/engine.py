@@ -106,6 +106,10 @@ def run_anchored_sequential(
         ledger.append("m10_anchor", {
             "frame": a.frame_index, "phases": list(a.phase_names), "rwp": a.rwp,
             "confidence": a.confidence, "fallback": a.fallback,
+            # FR-318 (最終レビュー F1): alkali 診断をアンカー要約へ貫通させる — ③ の
+            # per_phase_content 導出手順 (skills/insitu 3″) が anchors[].alkali を参照するため、
+            # ここに載せないと手順書が実行不能になる (②に無い機能を手順書に書かない)。
+            "alkali": dict(a.alkali),
         })
         if a.fallback:
             warnings.append(f"fallback_anchor@{a.frame_index}")

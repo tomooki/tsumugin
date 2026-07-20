@@ -77,6 +77,22 @@ def _identifier_from_table(
     return identify
 
 
+def _json_alkali(alkali: Mapping[str, object]) -> dict:
+    """alkali_* dict を JSON 安全化する (float は finite_or_none, dict は再帰 1 段)。"""
+    out: dict = {}
+    for k, v in alkali.items():
+        if isinstance(v, float):
+            out[k] = finite_or_none(v)
+        elif isinstance(v, Mapping):
+            out[k] = {
+                str(kk): (finite_or_none(vv) if isinstance(vv, float) else vv)
+                for kk, vv in v.items()
+            }
+        else:
+            out[k] = v
+    return out
+
+
 def _anchor_summary(ledger) -> tuple[list[dict], list[dict]]:
     """ledger の m10 エントリからアンカー/crossover 要約を抽出する (非有限は None 化)。
 
@@ -95,6 +111,9 @@ def _anchor_summary(ledger) -> tuple[list[dict], list[dict]]:
                 "rwp": finite_or_none(p["rwp"]),
                 "confidence": finite_or_none(p["confidence"]),
                 "fallback": bool(p["fallback"]),
+                # FR-318 (F1): 単相アンカーの alkali_x_xrd / alkali_per_phase が
+                # `charge_constraint.per_phase_content` の出所 (§4.5 到達可能性)。
+                "alkali": _json_alkali(p.get("alkali") or {}),
             })
         elif e.kind == "m10_segment_choice":
             crossovers.append({
@@ -184,7 +203,9 @@ def anchored_sequential(
             if anchor_table is not None
             else None
         )
-    except (ValueError, TypeError, KeyError, IndexError) as exc:
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        # AttributeError も捕捉 (F-final-1 安全網): charge_constraint の深い入れ子のゴミは
+        # AttributeError になる — ② は例外を送出しない。
         return {"error": str(exc), "error_type": type(exc).__name__}
 
     if runner is None:
