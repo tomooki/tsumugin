@@ -1,13 +1,15 @@
 ---
 name: insitu
-description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential) 全自動 Rietveld 解析を閉ループで進める。MCP ツール (sequential_rietveld / identify_and_add_phase / parametric_fit) を反復駆動し、温度/時間フレーム列をウォームスタートで逐次精密化、相転移で出現する新相を Materials Project から自動同定して相集合に追加、格子 vs 温度・転移温度を抽出する。初期相のみ与えれば新相は自動発見する。データ品質 (背景減算) の確認と相集合の完全性検証 (check_phase_set) を必須手順として含む。
+description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential) 全自動 Rietveld 解析を閉ループで進める。MCP ツール (sequential_rietveld / identify_and_add_phase / parametric_fit) を反復駆動し、温度/時間フレーム列をウォームスタートで逐次精密化、相転移で出現する新相を Materials Project から自動同定して相集合に追加、格子 vs 温度・転移温度を抽出する。初期相のみ与えれば新相は自動発見する。データ品質 (背景減算) の確認と相集合の完全性検証 (check_phase_set) を必須手順として含む。**電気化学 operando (充放電) の系列も本 skill が進める** — 転移を含む operando は anchored_sequential (M10, bic で相数抑制) を既定にし、クーロメトリー拘束 (alkali_budget/charge_constraint, FR-318) と echem 同期 (align_echem) で診断/拘束する。
 ---
 
-# tsumugin: Agentic 高温 in situ 逐次 Rietveld 解析 (③ 判断層)
+# tsumugin: Agentic in situ/operando 逐次 Rietveld 解析 (③ 判断層)
 
 あなた (Claude) が**判断者 ③** として、温度/時間系列の粉末回折を逐次 Rietveld 精密化する閉ループ
 解析を行う。M7 単一フレーム自動 Rietveld + M8 agentic 閉ループ + M6 相同定を統合した M9 の系列版。
 **初期相のみ与えられ、系列途中で出現する新相 (例 CaTeO3 の脱水相 delta) は自動同定する**のが要点。
+**高温/時間の温度系列だけでなく、電気化学 operando (充放電) の系列を「進める」のも本 skill である**
+(手順 3′/3″)。
 
 設計: `docs/design/m9-insitu-sequential/architecture.md`。
 系列結果を**疑う**側 (相集合の誤り・モデル改訂) は `operando-diagnose` skill が担当し、本 skill と併用する
@@ -35,6 +37,14 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 閉ループ丸ごとは MCP に**無い**。回すのはあなた。
 
 ## 手順
+
+測定系によって手順 0-8 に加えて踏む節が変わる (**番号は振り直さない** — 3′/3″ は手順 3 に挟まる
+枝であって、後続の手順 4-8 の番号はそのまま続く)。
+
+| 測定系 | 踏む手順 |
+|---|---|
+| 高温/時間 in situ (温度変化・脱水等) | 手順 0-8 をそのまま |
+| **電気化学 operando (充放電)** | 手順 0-8 に加え **3′ (`anchored_sequential`) と 3″ (`charge_constraint`) が必須**。echem 同期 (`offset_s`/`interval_s`) は 3″ の (0) = `align_echem` で得る |
 
 ### 0. データ品質を先に問う (**精密化の前に**)
 

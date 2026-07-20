@@ -140,6 +140,57 @@ def test_insitu_skill_documents_auto_freeze_as_threshold_not_bool():
 
 
 # --------------------------------------------------------------------------------------
+# D 案 (名称と実態のズレ解消): insitu は電気化学 operando も「進める」側であることの恒久ガード
+# --------------------------------------------------------------------------------------
+
+
+def _frontmatter(text: str) -> str:
+    """先頭の YAML frontmatter (最初の `---` ペアの中身) を抜き出す。"""
+    parts = text.split("---", 2)
+    assert len(parts) >= 3, "SKILL.md の frontmatter を抽出できていない"
+    return parts[1]
+
+
+def test_insitu_skill_description_covers_electrochemical_operando_scope():
+    """D1: frontmatter description が電気化学 operando のスコープを明示すること。
+
+    ③ (LLM) は description でスキルを選ぶ。「高温/時間 in situ」としか言わないと、電気化学
+    operando (充放電) の解析で insitu が選ばれないリスクがある — 実際には手順 3′
+    (anchored_sequential) と 3″ (charge_constraint/alkali_budget/align_echem) で電気化学
+    operando も本 skill が「進める」対象である。
+    """
+    text = _SKILL.read_text(encoding="utf-8")
+    fm = _frontmatter(text)
+    assert re.search(r"operando|電気化学", fm), (
+        "insitu SKILL の frontmatter description が電気化学 operando のスコープに触れていない"
+        " — ③ が電気化学 operando で本 skill を選ばないリスクがある"
+    )
+    # H1 表題・冒頭段落にも同じスコープが反映されていること
+    body = text.split("---", 2)[2]
+    intro = body.split("## ", 1)[0]
+    assert re.search(r"operando|電気化学", intro), (
+        "insitu SKILL の H1/冒頭段落が電気化学 operando のスコープに触れていない"
+    )
+
+
+def test_insitu_skill_has_measurement_branch_table():
+    """D2: 「## 手順」直下に測定系の分岐表があり、電気化学固有手順 (3′/3″) が必須と読めること。
+
+    高温ユーザーと電気化学ユーザーのどちらが何を踏むべきかが手順の頭から一目で判るように、
+    分岐表を置く。表現の変異に頑健であるよう、「電気化学」と手順ラベル 3′/3″ が近傍に
+    現れることだけを固定する (厳密な表構造までは強制しない)。
+    """
+    text = _SKILL.read_text(encoding="utf-8")
+    body = text.split("## 手順", 1)[1].split("### 0.", 1)[0]
+    assert "電気化学" in body, "「## 手順」直下に電気化学 operando の分岐が無い"
+    assert "3′" in body and "3″" in body, "「## 手順」直下に手順 3′/3″ への参照が無い"
+    assert re.search(r"電気化学[\s\S]{0,120}(3′[\s\S]{0,40}3″|3″[\s\S]{0,40}3′)", body), (
+        "電気化学 operando の分岐説明の近傍に 3′ と 3″ の両方が現れていない"
+        " (③ が『電気化学なら何を追加で踏むか』を一目で読めない)"
+    )
+
+
+# --------------------------------------------------------------------------------------
 # FR-318 電気化学制約 (charge_constraint) の恒久ガード
 # --------------------------------------------------------------------------------------
 
