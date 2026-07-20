@@ -78,6 +78,12 @@ class TargetComposition:
         if self.mode not in CONSTRAINT_MODES:
             raise ValueError(f"mode は {CONSTRAINT_MODES} のいずれか: {self.mode!r}")
 
+    def __hash__(self) -> int:
+        # per_phase が dict のため自動生成 __hash__ は TypeError になる。FrameSpec は値ハッシュで
+        # dict キーに使われる (mcp.anchor_tools._make_identifier の位置解決) ので、__eq__ と整合する
+        # 明示 __hash__ が必須 (等価な per_phase ⇒ ソート済み items も等価)。
+        return hash((self.total, tuple(sorted(self.per_phase.items())), self.mode, self.esd))
+
     def to_dict(self) -> dict[str, object]:
         return {
             "total": self.total,
