@@ -271,6 +271,56 @@ def test_identify_phase_mixtures_tool_without_provider_returns_error():
 
 
 # ===========================================================================
+# subtract_bg 配線 (① reference.engine.identify_phases / reference.mixture.identify_phase_mixtures
+# の subtract_bg を ② へ透過する。① 既定は subtract_bg=False — ② もこれに合わせる)
+# ===========================================================================
+
+
+def test_identify_phases_signature_has_subtract_bg_default_false():
+    # 【テスト目的】: ② identify_phases に subtract_bg が実在し、① と同じ既定 False であることを
+    #   シグネチャで固定する 🔵
+    sig = inspect.signature(identify_phases)
+    assert "subtract_bg" in sig.parameters
+    assert sig.parameters["subtract_bg"].default is False
+
+
+def test_identify_phase_mixtures_signature_has_subtract_bg_default_false():
+    sig = inspect.signature(identify_phase_mixtures)
+    assert "subtract_bg" in sig.parameters
+    assert sig.parameters["subtract_bg"].default is False
+
+
+def test_identify_phases_tool_accepts_subtract_bg_true_without_error():
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0, 30.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 30.0, 40.0])
+    out = identify_phases(session, tt, y, ["Fe", "O"], subtract_bg=True)
+    assert "error" not in out
+    assert out["mode"] == "single"
+
+
+def test_identify_phases_tool_accepts_subtract_bg_false_without_error():
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0, 30.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 30.0, 40.0])
+    out = identify_phases(session, tt, y, ["Fe", "O"], subtract_bg=False)
+    assert "error" not in out
+    assert out["mode"] == "single"
+
+
+def test_identify_phase_mixtures_tool_accepts_subtract_bg_true_without_error():
+    prov = _FakeRefProvider([
+        _ref_phase("mp-A", [20.0, 40.0]),
+        _ref_phase("mp-B", [30.0, 50.0]),
+    ])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0, 30.0, 50.0])
+    out = identify_phase_mixtures(session, tt, y, ["Fe", "O"], subtract_bg=True)
+    assert "error" not in out
+    assert out["mode"] == "mixture"
+
+
+# ===========================================================================
 # M11: identify_pattern (単相/多相統一の逐次減算同定, Issue #100)
 # ===========================================================================
 

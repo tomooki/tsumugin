@@ -9,14 +9,22 @@ argument-hint: <frame-files...> --initial <structure-file> [--elements Ca,Te,O]
 
 手順:
 1. `insitu` skill (`plugins/tsumugin/skills/insitu/SKILL.md`) の手順に従う。
-2. フレームファイルから `FrameSpec` 列 (data_path・axis_value=温度/時間・data_format) を、初期相から
+2. **必須・精密化の前に** `assess_data_quality` でデータ品質を問う (skill 手順0)。減算済みなら
+   生データの有無をユーザーに確認する — 気づかず回すと全フレームの Rwp が無意味に高いまま「収束
+   しない」と誤診する。
+3. フレームファイルから `FrameSpec` 列 (data_path・axis_value=温度/時間・data_format) を、初期相から
    `PhaseSpec` を組み立てる。`--elements` があれば `phase_id` の元素系に用いる。
-3. MCP ツール `sequential_rietveld` を駆動し、フレーム別 Rwp/格子/相分率・変化点・自動出現相を得る。
-4. 系列途中で出現する新相は受理基準 (相分率有意 ∧ Rwp 改善 ∧ 妥当性) で自動追加されるが、
+4. 転移を含む operando (充放電・脱水・相変態) は `sequential_rietveld` でなく `anchored_sequential`
+   を既定にする (skill 手順3′; 相数を Rwp でなく bic で抑制し偽相の全域拡散を防ぐ)。
+5. MCP ツール `sequential_rietveld`/`anchored_sequential` を駆動し、フレーム別 Rwp/格子/相分率・
+   変化点・自動出現相を得る。
+6. 系列途中で出現する新相は受理基準 (相分率有意 ∧ Rwp 改善 ∧ 妥当性) で自動追加されるが、
    化学的妥当性を確認し、疑わしければユーザーに承認を求める。自動追加が起きず未指数ピークが残る
    変化点は `identify_and_add_phase` で候補を探し、承認の上で相を足して再実行する。
-5. `parametric_fit` で格子 vs 温度の熱膨張・相分率シグモイドの転移温度 (onset/midpoint±σ) を抽出する。
-6. 全フレーム収束・相の出現/消失・転移特性・申し送りを報告する。
+7. **必須・飛ばしてよい手順ではない** `check_phase_set` で相集合の完全性を疑う (skill 手順5)。
+   Rwp が良好でも計量の近い相が欠落相の強度を肩代わりしうる — Rwp だけで完全性を結論しない。
+8. `parametric_fit` で格子 vs 温度の熱膨張・相分率シグモイドの転移温度 (onset/midpoint±σ) を抽出する。
+9. 全フレーム収束・相の出現/消失・転移特性・申し送りを報告する。
 
 MCP サーバ未接続なら、その旨と接続方法を案内する。新相自動同定には Materials Project キー
 (`MATERIALS_PROJECT_API`) が必要で、未設定時は CIF を直接 initial 相に足す運用を案内する。

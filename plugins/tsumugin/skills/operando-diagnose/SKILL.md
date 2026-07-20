@@ -95,8 +95,10 @@ sequential_rietveld(
 > 実測 K₂Mn[Fe(CN)₆] (cubic 1103.4 / tetra 517.8 amu):
 > `Scale {cubic 0.75, tetra 0.25}` = `wt% {cubic 86.5, tetra 13.5}`。
 > 「tetra は 13.5 wt% で少数相だから `auto_freeze_minor_cells=0.15`」と決めると、実際の比較は
-> **Scale 0.25 ≥ 0.15** → **tetra のセルは解放されたまま**で #80 の発散が起きる。
-> **答えが basis で割れる**ので、閾値を決める前に `frames[i]["phase_fractions"]` (Scale) を見ること。
+> **Scale 0.25 ≥ 0.15** → **tetra のセルは解放されたまま**で #80 の発散が起きる (凍結したいなら
+> Scale 基準で 0.3 等)。**答えが basis で割れる**ので、閾値を決める前に
+> `frames[i]["phase_fractions"]` (Scale) を実際に見ること。質量の重い相ほど Scale は wt% より
+> 小さく出る。
 >
 > `phase_id` の `frac_min` (新相採用の最小分率, 既定 0.02) も **Scale** 基準である。
 > `check_phase_set` / `repair_frames` の分率系の閾値 (`min_amplitude` / `frac_delta`) も同じく
@@ -280,12 +282,13 @@ Scale は単位胞の散乱能に対する比例係数であり、**単位胞質
 |---|---|---|
 | `>0` | 解放して精密化した項の su | `a = 10.0316(133)` |
 | `0.0` | **対称拘束で厳密に固定** (monoclinic の α/γ = 90° 等) | 90° は定義値。esd を付けない |
-| `null` | **そのフレームで格子を解放していない** — `refine_cell=False` / `auto_freeze_minor_cells` による凍結・セル段の revert・未精密化 | 「参照値に固定 (not refined)」と書く。**esd を付けてはならない** |
+| `null` | **そのフレームで格子を解放していない** — `refine_cell=False` / `auto_freeze_minor_cells` による凍結・セル段の revert・未精密化 | 「参照値に固定 (not refined)」と書く。**esd を付けてはならない** (値は入力 CIF 由来であってこのデータから決まっていない) |
 | 相ごと欠落 | 抽出できなかった (共分散構造の異常) | 出版せず原因を調べる |
 
 ⚠ **「0 なら固定」と推論しないこと** — 解放した相の中にも真の `0.0` (対称拘束) がある。
 凍結は `null` でしか判らない。`auto_freeze_minor_cells` は**あなたが相を名指ししなくても**
-Scale が閾値未満の相を凍結するので、**どの相が凍結されたかは `cell_esd` の `null` で読む**。
+Scale が閾値未満の相を凍結するので、**どの相が凍結されたかは `cell_esd` の `null` で読む**
+(`auto_rietveld` の `stages[].note` の `auto_frozen_cells=` にも出る)。
 
 **「Scale は相対比較なら安全」は転移推定には当てはまらない**: `parametric_fit` の転移温度は
 「曲線が**絶対レベル** 0.50 (midpoint) / 0.10 (onset) を横切る軸値」であり、y 軸が Scale か

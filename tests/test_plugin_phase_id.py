@@ -70,10 +70,37 @@ def test_skill_states_identification_is_proposal_not_answer():
 
 
 def test_skill_documents_double_background_subtraction_hazard():
-    """二重背景減算の注意 (assess_data_quality で減算済みなら subtract_bg=False) を明示すること。"""
+    """二重背景減算の注意 (ツール毎の既定 subtract_bg) を明示し、実シグネチャと一致すること。
+
+    既定値はツールによって違う: `identify_pattern` のみ既定 True (SNIP 減算する)、
+    `identify_phases`/`identify_phase_mixtures` は既定 False (減算しない)。skill の文言が
+    この実態とずれると、③ は減算済みデータへ二重減算するか、生データを未減算のまま渡して
+    誤同定を招く。3 ツールすべてに `subtract_bg` が実在し既定値が想定通りであることまで
+    machine-check する (tests/test_plugin_operando_diagnose.py の
+    `test_repair_frames_documented_kwargs_exist_in_the_real_signature` の流儀)。
+    """
+    import inspect
+
+    from tsumugin.mcp.tools import identify_phase_mixtures, identify_pattern, identify_phases
+
     text = _text()
     assert "subtract_bg" in text
     assert "二重" in text or "is_subtracted" in text
+
+    expected_defaults = {
+        "identify_pattern": (identify_pattern, True),
+        "identify_phases": (identify_phases, False),
+        "identify_phase_mixtures": (identify_phase_mixtures, False),
+    }
+    for name, (func, expected_default) in expected_defaults.items():
+        params = inspect.signature(func).parameters
+        assert "subtract_bg" in params, (
+            f"{name} に `subtract_bg` 引数が実在しない — skill の指示が呼べない指示になる"
+        )
+        assert params["subtract_bg"].default == expected_default, (
+            f"{name} の subtract_bg 既定が {expected_default} でない "
+            "(skill が説明する『ツール毎の既定』の前提が実装とずれている)"
+        )
 
 
 def test_command_references_skill():

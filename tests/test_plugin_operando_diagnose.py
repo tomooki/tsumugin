@@ -499,6 +499,37 @@ def test_plugin_manifest_advertises_operando_diagnose():
 # --------------------------------------------------------------------------------------
 
 
+_DUPLICATED_BLOCK_KEY_PHRASES = (
+    # (1) auto_freeze_minor_cells/frac_min の Scale 基準警告
+    "Scale 基準で 0.3 等",
+    "frac_min` (新相採用の最小分率, 既定 0.02) も",
+    # (2) cell_esd 3 状態表
+    "値は入力 CIF 由来であってこのデータから決まっていない",
+    "auto_rietveld` の `stages[].note` の `auto_frozen_cells=` にも出る",
+    # (3) wt% 換算注意 + K₂Mn[Fe(CN)₆] 実測値
+    "tetra ドーム頂点 65.6%」と報告した数値は誤りだった",
+)
+
+
+@pytest.mark.parametrize("phrase", _DUPLICATED_BLOCK_KEY_PHRASES)
+def test_insitu_and_operando_diagnose_duplicated_blocks_stay_in_sync(phrase):
+    """insitu/SKILL.md と operando-diagnose/SKILL.md の意図的な重複ブロックがドリフトしないこと。
+
+    両 skill は安全上の再言明 (auto_freeze_minor_cells の Scale 基準・cell_esd の 3 状態・
+    wt% 換算) を独立に持つ。片方だけ更新されると、その skill だけで実測知見が古いまま残り
+    (Issue #96 型のドリフト)、③ がどちらの skill を経由するかで受け取る情報が変わってしまう。
+    変異に頑健な部分文字列 (数値・警告の核) を選び、両ファイルへの出現を強制する
+    (`test_playbook_and_skill_share_safety_critical_instructions` と同じ流儀)。
+
+    **本ガードの限界**: 表現の同値性までは検査できない (語 → 主張の写像は機械化できない)。
+    選んだフレーズの再言明の欠落を捕らえるだけ — 最終防波堤は人間のレビュー。
+    """
+    insitu_text = _INSITU_SKILL.read_text(encoding="utf-8")
+    od_text = _SKILL.read_text(encoding="utf-8")
+    assert phrase in insitu_text, f"insitu/SKILL.md にドリフトしたブロックの核文言が無い: {phrase!r}"
+    assert phrase in od_text, f"operando-diagnose/SKILL.md にドリフトしたブロックの核文言が無い: {phrase!r}"
+
+
 def test_skill_and_playbook_document_j9_coulometry():
     """J9 (alkali_budget → alkali_residual/infeasible の独立検出器) が skill と PLAYBOOK の
     両方に同内容であること (安全上重要な指示の同期規約)。"""

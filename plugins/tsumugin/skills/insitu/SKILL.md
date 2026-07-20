@@ -29,6 +29,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復。`repairs[]` に**修復後の出版値** (重量分率 ± esd・`cell_esd`) を同梱 |
 | `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
+| `align_echem` | 計器 (電気化学突合) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス `offset_s`/`interval_s`/`n_frames` or 明示 `frame_epoch_s`) → per-frame の電位/状態 (rest/charge/discharge)。`alkali_budget` の `offset_s`/`interval_s` はここで XRD フレーム時刻と echem を同期して得る |
 | `alkali_budget` | 計器 (クーロメトリー, FR-318) | MPR + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標 x_total(t) の表 (`targets[]`)。出力を `sequential_rietveld`/`anchored_sequential` の `charge_constraint.targets` へそのまま渡す |
 
 閉ループ丸ごとは MCP に**無い**。回すのはあなた。
@@ -89,6 +90,10 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 >
 > **閾値を決める前に `result["frames"][i]["phase_fractions"]` (Scale) を実際に見ること。**
 > 質量の重い相ほど Scale は wt% より小さく出る。
+>
+> `phase_id` の `frac_min` (新相採用の最小分率, 既定 0.02) も **Scale** 基準である。
+> `check_phase_set` / `repair_frames` の分率系の閾値 (`min_amplitude` / `frac_delta`) も同じく
+> Scale 基準である (各ツールの出力 `fraction_basis` がそれを明示する)。
 
 ### 2. 新相自動同定を設定する
 
@@ -137,8 +142,10 @@ Rwp 改善 ∧ 妥当性) を満たせば自動追加**する。`elements` を�
 定電流充放電では反応電気量 Q(t) が電極中の可動アルカリ量の**独立した化学量測定**になる。
 X 線単独の占有率精密化は Uiso 縮退で不安定なので、これを診断/制約に使う。
 
-**手順**: (1) `alkali_budget(mpr_path, active_mass_mg, formula_weight, x0=…, offset_s=…,
-interval_s=…, n_frames=…)` で per-frame 目標表を作る → (2) その `targets` を
+**手順**: (0) `offset_s`/`interval_s` は `align_echem` で XRD フレーム時刻と echem を同期して得る
+(一定ケイデンス取得が operando では普通なので既定経路。個別フレームの POSIX 時刻列があるなら
+`frame_epoch_s` で明示してもよい) → (1) `alkali_budget(mpr_path, active_mass_mg, formula_weight,
+x0=…, offset_s=…, interval_s=…, n_frames=…)` で per-frame 目標表を作る → (2) その `targets` を
 `charge_constraint` spec に入れて系列ツールへ渡す:
 
 ```json
@@ -271,7 +278,7 @@ y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fracti
 **単位胞質量が相間で異なると重量分率と乖離する**。
 
 > 実測 (K₂Mn[Fe(CN)₆]): cubic 1103.4 amu vs tetra 517.8 amu → **同じ fit で 65.6 Scale% が
-> 実際には 47.2 wt%** (この点で 1.39 倍の誤り)。
+> 実際には 47.2 wt%** (この点で 1.39 倍の誤り)。「tetra ドーム頂点 65.6%」と報告した数値は誤りだった。
 >
 > **乖離の大きさはフレーム毎に違う** (実測: fr112 1.62 / fr120 1.48 / fr124 1.41 / fr126 1.39 倍)。
 > 大きさを決めるのは相の**単位胞質量比** (ここでは 2.13 倍) と**そのフレームの分率**である。
@@ -281,8 +288,8 @@ y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fracti
 | キー | 何か | 使いどころ |
 |---|---|---|
 | `phase_fractions` | **Scale** の正規化値 | **同一 basis 内の相対比較のみ** (新相の有意性・張り付き検出)。**転移の追跡には使えない** — 転移推定は絶対レベル 0.50/0.10 の交差なので basis で答えが変わる (手順 7) |
-| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs`) | **出版値・定量相分析はこちら**。転移温度もこちら基準 (`parametric_fit` の既定) |
-| `phase_weight_fraction_esd` | 重量分率の esd | **出版には esd 必須** |
+| `phase_weight_fractions` | **重量 (質量) 分率** (GSAS `calcMassFracs` が精密化占有率込みで算出) | **出版値・定量相分析はこちら**。転移温度もこちら基準 (`parametric_fit` の既定) |
+| `phase_weight_fraction_esd` | 重量分率の esd (共分散から伝播) | **出版には esd 必須** |
 | `cell_esd` | 格子 esd (a,b,c,α,β,γ) | 同上 (esd 無しの格子は出版できない)。**3 状態を区別する → 下記** |
 
 `sequential_rietveld` は `result["frames"][i]` に、`repair_frames` は `out["repairs"][j]` に

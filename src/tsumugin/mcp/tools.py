@@ -471,6 +471,7 @@ def identify_phases(
     *,
     hull_cutoff_ev: float | None = 0.1,
     max_results: int | None = None,
+    subtract_bg: bool = False,
     reason: str = "",
 ) -> dict:
     """未知パターン + 元素一覧から単相候補をランキング同定する (M6 委譲境界)。🔵 FR-110/117
@@ -480,6 +481,8 @@ def identify_phases(
       (json.dumps(allow_nan=False) 安全, スコアは finite_or_none で None 化)。
     【記録】: ``ledger.append("mcp_identify", {..., "reason": reason})``。破壊的操作なし (NFR-101)。
 
+    :param subtract_bg: 同定前に SNIP 背景減算をオプトイン適用する (① と同じ既定 False)。
+      観測パターンが**既に背景減算済み**の場合に True を渡すと二重減算になるため注意。
     Raises:
         なし (供給元未設定は error dict へ縮退)。
     """
@@ -495,6 +498,7 @@ def identify_phases(
         elements=elements,
         hull_cutoff_ev=hull_cutoff_ev,
         max_results=max_results,
+        subtract_bg=subtract_bg,
     )
     session.ledger.append(
         "mcp_identify", {"mode": "single", "n_elements": len(elements), "reason": reason}
@@ -529,6 +533,7 @@ def identify_phase_mixtures(
     elements: Sequence[str],
     *,
     hull_cutoff_ev: float | None = 0.1,
+    subtract_bg: bool = False,
     reason: str = "",
 ) -> dict:
     """未知パターン + 元素一覧から多相混合を同定する (M6 委譲境界)。🔵 FR-110/115
@@ -536,6 +541,9 @@ def identify_phase_mixtures(
     【委譲】: ``session.reference_provider`` を供給元に ``reference.identify_phase_mixtures`` へ
       委譲し、既存木探索の ``SearchResult`` を ``/api/result`` スキーマ準拠 dict
       (``to_summary()``) で返す。供給元未設定なら error dict。破壊的操作なし (NFR-101)。
+
+    :param subtract_bg: 同定前に SNIP 背景減算をオプトイン適用する (① と同じ既定 False)。
+      観測パターンが**既に背景減算済み**の場合に True を渡すと二重減算になるため注意。
     """
     provider = session.reference_provider
     if provider is None:
@@ -543,7 +551,12 @@ def identify_phase_mixtures(
     two_theta = np.asarray(two_theta, dtype=float)
     intensity = np.asarray(intensity, dtype=float)
     result = _identify_phase_mixtures(
-        two_theta, intensity, provider, elements=elements, hull_cutoff_ev=hull_cutoff_ev
+        two_theta,
+        intensity,
+        provider,
+        elements=elements,
+        hull_cutoff_ev=hull_cutoff_ev,
+        subtract_bg=subtract_bg,
     )
     session.ledger.append(
         "mcp_identify", {"mode": "mixture", "n_elements": len(elements), "reason": reason}

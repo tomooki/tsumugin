@@ -51,6 +51,21 @@ def test_insitu_command_references_skill():
     assert "sequential_rietveld" in text
 
 
+def test_insitu_command_does_not_drop_the_skills_mandatory_steps():
+    """command の圧縮箇条書きが skill の必須手順を欠落させないこと。
+
+    insitu SKILL.md は手順0 (`assess_data_quality`) と手順5 (`check_phase_set`, 「飛ばしてよい
+    手順ではない」) を明示的に必須と言う。圧縮版の command がこれを落とすと、③ が command 経由で
+    動くときだけ必須手順を踏まずに回してしまう (operando-diagnose.md には同種の警告がある一方
+    insitu-analyze.md には無かった非対称の解消)。転移を含む operando の既定経路
+    `anchored_sequential` への言及も同様に欠落していた。
+    """
+    text = (_PLUGIN / "commands" / "insitu-analyze.md").read_text(encoding="utf-8")
+    assert "assess_data_quality" in text, "command が手順0 (assess_data_quality) に言及していない"
+    assert "check_phase_set" in text, "command が手順5 (check_phase_set) に言及していない"
+    assert "anchored_sequential" in text, "command が転移を含む operando の既定 anchored_sequential に言及していない"
+
+
 def _skill_tool_table_names() -> list[str]:
     """skill の「使う MCP ツール (②)」表の第1列 (バッククォート付き) を抜き出す。"""
     text = _SKILL.read_text(encoding="utf-8")
@@ -140,6 +155,11 @@ def test_insitu_skill_documents_charge_constraint():
     assert "alkali_budget" in text, "insitu SKILL が alkali_budget に言及していない"
     assert "alkali_budget" in MCP_TOOLS
     assert "charge_constraint" in text
+    # §4.5 到達可能性: offset_s/interval_s は align_echem の出力から来る。insitu SKILL がこの
+    # 供給元に触れないと、③ は alkali_budget のこの2引数を「どこから来るか言えない」まま渡す
+    # ことになる (operando-diagnose J8 には既にあるので insitu 側だけ欠落していた非対称の解消)。
+    assert "align_echem" in text, "insitu SKILL が align_echem に言及していない (offset_s/interval_s の出所)"
+    assert "align_echem" in MCP_TOOLS
     # 安全指示: diagnose 既定 / lock は明示 opt-in / soft は headless で無効
     assert "diagnose" in text
     assert "lock_fractions" in text

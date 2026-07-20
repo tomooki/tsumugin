@@ -102,23 +102,31 @@ def create_mcp_server(session: AnalysisSession) -> object:
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict[str, Any] | None) -> list[Any]:
-        # 【配線】: 名前から実処理関数を引き当て、session を束縛して委譲する 🔵 REQ-021
-        fn = MCP_TOOLS.get(name)
-        if fn is None:
-            raise ValueError(f"unknown tool: {name}")
-        kwargs = dict(arguments or {})
-        # 【第 1 引数束縛】: session-facade 型ツール (M4/M6) は (session, **kwargs) 形で session を
-        #   束縛する。M8 の実構造 Rietveld ツール (rietveld_tools) は session を取らない計器+
-        #   アクチュエータのため kwargs のみで呼ぶ。第 1 引数名で判別する (architecture.md §6) 🔵
-        import inspect
+        # 【境界縮退】: ③ (LLM) が不正な kwarg / 未知ツール名を渡しても例外を MCP 境界へ貫通させず、
+        #   正常経路と同じ TextContent(JSON) 形で {"error", "error_type"} dict へ縮退する
+        #   (CLAUDE.md 不変条件「② ツールは例外を送出しない」)。json.dumps(allow_nan=False) が
+        #   NaN/inf 混入時に送出する ValueError もここで同様に縮退する 🔵
+        try:
+            # 【配線】: 名前から実処理関数を引き当て、session を束縛して委譲する 🔵 REQ-021
+            fn = MCP_TOOLS.get(name)
+            if fn is None:
+                raise ValueError(f"unknown tool: {name}")
+            kwargs = dict(arguments or {})
+            # 【第 1 引数束縛】: session-facade 型ツール (M4/M6) は (session, **kwargs) 形で session を
+            #   束縛する。M8 の実構造 Rietveld ツール (rietveld_tools) は session を取らない計器+
+            #   アクチュエータのため kwargs のみで呼ぶ。第 1 引数名で判別する (architecture.md §6) 🔵
+            import inspect
 
-        params = list(inspect.signature(fn).parameters)  # type: ignore[arg-type]
-        if params and params[0] == "session":
-            result = fn(session, **kwargs)  # type: ignore[operator]
-        else:
-            result = fn(**kwargs)  # type: ignore[operator]
-        # 【応答整形】: 素の型 dict を JSON テキストコンテンツで返す (SDK が転送) 🔵
-        return [mcp_types.TextContent(type="text", text=json.dumps(result, allow_nan=False))]
+            params = list(inspect.signature(fn).parameters)  # type: ignore[arg-type]
+            if params and params[0] == "session":
+                result = fn(session, **kwargs)  # type: ignore[operator]
+            else:
+                result = fn(**kwargs)  # type: ignore[operator]
+            # 【応答整形】: 素の型 dict を JSON テキストコンテンツで返す (SDK が転送) 🔵
+            text = json.dumps(result, allow_nan=False)
+        except Exception as exc:  # 【境界縮退】: 例外は他の error dict と同型で返す 🔵
+            text = json.dumps({"error": str(exc), "error_type": type(exc).__name__})
+        return [mcp_types.TextContent(type="text", text=text)]
 
     return server
 
