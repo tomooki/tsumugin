@@ -517,7 +517,8 @@ def test_insitu_and_operando_diagnose_duplicated_blocks_stay_in_sync(phrase):
 
     両 skill は安全上の再言明 (auto_freeze_minor_cells の Scale 基準・cell_esd の 3 状態・
     wt% 換算) を独立に持つ。片方だけ更新されると、その skill だけで実測知見が古いまま残り
-    (Issue #96 型のドリフト)、③ がどちらの skill を経由するかで受け取る情報が変わってしまう。
+    (2026-07-20 のスキル監査で実際に版ズレを検出・解消済み)、③ がどちらの skill を経由するかで
+    受け取る情報が変わってしまう。
     変異に頑健な部分文字列 (数値・警告の核) を選び、両ファイルへの出現を強制する
     (`test_playbook_and_skill_share_safety_critical_instructions` と同じ流儀)。
 
