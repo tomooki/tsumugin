@@ -88,6 +88,27 @@ def test_framespec_target_composition_default_none_roundtrip():
     assert FrameSpec.from_dict(fs.to_dict()) == fs
 
 
+def test_framespec_with_target_composition_is_hashable():
+    """マージ後回帰ピン: FrameSpec は値ハッシュで dict キーに使われる
+    (`mcp.anchor_tools._make_identifier` の位置解決)。per_phase dict を持つ
+    TargetComposition が自動 __hash__ を壊し、charge_constraint × anchor_table の
+    組合せでのみ「unhashable type: 'dict'」が②境界内で発火した。"""
+    from tsumugin.insitu.model import TargetComposition
+
+    tc = TargetComposition(total=1.944, per_phase={"mono": 1.944, "cubic": 0.7})
+    fs = FrameSpec(data_path="x.xye", data_format="XYE", target_composition=tc)
+    # hash 可能 + __eq__ 整合 (等価な per_phase ⇒ 同一ハッシュ)
+    assert hash(fs) == hash(
+        FrameSpec(
+            data_path="x.xye", data_format="XYE",
+            target_composition=TargetComposition(
+                total=1.944, per_phase={"cubic": 0.7, "mono": 1.944},
+            ),
+        )
+    )
+    assert {fs: "anchor"}[fs] == "anchor"
+
+
 def test_target_composition_invalid_mode_raises():
     from tsumugin.insitu.model import TargetComposition
 
