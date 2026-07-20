@@ -531,6 +531,25 @@ def test_insitu_and_operando_diagnose_duplicated_blocks_stay_in_sync(phrase):
     assert phrase in od_text, f"operando-diagnose/SKILL.md にドリフトしたブロックの核文言が無い: {phrase!r}"
 
 
+def test_skill_step3_states_execution_order_of_j_labels():
+    """D3: 手順3 が「実行順 ≠ J 番号順」を明示し、実行順マップを持つこと (Issue #119 (2))。
+
+    手順3 内で J ラベルは J1→(無印)→J5→J2/J3→J6→J4→J8→J9 と番号順に並ばず、読み手が実行順を
+    辿りにくい。J 識別子自体 (J5/J6/J8/J9 等) は design doc/AGENT_PLAYBOOK/insitu SKILL から
+    安定 ID として参照されるため変更できない — 代わりに手順3 冒頭に実行順マップを明示する。
+    節の並び自体 (= 実際の記載順) は変えていないので、マップはその記載順と一致する
+    `J5 → J2/J3 → J6 → J4 → J8 → J9` を固定する。
+    """
+    text = _SKILL.read_text(encoding="utf-8")
+    body = text.split("### 3. 疑う", 1)[1].split("#### J5", 1)[0]
+    assert re.search(r"実行順.{0,10}(≠|!=|異な)", body), (
+        "手順3 冒頭に「実行順 ≠ J 番号順」の明示が無い"
+    )
+    assert "J5 → J2/J3 → J6 → J4 → J8 → J9" in body, (
+        "手順3 冒頭に J ラベルの実行順マップが無い (記載順と一致する固定文字列)"
+    )
+
+
 def test_skill_and_playbook_document_j9_coulometry():
     """J9 (alkali_budget → alkali_residual/infeasible の独立検出器) が skill と PLAYBOOK の
     両方に同内容であること (安全上重要な指示の同期規約)。"""
