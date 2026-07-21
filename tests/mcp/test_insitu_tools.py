@@ -338,6 +338,26 @@ def test_sequential_rietveld_instrument_invalid_recipe_returns_error_dict(monkey
     json.dumps(out, allow_nan=False)
 
 
+def test_sequential_rietveld_instrument_empty_recipe_returns_error_dict(monkeypatch):
+    """★空の recipe ([]) は error dict へ縮退すること (「呼べるが黙って間違う」の予防)。
+
+    recipe は**全置換**の意味論。`[]` は engine の `is not None` 判定を通って空タプルのまま
+    使われ、**精密化段階ゼロ = 未精密化の Rwp がそのまま返る**サイレント失敗になる (省略時の
+    None は既定 build_recipe にフォールバックするので安全だが、`[]` は別物)。③ が「上書き不要」
+    のつもりで [] を送ると operando 系列全体が精密化ゼロの結果を静かに返すため、明示的に弾く。
+    """
+    _capture_make_runner(monkeypatch)
+    _capture_seq(monkeypatch)
+    frames, initial = _frames_and_phases()
+
+    out = sequential_rietveld(
+        frames, initial, instrument={"path": "sr.instprm", "recipe": []}
+    )
+    assert out["error_type"] == "ValueError"
+    assert "recipe" in out["error"], "どのキーが問題か示していない"
+    json.dumps(out, allow_nan=False)
+
+
 @pytest.mark.parametrize(
     "spec",
     [

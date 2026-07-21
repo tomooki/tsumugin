@@ -55,8 +55,9 @@ description: 未知パターン + 元素一覧から相を同定する (③ 判�
   (Cu 管球の生データ等) にのみ使う。**Kα2 除去済み (単色化・ストリップ済み) のデータには使わない** —
   二重補正になり未マッチが悪化する。両フィールドとも省略可 (省略時 Cu Kα1/Kα2 既定)。不正なキー/
   値は `{"error","error_type":"ValueError"}` が返る。
-- **`scoring`**: 既定 `"dara"`。peak-rich な相 (反射数が多い低対称相) が上位候補で不当に沈んでいる
-  疑いがあるとき、比較用に `"coverage"` (旧方式) を併走させて見比べる。
+- **`scoring`** (`identify_phases` のみ, 既定 `"dara"`): peak-rich な相 (反射数が多い低対称相) が
+  上位候補で不当に沈んでいる疑いがあるとき、比較用に `"coverage"` (旧方式) を併走させて見比べる。
+  `identify_phase_mixtures` には無い (混合物は Dara 固定) ので渡さないこと。
 - **`rerank_top_k`** (`identify_phases` のみ, 既定 5): `refine_lattice=True` と併用すると、上位 K 候補を
   さらに軸別格子整合で再スコアする (DFT の軸別誤差を吸収)。0 で無効化。
 - **`prefilter_top_k`/`prefilter_dynamic`** (`identify_phase_mixtures` のみ): 元素系フィルタ後も候補が

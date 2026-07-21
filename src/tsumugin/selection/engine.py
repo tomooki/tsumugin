@@ -254,6 +254,11 @@ class FinalSelectionEngine:
             escalations=escalations,
         )
         # 【Queue 通知 (Issue #125)】: 検出条件が空なら _notify_queue は何もしない (ループ 0 回) 🔵
+        # 【⚠ 二重通知の前提】: ReviewQueue.add はデデュープしない (追記型)。同一 result に対し
+        #   decide() と accept() を**両方**呼ぶと同じ reason が 2 件積まれる。現状 decide() の呼び手は
+        #   ② に無く (テストのみ)、この経路は発生しない。将来 decide() を ② 配線する際は、
+        #   decide→accept を同一 result で両方叩かない (accept は decide 未経由の直接確定に限る) か、
+        #   ReviewQueue 側に item_id 冪等性を入れること。
         self._notify_queue(escalations, hypothesis_id=hypothesis_id, frame_index=frame_index)
         return self._register_accept(hyp, by=by, rationale=rationale)
 

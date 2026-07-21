@@ -64,7 +64,9 @@ _SEQ_CSV_COMMON_COLUMNS = [
 #: 相ごと列の接尾辞。``refined_cells``/``cell_esd`` は (a,b,c,α,β,γ) の先頭 3 (a,b,c) のみを
 #: CSV へ出す (M2 Trajectory と同じ設計裁量 — 角度 σ は CSV 列を肥大させないため JSON 側で見る)。
 #: M2 の ``sigma_source``/lifecycle 3 列 (birth_frame/death_frame/confidence) は含めない —
-#: M9 の系列結果にはそれらに対応する値が無く、空欄で埋めると「持っているように見える」偽装になる。
+#: M9 のフレーム行にはこれらに対応する列が無い (birth は ``appearances`` に別スキーマで出るが
+#: death/confidence は持たず、フレーム単位の行に相ライフサイクルは自然にマップしない)。
+#: 無い値を空欄で埋めると「持っているように見える」偽装になるため、列自体を作らない。
 _SEQ_CSV_PHASE_SUFFIXES = [
     "a",
     "b",
@@ -494,6 +496,15 @@ def _runner_from_instrument(
             "pass null to disable (bool true would freeze every phase in a multiphase run)"
         )
     raw_recipe = spec.get("recipe")
+    # recipe は**全置換**の意味論 (auto_rietveld の stages=追加 とは違う)。空 ([]) を許すと engine の
+    # `is not None` 判定を通って空タプルのまま使われ、**精密化段階ゼロ = 未精密化 Rwp がそのまま
+    # 返る**サイレント失敗になる。省略 (None) は既定 build_recipe へフォールバックするので安全だが、
+    # [] は別物。③ が「上書き不要」のつもりで [] を送る事故を明示的に弾く (呼べるが黙って間違う予防)。
+    if raw_recipe is not None and not raw_recipe:
+        raise ValueError(
+            "instrument.recipe が空です。空レシピは精密化段階ゼロ (未精密化の Rwp がそのまま返る) に"
+            "なります。既定レシピを使うなら recipe キーを省略してください"
+        )
     recipe = stages_from_dicts(raw_recipe) if raw_recipe is not None else None  # type: ignore[arg-type]
     return make_gsas_runner(
         instrument_path=_instrument_path_resolver(spec, frame_specs),

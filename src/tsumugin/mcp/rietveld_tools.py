@@ -243,8 +243,10 @@ def refine_with_revisions(
     採否の判断は ③ が済ませた前提 (このツールは適用+再実行のみ)。
 
     :param stages: `auto_rietveld` と同じ意味論の追加段階 spec (Issue #101)。``ReleaseParams``
-        action が足す段階 (`AnalysisAction.apply` 経由) と共存し、``stages`` 由来の段階は
-        action 適用後の末尾に追加される。不正な段階 spec は error dict へ縮退する。
+        action が足す段階 (`AnalysisAction.apply` 経由) と共存する。合成順は
+        **``stages`` が先 (既定レシピ直後) → action 由来の段階が末尾**
+        (`_build_input` が stages を extra_stages に置いた後、actions ループが apply で末尾に足す)。
+        不正な段階 spec は error dict へ縮退する。
     :param max_cyc: `auto_rietveld` と同じ (既定 GSAS runner への転送)。
     """
     try:
