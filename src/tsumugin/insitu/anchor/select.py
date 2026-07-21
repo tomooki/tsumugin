@@ -19,9 +19,17 @@ n_params 推定 (base + per_phase·相数) で再構成する (operando `_frame_
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING, Callable
 
 from ..model import FrameRietveldResult
 from .model import AnchorConfig, CrossoverChoice, Segment, SegmentPass
+
+if TYPE_CHECKING:  # 型注釈専用 — 実行時 import は遅延させ numpy-only を保つ
+    from typing import Mapping
+
+    from ...autorietveld.model import PhaseSpec, ValidityReport
+
+    BondChecker = Callable[..., "ValidityReport"]
 
 __all__ = ["frame_bic", "select_crossover", "assemble_path"]
 
@@ -58,7 +66,14 @@ def _is_monotonic(
     return all(fracs[i] <= fracs[i + 1] + 1e-9 for i in range(len(fracs) - 1))
 
 
-def _bond_ok_frame(fr, specs, cfg, checker, cache, direction: str) -> bool:
+def _bond_ok_frame(
+    fr: FrameRietveldResult,
+    specs: "Mapping[str, PhaseSpec]",
+    cfg: AnchorConfig,
+    checker: "BondChecker",
+    cache: dict[tuple[str, int], bool],
+    direction: str,
+) -> bool:
     """フレームの全相の結合距離/配位数が妥当か (相ごとに精密化セルで検査)。
 
     構造パス不明の相は検査不能として skip する (偽陰性で経路を落とさない)。1 相でも fail なら False。
@@ -87,7 +102,7 @@ def _bond_ok_frame(fr, specs, cfg, checker, cache, direction: str) -> bool:
 
 def select_crossover(
     seg: Segment, fwd: SegmentPass, bwd: SegmentPass, cfg: AnchorConfig = AnchorConfig(),
-    bond_checker=None,
+    bond_checker: "BondChecker | None" = None,
 ) -> CrossoverChoice:
     """区間の前方/後方パスから採用経路 (crossover) を決める。
 
@@ -166,22 +181,30 @@ def select_crossover(
         if _ok(best_s):
             bond_gate = "kept"
         else:
-            # 僅差帯 (bic_tie 以内) を bic 昇順・s 昇順で走査し、最初に結合妥当な候補を採る
+            # 僅差帯 (bic_tie 以内) を走査し最初に結合妥当な候補を採る。
+            # **並び順は「単調 → bic 昇順 → s 昇順」**: bic だけで並べると、僅差帯に非単調だが
+            # bic 最小の候補があるとそれを掴み、相分率が増減を繰り返す非物理な経路を
+            # ゲート ON のときだけ再導入してしまう (REQ-1011 の単調性 tie-break の回帰)。
             band = sorted(
                 ((tb, s, mono) for s, tb, mono in cands if tb <= best_tb + cfg.bic_tie),
-                key=lambda t: (t[0], t[1]),
+                key=lambda t: (not t[2], t[0], t[1]),
             )
             bond_gate = "no_valid_candidate"
             for tb, s, mono in band:
                 if _ok(s):
-                    best_s, best_tb, best_mono = s, tb, mono
+                    best_s, best_mono = s, mono
                     bond_gate = "moved"
                     break
 
     crossover_frame = inner[best_s - 1] if best_s > 0 else None
     onset_frame = inner[best_s] if best_s < m else None
+    # total_bic は**採用経路**の bic を報告する。`best_tb` は僅差帯の基準点 (raw bic 最小) として
+    # 走査中ずっと据え置く必要があるので、報告値とは別物 — 単調性 tie-break や結合ゲートで採用 s が
+    # 動いたとき、best_tb をそのまま返すと**棄却した別経路の bic** を渡すことになる。③ は
+    # `crossovers[].total_bic` で相数選定を検算すると教わっているため、食い違うと検算が狂う。
+    adopted_tb = cands[best_s][1]
     return CrossoverChoice(
-        crossover_frame=crossover_frame, total_bic=best_tb, onset_frame=onset_frame,
+        crossover_frame=crossover_frame, total_bic=adopted_tb, onset_frame=onset_frame,
         monotonic=best_mono, reason="bic_crossover", bond_gate=bond_gate,
     )
 

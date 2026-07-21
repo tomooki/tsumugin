@@ -190,11 +190,12 @@ def _stub_checker(calls, *, always_pass=False):
     return checker
 
 
-def _false_phase_case(delta_cells):
+def _false_phase_case(delta_cells, delta_fracs=None):
     """偽相 delta が bic では全域 (s=0) で勝つ区間を組む。delta_cells: frame→delta セル。
 
     gof は「後方 (alpha+delta) が全フレームで僅かに良い」ように選んであり、bic 最良は s=0
     (= 内側全フレームに delta) になる。結合ゲートだけが真の onset (frame4) を復元できる。
+    `delta_fracs` で後方の delta 分率を差し替えると経路の単調性を制御できる。
     """
     inner = [2, 3, 4, 5]
     seg = _seg(inner, ["alpha"], ["alpha", "new_delta"])
@@ -202,7 +203,7 @@ def _false_phase_case(delta_cells):
         j: _frc(j, 1.00, {"alpha": 1.0}, ("alpha",), {"alpha": NORMAL}) for j in inner
     })
     bwd_gof = {2: 0.97, 3: 0.97, 4: 0.80, 5: 0.80}
-    bwd_frac = {2: 0.02, 3: 0.03, 4: 0.30, 5: 0.50}
+    bwd_frac = delta_fracs or {2: 0.02, 3: 0.03, 4: 0.30, 5: 0.50}
     bwd = SegmentPass("backward", {
         j: _frc(j, bwd_gof[j], {"alpha": 1.0 - bwd_frac[j], "new_delta": bwd_frac[j]},
                 ("alpha", "new_delta"), {"alpha": NORMAL, "new_delta": delta_cells[j]})
@@ -289,6 +290,56 @@ def test_bond_gate_does_not_confuse_forward_and_backward_for_same_frame():
     assert choice.bond_gate == "moved"
     assert choice.crossover_frame == 2  # frame2 のみ前方 (delta なし)
     assert choice.onset_frame == 3      # delta は frame3 から (frame4 へ滑らない)
+
+
+# 非単調な s=0 (frame2 で 0.40 → frame3 で 0.03 と減る) を含む配置。
+# s=1 以降は前方が delta 0 なので単調。
+_NONMONO_FRACS = {2: 0.40, 3: 0.03, 4: 0.30, 5: 0.50}
+
+
+def test_bond_gate_preserves_monotonicity_tie_break():
+    """ゲートは単調性 tie-break (REQ-1011) を壊さないこと。
+
+    僅差帯に「非単調だが bic 最小かつ結合妥当」な候補があると、bic 昇順だけで走査すると
+    そちらを掴み、**転移で相分率が増減を繰り返す非物理な経路** (K₂Mn[Fe(CN)₆] の既知病理)
+    をゲート ON のときだけ再導入してしまう。単調な候補を優先すること。
+
+    配置: s=0 は非単調・結合妥当 / s=1 は単調だが結合不当 / s=2 は単調かつ結合妥当。
+    期待は s=2 (単調 ∧ 結合妥当) であって s=0 (非単調) ではない。
+    """
+    seg, fwd, bwd = _false_phase_case(
+        {2: NORMAL, 3: COLLAPSED, 4: NORMAL, 5: NORMAL}, delta_fracs=_NONMONO_FRACS,
+    )
+    cfg = AnchorConfig(bic_tie=200.0, require_bond_validity=True)
+    choice = select_crossover(seg, fwd, bwd, cfg, bond_checker=_stub_checker([]))
+    assert choice.bond_gate == "moved"
+    assert choice.monotonic is True, "非単調経路をゲートが掴んでいる (REQ-1011 の回帰)"
+    assert choice.crossover_frame == 3
+    assert choice.onset_frame == 4
+
+
+def test_total_bic_describes_the_adopted_path():
+    """total_bic は**採用経路**の bic であること (棄却された bic 最小候補の値ではない)。
+
+    単調性 tie-break が発火すると採用 s は動くが、従来は best_tb を据え置いていたため
+    total_bic が別経路の値を報告していた。③ は SKILL.md で「crossovers[].total_bic で
+    相数選定を検算する」と教わるので、採用経路と食い違う値を渡すと検算が狂う。
+    """
+    seg, fwd, bwd = _false_phase_case(
+        {j: NORMAL for j in (2, 3, 4, 5)}, delta_fracs=_NONMONO_FRACS,
+    )
+    cfg = AnchorConfig(bic_tie=200.0)  # ゲート OFF: 単調性 tie-break のみを見る
+    choice = select_crossover(seg, fwd, bwd, cfg)
+
+    # tie-break で非単調 s=0 でなく単調 s=1 が採られる
+    assert choice.monotonic is True
+    assert choice.crossover_frame == 2
+    inner = [2, 3, 4, 5]
+    s = inner.index(choice.crossover_frame) + 1
+    expected = sum(frame_bic(fwd.results[j], cfg) for j in inner[:s]) + sum(
+        frame_bic(bwd.results[j], cfg) for j in inner[s:]
+    )
+    assert choice.total_bic == expected, "total_bic が採用経路の bic と一致しない"
 
 
 def test_bond_gate_deterministic():

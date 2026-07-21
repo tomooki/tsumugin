@@ -173,7 +173,13 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "evidence": (FOUNDATIONAL, "BIC/AIC backend (FR-120)。M4 session 系 compare_hypotheses の裏方"),
     "store": (FOUNDATIONAL, "Ledger/Snapshot (P2/NFR-105)。全状態変更の追記基盤"),
     "search": (FOUNDATIONAL, "多仮説木探索 (FR-110)。M4 session 系 submit_analysis の裏方"),
-    "selection": (FOUNDATIONAL, "最終選択 + エスカレーション (M2)。accept/revert の裏方"),
+    # ★ accept/revert は ② から到達するが、**エスカレーション裁定 (decide) は到達しない** —
+    #   detect_escalations が走る唯一の入口 FinalSelectionEngine.decide() は本番の呼び手が無く
+    #   (テストのみ)、② accept_hypothesis は selection.accept を直接呼んで decide を迂回する。
+    #   FR-403 の 4 条件 (all_high_r/unknown_phase/close_competitor/guard_escalated) は全て
+    #   ③ から不可視。**既知の穴として明示宣言する** (黙って未露出にしない, Issue #125)。
+    "selection": (FOUNDATIONAL, "最終選択 + エスカレーション (M2)。accept/revert の裏方。"
+                  "ただし decide()/escalations は ② 未到達 = 既知の穴 (Issue #125)"),
     "sequential": (FOUNDATIONAL, "時系列基盤 (変化点/熱ベースライン, M2)。insitu/parametric が内包"),
     "export": (FOUNDATIONAL, "gpx 書き出し (FR-505)。export_gpx ツールの裏方"),
     "multistart": (FOUNDATIONAL, "マルチスタート大域最適確認 (FR-230)。autorietveld が内包・単独 ② 未露出は M-later"),
@@ -1384,3 +1390,33 @@ def test_anchor_is_still_unexposed_or_the_note_is_stale():
         )
     else:
         assert declared_unexposed, "anchor は ② 未露出のはずだが露出ありと宣言されている"
+
+
+def test_selection_escalation_is_still_unreachable_or_the_note_is_stale():
+    """★エスカレーション裁定の ② 到達状況と宣言が一致すること (Issue #125)。
+
+    `detect_escalations` (FR-403 の 4 条件 + FR-212 の guard_escalated) が実際に走るのは
+    `FinalSelectionEngine.decide()` の中だけ。② `accept_hypothesis` は `selection.accept` を
+    直接呼んで decide を**迂回する**ため、エスカレーションは ③ から一切見えない。
+
+    非トートロジー: 表を読まず ② の全ツール source を走査して `decide(` の呼び出しを探す。
+    Issue #125 で decide 経路が ② に入ったら本テストが fail し、PACKAGE_COVERAGE の
+    「既知の穴」記述の更新を強制する — **穴が塞がったのに塞がっていないと書き続けるのを防ぐ**。
+    """
+    callers = [
+        name for name, fn in MCP_TOOLS.items()
+        if ".decide(" in inspect.getsource(inspect.unwrap(fn))
+    ]
+    declared_gap = "既知の穴" in PACKAGE_COVERAGE["selection"][1]
+    if callers:
+        assert not declared_gap, (
+            f"エスカレーション裁定が ② に到達した ({callers}) — PACKAGE_COVERAGE['selection'] の "
+            "「既知の穴 (Issue #125)」記述と、③ skill 手順 (accept 前にエスカレーション確認) "
+            "の更新が必要"
+        )
+    else:
+        assert declared_gap, (
+            "decide() を呼ぶ ② ツールが無い = エスカレーションは ③ から不可視。"
+            "PACKAGE_COVERAGE['selection'] に既知の穴として宣言すること (CLAUDE.md: "
+            "露出しないと決めた場合は理由を明示宣言する / 黙って未露出にしない)"
+        )
