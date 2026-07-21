@@ -38,6 +38,7 @@ from ..pipeline import analyze_single_pattern
 from ..reference.engine import identify_phases as _identify_phases
 from ..reference.mixture import identify_phase_mixtures as _identify_phase_mixtures
 from ..reference.provider import ReferenceProvider
+from ._kalpha_spec import kalpha2_from_spec
 from ..search.tree import HypothesisTreeSearch, SearchResult
 from ..selection.engine import FinalSelectionEngine, detect_escalations
 from ..sequential.trajectory import Trajectory
@@ -500,6 +501,12 @@ def identify_phases(
     hull_cutoff_ev: float | None = 0.1,
     max_results: int | None = None,
     subtract_bg: bool = False,
+    scoring: Literal["dara", "coverage"] = "dara",
+    refine_lattice: bool = False,
+    max_strain: float = 0.01,
+    strain_penalty: float = 0.0,
+    rerank_top_k: int = 5,
+    kalpha2: Mapping[str, object] | None = None,
     reason: str = "",
 ) -> dict:
     """未知パターン + 元素一覧から単相候補をランキング同定する (M6 委譲境界)。🔵 FR-110/117
@@ -511,12 +518,32 @@ def identify_phases(
 
     :param subtract_bg: 同定前に SNIP 背景減算をオプトイン適用する (① と同じ既定 False)。
       観測パターンが**既に背景減算済み**の場合に True を渡すと二重減算になるため注意。
+    :param scoring: マッチスコア方式。``"dara"`` (既定, ① と同じ) は Fei et al. 2026 式1
+      (実測強度正規化 + extra 罰。peak-rich 相を希釈しない)。``"coverage"`` は旧方式 (一致率+被覆率)。
+      peak-rich 相の希釈が疑わしいときの比較用。
+    :param refine_lattice: True で各候補の計算ピークを等方格子歪み+ゼロシフトで観測へ整合してから
+      スコアする (Dara フロー)。MP(DFT) 構造は格子が実測とずれるため、DFT 由来の候補を使うときに使う。
+    :param max_strain: ``refine_lattice`` 時の等方歪み上限 (① と同じ既定 0.01 = 1%)。
+    :param strain_penalty: ランキングで格子シフトを罰する係数。実効スコア = score − strain_penalty·|strain|
+      (① と同じ既定 0 = 無効)。
+    :param rerank_top_k: >0 で上位 K 候補のみ異方格子整合で再スコアする (① と同じ既定 5 でオン)。
+      0 で無効化。DFT の軸別格子誤差 (Issue #20) を吸収し識別マージンを上げる。
+    :param kalpha2: Kα2 サテライト設定の JSON dict
+      (``{"intensity_ratio": float, "wavelength_ratio": float}``、両フィールドとも省略可・省略時は
+      Cu Kα1/Kα2 既定)。**Kα2 未除去の実験室 X 線データ**にのみ使う — 除去済みデータに指定すると
+      二重補正になるため使わないこと。不正なキー/型 (dict でない・未知キー・非数値) は例外を送出せず
+      ``{"error", "error_type":"ValueError"}`` へ縮退する (静かに無視すると指定した補正が効かない
+      「呼べるが黙って間違う」を再導入するため)。
     Raises:
-        なし (供給元未設定は error dict へ縮退)。
+        なし (供給元未設定・不正な kalpha2 spec は error dict へ縮退)。
     """
     provider = session.reference_provider
     if provider is None:
         return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    try:
+        kalpha2_cfg = kalpha2_from_spec(kalpha2)
+    except ValueError as exc:
+        return {"error": str(exc), "error_type": "ValueError"}
     two_theta = np.asarray(two_theta, dtype=float)
     intensity = np.asarray(intensity, dtype=float)
     result = _identify_phases(
@@ -527,6 +554,12 @@ def identify_phases(
         hull_cutoff_ev=hull_cutoff_ev,
         max_results=max_results,
         subtract_bg=subtract_bg,
+        scoring=scoring,
+        refine_lattice=refine_lattice,
+        max_strain=max_strain,
+        strain_penalty=strain_penalty,
+        rerank_top_k=rerank_top_k,
+        kalpha2=kalpha2_cfg,
     )
     session.ledger.append(
         "mcp_identify", {"mode": "single", "n_elements": len(elements), "reason": reason}
@@ -542,6 +575,7 @@ def identify_phases(
                 "energy_above_hull": finite_or_none(m.reference.energy_above_hull)
                 if m.reference.energy_above_hull is not None
                 else None,
+                "strain": finite_or_none(m.strain),
             }
             for m in result.matches
         ],
@@ -562,6 +596,10 @@ def identify_phase_mixtures(
     *,
     hull_cutoff_ev: float | None = 0.1,
     subtract_bg: bool = False,
+    refine_lattice: bool = False,
+    kalpha2: Mapping[str, object] | None = None,
+    prefilter_top_k: int | None = None,
+    prefilter_dynamic: bool = False,
     reason: str = "",
 ) -> dict:
     """未知パターン + 元素一覧から多相混合を同定する (M6 委譲境界)。🔵 FR-110/115
@@ -572,10 +610,26 @@ def identify_phase_mixtures(
 
     :param subtract_bg: 同定前に SNIP 背景減算をオプトイン適用する (① と同じ既定 False)。
       観測パターンが**既に背景減算済み**の場合に True を渡すと二重減算になるため注意。
+    :param refine_lattice: True で各候補の計算ピークを観測へ格子整合してから絞り込み/木探索に使う
+      (DFT 緩和格子のピーク位置ずれを吸収, Dara フロー)。MP(DFT) 由来の候補を使うときに使う。
+    :param kalpha2: Kα2 サテライト設定の JSON dict (``identify_phases`` と同じ変換規約:
+      ``{"intensity_ratio": float, "wavelength_ratio": float}``、両フィールドとも省略可)。
+      Kα2 未除去の実験室 X 線データにのみ使う (除去済みなら二重補正になるため None のまま)。
+      不正なキー/型は ``{"error", "error_type":"ValueError"}`` へ縮退する (静かに無視しない)。
+    :param prefilter_top_k: 絞り込みの安全上限。実効スコア上位 k 相のみ木探索へ渡す
+      (多相で候補が多すぎるときに使う)。``prefilter_dynamic`` と併用可。
+    :param prefilter_dynamic: True で動的閾値 (スコア分布の変曲点, Dara 準拠) を適用し、良い相を
+      件数に依らず残す (固定 top-k より正解を落としにくい)。
+    Raises:
+        なし (供給元未設定・不正な kalpha2 spec は error dict へ縮退)。
     """
     provider = session.reference_provider
     if provider is None:
         return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    try:
+        kalpha2_cfg = kalpha2_from_spec(kalpha2)
+    except ValueError as exc:
+        return {"error": str(exc), "error_type": "ValueError"}
     two_theta = np.asarray(two_theta, dtype=float)
     intensity = np.asarray(intensity, dtype=float)
     result = _identify_phase_mixtures(
@@ -585,6 +639,10 @@ def identify_phase_mixtures(
         elements=elements,
         hull_cutoff_ev=hull_cutoff_ev,
         subtract_bg=subtract_bg,
+        refine_lattice=refine_lattice,
+        kalpha2=kalpha2_cfg,
+        prefilter_top_k=prefilter_top_k,
+        prefilter_dynamic=prefilter_dynamic,
     )
     session.ledger.append(
         "mcp_identify", {"mode": "mixture", "n_elements": len(elements), "reason": reason}

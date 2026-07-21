@@ -58,6 +58,8 @@ from tsumugin.mcp.tools import (
     run_mem,
     submit_analysis,
 )
+from tsumugin.reference.engine import identify_phases as _layer1_identify_phases
+from tsumugin.reference.mixture import identify_phase_mixtures as _layer1_identify_phase_mixtures
 from tsumugin.reference.model import ReferencePhase
 from tsumugin.search.peaks import Peak
 
@@ -322,6 +324,185 @@ def test_identify_phase_mixtures_tool_accepts_subtract_bg_true_without_error():
     out = identify_phase_mixtures(session, tt, y, ["Fe", "O"], subtract_bg=True)
     assert "error" not in out
     assert out["mode"] == "mixture"
+
+
+# ===========================================================================
+# Issue #118: ① identify_phases/identify_phase_mixtures の主要パラメータ配線
+# (refine_lattice/max_strain/strain_penalty/rerank_top_k/scoring/kalpha2 —
+#  reference.engine.identify_phases; refine_lattice/kalpha2/prefilter_top_k/prefilter_dynamic —
+#  reference.mixture.identify_phase_mixtures)。② に無いパラメータは ③ から到達不能 (§4.5)。
+# ===========================================================================
+
+
+def test_identify_phases_threads_new_kwargs_to_layer1(monkeypatch):
+    """② の新パラメータが①へ実際に渡ること (kwargs をスパイで検証, デフォルトと異なる値で確認)。"""
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phases
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phases", spy)
+
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0, 30.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 30.0, 40.0])
+    out = identify_phases(
+        session, tt, y, ["Fe", "O"],
+        scoring="coverage",
+        refine_lattice=True,
+        max_strain=0.02,
+        strain_penalty=0.5,
+        rerank_top_k=2,
+        kalpha2={"intensity_ratio": 0.3, "wavelength_ratio": 1.01},
+    )
+    assert "error" not in out
+    assert captured["scoring"] == "coverage"
+    assert captured["refine_lattice"] is True
+    assert captured["max_strain"] == 0.02
+    assert captured["strain_penalty"] == 0.5
+    assert captured["rerank_top_k"] == 2
+    from tsumugin.reference.kalpha import KAlpha2
+
+    assert captured["kalpha2"] == KAlpha2(intensity_ratio=0.3, wavelength_ratio=1.01)
+
+
+def test_identify_phases_default_kwargs_match_layer1_defaults(monkeypatch):
+    """省略時は①既定値と同一の呼び出しになること (後方互換)。"""
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phases
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phases", spy)
+
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0, 30.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 30.0, 40.0])
+    identify_phases(session, tt, y, ["Fe", "O"])
+
+    sig = inspect.signature(_layer1_identify_phases)
+    assert captured["scoring"] == sig.parameters["scoring"].default
+    assert captured["refine_lattice"] == sig.parameters["refine_lattice"].default
+    assert captured["max_strain"] == sig.parameters["max_strain"].default
+    assert captured["strain_penalty"] == sig.parameters["strain_penalty"].default
+    assert captured["rerank_top_k"] == sig.parameters["rerank_top_k"].default
+    assert captured["kalpha2"] is None
+
+
+def test_identify_phases_kalpha2_none_stays_none(monkeypatch):
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phases
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phases", spy)
+
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0])
+    identify_phases(session, tt, y, ["Fe", "O"], kalpha2=None)
+    assert captured["kalpha2"] is None
+
+
+def test_identify_phases_invalid_kalpha2_spec_degrades_to_error_dict():
+    """不正な kalpha2 spec は例外を送出せず error dict へ縮退する (② 不変条件)。"""
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0])
+    out = identify_phases(session, tt, y, ["Fe", "O"], kalpha2={"unknown_key": 1})
+    assert out.get("error_type") == "ValueError"
+    assert "unknown_key" in out["error"]
+
+
+def test_identify_phases_invalid_kalpha2_spec_does_not_mutate_ledger():
+    """入力不正時は破壊的操作 (ledger 追記含む) をしない。"""
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0])
+    identify_phases(session, tt, y, ["Fe", "O"], kalpha2={"bad": 1})
+    assert "mcp_identify" not in [e.kind for e in session.ledger.entries]
+
+
+def test_identify_phase_mixtures_threads_new_kwargs_to_layer1(monkeypatch):
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phase_mixtures
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phase_mixtures", spy)
+
+    prov = _FakeRefProvider([
+        _ref_phase("mp-A", [20.0, 40.0]),
+        _ref_phase("mp-B", [30.0, 50.0]),
+    ])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0, 30.0, 50.0])
+    out = identify_phase_mixtures(
+        session, tt, y, ["Fe", "O"],
+        refine_lattice=True,
+        kalpha2={"intensity_ratio": 0.4},
+        prefilter_top_k=1,
+        prefilter_dynamic=True,
+    )
+    assert "error" not in out
+    assert captured["refine_lattice"] is True
+    from tsumugin.reference.kalpha import KAlpha2
+
+    assert captured["kalpha2"] == KAlpha2(intensity_ratio=0.4)
+    assert captured["prefilter_top_k"] == 1
+    assert captured["prefilter_dynamic"] is True
+
+
+def test_identify_phase_mixtures_default_kwargs_match_layer1_defaults(monkeypatch):
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phase_mixtures
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phase_mixtures", spy)
+
+    prov = _FakeRefProvider([
+        _ref_phase("mp-A", [20.0, 40.0]),
+        _ref_phase("mp-B", [30.0, 50.0]),
+    ])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0, 30.0, 50.0])
+    identify_phase_mixtures(session, tt, y, ["Fe", "O"])
+
+    sig = inspect.signature(_layer1_identify_phase_mixtures)
+    assert captured["refine_lattice"] == sig.parameters["refine_lattice"].default
+    assert captured["kalpha2"] is None
+    assert captured["prefilter_top_k"] == sig.parameters["prefilter_top_k"].default
+    assert captured["prefilter_dynamic"] == sig.parameters["prefilter_dynamic"].default
+
+
+def test_identify_phase_mixtures_invalid_kalpha2_spec_degrades_to_error_dict():
+    prov = _FakeRefProvider([_ref_phase("mp-A", [20.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0])
+    out = identify_phase_mixtures(session, tt, y, ["Fe", "O"], kalpha2={"bad": 1})
+    assert out.get("error_type") == "ValueError"
+    assert "bad" in out["error"]
 
 
 # ===========================================================================
