@@ -39,7 +39,7 @@ from ..reference.engine import identify_phases as _identify_phases
 from ..reference.mixture import identify_phase_mixtures as _identify_phase_mixtures
 from ..reference.provider import ReferenceProvider
 from ..search.tree import HypothesisTreeSearch, SearchResult
-from ..selection.engine import FinalSelectionEngine
+from ..selection.engine import FinalSelectionEngine, detect_escalations
 from ..sequential.trajectory import Trajectory
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
@@ -64,7 +64,9 @@ __all__ = [
     "identify_phase_mixtures",
     "identify_phases",
     "list_hypotheses",
+    "list_review_queue",
     "propose_discriminating_measurements",
+    "resolve_review_item",
     "revert",
     "run_mem",
     "submit_analysis",
@@ -197,11 +199,18 @@ def list_hypotheses(session: AnalysisSession) -> dict:
 
     【委譲】: ``session.search_result.to_summary()`` の /api/result スキーマ準拠 dict を返す。
       直近の探索結果が無い場合は空一覧 dict を返す (縮退・例外化しない)。
-    【空フォールバック (F4)】: search_result 不在時も to_summary と同じ 6 キー
-      (ranked/unknown_phase_flag/unmatched_observed/extra_calculated/warnings/n_hypotheses)
+    【空フォールバック (F4)】: search_result 不在時も to_summary と同じ 6 キー + ``escalations``
+      (ranked/unknown_phase_flag/unmatched_observed/extra_calculated/warnings/n_hypotheses/escalations)
       を揃えた縮退 dict を返す (スキーマ整合・下流の KeyError 防止)。
-    【テスト対応】: test_list_hypotheses_delegates_to_search_result_summary。
-    🔵 信頼性レベル: interfaces.py mcp/tools 節 / tree.py to_summary に依拠。
+    【Issue #125】: ``escalations`` は ``selection.detect_escalations`` (FR-403 の 4 条件) を
+      ``session.search_result`` に対して都度計算した tuple → list。**accept する前にここを見る**の
+      が ③ の手順 (SKILL.md「エスカレーションを確認する」)。空でなければ自動 accept せず
+      ``list_review_queue`` で未解決の確認事項も併せて読む。
+    【テスト対応】: test_list_hypotheses_delegates_to_search_result_summary /
+      test_list_hypotheses_includes_escalations_when_detected /
+      test_list_hypotheses_escalations_empty_when_none_detected /
+      test_list_hypotheses_empty_fallback_has_six_keys (7 キー化)。
+    🔵 信頼性レベル: interfaces.py mcp/tools 節 / tree.py to_summary に依拠 / Issue #125。
     """
     if session.search_result is None:
         return {
@@ -211,8 +220,13 @@ def list_hypotheses(session: AnalysisSession) -> dict:
             "extra_calculated": [],
             "warnings": [],
             "n_hypotheses": 0,
+            "escalations": [],
         }
-    return session.search_result.to_summary()
+    summary = session.search_result.to_summary()
+    # 【Issue #125】: accept 前に③がエスカレーションを確認できる唯一の場所。空でなければ
+    # 自動 accept せず review queue を確認すべき、というシグナルを ③ に渡す (SKILL.md 手順)。
+    summary["escalations"] = list(detect_escalations(session.search_result))
+    return summary
 
 
 def compare_hypotheses(
@@ -313,10 +327,16 @@ def accept_hypothesis(
       accepted 化を拒否し ``{"status": "recommend_only", "recommended_id": ...}`` を返す
       (REQ-106/EDGE-010)。それ以外は ``FinalSelectionEngine.accept(result, id, by=by)`` へ委譲。
     【記録】: accept 成立時のみ ``mcp_accept`` を ledger 記録する (accept 自体も selection 経由で
-      ``selection_accept`` を記録)。
+      ``selection_accept`` を記録)。``FinalSelectionEngine.accept`` は同時にエスカレーション成立時
+      queue へも通知する (Issue #125)。
+    【Issue #125】: 応答に ``escalations`` を含める。``selection.accept`` を直接呼ぶこの経路は
+      ``decide()`` を迂回するため、accept 成立時点のエスカレーション状況を③へ明示的に返す
+      (accept 後でも「実は僅差競合だった」等を確認できるようにする)。
     【テスト対応】: test_accept_agent_mode_accepts / test_accept_human_by_human_accepts_in_human_mode /
-      test_human_mode_rejects_agent_accept / test_accept_records_and_verifies。
-    🔵 信頼性レベル: interfaces.py mcp/tools 節 / selection/engine.accept に依拠。
+      test_human_mode_rejects_agent_accept / test_accept_records_and_verifies /
+      test_accept_hypothesis_includes_escalations_key /
+      test_accept_hypothesis_escalations_empty_when_none_detected。
+    🔵 信頼性レベル: interfaces.py mcp/tools 節 / selection/engine.accept に依拠 / Issue #125。
     """
     # 【human モード拒否】: agent 主導の accepted 化を拒み推奨提示に留める (EDGE-010) 🔵 REQ-106
     if session.selection.mode == "human" and by == "agent":
@@ -331,12 +351,20 @@ def accept_hypothesis(
         return {"status": "error", "error": "unknown_hypothesis"}
 
     # 【委譲】: FinalSelectionEngine.accept が mode を同一適用し accepted 化を記録する 🔵 REQ-023
+    #   (Issue #125: accept 内部でエスカレーション成立時 queue へも通知される)
     accepted = session.selection.accept(session.search_result, hypothesis_id, by=by)
     # 【理由付き記録】: MCP 経由の accept を追記する (selection 側 selection_accept と二重記録) 🔵 REQ-025
     session.ledger.append(
         "mcp_accept", {"hypothesis_id": hypothesis_id, "by": by, "reason": reason}
     )
-    return {"status": "accepted", "hypothesis_id": accepted.id, "accepted_by": accepted.accepted_by}
+    return {
+        "status": "accepted",
+        "hypothesis_id": accepted.id,
+        "accepted_by": accepted.accepted_by,
+        # 【Issue #125】: accept 対象の SearchResult に対するエスカレーション再計算 (detect_escalations
+        #   は純粋関数・副作用ゼロなので同じ result に対し何度呼んでも同じ tuple を返す, NFR-102) 🔵
+        "escalations": list(detect_escalations(session.search_result)),
+    }
 
 
 def revert(session: AnalysisSession, hypothesis_id: str, *, note: str = "") -> dict:
@@ -636,6 +664,95 @@ def identify_pattern(
     }
 
 
+def list_review_queue(session: AnalysisSession, *, include_resolved: bool = False) -> dict:
+    """Review Queue の内容を返す (Issue #125)。② から ReviewQueue を読む唯一の経路。
+
+    【背景】: ``ReviewQueue`` は ``FinalSelectionEngine.decide()``/``accept()`` がエスカレーション
+      成立時に通知する追記型キューで、① には実装済みだったが ② に露出しておらず積まれた内容を
+      人間が確認する手段が無かった (DOA)。``accept_hypothesis`` は ``selection.accept`` を直接呼ぶ
+      経路だが、``FinalSelectionEngine.accept`` 自体がエスカレーション検出時に queue へ通知する
+      よう修正済みなので、本ツールは常に空を返す DOA にはならない。
+    【委譲】: ``session.selection.review_queue`` (``FinalSelectionEngine.review_queue`` プロパティ)
+      から ``ReviewQueue`` を取得し、``items``/``unresolved`` を素の型 list[dict] に変換して返す。
+    【queue 未注入 (error 縮退)】: ``review_queue`` が ``None`` (未注入) のときは **「0 件」と
+      答えず** error dict へ縮退する (② の空/不正入力契約 — 0 件は「注入されていて中身が空」と
+      「そもそも注入されていない」を区別しないと危険な誤情報になる)。
+    【既定は未解決のみ】: ``include_resolved=False`` (既定) は ``unresolved`` のみを返す。
+      ``include_resolved=True`` で解決済みも含めた全件 (``items``) を返す。
+    【テスト対応】: tests/mcp/test_review_tools.py の list_review_queue 系。
+
+    :param include_resolved: True で解決済みも含めた全件を返す (既定は未解決のみ)
+    :returns: 成功時 ``{"status":"ok","items":[...],"unresolved_count":N,"total_count":M}``。
+      queue 未注入時は ``{"status":"error","error":...,"error_type":"no_review_queue"}``
+    """
+    queue = session.selection.review_queue
+    if queue is None:
+        return {
+            "status": "error",
+            "error": "review_queue が FinalSelectionEngine に注入されていません (確認事項の蓄積が"
+            "行われていない可能性)。",
+            "error_type": "no_review_queue",
+        }
+    source = queue.items if include_resolved else queue.unresolved
+    return {
+        "status": "ok",
+        "items": [
+            {
+                "item_id": it.item_id,
+                "reason": it.reason,
+                "hypothesis_id": it.hypothesis_id,
+                "frame_index": it.frame_index,
+                "detail": it.detail,
+                "resolved": it.resolved,
+            }
+            for it in source
+        ],
+        "unresolved_count": len(queue.unresolved),
+        "total_count": len(queue.items),
+    }
+
+
+def resolve_review_item(session: AnalysisSession, item_id: str, *, note: str = "") -> dict:
+    """Review Queue の 1 件を解決済みにする (Issue #125)。**人間の裁定を記録する操作**。
+
+    【権限境界】: これは人間がエスカレーション事項を確認・裁定したことを記録する操作であり、
+      ③ (agent) が独断で呼んではならない (SKILL.md の権限境界節に準拠)。ユーザーの確認を経てから
+      呼ぶこと。
+    【委譲】: ``session.selection.review_queue.resolve(item_id, note=note)`` へ委譲する
+      (``ReviewQueue.resolve`` は削除でなく resolved=True への状態遷移, P2)。
+    【未知 item_id (② は例外を送出しない)】: ``ReviewQueue.resolve`` は未知 item_id で ``KeyError``
+      を送出する (① の誤操作防御)。② はこれを捕捉して error dict へ縮退する (③ は LLM なので
+      例外は回復不能なハード失敗になるため)。
+    【queue 未注入】: ``list_review_queue`` と同様 error dict へ縮退する。
+    【テスト対応】: tests/mcp/test_review_tools.py の resolve_review_item 系。
+
+    :param item_id: 解決する ReviewItem の item_id ("rq-0000" 形式)
+    :param note: 解決理由の自然言語メモ (任意)
+    :returns: 成功時 ``{"status":"resolved","item_id":...,"unresolved_count":N}``。
+      queue 未注入/未知 item_id は ``{"status":"error","error":...,"error_type":...}``
+    """
+    queue = session.selection.review_queue
+    if queue is None:
+        return {
+            "status": "error",
+            "error": "review_queue が FinalSelectionEngine に注入されていません。",
+            "error_type": "no_review_queue",
+        }
+    try:
+        queue.resolve(item_id, note=note)
+    except KeyError:
+        return {
+            "status": "error",
+            "error": f"未知の item_id です: {item_id}",
+            "error_type": "unknown_item_id",
+        }
+    return {
+        "status": "resolved",
+        "item_id": item_id,
+        "unresolved_count": len(queue.unresolved),
+    }
+
+
 # 【ツールレジストリ】: 10 ツール (M4 8 + M6 相同定 2) + M8 実構造 Rietveld 3 + M9 in situ 逐次 3
 #   + M8-③ MEM model-fix 3 + operando 診断 4 + M10 anchor 1 = 24 ツール名 → 実処理関数。アダプタ層
 #   (server.py) が配線に使う単一情報源 🔵 REQ-021。M8 の 3 ツール (auto_rietveld/propose_next_actions/
@@ -658,6 +775,8 @@ MCP_TOOLS: Mapping[str, object] = {
     "identify_phase_mixtures": identify_phase_mixtures,
     "identify_pattern": identify_pattern,
     "propose_discriminating_measurements": propose_discriminating_measurements,
+    "list_review_queue": list_review_queue,
+    "resolve_review_item": resolve_review_item,
     **_RIETVELD_TOOLS,
     **_INSITU_TOOLS,
     **_MEM_MODEL_TOOLS,

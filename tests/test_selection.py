@@ -989,3 +989,87 @@ def test_decide_surfaces_derived_guard_escalation():
     assert "guard_escalated" in decision.escalations  # 【確認内容】: 裁定まで到達 🔵
     assert decision.accepted is None  # 【確認内容】: エスカレーション時は自動 accept しない 🔵
     assert decision.provisional_id == "h1"  # 【確認内容】: 暫定裁定として best を提示 🔵
+
+
+# ---------------------------------------------------------------------------
+# 4. Issue #125: review_queue プロパティ / accept() のエスカレーション通知
+# ---------------------------------------------------------------------------
+
+
+def test_review_queue_property_returns_injected_queue():
+    # 【テスト目的】: review_queue プロパティが注入済み ReviewQueue をそのまま読み取り専用で返す
+    # 【期待される動作】: 注入したインスタンスと同一オブジェクトが返る
+    # 🔵 信頼性: Issue #125 — ② list_review_queue が到達する唯一の経路
+    from tsumugin.selection import FinalSelectionEngine
+
+    queue = ReviewQueue()
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger(), queue=queue)
+
+    assert engine.review_queue is queue  # 【確認内容】: 注入したインスタンスと同一 🔵
+
+
+def test_review_queue_property_none_when_not_injected():
+    # 【テスト目的】: queue 未注入時は review_queue が None を返す (② の error 縮退判定に使う)
+    from tsumugin.selection import FinalSelectionEngine
+
+    engine = FinalSelectionEngine(mode="agent", ledger=Ledger())
+
+    assert engine.review_queue is None  # 【確認内容】: 未注入は None 🔵
+
+
+def test_accept_notifies_queue_when_escalation_present():
+    # 【テスト目的】: accept() が明示 accept 時もエスカレーション成立中なら Queue へ通知する (Issue #125)
+    # 【背景】: decide() を経由しない accept_hypothesis(MCP) 経路でも人間の後追い確認事項を蓄積する
+    from tsumugin.selection import FinalSelectionEngine
+
+    queue = ReviewQueue()
+    engine = FinalSelectionEngine(mode="human", ledger=Ledger(), queue=queue)
+    # 2 位 close_competitor=True で detect_escalations が "close_competitor" を発火する
+    result = _result([_ranked("h1", 10.0, False), _ranked("h2", 10.0, True)])
+
+    engine.accept(result, "h1", by="human")
+
+    assert len(queue.items) >= 1  # 【確認内容】: Queue へ通知された 🔵
+    assert any(i.reason == "close_competitor" for i in queue.items)  # 【確認内容】: 該当 reason 🔵
+    assert any(i.hypothesis_id == "h1" for i in queue.items)  # 【確認内容】: accept 対象の id を運ぶ 🔵
+
+
+def test_accept_does_not_notify_queue_when_no_escalation():
+    # 【テスト目的】: エスカレーション不成立時は accept() が Queue へ何も追加しない
+    from tsumugin.selection import FinalSelectionEngine
+
+    queue = ReviewQueue()
+    engine = FinalSelectionEngine(mode="human", ledger=Ledger(), queue=queue)
+    result = _result([_ranked("h1", 10.0, False)])
+
+    engine.accept(result, "h1", by="human")
+
+    assert len(queue.items) == 0  # 【確認内容】: エスカレーション無しでは通知しない 🔵
+
+
+def test_accept_notify_uses_frame_index_kwarg():
+    # 【テスト目的】: accept() の frame_index キーワード引数が Queue 通知にそのまま渡る (decide() と対称)
+    from tsumugin.selection import FinalSelectionEngine
+
+    queue = ReviewQueue()
+    engine = FinalSelectionEngine(mode="human", ledger=Ledger(), queue=queue)
+    result = _result([_ranked("h1", 10.0, False), _ranked("h2", 10.0, True)])
+
+    engine.accept(result, "h1", by="human", frame_index=7)
+
+    assert any(i.frame_index == 7 for i in queue.items)  # 【確認内容】: frame_index が伝播する 🔵
+
+
+def test_accept_without_frame_index_is_backward_compatible():
+    # 【テスト目的】: 既存呼び出し (frame_index 無指定) が後方互換で動作し続ける
+    from tsumugin.selection import FinalSelectionEngine
+
+    led = Ledger()
+    engine = FinalSelectionEngine(mode="human", ledger=led)
+    result = _result([_ranked("h1", 10.0, False)])
+
+    # 【処理内容】: 既存シグネチャのまま呼んでも例外にならず accepted 化される 🔵
+    h = engine.accept(result, "h1", by="human")
+
+    assert h.status == "accepted"  # 【確認内容】: 既存呼び出しが引き続き成立する 🔵
+    assert h.accepted_by == "human"  # 【確認内容】: 既存挙動が変わらない 🔵

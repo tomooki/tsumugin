@@ -174,7 +174,9 @@ def test_eight_tools_registered_in_mcp_tools():
     #   + M9 in situ 逐次 3 + M8-③ MEM 4 (mem_rietveld_iterate #100 含む) + operando 診断 4
     #   + M10 anchor 1 (anchored_sequential, #97) + 構造モデル比較 1 (compare_structure_models, #100)
     #   + 電気化学同期 1 (align_echem, #103)
-    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108) = 31 ツール登録
+    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108)
+    #   + alkali_budget 1 (FR-318) + review queue 露出 2 (list_review_queue/resolve_review_item,
+    #   Issue #125) = 34 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -208,6 +210,8 @@ def test_eight_tools_registered_in_mcp_tools():
         "alkali_budget",
         "convert_pattern",
         "write_instrument_params",
+        "list_review_queue",
+        "resolve_review_item",
     }
     assert set(MCP_TOOLS.keys()) == expected
 
@@ -512,6 +516,23 @@ def test_list_hypotheses_delegates_to_search_result_summary():
     assert ids == ["hyp-0000", "hyp-0001"]
 
 
+def test_list_hypotheses_includes_escalations_when_detected():
+    # 【テスト目的】: list_hypotheses が escalations (Issue #125) を含み、accept 前に③が確認できる
+    # 【背景】: 2 位 close_competitor=True で detect_escalations が "close_competitor" を検出する
+    ranked = [_ranked("hyp-0000", 10.0), _ranked("hyp-0001", 10.0, close=True)]
+    session = _session(ranked=ranked)
+    result = list_hypotheses(session)
+    assert "close_competitor" in result["escalations"]
+
+
+def test_list_hypotheses_escalations_empty_when_none_detected():
+    # 【テスト目的】: エスカレーション不成立時は escalations が空リストで返る
+    ranked = [_ranked("hyp-0000", 10.0), _ranked("hyp-0001", 20.0)]
+    session = _session(ranked=ranked)
+    result = list_hypotheses(session)
+    assert result["escalations"] == []
+
+
 def test_compare_hypotheses_delegates_to_rank(monkeypatch):
     # 【テスト目的】: compare_hypotheses が evidence.ranking.rank へ委譲する
     from tsumugin.mcp import tools as t
@@ -601,6 +622,24 @@ def test_accept_human_by_human_accepts_in_human_mode():
     session = _session(mode="human", ranked=ranked)
     result = accept_hypothesis(session, "hyp-0000", by="human", reason="human-accept")
     assert result["status"] == "accepted"
+
+
+def test_accept_hypothesis_includes_escalations_key():
+    # 【テスト目的】: accept_hypothesis の応答にも escalations (Issue #125) が含まれる
+    ranked = [_ranked("hyp-0000", 10.0), _ranked("hyp-0001", 10.0, close=True)]
+    session = _session(mode="agent", ranked=ranked)
+    result = accept_hypothesis(session, "hyp-0000", by="agent")
+    assert result["status"] == "accepted"
+    assert "close_competitor" in result["escalations"]
+
+
+def test_accept_hypothesis_escalations_empty_when_none_detected():
+    # 【テスト目的】: エスカレーション不成立時は accept_hypothesis の escalations が空リスト
+    ranked = [_ranked("hyp-0000", 10.0)]
+    session = _session(mode="agent", ranked=ranked)
+    result = accept_hypothesis(session, "hyp-0000", by="agent")
+    assert result["status"] == "accepted"
+    assert result["escalations"] == []
 
 
 def test_revert_uses_same_engine_registry():
@@ -930,7 +969,7 @@ def test_submit_joint_skips_empty_candidate_set_without_indexerror(monkeypatch):
 
 
 def test_list_hypotheses_empty_fallback_has_six_keys():
-    # 【F4】: search_result None 時も to_summary と同じ 6 キーが揃うこと。
+    # 【F4】: search_result None 時も to_summary と同じ 6 キー + escalations (Issue #125) が揃うこと。
     session = _session()  # ranked=None → search_result None
     result = list_hypotheses(session)
     assert set(result.keys()) == {
@@ -940,7 +979,9 @@ def test_list_hypotheses_empty_fallback_has_six_keys():
         "extra_calculated",
         "warnings",
         "n_hypotheses",
+        "escalations",
     }
     assert result["ranked"] == []
     assert result["unknown_phase_flag"] is False
     assert result["n_hypotheses"] == 0
+    assert result["escalations"] == []

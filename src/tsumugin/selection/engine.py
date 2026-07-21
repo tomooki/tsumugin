@@ -129,6 +129,16 @@ class FinalSelectionEngine:
         """【機能概要】: 現在の裁定モードを読み取り専用で返す 🔵"""
         return self._mode
 
+    @property
+    def review_queue(self) -> ReviewQueue | None:
+        """【機能概要】: 注入された ReviewQueue を読み取り専用で返す (Issue #125)。
+
+        【実装方針】: 内部 _queue をそのまま返す (未注入時は None)。② `list_review_queue` /
+        `resolve_review_item` が review queue へアクセスする唯一の経路になる (§4.5 到達可能性)。
+        🔵 信頼性レベル: Issue #125 — ② が review queue を読む経路
+        """
+        return self._queue
+
     def set_mode(self, mode: Literal["agent", "human"]) -> None:
         """【機能概要】: 裁定モードを切替し、切替を ledger に追記する (実行中いつでも切替可能)。
 
@@ -209,25 +219,42 @@ class FinalSelectionEngine:
         )
 
     def accept(
-        self, result: SearchResult, hypothesis_id: str, *, by: Literal["agent", "human"]
+        self,
+        result: SearchResult,
+        hypothesis_id: str,
+        *,
+        by: Literal["agent", "human"],
+        frame_index: int | None = None,
     ) -> Hypothesis:
         """【機能概要】: 指定仮説を明示的に accept し accepted 化した新 Hypothesis を返す。
 
         【実装方針】: result.hypotheses から対象を引き当て (未知 id は KeyError)、replace で
         status="accepted"/accepted_by=by の新インスタンスを作りレジストリ + ledger に記録する (REQ-013/014)。
         入力 SearchResult は変更しない (D5)。
+        【Issue #125】: エスカレーション条件が立っている中で accept するのは、まさに人間が後追いで
+        確認すべき事象。``decide()`` を経由しない明示 accept 経路 (② `accept_hypothesis` は
+        `selection.accept` を直接呼び `decide` を迂回する) でも Review Queue へ通知することで、
+        エスカレーションが ③ から不可視になる DOA を回避する。``frame_index`` は ``decide()`` と
+        対称に追加した末尾・既定 None のキーワード引数で、既存呼び出しは無指定のまま動作する。
         【テスト対応】: N-04 (human 明示 accept) / N-08 (追記型 Mapping) / E-02 (未知 id 例外) / B-03 (非破壊)。
-        🔵 信頼性レベル: 要件定義 2.2 accept / REQ-013/014 / D5
+        Issue #125: test_accept_notifies_queue_when_escalation_present /
+        test_accept_does_not_notify_queue_when_no_escalation / test_accept_notify_uses_frame_index_kwarg /
+        test_accept_without_frame_index_is_backward_compatible。
+        🔵 信頼性レベル: 要件定義 2.2 accept / REQ-013/014 / D5 / Issue #125
         """
         # 【引き当て】: 存在しない hypothesis_id は誤操作防御として KeyError (レジストリ非汚染) 🟡
         hyp = self._lookup(result, hypothesis_id)
+        # 【エスカレーション検出】: rationale とキュー通知の双方で同じ検出結果を使い回す (整合性) 🔵
+        escalations = detect_escalations(result)
         # 【根拠生成】: 対象仮説の ranked 情報から決定論的 rationale を組む 🔵
         target = next((r for r in result.ranked if r.hypothesis.id == hypothesis_id), None)
         rationale = self._build_rationale(
             target=target,
             unknown=result.unmatched.unknown_phase_flag,
-            escalations=detect_escalations(result),
+            escalations=escalations,
         )
+        # 【Queue 通知 (Issue #125)】: 検出条件が空なら _notify_queue は何もしない (ループ 0 回) 🔵
+        self._notify_queue(escalations, hypothesis_id=hypothesis_id, frame_index=frame_index)
         return self._register_accept(hyp, by=by, rationale=rationale)
 
     def revert(self, hypothesis_id: str, *, note: str = "") -> Hypothesis:
