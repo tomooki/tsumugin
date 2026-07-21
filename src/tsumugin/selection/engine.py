@@ -66,9 +66,9 @@ def detect_escalations(
 
     # 【条件 (d) guard_escalated】: ガード N 連続発動 (FR-212) 🔵
     # 【自動導出】: 明示指定が無ければ result.final_reports から拾う。StagedRefinementEngine の
-    #   3 連続失敗フラグは SearchResult に既に届いているのに、実運用の呼び出し側 (decide /
-    #   _decide_human) が誰も staged_escalated を渡しておらず、ledger に載るだけで裁定に
-    #   効いていなかった (仕様 FR-212「3 回失敗で Triage へ」の実質未発火)。
+    #   3 連続失敗フラグは SearchResult に既に届いているのに、本モジュール内の呼び出し側
+    #   (`FinalSelectionEngine.decide` / `.accept`) がどちらも staged_escalated を渡しておらず、
+    #   ledger に載るだけで裁定に効いていなかった (仕様 FR-212「3 回失敗で Triage へ」の実質未発火)。
     # 【明示優先】: True/False の明示指定は導出より優先する (既存呼び出しの後方互換)。
     if staged_escalated is None:
         staged_escalated = any(

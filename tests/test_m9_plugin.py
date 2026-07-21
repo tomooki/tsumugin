@@ -247,3 +247,40 @@ def test_charge_constraint_spec_keys_exist_in_real_signature():
 
     sig2 = inspect.signature(anchored_sequential)
     assert "charge_constraint" in sig2.parameters
+
+
+def test_bond_gate_spec_keys_exist_in_real_fields():
+    """skill/PLAYBOOK が教える anchor_config の JSON キーが実フィールドに実在すること (FR-335)。
+
+    先例 `test_charge_constraint_spec_keys_exist_in_real_signature` と同じ規律:
+    **③ に新しい JSON ツマミを教えたら、同じ PR で実署名/実フィールドとの突合ガードを置く**。
+    `AnchorConfig.from_dict` は未知キーを ValueError にするので「黙って間違う」形にはならないが、
+    ③ が手順書どおり送って実行時に落ちる前に CI で気づけるようにする。
+    """
+    import dataclasses
+    import inspect
+
+    from tsumugin.insitu.anchor.model import AnchorConfig
+    from tsumugin.mcp.anchor_tools import anchored_sequential
+
+    # ② の入口に anchor_config があること
+    assert "anchor_config" in inspect.signature(anchored_sequential).parameters, (
+        "skill は anchor_config を教えるが anchored_sequential に実在しない"
+    )
+
+    fields = {f.name for f in dataclasses.fields(AnchorConfig)}
+    for key in ("require_bond_validity", "bond_tol_lo", "bond_tol_hi"):
+        assert key in fields, f"skill/PLAYBOOK が教える {key} が AnchorConfig に実在しない"
+
+    # 手順書に実際に現れること (書いていない = ③ は使わない)
+    skill = _SKILL.read_text(encoding="utf-8")
+    assert "require_bond_validity" in skill, "insitu skill に FR-335 の使い方が無い"
+    assert "bond_gate" in skill, "insitu skill に bond_gate の読み方が無い"
+
+    playbook = Path(
+        "docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md"
+    ).read_text(encoding="utf-8")
+    assert "require_bond_validity" in playbook, (
+        "operando-diagnosis PLAYBOOK (非 Claude ハーネス向け) に FR-335 の使い方が無い — "
+        "偽相が全域に湧く病理を扱う J6 節が対象"
+    )

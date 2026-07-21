@@ -1407,8 +1407,10 @@ def test_selection_escalation_is_still_unreachable_or_the_note_is_stale():
 
     **限界**: ツール関数**自身の**ソーステキストの部分一致なので、ヘルパー関数を挟んだ
     間接呼び出しは追えない (既存の `test_anchor_is_still_unexposed_or_the_note_is_stale` と
-    同方式)。現状 `decide(` の呼び手は selection/refine_loop 内部のみで偽陰性は無いが、
-    ② がヘルパー経由で decide を呼ぶ形になったら本ガードはすり抜ける。
+    同方式)。現状 `FinalSelectionEngine.decide` の呼び手は本モジュール内部のみ (`src` 全体で
+    ヒットする `refine_loop/orchestrator.py` の `policy.decide` は同名だが別クラス
+    `RuleBasedPolicy` のメソッドで無関係) なので偽陰性は無いが、② がヘルパー経由で
+    decide を呼ぶ形になったら本ガードはすり抜ける。
     """
     callers = [
         name for name, fn in MCP_TOOLS.items()

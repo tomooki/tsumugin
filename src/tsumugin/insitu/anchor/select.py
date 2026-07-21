@@ -13,7 +13,7 @@ bic は `AutoRietveldResult` に n_params/chi2 が無いため `chi2 ≈ gof²·
 n_params 推定 (base + per_phase·相数) で再構成する (operando `_frame_bic` と同式)。相数ペナルティのみが
 前方/後方比較を分けるため、n_params の絶対精度は不要。numpy-only。
 
-信頼性: 🔵 architecture.md §5 / REQ-1009〜1011。
+信頼性: 🔵 architecture.md §5 (経路選定, REQ-1009〜1011) / §6 (結合距離ゲート, FR-335/REQ-1013)。
 """
 
 from __future__ import annotations

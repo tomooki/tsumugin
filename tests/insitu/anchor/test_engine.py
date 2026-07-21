@@ -154,3 +154,60 @@ def test_failed_frame_has_empty_esd():
 def test_empty_frames_returns_empty():
     res = run_anchored_sequential([], [ALPHA], runner=lambda *a: None, identifier=None)
     assert res.frames == ()
+
+
+def test_bond_gate_result_surfaces_in_warnings_and_ledger(monkeypatch):
+    """FR-335 ゲートの結果が engine の warnings + ledger に出ること。
+
+    select.py の判定ロジック自体は test_select.py が押さえているが、**その結果が ③ に
+    届くか**は engine の責務。結合ゲートが「僅差帯に妥当な経路が無い」と判断したのに
+    黙って採用すると、③ は相集合を疑う手掛かりを失う。
+
+    select.py は `check_bond_validity` を呼び出し時に遅延 import するため、モジュール属性の
+    差し替えが実行時に効く (実 CIF なしで警告経路を通せる)。
+    """
+    import tsumugin.autorietveld.validity as validity_mod
+
+    def fake_check(structure_path, refined_cell=None, *, bond_tol_lo=0.7,
+                   bond_tol_hi=1.3, expected_coordination=None):
+        # delta を常に結合不当 (崩壊セル) とみなす
+        return ValidityReport(passed="delta" not in structure_path)
+
+    monkeypatch.setattr(validity_mod, "check_bond_validity", fake_check)
+
+    cfg = AnchorConfig(anchor_confidence_min=0.5, anchor_rwp_max=15.0,
+                       base_params=30, per_phase_params=12, require_bond_validity=True)
+    conf = {0: 0.9, 1: 0.9, 2: 0.2, 3: 0.2, 4: 0.85, 5: 0.9}
+    specs = {0: (ALPHA,), 1: (ALPHA,), 2: (ALPHA,), 3: (ALPHA,),
+             4: (ALPHA, DELTA), 5: (ALPHA, DELTA)}
+
+    def identifier(frame):
+        i = _idx(frame)
+        return (conf[i], specs[i])
+
+    def runner(frame, phases, cells):
+        i = _idx(frame)
+        names = [p.phase_name for p in phases]
+        if names == ["alpha"]:
+            gof = 1.0 if i <= 2 else 3.0
+            rwp = 9.0 if i <= 2 else 30.0
+            return _res(rwp, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0}, gof=gof)
+        dfrac = {0: 0.01, 1: 0.02, 2: 0.05, 3: 0.30, 4: 0.55, 5: 0.75}.get(i, 0.3)
+        gof = 1.4 if i <= 2 else 1.0
+        return _res(9.5 if i <= 2 else 9.0,
+                    {n: (5.0, 5.0, 5.0, 90, 90, 90) for n in names},
+                    {"alpha": 1 - dfrac, "new_delta": dfrac}, gof=gof)
+
+    res = run_anchored_sequential(_frames(6), [ALPHA], runner=runner,
+                                  identifier=identifier, cfg=cfg)
+
+    gates = [e.payload.get("bond_gate") for e in res.ledger.entries
+             if e.kind == "m10_segment_choice"]
+    assert gates, "m10_segment_choice が ledger に無い"
+    assert any(g == "no_valid_candidate" for g in gates), (
+        f"delta を全て結合不当にしたのにゲートが発火していない: {gates}"
+    )
+    assert any("FR-335" in w for w in res.warnings), (
+        f"ゲート結果が warnings に出ていない (③ から不可視): {res.warnings}"
+    )
+    assert res.ledger.verify()
