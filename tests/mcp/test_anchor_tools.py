@@ -87,6 +87,27 @@ def test_anchored_sequential_exposes_per_segment_bic_for_phase_count_suppression
         assert "total_bic" in c, "区間選定の bic が ③ から見えない"
 
 
+def test_anchored_sequential_exposes_bond_gate_result():
+    """★crossovers に bond_gate を出すこと (FR-335 結合ゲートの効きを ③ に見せる)。
+
+    skills/insitu 手順 3′ は「効いたかどうかは `crossovers[].bond_gate` で読む」と指示する。
+    ② が返さなければその指示は**呼べるが黙って間違う**手順になる (§4.5 到達可能性)。
+    特に "no_valid_candidate" (僅差帯に結合妥当な経路が無い) は ③ が相集合を疑い直す
+    唯一の手掛かりなので、露出が欠けると疑う機会そのものが消える。
+    """
+    frames = [_frame(i) for i in range(3)]
+    phases = [_phase("mono"), _phase("cubic")]
+    out = anchored_sequential(
+        frames, phases,
+        anchor_table={"0": ["mono"], "2": ["mono", "cubic"]},
+        runner=_runner,
+    )
+    assert out["crossovers"]
+    for c in out["crossovers"]:
+        assert "bond_gate" in c, "FR-335 ゲートの結果が ③ から見えない"
+        assert c["bond_gate"] in ("", "kept", "moved", "no_valid_candidate")
+
+
 def test_anchored_sequential_carries_publication_values_per_frame():
     """per-frame の出版値 (重量分率 ± esd) が届くこと (seq_result_to_dict 流用の確認)。"""
     frames = [_frame(i) for i in range(3)]

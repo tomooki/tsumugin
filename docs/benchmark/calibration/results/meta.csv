@@ -1,0 +1,5 @@
+key,value
+n_problems,200
+seed,0
+n_close_competitor_problems,167
+close_competitor_fraction,0.8350

@@ -1,0 +1,8 @@
+FR-244 recommend_occupancy_release 発火確認 (NaCuHCF Na/O 混合サイト)
+
+joint (xray+neutron_tof): 2 件推奨
+  site=Na1_O3 elements=('Na', 'O') contrast=0.1941 param=global.occ.Na1_O3
+    rationale: phase0 site 'Na1_O3' 占有元素対 (Na,O) の X線/中性子コントラスト |f_norm-b_norm|=0.1941 が閾値 0.1500 以上のため、joint データで占有率 global.occ.Na1_O3 の解放を推奨する。
+  site=Na2_O1 elements=('Na', 'O') contrast=0.1941 param=global.occ.Na2_O1
+    rationale: phase0 site 'Na2_O1' 占有元素対 (Na,O) の X線/中性子コントラスト |f_norm-b_norm|=0.1941 が閾値 0.1500 以上のため、joint データで占有率 global.occ.Na2_O1 の解放を推奨する。
+xray-only (probe 種別 1 種): 0 件推奨 (joint 条件 [hist>=2 かつ probe 種別>=2] 未達のため空を期待)

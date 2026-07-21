@@ -26,6 +26,7 @@ import pytest
 from tsumugin.evidence.base import EvidenceResult
 from tsumugin.evidence.ranking import RankedHypothesis
 from tsumugin.model import Hypothesis, RefinementMetrics
+from tsumugin.refinement.staged import RefinementReport
 from tsumugin.search.matcher import UnmatchedPeakReport
 from tsumugin.search.tree import SearchResult
 from tsumugin.store.ledger import Ledger
@@ -49,7 +50,7 @@ def _ranked(hyp_id: str, rwp: float, close: bool) -> RankedHypothesis:
     return RankedHypothesis(hypothesis=h, evidence=ev, probability=0.5, close_competitor=close)
 
 
-def _result(ranked, *, unknown_phase: bool = False) -> SearchResult:
+def _result(ranked, *, unknown_phase: bool = False, final_reports=None) -> SearchResult:
     # 【テストデータ準備】: 木探索を回さず ranked / unmatched だけを最小構成した軽量 SearchResult
     # 【初期条件設定】: ledger/snapshots は空で純粋関数の非破壊検証に足りる 🔵
     led = Ledger()
@@ -61,10 +62,18 @@ def _result(ranked, *, unknown_phase: bool = False) -> SearchResult:
         unmatched=UnmatchedPeakReport(
             unmatched_observed=(), extra_calculated=(), unknown_phase_flag=unknown_phase
         ),
-        final_reports={},
+        final_reports=final_reports or {},
         ledger=led,
         snapshots=SnapshotStore(ledger=led),
         warnings=(),
+    )
+
+
+def _report(escalated: bool) -> RefinementReport:
+    # 【テストデータ準備】: escalated だけ意味を持つ最小 RefinementReport (FR-212 配線用)
+    m = RefinementMetrics(rwp=10.0, gof=1.0, chi2=1.0, n_obs=100, n_params=5, evidence={"bic": 0.0})
+    return RefinementReport(
+        final_phases=(), metrics=m, stage_outcomes=(), escalated=escalated
     )
 
 
@@ -924,3 +933,59 @@ def test_revert_ledger_count_never_decreases():
     # 【期待値確認】: revert は削除でなく追記で表現される
     assert len(led.entries) > before  # 【確認内容】: 件数が減らず増える 🔵
     assert led.verify() is True  # 【確認内容】: ハッシュチェーン整合維持 🔵
+
+
+# ---------------------------------------------------------------------------
+# 6. FR-212 段階解放エスカレーションの自動配線
+# ---------------------------------------------------------------------------
+#
+# 回帰の背景: StagedRefinementEngine の 3 連続失敗フラグ (RefinementReport.escalated) は
+# search/tree.py で ledger に載るだけで、detect_escalations の staged_escalated には
+# **実運用の呼び出し側から一度も渡されていなかった** (テストのみ手動指定)。結果、仕様
+# FR-212「3 回失敗で Triage へ」が実質未発火だった。SearchResult.final_reports に情報は
+# 既に届いているので、明示指定が無いときはそこから導出する。
+
+
+def test_guard_escalation_derived_from_final_reports():
+    # 【テスト目的】: 呼び出し側が staged_escalated を渡さなくても final_reports から拾う (FR-212)
+    # 【期待される動作】: escalated=True の report が 1 つでもあれば guard_escalated が発火
+    result = _result([_ranked("h1", 10.0, False)],
+                     final_reports={"h1": _report(True)})
+
+    reasons = detect_escalations(result)  # 明示引数なし = 実運用の呼ばれ方
+
+    assert reasons == ("guard_escalated",)  # 【確認内容】: 自動導出で発火 🔵
+
+
+def test_no_guard_escalation_when_no_report_escalated():
+    # 【テスト目的】: escalated=False のみなら発火しない (偽陽性を出さない)
+    result = _result([_ranked("h1", 10.0, False)],
+                     final_reports={"h1": _report(False), "h2": _report(False)})
+
+    assert detect_escalations(result) == ()  # 【確認内容】: 非発火 🔵
+
+
+def test_explicit_staged_escalated_overrides_derivation():
+    # 【テスト目的】: 明示指定は導出より優先する (既存呼び出しの後方互換)
+    # 【期待される動作】: final_reports が escalated でも False 明示なら非発火
+    result = _result([_ranked("h1", 10.0, False)],
+                     final_reports={"h1": _report(True)})
+
+    assert detect_escalations(result, staged_escalated=False) == ()  # 【確認内容】: 明示優先 🔵
+    assert detect_escalations(result, staged_escalated=True) == ("guard_escalated",)
+
+
+def test_decide_surfaces_derived_guard_escalation():
+    # 【テスト目的】: FinalSelectionEngine.decide が導出済みエスカレーションを裁定に反映する
+    # 【期待される動作】: guard_escalated 検出時は agent モードでも自動 accept しない (暫定裁定)
+    from tsumugin.selection import FinalSelectionEngine
+
+    led = Ledger()
+    engine = FinalSelectionEngine(mode="agent", ledger=led)
+    result = _result([_ranked("h1", 10.0, False)], final_reports={"h1": _report(True)})
+
+    decision = engine.decide(result)
+
+    assert "guard_escalated" in decision.escalations  # 【確認内容】: 裁定まで到達 🔵
+    assert decision.accepted is None  # 【確認内容】: エスカレーション時は自動 accept しない 🔵
+    assert decision.provisional_id == "h1"  # 【確認内容】: 暫定裁定として best を提示 🔵

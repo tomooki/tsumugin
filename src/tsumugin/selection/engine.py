@@ -26,7 +26,7 @@ from .review_queue import EscalationReason, ReviewQueue
 def detect_escalations(
     result: SearchResult,
     *,
-    staged_escalated: bool = False,
+    staged_escalated: bool | None = None,
     high_r_threshold: float = 30.0,
 ) -> tuple[EscalationReason, ...]:
     """【機能概要】: エスカレーションが必要な 4 条件を検出し宣言順のタプルで返す純粋関数。
@@ -37,7 +37,9 @@ def detect_escalations(
     🔵 信頼性レベル: 要件定義 2.2 4 条件 / D6 / NFR-102 決定論
 
     @param result: 木探索結果。ranked の metrics.rwp / close_competitor と unmatched.unknown_phase_flag を読む。
-    @param staged_escalated: 段階的精密化のガード N 連続発動フラグ (呼び出し側供給)。
+    @param staged_escalated: 段階的精密化のガード N 連続発動フラグ。``None`` (既定) なら
+        ``result.final_reports`` の ``RefinementReport.escalated`` から自動導出する (FR-212)。
+        ``True``/``False`` の明示指定はその値を優先する。
     @param high_r_threshold: 全高 R 判定の Rwp 閾値 (%)。既定 30.0。
     @returns: 発火した EscalationReason を宣言順に含む tuple。条件なしなら空タプル。
     """
@@ -62,7 +64,16 @@ def detect_escalations(
     if len(result.ranked) >= 2 and result.ranked[1].close_competitor:
         reasons.append("close_competitor")
 
-    # 【条件 (d) guard_escalated】: ガード N 連続発動を示す bool 引数をそのまま採用 🔵
+    # 【条件 (d) guard_escalated】: ガード N 連続発動 (FR-212) 🔵
+    # 【自動導出】: 明示指定が無ければ result.final_reports から拾う。StagedRefinementEngine の
+    #   3 連続失敗フラグは SearchResult に既に届いているのに、本モジュール内の呼び出し側
+    #   (`FinalSelectionEngine.decide` / `.accept`) がどちらも staged_escalated を渡しておらず、
+    #   ledger に載るだけで裁定に効いていなかった (仕様 FR-212「3 回失敗で Triage へ」の実質未発火)。
+    # 【明示優先】: True/False の明示指定は導出より優先する (既存呼び出しの後方互換)。
+    if staged_escalated is None:
+        staged_escalated = any(
+            bool(report.escalated) for report in result.final_reports.values()
+        )
     if staged_escalated:
         reasons.append("guard_escalated")
 

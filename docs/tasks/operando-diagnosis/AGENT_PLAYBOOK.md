@@ -197,6 +197,26 @@ anchored_sequential(frames, phases,
   (省略時は無音の既定に落とさず error dict)。実データで per-frame 3 相固定が Rwp 8% のまま生成した
   「tetra が増減する」偽描像は、当時 M10 が ② 未露出 (Issue #97) で使えなかったことが原因だった。
 
+- **bic でも偽相が残るなら結合距離ゲートを足す** (FR-335)。bic は「相を増やせば残差が減る」ことは
+  罰するが、**増えた相の構造が物理的に有り得るか**は見ない。転移域で新相のセルが崩壊したまま僅差で
+  勝つ場合 (原子間距離が元素半径和を大きく割る) に効く。`crossovers[].onset_frame` が物理的に
+  早すぎる / 新相が転移前から湧くときだけ足す — **常時 ON にしない** (高温/転移で正当に歪んだ構造を
+  偽陽性で弾く恐れがあるため既定 OFF)。
+
+```python
+anchored_sequential(frames, phases, anchor_table={...},
+                    instrument={...}, two_theta_limits=[2.4, 18.0],
+                    anchor_config={"require_bond_validity": True,
+                                   "bond_tol_lo": 0.7, "bond_tol_hi": 1.3})
+# -> crossovers[].bond_gate で効きを読む:
+#    "moved"              = ゲートが bic 最良を棄却し crossover を動かした
+#    "kept"               = bic 最良が既に結合妥当
+#    "no_valid_candidate" = 僅差帯に結合妥当な経路が 1 つも無い
+#                           → 相集合そのものが疑わしい。J5 (check_phase_set) へ戻る
+```
+
+  pymatgen 不在の環境では自動 skip される (ゲートを課さず bic のまま)。
+
 #### J4 参照構造の供給
 
 **手組みモデルを信用しない**。実データでは手組み正方晶の**歪み方向が逆**で、実験 tetra CIF

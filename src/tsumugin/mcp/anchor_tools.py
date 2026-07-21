@@ -136,6 +136,9 @@ def _anchor_summary(ledger) -> tuple[list[dict], list[dict]]:
                 "onset_frame": p["onset_frame"],
                 "monotonic": bool(p["monotonic"]),
                 "reason": p["reason"],
+                # FR-335: 結合ゲートの効き ("" 未適用 / kept / moved / no_valid_candidate)。
+                # "no_valid_candidate" は ③ が相集合を疑い直す手掛かりなので必ず出す。
+                "bond_gate": str(p.get("bond_gate", "")),
             })
     return anchors, crossovers
 

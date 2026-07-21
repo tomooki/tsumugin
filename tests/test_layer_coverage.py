@@ -71,7 +71,9 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "anchored_sequential",
         "Issue #97 解決: run_anchored_sequential(runner=, identifier=) の callable を #93 と同型の "
         "JSON spec で露出した — runner→instrument spec (sequential_rietveld と共有)・identifier→"
-        "anchor_table {frame_index: [phase_name]}。crossovers[].total_bic で「BIC 相数抑制」も可視化",
+        "anchor_table {frame_index: [phase_name]}。crossovers[].total_bic で「BIC 相数抑制」も可視化。"
+        "FR-335 結合ゲートは anchor_config.require_bond_validity で有効化し crossovers[].bond_gate "
+        "で効きを読む (bic は相数を罰するが増えた相の構造が physical かは見ないため)",
     ),
     "oed (M5/FR-700)": (
         "propose_discriminating_measurements",
@@ -171,7 +173,13 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "evidence": (FOUNDATIONAL, "BIC/AIC backend (FR-120)。M4 session 系 compare_hypotheses の裏方"),
     "store": (FOUNDATIONAL, "Ledger/Snapshot (P2/NFR-105)。全状態変更の追記基盤"),
     "search": (FOUNDATIONAL, "多仮説木探索 (FR-110)。M4 session 系 submit_analysis の裏方"),
-    "selection": (FOUNDATIONAL, "最終選択 + エスカレーション (M2)。accept/revert の裏方"),
+    # ★ accept/revert は ② から到達するが、**エスカレーション裁定 (decide) は到達しない** —
+    #   detect_escalations が走る唯一の入口 FinalSelectionEngine.decide() は本番の呼び手が無く
+    #   (テストのみ)、② accept_hypothesis は selection.accept を直接呼んで decide を迂回する。
+    #   FR-403 の 4 条件 (all_high_r/unknown_phase/close_competitor/guard_escalated) は全て
+    #   ③ から不可視。**既知の穴として明示宣言する** (黙って未露出にしない, Issue #125)。
+    "selection": (FOUNDATIONAL, "最終選択 + エスカレーション (M2)。accept/revert の裏方。"
+                  "ただし decide()/escalations は ② 未到達 = 既知の穴 (Issue #125)"),
     "sequential": (FOUNDATIONAL, "時系列基盤 (変化点/熱ベースライン, M2)。insitu/parametric が内包"),
     "export": (FOUNDATIONAL, "gpx 書き出し (FR-505)。export_gpx ツールの裏方"),
     "multistart": (FOUNDATIONAL, "マルチスタート大域最適確認 (FR-230)。autorietveld が内包・単独 ② 未露出は M-later"),
@@ -1382,3 +1390,42 @@ def test_anchor_is_still_unexposed_or_the_note_is_stale():
         )
     else:
         assert declared_unexposed, "anchor は ② 未露出のはずだが露出ありと宣言されている"
+
+
+def test_selection_escalation_is_still_unreachable_or_the_note_is_stale():
+    """★エスカレーション裁定の ② 到達状況と宣言が一致すること (Issue #125)。
+
+    `detect_escalations` (FR-403 の 4 条件 + FR-212 の guard_escalated) が実際に走るのは
+    `FinalSelectionEngine.decide()` の中だけ。② `accept_hypothesis` は `selection.accept` を
+    直接呼んで decide を**迂回する**ため、エスカレーションは ③ から一切見えない。
+
+    非トートロジー: 表を読まず ② の全ツール source を走査して `decide(` の呼び出しを探す。
+    Issue #125 で decide 経路が ② に入ったら本テストが fail し、PACKAGE_COVERAGE の
+    「既知の穴」記述の更新を強制する — **穴が塞がったのに塞がっていないと書き続けるのを防ぐ**。
+    変異テストで双方向 (宣言だけ削る / accept_hypothesis に decide 呼び出しを注入) とも
+    fail することを確認済み。
+
+    **限界**: ツール関数**自身の**ソーステキストの部分一致なので、ヘルパー関数を挟んだ
+    間接呼び出しは追えない (既存の `test_anchor_is_still_unexposed_or_the_note_is_stale` と
+    同方式)。現状 `FinalSelectionEngine.decide` の呼び手は本モジュール内部のみ (`src` 全体で
+    ヒットする `refine_loop/orchestrator.py` の `policy.decide` は同名だが別クラス
+    `RuleBasedPolicy` のメソッドで無関係) なので偽陰性は無いが、② がヘルパー経由で
+    decide を呼ぶ形になったら本ガードはすり抜ける。
+    """
+    callers = [
+        name for name, fn in MCP_TOOLS.items()
+        if ".decide(" in inspect.getsource(inspect.unwrap(fn))
+    ]
+    declared_gap = "既知の穴" in PACKAGE_COVERAGE["selection"][1]
+    if callers:
+        assert not declared_gap, (
+            f"エスカレーション裁定が ② に到達した ({callers}) — PACKAGE_COVERAGE['selection'] の "
+            "「既知の穴 (Issue #125)」記述と、③ skill 手順 (accept 前にエスカレーション確認) "
+            "の更新が必要"
+        )
+    else:
+        assert declared_gap, (
+            "decide() を呼ぶ ② ツールが無い = エスカレーションは ③ から不可視。"
+            "PACKAGE_COVERAGE['selection'] に既知の穴として宣言すること (CLAUDE.md: "
+            "露出しないと決めた場合は理由を明示宣言する / 黙って未露出にしない)"
+        )
