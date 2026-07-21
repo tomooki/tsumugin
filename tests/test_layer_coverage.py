@@ -1402,6 +1402,13 @@ def test_selection_escalation_is_still_unreachable_or_the_note_is_stale():
     非トートロジー: 表を読まず ② の全ツール source を走査して `decide(` の呼び出しを探す。
     Issue #125 で decide 経路が ② に入ったら本テストが fail し、PACKAGE_COVERAGE の
     「既知の穴」記述の更新を強制する — **穴が塞がったのに塞がっていないと書き続けるのを防ぐ**。
+    変異テストで双方向 (宣言だけ削る / accept_hypothesis に decide 呼び出しを注入) とも
+    fail することを確認済み。
+
+    **限界**: ツール関数**自身の**ソーステキストの部分一致なので、ヘルパー関数を挟んだ
+    間接呼び出しは追えない (既存の `test_anchor_is_still_unexposed_or_the_note_is_stale` と
+    同方式)。現状 `decide(` の呼び手は selection/refine_loop 内部のみで偽陰性は無いが、
+    ② がヘルパー経由で decide を呼ぶ形になったら本ガードはすり抜ける。
     """
     callers = [
         name for name, fn in MCP_TOOLS.items()
