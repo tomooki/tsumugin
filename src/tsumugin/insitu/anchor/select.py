@@ -58,13 +58,15 @@ def _is_monotonic(
     return all(fracs[i] <= fracs[i + 1] + 1e-9 for i in range(len(fracs) - 1))
 
 
-def _bond_ok_frame(fr, specs, cfg, checker, cache) -> bool:
+def _bond_ok_frame(fr, specs, cfg, checker, cache, direction: str) -> bool:
     """フレームの全相の結合距離/配位数が妥当か (相ごとに精密化セルで検査)。
 
     構造パス不明の相は検査不能として skip する (偽陰性で経路を落とさない)。1 相でも fail なら False。
-    フレーム単位でメモ化する — pymatgen 構造読込は高価で、同じフレームが複数候補で再評価されるため。
+    メモ化する — pymatgen 構造読込は高価で、同じフレームが複数の crossover 候補で再評価されるため。
+    **キーは (方向, frame_index)**: 同一フレームでも前方 (相少) と後方 (相多) は相集合もセルも
+    別物なので、frame_index だけでメモ化すると一方の判定を他方に誤用して健全な経路を棄却する。
     """
-    key = fr.frame_index
+    key = (direction, fr.frame_index)
     if key in cache:
         return cache[key]
     ok = True
@@ -148,16 +150,18 @@ def select_crossover(
             if anc is not None:
                 for sp in anc.phase_specs:
                     specs.setdefault(sp.phase_name, sp)
-        cache: dict[int, bool] = {}
+        cache: dict[tuple[str, int], bool] = {}
 
         def _ok(s: int) -> bool:
             """crossover 近傍 (直前の前方採用フレーム / 直後の後方採用フレーム) が結合妥当か。"""
-            frames = []
+            frames: list[tuple[str, object]] = []
             if s > 0 and inner[s - 1] in fr_:
-                frames.append(fr_[inner[s - 1]])
+                frames.append(("forward", fr_[inner[s - 1]]))
             if s < m and inner[s] in br_:
-                frames.append(br_[inner[s]])
-            return all(_bond_ok_frame(f, specs, cfg, checker, cache) for f in frames)
+                frames.append(("backward", br_[inner[s]]))
+            return all(
+                _bond_ok_frame(f, specs, cfg, checker, cache, direction=d) for d, f in frames
+            )
 
         if _ok(best_s):
             bond_gate = "kept"

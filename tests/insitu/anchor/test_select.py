@@ -273,6 +273,24 @@ def test_bond_gate_degrades_when_pymatgen_absent():
     assert choice.onset_frame == 2  # ゲートが効かないので素の bic のまま
 
 
+def test_bond_gate_does_not_confuse_forward_and_backward_for_same_frame():
+    """同一フレームの前方結果と後方結果を取り違えないこと (メモ化キーの回帰)。
+
+    同じ frame_index が前方 (相少) と後方 (相多) の両方に存在し、**結合妥当性は
+    別々に評価されなければならない**。frame_index だけをキーにメモ化すると、後方で
+    崩壊と判定した結果を前方の判定に再利用して健全な経路を誤って棄却する。
+
+    ここでは delta が frame2 でのみ崩壊。正しくは s=1 (onset=frame3) が採れるが、
+    キー衝突があると前方 frame2 が「崩壊」と誤判定され s=2 (onset=frame4) へ滑る。
+    """
+    seg, fwd, bwd = _false_phase_case({2: COLLAPSED, 3: NORMAL, 4: NORMAL, 5: NORMAL})
+    cfg = AnchorConfig(bic_tie=200.0, require_bond_validity=True)
+    choice = select_crossover(seg, fwd, bwd, cfg, bond_checker=_stub_checker([]))
+    assert choice.bond_gate == "moved"
+    assert choice.crossover_frame == 2  # frame2 のみ前方 (delta なし)
+    assert choice.onset_frame == 3      # delta は frame3 から (frame4 へ滑らない)
+
+
 def test_bond_gate_deterministic():
     seg, fwd, bwd = _false_phase_case({2: COLLAPSED, 3: COLLAPSED, 4: NORMAL, 5: NORMAL})
     cfg = AnchorConfig(bic_tie=200.0, require_bond_validity=True)
