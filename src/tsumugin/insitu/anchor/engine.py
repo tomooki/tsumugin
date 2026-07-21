@@ -166,7 +166,22 @@ def run_anchored_sequential(
             "inner": list(seg.frame_indices), "reason": choice.reason,
             "crossover_frame": choice.crossover_frame, "total_bic": choice.total_bic,
             "onset_frame": choice.onset_frame, "monotonic": choice.monotonic,
+            "bond_gate": choice.bond_gate,
         })
+        # FR-335: 結合ゲートが経路を動かした/動かせなかったことは ③ に見えないと意味が無い
+        if choice.bond_gate == "moved":
+            warnings.append(
+                f"segment[{seg.frame_indices[0]}..{seg.frame_indices[-1]}]: 結合距離ゲート "
+                f"(FR-335) が bic 最良経路を棄却し crossover を frame {choice.crossover_frame} へ"
+                f" 移しました (onset={choice.onset_frame}) — bic 僅差帯で新相のセルが崩壊していた"
+                " ため。偽相の可能性を確認してください"
+            )
+        elif choice.bond_gate == "no_valid_candidate":
+            warnings.append(
+                f"segment[{seg.frame_indices[0]}..{seg.frame_indices[-1]}]: 結合距離ゲート "
+                "(FR-335) の僅差帯で結合妥当な経路が 1 つもありません。bic 最良を保持しましたが、"
+                "**採用経路の構造は物理的に疑わしい** — 相集合そのものを見直してください"
+            )
         if choice.onset_frame is not None and seg.right is not None:
             for p in frozenset(seg.right.phase_names) - frozenset(
                 seg.left.phase_names if seg.left else ()

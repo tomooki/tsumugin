@@ -58,10 +58,42 @@ def _is_monotonic(
     return all(fracs[i] <= fracs[i + 1] + 1e-9 for i in range(len(fracs) - 1))
 
 
+def _bond_ok_frame(fr, specs, cfg, checker, cache) -> bool:
+    """フレームの全相の結合距離/配位数が妥当か (相ごとに精密化セルで検査)。
+
+    構造パス不明の相は検査不能として skip する (偽陰性で経路を落とさない)。1 相でも fail なら False。
+    フレーム単位でメモ化する — pymatgen 構造読込は高価で、同じフレームが複数候補で再評価されるため。
+    """
+    key = fr.frame_index
+    if key in cache:
+        return cache[key]
+    ok = True
+    for name in fr.phase_names:
+        spec = specs.get(name)
+        if spec is None:
+            continue
+        report = checker(
+            spec.structure_path, fr.refined_cells.get(name),
+            bond_tol_lo=cfg.bond_tol_lo, bond_tol_hi=cfg.bond_tol_hi,
+        )
+        if not report.passed:
+            ok = False
+            break
+    cache[key] = ok
+    return ok
+
+
 def select_crossover(
     seg: Segment, fwd: SegmentPass, bwd: SegmentPass, cfg: AnchorConfig = AnchorConfig(),
+    bond_checker=None,
 ) -> CrossoverChoice:
-    """区間の前方/後方パスから採用経路 (crossover) を決める。"""
+    """区間の前方/後方パスから採用経路 (crossover) を決める。
+
+    :param bond_checker: 結合妥当性判定の注入 (**テスト注入専用**)。None なら
+        `autorietveld.validity.check_bond_validity` (pymatgen 遅延 import)。実運用の設定経路は
+        `AnchorConfig.require_bond_validity` / `bond_tol_lo` / `bond_tol_hi` で、② `anchored_sequential`
+        の `anchor_config` JSON から到達する (callable を ③ に要求しない)。
+    """
     inner = list(seg.frame_indices)
     fr_, br_ = dict(fwd.results), dict(bwd.results)
     have_f = any(j in fr_ for j in inner)
@@ -92,18 +124,61 @@ def select_crossover(
     best_tb = float("inf")
     best_s = 0
     best_mono = False
+    cands: list[tuple[int, float, bool]] = []
     for s in range(0, m + 1):
         tb = sum(fb[:s]) + sum(bb[s:])
         mono = _is_monotonic(inner, s, fr_, br_, new_phases)
+        cands.append((s, tb, mono))
         if tb < best_tb - 1e-9:
             best_tb, best_s, best_mono = tb, s, mono
         elif tb <= best_tb + cfg.bic_tie and mono and not best_mono:
             best_s, best_mono = s, mono  # 同点内は単調な s を優先 (best_tb は据え置き)
+
+    # --- FR-335 結合距離/配位数ゲート (REQ-1013) ---
+    # bic は「相を増やせば残差は下がる」を罰するが、**増やした相の構造が物理的に有り得るか**は見ない。
+    # 崩壊セルの偽相が僅差で勝つ実データ病理 (K₂Mn[Fe(CN)₆]) を、crossover 近傍フレームの
+    # 結合距離で棄却する。異相集合 crossover 限定 — 相集合が同一な区間には偽相の混入余地が無い。
+    bond_gate = ""
+    if cfg.require_bond_validity:
+        checker = bond_checker
+        if checker is None:
+            from ...autorietveld.validity import check_bond_validity as checker  # 遅延 import
+        specs = {}
+        for anc in (seg.left, seg.right):
+            if anc is not None:
+                for sp in anc.phase_specs:
+                    specs.setdefault(sp.phase_name, sp)
+        cache: dict[int, bool] = {}
+
+        def _ok(s: int) -> bool:
+            """crossover 近傍 (直前の前方採用フレーム / 直後の後方採用フレーム) が結合妥当か。"""
+            frames = []
+            if s > 0 and inner[s - 1] in fr_:
+                frames.append(fr_[inner[s - 1]])
+            if s < m and inner[s] in br_:
+                frames.append(br_[inner[s]])
+            return all(_bond_ok_frame(f, specs, cfg, checker, cache) for f in frames)
+
+        if _ok(best_s):
+            bond_gate = "kept"
+        else:
+            # 僅差帯 (bic_tie 以内) を bic 昇順・s 昇順で走査し、最初に結合妥当な候補を採る
+            band = sorted(
+                ((tb, s, mono) for s, tb, mono in cands if tb <= best_tb + cfg.bic_tie),
+                key=lambda t: (t[0], t[1]),
+            )
+            bond_gate = "no_valid_candidate"
+            for tb, s, mono in band:
+                if _ok(s):
+                    best_s, best_tb, best_mono = s, tb, mono
+                    bond_gate = "moved"
+                    break
+
     crossover_frame = inner[best_s - 1] if best_s > 0 else None
     onset_frame = inner[best_s] if best_s < m else None
     return CrossoverChoice(
         crossover_frame=crossover_frame, total_bic=best_tb, onset_frame=onset_frame,
-        monotonic=best_mono, reason="bic_crossover",
+        monotonic=best_mono, reason="bic_crossover", bond_gate=bond_gate,
     )
 
 

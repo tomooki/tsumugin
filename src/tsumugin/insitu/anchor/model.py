@@ -190,6 +190,11 @@ class CrossoverChoice:
     :param onset_frame: 相集合変化を伴う場合の新相 onset フレーム (無ければ None)
     :param monotonic: 採用経路の新相分率が単調か
     :param reason: 選定方式 ("bic_crossover" / "rwp_per_frame" / "single_direction")
+    :param bond_gate: FR-335 結合距離/配位数ゲートの適用結果。``""`` = 未適用
+        (`require_bond_validity=False` / 異相集合 crossover 以外) / ``"kept"`` = bic 最良が
+        既に結合妥当 / ``"moved"`` = 僅差帯で結合妥当な候補へ crossover を移した /
+        ``"no_valid_candidate"`` = 僅差帯の全候補が結合不当だったため bic 最良を保持
+        (**黙って不当経路を採らず ③ に疑う手掛かりを残す**)。
     """
 
     crossover_frame: int | None
@@ -197,3 +202,4 @@ class CrossoverChoice:
     onset_frame: int | None = None
     monotonic: bool = True
     reason: str = ""
+    bond_gate: str = ""
