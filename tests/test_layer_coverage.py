@@ -71,7 +71,9 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "anchored_sequential",
         "Issue #97 解決: run_anchored_sequential(runner=, identifier=) の callable を #93 と同型の "
         "JSON spec で露出した — runner→instrument spec (sequential_rietveld と共有)・identifier→"
-        "anchor_table {frame_index: [phase_name]}。crossovers[].total_bic で「BIC 相数抑制」も可視化",
+        "anchor_table {frame_index: [phase_name]}。crossovers[].total_bic で「BIC 相数抑制」も可視化。"
+        "FR-335 結合ゲートは anchor_config.require_bond_validity で有効化し crossovers[].bond_gate "
+        "で効きを読む (bic は相数を罰するが増えた相の構造が physical かは見ないため)",
     ),
     "oed (M5/FR-700)": (
         "propose_discriminating_measurements",
