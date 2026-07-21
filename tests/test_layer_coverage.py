@@ -59,11 +59,23 @@ UNEXPOSED = "UNEXPOSED"
 
 LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     # feature: (露出を示すツール名 or UNEXPOSED, 根拠/理由)
-    "autorietveld (M7)": ("auto_rietveld", "実構造 Rietveld"),
+    "autorietveld (M7)": (
+        "auto_rietveld",
+        "実構造 Rietveld。Issue #101 解決: 段階解放レシピの追加段階 (`stages` →"
+        "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
+    ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
     "reference (M6)": ("identify_phases", "相同定 (単相/多相)"),
-    "refine_loop (M8)": ("propose_next_actions", "agentic 閉ループ"),
-    "insitu (M9)": ("sequential_rietveld", "逐次 operando"),
+    "refine_loop (M8)": (
+        "propose_next_actions",
+        "agentic 閉ループ。Issue #101 解決: `refine_with_revisions` も `stages`/`max_cyc` を受け、"
+        "action 適用後に追加段階を末尾へ足せる (既定 GSAS runner `_default_gsas_runner(seed, max_cyc=)`)",
+    ),
+    "insitu (M9)": (
+        "sequential_rietveld",
+        "逐次 operando。Issue #114 解決: instrument spec の `recipe` で段階解放レシピを全置換可能 "
+        "(`make_gsas_runner(recipe=...)` [#52] への到達; `stages` と違い既定レシピの追加ではなく置換)",
+    ),
     "mem (M8-③)": ("mem_density", "MEM 密度→構造改訂"),
     "operando diag (M8-③)": ("check_phase_set", "相集合の完全性"),
     # --- 未露出 (Issue #97): 宣言することで「忘れた」ではなく「既知の穴」であることを示す ---
@@ -1219,6 +1231,12 @@ SPEC_INPUT_BASIS: dict[str, tuple[str, str]] = {
     "instrument.max_cyc": (BASIS_FREE, "各段階の最大精密化サイクル数 (int)。相分率と比較しない"),
     "instrument.background_coeffs": (
         BASIS_FREE, "Chebyshev 背景項数 (int)。相分率と比較しない"
+    ),
+    "instrument.recipe": (
+        BASIS_FREE,
+        "Issue #114: 段階解放レシピの全置換 (`RefinementStage` の JSON 列, `_recipe_spec` 経由で "
+        "make_gsas_runner(recipe=...) [Issue #52] へ渡す)。GSAS 解放フラグの宣言的記述であり "
+        "相分率とは比較しない",
     ),
     # --- phase_id spec (`sequential_rietveld`) ---
     "phase_id.frac_min": (

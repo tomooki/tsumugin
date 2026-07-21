@@ -376,9 +376,18 @@ def _runner_from_instrument(
     two_theta_limits: tuple[float, float] | None,
     charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> Callable:
-    """instrument spec (JSON) から make_gsas_runner で runner を組み立てる (Issue #93)。"""
+    """instrument spec (JSON) から make_gsas_runner で runner を組み立てる (Issue #93)。
+
+    ``spec["recipe"]`` (Issue #114) は `make_gsas_runner(recipe=...)` へそのまま渡す**全段階の
+    置換**であり (Issue #52; 未指定なら `make_gsas_runner` 内部で ``build_recipe`` が組む既定 7 段階
+    レシピを使う)、`rietveld_tools.auto_rietveld` の ``stages`` (`AnalysisInput.extra_stages` =
+    既定レシピへの**追加**段階) とは意味論が異なる — ① `make_gsas_runner` の既存契約をそのまま
+    ② へ配線しているだけで、ここで新しい合成規則は作らない。JSON→RefinementStage の変換は
+    `rietveld_tools` と共有する `_recipe_spec.stages_from_dicts` を使う (二重実装を避ける)。
+    """
     from ..autorietveld.model import Geometry, Radiation
     from ..insitu.engine import make_gsas_runner
+    from ._recipe_spec import stages_from_dicts
 
     afmc = spec.get("auto_freeze_minor_cells")
     # ⚠ #80 の本体は **float 閾値** (bool ではない)。JSON の true をそのまま float 化すると 1.0 =
@@ -388,6 +397,8 @@ def _runner_from_instrument(
             "auto_freeze_minor_cells is a phase-fraction threshold (float, e.g. 0.2), not a bool; "
             "pass null to disable (bool true would freeze every phase in a multiphase run)"
         )
+    raw_recipe = spec.get("recipe")
+    recipe = stages_from_dicts(raw_recipe) if raw_recipe is not None else None  # type: ignore[arg-type]
     return make_gsas_runner(
         instrument_path=_instrument_path_resolver(spec, frame_specs),
         radiation=_enum_from_value(Radiation, spec.get("radiation", "xray_lab"), "radiation"),
@@ -395,6 +406,7 @@ def _runner_from_instrument(
         two_theta_limits=two_theta_limits,
         max_cyc=int(spec.get("max_cyc", 12)),  # type: ignore[arg-type]
         background_coeffs=int(spec.get("background_coeffs", 6)),  # type: ignore[arg-type]
+        recipe=recipe,
         auto_freeze_minor_cells=None if afmc is None else float(afmc),  # type: ignore[arg-type]
         charge_constraint=charge_constraint,
     )
@@ -544,6 +556,13 @@ def sequential_rietveld(
           0.2 は **Scale では tetra を解放し wt% では凍結する**。出版値は wt% なので wt% の直感で
           数字を決めると静かに外れる (③ 向けの警告は skills/insitu・skills/operando-diagnose・
           AGENT_PLAYBOOK の「分率の閾値は Scale 基準」節)
+        - ``recipe``: **段階解放レシピの全置換** (Issue #114: ① `make_gsas_runner(recipe=...)`
+          [Issue #52] が既に持つ引数を JSON から届くようにしたもの)。``[{"label": str,
+          "flags": {GSAS 語彙}, "note": str (省略可)}, ...]`` の列 (語彙は
+          ``autorietveld.recipe`` docstring 参照)。指定すると既定の 7 段階 `build_recipe` を
+          **使わず**このレシピをそのまま使う (`auto_rietveld` の ``stages`` = 既定への**追加**とは
+          意味論が違う点に注意)。省略 (None, 既定) なら従来通り `build_recipe` が組む。不正な
+          段階 spec は error dict へ縮退する
 
         ``two_theta_limits`` は本引数の runner にも転送される (フレーム側指定が優先)。
     :param charge_constraint: **FR-318 電気化学制約の JSON spec**。キー: ``config``

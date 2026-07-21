@@ -25,6 +25,7 @@ from typing import Callable, Mapping, Sequence
 from .._json import finite_or_none
 from ..autorietveld import AutoRietveldResult, HistogramSpec, PhaseSpec, ValidityReport
 from ._degrade import degrade_oserror
+from ._recipe_spec import stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
 from ..refine_loop.diagnostics import propose_next_actions as _propose
 from ..refine_loop.orchestrator import _default_gsas_runner
@@ -46,11 +47,16 @@ __all__ = [
 
 
 def _specs_dict(inp: AnalysisInput) -> dict[str, object]:
-    """spec ハンドル (stateless echo): ③ が refine_with_revisions へ差し戻すための往復可能な spec。"""
+    """spec ハンドル (stateless echo): ③ が refine_with_revisions へ差し戻すための往復可能な spec。
+
+    ``stages`` (Issue #101: ③ が渡した追加段階 = ``AnalysisInput.extra_stages``) も同梱する —
+    背景係数と同じく、渡した spec がそのまま往復できないと ③ は次呼び出しで追加段階を失う。
+    """
     return {
         "histograms": [h.to_dict() for h in inp.histograms],
         "phases": [p.to_dict() for p in inp.phases],
         "background_coeffs": inp.background_coeffs,
+        "stages": [stage_to_dict(s) for s in inp.extra_stages],
     }
 
 
@@ -154,11 +160,19 @@ def _build_input(
     histograms: Sequence[Mapping[str, object]],
     phases: Sequence[Mapping[str, object]],
     background_coeffs: int,
+    extra_stages: Sequence[Mapping[str, object]] | None = None,
 ) -> AnalysisInput:
+    """spec (JSON) を `AnalysisInput` へ変換する。
+
+    :param extra_stages: 段階解放レシピの追加段階 spec (Issue #101: ``AnalysisInput.extra_stages``
+        への到達口)。不正な段階 spec は `stages_from_dicts` が ``ValueError`` を送出する
+        (呼び出し側が error dict へ縮退する)。
+    """
     return AnalysisInput(
         histograms=tuple(HistogramSpec.from_dict(h) for h in histograms),
         phases=tuple(PhaseSpec.from_dict(p) for p in phases),
         background_coeffs=background_coeffs,
+        extra_stages=stages_from_dicts(extra_stages),
     )
 
 
@@ -168,6 +182,8 @@ def auto_rietveld(
     phases: Sequence[Mapping[str, object]],
     *,
     background_coeffs: int = 6,
+    stages: Sequence[Mapping[str, object]] | None = None,
+    max_cyc: int = 12,
     seed: int = 0,
     runner: Runner | None = None,
 ) -> dict:
@@ -176,11 +192,22 @@ def auto_rietveld(
     :param histograms: HistogramSpec.to_dict の列
     :param phases: PhaseSpec.to_dict の列
     :param background_coeffs: 初期背景係数数
+    :param stages: **段階解放レシピの追加段階** (Issue #101)。``build_recipe`` が生成する既定
+        レシピの末尾に追加される (``AnalysisInput.extra_stages`` と同じ意味論)。各要素は
+        ``{"label": str, "flags": {GSAS 語彙}, "note": str (省略可)}``
+        (語彙は ``autorietveld.recipe`` docstring 参照: ``profile_lorentzian``/``tof_profile``/
+        ``size_strain``/``preferred_orientation``/``absorption`` 等)。不正なキー/型は
+        ``{"error","error_type"}`` へ縮退する (黙って無視しない)。既定 None (追加段階なし・非回帰)。
+    :param max_cyc: 各段階の最大精密化サイクル (``run_auto_rietveld`` へ転送。既定 12 は非回帰)。
+        ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
     :param seed: 既定 GSAS runner 用乱数種
     :param runner: 注入 runner (None なら GSAS 駆動)。テスト用の内部シーム
     """
-    inp = _build_input(histograms, phases, background_coeffs)
-    run = runner or _default_gsas_runner(seed)
+    try:
+        inp = _build_input(histograms, phases, background_coeffs, stages)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc)
     return _result_to_dict(run(inp), inp)
 
 
@@ -205,6 +232,8 @@ def refine_with_revisions(
     actions: Sequence[Mapping[str, object]],
     *,
     background_coeffs: int = 6,
+    stages: Sequence[Mapping[str, object]] | None = None,
+    max_cyc: int = 12,
     seed: int = 0,
     runner: Runner | None = None,
 ) -> dict:
@@ -212,11 +241,19 @@ def refine_with_revisions(
 
     SafeAction (背景/パラメータ) も ModelAction (リミット/相追加/構造改訂) も適用できる。
     採否の判断は ③ が済ませた前提 (このツールは適用+再実行のみ)。
+
+    :param stages: `auto_rietveld` と同じ意味論の追加段階 spec (Issue #101)。``ReleaseParams``
+        action が足す段階 (`AnalysisAction.apply` 経由) と共存し、``stages`` 由来の段階は
+        action 適用後の末尾に追加される。不正な段階 spec は error dict へ縮退する。
+    :param max_cyc: `auto_rietveld` と同じ (既定 GSAS runner への転送)。
     """
-    inp = _build_input(histograms, phases, background_coeffs)
-    for a in actions:
-        inp = action_from_dict(a).apply(inp)
-    run = runner or _default_gsas_runner(seed)
+    try:
+        inp = _build_input(histograms, phases, background_coeffs, stages)
+        for a in actions:
+            inp = action_from_dict(a).apply(inp)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc)
     return _result_to_dict(run(inp), inp)
 
 

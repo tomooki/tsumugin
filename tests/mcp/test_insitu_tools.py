@@ -266,6 +266,64 @@ def test_sequential_rietveld_auto_freeze_bool_rejected(monkeypatch):
     json.dumps(out, allow_nan=False)
 
 
+# --- Issue #114: instrument spec の recipe → make_gsas_runner(recipe=...) --------------------
+
+
+def test_sequential_rietveld_instrument_recipe_reaches_make_gsas_runner(monkeypatch):
+    """instrument.recipe (JSON) が RefinementStage タプルに変換され make_gsas_runner(recipe=) に届く。
+
+    make_gsas_runner(recipe=...) は① に既に存在する (Issue #52) が、② の instrument spec からは
+    JSON で届かなかった (Issue #114)。共有ヘルパ (_recipe_spec, rietveld_tools と同じ実装) で変換する。
+    """
+    from tsumugin.autorietveld import RefinementStage
+
+    made = _capture_make_runner(monkeypatch)
+    _capture_seq(monkeypatch)
+    frames, initial = _frames_and_phases()
+
+    sequential_rietveld(
+        frames, initial,
+        instrument={
+            "path": "sr.instprm",
+            "recipe": [
+                {"label": "S0 scale+background", "flags": {"scale": True}},
+                {"label": "S1 absorption", "flags": {"absorption": True}, "note": "opt-in"},
+            ],
+        },
+    )
+
+    recipe = made["recipe"]
+    assert recipe == (
+        RefinementStage(label="S0 scale+background", flags={"scale": True}),
+        RefinementStage(label="S1 absorption", flags={"absorption": True}, note="opt-in"),
+    )
+
+
+def test_sequential_rietveld_instrument_recipe_default_is_none(monkeypatch):
+    """recipe 省略時は None (make_gsas_runner の既定 build_recipe 経路, 非回帰)。"""
+    made = _capture_make_runner(monkeypatch)
+    _capture_seq(monkeypatch)
+    frames, initial = _frames_and_phases()
+
+    sequential_rietveld(frames, initial, instrument={"path": "sr.instprm"})
+
+    assert made["recipe"] is None
+
+
+def test_sequential_rietveld_instrument_invalid_recipe_returns_error_dict(monkeypatch):
+    """不正な recipe spec は例外でなく error dict へ縮退する (② は例外を送出しない)。"""
+    _capture_make_runner(monkeypatch)
+    _capture_seq(monkeypatch)
+    frames, initial = _frames_and_phases()
+
+    out = sequential_rietveld(
+        frames, initial,
+        instrument={"path": "sr.instprm", "recipe": [{"flags": {"scale": True}}]},
+    )
+    assert out["error_type"] == "ValueError"
+    json.dumps(out, allow_nan=False)
+
+
 @pytest.mark.parametrize(
     "spec",
     [

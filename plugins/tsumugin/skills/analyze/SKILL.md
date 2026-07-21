@@ -15,9 +15,9 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 | ツール | 役割 | 入出力 |
 |---|---|---|
-| `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル** |
+| `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル**。任意で `stages` (追加段階, 下記) / `max_cyc` |
 | `propose_next_actions` | 計器 (診断) | 直前結果 + 残差シグネチャ → `ActionProposal[]` (rationale/priority/**safe**) |
-| `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行 |
+| `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行。`stages`/`max_cyc` も同様に渡せる |
 
 閉ループ丸ごと (agentic_analyze) は MCP に**無い**。回すのはあなた。
 
@@ -66,6 +66,31 @@ Uiso<0・占有率逸脱・格子逸脱を生む手は過剰適合として棄�
 Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発散→混合占有制約 (SetMixedOccupancy)、
 座標段階でセル発散→特殊位置の座標解放を避ける、TOF/放射光の高止まり→データリミット、
 未指数ピーク→相追加 (AddPhase, 相同定へ)。いずれも ModelAction はユーザー承認を挟む。
+
+## 精密化段階を追加する (`stages` / `max_cyc`)
+
+`auto_rietveld`/`refine_with_revisions` は既定の 7 段階レシピ (`build_recipe`) の末尾に**追加段階**を
+足せる (`stages` 引数, Issue #101)。既定レシピが試さない knob は ③ が明示的に足す必要がある:
+
+```json
+{"stages": [{"label": "S9 absorption", "flags": {"absorption": true}, "note": "弱吸収試料"}]}
+```
+
+| どの knob がいつ効くか | `flags` |
+|---|---|
+| X 線 (実験室/放射光) の残差が高止まり (CaTeO3 型: U,V,W だけでは形状に合わない) | `{"profile_lorentzian": true}` |
+| TOF 中性子/放射光の残差が高止まり (XND T4 型) | `{"tof_profile": true}` |
+| 選択配向が疑われる系統的 obs>calc | `{"preferred_orientation": 4}` (SH order) |
+| 試料吸収が強い (透過配置の弱吸収試料) | `{"absorption": true}` |
+| サイズ/微小歪みの型を変える (異方) | `{"size_strain": "uniaxial"}` / `"generalized"` (X 線限定) |
+
+**追加段階も revert ガードが効く** — 悪化すれば当該段階だけ棄却され、他段階には影響しない
+(既定レシピと同じ安全網)。まず 1 段だけ足して試し、`stages[*].reverted` で効いたか確認する。
+
+`stages` は `auto_rietveld` が返す `specs` ハンドルにも同梱される (`specs["stages"]`) ので、
+`refine_with_revisions` を反復するときは持ち回ること (省略すると追加段階が消える)。
+
+`max_cyc` (既定 12) は各段階の最大精密化サイクル数。収束が遅い/振動する系で増やす。
 
 ## 構造改訂が要るとき → `mem-model-fix` skill
 

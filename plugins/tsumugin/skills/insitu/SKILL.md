@@ -84,6 +84,8 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `radiation` | `xray_lab` / `xray_synchrotron` / `neutron_cw` / `neutron_tof` |
 | `geometry` | `bragg_brentano` / `debye_scherrer` |
 | `background_coeffs` | 背景項数 (既定 6)。実測で **18 が最良** の系があった (12/24 は劣る) |
+| `max_cyc` | 各段階の最大精密化サイクル数 (既定 12)。収束が遅い/振動する系で増やす |
+| `recipe` | **段階解放レシピの全置換** (Issue #114)。`[{"label": str, "flags": {...}, "note": str}, ...]` の列。指定すると既定の `build_recipe` (7 段階) を**使わず**このレシピをそのまま使う (`analyze` skill の `auto_rietveld.stages` = 既定への**追加**とは違う — こちらは丸ごと差し替え)。operando 系列で不要な段階を省いた軽量レシピを注入する用途 (Issue #52)。省略 (既定) なら従来通り |
 | `auto_freeze_minor_cells` | **`phase_fractions` (= Scale) 基準の閾値 (float, 例 0.2)。bool ではない** — **Scale** が閾値未満の相のセルを自動凍結する。少数相のセルを解放すると計量相関で発散し分率が崩壊する (#80)。個別に凍結するなら `PhaseSpec.refine_cell=False` (手動が自動に優先)。⚠ **wt% ではない → 下記** |
 
 > ### ⚠ 分率の閾値は**すべて Scale 基準** — wt% で考えて数字を決めない
