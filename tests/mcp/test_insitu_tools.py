@@ -5,6 +5,7 @@ SDK 非依存・素の型 dict 応答・json.dumps(allow_nan=False) 安全・決
 
 from __future__ import annotations
 
+import csv
 import json
 
 import pytest
@@ -18,7 +19,14 @@ from tsumugin.mcp.insitu_tools import (
     parametric_fit,
     seq_result_to_dict,
     sequential_rietveld,
+    write_sequential_csv,
 )
+
+
+def _read_rows(path):
+    """csv.reader で全行 (ヘッダ含む) を読み戻す (newline/utf-8 固定; test_trajectory.py の範)。"""
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.reader(f))
 
 
 def _result(rwp, cells, fracs, valid=True):
@@ -28,8 +36,14 @@ def _result(rwp, cells, fracs, valid=True):
     )
 
 
-def test_registry_has_three_tools():
-    assert set(INSITU_TOOLS) == {"sequential_rietveld", "identify_and_add_phase", "parametric_fit"}
+def test_registry_has_four_tools():
+    # 【テスト目的】: FR-504 トラジェクトリ CSV (write_sequential_csv, Issue #116/#117 調査) 追加後は 4 ツール
+    assert set(INSITU_TOOLS) == {
+        "sequential_rietveld",
+        "identify_and_add_phase",
+        "parametric_fit",
+        "write_sequential_csv",
+    }
 
 
 def test_sequential_rietveld_structured_output_json_safe():
@@ -837,3 +851,175 @@ def test_instrument_path_resolver_single_path_is_str():
     """`path` (単一) はそのまま str を返す (callable を組まない)。"""
     frame_specs = [FrameSpec(data_path="f0.xrdml", axis_value=0.0)]
     assert _instrument_path_resolver({"path": "one.instprm"}, frame_specs) == "one.instprm"
+
+
+# ===========================================================================
+# write_sequential_csv: FR-504 トラジェクトリ CSV を M9 実データ経路から到達可能にする
+# ---------------------------------------------------------------------------
+# 調査の帰結 (Issue #116/#117 付帯): M2 `sequential.trajectory.Trajectory.to_csv` は既に実装
+# 済みだが `session.trajectory` を設定する ② ツールが無く実データ経路 (M9) からは到達不能だった。
+# `sequential_rietveld`/`anchored_sequential` の戻り値 dict は既に格子/scale/wt_frac/esd を
+# 持つので、Trajectory を経由せず**この dict を直接 CSV へ写す**方が実データに即しており、
+# 他 ② ツールの出力を入力に取るため §4.5 到達可能性も満たす。
+# ===========================================================================
+
+
+def _seq_dict_two_frames():
+    """2 相・2 フレームの正常系列結果 dict (write_sequential_csv の主経路検証用)。"""
+    frames = (
+        FrameRietveldResult(
+            frame_index=0, axis_value=300.0, data_path="f0.xrdml", rwp=7.0, gof=1.1,
+            refined_cells={"cubic": (10.4, 10.4, 10.4, 90.0, 90.0, 90.0)},
+            phase_fractions={"cubic": 1.0}, phase_names=("cubic",),
+            phase_weight_fractions={"cubic": 1.0},
+            phase_weight_fraction_esd={"cubic": 0.0},
+            cell_esd={"cubic": (0.002, 0.002, 0.002, 0.0, 0.0, 0.0)},
+        ),
+        FrameRietveldResult(
+            frame_index=1, axis_value=320.0, data_path="f1.xrdml", rwp=8.0, gof=1.2,
+            refined_cells={
+                "cubic": (10.5, 10.5, 10.5, 90.0, 90.0, 90.0),
+                "tetra": (10.2, 10.2, 10.6, 90.0, 90.0, 90.0),
+            },
+            phase_fractions={"cubic": 0.6, "tetra": 0.4}, phase_names=("cubic", "tetra"),
+            phase_weight_fractions={"cubic": 0.7, "tetra": 0.3},
+            phase_weight_fraction_esd={"cubic": 0.01, "tetra": 0.01},
+            cell_esd={
+                "cubic": (0.003, 0.003, 0.003, 0.0, 0.0, 0.0),
+                "tetra": (0.004, 0.004, 0.005, 0.0, 0.0, 0.0),
+            },
+            changepoint=True, changepoint_reasons=("lattice_jump", "new_peaks"),
+        ),
+    )
+    return seq_result_to_dict(
+        SequentialRietveldResult(frames=frames, phase_names=("cubic", "tetra"))
+    )
+
+
+def test_write_sequential_csv_writes_expected_header_and_values(tmp_path):
+    seq = _seq_dict_two_frames()
+    out = tmp_path / "traj.csv"
+    result = write_sequential_csv(seq, str(out))
+
+    assert result["path"] == str(out)
+    assert result["n_frames"] == 2
+    assert result["n_phases"] == 2
+    assert out.exists()
+
+    rows = _read_rows(out)
+    header = rows[0]
+    # 【共通列】: フレーム共通列がすべて存在する
+    for col in (
+        "frame_index", "data_path", "axis_value", "rwp", "gof",
+        "changepoint", "changepoint_reasons", "refine_failed",
+    ):
+        assert col in header, col
+    # 【相ごと列】: cubic/tetra それぞれ 9 列 (a/b/c/a_esd/b_esd/c_esd/scale/wt_frac/wt_frac_esd)
+    for ref in ("cubic", "tetra"):
+        for suffix in ("a", "b", "c", "a_esd", "b_esd", "c_esd", "scale", "wt_frac", "wt_frac_esd"):
+            assert f"{ref}.{suffix}" in header, f"{ref}.{suffix}"
+
+    idx = {name: i for i, name in enumerate(header)}
+    row1 = rows[2]  # フレーム 1 (0 起点で 2 行目がヘッダ, 3 行目がフレーム1)
+    assert row1[idx["frame_index"]] == "1"
+    assert row1[idx["changepoint"]] == "True"
+    assert row1[idx["changepoint_reasons"]] == "lattice_jump|new_peaks"
+    assert row1[idx["cubic.a"]] == "10.5"
+    assert row1[idx["tetra.a"]] == "10.2"
+    assert row1[idx["cubic.wt_frac"]] == "0.7"
+    assert row1[idx["tetra.wt_frac"]] == "0.3"
+    assert row1[idx["cubic.a_esd"]] == "0.003"
+
+
+def test_write_sequential_csv_does_not_fabricate_m2_only_columns(tmp_path):
+    """M2 Trajectory 固有列 (sigma_source/lifecycle 3 列) を M9 データから捏造しないこと。
+
+    M9 の SequentialRietveldResult にはこれらに対応する値が無い。含めて空欄で埋めると
+    「持っているように見える」偽装になる (CLAUDE.md ②不変条件と同じ規律の CSV 版)。
+    """
+    seq = _seq_dict_two_frames()
+    out = tmp_path / "traj.csv"
+    write_sequential_csv(seq, str(out))
+    header = _read_rows(out)[0]
+
+    # 相接頭辞つき (``calcite.sigma_source``) と**素の共通列** (``sigma_source``) の両方を見る。
+    # M2 の `sigma_source` は接頭辞の無い共通列なので、endswith(".name") だけだと素の名前で
+    # 捏造された列を見逃す (ガードの穴)。
+    for forbidden in ("sigma_source", "birth_frame", "death_frame", "confidence"):
+        offenders = [c for c in header if c == forbidden or c.endswith(f".{forbidden}")]
+        assert not offenders, f"M9 に対応値の無い列を捏造している: {offenders}"
+
+
+def test_write_sequential_csv_blank_cell_for_phase_absent_in_frame(tmp_path):
+    """フレーム 0 に無い tetra の格子/scale 列は空欄 (欠測の捏造をしない)。"""
+    seq = _seq_dict_two_frames()
+    out = tmp_path / "traj.csv"
+    write_sequential_csv(seq, str(out))
+    rows = _read_rows(out)
+    header = rows[0]
+    idx = {name: i for i, name in enumerate(header)}
+    row0 = rows[1]  # フレーム 0 (cubic のみ)
+    assert row0[idx["tetra.a"]] == ""
+    assert row0[idx["tetra.scale"]] == ""
+    assert row0[idx["tetra.wt_frac"]] == ""
+
+
+def test_write_sequential_csv_non_finite_and_none_become_blank(tmp_path):
+    """rwp=inf (精密化失敗フレーム) は空欄になり、有限値と取り違えない。"""
+    frame = FrameRietveldResult(
+        frame_index=0, axis_value=1.0, data_path="f0.xrdml",
+        rwp=float("inf"), gof=float("inf"), refined_cells={}, phase_fractions={},
+        phase_names=("alpha",), refine_failed=True,
+    )
+    seq = seq_result_to_dict(SequentialRietveldResult(frames=(frame,), phase_names=("alpha",)))
+    out = tmp_path / "traj.csv"
+    write_sequential_csv(seq, str(out))
+    rows = _read_rows(out)
+    header, row0 = rows[0], rows[1]
+    idx = {name: i for i, name in enumerate(header)}
+    assert row0[idx["rwp"]] == ""
+    assert row0[idx["gof"]] == ""
+    assert row0[idx["refine_failed"]] == "True"
+    assert row0[idx["alpha.a"]] == ""
+
+
+def test_write_sequential_csv_is_deterministic(tmp_path):
+    """同一入力から常に同一バイト列 (NFR-102)。"""
+    seq = _seq_dict_two_frames()
+    out1 = tmp_path / "a.csv"
+    out2 = tmp_path / "b.csv"
+    write_sequential_csv(seq, str(out1))
+    write_sequential_csv(seq, str(out2))
+    assert out1.read_bytes() == out2.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        pytest.param({}, id="frames キーが無い"),
+        pytest.param({"frames": []}, id="frames が空"),
+        pytest.param({"frames": [{"rwp": 1.0}]}, id="必須キー欠落 (frame_index/phase_names 無し)"),
+        pytest.param("x", id="result が str"),
+    ],
+)
+def test_write_sequential_csv_refuses_malformed_input_without_writing_file(tmp_path, malformed):
+    """★空/不正な系列を「0 フレームの正しい CSV」として黙って書き出さない (偽成功の禁止)。"""
+    out = tmp_path / "traj.csv"
+    result = write_sequential_csv(malformed, str(out))
+    assert "error" in result and "error_type" in result
+    assert not out.exists()
+    json.dumps(result, allow_nan=False)
+
+
+def test_write_sequential_csv_degrades_oserror_to_error_dict():
+    """★書き込み先ディレクトリが無い等の I/O 失敗は例外を送出せず error dict へ縮退する (② 契約)。"""
+    seq = _seq_dict_two_frames()
+    result = write_sequential_csv(seq, "/no/such/directory/traj.csv")
+    assert "error" in result and "error_type" in result
+    json.dumps(result, allow_nan=False)
+
+
+def test_write_sequential_csv_registered_in_mcp_tools():
+    from tsumugin.mcp.tools import MCP_TOOLS
+
+    assert MCP_TOOLS["write_sequential_csv"] is write_sequential_csv

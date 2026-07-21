@@ -33,6 +33,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
 | `align_echem` | 計器 (電気化学突合) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス `offset_s`/`interval_s`/`n_frames` or 明示 `frame_epoch_s`) → per-frame の電位/状態 (rest/charge/discharge)。`alkali_budget` の `offset_s`/`interval_s` はここで XRD フレーム時刻と echem を同期して得る |
 | `alkali_budget` | 計器 (クーロメトリー, FR-318) | MPR + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標 x_total(t) の表 (`targets[]`)。出力を `sequential_rietveld`/`anchored_sequential` の `charge_constraint.targets` へそのまま渡す |
+| `write_sequential_csv` | 出力 (FR-504 トラジェクトリ CSV) | `sequential_rietveld`/`anchored_sequential` の結果 dict + 出力パス → フレーム毎の CSV (frame_index/rwp/gof/相ごとの格子±esd・scale・**wt_frac±esd**)。手順 8 の報告を人間/他ツールへ渡す成果物として使う (`get_trajectory` は使わない — session.trajectory を埋める ② ツールが無く到達不能, Issue #116) |
 
 閉ループ丸ごとは MCP に**無い**。回すのはあなた。
 
@@ -300,6 +301,13 @@ y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fracti
 
 全フレーム収束・転移特性・最良結果・相の出現/消失・転移温度・申し送り。
 **Rwp と併せて、相集合の完全性をどう確認したかを必ず書く**。
+
+CSV で成果物を残す/他ツールへ渡すときは `write_sequential_csv(result, path)` を使う
+(FR-504)。`result` は `sequential_rietveld`/`anchored_sequential` の戻り値をそのまま渡す。
+出す列は M9 が実際に持つ値のみ (フレーム共通列 + 相ごとの a/b/c/a_esd/b_esd/c_esd/
+scale/wt_frac/wt_frac_esd) — `scale` は Scale であって重量分率ではない (上表と同じ注意)。
+`get_trajectory` は使わない: M2 逐次 simulate 系の出力アクセサで、`session.trajectory` を
+設定する ② ツールが無く実データ経路からは到達不能 (Issue #116)。
 
 **定量値は Scale ではなく重量分率で報告する**。`phase_fractions` は HAP Scale の正規化値であり、
 **単位胞質量が相間で異なると重量分率と乖離する**。

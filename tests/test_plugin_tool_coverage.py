@@ -24,13 +24,23 @@ _SKILLS_DIR = Path("plugins/tsumugin/skills")
 # (= 新規ツール追加時の ③ 配線忘れを検出する)。
 UNEXPOSED_MCP_TOOLS: dict[str, str] = {
     "get_trajectory": (
-        "M2 逐次 Trajectory の読み出しツールだが、session.trajectory を埋める ② ツールが存在せず"
-        "入力を作る経路が MCP に無い (dead on arrival)。Issue 化済み — 生成側の露出 or 廃止の判断待ち"
+        "方針確定 (Issue #116, 2026-07-21): ③ の手順には載せない。M2 逐次 simulate 系 "
+        "(sequential/engine.py) の Trajectory 出力アクセサだが、session.trajectory を埋める ② "
+        "ツールが存在せず、JSON しか送れない ③ からは意味のある入力を作る経路がない (dead on "
+        "arrival)。手順書に書けば「呼べるが必ず error dict になる」手順を教えることになるため非露出。"
+        "実データの時系列は sequential_rietveld / anchored_sequential の結果 dict をそのまま使う"
+        "こと (frames[].rwp/refined_cells/phase_fractions/phase_weight_fractions 等・"
+        "FR-504 トラジェクトリ CSV は write_sequential_csv で到達可能)。ツール自体は例外を送出せず"
+        "error dict (error_type=TrajectoryUnavailableError) へ縮退するよう修正済み"
     ),
     "run_mem": (
-        "M4/M5 シミュレート joint 検証用の旧 MEM 境界。実データ経路は mem_density/"
-        "mem_rietveld_iterate (mem-model-fix skill) が担う。シミュレート経路を ③ の手順に載せるかは"
-        "Issue で判断"
+        "方針確定 (Issue #117, 2026-07-21): ③ の手順には載せない。M4/M5 シミュレート joint 検証用の"
+        "旧 MEM 境界で、``mem_backend`` は MEMBackend Protocol の**オブジェクト**であり JSON からは"
+        "渡せないため、③ からは意味のある呼び出しを構成できない (dead on arrival)。実データ MEM は"
+        "mem_density / mem_rietveld_iterate (mem-model-fix skill) を使うこと。ツール自体は"
+        "mem_backend 未供給時の MEMUnavailableError を捕捉し error dict "
+        "(error_type=MEMUnavailableError) へ縮退するよう修正済み (① mem.run_mem_boundary の直叩きは"
+        "従来どおり送出・placeholder=True 後方互換も維持)"
     ),
     "residual_report": (
         "設計上、単体呼び出しは主経路でない (auto_rietveld/sequential_rietveld の residual_report"

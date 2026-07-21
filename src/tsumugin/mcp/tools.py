@@ -25,7 +25,7 @@ import numpy as np
 
 from .._json import finite_or_none
 from ..backends.base import RefinementBackend
-from ..errors import GSASUnavailableError
+from ..errors import GSASUnavailableError, MEMUnavailableError
 from ..evidence.base import EvidenceBackend
 from ..evidence.ic import BICBackend
 from ..evidence.ranking import rank
@@ -392,12 +392,31 @@ def get_trajectory(session: AnalysisSession, *, path: str | None = None) -> dict
     """時系列トラジェクトリを返す/CSV 書き出す。Trajectory へ委譲。🔵 REQ-021/022
 
     【委譲】: ``session.trajectory`` のヘッダ + frame_index 行を素の型 dict で返す。``path`` 指定
-      時は ``Trajectory.to_csv`` で CSV を書き出しパスを添える。trajectory 不在は空応答 (縮退)。
-    【テスト対応】: test_get_trajectory_delegates_to_trajectory_csv。
+      時は ``Trajectory.to_csv`` で CSV を書き出しパスを添える。
+    【Issue #116: 偽成功の是正】: ``session.trajectory`` を設定する ② ツールは存在しない
+      (``sequential/engine.py`` の M2 simulate 系の出力アクセサであり、実データ経路である M9
+      ``sequential_rietveld``/M10 ``anchored_sequential`` とは別サブシステム)。従来は
+      ``{"header": [], "rows": {}, "path": None}`` という**成功に見える空応答**を返しており、
+      ③ はこれを「時系列データが無い」と読んでしまう (実際は「このツールへ入力を渡す経路が無い」)。
+      CLAUDE.md ②不変条件 (空/不正入力を「正常」と答えない) に抵触するため、明示的な error dict
+      (``error_type`` 付き) へ縮退する。実データの時系列は ``sequential_rietveld`` /
+      ``anchored_sequential`` の結果 dict をそのまま使うこと。
+    【テスト対応】: test_get_trajectory_delegates_to_trajectory_csv /
+      test_get_trajectory_without_trajectory_returns_error_dict_not_empty_success /
+      test_get_trajectory_without_trajectory_ignores_path_and_does_not_write_file。
     🔵 信頼性レベル: interfaces.py mcp/tools 節 / sequential/trajectory に依拠。
     """
     if session.trajectory is None:
-        return {"header": [], "rows": {}, "path": None}
+        return {
+            "error": (
+                "session.trajectory が未設定です。get_trajectory は M2 逐次 simulate 系 "
+                "(sequential/engine.py) の Trajectory 出力アクセサですが、これを設定する ② ツールは "
+                "存在しないため実運用では到達不能です (dead on arrival)。実データの時系列は "
+                "sequential_rietveld または anchored_sequential が返す結果 dict をそのまま使って"
+                "ください (frames[].rwp/refined_cells/phase_fractions 等)。"
+            ),
+            "error_type": "TrajectoryUnavailableError",
+        }
     trajectory = session.trajectory
     # 【委譲】: 決定論ヘッダ + frame_index → セル列 (Trajectory 私有を触らず公開 API 経由) 🔵
     response: dict = {
@@ -451,13 +470,36 @@ def run_mem(session: AnalysisSession, **params: object) -> dict:
     【委譲】: ``mcp.mem.run_mem_boundary`` へ **params 透過で委譲する。``mem_backend`` /
       ``hypothesis_id`` / ``frame_index`` を含む params はそのまま境界へ渡り、``mem_backend``
       供給時のみ ``build_mem_input``→``mem_backend.run`` の実処理へ入る (M5 実体化)。
-    【後方互換】: ``mem_backend`` 未供給かつ ``placeholder=False`` は従来通り ``MEMUnavailableError``
-      送出、``placeholder=True`` は M4 プレースホルダ dict (D9)。破壊的操作なし (NFR-101)。
-    【テスト対応】: test_run_mem_default_raises_mem_unavailable / test_run_mem_tool_passes_backend_through_params。
+    【後方互換】: ``placeholder=True`` は M4 プレースホルダ dict (D9・状態変更なし)。破壊的操作なし
+      (NFR-101)。
+    【Issue #117: 例外リークの是正】: ``mem_backend`` は ``MEMBackend`` Protocol の**オブジェクト**
+      であり JSON からは渡せない。したがって JSON しか送れない ③ が呼ぶと ``mem_backend`` は
+      常に未供給になり、① ``run_mem_boundary`` は ``MEMUnavailableError`` を送出する。この例外が
+      ② 境界を越えるのは CLAUDE.md ②不変条件 (② ツールは例外を送出しない) への抵触なので、ここで
+      捕捉して error dict へ縮退する。① 直叩き経路 (``mem.run_mem_boundary`` を直接呼ぶ場合) は
+      本関数を経由しないため従来通り送出される (後方互換, TC-511 系不変)。
+    【テスト対応】: test_run_mem_default_returns_error_dict_not_raises (旧
+      test_run_mem_default_raises_mem_unavailable を改称) / test_run_mem_tool_passes_backend_through_params。
     🔵 信頼性レベル: interfaces.py mcp/tools・mcp/mem 節 / REQ-033/034/101/104 に依拠。
     """
-    # 【委譲】: M5 実体化境界へ params 透過 (mem_backend 供給時のみ実処理・破壊的追記なし) 🔵 REQ-034
-    return _mem.run_mem_boundary(session, **params)
+    try:
+        # 【委譲】: M5 実体化境界へ params 透過 (mem_backend 供給時のみ実処理・破壊的追記なし) 🔵 REQ-034
+        return _mem.run_mem_boundary(session, **params)
+    except MEMUnavailableError as exc:
+        # 【② 契約 (例外を送出しない)】: mem_backend は Protocol オブジェクトで JSON 境界を越えられ
+        #   ないため、③ から呼ぶ限り本例外は避けられない。error dict へ縮退し、実データ MEM の代替
+        #   経路 (JSON-only・callable 不要) を明示する 🔵 Issue #117
+        return {
+            "status": "error",
+            "error": "mem_backend_unavailable",
+            "error_type": type(exc).__name__,
+            "message": (
+                "run_mem は mem_backend (MEMBackend Protocol オブジェクト) を要求しますが、JSON から"
+                "はオブジェクトを渡せないため実運用では到達不能です (dead on arrival)。実データ MEM は "
+                "mem_density (単発 MEM 密度解析) または mem_rietveld_iterate (MEM-Rietveld 反復) を"
+                "使ってください (mem-model-fix skill)。"
+            ),
+        }
 
 
 def propose_discriminating_measurements(

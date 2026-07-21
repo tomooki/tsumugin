@@ -178,7 +178,7 @@ def test_eight_tools_registered_in_mcp_tools():
     #   + 電気化学同期 1 (align_echem, #103)
     #   + interop 変換 2 (convert_pattern/write_instrument_params, #108)
     #   + alkali_budget 1 (FR-318) + review queue 露出 2 (list_review_queue/resolve_review_item,
-    #   Issue #125) = 34 ツール登録
+    #   Issue #125) + write_sequential_csv 1 (FR-504 トラジェクトリ CSV, Issue #116/#117 調査) = 35 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -214,6 +214,7 @@ def test_eight_tools_registered_in_mcp_tools():
         "write_instrument_params",
         "list_review_queue",
         "resolve_review_item",
+        "write_sequential_csv",
     }
     assert set(MCP_TOOLS.keys()) == expected
 
@@ -761,6 +762,28 @@ def test_get_trajectory_delegates_to_trajectory_csv(tmp_path):
     assert result["path"] == str(out)
 
 
+def test_get_trajectory_without_trajectory_returns_error_dict_not_empty_success():
+    # 【テスト目的】: Issue #116 — session.trajectory 未設定は偽の成功空応答でなく error dict を返す。
+    #   旧実装は {"header": [], "rows": {}, "path": None} という「成功に見える空応答」を返しており、
+    #   ③ はこれを「時系列データが無い」と誤読していた (実際は入力経路が存在しない)。
+    session = _session()  # trajectory 既定 None
+    result = get_trajectory(session)
+    assert "header" not in result  # 【確認内容】: 偽成功の旧スキーマが残っていない
+    assert "rows" not in result
+    assert result["error_type"] == "TrajectoryUnavailableError"
+    assert "sequential_rietveld" in result["error"]
+    assert "anchored_sequential" in result["error"]
+
+
+def test_get_trajectory_without_trajectory_ignores_path_and_does_not_write_file(tmp_path):
+    # 【テスト目的】: trajectory 未設定時は path 指定があってもファイルを書き出さない (副作用なし)
+    session = _session()
+    out = tmp_path / "traj.csv"
+    result = get_trajectory(session, path=str(out))
+    assert result["error_type"] == "TrajectoryUnavailableError"
+    assert not out.exists()
+
+
 def test_export_gpx_delegates_to_export_module(monkeypatch, tmp_path):
     # 【テスト目的】: export_gpx が export.gpx.export_gpx へ委譲する (GSAS 非依存に強制成功)
     from tsumugin.mcp import tools as t
@@ -917,11 +940,27 @@ def test_mode_switch_records_and_verifies():
 # ===========================================================================
 
 
-def test_run_mem_default_raises_mem_unavailable():
-    # 【テスト目的】: 既定 run_mem は MEMUnavailableError を送出する (EDGE-008)
+def test_run_mem_default_returns_error_dict_not_raises():
+    # 【テスト目的】: Issue #117 — ② run_mem は MEMUnavailableError を送出せず error dict へ縮退する
+    #   (mem_backend は JSON から渡せない Protocol オブジェクトなので ③ からは常にこの経路を通る)。
+    #   ① run_mem_boundary の直叩きは従来通り送出する (test_mcp_mem.py 側で不変を確認)。
+    session = _session()
+    result = run_mem(session)
+    assert isinstance(result, dict)
+    assert result["status"] == "error"
+    assert result["error_type"] == "MEMUnavailableError"
+    # 【代替経路の明示】: ③ が実データ MEM への正しい導線を得られること
+    assert "mem_density" in result["message"]
+    assert "mem_rietveld_iterate" in result["message"]
+
+
+def test_run_mem_boundary_direct_call_still_raises_mem_unavailable():
+    # 【テスト目的】: ① 直叩き経路 (mem_module.run_mem_boundary) は従来どおり例外を送出する
+    #   (② run_mem のみが error dict へ縮退する境界であることの対比; test_mcp_mem.py の
+    #   test_default_without_backend_raises_mem_unavailable と同一契約)
     session = _session()
     with pytest.raises(MEMUnavailableError):
-        run_mem(session)
+        mem_module.run_mem_boundary(session)
 
 
 def test_run_mem_placeholder_returns_dict_without_state_change():
@@ -936,11 +975,11 @@ def test_run_mem_placeholder_returns_dict_without_state_change():
 
 
 def test_run_mem_default_does_not_mutate_ledger():
-    # 【テスト目的】: run_mem 例外送出でも ledger 追記・破壊操作がない
+    # 【テスト目的】: run_mem が error dict へ縮退しても ledger 追記・破壊操作がない
     session = _session()
     n_before = len(session.ledger.entries)
-    with pytest.raises(MEMUnavailableError):
-        run_mem(session)
+    result = run_mem(session)
+    assert result["status"] == "error"
     assert len(session.ledger.entries) == n_before
 
 

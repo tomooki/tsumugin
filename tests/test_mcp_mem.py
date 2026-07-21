@@ -187,11 +187,14 @@ def test_default_without_backend_raises_mem_unavailable():
         mem_module.run_mem_boundary(session)
 
 
-def test_run_mem_tool_default_still_raises():
-    # 【テスト目的】: run_mem ツール経由でも既定は MEMUnavailableError (既存挙動不変)
+def test_run_mem_tool_default_returns_error_dict():
+    # 【テスト目的】: Issue #117 — run_mem ツール経由は MEMUnavailableError を送出せず error dict へ
+    #   縮退する (② は例外を送出しない契約)。① mem_module.run_mem_boundary の直叩きは
+    #   test_default_without_backend_raises_mem_unavailable の通り従来どおり送出する (不変)。
     session = _session()
-    with pytest.raises(MEMUnavailableError):
-        run_mem(session)
+    result = run_mem(session)
+    assert result["status"] == "error"
+    assert result["error_type"] == "MEMUnavailableError"
 
 
 # ===========================================================================
