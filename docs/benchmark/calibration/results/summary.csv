@@ -1,0 +1,5 @@
+series,backend,temperature,ece,n_samples,probability_semantics
+bic_raw,bic,1.000000,0.409680,200,BIC 近似事後確率 (softmax(-BIC/2))
+bic_calibrated,bic,35.130107,0.100475,200,BIC 近似事後確率 (softmax(-BIC/2))
+nested_raw,nested,1.000000,0.156315,200,logZ ベース事後確率 (softmax(-(-logZ)))
+nested_calibrated,nested,3.984629,0.046100,200,logZ ベース事後確率 (softmax(-(-logZ)))

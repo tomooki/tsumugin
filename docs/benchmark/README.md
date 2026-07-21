@@ -159,3 +159,69 @@ for f in 11BM_NAC.fxye 11bm_gsas.prm PG3_22048.gsa PG3_22049.gsa POWGEN_1066.ins
 
 - PbSO4 の CIF は既存 `testdata/PbSO4-Wyckoff.cif` を使用。
 - fluoroapatite / garnet の CIF は Phase A/B で MP または COD から取得して固定する。
+
+## 確率較正ベンチ (仕様 §12-5, Issue #72 前半)
+
+`bic` / `nested` の**予測確率がどれだけ当たっているか** (reliability / ECE) を評価する。合成の
+多仮説選択問題 (主相 + 微弱な副相を見落とす偽仮説) を決定論生成し、温度 T=1 (較正前) と
+in-sample ECE 最小化でフィットした T (較正後) を `nested.calibration.calibrate_by_backend` で比較する。
+
+```bash
+uv run python -u docs/benchmark/calibration/run_calibration_bench.py
+```
+
+GSAS-II 非依存 (numpy コアのみ)・**乱数種固定でビット同一** (NFR-102)。スモークテストは
+`tests/test_calibration_bench.py` (高速ティア)。出力は `docs/benchmark/calibration/results/`
+(`summary.csv` / `meta.csv` / `reliability_bins.csv`)。
+
+### 較正結果 (200 問題)
+
+| 系列 | backend | 温度 T | ECE |
+|---|---|---|---|
+| bic_raw | bic | 1.000 | 0.4097 |
+| bic_calibrated | bic | 35.130 | 0.1005 |
+| nested_raw | nested | 1.000 | 0.1563 |
+| nested_calibrated | nested | 3.985 | 0.0461 |
+
+- **温度較正は両 backend で ECE を大きく下げる** (bic 0.410→0.100、nested 0.156→0.046)。
+- **素の bic 確率は極端に過信** (T≈35 を要する)。`softmax(-BIC/2)` は僅差でも確率を 0/1 へ張り付か
+  せるため、**未較正の bic 確率をそのまま「この相である確率」として読んではいけない** (FR-124 が
+  backend 間で確率の意味が違うことのレポート明記を求める理由)。
+- nested は素でも bic より較正が良い (T≈4)。ただし v1 の evidence が定数尤度サロゲートである
+  制約 (Issue #76) は本ベンチの外にあり、**ここで測っているのは確率の較正であって裁定力ではない**。
+
+## joint 占有率ベンチ (仕様 §12-6, Issue #72 後半)
+
+X線単独 vs SXRD+ND joint で NaCuHCF·nD₂O の占有率 (Na/O/Ow) **±σ** を比較し、中性子コントラスト
+(b: Na 3.63 / O 5.80 fm ↔ X線 Z: Na 11 / O 8) による占有率決定精度の向上を定量する。併せて
+FR-244 (`joint.contrast.recommend_occupancy_release`) が joint データでのみ発火することを確認する。
+
+```bash
+uv run python -u docs/benchmark/joint/run_joint_occupancy_bench.py
+```
+
+入力は `docs/benchmark/testdata/xnd/` (ローカル限定・非再配布)。実 GSAS-II 精密化 (~405 s) を伴う
+ため **gated テスト化していない** — 実行は手動。出力は `docs/benchmark/joint/results/`。
+
+### 占有率 ±σ の比較
+
+| サイト | X線単独 値 | X線単独 σ | joint 値 | joint σ | σ 比 (joint/X線) |
+|---|---|---|---|---|---|
+| Na1 | 0.1491 | 0.0237 | 0.1423 | 0.0185 | **0.782** |
+| O3 | 0.8509 | 0.0237 | 0.8577 | 0.0185 | **0.782** |
+| Na2 | 0.9895 | 0.0319 | 0.9619 | 0.0253 | **0.791** |
+| O1 | 0.0105 | 0.0319 | 0.0381 | 0.0253 | **0.791** |
+| Ow | 0.3297 | 0.0137 | 0.3453 | 0.0108 | **0.788** |
+
+| モード | Rwp% | GOF | n_obs | n_params | dt |
+|---|---|---|---|---|---|
+| xray_only | 15.15 | 21.36 | 12168 | 29 | 66 s |
+| joint | 15.27 | 16.85 | 20082 | 48 | 405 s |
+
+- **joint は全サイトで占有率 σ を ~21% 縮める** (σ 比 0.78–0.79)。中性子の Na/O コントラストが
+  X線では分離できない Na/O 分割を決めるという FR-240/244 の設計意図を実データで確認した。
+- **Rwp は joint の方が僅かに高い (15.15→15.27%)。これは劣化ではない** — 中性子ヒストグラムを
+  加えて同じ構造で同時に説明しているので、比較対象として意味を持つのは Rwp ではなく σ と GOF。
+  同様に **2 モードの bic は観測データ自体が違うので比較してはならない** (n_obs が異なる)。
+- **FR-244 は joint で 2 件 (Na1_O3 / Na2_O1, コントラスト 0.194) を推奨し、X線単独では 0 件**。
+  probe 種別が 1 種のとき発火しない仕様どおりの挙動 (提案のみ・非破壊)。

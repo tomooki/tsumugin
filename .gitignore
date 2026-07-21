@@ -27,3 +27,6 @@ CLAUDE.md
 # 注2: 今後 repro スクリプトを意図的にバージョン管理したい場合は `git add -f <path>` が必要。
 #      恒久的に残す価値があるものは tests/ か docs/ へ昇格させるのが本筋。
 scratchpad/
+
+# ベンチの派生 GSAS-II プロジェクト (大容量バイナリ; スクリプト再実行で再生成できる)
+docs/benchmark/joint/results/*.gpx
