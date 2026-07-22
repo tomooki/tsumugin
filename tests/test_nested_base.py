@@ -174,6 +174,116 @@ def test_evidence_problem_defaults():
     assert problem.label == ""
 
 
+def test_priorspec_log_pdf_uniform_inside_is_neg_log_width():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="a", kind="uniform", low=2.0, high=6.0)
+    assert spec.log_pdf(4.0) == pytest.approx(-math.log(4.0))
+    # 端点も区間内 (low <= x <= high)
+    assert spec.log_pdf(2.0) == pytest.approx(-math.log(4.0))
+    assert spec.log_pdf(6.0) == pytest.approx(-math.log(4.0))
+
+
+def test_priorspec_log_pdf_uniform_outside_is_neg_inf():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="a", kind="uniform", low=2.0, high=6.0)
+    assert spec.log_pdf(1.999) == -float("inf")
+    assert spec.log_pdf(6.001) == -float("inf")
+
+
+def test_priorspec_log_pdf_uniform_degenerate_width_is_neg_inf_everywhere():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="a", kind="uniform", low=5.0, high=5.0)
+    assert spec.log_pdf(5.0) == -float("inf")
+    assert spec.log_pdf(0.0) == -float("inf")
+    # high < low (negative width) も同様
+    spec_neg = PriorSpec(param_name="a", kind="uniform", low=5.0, high=1.0)
+    assert spec_neg.log_pdf(3.0) == -float("inf")
+
+
+def test_priorspec_log_pdf_normal_matches_closed_form():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="a", kind="normal", loc=3.0, scale=2.0)
+    for x in (3.0, 5.0, -1.0):
+        expected = -0.5 * ((x - 3.0) / 2.0) ** 2 - math.log(2.0) - 0.5 * math.log(2.0 * math.pi)
+        assert spec.log_pdf(x) == pytest.approx(expected)
+
+
+def test_priorspec_log_pdf_normal_scale_zero_degrades_to_uniform():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="a", kind="normal", loc=3.0, scale=0.0, low=1.0, high=5.0)
+    assert spec.log_pdf(2.0) == pytest.approx(-math.log(4.0))
+    assert spec.log_pdf(0.5) == -float("inf")
+
+
+def test_priorspec_log_pdf_normal_scale_negative_degrades_to_uniform():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="a", kind="normal", loc=0.0, scale=-1.0, low=2.0, high=8.0)
+    assert spec.log_pdf(4.0) == pytest.approx(-math.log(6.0))
+
+
+def test_priorspec_log_pdf_truncated_normal_matches_normal_minus_logz():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(
+        param_name="a", kind="truncated_normal", low=0.0, high=1.0, loc=0.5, scale=0.3
+    )
+    alpha = (0.0 - 0.5) / 0.3
+    beta = (1.0 - 0.5) / 0.3
+    z = 0.5 * (1.0 + math.erf(beta / math.sqrt(2.0))) - 0.5 * (
+        1.0 + math.erf(alpha / math.sqrt(2.0))
+    )
+    expected_at_loc = (
+        -0.5 * 0.0 - math.log(0.3) - 0.5 * math.log(2.0 * math.pi) - math.log(z)
+    )
+    assert spec.log_pdf(0.5) == pytest.approx(expected_at_loc)
+
+
+def test_priorspec_log_pdf_truncated_normal_outside_bounds_is_neg_inf():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(
+        param_name="a", kind="truncated_normal", low=0.0, high=1.0, loc=0.5, scale=0.3
+    )
+    assert spec.log_pdf(-0.01) == -float("inf")
+    assert spec.log_pdf(1.01) == -float("inf")
+
+
+def test_priorspec_log_pdf_truncated_normal_scale_zero_degrades_to_uniform():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(
+        param_name="a", kind="truncated_normal", low=0.0, high=1.0, loc=0.5, scale=0.0
+    )
+    assert spec.log_pdf(0.25) == pytest.approx(-math.log(1.0))
+    assert spec.log_pdf(-0.5) == -float("inf")
+
+
+def test_priorspec_log_pdf_truncated_normal_zero_mass_degrades_to_uniform():
+    # 数値的に Z=cdf_b-cdf_a<=0 に潰れる縮退ケース (scale が区間に比べ極端に小さく erf が飽和)。
+    # transform の cdf_b-cdf_a<=0 縮退 (uniform 端点補間) と整合させる。
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(
+        param_name="a", kind="truncated_normal", low=100.0, high=101.0, loc=0.0, scale=1e-4
+    )
+    assert spec.log_pdf(100.5) == pytest.approx(-math.log(1.0))
+
+
+def test_priorspec_log_pdf_determinism():
+    from tsumugin.nested.base import PriorSpec
+
+    spec = PriorSpec(param_name="a", kind="truncated_normal", low=0.0, high=1.0, loc=0.5, scale=0.3)
+    a = spec.log_pdf(0.4)
+    b = spec.log_pdf(0.4)
+    assert a == b
+
+
 def test_problem_aware_backend_runtime_checkable_true():
     from tsumugin.nested.base import (
         EvidenceProblem,
