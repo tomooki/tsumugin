@@ -1188,7 +1188,7 @@ def test_submit_joint_skips_empty_candidate_set_without_indexerror(monkeypatch):
     assert captured["refs"] == ["A"]
 
 
-def test_list_hypotheses_empty_fallback_has_six_keys():
+def test_list_hypotheses_empty_fallback_has_seven_keys():
     # 【F4】: search_result None 時も to_summary と同じ 6 キー + escalations (Issue #125) が揃うこと。
     session = _session()  # ranked=None → search_result None
     result = list_hypotheses(session)

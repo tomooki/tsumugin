@@ -889,14 +889,15 @@ def write_sequential_csv(result: Mapping[str, object], path: str, *, reason: str
     列は M9 ``SequentialRietveldResult`` が実際に持つ値のみで構成する: フレーム共通列
     (frame_index/data_path/axis_value/rwp/gof/changepoint/changepoint_reasons/refine_failed) +
     相ごと 9 列 (a/b/c/a_esd/b_esd/c_esd/scale/wt_frac/wt_frac_esd)。M2 Trajectory の
-    ``sigma_source``/lifecycle 3 列 (birth_frame/death_frame/confidence) は**含めない** — M9 は
-    それらに対応する値を持たず、空欄で埋めると「持っているように見える」偽装になる (CLAUDE.md
-    ②不変条件: 空/不正入力を「正常」と答えない、と同じ規律の CSV 版)。``scale`` は
-    **Scale であって重量分率ではない** (``wt_frac`` を定量値として使うこと — insitu skill 手順 8 と
-    同じ注意)。
+    ``sigma_source``/lifecycle 3 列 (birth_frame/death_frame/confidence) は**含めない** — M9 の
+    フレーム行にはこれらに対応する列が無い (birth は ``appearances`` に別スキーマで出るが
+    death/confidence は持たず、フレーム単位の行に相ライフサイクルは自然にマップしない)。無い値を
+    空欄で埋めると「持っているように見える」偽装になる (CLAUDE.md ②不変条件: 空/不正入力を
+    「正常」と答えない、と同じ規律の CSV 版)。``scale`` は **Scale であって重量分率ではない**
+    (``wt_frac`` を定量値として使うこと — insitu skill 手順 8 と同じ注意)。
 
-    :returns: ``{"path": str, "n_frames": int, "n_phases": int}``。入力不正/書き込み失敗は
-        ``{"error", "error_type"}``
+    :returns: ``{"path": str, "n_frames": int, "n_phases": int, "reason": str}``。
+        入力不正/書き込み失敗は ``{"error", "error_type"}``
     """
     try:
         _validate_seq_result(result)
