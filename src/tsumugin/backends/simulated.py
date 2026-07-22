@@ -16,7 +16,7 @@ import numpy as np
 from ..absorption.model import AbsorptionConfig, transmission_factor
 from ..evidence.noise import noise_extras
 from ..model import LatticeParams, PhaseInstance
-from .base import RefinementModel, RefinementResult, parse_param
+from .base import Curvature, RefinementModel, RefinementResult, parse_param
 
 # 既定の反射リスト。s = h²+k²+l² が d 間隔 (d = L/√s) を決める。
 _DEFAULT_HKL: tuple[tuple[int, int, int], ...] = (
@@ -322,9 +322,28 @@ class SimulatedBackend:
         )
         globals_out = {**globals_out, **noise_globals}
         warnings_out = warnings_out + noise_warnings
+        # 【最終 J の一括計算 (Issue #76)】: 最終受理 p で J を 1 回だけ計算し、格子 σ 導出と
+        #   Curvature 公開 (JᵀJ) で共有する (二重計算の排除)。chi2/J が非有限なら双方とも提供しない 🔵
+        jac_final: np.ndarray | None = None
+        if math.isfinite(chi2):
+            jac_candidate = self._jacobian(phases, names, p, fit_mu_t, full_residual, r)
+            if bool(np.all(np.isfinite(jac_candidate))):
+                jac_final = jac_candidate
         # 【格子 σ】: 最終受理パラメータの JᵀJ 漸近共分散から解放格子属性の σ を導出し、
         #   解放しなかった相の古い σ はリセットする (FR-306/NFR-107) 🔵
-        phases = self._apply_lattice_sigma(phases, names, p, fit_mu_t, full_residual, r, chi2)
+        phases = self._apply_lattice_sigma(
+            phases, names, p, fit_mu_t, full_residual, r, chi2, jac=jac_final
+        )
+        # 【Curvature 公開 (Issue #76)】: JᵀJ = −logL(=χ²/2) の Gauss-Newton Hessian。列順は
+        #   names 順 + (fit_mu_t 時) 末尾 "global.mu_t"。非有限経路は None (NaN を漏らさない) 🔵
+        curvature: Curvature | None = None
+        if jac_final is not None:
+            curve_names = tuple(names) + (("global.mu_t",) if fit_mu_t else ())
+            curvature = Curvature(
+                param_names=curve_names,
+                point=p.copy(),
+                hessian=jac_final.T @ jac_final,
+            )
         return RefinementResult(
             phases=phases,
             chi2=chi2,
@@ -337,6 +356,7 @@ class SimulatedBackend:
             globals=globals_out,
             warnings=warnings_out,
             noise_scale=noise_scale,
+            curvature=curvature,
         )
 
     def _noise_estimate_extras(
@@ -477,6 +497,8 @@ class SimulatedBackend:
         full_residual,
         r: np.ndarray,
         chi2: float,
+        *,
+        jac: np.ndarray | None = None,
     ) -> tuple[PhaseInstance, ...]:
         """最終受理パラメータの JᵀJ 漸近共分散から解放格子属性の σ を書き込む (FR-306/NFR-107)。
 
@@ -532,8 +554,11 @@ class SimulatedBackend:
         if by_phase and math.isfinite(chi2):
             dof = max(int(r.size) - int(p.size), 1)  # 【n_res 自由度】: restraint 行を含む 🔵
             reduced_chi2 = chi2 / dof
-            # 【J の再計算】: LM ループ先頭の J は最終受理 p より古いため、最終 p で 1 回再計算 🔵
-            jac = self._jacobian(phases, names, p, fit_mu_t, full_residual, r)
+            # 【J の供給/再計算】: refine() 本経路は最終受理 p の J を渡してくる (Issue #76 の
+            #   Curvature と共有・二重計算排除)。未供給の呼び出し (早期リターン経路等) のみ
+            #   最終 p で 1 回計算する 🔵
+            if jac is None:
+                jac = self._jacobian(phases, names, p, fit_mu_t, full_residual, r)
             cov: np.ndarray | None = None
             if bool(np.all(np.isfinite(jac))):
                 try:

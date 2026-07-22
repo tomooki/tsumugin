@@ -455,3 +455,139 @@ def test_estimate_noise_opt_in_populates_on_no_free_params_path():
     )
     assert result.noise_scale is not None
     assert math.isfinite(result.noise_scale)
+
+
+# ---------------------------------------------------------------------------
+# Curvature 公開 (Issue #76 T1): 最終受理パラメータの JᵀJ を RefinementResult へ
+# ---------------------------------------------------------------------------
+
+
+def test_refine_populates_curvature_with_sorted_param_order():
+    # 【テスト目的】: 解放パラメータありの refine が curvature (param_names/point/hessian) を
+    #   充填し、列順が names (sorted free_params) と一致・point が精密化済み値と一致すること。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=2.0)
+    y = backend.simulate((truth,), tt)
+    start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.02, 5.0, 5.0), scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale"), param_name(0, "lattice.a")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    curv = result.curvature
+    assert curv is not None
+    # 【確認内容】: 列順は sorted free_params (lattice.a < scale) 🔵
+    assert curv.param_names == (param_name(0, "lattice.a"), param_name(0, "scale"))
+    # 【確認内容】: point は精密化後の実値 (phases から読める値と一致) 🔵
+    assert curv.point[0] == pytest.approx(result.phases[0].lattice.a)
+    assert curv.point[1] == pytest.approx(result.phases[0].scale)
+    # 【確認内容】: hessian は対称・有限・正定値 (識別可能な 2 パラメータ) 🔵
+    h = np.asarray(curv.hessian)
+    assert h.shape == (2, 2)
+    assert np.all(np.isfinite(h))
+    assert np.allclose(h, h.T)
+    assert np.all(np.linalg.eigvalsh(0.5 * (h + h.T)) > 0.0)
+
+
+def test_curvature_hessian_matches_analytic_jtj_for_scale_only():
+    # 【テスト目的】: scale のみ解放の残差 r(s)=sqrt(w)·(y−s·y_unit) は dr/ds=−sqrt(w)·y_unit で
+    #   H=JᵀJ=Σ w·y_unit² が解析的に既知。数値前進差分の JᵀJ がこれと一致することを確認
+    #   (H が -logL=χ²/2 の Hessian [JᵀJ 近似] のスケールで公開されている契約の検証)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=3.0)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    curv = result.curvature
+    assert curv is not None and curv.param_names == (param_name(0, "scale"),)
+    y_unit = backend.simulate((_phase(a=5.0, scale=1.0),), tt)
+    weights = 1.0 / np.maximum(y, 1.0)
+    expected = float(np.sum(weights * y_unit**2))
+    assert float(curv.hessian[0, 0]) == pytest.approx(expected, rel=1e-3)
+
+
+def test_curvature_is_none_without_free_params():
+    # 【テスト目的】: 解放パラメータ皆無の早期リターン経路では curvature を提供しない (None)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    phase = _phase(a=5.0, scale=2.0)
+    y = backend.simulate((phase,), tt)
+    result = backend.refine(
+        RefinementModel(phases=(phase,), free_params=frozenset(), two_theta=tt, intensity=y)
+    )
+    assert result.curvature is None
+
+
+def test_curvature_is_none_for_nonfinite_data():
+    # 【テスト目的】: NaN 強度で chi2/J が非有限のとき curvature を書かない (NaN を漏らさない)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    y = np.full_like(tt, np.nan)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    assert result.curvature is None
+
+
+def test_curvature_includes_mu_t_column_when_fit():
+    # 【テスト目的】: absorption + global.mu_t 解放時、curvature の末尾列が global.mu_t で
+    #   restraint 行込みの JᵀJ になっていること (列順契約: names 順 + 末尾 μt)。
+    from tsumugin.absorption.model import AbsorptionConfig
+
+    tt = _grid()
+    truth = _phase(a=5.0, scale=1.0)
+    y = SimulatedBackend(
+        peak_fwhm=0.2, absorption=AbsorptionConfig(mu_t_initial=0.5)
+    ).simulate((truth,), tt)
+    backend = SimulatedBackend(
+        peak_fwhm=0.2,
+        absorption=AbsorptionConfig(mu_t_initial=0.0, mu_t_calc=0.5, restraint_weight=100.0),
+    )
+    start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.02, 5.0, 5.0), scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "lattice.a"), "global.mu_t"}),
+        two_theta=tt,
+        intensity=y,
+    )
+    result = backend.refine(model)
+    curv = result.curvature
+    assert curv is not None
+    assert curv.param_names == (param_name(0, "lattice.a"), "global.mu_t")
+    assert curv.point[1] == pytest.approx(result.globals["mu_t"])
+
+
+def test_curvature_is_deterministic_bitwise():
+    # 【テスト目的】: 同一入力 2 回で curvature がビット同一 (NFR-102)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=2.5)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale"), param_name(0, "lattice.a")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    r1 = backend.refine(model)
+    r2 = backend.refine(model)
+    assert r1.curvature is not None and r2.curvature is not None
+    assert r1.curvature.param_names == r2.curvature.param_names
+    assert np.array_equal(r1.curvature.point, r2.curvature.point)
+    assert np.array_equal(r1.curvature.hessian, r2.curvature.hessian)

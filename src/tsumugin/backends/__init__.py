@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import (
+    Curvature,
     RefinementBackend,
     RefinementModel,
     RefinementResult,
@@ -11,6 +12,7 @@ from .base import (
 )
 
 __all__ = [
+    "Curvature",
     "RefinementBackend",
     "RefinementModel",
     "RefinementResult",

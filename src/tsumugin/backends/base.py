@@ -26,6 +26,26 @@ class RefinementModel:
 
 
 @dataclass(frozen=True)
+class Curvature:
+    """最終受理パラメータにおける目的関数の曲率情報 (Issue #76 / FR-121)。
+
+    バックエンドが σ 導出のために既に計算している重み付き JᵀJ を evidence 層 (Laplace/nested)
+    へ公開する。``hessian`` は **負対数尤度 −logL = χ²/2 の Hessian の Gauss-Newton 近似
+    (JᵀJ)** であり、`nested.laplace.LaplaceBackend.score_problem` の ``hessian`` 契約
+    (負対数尤度の Hessian) にそのまま渡せるスケールで統一する。restraint 行を残差に含む
+    バックエンドでは J も restraint 行込み (σ 導出と同一の J)。
+
+    ``param_names`` は J の列順 (= ``point``/``hessian`` の次元順)。非識別パラメータ
+    (恒等 0 列) を含む場合 hessian は特異になるが、それは消費側 (Laplace の正定値ガード)
+    が正しく縮退するための情報であり、ここでは加工しない。
+    """
+
+    param_names: tuple[str, ...]  # 【列順】: J の列に対応するパラメータ名 (point/hessian と同順)
+    point: np.ndarray  # 【最終受理パラメータベクトル】: param_names 順の実値
+    hessian: np.ndarray  # 【JᵀJ】: −logL=χ²/2 の Hessian (Gauss-Newton 近似, 重み・restraint 行込み)
+
+
+@dataclass(frozen=True)
 class RefinementResult:
     """精密化からの出力。"""
 
@@ -45,6 +65,10 @@ class RefinementResult:
     # 呼んだ場合のみ設定されるノイズスケール s。既定 None は「未推定」= 既存呼び出し元と
     # ビット同一 (末尾・既定値付きで非破壊追加, REQ-404)。🔵
     noise_scale: float | None = None
+    # 【追加フィールド (Issue #76)】: 最終受理パラメータの JᵀJ 曲率 (Laplace/nested の実
+    # Hessian 供給源)。提供できないバックエンド/経路 (解放ゼロ・非有限・GSAS 未配線) は None。
+    # 末尾・既定値付きの非破壊追加。🔵
+    curvature: Curvature | None = None
 
 
 @runtime_checkable
