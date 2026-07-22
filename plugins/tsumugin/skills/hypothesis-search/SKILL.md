@@ -1,6 +1,6 @@
 ---
 name: hypothesis-search
-description: 多仮説の相同定・裁定を進める (③ 判断層)。MCP ツール (submit_analysis / list_hypotheses / compare_hypotheses / propose_discriminating_measurements / accept_hypothesis / revert / export_gpx) を駆動し、候補相集合から仮説を木探索・evidence (BIC) でランキングし、化学的妥当性 (chem_context) で非物理な相を降格し、僅差競合には判別測定 (OED) を情報利得順に提案し、最終選択を承認境界付きで確定して gpx に書き出す。降格は除外でなく確率補正であり、判別測定・最終採択はユーザー承認を挟む。
+description: 多仮説の相同定・裁定を進める (③ 判断層)。MCP ツール (submit_analysis / list_hypotheses / compare_hypotheses / propose_discriminating_measurements / accept_hypothesis / revert / export_gpx / list_review_queue / resolve_review_item) を駆動し、候補相集合から仮説を木探索・evidence (BIC) でランキングし、化学的妥当性 (chem_context) で非物理な相を降格し、僅差競合には判別測定 (OED) を情報利得順に提案し、エスカレーション有無を確認した上で最終選択を承認境界付きで確定して gpx に書き出す。降格は除外でなく確率補正であり、判別測定・最終採択・レビュー項目の解決はユーザー承認を挟む。
 ---
 
 # tsumugin: Agentic 多仮説 相同定・裁定 (③ 判断層)
@@ -20,7 +20,9 @@ description: 多仮説の相同定・裁定を進める (③ 判断層)。MCP �
 | `list_hypotheses` | 一覧 | session の探索結果 → ranked/unknown_phase_flag/未マッチ |
 | `compare_hypotheses` | 裁定 (+化学降格) | hypothesis_ids (+ `chem_context`) → evidence/確率/close_competitor。`chem_context` で非物理相を**降格** |
 | `propose_discriminating_measurements` | 測定計画 (OED) | (session) → 僅差競合を判別する測定を**情報利得順**に提案 (非破壊・提案のみ) |
-| `accept_hypothesis` | 最終選択 | hypothesis_id + by (agent/human) → 採択。human モードは agent 採択を拒否し推奨に留める |
+| `accept_hypothesis` | 最終選択 | hypothesis_id + by (agent/human) → 採択。応答の `escalations` も見る (Issue #125) |
+| `list_review_queue` | 確認事項の一覧 | (include_resolved) → 未解決 (既定) or 全件の ReviewItem 一覧 |
+| `resolve_review_item` | 確認事項の解決記録 | item_id + note → 解決済みへ状態遷移 (追記型・削除しない) |
 | `revert` | 取消 | hypothesis_id → 採択を superseded 化 (追記型・削除しない) |
 | `export_gpx` | 書き出し | hypothesis_id + path → 採択相を GSAS-II .gpx に |
 
@@ -64,17 +66,34 @@ description: 多仮説の相同定・裁定を進める (③ 判断層)。MCP �
   `estimated_information_gain` を読み、**どの測定を実施するかはユーザーに諮る**。
 - 僅差競合が無ければ空提案 = 「evidence で既に決着」のシグナル。
 
-### 4. 最終選択を確定する — **承認境界**
+### 4. エスカレーションを確認する — **accept 前に必ず見る** (Issue #125)
+
+`accept_hypothesis` を呼ぶ**前**に `list_hypotheses` の応答に含まれる `escalations` を見る。
+
+- `escalations` は `all_high_r` (全仮説が高 R) / `unknown_phase` (未知相フラグ) /
+  `close_competitor` (僅差競合) / `guard_escalated` (段階解放ガード連続発動) の 4 条件で、
+  空でなければ**人間が後追いで確認すべき事象が立っている**ことを意味する。
+- **`escalations` が空でなければ自動 accept しない**。手順 2/3 (化学的妥当性の確認・判別測定)
+  に戻るか、ユーザーに状況を提示して判断を仰ぐ。
+- `list_review_queue()` で、これまでに蓄積された未解決の確認事項 (ReviewItem) を読む。
+  `accept_hypothesis` 自体もエスカレーション成立時に queue へ通知するため、ここが「後から
+  何を見落としていないか」を棚卸しする場所になる。
+- **`resolve_review_item(item_id, note=...)` は人間の裁定を記録する操作であり、agent が独断で
+  呼んではならない**。ユーザーが実際に確認・裁定した後にのみ、その旨を伝えて呼ぶ。
+
+### 5. 最終選択を確定する — **承認境界**
 
 `accept_hypothesis(hypothesis_id, by=...)` で採択する。
 
 - **human モードでは `by="agent"` の採択は拒否**され `{"status": "recommend_only"}` が返る
   (最終選択は人間が握る運用)。その場合は推奨理由を提示し、ユーザーに `by="human"` の採択を仰ぐ。
-- agent モードなら自律採択できるが、**化学的に不自然な相を含む仮説・僅差で決着していない仮説は
-  採択せず、手順 2/3 に戻る**。
+- agent モードなら自律採択できるが、**化学的に不自然な相を含む仮説・僅差で決着していない仮説・
+  手順 4 の `escalations` が非空の仮説は採択せず、手順 2/3/4 に戻る**。
+- 応答にも `escalations` が含まれる。accept 後であっても非空なら、確認事項を
+  `list_review_queue`/`resolve_review_item` の手順 4 に従って扱う。
 - 誤採択は `revert(hypothesis_id)` で取り消せる (追記型・履歴は消えない)。
 
-### 5. 書き出す
+### 6. 書き出す
 
 `export_gpx(hypothesis_id, path)` で採択仮説の相を GSAS-II `.gpx` に書き出す。GSAS-II 未導入なら
 `{"status": "error", "error": "gsas_unavailable"}` が返るので、その旨をユーザーに伝える。
@@ -87,6 +106,8 @@ description: 多仮説の相同定・裁定を進める (③ 判断層)。MCP �
 | 化学的妥当性の**降格** (chem_context) | ✅ 提案 (降格のみ・除外しない) | 組成を供給・最終判断 |
 | 判別測定の**提案** (OED) | ✅ 情報利得順に提案 (非破壊) | どれを実施するか諮る |
 | **最終採択** (accept) | 🟡 agent モードのみ自律 | ✅ human モードは承認必須 |
+| エスカレーション**確認** (`escalations`/`list_review_queue`) | ✅ 検出・蓄積は自律 | 内容を読み判断は③ |
+| レビュー項目の**解決記録** (`resolve_review_item`) | ❌ しない | ✅ 人間の裁定をあなたが記録する操作。agent 独断禁止 |
 | 測定の実行・データ変更 | ❌ しない | ✅ 実験者が実施 |
 
 **なぜ降格は除外でないか**: 化学ルールは経験則で、稀な準安定相・特殊雰囲気を誤って弾きうる。

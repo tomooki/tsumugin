@@ -58,6 +58,8 @@ from tsumugin.mcp.tools import (
     run_mem,
     submit_analysis,
 )
+from tsumugin.reference.engine import identify_phases as _layer1_identify_phases
+from tsumugin.reference.mixture import identify_phase_mixtures as _layer1_identify_phase_mixtures
 from tsumugin.reference.model import ReferencePhase
 from tsumugin.search.peaks import Peak
 
@@ -174,7 +176,9 @@ def test_eight_tools_registered_in_mcp_tools():
     #   + M9 in situ 逐次 3 + M8-③ MEM 4 (mem_rietveld_iterate #100 含む) + operando 診断 4
     #   + M10 anchor 1 (anchored_sequential, #97) + 構造モデル比較 1 (compare_structure_models, #100)
     #   + 電気化学同期 1 (align_echem, #103)
-    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108) = 31 ツール登録
+    #   + interop 変換 2 (convert_pattern/write_instrument_params, #108)
+    #   + alkali_budget 1 (FR-318) + review queue 露出 2 (list_review_queue/resolve_review_item,
+    #   Issue #125) + write_sequential_csv 1 (FR-504 トラジェクトリ CSV, Issue #116/#117 調査) = 35 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -208,6 +212,9 @@ def test_eight_tools_registered_in_mcp_tools():
         "alkali_budget",
         "convert_pattern",
         "write_instrument_params",
+        "list_review_queue",
+        "resolve_review_item",
+        "write_sequential_csv",
     }
     assert set(MCP_TOOLS.keys()) == expected
 
@@ -318,6 +325,185 @@ def test_identify_phase_mixtures_tool_accepts_subtract_bg_true_without_error():
     out = identify_phase_mixtures(session, tt, y, ["Fe", "O"], subtract_bg=True)
     assert "error" not in out
     assert out["mode"] == "mixture"
+
+
+# ===========================================================================
+# Issue #118: ① identify_phases/identify_phase_mixtures の主要パラメータ配線
+# (refine_lattice/max_strain/strain_penalty/rerank_top_k/scoring/kalpha2 —
+#  reference.engine.identify_phases; refine_lattice/kalpha2/prefilter_top_k/prefilter_dynamic —
+#  reference.mixture.identify_phase_mixtures)。② に無いパラメータは ③ から到達不能 (§4.5)。
+# ===========================================================================
+
+
+def test_identify_phases_threads_new_kwargs_to_layer1(monkeypatch):
+    """② の新パラメータが①へ実際に渡ること (kwargs をスパイで検証, デフォルトと異なる値で確認)。"""
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phases
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phases", spy)
+
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0, 30.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 30.0, 40.0])
+    out = identify_phases(
+        session, tt, y, ["Fe", "O"],
+        scoring="coverage",
+        refine_lattice=True,
+        max_strain=0.02,
+        strain_penalty=0.5,
+        rerank_top_k=2,
+        kalpha2={"intensity_ratio": 0.3, "wavelength_ratio": 1.01},
+    )
+    assert "error" not in out
+    assert captured["scoring"] == "coverage"
+    assert captured["refine_lattice"] is True
+    assert captured["max_strain"] == 0.02
+    assert captured["strain_penalty"] == 0.5
+    assert captured["rerank_top_k"] == 2
+    from tsumugin.reference.kalpha import KAlpha2
+
+    assert captured["kalpha2"] == KAlpha2(intensity_ratio=0.3, wavelength_ratio=1.01)
+
+
+def test_identify_phases_default_kwargs_match_layer1_defaults(monkeypatch):
+    """省略時は①既定値と同一の呼び出しになること (後方互換)。"""
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phases
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phases", spy)
+
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0, 30.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 30.0, 40.0])
+    identify_phases(session, tt, y, ["Fe", "O"])
+
+    sig = inspect.signature(_layer1_identify_phases)
+    assert captured["scoring"] == sig.parameters["scoring"].default
+    assert captured["refine_lattice"] == sig.parameters["refine_lattice"].default
+    assert captured["max_strain"] == sig.parameters["max_strain"].default
+    assert captured["strain_penalty"] == sig.parameters["strain_penalty"].default
+    assert captured["rerank_top_k"] == sig.parameters["rerank_top_k"].default
+    assert captured["kalpha2"] is None
+
+
+def test_identify_phases_kalpha2_none_stays_none(monkeypatch):
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phases
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phases", spy)
+
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0])
+    identify_phases(session, tt, y, ["Fe", "O"], kalpha2=None)
+    assert captured["kalpha2"] is None
+
+
+def test_identify_phases_invalid_kalpha2_spec_degrades_to_error_dict():
+    """不正な kalpha2 spec は例外を送出せず error dict へ縮退する (② 不変条件)。"""
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0])
+    out = identify_phases(session, tt, y, ["Fe", "O"], kalpha2={"unknown_key": 1})
+    assert out.get("error_type") == "ValueError"
+    assert "unknown_key" in out["error"]
+
+
+def test_identify_phases_invalid_kalpha2_spec_does_not_mutate_ledger():
+    """入力不正時は破壊的操作 (ledger 追記含む) をしない。"""
+    prov = _FakeRefProvider([_ref_phase("mp-good", [20.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0])
+    identify_phases(session, tt, y, ["Fe", "O"], kalpha2={"bad": 1})
+    assert "mcp_identify" not in [e.kind for e in session.ledger.entries]
+
+
+def test_identify_phase_mixtures_threads_new_kwargs_to_layer1(monkeypatch):
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phase_mixtures
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phase_mixtures", spy)
+
+    prov = _FakeRefProvider([
+        _ref_phase("mp-A", [20.0, 40.0]),
+        _ref_phase("mp-B", [30.0, 50.0]),
+    ])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0, 30.0, 50.0])
+    out = identify_phase_mixtures(
+        session, tt, y, ["Fe", "O"],
+        refine_lattice=True,
+        kalpha2={"intensity_ratio": 0.4},
+        prefilter_top_k=1,
+        prefilter_dynamic=True,
+    )
+    assert "error" not in out
+    assert captured["refine_lattice"] is True
+    from tsumugin.reference.kalpha import KAlpha2
+
+    assert captured["kalpha2"] == KAlpha2(intensity_ratio=0.4)
+    assert captured["prefilter_top_k"] == 1
+    assert captured["prefilter_dynamic"] is True
+
+
+def test_identify_phase_mixtures_default_kwargs_match_layer1_defaults(monkeypatch):
+    from tsumugin.mcp import tools as t
+
+    captured = {}
+    real = t._identify_phase_mixtures
+
+    def spy(two_theta, intensity, provider, **kwargs):
+        captured.update(kwargs)
+        return real(two_theta, intensity, provider, **kwargs)
+
+    monkeypatch.setattr(t, "_identify_phase_mixtures", spy)
+
+    prov = _FakeRefProvider([
+        _ref_phase("mp-A", [20.0, 40.0]),
+        _ref_phase("mp-B", [30.0, 50.0]),
+    ])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0, 30.0, 50.0])
+    identify_phase_mixtures(session, tt, y, ["Fe", "O"])
+
+    sig = inspect.signature(_layer1_identify_phase_mixtures)
+    assert captured["refine_lattice"] == sig.parameters["refine_lattice"].default
+    assert captured["kalpha2"] is None
+    assert captured["prefilter_top_k"] == sig.parameters["prefilter_top_k"].default
+    assert captured["prefilter_dynamic"] == sig.parameters["prefilter_dynamic"].default
+
+
+def test_identify_phase_mixtures_invalid_kalpha2_spec_degrades_to_error_dict():
+    prov = _FakeRefProvider([_ref_phase("mp-A", [20.0, 40.0])])
+    session = _session(reference_provider=prov)
+    tt, y = _synthetic_pattern([20.0, 40.0])
+    out = identify_phase_mixtures(session, tt, y, ["Fe", "O"], kalpha2={"bad": 1})
+    assert out.get("error_type") == "ValueError"
+    assert "bad" in out["error"]
 
 
 # ===========================================================================
@@ -512,6 +698,23 @@ def test_list_hypotheses_delegates_to_search_result_summary():
     assert ids == ["hyp-0000", "hyp-0001"]
 
 
+def test_list_hypotheses_includes_escalations_when_detected():
+    # 【テスト目的】: list_hypotheses が escalations (Issue #125) を含み、accept 前に③が確認できる
+    # 【背景】: 2 位 close_competitor=True で detect_escalations が "close_competitor" を検出する
+    ranked = [_ranked("hyp-0000", 10.0), _ranked("hyp-0001", 10.0, close=True)]
+    session = _session(ranked=ranked)
+    result = list_hypotheses(session)
+    assert "close_competitor" in result["escalations"]
+
+
+def test_list_hypotheses_escalations_empty_when_none_detected():
+    # 【テスト目的】: エスカレーション不成立時は escalations が空リストで返る
+    ranked = [_ranked("hyp-0000", 10.0), _ranked("hyp-0001", 20.0)]
+    session = _session(ranked=ranked)
+    result = list_hypotheses(session)
+    assert result["escalations"] == []
+
+
 def test_compare_hypotheses_delegates_to_rank(monkeypatch):
     # 【テスト目的】: compare_hypotheses が evidence.ranking.rank へ委譲する
     from tsumugin.mcp import tools as t
@@ -559,6 +762,28 @@ def test_get_trajectory_delegates_to_trajectory_csv(tmp_path):
     assert result["path"] == str(out)
 
 
+def test_get_trajectory_without_trajectory_returns_error_dict_not_empty_success():
+    # 【テスト目的】: Issue #116 — session.trajectory 未設定は偽の成功空応答でなく error dict を返す。
+    #   旧実装は {"header": [], "rows": {}, "path": None} という「成功に見える空応答」を返しており、
+    #   ③ はこれを「時系列データが無い」と誤読していた (実際は入力経路が存在しない)。
+    session = _session()  # trajectory 既定 None
+    result = get_trajectory(session)
+    assert "header" not in result  # 【確認内容】: 偽成功の旧スキーマが残っていない
+    assert "rows" not in result
+    assert result["error_type"] == "TrajectoryUnavailableError"
+    assert "sequential_rietveld" in result["error"]
+    assert "anchored_sequential" in result["error"]
+
+
+def test_get_trajectory_without_trajectory_ignores_path_and_does_not_write_file(tmp_path):
+    # 【テスト目的】: trajectory 未設定時は path 指定があってもファイルを書き出さない (副作用なし)
+    session = _session()
+    out = tmp_path / "traj.csv"
+    result = get_trajectory(session, path=str(out))
+    assert result["error_type"] == "TrajectoryUnavailableError"
+    assert not out.exists()
+
+
 def test_export_gpx_delegates_to_export_module(monkeypatch, tmp_path):
     # 【テスト目的】: export_gpx が export.gpx.export_gpx へ委譲する (GSAS 非依存に強制成功)
     from tsumugin.mcp import tools as t
@@ -601,6 +826,24 @@ def test_accept_human_by_human_accepts_in_human_mode():
     session = _session(mode="human", ranked=ranked)
     result = accept_hypothesis(session, "hyp-0000", by="human", reason="human-accept")
     assert result["status"] == "accepted"
+
+
+def test_accept_hypothesis_includes_escalations_key():
+    # 【テスト目的】: accept_hypothesis の応答にも escalations (Issue #125) が含まれる
+    ranked = [_ranked("hyp-0000", 10.0), _ranked("hyp-0001", 10.0, close=True)]
+    session = _session(mode="agent", ranked=ranked)
+    result = accept_hypothesis(session, "hyp-0000", by="agent")
+    assert result["status"] == "accepted"
+    assert "close_competitor" in result["escalations"]
+
+
+def test_accept_hypothesis_escalations_empty_when_none_detected():
+    # 【テスト目的】: エスカレーション不成立時は accept_hypothesis の escalations が空リスト
+    ranked = [_ranked("hyp-0000", 10.0)]
+    session = _session(mode="agent", ranked=ranked)
+    result = accept_hypothesis(session, "hyp-0000", by="agent")
+    assert result["status"] == "accepted"
+    assert result["escalations"] == []
 
 
 def test_revert_uses_same_engine_registry():
@@ -697,11 +940,27 @@ def test_mode_switch_records_and_verifies():
 # ===========================================================================
 
 
-def test_run_mem_default_raises_mem_unavailable():
-    # 【テスト目的】: 既定 run_mem は MEMUnavailableError を送出する (EDGE-008)
+def test_run_mem_default_returns_error_dict_not_raises():
+    # 【テスト目的】: Issue #117 — ② run_mem は MEMUnavailableError を送出せず error dict へ縮退する
+    #   (mem_backend は JSON から渡せない Protocol オブジェクトなので ③ からは常にこの経路を通る)。
+    #   ① run_mem_boundary の直叩きは従来通り送出する (test_mcp_mem.py 側で不変を確認)。
+    session = _session()
+    result = run_mem(session)
+    assert isinstance(result, dict)
+    assert result["status"] == "error"
+    assert result["error_type"] == "MEMUnavailableError"
+    # 【代替経路の明示】: ③ が実データ MEM への正しい導線を得られること
+    assert "mem_density" in result["message"]
+    assert "mem_rietveld_iterate" in result["message"]
+
+
+def test_run_mem_boundary_direct_call_still_raises_mem_unavailable():
+    # 【テスト目的】: ① 直叩き経路 (mem_module.run_mem_boundary) は従来どおり例外を送出する
+    #   (② run_mem のみが error dict へ縮退する境界であることの対比; test_mcp_mem.py の
+    #   test_default_without_backend_raises_mem_unavailable と同一契約)
     session = _session()
     with pytest.raises(MEMUnavailableError):
-        run_mem(session)
+        mem_module.run_mem_boundary(session)
 
 
 def test_run_mem_placeholder_returns_dict_without_state_change():
@@ -716,11 +975,11 @@ def test_run_mem_placeholder_returns_dict_without_state_change():
 
 
 def test_run_mem_default_does_not_mutate_ledger():
-    # 【テスト目的】: run_mem 例外送出でも ledger 追記・破壊操作がない
+    # 【テスト目的】: run_mem が error dict へ縮退しても ledger 追記・破壊操作がない
     session = _session()
     n_before = len(session.ledger.entries)
-    with pytest.raises(MEMUnavailableError):
-        run_mem(session)
+    result = run_mem(session)
+    assert result["status"] == "error"
     assert len(session.ledger.entries) == n_before
 
 
@@ -929,8 +1188,8 @@ def test_submit_joint_skips_empty_candidate_set_without_indexerror(monkeypatch):
     assert captured["refs"] == ["A"]
 
 
-def test_list_hypotheses_empty_fallback_has_six_keys():
-    # 【F4】: search_result None 時も to_summary と同じ 6 キーが揃うこと。
+def test_list_hypotheses_empty_fallback_has_seven_keys():
+    # 【F4】: search_result None 時も to_summary と同じ 6 キー + escalations (Issue #125) が揃うこと。
     session = _session()  # ranked=None → search_result None
     result = list_hypotheses(session)
     assert set(result.keys()) == {
@@ -940,7 +1199,9 @@ def test_list_hypotheses_empty_fallback_has_six_keys():
         "extra_calculated",
         "warnings",
         "n_hypotheses",
+        "escalations",
     }
     assert result["ranked"] == []
     assert result["unknown_phase_flag"] is False
     assert result["n_hypotheses"] == 0
+    assert result["escalations"] == []

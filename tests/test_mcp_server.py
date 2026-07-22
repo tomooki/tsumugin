@@ -237,7 +237,9 @@ def test_create_mcp_server_wires_all_eight_tools():
     #   [propose_discriminating_measurements #104] + M8 実構造 3 + M9 in situ 逐次 3
     #   + M8-③ MEM 4 + operando 診断 4 + M10 anchor 1 + 構造モデル比較 1 + 電気化学同期 1
     #   + interop 変換 2。※ chem 降格は compare_hypotheses の chem_context 引数で露出 [#100/#104]) 🔵
-    assert len(MCP_TOOLS) == 32  # +1: alkali_budget (FR-318)
+    # +1: alkali_budget (FR-318) → 32。+2: list_review_queue/resolve_review_item (Issue #125) → 34
+    # +1: write_sequential_csv (FR-504 トラジェクトリ CSV, Issue #116/#117 調査) → 35
+    assert len(MCP_TOOLS) == 35
 
 
 def _collect_tool_names(server: object) -> list[str]:

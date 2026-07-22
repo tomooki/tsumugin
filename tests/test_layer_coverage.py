@@ -59,11 +59,23 @@ UNEXPOSED = "UNEXPOSED"
 
 LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     # feature: (露出を示すツール名 or UNEXPOSED, 根拠/理由)
-    "autorietveld (M7)": ("auto_rietveld", "実構造 Rietveld"),
+    "autorietveld (M7)": (
+        "auto_rietveld",
+        "実構造 Rietveld。Issue #101 解決: 段階解放レシピの追加段階 (`stages` →"
+        "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
+    ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
     "reference (M6)": ("identify_phases", "相同定 (単相/多相)"),
-    "refine_loop (M8)": ("propose_next_actions", "agentic 閉ループ"),
-    "insitu (M9)": ("sequential_rietveld", "逐次 operando"),
+    "refine_loop (M8)": (
+        "propose_next_actions",
+        "agentic 閉ループ。Issue #101 解決: `refine_with_revisions` も `stages`/`max_cyc` を受け、"
+        "action 適用後に追加段階を末尾へ足せる (既定 GSAS runner `_default_gsas_runner(seed, max_cyc=)`)",
+    ),
+    "insitu (M9)": (
+        "sequential_rietveld",
+        "逐次 operando。Issue #114 解決: instrument spec の `recipe` で段階解放レシピを全置換可能 "
+        "(`make_gsas_runner(recipe=...)` [#52] への到達; `stages` と違い既定レシピの追加ではなく置換)",
+    ),
     "mem (M8-③)": ("mem_density", "MEM 密度→構造改訂"),
     "operando diag (M8-③)": ("check_phase_set", "相集合の完全性"),
     # --- 未露出 (Issue #97): 宣言することで「忘れた」ではなく「既知の穴」であることを示す ---
@@ -173,13 +185,16 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "evidence": (FOUNDATIONAL, "BIC/AIC backend (FR-120)。M4 session 系 compare_hypotheses の裏方"),
     "store": (FOUNDATIONAL, "Ledger/Snapshot (P2/NFR-105)。全状態変更の追記基盤"),
     "search": (FOUNDATIONAL, "多仮説木探索 (FR-110)。M4 session 系 submit_analysis の裏方"),
-    # ★ accept/revert は ② から到達するが、**エスカレーション裁定 (decide) は到達しない** —
-    #   detect_escalations が走る唯一の入口 FinalSelectionEngine.decide() は本番の呼び手が無く
-    #   (テストのみ)、② accept_hypothesis は selection.accept を直接呼んで decide を迂回する。
-    #   FR-403 の 4 条件 (all_high_r/unknown_phase/close_competitor/guard_escalated) は全て
-    #   ③ から不可視。**既知の穴として明示宣言する** (黙って未露出にしない, Issue #125)。
+    # ★ accept/revert に加え、**エスカレーション検出 (detect_escalations) も ② から到達する**
+    #   (Issue #125 解決)。detect_escalations が走る入口は FinalSelectionEngine.decide() だけでなく
+    #   なった: ② accept_hypothesis が委譲する FinalSelectionEngine.accept() 自体がエスカレーション
+    #   成立時に Review Queue へ通知するよう修正され、decide() を迂回する経路でも検出結果が
+    #   ledger/queue に残る。加えて ② list_hypotheses/accept_hypothesis の応答に "escalations" を
+    #   直接含め、② list_review_queue/resolve_review_item で Review Queue 自体も ③ から読める。
+    #   FR-403 の 4 条件 (all_high_r/unknown_phase/close_competitor/guard_escalated) は ③ から可視。
     "selection": (FOUNDATIONAL, "最終選択 + エスカレーション (M2)。accept/revert の裏方。"
-                  "ただし decide()/escalations は ② 未到達 = 既知の穴 (Issue #125)"),
+                  "escalations は ② list_hypotheses/accept_hypothesis の応答・list_review_queue/"
+                  "resolve_review_item 経由で ③ から到達可能 (Issue #125 解決)"),
     "sequential": (FOUNDATIONAL, "時系列基盤 (変化点/熱ベースライン, M2)。insitu/parametric が内包"),
     "export": (FOUNDATIONAL, "gpx 書き出し (FR-505)。export_gpx ツールの裏方"),
     "multistart": (FOUNDATIONAL, "マルチスタート大域最適確認 (FR-230)。autorietveld が内包・単独 ② 未露出は M-later"),
@@ -1217,6 +1232,12 @@ SPEC_INPUT_BASIS: dict[str, tuple[str, str]] = {
     "instrument.background_coeffs": (
         BASIS_FREE, "Chebyshev 背景項数 (int)。相分率と比較しない"
     ),
+    "instrument.recipe": (
+        BASIS_FREE,
+        "Issue #114: 段階解放レシピの全置換 (`RefinementStage` の JSON 列, `_recipe_spec` 経由で "
+        "make_gsas_runner(recipe=...) [Issue #52] へ渡す)。GSAS 解放フラグの宣言的記述であり "
+        "相分率とは比較しない",
+    ),
     # --- phase_id spec (`sequential_rietveld`) ---
     "phase_id.frac_min": (
         "scale",
@@ -1379,9 +1400,10 @@ def test_anchor_is_still_unexposed_or_the_note_is_stale():
     """
     # unwrap で @degrade_oserror 等のデコレータを貫通する (wrapper の source には "anchor" が無く、
     # unwrap しないと露出済みの anchored_sequential を見落として宣言と食い違う; Issue #94)。
-    exposed = [
-        t for t in MCP_TOOLS if "anchor" in inspect.getsource(inspect.unwrap(MCP_TOOLS[t])).lower()
-    ]
+    # `_code_without_docs` で docstring/コメントを落としてから見る — 生の `inspect.getsource` は
+    # **説明文が "anchor" に言及しているだけで露出済みと誤判定**する (同型の欠陥を Issue #125 の
+    # ガードで実測: 配線を全削除しても pass した)。実コードだけを根拠にする。
+    exposed = [t for t in MCP_TOOLS if "anchor" in _code_without_docs(MCP_TOOLS[t]).lower()]
     declared_unexposed = LAYER1_FEATURES["insitu.anchor (M10/FR-330)"][0] == UNEXPOSED
     if exposed:
         assert not declared_unexposed, (
@@ -1392,40 +1414,90 @@ def test_anchor_is_still_unexposed_or_the_note_is_stale():
         assert declared_unexposed, "anchor は ② 未露出のはずだが露出ありと宣言されている"
 
 
-def test_selection_escalation_is_still_unreachable_or_the_note_is_stale():
-    """★エスカレーション裁定の ② 到達状況と宣言が一致すること (Issue #125)。
+def _code_without_docs(fn: object) -> str:
+    """関数ソースから docstring とコメントを除いた**コード本体**を返す。
 
-    `detect_escalations` (FR-403 の 4 条件 + FR-212 の guard_escalated) が実際に走るのは
-    `FinalSelectionEngine.decide()` の中だけ。② `accept_hypothesis` は `selection.accept` を
-    直接呼んで decide を**迂回する**ため、エスカレーションは ③ から一切見えない。
-
-    非トートロジー: 表を読まず ② の全ツール source を走査して `decide(` の呼び出しを探す。
-    Issue #125 で decide 経路が ② に入ったら本テストが fail し、PACKAGE_COVERAGE の
-    「既知の穴」記述の更新を強制する — **穴が塞がったのに塞がっていないと書き続けるのを防ぐ**。
-    変異テストで双方向 (宣言だけ削る / accept_hypothesis に decide 呼び出しを注入) とも
-    fail することを確認済み。
-
-    **限界**: ツール関数**自身の**ソーステキストの部分一致なので、ヘルパー関数を挟んだ
-    間接呼び出しは追えない (既存の `test_anchor_is_still_unexposed_or_the_note_is_stale` と
-    同方式)。現状 `FinalSelectionEngine.decide` の呼び手は本モジュール内部のみ (`src` 全体で
-    ヒットする `refine_loop/orchestrator.py` の `policy.decide` は同名だが別クラス
-    `RuleBasedPolicy` のメソッドで無関係) なので偽陰性は無いが、② がヘルパー経由で
-    decide を呼ぶ形になったら本ガードはすり抜ける。
+    ★なぜ必要か (実測): `inspect.getsource` は docstring とコメントを含む。「そのキーが実際に
+    配線されているか」を部分一致で見るガードは、**docstring がキー名に言及しているだけで通って
+    しまう**。実際 `list_hypotheses` の配線行を削除する変異を当てても、docstring に
+    "escalations" が残っているためガードが pass した = **トートロジーで、落ちないガード**だった。
+    ast で往復すると docstring は明示的に除去でき、コメントは AST に存在しないため自動的に落ちる。
     """
-    callers = [
-        name for name, fn in MCP_TOOLS.items()
-        if ".decide(" in inspect.getsource(inspect.unwrap(fn))
+    src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))  # type: ignore[arg-type]
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
+            body = getattr(node, "body", [])
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
+
+
+def test_code_without_docs_strips_docstrings_and_comments():
+    """★上のヘルパ自身が説明文を落とすこと (ガードのガード)。
+
+    これが壊れると全ての「配線されているか」検査が静かにトートロジー化するため、
+    ヘルパ単体を直接検査する。
+    """
+
+    def sample():
+        """marker_in_docstring"""
+        # marker_in_comment
+        return {"marker_in_code": 1}
+
+    code = _code_without_docs(sample)
+    assert "marker_in_docstring" not in code, "docstring が落ちていない (ガードがトートロジー化)"
+    assert "marker_in_comment" not in code, "コメントが落ちていない"
+    assert "marker_in_code" in code, "コード本体まで落としている (検査が常に fail 側へ倒れる)"
+
+
+def test_selection_escalation_is_now_reachable_or_the_note_is_stale():
+    """★エスカレーション検出の ② 到達状況と宣言が一致すること (Issue #125 解決後・逆方向ガード)。
+
+    **Issue #125 解決前の状態**: `detect_escalations` (FR-403 の 4 条件 + FR-212 の
+    guard_escalated) が実際に走るのは `FinalSelectionEngine.decide()` の中だけだった。②
+    `accept_hypothesis` は `selection.accept` を直接呼んで decide を迂回するため、
+    `list_review_queue` を足すだけでは常に空を返す DOA になる懸念があった。
+
+    **解決内容**: `FinalSelectionEngine.accept()` 自体がエスカレーション検出時に Review Queue へ
+    通知するよう修正し (decide() 迂回でも検出結果が残る)、② `list_hypotheses`/`accept_hypothesis`
+    の応答へ `escalations` を直接含めた。② `list_review_queue`/`resolve_review_item` で
+    Review Queue 自体も ③ から読める。
+
+    本テストは元の `test_selection_escalation_is_still_unreachable_or_the_note_is_stale`
+    (Issue #125 前) の**逆方向**: 表を読まず `list_hypotheses`/`accept_hypothesis` の実ソースに
+    `"escalations"` が実際に現れるかを見て、宣言 (もう「既知の穴」ではない) と食い違わないことを
+    確認する。将来この配線が外れて ③ から再び不可視になったら本テストが fail し、
+    `PACKAGE_COVERAGE["selection"]` の記述更新 (「既知の穴」へ書き戻す) を強制する —
+    **塞がった穴が再び開いたのに気づかない、を防ぐ**。
+
+    **限界**: ツール関数**自身の**コード本体の部分一致なので、ヘルパー関数を挟んだ間接的な
+    "escalations" 生成は追えない。現状は両ツールとも関数本体に直接 `"escalations"` キーを書いて
+    いるため偽陰性は無い。なお `_code_without_docs` で docstring/コメントを落としてから見る —
+    生の `inspect.getsource` だと**説明文の言及だけで通る**トートロジーになる (変異テストで実証済)。
+    振る舞い自体の検査は `tests/test_mcp_tools.py` の
+    `test_list_hypotheses_includes_escalations_when_detected` が担う。
+    """
+    exposing_tools = [
+        name
+        for name in ("list_hypotheses", "accept_hypothesis")
+        if "escalations" in _code_without_docs(MCP_TOOLS[name])
     ]
     declared_gap = "既知の穴" in PACKAGE_COVERAGE["selection"][1]
-    if callers:
+    if len(exposing_tools) == 2:
         assert not declared_gap, (
-            f"エスカレーション裁定が ② に到達した ({callers}) — PACKAGE_COVERAGE['selection'] の "
-            "「既知の穴 (Issue #125)」記述と、③ skill 手順 (accept 前にエスカレーション確認) "
-            "の更新が必要"
+            f"エスカレーションは ② ({exposing_tools}) から到達可能になっているのに "
+            "PACKAGE_COVERAGE['selection'] がまだ「既知の穴」と書いている — Issue #125 解決後の"
+            "記述更新漏れ (陳腐化した宣言)"
         )
     else:
         assert declared_gap, (
-            "decide() を呼ぶ ② ツールが無い = エスカレーションは ③ から不可視。"
-            "PACKAGE_COVERAGE['selection'] に既知の穴として宣言すること (CLAUDE.md: "
-            "露出しないと決めた場合は理由を明示宣言する / 黙って未露出にしない)"
+            f"escalations を返す ② ツールが揃っていない ({exposing_tools}) = エスカレーションが"
+            "再び ③ から不可視になった。PACKAGE_COVERAGE['selection'] を「既知の穴」に戻し、"
+            "③ skill 手順 (hypothesis-search「エスカレーションを確認する」節) の整合も見直すこと"
         )

@@ -155,8 +155,14 @@ def run_refinement_loop(
 # ---------------- 既定の GSAS 駆動 runner / 粗診断 ----------------
 
 
-def _default_gsas_runner(seed: int) -> Runner:
-    """AnalysisInput を run_auto_rietveld で実行する既定 runner (GSAS 遅延 import)。"""
+def _default_gsas_runner(seed: int, max_cyc: int = 12) -> Runner:
+    """AnalysisInput を run_auto_rietveld で実行する既定 runner (GSAS 遅延 import)。
+
+    :param seed: 乱数種 (現状 runner 内では未使用 — 呼び出し側の再現性記録用に残置)
+    :param max_cyc: 各段階の最大精密化サイクル (Issue #101: ② `auto_rietveld`/
+        `refine_with_revisions` の ``max_cyc`` 引数から届く。既定 12 は
+        ``run_auto_rietveld`` 自体の既定と同一で非回帰)
+    """
 
     def runner(inp: AnalysisInput) -> AutoRietveldResult:
         from tsumugin.autorietveld import build_recipe, run_auto_rietveld
@@ -165,7 +171,9 @@ def _default_gsas_runner(seed: int) -> Runner:
             inp.histograms, inp.phases, background_coeffs=inp.background_coeffs
         )
         recipe = (*recipe, *inp.extra_stages)
-        return run_auto_rietveld(list(inp.histograms), list(inp.phases), recipe=recipe)
+        return run_auto_rietveld(
+            list(inp.histograms), list(inp.phases), recipe=recipe, max_cyc=max_cyc
+        )
 
     return runner
 

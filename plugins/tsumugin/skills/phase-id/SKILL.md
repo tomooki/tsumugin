@@ -43,6 +43,27 @@ description: 未知パターン + 元素一覧から相を同定する (③ 判�
 
 いずれも `elements` に**想定する全元素**を渡す (元素系フィルタの単位)。多い分には安全側。
 
+#### `identify_phases`/`identify_phase_mixtures` の詳細パラメータ (Issue #118)
+
+`identify_pattern` の陰で使われがちだが、M6 の中核機能 (Dara 格子精密化・Kα2・動的閾値) は
+`identify_phases`/`identify_phase_mixtures` に直接配線されている。**いつ使うか**:
+
+- **`refine_lattice=True`**: 候補が Materials Project (DFT) 由来のとき使う。MP 構造は格子が実測と
+  ずれる (軸別に最大 3% 程度) ため、整合してからスコアしないと正解相が偽陰性になる (Dara フロー)。
+  ユーザー CIF が実測に近い格子で既に整合済みなら不要。
+- **`kalpha2={"intensity_ratio": ..., "wavelength_ratio": ...}`**: **Kα2 未除去の実験室 X 線データ**
+  (Cu 管球の生データ等) にのみ使う。**Kα2 除去済み (単色化・ストリップ済み) のデータには使わない** —
+  二重補正になり未マッチが悪化する。両フィールドとも省略可 (省略時 Cu Kα1/Kα2 既定)。不正なキー/
+  値は `{"error","error_type":"ValueError"}` が返る。
+- **`scoring`** (`identify_phases` のみ, 既定 `"dara"`): peak-rich な相 (反射数が多い低対称相) が
+  上位候補で不当に沈んでいる疑いがあるとき、比較用に `"coverage"` (旧方式) を併走させて見比べる。
+  `identify_phase_mixtures` には無い (混合物は Dara 固定) ので渡さないこと。
+- **`rerank_top_k`** (`identify_phases` のみ, 既定 5): `refine_lattice=True` と併用すると、上位 K 候補を
+  さらに軸別格子整合で再スコアする (DFT の軸別誤差を吸収)。0 で無効化。
+- **`prefilter_top_k`/`prefilter_dynamic`** (`identify_phase_mixtures` のみ): 元素系フィルタ後も候補が
+  多く木探索が重い/絞り込みが粗いとき使う。`prefilter_dynamic=True` はスコア分布の変曲点で動的に
+  閾値を引く (固定 top-k より正解を落としにくい)。件数上限も併用するなら `prefilter_top_k` を足す。
+
 ### 2. 結果を読む — **Dara スコアと計量縮退に注意**
 
 - `identify_phases` の各候補は **Dara スコア** (matched/wrong/missing/extra の 4 分類 + extra 罰) で

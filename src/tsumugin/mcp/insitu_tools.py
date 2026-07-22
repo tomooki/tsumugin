@@ -21,6 +21,7 @@ M8 の `rietveld_tools` と同じ設計 (二重反転回避): 閉ループ丸ご
 
 from __future__ import annotations
 
+import csv
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
@@ -43,7 +44,104 @@ __all__ = [
     "identify_and_add_phase",
     "parametric_fit",
     "sequential_rietveld",
+    "write_sequential_csv",
 ]
+
+#: FR-504 トラジェクトリ CSV のフレーム共通列 (固定・先頭順)。
+#: M2 ``sequential.trajectory._FRAME_COMMON_COLUMNS`` と役割は同じだが、列自体は M9
+#: ``SequentialRietveldResult``/``seq_result_to_dict`` が実際に持つフィールドのみで構成する
+#: (M2 Trajectory の列をそのまま真似ない — 無い列を空欄で埋めて「あるように見せる」のは禁止)。
+_SEQ_CSV_COMMON_COLUMNS = [
+    "frame_index",
+    "data_path",
+    "axis_value",
+    "rwp",
+    "gof",
+    "changepoint",
+    "changepoint_reasons",
+    "refine_failed",
+]
+#: 相ごと列の接尾辞。``refined_cells``/``cell_esd`` は (a,b,c,α,β,γ) の先頭 3 (a,b,c) のみを
+#: CSV へ出す (M2 Trajectory と同じ設計裁量 — 角度 σ は CSV 列を肥大させないため JSON 側で見る)。
+#: M2 の ``sigma_source``/lifecycle 3 列 (birth_frame/death_frame/confidence) は含めない —
+#: M9 のフレーム行にはこれらに対応する列が無い (birth は ``appearances`` に別スキーマで出るが
+#: death/confidence は持たず、フレーム単位の行に相ライフサイクルは自然にマップしない)。
+#: 無い値を空欄で埋めると「持っているように見える」偽装になるため、列自体を作らない。
+_SEQ_CSV_PHASE_SUFFIXES = [
+    "a",
+    "b",
+    "c",
+    "a_esd",
+    "b_esd",
+    "c_esd",
+    "scale",
+    "wt_frac",
+    "wt_frac_esd",
+]
+_SEQ_CSV_REASONS_DELIMITER = "|"
+
+
+def _seq_csv_num_cell(value: object) -> str:
+    """CSV セル用の数値純化 (有限は str、None/非有限 (inf/-inf/NaN) は空欄)。
+
+    ``sequential.trajectory._num_cell`` / ``operando.output._num_cell`` と同一セマンティクス
+    (Issue #5 の単一情報源判定へ委譲・書式は元値保持)。本モジュール専用の第三の複製だが、
+    層をまたいだ私有 import は既存 2 者間でも避けられている設計裁量を踏襲する。
+    """
+    return "" if finite_or_none(value) is None else str(value)  # type: ignore[arg-type]
+
+
+def _seq_csv_phase_refs(result: Mapping[str, object]) -> list[str]:
+    """CSV に出す相 ref の集合を全フレームの ``phase_names`` ∪ トップレベル ``phase_names`` から
+    sorted 昇順で確定する (Trajectory._sorted_phase_refs と同じ決定論方針)。
+    """
+    refs: set[str] = set(str(p) for p in result.get("phase_names", ()))  # type: ignore[union-attr]
+    for fd in result.get("frames", ()):  # type: ignore[union-attr]
+        for p in fd.get("phase_names", ()) if isinstance(fd, Mapping) else ():  # type: ignore[union-attr]
+            refs.add(str(p))
+    return sorted(refs)
+
+
+def _seq_csv_header(phase_refs: Sequence[str]) -> list[str]:
+    columns = list(_SEQ_CSV_COMMON_COLUMNS)
+    for ref in phase_refs:
+        columns.extend(f"{ref}.{suffix}" for suffix in _SEQ_CSV_PHASE_SUFFIXES)
+    return columns
+
+
+def _seq_csv_row(fd: Mapping[str, object], phase_refs: Sequence[str]) -> list[str]:
+    row = [
+        _seq_csv_num_cell(fd.get("frame_index")),
+        str(fd.get("data_path", "")),
+        _seq_csv_num_cell(fd.get("axis_value")),
+        _seq_csv_num_cell(fd.get("rwp")),
+        _seq_csv_num_cell(fd.get("gof")),
+        str(bool(fd.get("changepoint", False))),
+        _SEQ_CSV_REASONS_DELIMITER.join(str(r) for r in fd.get("changepoint_reasons", ())),  # type: ignore[union-attr]
+        str(bool(fd.get("refine_failed", False))),
+    ]
+    refined_cells = fd.get("refined_cells") or {}
+    cell_esd = fd.get("cell_esd") or {}
+    phase_fractions = fd.get("phase_fractions") or {}
+    weight_fractions = fd.get("phase_weight_fractions") or {}
+    weight_esd = fd.get("phase_weight_fraction_esd") or {}
+    for ref in phase_refs:
+        cell = refined_cells.get(ref)  # type: ignore[union-attr]
+        esd = cell_esd.get(ref)  # type: ignore[union-attr]
+        row.extend(
+            [
+                _seq_csv_num_cell(cell[0]) if cell else "",
+                _seq_csv_num_cell(cell[1]) if cell else "",
+                _seq_csv_num_cell(cell[2]) if cell else "",
+                _seq_csv_num_cell(esd[0]) if esd else "",
+                _seq_csv_num_cell(esd[1]) if esd else "",
+                _seq_csv_num_cell(esd[2]) if esd else "",
+                _seq_csv_num_cell(phase_fractions.get(ref)),  # type: ignore[union-attr]
+                _seq_csv_num_cell(weight_fractions.get(ref)),  # type: ignore[union-attr]
+                _seq_csv_num_cell(weight_esd.get(ref)),  # type: ignore[union-attr]
+            ]
+        )
+    return row
 
 
 def _cells_dict(cells: Mapping[str, Sequence[float]]) -> dict[str, list[float | None]]:
@@ -376,9 +474,18 @@ def _runner_from_instrument(
     two_theta_limits: tuple[float, float] | None,
     charge_constraint: "ChargeConstraintConfig | None" = None,
 ) -> Callable:
-    """instrument spec (JSON) から make_gsas_runner で runner を組み立てる (Issue #93)。"""
+    """instrument spec (JSON) から make_gsas_runner で runner を組み立てる (Issue #93)。
+
+    ``spec["recipe"]`` (Issue #114) は `make_gsas_runner(recipe=...)` へそのまま渡す**全段階の
+    置換**であり (Issue #52; 未指定なら `make_gsas_runner` 内部で ``build_recipe`` が組む既定 7 段階
+    レシピを使う)、`rietveld_tools.auto_rietveld` の ``stages`` (`AnalysisInput.extra_stages` =
+    既定レシピへの**追加**段階) とは意味論が異なる — ① `make_gsas_runner` の既存契約をそのまま
+    ② へ配線しているだけで、ここで新しい合成規則は作らない。JSON→RefinementStage の変換は
+    `rietveld_tools` と共有する `_recipe_spec.stages_from_dicts` を使う (二重実装を避ける)。
+    """
     from ..autorietveld.model import Geometry, Radiation
     from ..insitu.engine import make_gsas_runner
+    from ._recipe_spec import stages_from_dicts
 
     afmc = spec.get("auto_freeze_minor_cells")
     # ⚠ #80 の本体は **float 閾値** (bool ではない)。JSON の true をそのまま float 化すると 1.0 =
@@ -388,6 +495,17 @@ def _runner_from_instrument(
             "auto_freeze_minor_cells is a phase-fraction threshold (float, e.g. 0.2), not a bool; "
             "pass null to disable (bool true would freeze every phase in a multiphase run)"
         )
+    raw_recipe = spec.get("recipe")
+    # recipe は**全置換**の意味論 (auto_rietveld の stages=追加 とは違う)。空 ([]) を許すと engine の
+    # `is not None` 判定を通って空タプルのまま使われ、**精密化段階ゼロ = 未精密化 Rwp がそのまま
+    # 返る**サイレント失敗になる。省略 (None) は既定 build_recipe へフォールバックするので安全だが、
+    # [] は別物。③ が「上書き不要」のつもりで [] を送る事故を明示的に弾く (呼べるが黙って間違う予防)。
+    if raw_recipe is not None and not raw_recipe:
+        raise ValueError(
+            "instrument.recipe が空です。空レシピは精密化段階ゼロ (未精密化の Rwp がそのまま返る) に"
+            "なります。既定レシピを使うなら recipe キーを省略してください"
+        )
+    recipe = stages_from_dicts(raw_recipe) if raw_recipe is not None else None  # type: ignore[arg-type]
     return make_gsas_runner(
         instrument_path=_instrument_path_resolver(spec, frame_specs),
         radiation=_enum_from_value(Radiation, spec.get("radiation", "xray_lab"), "radiation"),
@@ -395,6 +513,7 @@ def _runner_from_instrument(
         two_theta_limits=two_theta_limits,
         max_cyc=int(spec.get("max_cyc", 12)),  # type: ignore[arg-type]
         background_coeffs=int(spec.get("background_coeffs", 6)),  # type: ignore[arg-type]
+        recipe=recipe,
         auto_freeze_minor_cells=None if afmc is None else float(afmc),  # type: ignore[arg-type]
         charge_constraint=charge_constraint,
     )
@@ -544,6 +663,13 @@ def sequential_rietveld(
           0.2 は **Scale では tetra を解放し wt% では凍結する**。出版値は wt% なので wt% の直感で
           数字を決めると静かに外れる (③ 向けの警告は skills/insitu・skills/operando-diagnose・
           AGENT_PLAYBOOK の「分率の閾値は Scale 基準」節)
+        - ``recipe``: **段階解放レシピの全置換** (Issue #114: ① `make_gsas_runner(recipe=...)`
+          [Issue #52] が既に持つ引数を JSON から届くようにしたもの)。``[{"label": str,
+          "flags": {GSAS 語彙}, "note": str (省略可)}, ...]`` の列 (語彙は
+          ``autorietveld.recipe`` docstring 参照)。指定すると既定の 7 段階 `build_recipe` を
+          **使わず**このレシピをそのまま使う (`auto_rietveld` の ``stages`` = 既定への**追加**とは
+          意味論が違う点に注意)。省略 (None, 既定) なら従来通り `build_recipe` が組む。不正な
+          段階 spec は error dict へ縮退する
 
         ``two_theta_limits`` は本引数の runner にも転送される (フレーム側指定が優先)。
     :param charge_constraint: **FR-318 電気化学制約の JSON spec**。キー: ``config``
@@ -747,9 +873,59 @@ def parametric_fit(
     }
 
 
-# 【M9 ツールレジストリ】: MCP_TOOLS へマージする 3 ツール (architecture.md §6)。
+@degrade_oserror
+def write_sequential_csv(result: Mapping[str, object], path: str, *, reason: str = "") -> dict:
+    """``sequential_rietveld``/``anchored_sequential`` の結果 dict から FR-504 トラジェクトリ CSV を
+    書き出す (Issue #116 調査の帰結: M2 ``Trajectory.to_csv`` は実データ経路である M9/M10 の結果
+    dict から作れず ② に到達不能だった。**M2 の Trajectory を経由せず**、M9 の結果 dict を直接
+    CSV へ写す方が実データに即した誠実な実装になるため、こちらを新設する)。
+
+    :param result: ``sequential_rietveld`` (または ``anchored_sequential``, 同一スキーマ) の
+        戻り値 dict そのもの (§4.5 到達可能性: 他 ② ツールの出力から来る)。空/不正 (``frames`` 無し・
+        空・必須キー欠落) は判断せず error dict (``_validate_seq_result`` と同じ縮退契約 —
+        0 フレームを「空の CSV でよい」と黙って書き出さない)
+    :param path: 出力 CSV パス
+
+    列は M9 ``SequentialRietveldResult`` が実際に持つ値のみで構成する: フレーム共通列
+    (frame_index/data_path/axis_value/rwp/gof/changepoint/changepoint_reasons/refine_failed) +
+    相ごと 9 列 (a/b/c/a_esd/b_esd/c_esd/scale/wt_frac/wt_frac_esd)。M2 Trajectory の
+    ``sigma_source``/lifecycle 3 列 (birth_frame/death_frame/confidence) は**含めない** — M9 の
+    フレーム行にはこれらに対応する列が無い (birth は ``appearances`` に別スキーマで出るが
+    death/confidence は持たず、フレーム単位の行に相ライフサイクルは自然にマップしない)。無い値を
+    空欄で埋めると「持っているように見える」偽装になる (CLAUDE.md ②不変条件: 空/不正入力を
+    「正常」と答えない、と同じ規律の CSV 版)。``scale`` は **Scale であって重量分率ではない**
+    (``wt_frac`` を定量値として使うこと — insitu skill 手順 8 と同じ注意)。
+
+    :returns: ``{"path": str, "n_frames": int, "n_phases": int, "reason": str}``。
+        入力不正/書き込み失敗は ``{"error", "error_type"}``
+    """
+    try:
+        _validate_seq_result(result)
+    except (ValueError, TypeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
+    phase_refs = _seq_csv_phase_refs(result)
+    header = _seq_csv_header(phase_refs)
+    frames = result["frames"]
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for fd in frames:  # type: ignore[union-attr]
+            writer.writerow(_seq_csv_row(fd, phase_refs))  # type: ignore[arg-type]
+
+    return {
+        "path": str(path),
+        "n_frames": len(frames),  # type: ignore[arg-type]
+        "n_phases": len(phase_refs),
+        "reason": reason,
+    }
+
+
+# 【M9 ツールレジストリ】: MCP_TOOLS へマージする 4 ツール (architecture.md §6 の 3 + FR-504 CSV)。
 INSITU_TOOLS: Mapping[str, object] = {
     "sequential_rietveld": sequential_rietveld,
     "identify_and_add_phase": identify_and_add_phase,
     "parametric_fit": parametric_fit,
+    "write_sequential_csv": write_sequential_csv,
 }

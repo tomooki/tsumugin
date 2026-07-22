@@ -25,7 +25,7 @@ import numpy as np
 
 from .._json import finite_or_none
 from ..backends.base import RefinementBackend
-from ..errors import GSASUnavailableError
+from ..errors import GSASUnavailableError, MEMUnavailableError
 from ..evidence.base import EvidenceBackend
 from ..evidence.ic import BICBackend
 from ..evidence.ranking import rank
@@ -38,8 +38,9 @@ from ..pipeline import analyze_single_pattern
 from ..reference.engine import identify_phases as _identify_phases
 from ..reference.mixture import identify_phase_mixtures as _identify_phase_mixtures
 from ..reference.provider import ReferenceProvider
+from ._kalpha_spec import kalpha2_from_spec
 from ..search.tree import HypothesisTreeSearch, SearchResult
-from ..selection.engine import FinalSelectionEngine
+from ..selection.engine import FinalSelectionEngine, detect_escalations
 from ..sequential.trajectory import Trajectory
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
@@ -64,7 +65,9 @@ __all__ = [
     "identify_phase_mixtures",
     "identify_phases",
     "list_hypotheses",
+    "list_review_queue",
     "propose_discriminating_measurements",
+    "resolve_review_item",
     "revert",
     "run_mem",
     "submit_analysis",
@@ -197,11 +200,18 @@ def list_hypotheses(session: AnalysisSession) -> dict:
 
     【委譲】: ``session.search_result.to_summary()`` の /api/result スキーマ準拠 dict を返す。
       直近の探索結果が無い場合は空一覧 dict を返す (縮退・例外化しない)。
-    【空フォールバック (F4)】: search_result 不在時も to_summary と同じ 6 キー
-      (ranked/unknown_phase_flag/unmatched_observed/extra_calculated/warnings/n_hypotheses)
+    【空フォールバック (F4)】: search_result 不在時も to_summary と同じ 6 キー + ``escalations``
+      (ranked/unknown_phase_flag/unmatched_observed/extra_calculated/warnings/n_hypotheses/escalations)
       を揃えた縮退 dict を返す (スキーマ整合・下流の KeyError 防止)。
-    【テスト対応】: test_list_hypotheses_delegates_to_search_result_summary。
-    🔵 信頼性レベル: interfaces.py mcp/tools 節 / tree.py to_summary に依拠。
+    【Issue #125】: ``escalations`` は ``selection.detect_escalations`` (FR-403 の 4 条件) を
+      ``session.search_result`` に対して都度計算した tuple → list。**accept する前にここを見る**の
+      が ③ の手順 (SKILL.md「エスカレーションを確認する」)。空でなければ自動 accept せず
+      ``list_review_queue`` で未解決の確認事項も併せて読む。
+    【テスト対応】: test_list_hypotheses_delegates_to_search_result_summary /
+      test_list_hypotheses_includes_escalations_when_detected /
+      test_list_hypotheses_escalations_empty_when_none_detected /
+      test_list_hypotheses_empty_fallback_has_six_keys (7 キー化)。
+    🔵 信頼性レベル: interfaces.py mcp/tools 節 / tree.py to_summary に依拠 / Issue #125。
     """
     if session.search_result is None:
         return {
@@ -211,8 +221,13 @@ def list_hypotheses(session: AnalysisSession) -> dict:
             "extra_calculated": [],
             "warnings": [],
             "n_hypotheses": 0,
+            "escalations": [],
         }
-    return session.search_result.to_summary()
+    summary = session.search_result.to_summary()
+    # 【Issue #125】: accept 前に③がエスカレーションを確認できる唯一の場所。空でなければ
+    # 自動 accept せず review queue を確認すべき、というシグナルを ③ に渡す (SKILL.md 手順)。
+    summary["escalations"] = list(detect_escalations(session.search_result))
+    return summary
 
 
 def compare_hypotheses(
@@ -313,10 +328,16 @@ def accept_hypothesis(
       accepted 化を拒否し ``{"status": "recommend_only", "recommended_id": ...}`` を返す
       (REQ-106/EDGE-010)。それ以外は ``FinalSelectionEngine.accept(result, id, by=by)`` へ委譲。
     【記録】: accept 成立時のみ ``mcp_accept`` を ledger 記録する (accept 自体も selection 経由で
-      ``selection_accept`` を記録)。
+      ``selection_accept`` を記録)。``FinalSelectionEngine.accept`` は同時にエスカレーション成立時
+      queue へも通知する (Issue #125)。
+    【Issue #125】: 応答に ``escalations`` を含める。``selection.accept`` を直接呼ぶこの経路は
+      ``decide()`` を迂回するため、accept 成立時点のエスカレーション状況を③へ明示的に返す
+      (accept 後でも「実は僅差競合だった」等を確認できるようにする)。
     【テスト対応】: test_accept_agent_mode_accepts / test_accept_human_by_human_accepts_in_human_mode /
-      test_human_mode_rejects_agent_accept / test_accept_records_and_verifies。
-    🔵 信頼性レベル: interfaces.py mcp/tools 節 / selection/engine.accept に依拠。
+      test_human_mode_rejects_agent_accept / test_accept_records_and_verifies /
+      test_accept_hypothesis_includes_escalations_key /
+      test_accept_hypothesis_escalations_empty_when_none_detected。
+    🔵 信頼性レベル: interfaces.py mcp/tools 節 / selection/engine.accept に依拠 / Issue #125。
     """
     # 【human モード拒否】: agent 主導の accepted 化を拒み推奨提示に留める (EDGE-010) 🔵 REQ-106
     if session.selection.mode == "human" and by == "agent":
@@ -331,12 +352,20 @@ def accept_hypothesis(
         return {"status": "error", "error": "unknown_hypothesis"}
 
     # 【委譲】: FinalSelectionEngine.accept が mode を同一適用し accepted 化を記録する 🔵 REQ-023
+    #   (Issue #125: accept 内部でエスカレーション成立時 queue へも通知される)
     accepted = session.selection.accept(session.search_result, hypothesis_id, by=by)
     # 【理由付き記録】: MCP 経由の accept を追記する (selection 側 selection_accept と二重記録) 🔵 REQ-025
     session.ledger.append(
         "mcp_accept", {"hypothesis_id": hypothesis_id, "by": by, "reason": reason}
     )
-    return {"status": "accepted", "hypothesis_id": accepted.id, "accepted_by": accepted.accepted_by}
+    return {
+        "status": "accepted",
+        "hypothesis_id": accepted.id,
+        "accepted_by": accepted.accepted_by,
+        # 【Issue #125】: accept 対象の SearchResult に対するエスカレーション再計算 (detect_escalations
+        #   は純粋関数・副作用ゼロなので同じ result に対し何度呼んでも同じ tuple を返す, NFR-102) 🔵
+        "escalations": list(detect_escalations(session.search_result)),
+    }
 
 
 def revert(session: AnalysisSession, hypothesis_id: str, *, note: str = "") -> dict:
@@ -363,12 +392,31 @@ def get_trajectory(session: AnalysisSession, *, path: str | None = None) -> dict
     """時系列トラジェクトリを返す/CSV 書き出す。Trajectory へ委譲。🔵 REQ-021/022
 
     【委譲】: ``session.trajectory`` のヘッダ + frame_index 行を素の型 dict で返す。``path`` 指定
-      時は ``Trajectory.to_csv`` で CSV を書き出しパスを添える。trajectory 不在は空応答 (縮退)。
-    【テスト対応】: test_get_trajectory_delegates_to_trajectory_csv。
+      時は ``Trajectory.to_csv`` で CSV を書き出しパスを添える。
+    【Issue #116: 偽成功の是正】: ``session.trajectory`` を設定する ② ツールは存在しない
+      (``sequential/engine.py`` の M2 simulate 系の出力アクセサであり、実データ経路である M9
+      ``sequential_rietveld``/M10 ``anchored_sequential`` とは別サブシステム)。従来は
+      ``{"header": [], "rows": {}, "path": None}`` という**成功に見える空応答**を返しており、
+      ③ はこれを「時系列データが無い」と読んでしまう (実際は「このツールへ入力を渡す経路が無い」)。
+      CLAUDE.md ②不変条件 (空/不正入力を「正常」と答えない) に抵触するため、明示的な error dict
+      (``error_type`` 付き) へ縮退する。実データの時系列は ``sequential_rietveld`` /
+      ``anchored_sequential`` の結果 dict をそのまま使うこと。
+    【テスト対応】: test_get_trajectory_delegates_to_trajectory_csv /
+      test_get_trajectory_without_trajectory_returns_error_dict_not_empty_success /
+      test_get_trajectory_without_trajectory_ignores_path_and_does_not_write_file。
     🔵 信頼性レベル: interfaces.py mcp/tools 節 / sequential/trajectory に依拠。
     """
     if session.trajectory is None:
-        return {"header": [], "rows": {}, "path": None}
+        return {
+            "error": (
+                "session.trajectory が未設定です。get_trajectory は M2 逐次 simulate 系 "
+                "(sequential/engine.py) の Trajectory 出力アクセサですが、これを設定する ② ツールは "
+                "存在しないため実運用では到達不能です (dead on arrival)。実データの時系列は "
+                "sequential_rietveld または anchored_sequential が返す結果 dict をそのまま使って"
+                "ください (frames[].rwp/refined_cells/phase_fractions 等)。"
+            ),
+            "error_type": "TrajectoryUnavailableError",
+        }
     trajectory = session.trajectory
     # 【委譲】: 決定論ヘッダ + frame_index → セル列 (Trajectory 私有を触らず公開 API 経由) 🔵
     response: dict = {
@@ -422,13 +470,36 @@ def run_mem(session: AnalysisSession, **params: object) -> dict:
     【委譲】: ``mcp.mem.run_mem_boundary`` へ **params 透過で委譲する。``mem_backend`` /
       ``hypothesis_id`` / ``frame_index`` を含む params はそのまま境界へ渡り、``mem_backend``
       供給時のみ ``build_mem_input``→``mem_backend.run`` の実処理へ入る (M5 実体化)。
-    【後方互換】: ``mem_backend`` 未供給かつ ``placeholder=False`` は従来通り ``MEMUnavailableError``
-      送出、``placeholder=True`` は M4 プレースホルダ dict (D9)。破壊的操作なし (NFR-101)。
-    【テスト対応】: test_run_mem_default_raises_mem_unavailable / test_run_mem_tool_passes_backend_through_params。
+    【後方互換】: ``placeholder=True`` は M4 プレースホルダ dict (D9・状態変更なし)。破壊的操作なし
+      (NFR-101)。
+    【Issue #117: 例外リークの是正】: ``mem_backend`` は ``MEMBackend`` Protocol の**オブジェクト**
+      であり JSON からは渡せない。したがって JSON しか送れない ③ が呼ぶと ``mem_backend`` は
+      常に未供給になり、① ``run_mem_boundary`` は ``MEMUnavailableError`` を送出する。この例外が
+      ② 境界を越えるのは CLAUDE.md ②不変条件 (② ツールは例外を送出しない) への抵触なので、ここで
+      捕捉して error dict へ縮退する。① 直叩き経路 (``mem.run_mem_boundary`` を直接呼ぶ場合) は
+      本関数を経由しないため従来通り送出される (後方互換, TC-511 系不変)。
+    【テスト対応】: test_run_mem_default_returns_error_dict_not_raises (旧
+      test_run_mem_default_raises_mem_unavailable を改称) / test_run_mem_tool_passes_backend_through_params。
     🔵 信頼性レベル: interfaces.py mcp/tools・mcp/mem 節 / REQ-033/034/101/104 に依拠。
     """
-    # 【委譲】: M5 実体化境界へ params 透過 (mem_backend 供給時のみ実処理・破壊的追記なし) 🔵 REQ-034
-    return _mem.run_mem_boundary(session, **params)
+    try:
+        # 【委譲】: M5 実体化境界へ params 透過 (mem_backend 供給時のみ実処理・破壊的追記なし) 🔵 REQ-034
+        return _mem.run_mem_boundary(session, **params)
+    except MEMUnavailableError as exc:
+        # 【② 契約 (例外を送出しない)】: mem_backend は Protocol オブジェクトで JSON 境界を越えられ
+        #   ないため、③ から呼ぶ限り本例外は避けられない。error dict へ縮退し、実データ MEM の代替
+        #   経路 (JSON-only・callable 不要) を明示する 🔵 Issue #117
+        return {
+            "status": "error",
+            "error": "mem_backend_unavailable",
+            "error_type": type(exc).__name__,
+            "message": (
+                "run_mem は mem_backend (MEMBackend Protocol オブジェクト) を要求しますが、JSON から"
+                "はオブジェクトを渡せないため実運用では到達不能です (dead on arrival)。実データ MEM は "
+                "mem_density (単発 MEM 密度解析) または mem_rietveld_iterate (MEM-Rietveld 反復) を"
+                "使ってください (mem-model-fix skill)。"
+            ),
+        }
 
 
 def propose_discriminating_measurements(
@@ -472,6 +543,12 @@ def identify_phases(
     hull_cutoff_ev: float | None = 0.1,
     max_results: int | None = None,
     subtract_bg: bool = False,
+    scoring: Literal["dara", "coverage"] = "dara",
+    refine_lattice: bool = False,
+    max_strain: float = 0.01,
+    strain_penalty: float = 0.0,
+    rerank_top_k: int = 5,
+    kalpha2: Mapping[str, object] | None = None,
     reason: str = "",
 ) -> dict:
     """未知パターン + 元素一覧から単相候補をランキング同定する (M6 委譲境界)。🔵 FR-110/117
@@ -483,12 +560,32 @@ def identify_phases(
 
     :param subtract_bg: 同定前に SNIP 背景減算をオプトイン適用する (① と同じ既定 False)。
       観測パターンが**既に背景減算済み**の場合に True を渡すと二重減算になるため注意。
+    :param scoring: マッチスコア方式。``"dara"`` (既定, ① と同じ) は Fei et al. 2026 式1
+      (実測強度正規化 + extra 罰。peak-rich 相を希釈しない)。``"coverage"`` は旧方式 (一致率+被覆率)。
+      peak-rich 相の希釈が疑わしいときの比較用。
+    :param refine_lattice: True で各候補の計算ピークを等方格子歪み+ゼロシフトで観測へ整合してから
+      スコアする (Dara フロー)。MP(DFT) 構造は格子が実測とずれるため、DFT 由来の候補を使うときに使う。
+    :param max_strain: ``refine_lattice`` 時の等方歪み上限 (① と同じ既定 0.01 = 1%)。
+    :param strain_penalty: ランキングで格子シフトを罰する係数。実効スコア = score − strain_penalty·|strain|
+      (① と同じ既定 0 = 無効)。
+    :param rerank_top_k: >0 で上位 K 候補のみ異方格子整合で再スコアする (① と同じ既定 5 でオン)。
+      0 で無効化。DFT の軸別格子誤差 (Issue #20) を吸収し識別マージンを上げる。
+    :param kalpha2: Kα2 サテライト設定の JSON dict
+      (``{"intensity_ratio": float, "wavelength_ratio": float}``、両フィールドとも省略可・省略時は
+      Cu Kα1/Kα2 既定)。**Kα2 未除去の実験室 X 線データ**にのみ使う — 除去済みデータに指定すると
+      二重補正になるため使わないこと。不正なキー/型 (dict でない・未知キー・非数値) は例外を送出せず
+      ``{"error", "error_type":"ValueError"}`` へ縮退する (静かに無視すると指定した補正が効かない
+      「呼べるが黙って間違う」を再導入するため)。
     Raises:
-        なし (供給元未設定は error dict へ縮退)。
+        なし (供給元未設定・不正な kalpha2 spec は error dict へ縮退)。
     """
     provider = session.reference_provider
     if provider is None:
         return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    try:
+        kalpha2_cfg = kalpha2_from_spec(kalpha2)
+    except ValueError as exc:
+        return {"error": str(exc), "error_type": "ValueError"}
     two_theta = np.asarray(two_theta, dtype=float)
     intensity = np.asarray(intensity, dtype=float)
     result = _identify_phases(
@@ -499,6 +596,12 @@ def identify_phases(
         hull_cutoff_ev=hull_cutoff_ev,
         max_results=max_results,
         subtract_bg=subtract_bg,
+        scoring=scoring,
+        refine_lattice=refine_lattice,
+        max_strain=max_strain,
+        strain_penalty=strain_penalty,
+        rerank_top_k=rerank_top_k,
+        kalpha2=kalpha2_cfg,
     )
     session.ledger.append(
         "mcp_identify", {"mode": "single", "n_elements": len(elements), "reason": reason}
@@ -514,6 +617,7 @@ def identify_phases(
                 "energy_above_hull": finite_or_none(m.reference.energy_above_hull)
                 if m.reference.energy_above_hull is not None
                 else None,
+                "strain": finite_or_none(m.strain),
             }
             for m in result.matches
         ],
@@ -534,6 +638,10 @@ def identify_phase_mixtures(
     *,
     hull_cutoff_ev: float | None = 0.1,
     subtract_bg: bool = False,
+    refine_lattice: bool = False,
+    kalpha2: Mapping[str, object] | None = None,
+    prefilter_top_k: int | None = None,
+    prefilter_dynamic: bool = False,
     reason: str = "",
 ) -> dict:
     """未知パターン + 元素一覧から多相混合を同定する (M6 委譲境界)。🔵 FR-110/115
@@ -544,10 +652,26 @@ def identify_phase_mixtures(
 
     :param subtract_bg: 同定前に SNIP 背景減算をオプトイン適用する (① と同じ既定 False)。
       観測パターンが**既に背景減算済み**の場合に True を渡すと二重減算になるため注意。
+    :param refine_lattice: True で各候補の計算ピークを観測へ格子整合してから絞り込み/木探索に使う
+      (DFT 緩和格子のピーク位置ずれを吸収, Dara フロー)。MP(DFT) 由来の候補を使うときに使う。
+    :param kalpha2: Kα2 サテライト設定の JSON dict (``identify_phases`` と同じ変換規約:
+      ``{"intensity_ratio": float, "wavelength_ratio": float}``、両フィールドとも省略可)。
+      Kα2 未除去の実験室 X 線データにのみ使う (除去済みなら二重補正になるため None のまま)。
+      不正なキー/型は ``{"error", "error_type":"ValueError"}`` へ縮退する (静かに無視しない)。
+    :param prefilter_top_k: 絞り込みの安全上限。実効スコア上位 k 相のみ木探索へ渡す
+      (多相で候補が多すぎるときに使う)。``prefilter_dynamic`` と併用可。
+    :param prefilter_dynamic: True で動的閾値 (スコア分布の変曲点, Dara 準拠) を適用し、良い相を
+      件数に依らず残す (固定 top-k より正解を落としにくい)。
+    Raises:
+        なし (供給元未設定・不正な kalpha2 spec は error dict へ縮退)。
     """
     provider = session.reference_provider
     if provider is None:
         return {"error": "reference_provider が AnalysisSession に設定されていません (相同定不可)。"}
+    try:
+        kalpha2_cfg = kalpha2_from_spec(kalpha2)
+    except ValueError as exc:
+        return {"error": str(exc), "error_type": "ValueError"}
     two_theta = np.asarray(two_theta, dtype=float)
     intensity = np.asarray(intensity, dtype=float)
     result = _identify_phase_mixtures(
@@ -557,6 +681,10 @@ def identify_phase_mixtures(
         elements=elements,
         hull_cutoff_ev=hull_cutoff_ev,
         subtract_bg=subtract_bg,
+        refine_lattice=refine_lattice,
+        kalpha2=kalpha2_cfg,
+        prefilter_top_k=prefilter_top_k,
+        prefilter_dynamic=prefilter_dynamic,
     )
     session.ledger.append(
         "mcp_identify", {"mode": "mixture", "n_elements": len(elements), "reason": reason}
@@ -636,6 +764,95 @@ def identify_pattern(
     }
 
 
+def list_review_queue(session: AnalysisSession, *, include_resolved: bool = False) -> dict:
+    """Review Queue の内容を返す (Issue #125)。② から ReviewQueue を読む唯一の経路。
+
+    【背景】: ``ReviewQueue`` は ``FinalSelectionEngine.decide()``/``accept()`` がエスカレーション
+      成立時に通知する追記型キューで、① には実装済みだったが ② に露出しておらず積まれた内容を
+      人間が確認する手段が無かった (DOA)。``accept_hypothesis`` は ``selection.accept`` を直接呼ぶ
+      経路だが、``FinalSelectionEngine.accept`` 自体がエスカレーション検出時に queue へ通知する
+      よう修正済みなので、本ツールは常に空を返す DOA にはならない。
+    【委譲】: ``session.selection.review_queue`` (``FinalSelectionEngine.review_queue`` プロパティ)
+      から ``ReviewQueue`` を取得し、``items``/``unresolved`` を素の型 list[dict] に変換して返す。
+    【queue 未注入 (error 縮退)】: ``review_queue`` が ``None`` (未注入) のときは **「0 件」と
+      答えず** error dict へ縮退する (② の空/不正入力契約 — 0 件は「注入されていて中身が空」と
+      「そもそも注入されていない」を区別しないと危険な誤情報になる)。
+    【既定は未解決のみ】: ``include_resolved=False`` (既定) は ``unresolved`` のみを返す。
+      ``include_resolved=True`` で解決済みも含めた全件 (``items``) を返す。
+    【テスト対応】: tests/mcp/test_review_tools.py の list_review_queue 系。
+
+    :param include_resolved: True で解決済みも含めた全件を返す (既定は未解決のみ)
+    :returns: 成功時 ``{"status":"ok","items":[...],"unresolved_count":N,"total_count":M}``。
+      queue 未注入時は ``{"status":"error","error":...,"error_type":"no_review_queue"}``
+    """
+    queue = session.selection.review_queue
+    if queue is None:
+        return {
+            "status": "error",
+            "error": "review_queue が FinalSelectionEngine に注入されていません (確認事項の蓄積が"
+            "行われていない可能性)。",
+            "error_type": "no_review_queue",
+        }
+    source = queue.items if include_resolved else queue.unresolved
+    return {
+        "status": "ok",
+        "items": [
+            {
+                "item_id": it.item_id,
+                "reason": it.reason,
+                "hypothesis_id": it.hypothesis_id,
+                "frame_index": it.frame_index,
+                "detail": it.detail,
+                "resolved": it.resolved,
+            }
+            for it in source
+        ],
+        "unresolved_count": len(queue.unresolved),
+        "total_count": len(queue.items),
+    }
+
+
+def resolve_review_item(session: AnalysisSession, item_id: str, *, note: str = "") -> dict:
+    """Review Queue の 1 件を解決済みにする (Issue #125)。**人間の裁定を記録する操作**。
+
+    【権限境界】: これは人間がエスカレーション事項を確認・裁定したことを記録する操作であり、
+      ③ (agent) が独断で呼んではならない (SKILL.md の権限境界節に準拠)。ユーザーの確認を経てから
+      呼ぶこと。
+    【委譲】: ``session.selection.review_queue.resolve(item_id, note=note)`` へ委譲する
+      (``ReviewQueue.resolve`` は削除でなく resolved=True への状態遷移, P2)。
+    【未知 item_id (② は例外を送出しない)】: ``ReviewQueue.resolve`` は未知 item_id で ``KeyError``
+      を送出する (① の誤操作防御)。② はこれを捕捉して error dict へ縮退する (③ は LLM なので
+      例外は回復不能なハード失敗になるため)。
+    【queue 未注入】: ``list_review_queue`` と同様 error dict へ縮退する。
+    【テスト対応】: tests/mcp/test_review_tools.py の resolve_review_item 系。
+
+    :param item_id: 解決する ReviewItem の item_id ("rq-0000" 形式)
+    :param note: 解決理由の自然言語メモ (任意)
+    :returns: 成功時 ``{"status":"resolved","item_id":...,"unresolved_count":N}``。
+      queue 未注入/未知 item_id は ``{"status":"error","error":...,"error_type":...}``
+    """
+    queue = session.selection.review_queue
+    if queue is None:
+        return {
+            "status": "error",
+            "error": "review_queue が FinalSelectionEngine に注入されていません。",
+            "error_type": "no_review_queue",
+        }
+    try:
+        queue.resolve(item_id, note=note)
+    except KeyError:
+        return {
+            "status": "error",
+            "error": f"未知の item_id です: {item_id}",
+            "error_type": "unknown_item_id",
+        }
+    return {
+        "status": "resolved",
+        "item_id": item_id,
+        "unresolved_count": len(queue.unresolved),
+    }
+
+
 # 【ツールレジストリ】: 10 ツール (M4 8 + M6 相同定 2) + M8 実構造 Rietveld 3 + M9 in situ 逐次 3
 #   + M8-③ MEM model-fix 3 + operando 診断 4 + M10 anchor 1 = 24 ツール名 → 実処理関数。アダプタ層
 #   (server.py) が配線に使う単一情報源 🔵 REQ-021。M8 の 3 ツール (auto_rietveld/propose_next_actions/
@@ -658,6 +875,8 @@ MCP_TOOLS: Mapping[str, object] = {
     "identify_phase_mixtures": identify_phase_mixtures,
     "identify_pattern": identify_pattern,
     "propose_discriminating_measurements": propose_discriminating_measurements,
+    "list_review_queue": list_review_queue,
+    "resolve_review_item": resolve_review_item,
     **_RIETVELD_TOOLS,
     **_INSITU_TOOLS,
     **_MEM_MODEL_TOOLS,
