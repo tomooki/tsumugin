@@ -25,7 +25,7 @@ class RefinementModel:
     weights: np.ndarray | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Curvature:
     """最終受理パラメータにおける目的関数の曲率情報 (Issue #76 / FR-121)。
 
@@ -43,6 +43,22 @@ class Curvature:
     param_names: tuple[str, ...]  # 【列順】: J の列に対応するパラメータ名 (point/hessian と同順)
     point: np.ndarray  # 【最終受理パラメータベクトル】: param_names 順の実値
     hessian: np.ndarray  # 【JᵀJ】: −logL=χ²/2 の Hessian (Gauss-Newton 近似, 重み・restraint 行込み)
+
+    # 【値等価 (eq=False + 手書き __eq__)】: dataclass 既定の __eq__ は ndarray の `==` が配列を
+    #   返すため bool 文脈で ValueError (truth value ambiguous) になり、Curvature を内包する
+    #   RefinementResult の等価比較 (決定論テスト等) を壊す。np.array_equal による値等価を定義する。
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Curvature):
+            return NotImplemented
+        return (
+            self.param_names == other.param_names
+            and bool(np.array_equal(self.point, other.point))
+            and bool(np.array_equal(self.hessian, other.hessian))
+        )
+
+    # 【非ハッシュ化】: 値等価と整合するハッシュは配列内容に依存し高コストなため提供しない
+    #   (内包側の RefinementResult も globals: Mapping を持ち元来非ハッシュ)。
+    __hash__ = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True)

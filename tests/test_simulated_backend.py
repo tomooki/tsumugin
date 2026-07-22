@@ -591,3 +591,33 @@ def test_curvature_is_deterministic_bitwise():
     assert r1.curvature.param_names == r2.curvature.param_names
     assert np.array_equal(r1.curvature.point, r2.curvature.point)
     assert np.array_equal(r1.curvature.hessian, r2.curvature.hessian)
+
+
+def test_curvature_value_equality_supports_result_comparison():
+    # 【テスト目的】: Curvature を内包する RefinementResult の == 比較 (決定論テストの基盤) が
+    #   ndarray truth-value ambiguity で壊れないこと (T1 レグレッション: eq=False + 値等価)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=2.0)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    model = RefinementModel(
+        phases=(start,),
+        free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt,
+        intensity=y,
+    )
+    r1 = backend.refine(model)
+    r2 = backend.refine(model)
+    assert r1.curvature == r2.curvature  # 値等価
+    assert r1 == r2  # RefinementResult 全体の等価比較が例外なく成立する
+    # 異なる曲率は不等 (値等価が恒真でないこと)
+    assert r1.curvature is not None
+    from tsumugin.backends.base import Curvature
+
+    other = Curvature(
+        param_names=r1.curvature.param_names,
+        point=r1.curvature.point,
+        hessian=r1.curvature.hessian * 2.0,
+    )
+    assert r1.curvature != other
