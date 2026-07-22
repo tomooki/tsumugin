@@ -1309,3 +1309,116 @@ def test_route_detection_distinguishes_real_laplace_from_bic_fallback():
     # raw Δ = -200 (閾値超) でも経路混在なので verdict を上書きしない
     assert result.verdict == "undecided"
     assert any("経路が非対称のため裁定値を比較できません" in m for m in result.escalations)
+
+
+# ---------------------------------------------------------------------------
+# Issue #76 受け入れ基準: bic 僅差だが実曲率 Laplace/nested は判別可能なケース
+# ---------------------------------------------------------------------------
+
+
+class _LaplaceOnlyNestedBackend:
+    """score_problem を実 LaplaceBackend へ直行させる (dynesty を回さない) 決定論バックエンド。
+
+    実 NestedBackend の「サンプラ未導入 → Laplace 縮退」経路と同一の実効経路
+    ("laplace" = 実曲率 Laplace) を、dynesty の導入有無に依存せず決定論的に踏む。
+    """
+
+    def __init__(self) -> None:
+        from tsumugin.nested.laplace import LaplaceBackend
+
+        self.laplace = LaplaceBackend()
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        res = self.laplace.score_problem(problem)
+        return NestedOutcome(result=res, logz=None, truncated=True)
+
+
+def _two_phase_close_tie_setup() -> tuple[SimulatedBackend, FrameSeries, PhaseInstance]:
+    """bic 僅差になる真の二相系列 (broad peak で単相が肩代わり可能) を構成する。
+
+    真実 = 二相 (a=5.00 / a=5.04, fwhm=0.6 で重なる) の相分率が 0.3→0.7 と変化する 3 フレーム。
+    単相 (格子解放) 仮説 A が各フレームの平均ピーク位置をほぼ完全に肩代わりできるため
+    ΔΣbic < 1 (bic では判別不能) だが、実曲率 Laplace は実 DOF 差 (A: 4/フレーム vs
+    B: 2/フレーム) を curvature/事前分布体積で罰し ΔBIC_nested ≈ +23 で two_phase (真実) を
+    確定できる (探索記録: scratchpad/explore_t5b.py, 2026-07-22)。
+    """
+    backend = SimulatedBackend(peak_fwhm=0.6)
+    tt = np.arange(15.0, 80.0, 0.05)
+    frames = []
+    for i in range(3):
+        x = 0.3 + 0.4 * i / 2.0
+        y = backend.simulate(
+            (
+                PhaseInstance(phase_ref="P", lattice=LatticeParams(5.0, 5.0, 5.0), scale=1.0 - x),
+                PhaseInstance(phase_ref="P", lattice=LatticeParams(5.04, 5.04, 5.04), scale=x),
+            ),
+            tt,
+        )
+        frames.append(y)
+    series = FrameSeries(two_theta=tt, intensities=np.array(frames))
+    start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.02, 5.02, 5.02), scale=1.0)
+    return backend, series, start
+
+
+def test_acceptance_bic_tie_resolved_by_real_curvature_laplace():
+    # 【テスト目的 (Issue #76 受け入れ基準 1)】: bic 一次では僅差 (|ΔΣbic|<閾値) の真の二相データを、
+    #   実曲率 Laplace (物理尤度 + JᵀJ + restraint 由来事前分布) が two_phase (真実) に確定させる。
+    #   v1 サロゲートでは構造的に不可能だった「僅差の解消」の実証。
+    backend, series, start = _two_phase_close_tie_setup()
+    config = DiscriminationConfig(
+        multistart=MultistartConfig(n_starts=2), nested_arbitration=ArbitrationConfig()
+    )
+
+    result = discriminate_interval(
+        backend, series, (0, 2), (start,),
+        config=config, nested_backend=_LaplaceOnlyNestedBackend(),
+    )
+
+    # bic 一次は僅差だった (発動条件の確認 — これが無いと「元々判別できていた」ことになる)
+    assert abs(result.delta_evidence) < 10.0
+    # 実曲率 Laplace が真実 (two_phase) へ確定させた
+    assert result.verdict == "two_phase"
+    assert result.adjudicated_by == "laplace"
+    assert result.nested_delta_evidence is not None
+    assert result.nested_delta_evidence >= 10.0  # BIC 等価スケールで閾値以上 🔵
+    # 暫定裁定でも close_competitor の人間確認要求は維持される (FR-403)
+    assert any("としました" in m for m in result.escalations)
+
+
+def test_acceptance_case_is_deterministic():
+    # 【テスト目的 (Issue #76 受け入れ基準 2)】: Laplace 経路 (サンプラ不使用) はビット同一の決定論。
+    def _run() -> DiscriminationResult:
+        backend, series, start = _two_phase_close_tie_setup()
+        config = DiscriminationConfig(
+            multistart=MultistartConfig(n_starts=2), nested_arbitration=ArbitrationConfig()
+        )
+        return discriminate_interval(
+            backend, series, (0, 2), (start,),
+            config=config, nested_backend=_LaplaceOnlyNestedBackend(),
+        )
+
+    assert _run() == _run()
+
+
+@pytest.mark.nested
+def test_acceptance_real_dynesty_agrees_in_sign():
+    # 【テスト目的 (Issue #76 受け入れ基準 1/2)】: 実 dynesty (物理尤度・seed 固定・logz_err 併記) でも
+    #   同符号 (two_phase 優位, Δ>0) で裁定できる。予算 (maxcall) は NFR-103 打ち切り安全弁。
+    if importlib.util.find_spec("dynesty") is None:
+        pytest.skip("dynesty 未導入")
+
+    backend, series, start = _two_phase_close_tie_setup()
+    config = DiscriminationConfig(
+        multistart=MultistartConfig(n_starts=2), nested_arbitration=ArbitrationConfig()
+    )
+    real_nested = NestedBackend(config=NestedConfig(n_live=25, max_calls=3000, seed=0))
+
+    result = discriminate_interval(
+        backend, series, (0, 2), (start,),
+        config=config, nested_backend=real_nested,
+    )
+
+    # 完走すれば nested、時間上限等で縮退すれば laplace — いずれも実曲率経路で Δ>0 (two_phase 優位)
+    assert result.adjudicated_by in ("nested", "laplace")
+    assert result.nested_delta_evidence is not None
+    assert result.nested_delta_evidence > 0.0
