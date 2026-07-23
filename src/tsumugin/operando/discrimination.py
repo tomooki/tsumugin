@@ -920,9 +920,9 @@ def _combine_adjudicated_by(
 
     【報告専用 (レビュー指摘)】: この集約値は ``DiscriminationResult.adjudicated_by`` の**報告**用の
       要約であり、verdict 上書きの可否判断 (三重ガード①「同一経路」) には使わない。経路一致判定は
-      ``_run_nested_arbitration`` が per-hypothesis の ``adjudicated_by`` を直接比較して行う
-      (混在時にここで "laplace" へ丸めてしまうと nested-nested / laplace-laplace / nested-laplace の
-      区別が失われ、誤って同一経路と判定されうるため)。
+      ``_run_nested_arbitration`` が per-hypothesis の**実効経路** (``_effective_route`` の 3 値,
+      Issue #76) を比較して行う (混在時にここで "laplace" へ丸めてしまうと経路の区別が失われ、
+      誤って同一経路と判定されうるため)。
     🟡 信頼性レベル: 実装裁量 (REQ-015 の adjudicated_by 明示を 2 仮説の集約値として表現)。
     """
     if single == "nested" and two_phase == "nested":
@@ -1018,13 +1018,14 @@ def _run_nested_arbitration(
       close_competitor 判定の再利用」)。``ledger`` は ``arbitrate`` へそのまま渡し、
       "arbitration"/"nested_run"/"nested_fallback" 記録は既存契約に委ねる (呼び側が別途
       "discrimination.nested_arbitration" を追記する)。
-    【三重ガード (レビュー指摘)】: ``ArbitratedHypothesis.adjudicated_by`` は per-hypothesis に
-      "nested"/"laplace" を明示する既存フィールドのため (``full_nested=True`` + 両 problem 供給下では
-      "bic" にはならない)、これを ``by_id`` から個別に取り出して比較するだけで「両仮説が同一経路か」
-      が判定できる (``arbitrate`` API 自体は変更しない)。①route_consistent (同一経路) ②delta が
-      有限 ③|delta|>=close_threshold の 3 条件を全て満たしたときのみ ``_nested_verdict_from_delta``
-      の非 undecided 結果を ``provisional_verdict`` として採用し、いずれか欠けたら undecided に
-      留める (呼び側 ``discriminate_interval`` は provisional_verdict をそのまま信頼できる)。
+    【三重ガード (Issue #76 で実効経路化)】: 経路一致判定は ``adjudicated_by`` の 2 値比較でなく
+      per-hypothesis の**実効経路** (``_effective_route``: nested / 実 Laplace / BIC フォールバック
+      の 3 値。"laplace" ラベルだけでは -logZ スケールと Σbic スケールの混在を見抜けないため) の
+      厳密一致で行う (``arbitrate`` API 自体は変更しない)。①route_consistent (実効経路一致)
+      ②delta が有限 ③|delta|>=close_threshold (delta は nested/実 Laplace 経路なら ×2 の BIC
+      等価スケール) の 3 条件を全て満たしたときのみ ``_nested_verdict_from_delta`` の非 undecided
+      結果を ``provisional_verdict`` として採用し、いずれか欠けたら undecided に留める
+      (呼び側 ``discriminate_interval`` は provisional_verdict をそのまま信頼できる)。
     🟡 信頼性レベル: 実装裁量 (nested/arbitration.arbitrate 既存契約への配線 + レビュー指摘の三重ガード)。
 
     @returns: nested 裁定の生結果・ΔBIC(nested)・集約 adjudicated_by・暫定 verdict・経路一致フラグを
