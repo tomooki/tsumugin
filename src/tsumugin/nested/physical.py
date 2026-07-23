@@ -146,12 +146,12 @@ def restraints_from_state(
     中心とする有界区間を組む:
 
     - ``lattice.*``: uniform [v(1−m), v(1+m)] (m = ``lattice_rel_margin``)
-    - ``scale``: uniform [0, v·factor] (v<=0 は [0, ``scale_degenerate_upper``] へ縮退)
-    - ``wt_frac`` / ``occ.*``: uniform [0, max(1, v)]
+    - ``scale``: uniform [min(0,v), max(v·factor, v)] (v<=0 の上限は ``scale_degenerate_upper``)
+    - ``wt_frac`` / ``occ.*``: uniform [min(0,v), max(1, v)]
 
-    いずれも **v が区間に入る** (MAP が事前分布の台内) を構成的に保証する。値を読めない
-    パラメータは ``_read_param`` が ``ValueError`` で弾く (黙って既定分布に落とさない)。
-    返り値は param_name 昇順 (決定論, NFR-102)。
+    いずれも **v が区間に入る** (MAP が事前分布の台内) を構成的に保証する — 全分岐で境界を
+    v で括る (負値等の縮退値でも破れない)。値を読めないパラメータは ``_read_param`` が
+    ``ValueError`` で弾く (黙って既定分布に落とさない)。返り値は param_name 昇順 (決定論, NFR-102)。
     """
     restraints: list[RestraintSpec] = []
     for name in sorted(free_params):
@@ -166,9 +166,16 @@ def restraints_from_state(
             restraints.append(RestraintSpec(param_name=name, lower=low, upper=high))
         elif key == "scale":
             upper = v * config.scale_upper_factor if v > 0.0 else config.scale_degenerate_upper
-            restraints.append(RestraintSpec(param_name=name, lower=0.0, upper=upper))
+            # 【台内保証 (レビュー指摘)】: 縮退した精密化値 (負の scale 等) でも MAP が区間に
+            #   入るよう境界を v で括る。台外 MAP は log_pdf=-inf → Laplace が BIC へ静かに縮退
+            #   し「実曲率で解消できない」と誤認させるため、lattice 分岐の swap と同格の防御。
+            restraints.append(
+                RestraintSpec(param_name=name, lower=min(0.0, v), upper=max(upper, v))
+            )
         else:  # wt_frac / occ.* (値は _read_param 通過済み = サポート種別)
-            restraints.append(RestraintSpec(param_name=name, lower=0.0, upper=max(1.0, v)))
+            restraints.append(
+                RestraintSpec(param_name=name, lower=min(0.0, v), upper=max(1.0, v))
+            )
     return tuple(restraints)
 
 

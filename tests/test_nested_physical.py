@@ -102,6 +102,31 @@ def test_restraints_from_state_map_always_inside_support():
             assert r.lower <= v <= r.upper
 
 
+def test_restraints_from_state_brackets_degenerate_negative_values():
+    # 【テスト目的 (レビュー指摘)】: 負の scale/wt_frac/occ (SimulatedBackend はクリップするが
+    #   本関数は backend 非依存の公開部品) でも台内保証が破れないこと。破れると log_pdf=-inf →
+    #   Laplace が BIC へ静かに縮退し「実曲率で解消できない」と誤認させる (v1 欠陥の再導入)。
+    phase = PhaseInstance(
+        phase_ref="P",
+        lattice=LatticeParams(5.0, 5.0, 5.0),
+        scale=-0.5,
+        wt_frac=-0.1,
+        occupancies={"site": -0.2},
+    )
+    free = frozenset(
+        {param_name(0, "scale"), param_name(0, "wt_frac"), param_name(0, "occ.site")}
+    )
+    values = {
+        param_name(0, "scale"): -0.5,
+        param_name(0, "wt_frac"): -0.1,
+        param_name(0, "occ.site"): -0.2,
+    }
+    for r in restraints_from_state((phase,), free, config=PhysicalProblemConfig()):
+        v = values[r.param_name]
+        assert r.lower is not None and r.upper is not None
+        assert r.lower <= v <= r.upper
+
+
 # ---------------------------------------------------------------------------
 # build_physical_problem
 # ---------------------------------------------------------------------------

@@ -25,6 +25,11 @@ MAP 点 + Hessian が渡せる場合に Laplace 近似 evidence を計算する 
   (nested サンプラの logZ と直接比較可能な絶対 evidence) を返す。``log_prior`` が非有限
   (MAP が事前分布の台の外・退化事前分布等) なら例外化せず BIC フォールバックへ縮退する。
   ``priors`` が空の場合は事前項を加算せず**従来通り相対 evidence のまま** (後方互換)。
+  **適用範囲の注意**: この加算が Laplace 次数で正しいのは事前分布が MAP 近傍で曲率を持たない
+  (uniform) 場合、または呼び出し側が渡す ``hessian`` が事前曲率込みの**事後** Hessian の場合。
+  normal/truncated_normal 事前分布 + 尤度のみの Hessian (例: backends の ``Curvature`` = JᵀJ)
+  の組では事前曲率 (-∂²log p) の分だけ logZ が偏る — 現行の ``nested.physical`` は uniform
+  事前分布のみを構成するため一致するが、他の呼び出し側は自らこの前提を満たすこと。
   ``k`` は必ず Hessian 次元 ``d = H.shape[0]`` を用い、(k/2)ln(2π) の次元と ln|H| の次元を厳密に
   一致させる (len(priors) や map_point 次元との食い違いによる静かなバイアスを避ける)。
 

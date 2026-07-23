@@ -555,8 +555,9 @@ class SimulatedBackend:
             dof = max(int(r.size) - int(p.size), 1)  # 【n_res 自由度】: restraint 行を含む 🔵
             reduced_chi2 = chi2 / dof
             # 【J の供給/再計算】: refine() 本経路は最終受理 p の J を渡してくる (Issue #76 の
-            #   Curvature と共有・二重計算排除)。未供給の呼び出し (早期リターン経路等) のみ
-            #   最終 p で 1 回計算する 🔵
+            #   Curvature と共有・二重計算排除)。未供給の呼び出し (早期リターン経路のほか、
+            #   chi2 有限でも J に非有限が混ざり供給を断念した場合) のみ最終 p で 1 回計算する
+            #   (後者は下の isfinite ガードで σ 未提供に落ちる従来どおりの縮退) 🔵
             if jac is None:
                 jac = self._jacobian(phases, names, p, fit_mu_t, full_residual, r)
             cov: np.ndarray | None = None
