@@ -71,6 +71,26 @@ def test_frozen_assignment_raises():
         p.scale = 3.0  # type: ignore[misc]
 
 
+def test_structure_ref_defaults_none_and_is_nondestructive():
+    # 【Issue #130 L1】: 実 CIF 参照フィールド structure_ref は末尾・既定 None の非破壊追加。
+    #   既存の全構築 (structure_ref を渡さない) は None のまま = 後方互換 (REQ-404)。
+    p = PhaseInstance(phase_ref="pbso4", lattice=LatticeParams(8.48, 5.40, 6.96))
+    assert p.structure_ref is None
+    p2 = p.with_updates(structure_ref="/data/PbSO4.cif")
+    assert p2.structure_ref == "/data/PbSO4.cif"
+    assert p.structure_ref is None  # 元は不変 (P2)
+    # 他フィールドの with_updates は structure_ref を保持する
+    p3 = p2.with_updates(scale=2.0)
+    assert p3.structure_ref == "/data/PbSO4.cif"
+
+
+def test_structure_ref_can_be_set_at_construction():
+    p = PhaseInstance(
+        phase_ref="a", lattice=LatticeParams(5, 5, 5), structure_ref="/x/a.cif"
+    )
+    assert p.structure_ref == "/x/a.cif"
+
+
 def test_defaults():
     h = Hypothesis(id="h1", phases=())
     assert h.status == "candidate"
