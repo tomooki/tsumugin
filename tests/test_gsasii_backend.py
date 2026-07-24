@@ -430,3 +430,22 @@ def test_structure_ref_refine_recovers_cell_on_real_structure():
     )
     assert fitted.phases[0].lattice.a == pytest.approx(8.48, abs=0.02)
     assert fitted.phases[0].lattice.c == pytest.approx(6.958, abs=0.02)
+
+
+@pytest.mark.gsas
+def test_apply_cell_preserves_cif_angles_overrides_only_lengths():
+    # 【Issue #130 レビュー】: _apply_cell は実 CIF の角度 (α/β/γ) を保持し a/b/c のみ上書き。
+    #   単斜 (β≠90) の CIF に JSON 未指定角の既定 90° を注入して正しい角を潰す footgun の回帰ガード。
+    #   G2lat.calc_V を使うため gsas マーク (add_phase 実データは不要 = 高速)。
+    from tsumugin.backends.gsasii import _apply_cell
+
+    class _FakePhase:
+        # General.Cell = [refine_flag, a, b, c, alpha, beta, gamma, vol]。β=95 の単斜を模す。
+        data = {"General": {"Cell": [False, 5.0, 6.0, 7.0, 90.0, 95.0, 90.0, 0.0]}}
+
+    ph = _FakePhase()
+    _apply_cell(ph, LatticeParams(8.0, 9.0, 10.0))  # 角度は既定 90
+    cell = ph.data["General"]["Cell"]
+    assert cell[1:4] == [8.0, 9.0, 10.0]  # a/b/c は上書きされる
+    assert cell[4] == 90.0 and cell[5] == 95.0 and cell[6] == 90.0  # β=95 保持 (潰さない)
+    assert cell[7] > 0.0  # 体積が再計算される (単斜セルの正の体積)
