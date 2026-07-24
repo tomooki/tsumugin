@@ -306,7 +306,9 @@ class TestBondRestraintHeadlessCanary:
         assert d_a < 1.55, f"S–O2={d_a:.4f} が想定外にターゲット側へ動いた"
         # ③拘束ありは拘束なしと異なる (現状は非ゲート HessRefine 経由の小摂動を注入している)。
         #   完全不動化 (ChemComp 化) したらここが fail し docstring の摂動記述を再検証させる。
-        assert abs(d_a - d_none) > 1.0e-4, (
+        #   閾 5e-3 は weight=0 対照の cross-machine ノイズ上限 5e-4 の 10 倍 (ノイズで満たさない)
+        #   かつ実摂動 0.055 Å の 1/10 (現状は余裕で満たす) — 両閾の間のデッドゾーンを作らない。
+        assert abs(d_a - d_none) > 5.0e-3, (
             f"bond restraint がベースラインと同一 (d={d_a:.6f}) = 完全不動 — Bond が "
             "ChemComp のように no-op 化した可能性。engine docstring の『小摂動』記述を再検証せよ"
         )
