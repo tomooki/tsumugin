@@ -564,3 +564,19 @@ def test_skill_and_playbook_document_j9_coulometry():
     from tsumugin.mcp.tools import MCP_TOOLS as _tools
 
     assert "alkali_budget" in _tools
+
+
+def test_skill_and_playbook_document_j10_discriminate():
+    """J10 (discriminate → 固溶体 vs 二相判別) が skill と PLAYBOOK の両方に同内容で
+    あること (Issue #130; ★①→②③ 露出不変条件 + 安全上重要な指示の同期規約)。"""
+    skill = _SKILL.read_text(encoding="utf-8")
+    playbook = _PLAYBOOK.read_text(encoding="utf-8")
+    for text, name in ((skill, "SKILL"), (playbook, "PLAYBOOK")):
+        assert "J10" in text, f"{name} に J10 が無い"
+        assert "discriminate" in text, f"{name} が discriminate ツールに言及していない"
+        assert "structure_ref" in text, f"{name} が structure_ref (実 CIF の出所) を教えていない"
+        assert "undecided" in text, f"{name} が undecided で確定主張しないことを教えていない"
+        assert "提案≠適用" in text, f"{name} に提案≠適用が無い"
+    from tsumugin.mcp.tools import MCP_TOOLS as _tools
+
+    assert "discriminate" in _tools

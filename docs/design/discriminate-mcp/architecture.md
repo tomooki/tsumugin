@@ -63,8 +63,12 @@ JSON 引数と「どの ② 出力から来るか」(到達可能性):
 
 ### L5: ③ 手順書
 
-`skills/insitu` (進める) / `skills/operando-diagnose` (疑う) に「固溶体 vs 二相をいつ・どう
-判別するか」を追記 (discriminate ツール + 各引数の出所)。両 PLAYBOOK 同期。
+固溶体 vs 二相判別は「どちらのモデルか」を決める**診断判断 (疑う)** なので、`operando-diagnose`
+skill (「疑う」) + その `docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md` に J10 として追記する
+(discriminate ツール + 各引数の出所 + undecided は確定主張しない)。SKILL↔PLAYBOOK 同期は
+`test_plugin_operando_diagnose::test_skill_and_playbook_document_j10_discriminate` が強制。
+`insitu` (「進める」= 系列を前進させる) はモデル選択の判断を持たないため対象外
+(当初「両方」と書いたが、判別は 疑う 側の活動と整理し operando-diagnose 単独に確定)。
 
 ### L6: テスト
 

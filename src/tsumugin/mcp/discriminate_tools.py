@@ -88,12 +88,16 @@ def _result_to_dict(result: DiscriminationResult) -> dict[str, object]:
     """``DiscriminationResult`` を JSON dict へ畳む (大配列は境界を跨がせない, §4.5)。
 
     両仮説は id + multistart basin 数の要約のみ (相集合の生 phases は境界に晒さない)。
+    浮動小数フィールドは ``finite_or_none`` で非有限 (inf/nan) を None へ洗う (canonical JSON
+    への Infinity 混入防止, ② 境界の防御 — discrimination の ledger 経路と同じ規律)。
     """
+    from .._json import finite_or_none
+
     return {
         "verdict": result.verdict,
-        "delta_evidence": result.delta_evidence,
+        "delta_evidence": finite_or_none(result.delta_evidence),
         "adjudicated_by": result.adjudicated_by,
-        "nested_delta_evidence": result.nested_delta_evidence,
+        "nested_delta_evidence": finite_or_none(result.nested_delta_evidence),
         "escalations": list(result.escalations),
         "warnings": list(result.warnings),
         "hypothesis_single": {
