@@ -239,7 +239,8 @@ def test_create_mcp_server_wires_all_eight_tools():
     #   + interop 変換 2。※ chem 降格は compare_hypotheses の chem_context 引数で露出 [#100/#104]) 🔵
     # +1: alkali_budget (FR-318) → 32。+2: list_review_queue/resolve_review_item (Issue #125) → 34
     # +1: write_sequential_csv (FR-504 トラジェクトリ CSV, Issue #116/#117 調査) → 35
-    assert len(MCP_TOOLS) == 35
+    # +1: discriminate (FR-313 固溶体 vs 二相判別の実データ GSAS 露出, Issue #130) → 36
+    assert len(MCP_TOOLS) == 36
 
 
 def _collect_tool_names(server: object) -> list[str]:

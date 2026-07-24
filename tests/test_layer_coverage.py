@@ -93,12 +93,11 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "入力に取る session ツール (RankedHypothesis を境界に晒さない)。nested はスコープ外 (#76)",
     ),
     "nested (M5/FR-500)": (
-        UNEXPOSED,
-        "Issue #76 で物理尤度配線を実装済み (2026-07-22)。旧障壁「log_likelihood が callable で "
-        "JSON 化不可」は nested.physical の内部構築化 (精密化状態→problem を ① 内で組む) により "
-        "原理的には解消したが、呼び手の discrimination (FR-313) 自体が ② に無く、"
-        "FrameSeries/PhaseInstance の JSON spec 設計 + 実データ backend 接続が前提。② 露出 "
-        "(discriminate ツール + nested オプトイン引数) は Issue #130 で追跡 (裁定力の獲得と露出設計は別作業)",
+        "discriminate",
+        "Issue #76 で物理尤度配線 (2026-07-22) → Issue #130 (route X) で ② 露出済み。"
+        "discrimination (FR-313) を実データ GSAS で走らせる discriminate ツールを新設し、"
+        "その config.nested_arbitration が nested 物理尤度裁定のオプトイン引数 (裁定力+呼び手が揃った)。"
+        "PhaseInstance.structure_ref で実 CIF を GSASIIBackend へ渡す (でっち上げ CIF をやめる)",
     ),
     "chem (FR-412)": (
         "compare_hypotheses",
