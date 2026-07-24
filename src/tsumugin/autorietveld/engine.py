@@ -1063,7 +1063,18 @@ def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str
     fracs: dict[str, float] = {}
     esds: dict[str, float | None] = {}
     for name, pair in dict(vals).items():
-        fracs[str(name)] = _finite_or_zero(pair[0])
+        value = pair[0]
+        # 【値側の洗浄禁止 (Issue #107 事象2)】: 非有限の値を `_finite_or_zero` で捏造 0.0 に
+        #   して出版経路へ流さない (esd 側 R6 と同じ「計算された 0 と計算されなかったを区別」
+        #   規律)。重量分率は正規化 wtSum を全相で共有するため、1 つでも非有限なら組全体が
+        #   信頼できない → ComputeMassFracs 例外と同じ「出版値なし」({}, {}) へ縮退する。
+        try:
+            fvalue = float(value)
+        except (TypeError, ValueError):
+            return {}, {}
+        if not math.isfinite(fvalue):
+            return {}, {}
+        fracs[str(name)] = fvalue
         esds[str(name)] = _weight_esd_or_none(pair[1])
     return fracs, esds
 

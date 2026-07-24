@@ -266,3 +266,24 @@ def test_empty_or_failing_massfracs_degrades_to_empty_maps():
     assert _weight_fraction_maps([], []) == ({}, {})
     hist = _FakeHist(None, raises=True)
     assert _weight_fraction_maps([_FakeName("a"), _FakeName("b")], [hist]) == ({}, {})
+
+
+def test_multiphase_nonfinite_value_degrades_to_empty_not_fabricated_zero():
+    """★Issue #107 事象2: 値 (pair[0]) の非有限を 0.0 へ洗浄しない (esd 側 R6 と同じ規律)。
+
+    旧実装は `_finite_or_zero(pair[0])` で NaN 値を捏造 0.0 にして出版経路へ流した
+    (「相が存在するのに wt=0.0」)。値が 1 つでも非有限なら重量分率の組全体が信頼できない
+    (正規化 wtSum を共有する) ため、ComputeMassFracs 例外と同じ「出版値なし」({}, {}) へ
+    縮退する。「計算された 0 と計算されなかった」を型で区別する R5/R6 の規律の値側への適用。
+    """
+    hist = _FakeHist({"mono": (float("nan"), 0.01), "cubic": (0.4, 0.01)})
+    assert _weight_fraction_maps([_FakeName("mono"), _FakeName("cubic")], [hist]) == ({}, {})
+    hist_inf = _FakeHist({"mono": (float("inf"), 0.01), "cubic": (0.4, 0.01)})
+    assert _weight_fraction_maps([_FakeName("mono"), _FakeName("cubic")], [hist_inf]) == ({}, {})
+
+
+def test_multiphase_finite_values_are_preserved_unchanged():
+    """正常経路の非回帰: 全値が有限なら従来どおり値をそのまま返す (縮退しない)。"""
+    hist = _FakeHist({"mono": (0.7104, 0.00789), "cubic": (0.2896, 0.00789)})
+    fracs, _esds = _weight_fraction_maps([_FakeName("mono"), _FakeName("cubic")], [hist])
+    assert fracs == {"mono": pytest.approx(0.7104), "cubic": pytest.approx(0.2896)}
