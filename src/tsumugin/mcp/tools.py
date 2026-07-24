@@ -853,15 +853,17 @@ def resolve_review_item(session: AnalysisSession, item_id: str, *, note: str = "
     }
 
 
-# 【ツールレジストリ】: 10 ツール (M4 8 + M6 相同定 2) + M8 実構造 Rietveld 3 + M9 in situ 逐次 3
-#   + M8-③ MEM model-fix 3 + operando 診断 4 + M10 anchor 1 = 24 ツール名 → 実処理関数。アダプタ層
-#   (server.py) が配線に使う単一情報源 🔵 REQ-021。M8 の 3 ツール (auto_rietveld/propose_next_actions/
-#   refine_with_revisions)・M9 の 3 ツール (sequential_rietveld/identify_and_add_phase/
-#   parametric_fit)・M8-③ の 3 ツール (mem_density/propose_structure_revisions/edit_cif)・operando
-#   診断の 4 ツール (assess_data_quality/residual_report/check_phase_set/repair_frames)・M10 anchor の
-#   1 ツール (anchored_sequential, Issue #97) は session を取らない計器+アクチュエータ
-#   (rietveld_tools.py / insitu_tools.py / mem_tools.py / operando_diag_tools.py / anchor_tools.py,
-#   閉ループ丸ごとは出さない = ③ が回す, architecture.md §2/§6)。
+# 【ツールレジストリ】: **総数の正は `tests/test_mcp_server.py` のカウント検査** (この内訳コメントは
+#   歴史を要約するだけで、数を数え直す規範ではない — Issue #127 で 24 のまま陳腐化していた教訓)。
+#   現在 35: session 系 12 (M4 8 + M6 相同定 2 + Review Queue 2 [#125]) + M11 identify_pattern +
+#   OED propose_discriminating_measurements (#104) + compare_structure_models + echem 2
+#   (align_echem #103 / alkali_budget FR-318) + interop 2 (#108) + M8 実構造 Rietveld 3 +
+#   M9 in situ 逐次 3 + M8-③ MEM 4 (mem_density/propose_structure_revisions/edit_cif/
+#   mem_rietveld_iterate) + operando 診断 4 + M10 anchor 1。アダプタ層 (server.py) が配線に使う
+#   単一情報源 🔵 REQ-021。session を取らない計器+アクチュエータ群は rietveld_tools.py /
+#   insitu_tools.py / mem_tools.py / operando_diag_tools.py / anchor_tools.py / compare_tools.py /
+#   echem_tools.py / interop_tools.py に分離 (閉ループ丸ごとは出さない = ③ が回す,
+#   architecture.md §2/§6)。
 MCP_TOOLS: Mapping[str, object] = {
     "submit_analysis": submit_analysis,
     "list_hypotheses": list_hypotheses,
