@@ -284,20 +284,32 @@ class TestBondRestraintHeadlessCanary:
 
         機能する拘束なら target=2.3 は target=1.9 より S–O2 を長く引くはず。実際は両者
         ビット同一かつデータ値近傍 (< 1.55 Å, ターゲット 1.9/2.3 から遠い) に留まる。
+
+        **両方向を pin する** (レビュー指摘): ターゲット非追従 (機能拘束なら fail) に加え、
+        拘束ありがベースライン (拘束なし) と異なる (= 現状は小さな摂動を注入している) ことも
+        assert する。GSAS-II が Bond を ChemComp のように完全不動化した場合も docstring の
+        「小さな飽和摂動を注入」記述が崩れるので、その退化も検知する。
         """
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
+            _rwp0, d_none, _ = self._run(tmp, None)
             _rwp_a, d_a, _ = self._run(tmp, 1.9)
             _rwp_b, d_b, _ = self._run(tmp, 2.3)
 
-        # ターゲット非追従: 0.4 Å 離れたターゲットで最終距離が実質同一 (機能拘束では不可能)
+        # ①ターゲット非追従: 0.4 Å 離れたターゲットで最終距離が実質同一 (機能拘束では不可能)
         assert abs(d_a - d_b) < 1.0e-6, (
             f"bond restraint がターゲットに追従した (1.9→{d_a:.4f}, 2.3→{d_b:.4f}) — "
             "GSAS-II が headless restraint を修復した可能性。engine の非機能 caveat を再検証せよ"
         )
-        # データ値近傍に留まりターゲット (>=1.9) へ到達しない
+        # ②データ値近傍に留まりターゲット (>=1.9) へ到達しない
         assert d_a < 1.55, f"S–O2={d_a:.4f} が想定外にターゲット側へ動いた"
+        # ③拘束ありは拘束なしと異なる (現状は非ゲート HessRefine 経由の小摂動を注入している)。
+        #   完全不動化 (ChemComp 化) したらここが fail し docstring の摂動記述を再検証させる。
+        assert abs(d_a - d_none) > 1.0e-4, (
+            f"bond restraint がベースラインと同一 (d={d_a:.6f}) = 完全不動 — Bond が "
+            "ChemComp のように no-op 化した可能性。engine docstring の『小摂動』記述を再検証せよ"
+        )
 
     def test_canary_zero_weight_matches_no_restraint(self) -> None:
         """対照: weight=0 でベースライン (拘束なし) へ復帰 (摂動が拘束由来であることの確認)。"""
@@ -307,5 +319,7 @@ class TestBondRestraintHeadlessCanary:
             rwp0, d_none, _ = self._run(tmp0, None)
         with tempfile.TemporaryDirectory() as tmpz:
             rwp_z, d_zero, _ = self._run(tmpz, 2.3, weight=0.0)
-        assert d_zero == pytest.approx(d_none, abs=1.0e-9)
-        assert rwp_z == pytest.approx(rwp0, abs=1.0e-6)
+        # weight=0 は拘束なしと物理的に等価。同一マシンでは決定論だが、cross-machine の
+        # 総和順差にも耐えるよう物理スケールの許容で照合する (< 摂動サイズ 0.055 Å の 1/100)。
+        assert d_zero == pytest.approx(d_none, abs=5.0e-4)
+        assert rwp_z == pytest.approx(rwp0, abs=1.0e-3)
