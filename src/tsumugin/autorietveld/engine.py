@@ -706,7 +706,7 @@ def _apply_initial_occupancies(g2phases, occupancies: Mapping[str, Mapping[str, 
 
 
 def _apply_bond_restraints(gpx, g2phases, bond_restraints) -> None:
-    """相名→結合距離ソフト拘束を GSAS-II Bond restraint として登録する (O–H/D 漂流防止)。
+    """相名→結合距離ソフト拘束を GSAS-II Bond restraint として登録する (O–H/D 漂流防止の意図)。
 
     ``ph.addDistRestraint`` は**現在座標**で origin×target の距離が ``[bond/factor, bond*factor]`` に入る
     対を探して登録するため、**初期座標が理想幾何のうちに呼ぶ**必要がある (呼出は精密化開始前)。
@@ -716,6 +716,19 @@ def _apply_bond_restraints(gpx, g2phases, bond_restraints) -> None:
     **weight は相単位**: GSAS の ``setDistRestraintWeight`` が相全体の wtFactor を設定するため、同一相の
     複数 spec で異なる weight を与えても**最後に指定された値**が相全体に適用される (per-bond 重みは不可)。
     通常は同一相の全 spec に同じ weight を渡す。既定 1000.0。
+
+    ⚠ **本バージョンの GSAS-II では headless 最小二乗で距離拘束として機能しない** (Issue #112,
+    PbSO4 統制実験で確定)。``_apply_chem_comp_restraints`` と同根: ``GSASIIstrMath.errRefine`` が
+    penalty 残差を ``if len(pVals) and dlg:`` (L5203) でゲートし headless (dlg=None) では χ² から
+    除外する。``penaltyFxn``/``penaltyDeriv`` は Bond/Angle/ChemComp を共有処理するため Bond も
+    同じゲート下。ChemComp が完全不動なのに対し Bond は HessRefine 経由 (Vec/Hess は非ゲート) で
+    **小さな飽和摂動**を注入するが、距離ターゲットには追従しない (実測: ターゲット 1.9/2.3 Å で
+    最終 S–O2 がビット同一・データ値近傍に留まる = target-invariant) — 距離拘束としては非機能で、
+    むしろ Rwp を僅かに悪化させる。よって**登録はするが拘束効果は期待しないこと**。NaCuHCF の
+    「ND 18→14.7% 頑健改善」(PR #42) は bond restraint でなく水 O/D の **U (ADP) 自由精密化** が
+    主因だった (memo [nacuhcf-dh-determinability] と整合)。GSAS-II 更新で修復された場合に検知する
+    カナリアが ``tests/autorietveld/test_charge_constraint_gsas.py::TestBondRestraintHeadlessCanary``
+    (target-invariance が破れたら fail → 本 caveat と依存機能を再検証する)。
     """
     if not bond_restraints:
         return
