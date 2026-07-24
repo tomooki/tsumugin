@@ -88,6 +88,11 @@ class PhaseInstance:
     occupancies: Mapping[str, float] = field(default_factory=dict)
     # 【追加フィールド】: 相ライフサイクル。末尾・既定 None で後方互換を保証 (REQ-404 非破壊追加) 🔵
     lifecycle: PhaseLifecycle | None = None
+    # 【追加フィールド (Issue #130)】: 実結晶構造 CIF へのパス。末尾・既定 None で非破壊追加。
+    #   ``GSASIIBackend`` は structure_ref があれば実 CIF を add_phase し格子だけ上書きする
+    #   (無ければ従来のプレースホルダ CIF)。``SimulatedBackend`` は本フィールドを無視する
+    #   (hkl_table を phase_ref で引くため影響なし = 後方互換)。🔵
+    structure_ref: str | None = None
 
     def with_updates(self, **changes) -> "PhaseInstance":
         """変更を適用した新インスタンスを返す。自身は不変。"""

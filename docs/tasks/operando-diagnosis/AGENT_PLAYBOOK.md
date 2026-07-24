@@ -256,6 +256,27 @@ align_echem("K-10.mpr", offset_s=22.1, interval_s=283.0, n_frames=247)
   (Rwp が一致度の検定量に変わる)。採用判断は人間と合意する。
 - `alkali_x_xrd` の basis は**重量分率を式量で割ったモル平均** (Scale でも wt% 単純平均でもない)。
 
+#### J10 固溶体 vs 二相判別 (FR-313) — **転移域の描像を確定する前に**
+
+ある区間で格子が動く/相分率が動くように見えるとき、それが**固溶体** (単相の格子が連続変化)
+か**二相反応** (端成分 2 相の分率変化) かは Rwp を見比べても決まらない (両モデルが近い Rwp =
+僅差)。`discriminate` に判定させる:
+
+```
+discriminate(series={"data_paths": [...]} または {two_theta, intensities},
+             initial_phases=[{"phase_ref": "...", "lattice": {...}, "structure_ref": "<CIF>"}],
+             frame_range=[start, end], data_format="XYE",
+             config={"nested_arbitration": {}})   # 僅差を nested 物理尤度で再裁定 (#76) するとき
+```
+
+- **`structure_ref`** (実 CIF) を各相に入れる (`identify_and_add_phase`/`convert_pattern` の出力)。
+  無いと格子/scale のみの判別 (プレースホルダ構造)。端成分 2 相は**同構造・別格子**が前提
+  (`phase_ref` 共有)、異構造 2 相はスコープ外。
+- `verdict` が `undecided` のとき**確定を主張しない** — `escalations` に理由 (僅差/両仮説高 R/
+  比較不能)。僅差なら `config.nested_arbitration` を付けて再裁定を試し、`adjudicated_by` が
+  `nested`/`laplace` になり `nested_delta_evidence` (BIC 等価スケール) で解消できたか読む。
+  それでも undecided なら人間の確認を要求する (**提案≠適用**)。
+
 ### 2.4 改訂は承認を挟む
 
 相の追加/除外・対称性変更・セル解放方針の変更は**人間の承認後に適用**し、

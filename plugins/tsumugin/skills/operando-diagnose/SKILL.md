@@ -39,6 +39,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | `alkali_budget` | クーロメトリー整合 (J9, FR-318) | `.mpr` + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標。`charge_constraint` 経由で `alkali_x_xrd` vs `alkali_x_echem` の乖離 = 不可逆容量/相集合誤りの独立検出器 |
 | `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
 | `auto_rietveld` | 単一フレーム再フィット | `residual_report` + 出版値 (重量分率 ± esd・`cell_esd`) 同梱 |
+| `discriminate` | 固溶体 vs 二相判別 (FR-313, J10) | 1 区間を単相・格子連続 (A) と端成分 2 相・分率変化 (B) の 2 仮説で精密化し `verdict` (`solid_solution`/`two_phase`/`undecided`) + `delta_evidence` + `adjudicated_by` + `nested_delta_evidence`。僅差は nested 物理尤度で再裁定 (#76) |
 
 **②は判断しない・返すだけ**。判断はあなたがする。
 
@@ -318,6 +319,30 @@ wt% かで交差位置が動く。**Scale から転移温度を出さないこ�
 > 実測ではそれが**転移ドーム頂点の直前 (125-130) = 報告の主要値そのもの**だった。
 
 空 dict = その精密化から値が得られなかった (共分散なし/未収束) の意味で、**esd=0 ではない**。
+
+### 8. 固溶体 vs 二相反応を判別する (J10, FR-313) — **転移域の描像を確定する前に**
+
+ある区間で格子が動く/相分率が動くように見えるとき、それが **固溶体** (単相の格子が連続変化)
+なのか **二相反応** (端成分 2 相の分率が変化) なのかは、Rwp を見比べても決まらない
+(両モデルが近い Rwp を出す = 僅差)。`discriminate` に判定させる。
+
+```
+discriminate(
+    series={"data_paths": [...frame files...], },  # または {two_theta, intensities}
+    initial_phases=[{"phase_ref": "...", "lattice": {...}, "structure_ref": "<CIF パス>"}],
+    frame_range=[start, end],
+    data_format="XYE",              # data_paths のとき
+    config={"nested_arbitration": {}},   # 僅差を nested 物理尤度で再裁定 (#76) するなら付ける
+)
+```
+
+- **`structure_ref`** (実 CIF パス) を各相に入れる。`identify_and_add_phase` の出力 CIF や
+  `convert_pattern` の出力を渡せる。入れないと格子/scale のみの判別 (プレースホルダ構造) になる。
+- 端成分 2 相は **同構造・別格子** が前提 (`phase_ref` 共有)。異構造 2 相反応はスコープ外。
+- `verdict` が `undecided` のときは **確定を主張しない**。`escalations` に理由 (僅差/両仮説高 R/
+  比較不能) が入る。僅差なら `config.nested_arbitration` を付けて再裁定を試す —
+  `adjudicated_by` が `nested`/`laplace` になり `nested_delta_evidence` (BIC 等価スケール) で
+  解消できたか読む。それでも undecided なら人間の確認を要求する。
 
 ## 禁止事項
 

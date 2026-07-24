@@ -108,6 +108,28 @@ def _write_xye(
     path.write_text(rows + "\n", encoding="utf-8")
 
 
+def _apply_cell(g2ph, lattice: LatticeParams) -> None:
+    """実 CIF から読んだ相の単位胞長 (a/b/c) を warm-start 格子へ上書きする (Issue #130)。
+
+    ``add_phase`` が実構造 (原子/空間群) を保持したまま、``General.Cell`` の**長さ 3 成分と
+    体積のみ**を ``lattice`` の a/b/c へ置換する。**角度 (α/β/γ) は CIF から読んだ値を保持する** —
+    discrimination は a/b/c のみ解放し角度を一切変えないため、warm-start 格子側の角度
+    (JSON 未指定時は既定 90°) で単斜/三斜 CIF の正しい角を潰さないための防御。
+
+    ⚠ これは CIF 読込後の**事後変異**であり、GSAS-II の ``add_phase(cell=...)`` (phasefile が
+    None のスクラッチ構築時のみ有効な引数) とは別物。CIF-backed 相の格子を差し替える正規 API が
+    scriptable に無いため、``General.Cell`` を直接書く (体積は ``calc_V(cell2A(...))`` で再計算)。
+    """
+    from GSASII import GSASIIlattice as G2lat  # noqa: PLC0415 (遅延 import)
+
+    # 【角度は CIF 由来を保持】: discrimination は a/b/c のみ解放するので角度上書きは不要かつ危険
+    #   (単斜/三斜 CIF で JSON 未指定角の既定 90° が正しい角を潰す, レビュー指摘)。
+    existing = g2ph.data["General"]["Cell"]
+    cell = [lattice.a, lattice.b, lattice.c, existing[4], existing[5], existing[6]]
+    g2ph.data["General"]["Cell"][1:7] = cell
+    g2ph.data["General"]["Cell"][7] = G2lat.calc_V(G2lat.cell2A(cell))
+
+
 def _write_cif(path: Path, name: str, lattice: LatticeParams) -> None:
     """P m m m・Ni 1 原子の簡約 CIF を書き出す (モジュール docstring 参照)。"""
     cif = f"""data_{name}
@@ -312,11 +334,23 @@ class GSASIIBackend:
     def _add_phases(self, gpx, hist, phases: Sequence[PhaseInstance], tmp_path: Path):
         g2phases = []
         for i, phase in enumerate(phases):
-            cif = tmp_path / f"phase{i}.cif"
-            _write_cif(cif, f"phase{i}", phase.lattice)
-            g2ph = gpx.add_phase(
-                str(cif), phasename=f"phase{i}", histograms=[hist], fmthint="CIF"
-            )
+            if phase.structure_ref is not None:
+                # 【実 CIF 分岐 (Issue #130)】: 実結晶構造 (原子/空間群/参照セル) を読み、
+                #   格子だけ warm-start 値へ上書きする (discrimination の格子解放を反映)。
+                g2ph = gpx.add_phase(
+                    str(phase.structure_ref),
+                    phasename=f"phase{i}",
+                    histograms=[hist],
+                    fmthint="CIF",
+                )
+                _apply_cell(g2ph, phase.lattice)
+            else:
+                # 【従来フォールバック】: structure_ref なしはプレースホルダ CIF (格子/scale 判別)。
+                cif = tmp_path / f"phase{i}.cif"
+                _write_cif(cif, f"phase{i}", phase.lattice)
+                g2ph = gpx.add_phase(
+                    str(cif), phasename=f"phase{i}", histograms=[hist], fmthint="CIF"
+                )
             hap = g2ph.getHAPvalues(hist)
             hap["Scale"][0] = float(phase.scale)
             g2phases.append(g2ph)

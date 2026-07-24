@@ -621,3 +621,26 @@ def test_curvature_value_equality_supports_result_comparison():
         hessian=r1.curvature.hessian * 2.0,
     )
     assert r1.curvature != other
+
+
+def test_structure_ref_is_ignored_by_simulated_backend():
+    # 【Issue #130 L1】: SimulatedBackend は PhaseInstance.structure_ref を無視する
+    #   (hkl_table を phase_ref で引くため影響なし = 後方互換)。structure_ref の有無で
+    #   refine 結果がビット同一であることを確認 (変異: 万一参照したら chi2/phases が変わる)。
+    backend = SimulatedBackend(peak_fwhm=0.2)
+    tt = _grid()
+    truth = _phase(a=5.0, scale=2.0)
+    y = backend.simulate((truth,), tt)
+    start = _phase(a=5.0, scale=1.0)
+    start_with_ref = start.with_updates(structure_ref="/nonexistent/phantom.cif")
+    free = frozenset({param_name(0, "scale"), param_name(0, "lattice.a")})
+    r_plain = backend.refine(
+        RefinementModel(phases=(start,), free_params=free, two_theta=tt, intensity=y)
+    )
+    r_ref = backend.refine(
+        RefinementModel(phases=(start_with_ref,), free_params=free, two_theta=tt, intensity=y)
+    )
+    assert r_ref.chi2 == r_plain.chi2
+    assert r_ref.rwp == r_plain.rwp
+    assert r_ref.phases[0].scale == r_plain.phases[0].scale
+    assert r_ref.phases[0].lattice.a == r_plain.phases[0].lattice.a
