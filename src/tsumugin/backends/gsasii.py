@@ -108,6 +108,21 @@ def _write_xye(
     path.write_text(rows + "\n", encoding="utf-8")
 
 
+def _apply_cell(g2ph, lattice: LatticeParams) -> None:
+    """実 CIF から読んだ相の単位胞を warm-start 格子へ上書きする (Issue #130)。
+
+    ``add_phase`` が実構造 (原子/空間群) を保持したまま、``General.Cell`` の 6 定数と体積のみを
+    ``lattice`` へ置換する (GSAS-II 自身が ``add_phase(cell=...)`` で行う操作と同じ; L1423-1424)。
+    格子解放時の精密化は空間群の対称拘束を尊重するため、CIF の対称と整合する格子を渡すこと
+    (discrimination は端成分で phase_ref=構造を共有し a/b/c のみ解放するので整合する)。
+    """
+    from GSASII import GSASIIlattice as G2lat  # noqa: PLC0415 (遅延 import)
+
+    cell = [lattice.a, lattice.b, lattice.c, lattice.alpha, lattice.beta, lattice.gamma]
+    g2ph.data["General"]["Cell"][1:7] = cell
+    g2ph.data["General"]["Cell"][7] = G2lat.calc_V(G2lat.cell2A(cell))
+
+
 def _write_cif(path: Path, name: str, lattice: LatticeParams) -> None:
     """P m m m・Ni 1 原子の簡約 CIF を書き出す (モジュール docstring 参照)。"""
     cif = f"""data_{name}
@@ -312,11 +327,23 @@ class GSASIIBackend:
     def _add_phases(self, gpx, hist, phases: Sequence[PhaseInstance], tmp_path: Path):
         g2phases = []
         for i, phase in enumerate(phases):
-            cif = tmp_path / f"phase{i}.cif"
-            _write_cif(cif, f"phase{i}", phase.lattice)
-            g2ph = gpx.add_phase(
-                str(cif), phasename=f"phase{i}", histograms=[hist], fmthint="CIF"
-            )
+            if phase.structure_ref is not None:
+                # 【実 CIF 分岐 (Issue #130)】: 実結晶構造 (原子/空間群/参照セル) を読み、
+                #   格子だけ warm-start 値へ上書きする (discrimination の格子解放を反映)。
+                g2ph = gpx.add_phase(
+                    str(phase.structure_ref),
+                    phasename=f"phase{i}",
+                    histograms=[hist],
+                    fmthint="CIF",
+                )
+                _apply_cell(g2ph, phase.lattice)
+            else:
+                # 【従来フォールバック】: structure_ref なしはプレースホルダ CIF (格子/scale 判別)。
+                cif = tmp_path / f"phase{i}.cif"
+                _write_cif(cif, f"phase{i}", phase.lattice)
+                g2ph = gpx.add_phase(
+                    str(cif), phasename=f"phase{i}", histograms=[hist], fmthint="CIF"
+                )
             hap = g2ph.getHAPvalues(hist)
             hap["Scale"][0] = float(phase.scale)
             g2phases.append(g2ph)

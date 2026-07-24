@@ -321,3 +321,112 @@ def test_staged_engine_runs_on_gsasii_backend():
     assert report.metrics.rwp < 20.0
     assert report.final_phases[0].lattice.a == pytest.approx(4.0, abs=0.01)
     assert ledger.verify()
+
+
+# --- Issue #130 L2: structure_ref 実 CIF 分岐 ---
+
+_PBSO4_CIF = "docs/benchmark/testdata/PbSO4-Wyckoff.cif"
+
+
+def _pbso4_present() -> bool:
+    from pathlib import Path
+
+    return Path(_PBSO4_CIF).exists()
+
+
+@pytest.mark.gsas
+@pytest.mark.skipif(not _pbso4_present(), reason="PbSO4 CIF 未取得")
+def test_structure_ref_loads_real_cif_atoms_not_placeholder():
+    # 【Issue #130 L2】: structure_ref を与えると _write_cif の Ni 1 原子プレースホルダでなく
+    #   実 CIF の原子集合 (PbSO4 = Pb/S/O 複数原子) が読まれることを確認 (add_phase 経路)。
+    from GSASII import GSASIIscriptable as G2sc
+
+    backend = GSASIIBackend()
+    # 実 CIF の格子 (a=8.48,b=5.40,c=6.96 orthorhombic) を渡す
+    real = PhaseInstance(
+        phase_ref="pbso4",
+        lattice=LatticeParams(8.48, 5.398, 6.958),
+        scale=1.0,
+        structure_ref=_PBSO4_CIF,
+    )
+    # simulate 経由で add_phase が走る。プレースホルダなら Ni 1 原子、実 CIF なら Pb/S/O 複数。
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        from tsumugin.backends.gsasii import _write_instprm
+
+        instprm = Path(tmp) / "i.instprm"
+        _write_instprm(instprm, backend.wavelength)
+        gpx = G2sc.G2Project(newgpx=str(Path(tmp) / "s.gpx"))
+        hist = gpx.add_simulated_powder_histogram(
+            "t", str(instprm), 15.0, 70.0, Tstep=0.05
+        )
+        backend._add_phases(gpx, hist, (real,), Path(tmp))
+        ph = gpx.phases()[0]
+        elements = {a.element for a in ph.atoms()}
+    assert "Pb" in elements and "S" in elements and "O" in elements
+    assert "Ni" not in elements  # プレースホルダでない
+
+
+@pytest.mark.gsas
+@pytest.mark.skipif(not _pbso4_present(), reason="PbSO4 CIF 未取得")
+def test_structure_ref_cell_is_overridden_to_warmstart_lattice():
+    # 【Issue #130 L2】: 実 CIF を読みつつ格子は phase.lattice へ上書きされる (warm-start 反映)。
+    from GSASII import GSASIIscriptable as G2sc
+
+    backend = GSASIIBackend()
+    import tempfile
+    from pathlib import Path
+
+    # CIF 真値 (8.48) から離した格子を渡し、上書きされることを確認
+    warm = PhaseInstance(
+        phase_ref="pbso4",
+        lattice=LatticeParams(8.60, 5.50, 7.05),
+        structure_ref=_PBSO4_CIF,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        from tsumugin.backends.gsasii import _write_instprm
+
+        instprm = Path(tmp) / "i.instprm"
+        _write_instprm(instprm, backend.wavelength)
+        gpx = G2sc.G2Project(newgpx=str(Path(tmp) / "s.gpx"))
+        hist = gpx.add_simulated_powder_histogram(
+            "t", str(instprm), 15.0, 70.0, Tstep=0.05
+        )
+        backend._add_phases(gpx, hist, (warm,), Path(tmp))
+        cell = gpx.phases()[0].get_cell()
+    assert cell["length_a"] == pytest.approx(8.60, abs=1e-3)
+    assert cell["length_b"] == pytest.approx(5.50, abs=1e-3)
+    assert cell["length_c"] == pytest.approx(7.05, abs=1e-3)
+
+
+@pytest.mark.gsas
+@pytest.mark.skipif(not _pbso4_present(), reason="PbSO4 CIF 未取得")
+def test_structure_ref_refine_recovers_cell_on_real_structure():
+    # 【Issue #130 L2】: 実構造 PbSO4 を用いた refine が実際に走り、摂動格子から真セルへ
+    #   収束する (実多原子相でも cell/scale 解放が汎用的に機能することの end-to-end 確認)。
+    backend = GSASIIBackend()
+    tt = np.arange(15.0, 70.0, 0.05)
+    truth = PhaseInstance(
+        phase_ref="pbso4",
+        lattice=LatticeParams(8.48, 5.398, 6.958),
+        scale=1.0,
+        structure_ref=_PBSO4_CIF,
+    )
+    y = backend.simulate((truth,), tt)
+    start = truth.with_updates(lattice=LatticeParams(8.52, 5.42, 6.99))  # 摂動
+    fitted = backend.refine(
+        RefinementModel(
+            phases=(start,),
+            free_params=frozenset(
+                {param_name(0, "lattice.a"), param_name(0, "lattice.b"),
+                 param_name(0, "lattice.c"), param_name(0, "scale")}
+            ),
+            two_theta=tt,
+            intensity=y,
+        ),
+        max_cycles=8,
+    )
+    assert fitted.phases[0].lattice.a == pytest.approx(8.48, abs=0.02)
+    assert fitted.phases[0].lattice.c == pytest.approx(6.958, abs=0.02)
