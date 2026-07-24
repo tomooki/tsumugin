@@ -1051,6 +1051,10 @@ def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str
     陳述; 早期 return)、**多相で su==0.0 は「決まっていない」**ので ``None`` に倒す
     (`_weight_esd_or_none`)。旧実装は `_finite_or_zero` で全段 revert フレームの su を ``0.0`` として
     出版経路へ流していた (実測 fr213/fr224 が直前フレームと分率一致・su=0.0 = 無限精度の捏造)。
+
+    **値側も洗浄しない (Issue #107 事象2)**: 分率の値 (pair[0]) が非有限なら捏造 0.0 に丸めず、
+    正規化 wtSum を共有する組全体を「出版値なし」({}, {}) へ縮退する (ComputeMassFracs 例外
+    経路と同じ縮退)。空 dict は消費側 (insitu/model.py) が「未計算」として扱う既存契約。
     """
     if not g2phases or not g2hists:
         return {}, {}
