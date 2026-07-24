@@ -245,7 +245,7 @@ ExternalChannel:
 - FR-303: changepoint検出 — 残差時系列・格子微分・新規未マッチピークの複合指標。
 - FR-304: changepoint近傍のみ残差ピークに対する局所木探索。
 - FR-305: 相ライフサイクル(birth/death+確信度、ヒステリシスで点滅抑制)。
-- FR-306: 相トラジェクトリ、格子±σトラジェクトリ、R値時系列の出力。(v0.3.1 明確化: 出力形態は構造化データ (CSV + 仮説系譜) を第一級とし、グラフ描画は Web UI / 外部ツールに委譲する。格子 σ の出力欠落は機能ギャップとして Issue 管理。)
+- FR-306: 相トラジェクトリ、格子±σトラジェクトリ、R値時系列の出力。(v0.3.1 明確化: 出力形態は構造化データ (CSV + 仮説系譜) を第一級とし、グラフ描画は Web UI / 外部ツールに委譲する。) (v0.3.2 注記更新: 格子 σ 出力は Issue #66 で実装済み — `sequential/trajectory.py` の `a_sigma`/`b_sigma`/`c_sigma`/`sigma_source`。)
 
 ### FR-310 Operando電池モード
 
@@ -262,6 +262,15 @@ ExternalChannel:
   - CellConfig が未提供の場合は経験的推定モード — 実効吸収パラメータを弱restraintで精密化し、レポートに明示警告する。推定値から逆算した μt を提示し、CellConfig入力を促す。
   - 充放電に伴う電極の μ 変化(例: Na量変化)はフレーム依存の緩慢変化として平滑restraint付きで追跡可能とする。
   - 中性子ヒストグラムに対しては該当する吸収/多重散乱補正モデルを同一インターフェースで切替。
+- FR-318: **電気化学制約付き operando Rietveld (v0.3.2 追補 — 実装先行の欠番解消)** —
+  定電流充放電の実測積算電気量 Q(t) を可動アルカリ量の独立測定として使う。n_e = Q/m × M/F 変換で
+  per-frame の目標総アルカリ量 x_total(t) を組み、モード分岐 (diagnose[既定]/soft/fix/lock_fractions)
+  で占有率精密化に接続する。diagnose は制約を課さず x_XRD と x_echem の乖離・実行可能性
+  (feasibility = 多相域の不可逆容量検出) を報告のみ。fix は相間線形制約
+  Σ Zᵢ(xᵢ−x_total)·Scaleᵢ=0 を課す。複数アルカリ元素サイトは合算、x_XRD は式量 (FW) 除算の
+  モル平均。x₀ 校正は提案のみ (提案≠適用; 占有率が esd 付きで精密化されたときのみ x_refined)。
+  実装: `operando.coulometry` + `insitu.charge` + autorietveld シーダー群 (PR #111)。
+  ② は `alkali_budget` + `sequential_rietveld`/`anchored_sequential` の `charge_constraint` spec。
 
 ### FR-320 高温シーケンシャルモード
 

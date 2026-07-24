@@ -176,17 +176,21 @@ class EchemLoader(Protocol):
 
 
 class BiologicMprLoader:
-    """Biologic .mpr バイナリローダ (M3 では未実装スタブ)。
+    """Biologic .mpr バイナリローダの旧交換境界 (**実装は移管済み — 本クラスは使わないこと**)。
 
-    【機能概要】: EchemLoader の交換境界を満たすが、.mpr バイナリパーサは M3 スコープ外。
-    【実装方針】: 呼出時に NotImplementedError を送出し、中途半端な戻り値で沈黙しない。
-    【テスト対応】: TC-A03 (NotImplementedError) / TC-A04 (load シグネチャ) を通す。
-    🔵 信頼性レベル: interfaces.py L227-228 / REQ-008 に依拠。
+    【移管先 (Issue #71/#127)】: 実 .mpr パーサは ``tsumugin.interop.biologic.parse_mpr``
+      (galvani 遅延 import) + ``curve_from_mpr_data`` / ``align_frames``。② は ``align_echem``
+      ツール (mcp/echem_tools.py) から到達可能。本クラスは M3 期の ``EchemLoader`` Protocol
+      向けスタブで、後方互換のため型だけ残している (「.mpr は未実装」と誤読しないこと —
+      未実装なのは本クラス経由の経路のみ)。
+    【実装方針】: 呼出時に NotImplementedError で移管先を案内し、中途半端な戻り値で沈黙しない。
+    🔵 信頼性レベル: interfaces.py L227-228 / REQ-008 (歴史的) + Issue #127 項目 3。
     """
 
     def load(self, path: str) -> EchemData:
-        """.mpr 読込は M3 未実装。呼出時に NotImplementedError を送出する。"""
-        # 【未実装明示】: 交換境界は用意しつつ後続スコープであることを例外で示す 🔵
+        """.mpr 読込は本クラスでは提供しない。``interop.biologic.parse_mpr`` を使うこと。"""
+        # 【移管明示 (Issue #127)】: 死骸スタブの誤読 (「.mpr 未実装」) を防ぐため移管先を案内する 🔵
         raise NotImplementedError(
-            "BiologicMprLoader.load (.mpr バイナリ読込) は M3 では未実装です。"
+            "BiologicMprLoader.load は使われていません。実 .mpr 読込は "
+            "tsumugin.interop.biologic.parse_mpr (② align_echem ツール) へ移管済みです。"
         )

@@ -261,7 +261,9 @@ def test_read_echem_csv_non_numeric_cell_raises_explicit_error(tmp_path):
 
 
 def test_biologic_mpr_loader_load_raises_not_implemented():
-    # 【テスト目的】: 未実装機種ローダ (.mpr) が呼出で NotImplementedError を送出すること (TC-A03)
+    # 【テスト目的】: 旧交換境界スタブ (.mpr) が呼出で NotImplementedError を送出すること (TC-A03)。
+    #   ★ 実 .mpr パーサは interop.biologic.parse_mpr へ移管済み (Issue #71/#127) — この
+    #   スタブは後方互換で残す死骸で、「.mpr 未実装」の誤読防止に移管先を案内する (echem.py 参照)。
     # 【テスト内容】: Protocol 境界は用意しつつ未実装を明示し誤用時に沈黙しないことを検証
     # 【期待される動作】: BiologicMprLoader().load(path) が NotImplementedError
     # 🔵 信頼性: TC-202-04 / REQ-008 / interfaces.py L227-228 に直接依拠
