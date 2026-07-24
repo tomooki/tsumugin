@@ -94,8 +94,11 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     ),
     "nested (M5/FR-500)": (
         UNEXPOSED,
-        "Issue #76 と同時設計のため待機 (2026-07-17 スコープ判断)。EvidenceProblem.log_likelihood が "
-        "callable 必須で原理的に JSON 化不可 = 露出単位の再設計が要る。物理尤度配線 (FR-313) と一体で",
+        "Issue #76 で物理尤度配線を実装済み (2026-07-22)。旧障壁「log_likelihood が callable で "
+        "JSON 化不可」は nested.physical の内部構築化 (精密化状態→problem を ① 内で組む) により "
+        "原理的には解消したが、呼び手の discrimination (FR-313) 自体が ② に無く、"
+        "FrameSeries/PhaseInstance の JSON spec 設計 + 実データ backend 接続が前提。② 露出 "
+        "(discriminate ツール + nested オプトイン引数) は Issue #130 で追跡 (裁定力の獲得と露出設計は別作業)",
     ),
     "chem (FR-412)": (
         "compare_hypotheses",

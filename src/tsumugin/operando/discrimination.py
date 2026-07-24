@@ -26,23 +26,27 @@ Evidence Engine (bic 一次) で **固溶体 vs 二相反応** を判別する�
 **nested 裁定の配線 (Issue #65 / FR-313 / FR-122)**: ``config.nested_arbitration`` (既定 None) を
 ``ArbitrationConfig`` で与えるとオプトインで発動する。bic 一次判定が close_competitor (僅差) と
 判定したときのみ ``nested.arbitration.arbitrate`` (``full_nested=True`` 強制) で仮説 A/B のみを
-再裁定する。verdict の上書きは **三重ガード** を全て満たしたときのみ行う: ①両仮説の evidence 由来
-(``adjudicated_by``) が同一経路 (両方 nested 成功 または両方 Laplace 縮退) であること (片側 nested
-成功・片側 Laplace 縮退の混在は evidence のスケール [-logZ vs Σbic] が食い違い比較できないため
-undecided に留める、レビュー指摘) ②裁定後 ΔBIC が有限であること ③|ΔBIC_nested|>=close_threshold
-であること。三重ガードを満たさない場合は verdict を変更せず undecided のまま経路混在/未解消を
-escalations に正直に記録する (「〜としました」と誤って主張しない)。非僅差では nested を一切呼ばない
-(コスト抑制)。ReviewQueue への close_competitor 通知は再裁定後も維持する (FR-403「暫定裁定+要確認
-フラグ」・処理はブロックしない)。nested/EvidenceProblem は Σbic を BIC 対応値 (chi2=Σbic, k=0) と
-して渡す v1 サロゲートで、実 nested サンプラでの evidence は定数尤度近似 (-logZ=Σbic/2) となり
-Laplace フォールバック (=Σbic そのもの) とスケールが factor-2 で異なりうる粗い近似 (restraint 由来
-の物理事前分布/尤度の配線は Issue #76 で追跡)。**v1 サロゲートの限界**: 発動条件が
-|ΔBIC_bic|<close_threshold であるため、実 nested サンプラ経路 (-logZ=Σbic/2) では両辺が同一係数
-0.5 でスケールされるだけで close_threshold との大小関係は変わらず、僅差を数学的に解消できない。
-実運用経路での本裁定の主価値は「解消」ではなく **由来の記録と監査可能性**
-(adjudicated_by・nested_delta_evidence・nested_arbitration の保持) にある (Issue #76)。裁定が
-例外で完全に失敗しても (結果の展開・verdict 更新・escalation 組み立てを含め) bic 一次の
-close_competitor エスカレーションへ縮退する (例外化しない)。
+再裁定する。verdict の上書きは **三重ガード** を全て満たしたときのみ行う: ①両仮説の**実効経路**
+(``_EffectiveRoute`` の 3 値: nested 成功 / 実 Laplace / BIC フォールバック。``adjudicated_by``
+の 2 値では実 Laplace (-logZ スケール) と BIC フォールバック (Σbic スケール) の混在を見抜けず
+スケール違いを比較しうるため 3 値に細分化, Issue #76) が厳密一致すること ②裁定後 Δ が有限で
+あること ③|ΔBIC_nested|>=close_threshold であること。三重ガードを満たさない場合は verdict を
+変更せず undecided のまま経路混在/未解消を escalations に正直に記録する (「〜としました」と
+誤って主張しない)。非僅差では nested を一切呼ばない (コスト抑制)。ReviewQueue への
+close_competitor 通知は再裁定後も維持する (FR-403「暫定裁定+要確認フラグ」・処理はブロックしない)。
+
+**EvidenceProblem は物理尤度が既定 (Issue #76)**: ``config.physical_problem`` (既定
+``PhysicalProblemConfig()``) により区間 joint 物理尤度 problem (``nested.physical``: θ=フレーム別
+解放集合, logL=Σ-χ²/2 の backend 純評価, per-frame JᵀJ ブロック対角 Hessian, 精密化値中心の
+restraint 由来事前分布) を構築する。nested/実 Laplace 経路の Δ は **×2 の BIC 等価スケール**
+(BIC ≈ 2×(-logZ)) へ直してから close_threshold と比較するため、bic 僅差でも実曲率が判別可能な
+ケースは解消できる (受け入れ実証: ΔΣbic=0.35 → ΔBIC_nested≈+23 で真実確定)。物理構築の失敗は
+警告付きで v1 サロゲートへ縮退する。``physical_problem=None`` (escape hatch) では Σbic を
+BIC 対応値 (chi2=Σbic, k=0) として渡す **v1 定数尤度サロゲート**に退避し、その場合は発動条件と
+同一の close_threshold 判定に帰着して僅差を数学的に解消できない (主価値は adjudicated_by・
+nested_delta_evidence・nested_arbitration による由来の記録と監査可能性)。裁定が例外で完全に
+失敗しても (結果の展開・verdict 更新・escalation 組み立てを含め) bic 一次の close_competitor
+エスカレーションへ縮退する (例外化しない)。
 
 🔵 信頼性レベル: 契約は ``docs/design/m3-operando/interfaces.py`` L252-284、設計 D4
   (``docs/design/m3-operando/architecture.md`` L71-76)、``dataflow.md`` FR-313 シーケンス (L53-77)、
@@ -66,6 +70,7 @@ from ..model import Hypothesis, PhaseInstance, RefinementMetrics
 from ..multistart import MultistartConfig, MultistartEngine, MultistartResult
 from ..nested.arbitration import ArbitrationConfig, ArbitrationResult, arbitrate
 from ..nested.base import EvidenceProblem, PriorSpec
+from ..nested.physical import FrameState, PhysicalProblemConfig, build_physical_problem
 from ..nested.sampler import NestedBackend
 from ..selection.review_queue import EscalationReason, ReviewQueue
 from ..sequential.series import FrameSeries
@@ -113,10 +118,15 @@ class DiscriminationConfig:
     seq_max_cycles: int = 10  # 【逐次サイクル上限】: 区間内 direct refine の max_cycles 🟡
     # 【nested 裁定オプトイン (Issue #65 / FR-313 / FR-122)】: None (既定) は現行挙動不変。
     #   ArbitrationConfig を与えると close_competitor (僅差) のときのみ nested/Laplace 再裁定を発動する。
-    #   verdict 上書きは三重ガード (同一経路・有限性・閾値) を要する (module docstring 参照)。v1 サロゲート
-    #   は実 nested サンプラ経路で僅差を数学的に解消できない (発動条件と同一の close_threshold 判定に
-    #   帰着するため)。主価値は解消でなく由来の記録・監査可能性 (Issue #76 で物理尤度配線を追跡)。🟡
+    #   verdict 上書きは三重ガード (実効経路一致・有限性・閾値) を要する (module docstring 参照)。
+    #   physical_problem (下記, 既定 ON) の物理尤度経路では実曲率により僅差を解消できる (Issue #76)。
+    #   physical_problem=None の v1 サロゲート退避時は解消不能で、主価値は由来の記録・監査可能性。🟡
     nested_arbitration: ArbitrationConfig | None = None
+    # 【物理 EvidenceProblem (Issue #76)】: nested 裁定発動時に v1 Σbic サロゲートでなく区間 joint
+    #   物理尤度 problem (`nested.physical.build_physical_problem`) を構築する (既定 ON)。None で
+    #   v1 サロゲートへ明示退避する (互換 escape hatch)。構築に失敗した場合は自動でサロゲートへ
+    #   縮退し warning で明示する (判別を止めない)。🟡
+    physical_problem: PhysicalProblemConfig | None = PhysicalProblemConfig()
 
 
 @dataclass(frozen=True)
@@ -169,6 +179,9 @@ class _IntervalOutcome:
     # 【有限フレーム集合】: Σbic に寄与した有限フレーム index の集合。件数だけでなく「どのフレームが有限か」を
     #   保持し、両仮説が異なるフレーム部分集合で Σbic を計上する非対称比較を検出できるようにする 🔵
     finite_frames: frozenset[int]
+    # 【フレーム精密化状態 (Issue #76)】: 有限フレームの精密化済み状態 (phases/free/曲率/データ) を
+    #   frame_index 昇順で保持し、物理 EvidenceProblem 構築 (`nested.physical`) の材料にする 🟡
+    frame_states: tuple[FrameState, ...] = ()
 
 
 def discriminate_interval(
@@ -335,6 +348,7 @@ def discriminate_interval(
             nested_outcome = _run_nested_arbitration(
                 hyp_single, hyp_two_phase, seq_a, seq_b,
                 config.close_threshold, config.nested_arbitration, active_nested_backend, ledger,
+                backend=backend, physical_config=config.physical_problem,
             )
             adjudicated_by = nested_outcome.adjudicated_by
             nested_delta_evidence = nested_outcome.delta
@@ -345,7 +359,7 @@ def discriminate_interval(
                 #   維持し「要確認フラグ」として人間に残す (処理はブロックしない・close_competitor
                 #   エスカレーションは取り下げない)。
                 verdict = nested_outcome.provisional_verdict
-            nested_warnings = nested_outcome.result.warnings
+            nested_warnings = nested_outcome.result.warnings + nested_outcome.problem_warnings
             escalations = escalations + (
                 _nested_escalation_message(nested_outcome, verdict),
             )
@@ -502,6 +516,7 @@ def _refine_interval(
     endpoint_phases: dict[int, tuple[PhaseInstance, ...]] = {}
     endpoint_results: dict[int, RefinementResult] = {}
     finite_frames: set[int] = set()
+    frame_states: list[FrameState] = []
 
     for i in range(start, end + 1):
         intensity = np.asarray(series.intensities[i], dtype=float)
@@ -521,6 +536,18 @@ def _refine_interval(
             if warm_start:
                 warm = result.phases  # 【warm 更新】: 成功フレームのみ継承 (失敗は据え置き) 🔵
             finite_frames.add(i)  # 【有限フレーム記録】: どのフレームが Σbic に寄与したかを集合で保持 🔵
+            # 【物理 problem 材料 (Issue #76)】: 有限フレームの精密化済み状態を保持する (実解放集合 =
+            #   refine_suffixes 由来の free。model_suffixes の釣り合い DOF は evidence 用で実 DOF でない) 🟡
+            frame_states.append(
+                FrameState(
+                    frame_index=i,
+                    phases=result.phases,
+                    free_params=free,
+                    two_theta=two_theta,
+                    intensity=intensity,
+                    curvature=result.curvature,
+                )
+            )
         else:
             # 【非有限縮退】: Σbic に inf を混ぜず警告する (非有限を漏らさない) 🔵
             warnings.append(
@@ -540,6 +567,7 @@ def _refine_interval(
         endpoint_results=endpoint_results,
         warnings=tuple(warnings),
         finite_frames=frozenset(finite_frames),
+        frame_states=tuple(frame_states),
     )
 
 
@@ -792,7 +820,8 @@ class _NestedArbitrationOutcome:
     【機能概要】: ``arbitrate`` の生結果 (``ArbitrationResult``)・nested/Laplace 裁定後の
       ΔBIC 相当 (single−two_phase)・統合 adjudicated_by・その ΔBIC から導いた暫定 verdict を束ねる。
     【三重ガード (レビュー指摘)】: ``route_consistent`` (両仮説の evidence 由来が同一経路か) を
-      per-hypothesis の ``single_adjudicated_by``/``two_phase_adjudicated_by`` から明示的に保持する。
+      per-hypothesis の**実効経路** ``single_route``/``two_phase_route`` (3 値, Issue #76) から
+      明示的に保持する。
       ``provisional_verdict`` は ``_run_nested_arbitration`` が三重ガード (同一経路・有限性・閾値) を
       全て満たしたときのみ非 undecided になるよう構築済みで、呼び側 (``discriminate_interval``) は
       これをそのまま信頼して良い (undecided ならガードのいずれかに落ちたことを意味する)。
@@ -801,12 +830,35 @@ class _NestedArbitrationOutcome:
     """
 
     result: ArbitrationResult  # 【nested 裁定の生結果】: nested_ids・両仮説の再ランキングを保持
-    delta: float  # 【ΔBIC(nested)】: single の evidence − two_phase の evidence (bic と同一符号規約)
+    # 【ΔBIC 等価 (Issue #76)】: 実効経路が nested/実 Laplace (-logZ スケール) なら 2×Δvalue、
+    #   bic_fallback (Σbic スケール) / 経路混在なら raw Δvalue。bic と同一符号規約 (負= single 優位)
+    delta: float
     adjudicated_by: Literal["bic", "nested", "laplace"]  # 【裁定の由来 (両仮説で集約・報告用)】
     provisional_verdict: Literal["solid_solution", "two_phase", "undecided"]  # 【暫定 verdict】
-    route_consistent: bool  # 【三重ガード①】: 両仮説の evidence 由来 (adjudicated_by) が一致するか
-    single_adjudicated_by: Literal["bic", "nested", "laplace"]  # 【仮説 A の由来 (メッセージ用)】
-    two_phase_adjudicated_by: Literal["bic", "nested", "laplace"]  # 【仮説 B の由来 (メッセージ用)】
+    route_consistent: bool  # 【三重ガード①】: 両仮説の**実効経路**が厳密一致するか (Issue #76 で細分化)
+    single_route: _EffectiveRoute  # 【仮説 A の実効経路 (メッセージ用)】
+    two_phase_route: _EffectiveRoute  # 【仮説 B の実効経路 (メッセージ用)】
+    problem_warnings: tuple[str, ...] = ()  # 【物理 problem 構築のサロゲート縮退警告 (Issue #76)】
+
+
+def _surrogate_metrics(outcome: _IntervalOutcome) -> RefinementMetrics:
+    """区間 Σbic を BIC 対応値として運ぶ合成 metrics (chi2=Σbic, k=0, n=1)。
+
+    ``BICBackend``/``LaplaceBackend.score`` がこの metrics から Σbic をそのまま再現する
+    (bic 一次判定と厳密一致 = BIC フォールバック値の同一性が PR #75 ガード/メッセージングの前提)。
+    v1 サロゲート problem と物理 problem (Issue #76) の双方が **同一の** metrics を保持し、
+    BIC フォールバック経路の値を一致させる (実効経路検出 ``_effective_route`` もこの一致を使う)。
+
+    gof は消費者 (BICBackend.score / LaplaceBackend.score・score_problem) がいずれも読まない
+    dead フィールドのため、未使用を明示する nan を置く (レビュー指摘の経緯は v1 実装参照)。
+    """
+    return RefinementMetrics(
+        rwp=outcome.representative_rwp,
+        gof=float("nan"),
+        chi2=outcome.sum_bic,
+        n_obs=1,
+        n_params=0,
+    )
 
 
 def _build_evidence_problem(outcome: _IntervalOutcome, *, label: str) -> EvidenceProblem:
@@ -829,17 +881,7 @@ def _build_evidence_problem(outcome: _IntervalOutcome, *, label: str) -> Evidenc
     🟡 信頼性レベル: 実装裁量 (nested/laplace 既存契約 ``EvidenceProblem`` への Σbic 写像)。
     """
     sum_bic = outcome.sum_bic
-    metrics = RefinementMetrics(
-        rwp=outcome.representative_rwp,
-        # 【dead フィールド (レビュー指摘)】: gof はこのサロゲート経路の消費者 (BICBackend.score /
-        #   LaplaceBackend.score・score_problem) がいずれも読まない (chi2/n_params/n_obs のみ使用)。
-        #   RefinementMetrics の必須フィールドを満たすためだけの値であり、意味のある計算 (sqrt(Σbic) 等)
-        #   を割り当てるのは誤解を招くため未使用を明示する固定値 (nan) にする。
-        gof=float("nan"),
-        chi2=sum_bic,
-        n_obs=1,
-        n_params=0,
-    )
+    metrics = _surrogate_metrics(outcome)
     priors = (PriorSpec(param_name=f"discrimination.{label}.quality"),)
 
     def log_likelihood(theta: np.ndarray) -> float:
@@ -878,14 +920,80 @@ def _combine_adjudicated_by(
 
     【報告専用 (レビュー指摘)】: この集約値は ``DiscriminationResult.adjudicated_by`` の**報告**用の
       要約であり、verdict 上書きの可否判断 (三重ガード①「同一経路」) には使わない。経路一致判定は
-      ``_run_nested_arbitration`` が per-hypothesis の ``adjudicated_by`` を直接比較して行う
-      (混在時にここで "laplace" へ丸めてしまうと nested-nested / laplace-laplace / nested-laplace の
-      区別が失われ、誤って同一経路と判定されうるため)。
+      ``_run_nested_arbitration`` が per-hypothesis の**実効経路** (``_effective_route`` の 3 値,
+      Issue #76) を比較して行う (混在時にここで "laplace" へ丸めてしまうと経路の区別が失われ、
+      誤って同一経路と判定されうるため)。
     🟡 信頼性レベル: 実装裁量 (REQ-015 の adjudicated_by 明示を 2 仮説の集約値として表現)。
     """
     if single == "nested" and two_phase == "nested":
         return "nested"
     return "laplace"
+
+
+# 【実効経路 (Issue #76)】: adjudicated_by の 2 値 ("nested"/"laplace") では「実 Laplace
+#   (-logZ スケール)」と「Laplace の BIC フォールバック (Σbic スケール)」を区別できず、スケールの
+#   違う値を同一経路と誤認しうる (v1 の潜在欠陥)。3 値に細分化して三重ガード①の判定に用いる。
+_EffectiveRoute = Literal["nested", "laplace", "bic_fallback"]
+
+
+def _effective_route(
+    adjudicated_by: Literal["bic", "nested", "laplace"],
+    value: float,
+    problem: EvidenceProblem,
+) -> _EffectiveRoute:
+    """裁定 1 仮説分の実効経路を検出する (Issue #76 三重ガード①の細分化)。
+
+    nested 成功はそのまま "nested"。"laplace" は LaplaceBackend の文書化契約
+    「BIC フォールバック時は value が ``score(metrics).value`` に厳密一致する」を用いて
+    実 Laplace と BIC フォールバックを区別する (真の Laplace 値が偶然 BIC 値に一致する確率は
+    測度ゼロ・契約側で文書化済み)。想定外の "bic" (problem 欠損) は保守側の "bic_fallback"。
+    """
+    if adjudicated_by == "nested":
+        return "nested"
+    bic_value = float(_BIC.score(problem.metrics).value)
+    return "bic_fallback" if value == bic_value else "laplace"
+
+
+def _build_problems(
+    hyp_single: Hypothesis,
+    hyp_two_phase: Hypothesis,
+    seq_a: _IntervalOutcome,
+    seq_b: _IntervalOutcome,
+    backend: RefinementBackend,
+    physical_config: PhysicalProblemConfig | None,
+) -> tuple[dict[str, EvidenceProblem], tuple[str, ...]]:
+    """両仮説の EvidenceProblem を構築する (物理優先・失敗はサロゲート縮退 + 警告)。Issue #76。
+
+    physical_config が None (escape hatch) なら v1 Σbic サロゲートを用いる。物理構築の失敗
+    (ValueError: フレーム欠如・値を読めないパラメータ等) は例外化せず警告付きでサロゲートへ
+    縮退する (判別を止めない既存契約)。metrics はどちらの経路でも ``_surrogate_metrics`` で
+    同一 (BIC フォールバック値の一致 = PR #75 ガードの前提)。
+    """
+    warnings: list[str] = []
+    problems: dict[str, EvidenceProblem] = {}
+    for hyp, seq, label in (
+        (hyp_single, seq_a, "single"),
+        (hyp_two_phase, seq_b, "two_phase"),
+    ):
+        problem: EvidenceProblem | None = None
+        if physical_config is not None:
+            try:
+                problem = build_physical_problem(
+                    backend,
+                    seq.frame_states,
+                    metrics=_surrogate_metrics(seq),
+                    label=label,
+                    config=physical_config,
+                )
+            except ValueError as exc:
+                warnings.append(
+                    f"discrimination nested_arbitration: {label} の物理 EvidenceProblem 構築に"
+                    f"失敗したため v1 Σbic サロゲートへ縮退しました ({exc})。"
+                )
+        if problem is None:
+            problem = _build_evidence_problem(seq, label=label)
+        problems[hyp.id] = problem
+    return problems, tuple(warnings)
 
 
 def _run_nested_arbitration(
@@ -897,6 +1005,9 @@ def _run_nested_arbitration(
     arbitration_config: ArbitrationConfig,
     nested_backend: NestedBackend,
     ledger: Ledger | None,
+    *,
+    backend: RefinementBackend,
+    physical_config: PhysicalProblemConfig | None,
 ) -> _NestedArbitrationOutcome:
     """close_competitor の 2 仮説 (A/B) のみを対象に nested/Laplace 裁定を実行する (FR-122/313)。
 
@@ -907,22 +1018,22 @@ def _run_nested_arbitration(
       close_competitor 判定の再利用」)。``ledger`` は ``arbitrate`` へそのまま渡し、
       "arbitration"/"nested_run"/"nested_fallback" 記録は既存契約に委ねる (呼び側が別途
       "discrimination.nested_arbitration" を追記する)。
-    【三重ガード (レビュー指摘)】: ``ArbitratedHypothesis.adjudicated_by`` は per-hypothesis に
-      "nested"/"laplace" を明示する既存フィールドのため (``full_nested=True`` + 両 problem 供給下では
-      "bic" にはならない)、これを ``by_id`` から個別に取り出して比較するだけで「両仮説が同一経路か」
-      が判定できる (``arbitrate`` API 自体は変更しない)。①route_consistent (同一経路) ②delta が
-      有限 ③|delta|>=close_threshold の 3 条件を全て満たしたときのみ ``_nested_verdict_from_delta``
-      の非 undecided 結果を ``provisional_verdict`` として採用し、いずれか欠けたら undecided に
-      留める (呼び側 ``discriminate_interval`` は provisional_verdict をそのまま信頼できる)。
+    【三重ガード (Issue #76 で実効経路化)】: 経路一致判定は ``adjudicated_by`` の 2 値比較でなく
+      per-hypothesis の**実効経路** (``_effective_route``: nested / 実 Laplace / BIC フォールバック
+      の 3 値。"laplace" ラベルだけでは -logZ スケールと Σbic スケールの混在を見抜けないため) の
+      厳密一致で行う (``arbitrate`` API 自体は変更しない)。①route_consistent (実効経路一致)
+      ②delta が有限 ③|delta|>=close_threshold (delta は nested/実 Laplace 経路なら ×2 の BIC
+      等価スケール) の 3 条件を全て満たしたときのみ ``_nested_verdict_from_delta`` の非 undecided
+      結果を ``provisional_verdict`` として採用し、いずれか欠けたら undecided に留める
+      (呼び側 ``discriminate_interval`` は provisional_verdict をそのまま信頼できる)。
     🟡 信頼性レベル: 実装裁量 (nested/arbitration.arbitrate 既存契約への配線 + レビュー指摘の三重ガード)。
 
     @returns: nested 裁定の生結果・ΔBIC(nested)・集約 adjudicated_by・暫定 verdict・経路一致フラグを
       束ねた結果。
     """
-    problems = {
-        hyp_single.id: _build_evidence_problem(seq_a, label="single"),
-        hyp_two_phase.id: _build_evidence_problem(seq_b, label="two_phase"),
-    }
+    problems, problem_warnings = _build_problems(
+        hyp_single, hyp_two_phase, seq_a, seq_b, backend, physical_config
+    )
     # 【full_nested 強制】: close_threshold/temperature は呼び出し側設定を尊重しつつ、対象抽出だけを
     #   full_nested で上書きする 🟡
     effective_config = ArbitrationConfig(
@@ -940,13 +1051,32 @@ def _run_nested_arbitration(
     by_id = {a.ranked.hypothesis.id: a for a in arb.arbitrated}
     single_arb = by_id[hyp_single.id]
     two_phase_arb = by_id[hyp_two_phase.id]
-    delta = single_arb.ranked.evidence.value - two_phase_arb.ranked.evidence.value
+    raw_delta = single_arb.ranked.evidence.value - two_phase_arb.ranked.evidence.value
     adjudicated_by = _combine_adjudicated_by(single_arb.adjudicated_by, two_phase_arb.adjudicated_by)
 
-    # 【三重ガード①+②】: 経路一致 (同じ adjudicated_by) かつ delta が有限のときのみ、閉境界判定
-    #   (③) の結果を暫定 verdict として採用する。いずれかが欠けたら undecided に留める (呼び側で
-    #   verdict を上書きしない)。
-    route_consistent = single_arb.adjudicated_by == two_phase_arb.adjudicated_by
+    # 【実効経路検出 (Issue #76)】: adjudicated_by の 2 値でなく実効経路 3 値で一致を判定する。
+    #   「実 Laplace (-logZ)」と「BIC フォールバック (Σbic)」の混在はスケールが食い違い比較不能。
+    single_route = _effective_route(
+        single_arb.adjudicated_by, single_arb.ranked.evidence.value, problems[hyp_single.id]
+    )
+    two_phase_route = _effective_route(
+        two_phase_arb.adjudicated_by,
+        two_phase_arb.ranked.evidence.value,
+        problems[hyp_two_phase.id],
+    )
+    route_consistent = single_route == two_phase_route
+
+    # 【BIC 等価スケール (Issue #76)】: BIC ≈ 2×(-logZ) なので、-logZ スケールの経路 (nested /
+    #   実 Laplace) は ×2 で ΔBIC 相当に直してから close_threshold と比較する。bic_fallback は
+    #   既に BIC スケール (v1 と同一値 = 解消不能のまま正直に undecided)。経路混在は比較無効の
+    #   ため raw のまま監査記録にのみ残す。
+    if route_consistent and single_route != "bic_fallback":
+        delta = 2.0 * raw_delta
+    else:
+        delta = raw_delta
+
+    # 【三重ガード①+②】: 実効経路一致かつ delta が有限のときのみ、閉境界判定 (③) の結果を
+    #   暫定 verdict として採用する。いずれかが欠けたら undecided に留める。
     if route_consistent and math.isfinite(delta):
         provisional_verdict = _nested_verdict_from_delta(delta, close_threshold)
     else:
@@ -955,8 +1085,9 @@ def _run_nested_arbitration(
     return _NestedArbitrationOutcome(
         result=arb, delta=delta, adjudicated_by=adjudicated_by,
         provisional_verdict=provisional_verdict, route_consistent=route_consistent,
-        single_adjudicated_by=single_arb.adjudicated_by,
-        two_phase_adjudicated_by=two_phase_arb.adjudicated_by,
+        single_route=single_route,
+        two_phase_route=two_phase_route,
+        problem_warnings=problem_warnings,
     )
 
 
@@ -978,7 +1109,7 @@ def _nested_escalation_message(
     if not outcome.route_consistent:
         return (
             f"nested_arbitration: 仮説A/Bの evidence 由来が経路混在 (single="
-            f"{outcome.single_adjudicated_by}, two_phase={outcome.two_phase_adjudicated_by}) のため、"
+            f"{outcome.single_route}, two_phase={outcome.two_phase_route}) のため、"
             f"経路が非対称のため裁定値を比較できません。verdict は undecided のままとします。"
         )
     if outcome.provisional_verdict != "undecided":
@@ -994,7 +1125,14 @@ def _nested_escalation_message(
             f"(ΔBIC_nested={outcome.delta}) のため比較できません。evidence 計算の異常を疑って"
             f"ください。verdict は undecided のままとします。"
         )
+    # 【bic_fallback の明示 (Issue #76)】: 実曲率が無く v1 と同じ情報しか持たない縮退経路は、
+    #   「解消できない」ことが構造的 (発動条件と同一の Σbic 比較) である旨を添える。
+    route_note = (
+        " [BIC フォールバック = 実曲率なしのため構造的に解消不能]"
+        if outcome.single_route == "bic_fallback"
+        else ""
+    )
     return (
         f"nested_arbitration: {outcome.adjudicated_by} 再裁定でも僅差は解消されませんでした "
-        f"(ΔBIC_nested={outcome.delta:.4g}, verdict=undecided のまま)。"
+        f"(ΔBIC_nested={outcome.delta:.4g}, verdict=undecided のまま){route_note}。"
     )

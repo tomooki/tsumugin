@@ -873,7 +873,8 @@ def test_nested_arbitration_invoked_on_close_competitor_adds_provenance():
     # 【結果検証】: nested 裁定が実際に実行され (両ラベル呼び出し)、由来と暫定 verdict が反映される
     assert sorted(nested.calls) == ["single", "two_phase"]  # 両仮説とも nested 対象 🔵
     assert result.adjudicated_by == "nested"  # 【確認内容】: 裁定由来が判別結果に付く (要件3) 🔵
-    assert result.nested_delta_evidence == pytest.approx(50.0 - 200.0)  # single 優位で負 🔵
+    # 【Issue #76】: nested 経路 (-logZ スケール) は ×2 の BIC 等価スケールで記録される
+    assert result.nested_delta_evidence == pytest.approx(2.0 * (50.0 - 200.0))  # single 優位で負 🔵
     assert result.nested_arbitration is not None
     assert result.nested_arbitration.nested_ids == ("discrimination-single", "discrimination-two-phase")
     assert result.verdict == "solid_solution"  # 【確認内容】: 暫定裁定で undecided から更新 (FR-403) 🔵
@@ -1042,7 +1043,9 @@ def test_nested_arbitration_unresolved_message_omits_settled_wording():
     #   verdict を確定させたと誤解させる「〜としました」という文言を含まないことを確認
     #   (レビュー指摘: メッセージングの正直化)。
     backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
-    nested = FakeNestedBackend({"single": 100.0, "two_phase": 105.0})  # |Δ|=5 < close_threshold=10
+    # 【Issue #76】: nested 経路は ×2 の BIC 等価スケールで閾値比較されるため、
+    #   |2Δ|=8 < close_threshold=10 になる値を選ぶ (未解消メッセージの検証が目的)
+    nested = FakeNestedBackend({"single": 100.0, "two_phase": 104.0})
     config = _close_competitor_config(ArbitrationConfig())
 
     result = discriminate_interval(
@@ -1168,3 +1171,254 @@ def test_nested_arbitration_real_dynesty_smoke():
     assert set(result.nested_arbitration.nested_ids) == {
         "discrimination-single", "discrimination-two-phase",
     }
+
+
+# ===========================================================================
+# 5. 物理尤度配線 (Issue #76 / T4) — v1 サロゲートからの置換・実効経路検出・BIC 等価スケール
+# ===========================================================================
+
+
+class CaptureNestedBackend:
+    """run_with_fallback へ渡された EvidenceProblem 自体を捕捉するフェイク (Issue #76 T4)。"""
+
+    def __init__(self, values_by_label: dict[str, float], *, truncated: bool = False) -> None:
+        self._values = values_by_label
+        self._truncated = truncated
+        self.problems: dict[str, object] = {}
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        self.problems[problem.label] = problem
+        value = self._values[problem.label]
+        backend_name = "laplace" if self._truncated else "nested"
+        result = EvidenceResult(backend=backend_name, value=value)
+        return NestedOutcome(result=result, logz=-value, truncated=self._truncated)
+
+
+class EchoBicNestedBackend:
+    """value = BIC(problem.metrics) をそのまま返す (= Laplace の BIC フォールバック) フェイク。
+
+    実効経路検出 (Issue #76 T4) の "bic_fallback" 判定は「value が BIC 値に厳密一致する」
+    という LaplaceBackend の文書化契約を用いる。本フェイクはその状況を決定論的に再現する。
+    ``offset_by_label`` で片側だけ BIC からずらし「実 Laplace」経路を模せる。
+    """
+
+    def __init__(self, offset_by_label: dict[str, float] | None = None) -> None:
+        self._offsets = offset_by_label or {}
+        self.calls: list[str] = []
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        from tsumugin.evidence.ic import BICBackend
+
+        self.calls.append(problem.label)
+        value = float(BICBackend().score(problem.metrics).value)
+        value += self._offsets.get(problem.label, 0.0)
+        result = EvidenceResult(backend="laplace", value=value)
+        return NestedOutcome(result=result, logz=None, truncated=True)
+
+
+def test_physical_problem_is_default_for_nested_arbitration():
+    # 【テスト目的】: nested 裁定発動時、既定で v1 サロゲート (定数尤度・map_point 無し・ダミー 1 次元
+    #   事前分布) でなく物理 problem (map_point あり・frame 前置の実パラメータ事前分布) が渡ること。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    capture = CaptureNestedBackend({"single": 50.0, "two_phase": 200.0})
+    config = _close_competitor_config(ArbitrationConfig())
+
+    discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=capture,
+    )
+
+    problem = capture.problems["single"]
+    # 【確認内容】: 物理 problem の指紋 — map_point が精密化状態から埋まり、priors が frame 前置 🔵
+    assert problem.map_point is not None
+    names = [p.param_name for p in problem.priors]
+    assert all(n.startswith("frame") for n in names)
+    assert len(names) >= 4  # 4 フレーム × 解放パラメータ (>=1) — ダミー 1 次元でない
+    # 【確認内容】: 仮説 B 側も物理 problem 🔵
+    problem_b = capture.problems["two_phase"]
+    assert problem_b.map_point is not None
+
+
+def test_physical_problem_escape_hatch_none_restores_v1_surrogate():
+    # 【テスト目的】: DiscriminationConfig.physical_problem=None で v1 サロゲート (定数尤度・
+    #   ダミー 1 次元事前分布・map_point 無し) へ明示退避できること (互換 escape hatch)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    capture = CaptureNestedBackend({"single": 50.0, "two_phase": 200.0})
+    config = DiscriminationConfig(
+        nested_arbitration=ArbitrationConfig(), physical_problem=None
+    )
+
+    discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=capture,
+    )
+
+    problem = capture.problems["single"]
+    assert problem.map_point is None  # v1 サロゲートの指紋 🔵
+    assert [p.param_name for p in problem.priors] == ["discrimination.single.quality"]
+
+
+def test_nested_delta_is_bic_equivalent_scale():
+    # 【テスト目的】: nested 経路の Δ は BIC 等価スケール (×2) で閾値比較・記録されること
+    #   (ΔBIC ≈ 2Δ(-logZ))。raw Δ=-6 (閾値未満) でも 2Δ=-12 で solid_solution が確定する。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    nested = FakeNestedBackend({"single": 100.0, "two_phase": 106.0})
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=nested,
+    )
+
+    assert result.nested_delta_evidence == pytest.approx(2.0 * (100.0 - 106.0))
+    assert result.verdict == "solid_solution"  # |2Δ|=12 >= 10 で確定 🔵
+
+
+def test_bic_fallback_both_sides_stays_honest_undecided():
+    # 【テスト目的】: 両仮説とも Laplace の BIC フォールバック (実曲率なし = v1 と同じ情報しか無い)
+    #   のときは Δ=ΔΣbic (スケールしない) のままで、発動条件と同じ閾値未満 → undecided を維持する
+    #   (「解消できないものを解消したと主張しない」正直さの保存)。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    nested = EchoBicNestedBackend()  # 両側 BIC 値そのもの
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=nested,
+    )
+
+    assert result.verdict == "undecided"  # bic_fallback は僅差を解消できない (v1 と同じ) 🔵
+    assert result.nested_delta_evidence is not None
+    assert abs(result.nested_delta_evidence) < 10.0  # スケールされていない (ΔΣbic のまま) 🔵
+
+
+def test_route_detection_distinguishes_real_laplace_from_bic_fallback():
+    # 【テスト目的】: 片側「実 Laplace (-logZ スケール)」・片側「BIC フォールバック (Σbic スケール)」は
+    #   どちらも adjudicated_by=="laplace" になるため v1 の経路一致判定では見抜けない (潜在欠陥)。
+    #   実効経路検出 (value == BIC 値の文書化契約) がこの混在を経路非対称として undecided に留めること。
+    backend = ControlledFakeBackend(mode="close", chi2_single=100.0, chi2_two=100.0)
+    # single は BIC フォールバック (echo)、two_phase は BIC から +200 ずれた「実 Laplace」値
+    nested = EchoBicNestedBackend(offset_by_label={"two_phase": 200.0})
+    config = _close_competitor_config(ArbitrationConfig())
+
+    result = discriminate_interval(
+        backend, _fake_series(), (0, 3), (PHASE_A0,),
+        config=config, nested_backend=nested,
+    )
+
+    # raw Δ = -200 (閾値超) でも経路混在なので verdict を上書きしない
+    assert result.verdict == "undecided"
+    assert any("経路が非対称のため裁定値を比較できません" in m for m in result.escalations)
+
+
+# ---------------------------------------------------------------------------
+# Issue #76 受け入れ基準: bic 僅差だが実曲率 Laplace/nested は判別可能なケース
+# ---------------------------------------------------------------------------
+
+
+class _LaplaceOnlyNestedBackend:
+    """score_problem を実 LaplaceBackend へ直行させる (dynesty を回さない) 決定論バックエンド。
+
+    実 NestedBackend の「サンプラ未導入 → Laplace 縮退」経路と同一の実効経路
+    ("laplace" = 実曲率 Laplace) を、dynesty の導入有無に依存せず決定論的に踏む。
+    """
+
+    def __init__(self) -> None:
+        from tsumugin.nested.laplace import LaplaceBackend
+
+        self.laplace = LaplaceBackend()
+
+    def run_with_fallback(self, problem, *, ledger=None) -> NestedOutcome:
+        res = self.laplace.score_problem(problem)
+        return NestedOutcome(result=res, logz=None, truncated=True)
+
+
+def _two_phase_close_tie_setup() -> tuple[SimulatedBackend, FrameSeries, PhaseInstance]:
+    """bic 僅差になる真の二相系列 (broad peak で単相が肩代わり可能) を構成する。
+
+    真実 = 二相 (a=5.00 / a=5.04, fwhm=0.6 で重なる) の相分率が 0.3→0.7 と変化する 3 フレーム。
+    単相 (格子解放) 仮説 A が各フレームの平均ピーク位置をほぼ完全に肩代わりできるため
+    ΔΣbic < 1 (bic では判別不能) だが、実曲率 Laplace は実 DOF 差 (A: 4/フレーム vs
+    B: 2/フレーム) を curvature/事前分布体積で罰し ΔBIC_nested ≈ +23 で two_phase (真実) を
+    確定できる (探索記録: scratchpad/explore_t5b.py, 2026-07-22)。
+    """
+    backend = SimulatedBackend(peak_fwhm=0.6)
+    tt = np.arange(15.0, 80.0, 0.05)
+    frames = []
+    for i in range(3):
+        x = 0.3 + 0.4 * i / 2.0
+        y = backend.simulate(
+            (
+                PhaseInstance(phase_ref="P", lattice=LatticeParams(5.0, 5.0, 5.0), scale=1.0 - x),
+                PhaseInstance(phase_ref="P", lattice=LatticeParams(5.04, 5.04, 5.04), scale=x),
+            ),
+            tt,
+        )
+        frames.append(y)
+    series = FrameSeries(two_theta=tt, intensities=np.array(frames))
+    start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.02, 5.02, 5.02), scale=1.0)
+    return backend, series, start
+
+
+def test_acceptance_bic_tie_resolved_by_real_curvature_laplace():
+    # 【テスト目的 (Issue #76 受け入れ基準 1)】: bic 一次では僅差 (|ΔΣbic|<閾値) の真の二相データを、
+    #   実曲率 Laplace (物理尤度 + JᵀJ + restraint 由来事前分布) が two_phase (真実) に確定させる。
+    #   v1 サロゲートでは構造的に不可能だった「僅差の解消」の実証。
+    backend, series, start = _two_phase_close_tie_setup()
+    config = DiscriminationConfig(
+        multistart=MultistartConfig(n_starts=2), nested_arbitration=ArbitrationConfig()
+    )
+
+    result = discriminate_interval(
+        backend, series, (0, 2), (start,),
+        config=config, nested_backend=_LaplaceOnlyNestedBackend(),
+    )
+
+    # bic 一次は僅差だった (発動条件の確認 — これが無いと「元々判別できていた」ことになる)
+    assert abs(result.delta_evidence) < 10.0
+    # 実曲率 Laplace が真実 (two_phase) へ確定させた
+    assert result.verdict == "two_phase"
+    assert result.adjudicated_by == "laplace"
+    assert result.nested_delta_evidence is not None
+    assert result.nested_delta_evidence >= 10.0  # BIC 等価スケールで閾値以上 🔵
+    # 暫定裁定でも close_competitor の人間確認要求は維持される (FR-403)
+    assert any("としました" in m for m in result.escalations)
+
+
+def test_acceptance_case_is_deterministic():
+    # 【テスト目的 (Issue #76 受け入れ基準 2)】: Laplace 経路 (サンプラ不使用) はビット同一の決定論。
+    def _run() -> DiscriminationResult:
+        backend, series, start = _two_phase_close_tie_setup()
+        config = DiscriminationConfig(
+            multistart=MultistartConfig(n_starts=2), nested_arbitration=ArbitrationConfig()
+        )
+        return discriminate_interval(
+            backend, series, (0, 2), (start,),
+            config=config, nested_backend=_LaplaceOnlyNestedBackend(),
+        )
+
+    assert _run() == _run()
+
+
+@pytest.mark.nested
+def test_acceptance_real_dynesty_agrees_in_sign():
+    # 【テスト目的 (Issue #76 受け入れ基準 1/2)】: 実 dynesty (物理尤度・seed 固定・logz_err 併記) でも
+    #   同符号 (two_phase 優位, Δ>0) で裁定できる。予算 (maxcall) は NFR-103 打ち切り安全弁。
+    if importlib.util.find_spec("dynesty") is None:
+        pytest.skip("dynesty 未導入")
+
+    backend, series, start = _two_phase_close_tie_setup()
+    config = DiscriminationConfig(
+        multistart=MultistartConfig(n_starts=2), nested_arbitration=ArbitrationConfig()
+    )
+    real_nested = NestedBackend(config=NestedConfig(n_live=25, max_calls=3000, seed=0))
+
+    result = discriminate_interval(
+        backend, series, (0, 2), (start,),
+        config=config, nested_backend=real_nested,
+    )
+
+    # 完走すれば nested、時間上限等で縮退すれば laplace — いずれも実曲率経路で Δ>0 (two_phase 優位)
+    assert result.adjudicated_by in ("nested", "laplace")
+    assert result.nested_delta_evidence is not None
+    assert result.nested_delta_evidence > 0.0

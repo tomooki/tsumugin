@@ -396,6 +396,79 @@ def test_score_problem_fallback_map_point_dim_mismatch_hessian_dim():
     assert res.value == pytest.approx(backend.score(metrics).value)
 
 
+def test_score_problem_laplace_exact_for_linear_gaussian_1d():
+    # Issue #76/FR-125: 1D 線形ガウスは Laplace 近似が厳密に真の logZ と一致する。
+    # logL(theta) = -0.5*h*(theta-m)^2, prior=uniform[m-w/2, m+w/2] (十分広い)。
+    # true logZ = log( (1/w) * sqrt(2*pi/h) ) (尤度の積分 sqrt(2pi/h) x 事前密度 1/w)。
+    from tsumugin.nested.base import EvidenceProblem, PriorSpec
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    h = 4.0
+    m = 2.5
+    w = 10.0  # 十分広い一様事前 (尤度質量をほぼ全て含む)
+
+    def loglike(theta: np.ndarray) -> float:
+        return -0.5 * h * (float(theta[0]) - m) ** 2
+
+    problem = EvidenceProblem(
+        metrics=_metrics(1.0, 1, 50),
+        log_likelihood=loglike,
+        priors=(PriorSpec(param_name="a", kind="uniform", low=m - w / 2.0, high=m + w / 2.0),),
+        map_point=np.array([m]),
+        hessian=np.array([[h]]),
+    )
+    res = LaplaceBackend().score_problem(problem)
+    true_logz = math.log((1.0 / w) * math.sqrt(2.0 * math.pi / h))
+    assert res.value == pytest.approx(-true_logz, abs=1e-9)
+
+
+def test_score_problem_fallback_map_outside_prior_support():
+    # MAP が事前分布の台の外 (uniform prior) → log_prior=-inf → BIC フォールバック
+    from tsumugin.nested.base import EvidenceProblem, PriorSpec
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    backend = LaplaceBackend()
+    metrics = _metrics(chi2=20.0, n_params=1, n_obs=60)
+    hessian = np.array([[2.0]])
+
+    def loglike(theta: np.ndarray) -> float:
+        return -0.5 * 2.0 * float(theta[0]) ** 2
+
+    problem = EvidenceProblem(
+        metrics=metrics,
+        log_likelihood=loglike,
+        priors=(PriorSpec(param_name="a", kind="uniform", low=5.0, high=6.0),),
+        map_point=np.array([0.0]),  # 事前 [5,6] の外
+        hessian=hessian,
+    )
+    res = backend.score_problem(problem)
+    assert res.value == pytest.approx(backend.score(metrics).value)
+
+
+def test_score_problem_priors_empty_keeps_old_relative_formula():
+    # priors=() は事前項を加算しない (後方互換, 相対 evidence のまま)
+    from tsumugin.nested.base import EvidenceProblem
+    from tsumugin.nested.laplace import LaplaceBackend
+
+    hessian = np.diag([2.0, 8.0])
+
+    def loglike(theta: np.ndarray) -> float:
+        return -0.5 * float(theta @ hessian @ theta) + 1.5
+
+    problem = EvidenceProblem(
+        metrics=_metrics(10.0, 2, 100),
+        log_likelihood=loglike,
+        priors=(),
+        map_point=np.zeros(2),
+        hessian=hessian,
+    )
+    res = LaplaceBackend().score_problem(problem)
+    k = 2
+    sign, logdet = np.linalg.slogdet(hessian)
+    logz = 1.5 + (k / 2.0) * math.log(2.0 * math.pi) - 0.5 * logdet
+    assert res.value == pytest.approx(-logz)
+
+
 def test_reexport_from_nested_package():
     from tsumugin.nested import LaplaceBackend
 

@@ -17,9 +17,19 @@ MAP 点 + Hessian が渡せる場合に Laplace 近似 evidence を計算する 
   非正定値・数値エラー) や **次元不整合** (map_point 次元 / len(priors) が Hessian 次元 d と食い違う)
   なら例外化せず ``score(metrics)`` の BIC 近似へフォールバックする (EDGE-005/REQ-002)。
 
-**数値レビュー補足**: 上記 Laplace evidence 式は事前分布項 ``log p(θ_map)`` を省いた**相対 evidence**
-  である ((k/2)ln(2π) − (1/2)ln|H| + logL_map の形)。仮説間比較では省いた事前項が概ね相殺する前提で、
-  相対順位・確率較正の一貫性を優先する (絶対 evidence が必要な用途では別途事前項を加える)。
+**数値レビュー補足 (v2, Issue #76 / FR-125)**: 元の Laplace evidence 式は事前分布項
+  ``log p(θ_map)`` を省いた**相対 evidence** だった ((k/2)ln(2π) − (1/2)ln|H| + logL_map の形)。
+  v2 では ``problem.priors`` が非空かつ次元が Hessian と一致するとき、事前密度項
+  ``log_prior = Σ_j priors[j].log_pdf(θ_map[j])`` (``PriorSpec.log_pdf``) を加算し、
+  ``logZ = logL_map + log_prior + (k/2)ln(2π) − (1/2)ln|H|`` として**真の logZ Laplace 近似**
+  (nested サンプラの logZ と直接比較可能な絶対 evidence) を返す。``log_prior`` が非有限
+  (MAP が事前分布の台の外・退化事前分布等) なら例外化せず BIC フォールバックへ縮退する。
+  ``priors`` が空の場合は事前項を加算せず**従来通り相対 evidence のまま** (後方互換)。
+  **適用範囲の注意**: この加算が Laplace 次数で正しいのは事前分布が MAP 近傍で曲率を持たない
+  (uniform) 場合、または呼び出し側が渡す ``hessian`` が事前曲率込みの**事後** Hessian の場合。
+  normal/truncated_normal 事前分布 + 尤度のみの Hessian (例: backends の ``Curvature`` = JᵀJ)
+  の組では事前曲率 (-∂²log p) の分だけ logZ が偏る — 現行の ``nested.physical`` は uniform
+  事前分布のみを構成するため一致するが、他の呼び出し側は自らこの前提を満たすこと。
   ``k`` は必ず Hessian 次元 ``d = H.shape[0]`` を用い、(k/2)ln(2π) の次元と ln|H| の次元を厳密に
   一致させる (len(priors) や map_point 次元との食い違いによる静かなバイアスを避ける)。
 
@@ -66,7 +76,9 @@ class LaplaceBackend:
     【EvidenceBackend 準拠】: ``name`` + ``score(metrics)`` を持ち、既存 rank/evidence 経路に混在可能
       (符号規約: value 小さいほど良い, REQ-003)。metrics のみで呼ばれた場合は BIC 近似へ縮退する。
     【Laplace 近似】: ``EvidenceProblem`` (尤度関数 + MAP 点 + Hessian) が渡せる場合は
-      value = -log Z_laplace ≈ -( logL_map + (k/2)ln(2π) - (1/2)ln|H| ) を返す (符号統一で -logZ)。
+      value = -log Z_laplace ≈ -( logL_map + log_prior + (k/2)ln(2π) - (1/2)ln|H| ) を返す
+      (符号統一で -logZ)。``priors`` が非空かつ次元一致なら log_prior = Σ priors[j].log_pdf(θ_map[j])
+      を加算し絶対 evidence になる (v2, Issue #76)。``priors`` が空なら log_prior=0 (従来の相対 evidence)。
     【縮退フォールバック (EDGE-005)】: Hessian が特異/取得不能なら BIC 近似 (chi2 + k ln n) へ縮退し、
       value が ``score(metrics).value`` に一致することでフォールバックを表現する (例外化しない, REQ-002)。
       nested 打ち切り時の代替先でもある (REQ-101)。
@@ -84,9 +96,11 @@ class LaplaceBackend:
     def score_problem(self, problem: EvidenceProblem) -> EvidenceResult:
         """尤度 + Hessian を用いた Laplace evidence。特異時は score(metrics) へフォールバック。REQ-002/EDGE-005。
 
-        log Z_laplace ≈ logL_map + (k/2)ln(2π) - (1/2)ln|H| を計算し、符号統一で value=-logZ を返す。
-        map_point/hessian が None・Hessian が非正定値/特異 (det≤0)・数値エラーのときは例外を上げず
-        ``score(problem.metrics)`` の BIC 近似へフォールバックする (value が BIC 値に一致)。
+        log Z_laplace ≈ logL_map + log_prior + (k/2)ln(2π) - (1/2)ln|H| を計算し、符号統一で
+        value=-logZ を返す (``priors`` 非空かつ次元一致なら log_prior を加算、v2 / Issue #76)。
+        map_point/hessian が None・Hessian が非正定値/特異 (det≤0)・log_prior が非有限
+        (MAP が事前分布の台の外等)・数値エラーのときは例外を上げず ``score(problem.metrics)`` の
+        BIC 近似へフォールバックする (value が BIC 値に一致)。
         """
         map_point = problem.map_point
         hessian = problem.hessian
@@ -127,7 +141,21 @@ class LaplaceBackend:
             if not math.isfinite(logl_map):
                 return self.score(problem.metrics)
 
-            logz = logl_map + (k / 2.0) * math.log(2.0 * math.pi) - 0.5 * float(logdet)
+            # 【事前密度項 (v2, Issue #76/FR-125)】: priors が非空なら (この時点で len(priors)==d
+            #   は上のガードで保証済み) 事前密度を加算し絶対 evidence 化する。priors が空なら
+            #   log_prior=0 のまま従来の相対 evidence を維持する (後方互換)。
+            log_prior = 0.0
+            if problem.priors:
+                log_prior = sum(
+                    problem.priors[j].log_pdf(float(theta[j])) for j in range(d)
+                )
+                if not math.isfinite(log_prior):
+                    # MAP が事前分布の台の外・退化事前分布等 → BIC フォールバック (例外化しない)
+                    return self.score(problem.metrics)
+
+            logz = (
+                logl_map + log_prior + (k / 2.0) * math.log(2.0 * math.pi) - 0.5 * float(logdet)
+            )
             if not math.isfinite(logz):
                 return self.score(problem.metrics)
 

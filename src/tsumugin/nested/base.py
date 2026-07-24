@@ -144,6 +144,57 @@ class PriorSpec:
         # 数値誤差で境界を僅かに越える場合に備え区間へクランプ
         return min(max(value, self.low), self.high)
 
+    def log_pdf(self, x: float) -> float:
+        """事前分布の対数密度 log p(x) を返す (Issue #76 / FR-125)。
+
+        Laplace evidence の絶対化 (v2, ``nested.laplace.LaplaceBackend.score_problem``) で
+        事前項 ``log p(θ_map)`` として用いる。``transform`` と同じ縮退方針を踏襲し、
+        いかなる入力でも例外を投げない (numpy/math のみ)。
+
+        - uniform: ``low <= x <= high`` なら ``-log(high-low)``、区間外は ``-inf``。
+          ``high <= low`` (幅 0 以下、縮退) は密度が定義できないため全域 ``-inf``。
+        - normal: ``scale<=0`` は ``transform`` と同じ uniform 縮退 (``[low, high]`` の
+          一様密度) へ委譲する。それ以外は標準正規密度の対数式
+          ``-0.5*((x-loc)/scale)**2 - log(scale) - 0.5*log(2*pi)``。
+        - truncated_normal: ``scale<=0`` は同様に uniform 縮退。区間外 (``x<low`` または
+          ``x>high``) は ``-inf``。正規化定数 ``Z = Φ((high-loc)/scale) - Φ((low-loc)/scale)``
+          が数値的に 0 以下に潰れる場合 (``transform`` の ``cdf_b-cdf_a<=0`` 縮退と同条件) は
+          uniform 縮退へフォールバックする。それ以外は正規密度から ``log(Z)`` を引く。
+        """
+        if self.kind == "uniform":
+            return _uniform_log_pdf(self.low, self.high, x)
+        # 【scale<=0 の縮退】: transform と同方針で uniform 縮退へ委譲する (例外化しない)。
+        if self.scale <= 0.0:
+            return _uniform_log_pdf(self.low, self.high, x)
+        if self.kind == "normal":
+            z = (x - self.loc) / self.scale
+            return -0.5 * z * z - math.log(self.scale) - 0.5 * math.log(2.0 * math.pi)
+        # truncated_normal: 区間外は -inf、Z<=0 (数値縮退) は uniform 縮退
+        if x < self.low or x > self.high:
+            return -float("inf")
+        alpha = (self.low - self.loc) / self.scale
+        beta = (self.high - self.loc) / self.scale
+        z_mass = _norm_cdf(beta) - _norm_cdf(alpha)
+        if z_mass <= 0.0:
+            return _uniform_log_pdf(self.low, self.high, x)
+        z = (x - self.loc) / self.scale
+        normal_log_pdf = -0.5 * z * z - math.log(self.scale) - 0.5 * math.log(2.0 * math.pi)
+        return normal_log_pdf - math.log(z_mass)
+
+
+def _uniform_log_pdf(low: float, high: float, x: float) -> float:
+    """区間 ``[low, high]`` の一様密度の対数を返す (縮退経路の共通実装)。REQ-008/FR-125。
+
+    幅 ``high - low`` が 0 以下 (縮退) は密度を定義できないため全域 ``-inf`` とする。
+    それ以外は区間内で ``-log(high-low)``、区間外で ``-inf``。
+    """
+    width = high - low
+    if width <= 0.0:
+        return -float("inf")
+    if x < low or x > high:
+        return -float("inf")
+    return -math.log(width)
+
 
 @dataclass(frozen=True)
 class EvidenceProblem:
