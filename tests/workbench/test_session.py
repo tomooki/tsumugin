@@ -1148,3 +1148,46 @@ def test_export_gpx_info_after_gpx_written_returns_path_and_filename(
 
     assert result["path"] == str(gpx_path)
     assert result["filename"] == f"{project_session._project.name}.gpx"
+
+
+class TestStagesDefaultOnAndEmptyRecipeGuard:
+    """A1 統合修正: recipe 由来ステージは「実行予定 = released True」既定、全段 OFF は 422。
+
+    【背景】: GUI 通し実証で released=False 既定 → stageOn 同期 → stages_on 全 false →
+    空 recipe の縮退 run (履歴空・Rwp なし・"done") が実際に発生した。縮退 run は
+    「成功に見える無意味な実行」で最悪の失敗形。
+    """
+
+    def _project_session(self, tmp_path):
+        from tsumugin.workbench import lifecycle
+
+        project = lifecycle.create_project("stg", str(tmp_path))
+        session = WorkbenchSession.open_persistent(project)
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "docs" / "benchmark" / "testdata" / "m9" / "cateo3"
+        )
+        session.add_histogram(
+            data_path=str(src / "NB-LM01MO_030.XRDML"),
+            instrument_path=str(src / "cateo3_CuKa.instprm"),
+            radiation="xray_lab",
+            geometry="bragg_brentano",
+            data_format="XRDML",
+            two_theta_limits=[12.0, 70.0],
+        )
+        session.add_phase(structure_path=str(src / "alpha_CaTeO3_H2O.cif"), phase_name="alpha")
+        return session
+
+    def test_recipe_stages_default_released_true(self, tmp_path) -> None:
+        session = self._project_session(tmp_path)
+        stages = session.viewmodel()["stages"]
+        assert len(stages) > 0
+        assert all(st["released"] is True for st in stages)
+
+    def test_all_stages_off_is_rejected_not_degenerate_run(self, tmp_path) -> None:
+        session = self._project_session(tmp_path)
+        stages = session.viewmodel()["stages"]
+        all_off = {st["nn"]: False for st in stages}
+        result = session.request_refine(stages_on=all_off)
+        assert "error" in result
+        assert result["error_type"] == "ValueError"

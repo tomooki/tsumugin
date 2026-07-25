@@ -717,6 +717,13 @@ class WorkbenchSession:
         unknown = sorted(set(stages_on) - known_nn)
         if unknown:
             return {"error": f"unknown stage nn: {unknown}", "error_type": "ValueError"}
+        # 全段 OFF は「空 recipe の縮退 run」(履歴空で "done" に見える無意味な実行) に
+        # なるため明示拒否する — 成功に見える無意味な実行は最悪の失敗形。
+        if known_nn and all(not stages_on.get(nn, True) for nn in known_nn):
+            return {
+                "error": "all stages are disabled — nothing to refine",
+                "error_type": "ValueError",
+            }
         return None
 
     def request_refine(self, stages_on: "Mapping[str, bool] | None" = None) -> dict[str, Any]:
@@ -1490,7 +1497,13 @@ def _initial_fit_view(project: WorkbenchProject) -> dict[str, Any]:
 
 
 def _stages_from_recipe(project: WorkbenchProject) -> list[dict[str, Any]]:
-    """実 project から段階解放レシピを組み STAGES viewmodel の初期状態 (全未 release) を作る。"""
+    """実 project から段階解放レシピを組み STAGES viewmodel の初期状態を作る。
+
+    recipe 由来のステージは「次の RUN で実行される予定」の段であり released=True を既定と
+    する (OFF はユーザーの明示的除外)。released=False 既定だとフロントの stageOn 同期 →
+    stages_on 全 false → 空 recipe の縮退 run (履歴空で "done") が起きる (GUI 通し実証で
+    実際に発生した回帰)。
+    """
     try:
         recipe = build_recipe(
             project.histograms, project.phases, background_coeffs=project.background_coeffs
@@ -1506,7 +1519,7 @@ def _stages_from_recipe(project: WorkbenchProject) -> list[dict[str, Any]]:
                 "name": stage.label,
                 "flags": flags,
                 "delta_rwp": "",
-                "released": False,
+                "released": True,
                 "gate": None,
             }
         )

@@ -1038,14 +1038,17 @@ def test_refine_route_stages_on_passes_through_to_session(
         return lambda: _fake_result()
 
     monkeypatch.setattr(workbench_session_module, "build_default_runner", fake_build)
-    # stages_on の nn 検証を通すため viewmodel.stages に "01" を用意する。
-    project_session._stages = [{"nn": "01", "name": "s", "flags": "", "delta_rwp": "",
-                                 "released": False, "gate": None}]
+    # stages_on の nn 検証を通すため viewmodel.stages に 2 段を用意する
+    # (1 段のみ+OFF だと「全段 OFF は 422」の縮退 run ガードに当たるため)。
+    project_session._stages = [
+        {"nn": "01", "name": "s", "flags": "", "delta_rwp": "", "released": True, "gate": None},
+        {"nn": "02", "name": "t", "flags": "", "delta_rwp": "", "released": True, "gate": None},
+    ]
 
-    resp = project_client.post("/api/refine", json={"stages_on": {"01": False}})
+    resp = project_client.post("/api/refine", json={"stages_on": {"01": False, "02": True}})
     assert resp.status_code == 202
     project_session._job.join(timeout=5)
-    assert captured["stages_on"] == {"01": False}
+    assert captured["stages_on"] == {"01": False, "02": True}
 
 
 # --- A4: 相同定ジョブ ------------------------------------------------------
