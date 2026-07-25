@@ -40,7 +40,7 @@ export function AgentSession() {
         error: err instanceof ApiError ? err.message : "failed to send message",
       });
     }
-  }, [dispatch, state.draft, vm]);
+  }, [dispatch, state.draft]);
 
   return (
     <div className="agent-session">
