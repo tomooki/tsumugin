@@ -1,0 +1,153 @@
+/* Welcome screen (REQ-GUI-017) — replaces the 3-pane workbench body while
+   state.shell.source === "none". Spans the full shell__body grid. */
+
+.welcome-screen {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 48px 24px;
+  overflow-y: auto;
+}
+
+.welcome-screen__intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.welcome-screen__title {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 24px;
+  letter-spacing: 0.06em;
+}
+
+.welcome-screen__subtitle {
+  font-size: 12.5px;
+  color: var(--color-neutral-700);
+}
+
+.welcome-screen__error {
+  width: 100%;
+  max-width: 900px;
+  border: 1px solid var(--color-accent-700);
+  background: var(--color-accent-100);
+  color: var(--color-accent-900);
+  padding: 6px 10px;
+  font-size: 11.5px;
+}
+
+.welcome-screen__grid {
+  width: 100%;
+  max-width: 900px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.welcome-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.welcome-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--color-neutral-700);
+}
+
+.welcome-form__field input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  border-radius: 0;
+  padding: 5px 7px;
+}
+
+.welcome-form__field input:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.welcome-sample__note {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+  line-height: 1.5;
+}
+
+.welcome-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.welcome-recent__heading {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-600);
+}
+
+.welcome-recent__empty {
+  font-size: 11px;
+  color: var(--color-neutral-600);
+}
+
+.welcome-recent__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  text-align: left;
+  padding: 5px 6px;
+  border: 1px solid var(--color-divider);
+  border-radius: 0;
+  background: var(--color-bg);
+  cursor: pointer;
+}
+
+.welcome-recent__row:hover:not(:disabled) {
+  background: var(--color-accent-100);
+}
+
+.welcome-recent__row:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.welcome-recent__name {
+  grid-column: 1;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.welcome-recent__time {
+  grid-column: 2;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-600);
+}
+
+.welcome-recent__path {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-600);
+  word-break: break-all;
+}

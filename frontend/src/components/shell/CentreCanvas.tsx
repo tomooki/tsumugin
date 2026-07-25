@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import { useI18n } from "../../i18n";
+import type { StringKey } from "../../i18n/strings";
 import { useStore } from "../../state/store";
 import type { TabId } from "../../state/types";
 import {
@@ -8,12 +9,18 @@ import {
   LedgerTab,
   ParametersTab,
   PhaseIdTab,
+  ProjectTab,
   SequenceTab,
   StructureTab,
 } from "../tabs";
+import { pt } from "../tabs/ProjectTab.strings";
 import "./shell.css";
 
-const TAB_ORDER: { id: TabId; key: "tab.fit" | "tab.param" | "tab.hyp" | "tab.pid" | "tab.seq" | "tab.struct" | "tab.ledger" }[] = [
+// "project" is first (V2a P4) and, being new, has no central StringKey — its
+// label lives in ProjectTab.strings.ts's colocated dictionary (`pt`) instead,
+// mirroring shell.strings.ts's `st()` pattern. See tabLabel() below.
+const TAB_ORDER: { id: TabId; key: StringKey | null }[] = [
+  { id: "project", key: null },
   { id: "fit", key: "tab.fit" },
   { id: "param", key: "tab.param" },
   { id: "hyp", key: "tab.hyp" },
@@ -24,6 +31,7 @@ const TAB_ORDER: { id: TabId; key: "tab.fit" | "tab.param" | "tab.hyp" | "tab.pi
 ];
 
 const TAB_COMPONENTS: Record<TabId, () => ReactElement> = {
+  project: ProjectTab,
   fit: FitTab,
   param: ParametersTab,
   hyp: HypothesesTab,
@@ -37,7 +45,7 @@ const TAB_COMPONENTS: Record<TabId, () => ReactElement> = {
  * scrolling body. Each tab is its own file — see components/tabs. */
 export function CentreCanvas() {
   const { state, dispatch } = useStore();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const Active = TAB_COMPONENTS[state.tab];
 
   return (
@@ -50,7 +58,7 @@ export function CentreCanvas() {
             className={`tab-strip__btn${state.tab === tab.id ? " tab-strip__btn--active" : ""}`}
             onClick={() => dispatch({ type: "SET_TAB", tab: tab.id })}
           >
-            {t(tab.key)}
+            {tab.key ? t(tab.key) : pt(lang, "tab.project")}
           </button>
         ))}
       </div>

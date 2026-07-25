@@ -4,11 +4,17 @@
 import type {
   AcceptRequest,
   AcceptResponse,
+  AddHistogramRequest,
+  AddPhaseRequest,
   ApiErrorBody,
   ApprovalDecision,
   ApprovalResponse,
   LedgerResponse,
   ModeRequest,
+  ProjectCreateRequest,
+  ProjectOpenRequest,
+  ProjectSettingsRequest,
+  RecentProjectsResponse,
   RefineResponse,
   RefineStatus,
   ReviewQueueResponse,
@@ -22,6 +28,8 @@ import type {
   StructureApplyRequest,
   StructureApplyResponse,
   TranscriptMessageResponse,
+  UploadKind,
+  UploadResponse,
   ViewModel,
 } from "./types";
 
@@ -38,12 +46,18 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // FormData bodies (uploadProjectFile) must NOT get a forced "Content-Type:
+  // application/json" — the browser needs to set its own multipart boundary,
+  // and a JSON header on a multipart body would make the server reject it.
+  const isForm = init?.body instanceof FormData;
   const res = await fetch(path, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers: isForm
+      ? init?.headers
+      : {
+          "Content-Type": "application/json",
+          ...(init?.headers ?? {}),
+        },
   });
 
   let body: unknown;
@@ -141,4 +155,60 @@ export function getRefineStatus(): Promise<RefineStatus> {
 
 export function postTranscriptMessage(text: string): Promise<TranscriptMessageResponse> {
   return post<TranscriptMessageResponse>("/api/transcript/message", { text });
+}
+
+// — PROJECT lifecycle (V2a P3/P4, api-contract.md §プロジェクトライフサイクル) —
+
+export function postProjectCreate(payload: ProjectCreateRequest): Promise<ShellState> {
+  return post<ShellState>("/api/project", payload);
+}
+
+export function postProjectOpen(payload: ProjectOpenRequest): Promise<ShellState> {
+  return post<ShellState>("/api/project/open", payload);
+}
+
+export function postProjectClose(): Promise<ShellState> {
+  return post<ShellState>("/api/project/close", {});
+}
+
+export function postProjectDemo(): Promise<ShellState> {
+  return post<ShellState>("/api/project/demo", {});
+}
+
+export function getRecentProjects(): Promise<RecentProjectsResponse> {
+  return get<RecentProjectsResponse>("/api/project/recent");
+}
+
+// multipart upload — file copied server-side into the project's data/
+// directory (self-contained project). `request()` detects the FormData body
+// and skips the default JSON Content-Type header (see above).
+export function uploadProjectFile(file: File, kind: UploadKind): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("kind", kind);
+  return request<UploadResponse>("/api/project/upload", { method: "POST", body: form });
+}
+
+// Response is ShellState ("state+viewmodel 反映" per api-contract.md) — the
+// updated histogram/phase/settings rows land in the *viewmodel*, so callers
+// must follow up with getViewModel() to see them (ProjectTab does this after
+// every mutating call, mirroring OperatorConsole's post-action refetch).
+export function postAddHistogram(payload: AddHistogramRequest): Promise<ShellState> {
+  return post<ShellState>("/api/project/histograms", payload);
+}
+
+export function postRemoveHistogram(histId: string): Promise<ShellState> {
+  return post<ShellState>(`/api/project/histograms/${encodeURIComponent(histId)}/remove`, {});
+}
+
+export function postAddPhase(payload: AddPhaseRequest): Promise<ShellState> {
+  return post<ShellState>("/api/project/phases", payload);
+}
+
+export function postRemovePhase(phaseName: string): Promise<ShellState> {
+  return post<ShellState>(`/api/project/phases/${encodeURIComponent(phaseName)}/remove`, {});
+}
+
+export function postProjectSettings(payload: ProjectSettingsRequest): Promise<ShellState> {
+  return post<ShellState>("/api/project/settings", payload);
 }

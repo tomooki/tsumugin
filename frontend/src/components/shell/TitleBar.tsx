@@ -6,11 +6,15 @@ import "./shell.css";
 
 interface TitleBarProps {
   onModeChange: (mode: GuiMode) => void;
+  /** True while state.shell.source === "none" (Welcome screen, REQ-GUI-017)
+   * — there is no project session to attach a final_selection_mode switch
+   * to, so MANUAL/AUTO is disabled rather than silently no-op-ing. */
+  disabled?: boolean;
 }
 
 /** 56px title bar: TSUMUGIN logo + version/GSAS-II chips, centred mode
  * toggle, EN/日本語 segment + status chips. Handoff README §1. */
-export function TitleBar({ onModeChange }: TitleBarProps) {
+export function TitleBar({ onModeChange, disabled = false }: TitleBarProps) {
   const { state, dispatch } = useStore();
   const { t } = useI18n();
   const idle = state.shell?.agent.idle ?? state.mode === "manual";
@@ -37,6 +41,7 @@ export function TitleBar({ onModeChange }: TitleBarProps) {
                 key={m.key}
                 type="button"
                 className={`mode-toggle__btn${active ? " mode-toggle__btn--active" : ""}`}
+                disabled={disabled}
                 onClick={() => onModeChange(m.key)}
               >
                 <span className="mode-toggle__dot" />

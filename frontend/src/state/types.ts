@@ -4,7 +4,10 @@
 import type { GuiMode, RefineStatus, ShellState, Site, ViewModel } from "../api/types";
 import type { Lang } from "../i18n";
 
-export type TabId = "fit" | "param" | "hyp" | "pid" | "seq" | "struct" | "ledger";
+// "project" is first (V2a P4 — new PROJECT tab, see CentreCanvas.tsx TAB_ORDER
+// and LeftRail's "+" shortcuts). Default state.tab below stays "fit" so
+// existing default-tab expectations are unaffected.
+export type TabId = "project" | "fit" | "param" | "hyp" | "pid" | "seq" | "struct" | "ledger";
 // Histogram ids are server data (demo: sxrd/nd1/nd2, project mode: h0, h1, …),
 // not a closed vocabulary — a union type here silently strands `hist` on a
 // nonexistent id when the data source changes (regression: project mode's

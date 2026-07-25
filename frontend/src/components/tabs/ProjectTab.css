@@ -1,0 +1,158 @@
+/* PROJECT tab (V2a P4) — HISTOGRAMS / PHASES / SETTINGS cards. Table/card
+   styling mirrors PhaseIdTab.css / ParametersTab.css conventions (mono cells,
+   hairline row dividers, square corners). */
+
+.proj-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.proj-tab__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.proj-tab__title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.proj-tab__note {
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+}
+
+.proj-tab__banner {
+  border: 1px solid var(--color-accent-300);
+  background: var(--color-accent-100);
+  color: var(--color-accent-900);
+  padding: 5px 10px;
+  font-size: 11.5px;
+}
+
+.proj-tab__error {
+  border: 1px solid var(--color-accent-700);
+  background: var(--color-accent-100);
+  color: var(--color-accent-900);
+  padding: 5px 10px;
+  font-size: 11.5px;
+}
+
+.proj-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.proj-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.proj-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-600);
+  border-bottom: 1px solid var(--color-text);
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+.proj-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.proj-table td.num,
+.proj-table th.num {
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+.proj-table td.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.proj-table td.right {
+  text-align: right;
+}
+
+.proj-table__path {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proj-table__empty {
+  font-size: 11.5px;
+  color: var(--color-neutral-600);
+  padding: 6px 0;
+}
+
+.proj-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.proj-add__heading {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-600);
+}
+
+.proj-add__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 10px;
+}
+
+.proj-add__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--color-neutral-700);
+}
+
+.proj-add__field input,
+.proj-add__field select {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  border-radius: 0;
+  padding: 4px 6px;
+}
+
+.proj-add__field input:disabled,
+.proj-add__field select:disabled {
+  color: var(--color-neutral-500);
+  cursor: not-allowed;
+}
+
+.proj-add__chosen {
+  font-size: 10px;
+  color: var(--color-accent-800);
+  word-break: break-all;
+}
+
+.proj-add__status {
+  font-size: 10px;
+  color: var(--color-neutral-600);
+}
