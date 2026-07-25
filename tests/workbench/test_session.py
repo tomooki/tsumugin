@@ -1917,3 +1917,69 @@ def test_resolve_new_phase_approval_approve_reaches_add_phase(tmp_path, monkeypa
     assert result["state"] == "approved"
     assert called.get("phase_name") is not None
     assert any(p.phase_name == called["phase_name"] for p in session._project.phases)
+
+
+class TestNewPhaseApprovalErrorPaths:
+    """B5 実走で発見の 2 欠陥の回帰ガード。
+
+    (1) ② identify_and_add_phase の既定 provider が client 無し構築で TypeError 即死
+        (DOA, §4.5) — 例外は境界で error dict に縮退し、承認カードは pending のまま。
+    (2) ② が error dict を返したとき「承認済み・候補 0」と誤読しない (失敗を正常と
+        答えるのは最悪の失敗形)。
+    """
+
+    def _session_with_pending(self, tmp_path, monkeypatch):
+        from tsumugin.workbench import lifecycle
+
+        project = lifecycle.create_project("np", str(tmp_path))
+        session = WorkbenchSession.open_persistent(project)
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "docs" / "benchmark" / "testdata" / "m9" / "cateo3"
+        )
+        session.add_histogram(
+            data_path=str(src / "NB-LM01MO_030.XRDML"),
+            instrument_path=str(src / "cateo3_CuKa.instprm"),
+            radiation="xray_lab", geometry="bragg_brentano", data_format="XRDML",
+            two_theta_limits=[12.0, 70.0],
+        )
+        session.add_phase(structure_path=str(src / "alpha_CaTeO3_H2O.cif"), phase_name="alpha")
+        # 承認カードを直接シード (逐次実行を経ずに B5 経路のみ検証)。
+        # pending = transcript にあり _approvals に無い、が実装の状態機械。
+        hist = session.viewmodel()["project"]["histograms"][0]
+        session._np_approval_info["np-0"] = {
+            "frame_index": 0, "data_path": hist["data_path"],
+            "data_format": hist["data_format"],
+        }
+        session._transcript.append({
+            "id": "t1", "kind": "approval", "action_id": "np-0",
+            "title": "frame 0: 新相の可能性", "rationale": "", "action_json": "{}",
+            "state": "pending",
+        })
+        return session
+
+    def test_identify_exception_degrades_to_error_dict_and_stays_pending(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        session = self._session_with_pending(tmp_path, monkeypatch)
+        import tsumugin.mcp.insitu_tools as it
+
+        def boom(*a, **k):
+            raise TypeError("missing 1 required positional argument: 'client'")
+
+        monkeypatch.setattr(it, "identify_and_add_phase", boom)
+        result = session.resolve_approval("np-0", decision="approve")
+        assert "error" in result
+        assert "np-0" not in session._approvals  # pending のまま (再試行可能)
+
+    def test_identify_error_dict_is_not_treated_as_success(self, tmp_path, monkeypatch) -> None:
+        session = self._session_with_pending(tmp_path, monkeypatch)
+        import tsumugin.mcp.insitu_tools as it
+
+        monkeypatch.setattr(
+            it, "identify_and_add_phase",
+            lambda *a, **k: {"error": "MP key missing", "error_type": "ValueError"},
+        )
+        result = session.resolve_approval("np-0", decision="approve")
+        assert "error" in result and "MP key missing" in result["error"]
+        assert "np-0" not in session._approvals  # pending のまま (再試行可能)

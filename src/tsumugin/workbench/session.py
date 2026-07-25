@@ -1688,9 +1688,19 @@ class WorkbenchSession:
         except (OSError, ValueError) as exc:
             return {"error": f"could not read frame pattern: {exc}", "error_type": "ValueError"}
         workdir = str(Path(self._project.spec_dir) / "data")
-        found = identify_and_add_phase(
-            two_theta.tolist(), intensity.tolist(), elements, workdir, top_k=1
-        )
+        try:
+            found = identify_and_add_phase(
+                two_theta.tolist(), intensity.tolist(), elements, workdir, top_k=1
+            )
+        except Exception as exc:  # noqa: BLE001 — 境界縮退 (MP キー欠落/ネットワーク等)
+            return {"error": f"phase identification failed: {exc}", "error_type": "ValueError"}
+        if "error" in found:
+            # ② の error dict を「承認済み・候補 0」と誤読しない — 失敗は失敗として返し、
+            # 承認カードは pending のまま (ユーザーが再試行できる)。
+            return {
+                "error": f"phase identification failed: {found['error']}",
+                "error_type": str(found.get("error_type", "ValueError")),
+            }
         candidates = found.get("candidates") or []
         self.ledger.append(
             "approval_decision",
