@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from ..errors import LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
+from ..errors import ConflictError, LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
 from . import lifecycle
 from .session import WorkbenchSession
 
@@ -44,6 +44,11 @@ _ERROR_STATUS: dict[str, int] = {
 
 #: POST /api/project 系の「現在のセッションが refine 実行中」ガード共通メッセージ (api-contract.md)。
 _REFINING_CONFLICT = {"error": "refinement is running", "error_type": "ConflictError"}
+
+#: project ライフサイクルルート (create/open/close/demo) の「AUTO エージェントが実行中」ガード
+#: 共通メッセージ (V3a レビュー指摘 #2)。実行中に swap すると、バックグラウンドスレッドが
+#: 差し替え前後どちらのセッションに書き込むべきかが不定になる (`WorkbenchSession.agent_running`)。
+_AGENT_RUNNING_CONFLICT = {"error": "agent is running", "error_type": "ConflictError"}
 
 
 class _SessionHolder:
@@ -164,6 +169,12 @@ def create_workbench_app(
         swap までの間隙に別スレッドが旧セッションで refine を起動する TOCTOU が起きない
         (セルフレビュー指摘 #2)。
 
+        同様に AUTO エージェント (`AgentBridge`) が実行中の swap も拒否する (V3a レビュー指摘 #2):
+        ``AgentBridge`` は construction 時に束縛したクロージャ (``on_event``/``get_state_summary``)
+        で旧セッションを指し続けるため、実行中に swap すると完了時のバックグラウンドスレッドが
+        差し替え後のセッションから見えない旧セッションへ書き込む (更新が消える) か、新旧セッションの
+        状態が混線する。
+
         ``build_new_session`` が送出する例外はロック解放後にそのまま呼び出し元 (route ハンドラ) へ
         伝播する — ``with`` 文がロック解放を保証するため、呼び出し元は例外の型ごとに 4xx へ
         変換すればよい。
@@ -171,6 +182,8 @@ def create_workbench_app(
         with holder.lock:
             if holder.session.refine_status()["status"] == "running":
                 return JSONResponse(status_code=409, content=dict(_REFINING_CONFLICT))
+            if holder.session.agent_running():
+                return JSONResponse(status_code=409, content=dict(_AGENT_RUNNING_CONFLICT))
             holder.session = build_new_session()
             return holder.session.state()
 
@@ -187,7 +200,12 @@ def create_workbench_app(
         mode = body.get("mode")
         if mode not in ("manual", "auto"):
             return _invalid("mode", mode)
-        holder.session.set_mode(mode)
+        try:
+            holder.session.set_mode(mode)
+        except ConflictError as exc:
+            return JSONResponse(
+                status_code=409, content={"error": str(exc), "error_type": "ConflictError"}
+            )
         return holder.session.state()
 
     # ------------------------------------------------------------------

@@ -245,6 +245,20 @@ class AgentBridge:
         kwargs: dict[str, Any] = {
             "system_prompt": self._build_system_prompt(),
             "mcp_servers": {agent_mcp.SERVER_NAME: agent_mcp.build_server()},
+            # 【CRITICAL: ビルトインツール全無効】: ``tools=None`` (SDK 既定) は CLI へ `--tools` を
+            #   一切渡さず、CLI 側の既定 (Bash/Read/Write/Edit/WebFetch 等が全て有効) が生きる。
+            #   `permission_mode="bypassPermissions"` はこれらへの対話的許可プロンプトも素通し
+            #   させてしまうため、shim (`agent_mcp`) がツール表を絞っている前提が虚構になる
+            #   (実際には shim 外のビルトインツールでホストへ任意コマンドを実行できてしまう)。
+            #   `tools=[]` は ``_build_command`` (claude_agent_sdk の subprocess_cli.py) で
+            #   ``--tools ""`` に変換され、ベースのビルトインツール集合を空にする。MCP shim の
+            #   ツールは `--tools` の対象外で `--allowedTools` (下記) のみで制御されるため、
+            #   このリストを空にしても shim ツールは引き続き使える (実 CLI 引数列で確認済み,
+            #   `tests/workbench/test_agent_bridge.py`)。
+            "tools": [],
+            # allowed_tools には shim (`agent_mcp`) が公開する mcp__tsumugin__* の完全修飾 id のみを
+            # 明示する — ビルトインは上記 tools=[] で不在なので、ここに列挙されるのは事実上
+            # 到達可能な唯一の手段になる (権限境界の単一情報源は `agent_mcp.ALLOWED_TOOL_NAMES`)。
             "allowed_tools": agent_mcp.allowed_tool_ids(),
             # 【bypassPermissions】: shim のツール表自体が権限境界 (承認/レビュー/構造/project は
             #   非公開) なので、CLI 側の対話的許可プロンプトは不要かつ非対話実行では単にハング

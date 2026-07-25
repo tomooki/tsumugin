@@ -305,6 +305,58 @@ def test_config_path_overrides_max_turns(tmp_path: Path):
     assert captured[0]["options"]["max_turns"] == 7
 
 
+# ---------------------------------------------------------------------------
+# CRITICAL guard: ビルトインツール全無効 (V3a レビュー指摘 #1)
+# ---------------------------------------------------------------------------
+
+
+def test_build_options_disables_builtin_tools_and_restricts_to_shim_mcp_tools():
+    """非注入 (実 SDK) 経路の ``_build_options()`` は ``tools=[]`` (ビルトイン全無効) を返し、
+    ``allowed_tools`` は shim (`agent_mcp`) の完全修飾 mcp ツール id 集合とちょうど一致する。
+
+    ``tools`` 未設定 (SDK 既定 ``None``) だと CLI へ ``--tools`` が渡らず、CLI 既定のビルトイン
+    (Bash/Read/Write/Edit/WebFetch 等) が ``bypassPermissions`` 下で素通しに有効化されてしまう
+    (shim による権限境界が虚構になる)。``tools`` キー自体を削る変異で本テストは fail する。
+    """
+    from tsumugin.workbench import agent_mcp
+
+    bridge = AgentBridge(on_event=lambda *a, **k: {})
+    options = bridge._build_options()
+
+    assert options.tools == []
+    assert options.allowed_tools == agent_mcp.allowed_tool_ids()
+    assert set(options.allowed_tools) == {
+        f"mcp__{agent_mcp.SERVER_NAME}__{name}" for name in agent_mcp.ALLOWED_TOOL_NAMES
+    }
+
+
+def test_build_options_cli_args_pass_empty_tools_and_shim_allowed_tools():
+    """`_build_options()` が実際に SDK の CLI コマンド組み立て (`subprocess_cli.py
+    _build_command`) を通ったときに ``--tools ""`` (ベースのビルトインツール集合が空)
+    + ``--allowedTools <shim id 群>`` になることを、SDK 内部の変換ロジックを直接使って確認する
+    (SDK の ``tools=[]`` の意味論そのものを検証する — こちらが動作の一次情報源)。実プロセスは
+    起動しない (``cli_path`` をダミー文字列に固定しコマンド配列を組み立てるだけ)。
+    """
+    pytest.importorskip("claude_agent_sdk")
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
+    from tsumugin.workbench import agent_mcp
+
+    bridge = AgentBridge(on_event=lambda *a, **k: {})
+    options = bridge._build_options()
+    options.cli_path = "claude-stub"  # 実 CLI 探索/起動を避ける (コマンド組み立てのみ検証)
+
+    transport = SubprocessCLITransport(prompt="hi", options=options)
+    cmd = transport._build_command()
+
+    assert "--tools" in cmd
+    assert cmd[cmd.index("--tools") + 1] == ""  # 空 = ビルトイン全無効 (SDK 実挙動で確認済み)
+
+    assert "--allowedTools" in cmd
+    allowed = set(cmd[cmd.index("--allowedTools") + 1].split(","))
+    assert allowed == set(agent_mcp.allowed_tool_ids())
+
+
 def test_load_agent_config_missing_file_returns_empty(tmp_path: Path):
     assert _load_agent_config(tmp_path / "does-not-exist.json") == {}
 

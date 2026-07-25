@@ -12,6 +12,7 @@ import dataclasses
 import json
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -77,6 +78,34 @@ def test_set_mode_round_trip_appends_two_entries():
 
     assert len(session.ledger.entries) == before + 2
     assert session.mode == "manual"
+
+
+# ---------------------------------------------------------------------------
+# V3a レビュー指摘 #2: 実行中エージェントと mode 切替の衝突
+# ---------------------------------------------------------------------------
+
+
+def test_set_mode_rejects_switch_while_agent_running():
+    from tsumugin.errors import ConflictError
+
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    before = len(session.ledger.entries)
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    with pytest.raises(ConflictError):
+        session.set_mode("manual")
+
+    # 拒否された切替は ledger にも engine.mode にも副作用を残さない。
+    assert session.mode == "auto"
+    assert len(session.ledger.entries) == before
+
+
+def test_agent_running_reflects_bridge_status():
+    session = WorkbenchSession.create_demo()
+    assert session.agent_running() is False
+    session._agent_bridge = _StubBridge(available=True, running=True)
+    assert session.agent_running() is True
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +301,10 @@ def test_post_message_appends_transcript_and_ledger():
 class _StubBridge:
     """``AgentBridge`` の代わりに差し込む最小スタブ (session.py が使う面のみ実装)。"""
 
-    def __init__(self, *, available: bool, accept: bool = True) -> None:
+    def __init__(self, *, available: bool, accept: bool = True, running: bool = False) -> None:
         self._available = available
         self._accept = accept
+        self._running = running
         self.sent: list[str] = []
 
     @property
@@ -288,7 +318,8 @@ class _StubBridge:
         return True
 
     def status(self) -> dict:
-        return {"status": "running" if self.sent else "idle", "available": self._available,
+        is_running = self._running or bool(self.sent)
+        return {"status": "running" if is_running else "idle", "available": self._available,
                 "tokens": 0, "wall_time_s": 0.0, "error": None}
 
 
@@ -350,6 +381,64 @@ def test_post_message_agent_already_running_returns_conflict():
     result = session.post_message("hello")
 
     assert result["error_type"] == "ConflictError"
+
+
+def test_post_message_transcript_append_is_serialized_by_lock():
+    """V3a レビュー指摘 #3: ``post_message`` の ``msg = {"id": f"t{len(self._transcript)+1}", ...}``
+    採番 + append が ``self._lock`` 下で直列化されることを、複数スレッドが
+    ``len(self._transcript)`` の呼び出し (フック付き ``list`` サブクラス) に**同時に**到達できない
+    ことで確認する。
+
+    ``threading.Barrier(n_threads)`` を ``list.__len__`` にフックする: ロックが効いていれば
+    高々 1 スレッドずつしか ``len()`` 呼び出しに到達できないため、``n_threads`` 全員が揃うことは
+    なく barrier は必ずタイムアウトし ``post_message`` は例外で終わる (transcript には 1 行も
+    追加されない)。ロックを外す変異 (このテストが検出対象とする欠陥) を入れると、複数スレッドが
+    無防備に ``len()`` へ同時到達でき barrier が解消し、**同一の "before" 件数を読んだまま**
+    全員が append する — id が重複した行が transcript に残る。
+    """
+    session = WorkbenchSession.create_demo()
+    before = len(session._transcript)
+    n_threads = 5
+
+    class _BarrierHookedList(list):
+        """``__len__`` 呼び出しごとに barrier で待ち合わせるテスト専用の list サブクラス。"""
+
+        def __init__(self, *args: Any, on_len: Any) -> None:
+            super().__init__(*args)
+            self._on_len = on_len
+
+        def __len__(self) -> int:
+            n = super().__len__()
+            self._on_len()
+            return n
+
+    barrier = threading.Barrier(n_threads, timeout=1.0)
+    session._transcript = _BarrierHookedList(session._transcript, on_len=barrier.wait)
+
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def _post(i: int) -> None:
+        try:
+            session.post_message(f"msg-{i}")
+        except BaseException as exc:  # noqa: BLE001 — barrier タイムアウト/破損を収集する
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_post, args=(i,)) for i in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    new_rows = session._transcript[before:]
+    ids = [row["id"] for row in new_rows]
+
+    # ロックで直列化されていれば barrier (n_threads 人待ち) は誰も揃わずタイムアウトし、
+    # 全スレッドが例外で終わって transcript には何も追加されない。
+    assert len(errors) == n_threads, f"expected all {n_threads} calls to fail via barrier timeout"
+    assert new_rows == []
+    assert len(set(ids)) == len(ids)  # (mutation 時の対照: 重複が出れば直ちに分かる)
 
 
 def test_agent_status_delegates_to_bridge():

@@ -30,6 +30,7 @@ from .._json import finite_or_none
 from ..autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
 from ..autorietveld.recipe import build_recipe
 from ..backends.gsasii import gsasii_available
+from ..errors import ConflictError
 from ..insitu.model import FrameSpec
 from ..model import LatticeParams, PhaseInstance
 from ..selection.engine import FinalSelectionEngine
@@ -377,16 +378,32 @@ class WorkbenchSession:
         """接続元 ("demo"|"project", REQ-GUI-012)。``from_project`` で "project" になる。"""
         return self._source
 
+    def agent_running(self) -> bool:
+        """AUTO 実 LLM ブリッジ (`AgentBridge`) が現在ターンを実行中か (V3a レビュー指摘 #2)。
+
+        実行中に mode 切替/project swap が起きると、バックグラウンドスレッドが古いセッション
+        (transcript/ledger) へ書き込み続けたり、切替直後の新セッションへ誤って書き込んだりする
+        (``on_event``/``get_state_summary`` は construction 時に束縛したクロージャのため)。
+        呼び出し側 (`set_mode`/`app.py _guarded_swap`) がこれを見て 409 へ縮退させる。
+        """
+        return self._agent_bridge.status()["status"] == "running"
+
     def set_mode(self, gui_mode: str) -> bool:
         """GUI モードを切替える。同一モードへの切替は no-op (ledger 追記なし) で ``False`` を返す。
 
         変更時は ``FinalSelectionEngine.set_mode`` を呼ぶ (エンジン側が ``selection_set_mode`` を
         ledger に追記する契約なので session 側では二重追記しない)。不正値は ``ValueError``。
+        エージェントが実行中 (`agent_running()`) の切替要求は ``ConflictError`` (呼び出し側
+        [`app.py`] が 409 へ縮退, V3a レビュー指摘 #2) — 実行中のターンは "auto" モードの
+        ``AgentBridge`` を握ったままなので、その最中に "manual" へ落とす/別モードへ動かすと
+        実行中スレッドの transcript 書き込み前提が壊れる。
         """
         if gui_mode not in _GUI_TO_ENGINE:
             raise ValueError(f"unknown mode: {gui_mode!r}")
         if gui_mode == self.mode:
             return False
+        if self.agent_running():
+            raise ConflictError("agent is running — cannot switch mode while a turn is in progress")
         self.engine.set_mode(_GUI_TO_ENGINE[gui_mode])
         return True
 
@@ -1313,9 +1330,15 @@ class WorkbenchSession:
         エージェントへ非同期送信する (``bridge.send``)。実行中は ``ConflictError`` (呼び出し側が
         409 へ縮退)。それ以外は従来どおり記録のみ (demo/manual/エージェント不可用時のフォールバック,
         後方互換)。ユーザーメッセージ自体はどちらの経路でも transcript/ledger へ記録する。
+
+        transcript への append は ``self._lock`` 下で行う (V3a レビュー指摘 #3, ``_agent_append`` と
+        同じ流儀) — エージェントのバックグラウンドスレッド (``_agent_append``) や
+        ``GET /api/viewmodel`` の transcript 読み取りと並走しても、``len(self._transcript)`` に基づく
+        id 採番がレースして重複/欠番を起こさない。
         """
-        msg = {"id": f"t{len(self._transcript) + 1}", "kind": "user", "text": text}
-        self._transcript.append(msg)
+        with self._lock:
+            msg = {"id": f"t{len(self._transcript) + 1}", "kind": "user", "text": text}
+            self._transcript.append(msg)
         self.ledger.append("transcript_message", {"text": text})
         if self._source != "none" and self.mode == "auto" and self._agent_bridge.available:
             started = self._agent_bridge.send(text)

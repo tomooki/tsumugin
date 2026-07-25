@@ -458,9 +458,10 @@ def test_transcript_message_is_recorded(client: TestClient):
 
 
 class _StubBridge:
-    def __init__(self, *, available: bool, accept: bool = True) -> None:
+    def __init__(self, *, available: bool, accept: bool = True, running: bool = False) -> None:
         self._available = available
         self._accept = accept
+        self._running = running
         self.sent: list[str] = []
 
     @property
@@ -474,8 +475,9 @@ class _StubBridge:
         return True
 
     def status(self) -> dict:
+        is_running = self._running or bool(self.sent)
         return {
-            "status": "running" if self.sent else "idle",
+            "status": "running" if is_running else "idle",
             "available": self._available,
             "tokens": 7,
             "wall_time_s": 1.5,
@@ -522,6 +524,61 @@ def test_post_transcript_message_manual_mode_still_returns_200(
     resp = client.post("/api/transcript/message", json={"text": "go"})
     assert resp.status_code == 200
     assert resp.json()["message"]["text"] == "go"
+
+
+# ---------------------------------------------------------------------------
+# V3a レビュー指摘 #2: 実行中エージェントと mode 切替/project swap の衝突
+# ---------------------------------------------------------------------------
+
+
+def test_post_mode_returns_409_while_agent_running(client: TestClient, session: WorkbenchSession):
+    session.set_mode("auto")
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    resp = client.post("/api/mode", json={"mode": "manual"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+    # 拒否された切替でモードは変わらない。
+    assert client.get("/api/state").json()["mode"] == "auto"
+
+
+def test_project_lifecycle_routes_return_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    for method, path, body in [
+        ("post", "/api/project/close", {}),
+        ("post", "/api/project/demo", {}),
+    ]:
+        resp = getattr(client, method)(path, json=body)
+        assert resp.status_code == 409, f"{path} did not 409 while agent running"
+        assert resp.json()["error_type"] == "ConflictError"
+
+
+def test_project_create_returns_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession, tmp_path: Path
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+    directory = tmp_path / "projects"
+    directory.mkdir()
+
+    resp = client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+
+
+def test_project_open_returns_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession, tmp_path: Path
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    resp = client.post("/api/project/open", json={"path": str(tmp_path)})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
 
 
 # ---------------------------------------------------------------------------
