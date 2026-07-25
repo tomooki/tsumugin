@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -66,29 +67,38 @@ class Ledger:
 
     def __init__(self) -> None:
         self._entries: list[LedgerEntry] = []
+        # 【NFR-105 スレッド安全性】: append は「index 読取 → ハッシュ計算 → 追記」の
+        # 非アトミック列であり、並行 append は index 重複 / prev_hash 断裂でチェーンを
+        # 実際に破壊する (workbench の実 refine バックグラウンドジョブ + FastAPI threadpool
+        # の並走で顕在化, tests/test_ledger.py::TestConcurrentAppend が再現ガード)。
+        # 「verify() が常に True」という不変条件を呼び出し側の直列化規律に依存させない。
+        self._append_lock = threading.Lock()
 
     def append(self, kind: str, payload: Mapping[str, Any]) -> LedgerEntry:
-        """新しいエントリを追記してハッシュチェーンを伸ばす。"""
-        index = len(self._entries)
-        prev_hash = self._entries[-1].hash if self._entries else GENESIS_HASH
+        """新しいエントリを追記してハッシュチェーンを伸ばす (スレッド安全)。"""
         payload = dict(payload)  # 呼び出し側の後続変更から隔離
-        entry = LedgerEntry(
-            index=index,
-            kind=kind,
-            payload=payload,
-            prev_hash=prev_hash,
-            hash=_compute_hash(index, kind, payload, prev_hash),
-        )
-        self._entries.append(entry)
-        return entry
+        with self._append_lock:
+            index = len(self._entries)
+            prev_hash = self._entries[-1].hash if self._entries else GENESIS_HASH
+            entry = LedgerEntry(
+                index=index,
+                kind=kind,
+                payload=payload,
+                prev_hash=prev_hash,
+                hash=_compute_hash(index, kind, payload, prev_hash),
+            )
+            self._entries.append(entry)
+            return entry
 
     @property
     def entries(self) -> tuple[LedgerEntry, ...]:
-        return tuple(self._entries)
+        with self._append_lock:
+            return tuple(self._entries)
 
     def verify(self) -> bool:
         """ハッシュチェーンの整合性を検証する。
 
         【実装方針】: 検証ロジックは verify_entries へ委譲（単一情報源・挙動不変）🔵
+        並行 append 中でも一貫したスナップショットを検証するため entries 経由で読む。
         """
-        return verify_entries(self._entries)
+        return verify_entries(self.entries)
