@@ -30,3 +30,7 @@ scratchpad/
 
 # ベンチの派生 GSAS-II プロジェクト (大容量バイナリ; スクリプト再実行で再生成できる)
 docs/benchmark/joint/results/*.gpx
+
+# GUI workbench frontend (Vite + React)
+frontend/node_modules/
+frontend/dist/

@@ -1,0 +1,30 @@
+.bp-card {
+  background: var(--color-neutral-100);
+  padding: 10px 12px;
+}
+
+.bp-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+
+.bp-card__heading {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: 0.06em;
+}
+
+.bp-card__note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-600);
+  white-space: nowrap;
+}
+
+.bp-card__body {
+  min-height: 0;
+}
