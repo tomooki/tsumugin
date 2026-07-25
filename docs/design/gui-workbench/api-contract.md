@@ -186,6 +186,29 @@ histograms[0] (instrument_path/radiation/geometry/data_format/two_theta_limits) 
 | (B5 新相提案) | — | sequential 完了時、changepoint/未説明残差のフレームがあれば **ModelAction 承認カード** (transcript approval) を生成: 「frame N で新相を同定して追加するか」。APPROVE → phaseid ジョブ (残差, elements は現相集合由来) → top 候補を物質化して相追加 (ledger)。再実行はユーザーの明示 RUN。REJECT → 提案は ledger に残る。**エンジン内自動受理は GUI 経路では使わない** (提案≠適用) |
 | (B4 FR-403) | — | alkali feasibility infeasible フレームは ReviewQueue へ自動追加 (severity=echem) |
 
+## AUTO 実 LLM ブリッジ (V3a — ローカル Claude Code サブスクリプション)
+
+③ = ローカル `claude` CLI (claude-agent-sdk 経由, optional extra `agent`)。エージェントは
+**専用 MCP shim** (`tsumugin.workbench.agent_mcp`, stdio) 越しに workbench HTTP API を叩く —
+人間と同じ custody ガード (ledger/409/422) が全て適用される。
+
+**権限境界 (FR-402, 変更禁止)**: shim が公開するのは読み取り (state/viewmodel/ledger/status 系)
+と SafeAction 級のジョブ起動 (refine/sequential/phaseid/multistart/echem) のみ。
+**approval 解決・review 解決・structure apply・project 変更系 (作成/開く/フレーム/相/設定) は
+公開しない** — これらは人間専用 (提案≠適用)。shim のツール表がこの境界の単一情報源であり、
+逸脱はテストで fail させる。
+
+| 呼び出し | 内容 |
+|---|---|
+| POST `/api/transcript/message` | mode=auto かつ agent 利用可能時: メッセージをエージェントセッションへ送り**非同期実行** (従来の記録のみ動作は demo/manual/不可用時のフォールバック)。202 `{"status": "agent_started"}` / 実行中 409 |
+| GET `/api/agent/status` | `{"status": "idle"\|"running"\|"failed", "available": bool, "tokens": int, "wall_time_s": float, "error": str\|null}` — tokens/wall は FR-404 (=$ 表示なし)。available=false は CLI/SDK 不在 |
+| (transcript) | エージェントのテキスト/ツール呼び出し (kind=agent/tool, args/ret JSON) が実行中に逐次 append される。フロントは running 中 2s で viewmodel を再フェッチ |
+| state.agent | tokens/wall_time_s が実測値に。`available` 追加 |
+
+エージェント実行は GSAS ジョブ枠とは独立 (エージェントが起動する refine 等は HTTP 経由で
+既存の共有枠 409 に従う)。モデル/ターン数上限は `~/.tsumugin/agent.json` (任意) で設定、
+既定は SDK 既定モデル + max_turns 25。
+
 ## その他の変更系
 
 | 呼び出し | 成功レスポンス | 副作用 |
