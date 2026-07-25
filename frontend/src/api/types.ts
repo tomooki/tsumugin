@@ -42,7 +42,9 @@ export type RefineJobStatus = "idle" | "running" | "done" | "failed";
 // GSAS job slot (api-contract.md §解析ループ: "ジョブ枠は 1 つ"). Mirrors
 // state/types.ts ActiveJob minus the "no job has ever run yet" case, which
 // RefineStatus.kind represents as `null` instead (see below).
-export type JobKind = "refine" | "phaseid" | "multistart";
+// "sequential" added by api-contract.md §逐次 / operando (V2b): "ジョブ枠は
+// 既存と同一 (kind に "sequential" が加わる)".
+export type JobKind = "refine" | "phaseid" | "multistart" | "sequential";
 
 export interface RefineStatus {
   status: RefineJobStatus;
@@ -310,11 +312,31 @@ export interface SequenceSegment {
   selected: string;
 }
 
+/** Row shape for `sequence.frames[]` (V2b B2/B3, api-contract.md §逐次 /
+ * operando: "per-frame 表 `sequence.frames[]` ({frame, label, axis_value,
+ * rwp, cells, fractions, changepoint})"). `cells`/`fractions` are
+ * server-formatted display strings (mirrors PhaseIdCandidate.mwmsx/strain
+ * above — the exact per-phase breakdown is rendered verbatim, not parsed
+ * client-side). */
+export interface SequenceFrameRow {
+  frame: string;
+  label: string;
+  axis_value: number;
+  rwp: number;
+  cells: string;
+  fractions: string;
+  changepoint: boolean;
+}
+
 export interface SequenceViewModel {
   charts: SequenceChart[];
   anchors: SequenceAnchor[];
   note: string;
   segments: SequenceSegment[];
+  // V2b B2/B3: populated once POST /api/sequential completes. Optional —
+  // pre-V2b fixtures predate this field (mirrors SequenceChart.series /
+  // HypothesesViewModel.basin's precedent above).
+  frames?: SequenceFrameRow[];
 }
 
 export interface SiteLock {
@@ -421,10 +443,34 @@ export interface ProjectSettingsData {
   max_cyc: number | null;
 }
 
+// "temperature" | "time" | "index" — project.json's optional frame_axis
+// (api-contract.md §逐次 / operando, V2b B1).
+export type FrameAxis = "temperature" | "time" | "index";
+
+/** Row shape for the PROJECT tab's FRAMES table (V2b B1). Same judgment-call
+ * status as ProjectHistogramRow above: api-contract.md documents the
+ * project.json shape (`{"data_path", "axis_value", "label"?}`) and the
+ * POST /api/project/frames mutator, but not an explicit read shape for
+ * viewmodel.project — this mirrors the existing histograms/phases precedent
+ * (an additive optional field). `id` is a display key (server-assigned,
+ * analogous to ProjectHistogramRow.id); `label` falls back to the id
+ * server-side when the spec's optional label was omitted. */
+export interface ProjectFrameRow {
+  id: string;
+  label: string;
+  axis_value: number;
+  data_path: string;
+}
+
 export interface ProjectViewModel {
   histograms: ProjectHistogramRow[];
   phases: ProjectPhaseRow[];
   settings: ProjectSettingsData;
+  // V2b B1 additions — optional for the same reason as the fields above
+  // (pre-V2b fixtures/backends omit them; ProjectTab/ContextBar/SequenceTab
+  // treat an absent value the same as an empty frame column).
+  frames?: ProjectFrameRow[];
+  frame_axis?: FrameAxis;
 }
 
 export type TranscriptKind = "user" | "agent" | "tool" | "judgement" | "approval" | "escalation";
@@ -557,7 +603,9 @@ export interface RecentProjectsResponse {
   projects: RecentProject[];
 }
 
-export type UploadKind = "data" | "instrument" | "structure";
+// "echem" added by api-contract.md §逐次 / operando (V2b B4): "mpr は upload
+// (kind="echem") 経由も可".
+export type UploadKind = "data" | "instrument" | "structure" | "echem";
 
 export interface UploadResponse {
   stored_path: string;
@@ -659,6 +707,52 @@ export interface TranscriptMessageResponse {
 
 export interface ModeRequest {
   mode: GuiMode;
+}
+
+// — 逐次 / operando (V2b — B1〜B5, api-contract.md §逐次 / operando) —
+
+/** project.json's per-frame entry (`{"data_path", "axis_value", "label"?}`).
+ * Frames share histograms[0]'s instrument condition (M9 single-instrument
+ * series assumption) — no per-frame instrument fields here. */
+export interface FrameSpec {
+  data_path: string;
+  axis_value: number;
+  label?: string;
+}
+
+export interface ProjectFramesRequest {
+  frames: FrameSpec[];
+}
+
+export type SequentialMode = "forward" | "anchored";
+
+export interface SequentialRequest {
+  mode: SequentialMode;
+  // frame_index (string key, matching JSON object key constraints) → phase
+  // names present at that anchor frame.
+  anchor_table?: Record<string, string[]>;
+  use_charge_constraint?: boolean;
+}
+
+export interface EchemRequest {
+  mpr_path: string;
+  offset_s: number;
+  interval_s: number;
+  sign: -1 | 1;
+  x0?: number;
+}
+
+// ② align_echem+alkali_budget の出力 (`{"curve", "targets", ...}` —
+// api-contract.md leaves the full shape open-ended with "..."). `curve`/
+// `targets` are rendered as opaque success evidence (row/point counts) by
+// the PROJECT tab's ECHEM card; the fields the rest of the UI actually reads
+// (channels, project.echem, sequence fraction overlay) come from the
+// session-held server state via the follow-up GET /api/state +
+// /api/viewmodel refetch, not from this response body directly.
+export interface EchemSyncResponse {
+  curve: unknown[];
+  targets: unknown[];
+  [key: string]: unknown;
 }
 
 // — errors —

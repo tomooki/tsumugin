@@ -8,15 +8,30 @@ import {
   postReviewResolve,
   postStage,
 } from "../../api/client";
-import type { RefineStatus, ReviewItem, StageRow } from "../../api/types";
+import type { RefineStatus, ReviewItem, StageRow, TranscriptMessage } from "../../api/types";
 import { resolveJobConflict } from "../../hooks/useJobConflict";
 import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
+import type { ApprovalState } from "../../state/types";
 import { useStore } from "../../state/store";
 import { Btn, Chip } from "../common";
 import "./OperatorConsole.css";
 import { computeStagesOn, isStageGateOpen, reviewSeverityChipVariant, reviewSeverityLabelKey } from "./gates";
 import { jobFailedFallback, rt } from "./right.strings";
+import { TranscriptItem } from "./TranscriptItem";
+
+/** Is this transcript message an approval card still awaiting a decision?
+ * "Still" accounts for BOTH sources of truth: the server-fetched
+ * `message.state` (viewmodel.transcript, refreshed on the next viewmodel
+ * fetch) and this session's own local decision (state.approval, keyed by
+ * action_id — see TranscriptItem's `decide()`, which OperatorConsole reuses
+ * verbatim below). A card the user already decided locally must disappear
+ * from PENDING MODEL ACTIONS immediately, without waiting for a refetch. */
+function isPendingApproval(message: TranscriptMessage, approval: Record<string, ApprovalState>): boolean {
+  if (message.kind !== "approval") return false;
+  const local = message.action_id ? approval[message.action_id] : undefined;
+  return (local ?? message.state ?? "pending") === "pending";
+}
 
 /** MANUAL right-pane body — handoff/README.md §Right pane "MANUAL body":
  * STAGED RELEASE RECIPE (gated by PARAMETERS/STRUCTURE) + RUN
@@ -32,6 +47,14 @@ export function OperatorConsole() {
   // useCallback's memoization entirely.
   const stages: StageRow[] = useMemo(() => vm?.stages ?? [], [vm?.stages]);
   const review: ReviewItem[] = vm?.review ?? [];
+  // V2b B5 (api-contract.md §逐次 / operando): sequential runs that detect a
+  // changepoint/unexplained residual generate a `kind: "approval"` transcript
+  // card ("frame N で新相を同定して追加するか"). Surfacing it here (not only
+  // in AgentSession's transcript) is what makes it visible in MANUAL mode —
+  // OperatorConsole IS the MANUAL body (see file docstring), and the
+  // engine-internal auto-accept path is explicitly not used for GUI approvals
+  // (CLAUDE.md: "提案≠適用"), so a human must see and act on this queue.
+  const pendingApprovals = (vm?.transcript ?? []).filter((m) => isPendingApproval(m, state.approval));
 
   const running = state.refine?.status === "running";
 
@@ -216,6 +239,24 @@ export function OperatorConsole() {
           <div className="oc-refine-status">
             {state.refine?.last_event && <span>{state.refine.last_event}</span>}
             {state.refine?.elapsed_s != null && <span>{Math.round(state.refine.elapsed_s)}s</span>}
+          </div>
+        )}
+      </section>
+
+      <section className="oc-approvals">
+        <div className="oc-section-head">
+          <span className="oc-section-head__title">{rt(lang, "modelActions.pendingTitle")}</span>
+          <span className="oc-section-head__note">
+            {rt(lang, "modelActions.openCountNote", { n: pendingApprovals.length })}
+          </span>
+        </div>
+        {pendingApprovals.length === 0 ? (
+          <div className="oc-approvals__empty">{rt(lang, "modelActions.empty")}</div>
+        ) : (
+          <div className="oc-approvals-list">
+            {pendingApprovals.map((m) => (
+              <TranscriptItem key={m.id} message={m} />
+            ))}
           </div>
         )}
       </section>

@@ -9,6 +9,8 @@ import type {
   ApiErrorBody,
   ApprovalDecision,
   ApprovalResponse,
+  EchemRequest,
+  EchemSyncResponse,
   JobStartResponse,
   LedgerResponse,
   ModeRequest,
@@ -16,6 +18,7 @@ import type {
   PhaseIdAddRequest,
   PhaseIdRequest,
   ProjectCreateRequest,
+  ProjectFramesRequest,
   ProjectOpenRequest,
   ProjectSettingsRequest,
   RecentProjectsResponse,
@@ -27,6 +30,7 @@ import type {
   ReviewResolveResponse,
   RevertRequest,
   RevertResponse,
+  SequentialRequest,
   ShellState,
   StageAction,
   StageActionResponse,
@@ -244,4 +248,25 @@ export function postRemovePhase(phaseName: string): Promise<ShellState> {
 
 export function postProjectSettings(payload: ProjectSettingsRequest): Promise<ShellState> {
   return post<ShellState>("/api/project/settings", payload);
+}
+
+// — 逐次 / operando (V2b — B1〜B5, api-contract.md §逐次 / operando) —
+
+// Full-replace (idempotent set), not append — see api/types.ts
+// ProjectFramesRequest's doc comment and the contract's "フレーム列を全置換".
+export function postProjectFrames(payload: ProjectFramesRequest): Promise<ShellState> {
+  return post<ShellState>("/api/project/frames", payload);
+}
+
+export function postSequential(payload: SequentialRequest): Promise<JobStartResponse> {
+  return post<JobStartResponse>("/api/sequential", payload);
+}
+
+export function getSequentialStatus(): Promise<RefineStatus> {
+  return get<RefineStatus>("/api/sequential/status");
+}
+
+// Synchronous (not a background job) — no .../status polling counterpart.
+export function postEchem(payload: EchemRequest): Promise<EchemSyncResponse> {
+  return post<EchemSyncResponse>("/api/echem", payload);
 }

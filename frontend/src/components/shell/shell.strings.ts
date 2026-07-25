@@ -12,15 +12,26 @@ export interface StringPair {
 
 export const SHELL_STRINGS = {
   "refine.running": { en: "REFINING …", ja: "精密化 実行中 …" },
+  // ContextBar frame nav (V2b B2/B3): shown instead of the static single
+  // frame chip once viewModel.project.frames is non-empty — see
+  // ContextBar.tsx.
+  "frame.nav.label": { en: "fr {k} / {n}", ja: "fr {k} / {n}" },
+  "frame.nav.prev": { en: "previous frame", ja: "前のフレーム" },
+  "frame.nav.next": { en: "next frame", ja: "次のフレーム" },
 } as const satisfies Record<string, StringPair>;
 
 export type ShellStringKey = keyof typeof SHELL_STRINGS;
 
+function interpolate(template: string, vars?: Record<string, string | number>): string {
+  if (!vars) return template;
+  return Object.entries(vars).reduce((acc, [k, v]) => acc.replaceAll(`{${k}}`, String(v)), template);
+}
+
 /** Standalone translator for SHELL_STRINGS, mirroring right.strings.ts's
  * `rt()` — useI18n().t only accepts the central StringKey union, so a
  * colocated dictionary needs its own lookup. */
-export function st(lang: Lang, key: ShellStringKey): string {
+export function st(lang: Lang, key: ShellStringKey, vars?: Record<string, string | number>): string {
   const pair: StringPair | undefined = SHELL_STRINGS[key];
   if (!pair) return key;
-  return lang === "ja" ? pair.ja : pair.en;
+  return interpolate(lang === "ja" ? pair.ja : pair.en, vars);
 }

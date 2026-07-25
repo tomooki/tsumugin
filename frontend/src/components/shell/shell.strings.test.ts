@@ -20,4 +20,9 @@ describe("st()", () => {
   it("renders Japanese", () => {
     expect(st("ja", "refine.running")).toBe("精密化 実行中 …");
   });
+
+  it("interpolates {k}/{n}", () => {
+    expect(st("en", "frame.nav.label", { k: 3, n: 63 })).toBe("fr 3 / 63");
+    expect(st("ja", "frame.nav.label", { k: 3, n: 63 })).toBe("fr 3 / 63");
+  });
 });

@@ -5,12 +5,14 @@ import {
   getViewModel,
   postAddHistogram,
   postAddPhase,
+  postEchem,
+  postProjectFrames,
   postProjectSettings,
   postRemoveHistogram,
   postRemovePhase,
   uploadProjectFile,
 } from "../../api/client";
-import type { ProjectHistogramRow, ProjectPhaseRow } from "../../api/types";
+import type { FrameAxis, FrameSpec, ProjectHistogramRow, ProjectPhaseRow } from "../../api/types";
 import { DATA_FORMAT_OPTIONS, GEOMETRY_OPTIONS, RADIATION_OPTIONS } from "../../data/projectOptions";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
@@ -54,6 +56,7 @@ export function ProjectTab() {
   const histograms: ProjectHistogramRow[] = vm?.histograms ?? [];
   const phases: ProjectPhaseRow[] = vm?.phases ?? [];
   const settings = vm?.settings ?? { two_theta_limits: null, background_coeffs: null, max_cyc: null };
+  const frames = vm?.frames ?? [];
 
   const [error, setError] = useState<string | null>(null);
 
@@ -75,6 +78,29 @@ export function ProjectTab() {
   const [phaseName, setPhaseName] = useState("");
   const [uploadingCif, setUploadingCif] = useState(false);
   const [addingPhase, setAddingPhase] = useState(false);
+
+  // — FRAMES add form (V2b B1) — frameAxis is a client-side entry-mode
+  // toggle only (index ⇒ auto-sequential axis_value, time/temperature ⇒
+  // user-entered): POST /api/project/frames' payload per api-contract.md is
+  // strictly `{"frames": [...]}`, with no frame_axis parameter, so this
+  // selection is not itself persisted server-side — see api/types.ts
+  // ProjectViewModel.frame_axis's doc comment for the same judgment call.
+  const [frameAxis, setFrameAxis] = useState<FrameAxis>("index");
+  const [pendingFrames, setPendingFrames] = useState<
+    { data_path: string; label: string; axisValue: string }[]
+  >([]);
+  const [uploadingFrames, setUploadingFrames] = useState(false);
+  const [savingFrames, setSavingFrames] = useState(false);
+
+  // — ECHEM form (V2b B4) —
+  const [echemMprPath, setEchemMprPath] = useState("");
+  const [echemOffsetS, setEchemOffsetS] = useState("0");
+  const [echemIntervalS, setEchemIntervalS] = useState("1");
+  const [echemSign, setEchemSign] = useState<"1" | "-1">("1");
+  const [echemX0, setEchemX0] = useState("");
+  const [uploadingEchem, setUploadingEchem] = useState(false);
+  const [syncingEchem, setSyncingEchem] = useState(false);
+  const [echemSuccess, setEchemSuccess] = useState(false);
 
   // — SETTINGS form — resynced from the server on every viewmodel fetch
   // (mirrors reducer.ts's stageOn resync note: a page reload or an edit made
@@ -229,6 +255,118 @@ export function ProjectTab() {
     }
   }
 
+  // — FRAMES —
+
+  async function handleFrameFiles(e: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    setError(null);
+    setUploadingFrames(true);
+    try {
+      // Sequential (not Promise.all) — api-contract.md: "順に upload
+      // kind=data" — and keeps upload order == pending-row order
+      // deterministic for the sequential-index axis_value default below.
+      const uploaded: { data_path: string; label: string }[] = [];
+      for (const file of files) {
+        const res = await uploadProjectFile(file, "data");
+        uploaded.push({ data_path: res.stored_path, label: file.name });
+      }
+      setPendingFrames((prev) => [
+        ...prev,
+        ...uploaded.map((u, i) => ({
+          data_path: u.data_path,
+          label: u.label,
+          axisValue: frameAxis === "index" ? String(frames.length + prev.length + i) : "",
+        })),
+      ]);
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setUploadingFrames(false);
+      e.target.value = "";
+    }
+  }
+
+  function handlePendingAxisValueChange(index: number, value: string) {
+    setPendingFrames((prev) => prev.map((f, i) => (i === index ? { ...f, axisValue: value } : f)));
+  }
+
+  function handleRemovePendingFrame(index: number) {
+    setPendingFrames((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function handleSaveFrames() {
+    if (locked || pendingFrames.length === 0) return;
+    setError(null);
+    setSavingFrames(true);
+    try {
+      // Full replace (api-contract.md: "フレーム列を全置換") — existing rows
+      // must be resent alongside the new ones or they would be dropped.
+      const existing: FrameSpec[] = frames.map((f) => ({
+        data_path: f.data_path,
+        axis_value: f.axis_value,
+        label: f.label,
+      }));
+      const additions: FrameSpec[] = pendingFrames.map((f) => ({
+        data_path: f.data_path,
+        axis_value: parseOptionalNumber(f.axisValue) ?? 0,
+        label: f.label,
+      }));
+      await postProjectFrames({ frames: [...existing, ...additions] });
+      setPendingFrames([]);
+      await refetch();
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setSavingFrames(false);
+    }
+  }
+
+  // — ECHEM —
+
+  async function handleEchemFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    setUploadingEchem(true);
+    try {
+      const res = await uploadProjectFile(file, "echem");
+      setEchemMprPath(res.stored_path);
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setUploadingEchem(false);
+    }
+  }
+
+  async function handleSyncEchem() {
+    if (locked || !echemMprPath.trim()) return;
+    setError(null);
+    setEchemSuccess(false);
+    setSyncingEchem(true);
+    try {
+      const offset = Number(echemOffsetS);
+      const interval = Number(echemIntervalS);
+      const x0 = parseOptionalNumber(echemX0);
+      await postEchem({
+        mpr_path: echemMprPath.trim(),
+        offset_s: Number.isFinite(offset) ? offset : 0,
+        interval_s: Number.isFinite(interval) ? interval : 0,
+        sign: echemSign === "-1" ? -1 : 1,
+        ...(x0 !== null ? { x0 } : {}),
+      });
+      setEchemSuccess(true);
+      // Session-held sync results surface through channels/project.echem/
+      // sequence fraction overlay only via a fresh fetch (api-contract.md:
+      // "結果はセッション保持").
+      await refetch();
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setSyncingEchem(false);
+    }
+  }
+
   // — SETTINGS —
 
   async function handleSaveSettings() {
@@ -254,6 +392,8 @@ export function ProjectTab() {
 
   const histBusy = uploadingData || uploadingInstrument || addingHist;
   const phaseBusy = uploadingCif || addingPhase;
+  const framesBusy = uploadingFrames || savingFrames;
+  const echemBusy = uploadingEchem || syncingEchem;
 
   return (
     <div className="proj-tab">
@@ -379,6 +519,101 @@ export function ProjectTab() {
         </div>
       </BlueprintCard>
 
+      <BlueprintCard
+        heading={t("project.frames.heading")}
+        note={t("project.frames.note")}
+        className="proj-card"
+      >
+        <table className="proj-table">
+          <thead>
+            <tr>
+              <th>{t("project.frames.col.label")}</th>
+              <th className="num">{t("project.frames.col.axisValue")}</th>
+              <th>{t("project.frames.col.dataFile")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {frames.map((f) => (
+              <tr key={f.id}>
+                <td>{f.label}</td>
+                <td className="num mono">{f.axis_value}</td>
+                <td className="mono proj-table__path">{f.data_path}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {frames.length === 0 && <div className="proj-table__empty">{t("project.frames.empty")}</div>}
+
+        <div className="proj-add">
+          <span className="proj-add__heading">{t("project.frames.add.heading")}</span>
+          <div className="proj-add__grid">
+            <label className="proj-add__field">
+              <span>{t("project.frames.axis.label")}</span>
+              <select
+                value={frameAxis}
+                disabled={locked}
+                onChange={(e) => setFrameAxis(e.target.value as FrameAxis)}
+              >
+                <option value="index">{t("project.frames.axis.index")}</option>
+                <option value="time">{t("project.frames.axis.time")}</option>
+                <option value="temperature">{t("project.frames.axis.temperature")}</option>
+              </select>
+            </label>
+            <label className="proj-add__field">
+              <span>{t("project.frames.add.files")}</span>
+              <input type="file" multiple disabled={locked || framesBusy} onChange={handleFrameFiles} />
+              {uploadingFrames && <span className="proj-add__status">{t("project.frames.add.uploading")}</span>}
+            </label>
+          </div>
+
+          {pendingFrames.length > 0 && (
+            <table className="proj-table">
+              <thead>
+                <tr>
+                  <th>{t("project.frames.col.dataFile")}</th>
+                  <th className="num">{t("project.frames.add.axisValue")}</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {pendingFrames.map((f, i) => (
+                  <tr key={`${f.data_path}-${i}`}>
+                    <td className="mono proj-table__path">{f.label}</td>
+                    <td className="num">
+                      <input
+                        value={f.axisValue}
+                        disabled={locked}
+                        aria-label={`${t("project.frames.add.axisValue")} ${f.label}`}
+                        onChange={(e) => handlePendingAxisValueChange(i, e.target.value)}
+                      />
+                    </td>
+                    <td className="right">
+                      <Btn
+                        type="button"
+                        variant="outline"
+                        disabled={locked}
+                        onClick={() => handleRemovePendingFrame(i)}
+                      >
+                        {t("project.frames.add.remove")}
+                      </Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <Btn
+            type="button"
+            variant="accent"
+            disabled={locked || framesBusy || pendingFrames.length === 0}
+            onClick={handleSaveFrames}
+          >
+            {savingFrames ? t("project.frames.add.saving") : t("project.frames.add.submit")}
+          </Btn>
+        </div>
+      </BlueprintCard>
+
       <BlueprintCard heading={t("project.phases.heading")} className="proj-card">
         <table className="proj-table">
           <thead>
@@ -461,6 +696,56 @@ export function ProjectTab() {
         <Btn type="button" variant="accent" disabled={locked || savingSettings} onClick={handleSaveSettings}>
           {savingSettings ? t("project.settings.saving") : t("project.settings.save")}
         </Btn>
+      </BlueprintCard>
+
+      <BlueprintCard
+        heading={t("project.echem.heading")}
+        note={t("project.echem.note")}
+        className="proj-card"
+      >
+        <div className="proj-add__grid">
+          <label className="proj-add__field">
+            <span>{t("project.echem.mprFile")}</span>
+            <input type="file" disabled={locked} onChange={handleEchemFile} />
+            {uploadingEchem && <span className="proj-add__status">{t("project.echem.uploading")}</span>}
+          </label>
+          <label className="proj-add__field">
+            <span>{t("project.echem.mprPath")}</span>
+            <input value={echemMprPath} disabled={locked} onChange={(e) => setEchemMprPath(e.target.value)} />
+          </label>
+          <label className="proj-add__field">
+            <span>{t("project.echem.offsetS")}</span>
+            <input value={echemOffsetS} disabled={locked} onChange={(e) => setEchemOffsetS(e.target.value)} />
+          </label>
+          <label className="proj-add__field">
+            <span>{t("project.echem.intervalS")}</span>
+            <input value={echemIntervalS} disabled={locked} onChange={(e) => setEchemIntervalS(e.target.value)} />
+          </label>
+          <label className="proj-add__field">
+            <span>{t("project.echem.sign")}</span>
+            <select
+              value={echemSign}
+              disabled={locked}
+              onChange={(e) => setEchemSign(e.target.value as "1" | "-1")}
+            >
+              <option value="1">+1</option>
+              <option value="-1">-1</option>
+            </select>
+          </label>
+          <label className="proj-add__field">
+            <span>{t("project.echem.x0")}</span>
+            <input value={echemX0} disabled={locked} onChange={(e) => setEchemX0(e.target.value)} />
+          </label>
+        </div>
+        <Btn
+          type="button"
+          variant="accent"
+          disabled={locked || echemBusy || !echemMprPath.trim()}
+          onClick={handleSyncEchem}
+        >
+          {syncingEchem ? t("project.echem.syncing") : t("project.echem.submit")}
+        </Btn>
+        {echemSuccess && <div className="proj-add__status">{t("project.echem.success")}</div>}
       </BlueprintCard>
     </div>
   );
