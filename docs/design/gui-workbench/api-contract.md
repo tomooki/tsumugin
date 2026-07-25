@@ -17,6 +17,8 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
   },
   "mode": "manual",                    // "manual" | "auto" (GUI 語彙)
   "final_selection_mode": "human",     // "human" | "agent" (FR-402, エンジン語彙)
+  "source": "demo",                    // "demo" | "project" (実プロジェクト接続時 "project")
+  "refine": { "status": "idle" },      // /api/refine/status と同形 (シェルバッジ用)
   "ledger": { "count": 1281, "verified": true },
   "status": { "backend_build": "tsumugin 0.3.0", "seed": 0, "mcp_tools": 36 },
   "agent": { "tokens": 1240000, "wall_time_s": 1084, "idle": true }  // idle=true (MANUAL)
@@ -44,7 +46,13 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
     "phase_ticks": ["cubic K2Mn[Fe(CN)6]"], "two_theta": { "min": 4.0, "max": 38.0 },
     "history": [{ "stage": "06 phase fractions", "rwp": 7.02, "delta_rwp": -0.31,
                   "guard": "", "reverted": false }],
-    "validity": [{ "check": "occupancy bounds", "status": "pass", "detail": "0 ≤ occ ≤ 1" }]
+    "validity": [{ "check": "occupancy bounds", "status": "pass", "detail": "0 ≤ occ ≤ 1" }],
+    // 実プロット曲線 (hist id →)。null = 曲線なし (placeholder 表示)。配列は
+    // バックエンドで ≤2000 点に間引き済み (大配列を境界で無制限に跨がせない)。
+    // yobs のみ = 精密化前 (load_pattern による生データ)。ycalc/ybkg/residual/ticks
+    // は精密化完了後に gpx から抽出して埋まる。
+    "plot": { "sxrd": { "x": [4.0], "yobs": [123.0], "ycalc": null, "ybkg": null,
+                        "residual": null, "ticks": { "alpha CaTeO3·H2O": [10.2] } } }
   },
   "parameters": {                       // hist id → カード列
     "sxrd": { "released_count": 3, "cards": [{
@@ -60,7 +68,9 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
                "rwp": 6.71, "gof": 1.29, "bic": 39402, "close": true,
                "status": "provisional", "selected": true }],
     "diff": { "vs": "H-011", "rows": [{ "field": "phases", "a": "…", "b": "…", "changed": true }] },
-    "evidence": [["evidence backend", "bic → nested"], ["ΔlogZ", "1.2 < 2.5 threshold"]]
+    "evidence": [["evidence backend", "bic → nested"], ["ΔlogZ", "1.2 < 2.5 threshold"]],
+    // basin 散布 (マルチスタート格子ベイスン)。null = データなし (empty-state)。
+    "basin": { "points": [{ "x": 9.372, "y": 6.71, "label": "start 1" }] }
   },
   "phase_id": {
     "candidates": [{ "rank": 1, "formula": "KMnFe(CN)6", "source": "MP", "sg": "P21/n",
@@ -71,7 +81,9 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
                       "flagged_frames": "fr088–fr101" }
   },
   "sequence": {
-    "charts": [{ "id": "rwp", "title": "Rwp vs frame" }],
+    // series: null = データ未取得 (empty-state 表示)。labels は系列名 (凡例)。
+    "charts": [{ "id": "rwp", "title": "Rwp vs frame",
+                 "series": { "x": [0], "ys": [[13.4]], "labels": ["Rwp"] } }],
     "anchors": [{ "id": "fr012", "crossover": false }, { "id": "fr091", "crossover": true }],
     "note": "crossover fr091 · total_bic minimum · x_XRD follows x_echem within esd",
     "segments": [{ "segment": "fr061–fr091", "forward": "cubic+mono", "backward": "cubic+tetra",
@@ -113,7 +125,8 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
 | POST `/api/structure/apply` `{"sites": [...], "note": str}` | `{"snapshot_id": str, "ledger_index": int}` | SnapshotStore.save + ledger |
 | POST `/api/approval/{action_id}` `{"decision": "approve"\|"reject"}` | `{"state": ..., "snapshot_id": str\|null, "ledger_index": int}` | 両経路 ledger、approve のみ snapshot |
 | POST `/api/stages/{nn}` `{"action": "release"\|"revert"}` | `{"stage": {...updated}}` | セッション状態 + ledger |
-| POST `/api/refine` `{}` | 202 `{"status": "recorded"}` | ledger のみ (runner は M-later) |
+| POST `/api/refine` `{}` | 202 `{"status": "started"}` / 409 (実行中) | 実 `run_auto_rietveld` をバックグラウンドスレッドで起動 + ledger (`refine_request`)。demo モード (project 未接続) は従来どおり 202 `{"status": "recorded"}` + ledger のみ |
+| GET `/api/refine/status` | `{"status": "idle"\|"running"\|"done"\|"failed", "elapsed_s": float\|null, "last_event": str\|null, "error": str\|null}` | — (ポーリング用。完了時はフロントが state/viewmodel を再フェッチ) |
 | POST `/api/transcript/message` `{"text": str}` | `{"message": {...}}` | transcript 追記 |
 | GET `/api/ledger` | `{"entries": [{"index", "time", "actor", "text", "hash", "revert_to"}], "verified": true}` | — |
 | GET `/api/review-queue` | `{"items": [...]}` | — |

@@ -21,9 +21,12 @@ desktop/             Tauri 2 シェル (sidecar = FastAPI, ADR-0001)
 
 | ファイル | 役割 |
 |---|---|
-| `session.py` | `WorkbenchSession` — Ledger / SnapshotStore / ReviewQueue / FinalSelectionEngine / SearchResult(任意) / transcript・承認・ステージ状態を束ねる可変セッション。numpy-only。 |
-| `seed.py` | 決定論シードデータ (プロトタイプ同値の view-model: fit/params/phase-id/sequence/structure/transcript)。純 dict を返す関数群。 |
-| `app.py` | `create_workbench_app(session) -> FastAPI` + `serve()`。fastapi 遅延 import (`web` extra)。ビルド済み frontend があれば静的配信。 |
+| `session.py` | `WorkbenchSession` — Ledger / SnapshotStore / ReviewQueue / FinalSelectionEngine / SearchResult(任意) / transcript・承認・ステージ状態を束ねる可変セッション。numpy-only。`create_demo()` (シード) と `from_project()` (実プロジェクト) の 2 系統。変更は内部 `threading.Lock` で直列化 (FastAPI sync ハンドラは threadpool 実行 + refine ジョブスレッドが並走するため)。 |
+| `seed.py` | 決定論シードデータ (プロトタイプ同値の view-model: fit/params/phase-id/sequence/structure/transcript)。純 dict を返す関数群。demo モード専用。 |
+| `project.py` | **実プロジェクト境界**: JSON プロジェクト spec (histograms/phases は ② `auto_rietveld` と同一スキーマ = `HistogramSpec.from_dict`/`PhaseSpec.from_dict` を再利用) のロード + 検証 + 精密化前プレビュー (`reference.io.load_pattern`, numpy-only) + viewmodel 構築。 |
+| `jobs.py` | **精密化ジョブ**: `RefinementJobManager` — `run_auto_rietveld` を `threading.Thread` で実行 (先例なしの新設計)。状態 `idle/running/done/failed`、進捗は ledger 追記 (engine に session ledger を渡す) の最新エントリで報告。完了時に lock 下で session を更新 (metrics/history/validity/wt%/曲線) + snapshot + ledger。runner は callable 注入可 (**テスト専用**、実運用既定は `run_auto_rietveld`、§4.5)。 |
+| `curves.py` | **プロット曲線抽出**: 精密化済み gpx から `hist.data["data"][1]` = [x, Yobs, weight, Ycalc, Ybkg, Ydiff] と `Reflection Lists` を読み、`{x, yobs, ycalc, ybkg, residual, ticks}` に構造化。**≤2000 点へ間引き** (大配列を境界で無制限に跨がせない)。GSAS 遅延 import。workbench (FOUNDATIONAL) 内に置くことで ① への機能追加を避ける。 |
+| `app.py` | `create_workbench_app(session) -> FastAPI` + `serve()`。fastapi 遅延 import (`web` extra)。ビルド済み frontend があれば静的配信。`POST /api/refine` (202/409) + `GET /api/refine/status` (ポーリング)。 |
 
 ### モード制御 (FR-402)
 
@@ -108,6 +111,21 @@ components/right/   OperatorConsole (recipe+gating+review) / AgentSession (trans
 - **シードもバックエンド供給**: フロントにデータを持たせると実 API 差し替え時に view を
   書き直すことになる。`/api/viewmodel` の形を実データの契約として先に凍結する
   (ADR-0001 規律 1: バックエンド安定契約の先行)。
-- **チャート v1 placeholder**: ハンドオフの明示指定。枠geometry と軸ラベルを保持し、
-  後続で Plotly 等に差し替える。
+- **チャートは自前 SVG コンポーネント** (`frontend/src/components/charts/`): ランタイム依存
+  react のみの規律を維持し、Industry トークンで描く軽量 SVG (LinePlot: yobs 点列 + ycalc 線 +
+  残差パネル + 反射 tick 行 / SeriesChart: 折れ線・散布)。series/plot が null のときは
+  ハンドオフと同じ破線 empty-state 枠に縮退 (「実チャート = データがあれば描く・無ければ
+  枠」)。Plotly 等の導入は 3D/対話要件が出た時点で再検討 (ADR-0001)。
+- **実プロジェクト接続 (v1 実用形)**: 起動 `python -m tsumugin.workbench --project <spec.json>`。
+  spec の histograms/phases は ② `auto_rietveld` ツールと同一 JSON スキーマ (from_dict 共有)。
+  起動直後は load_pattern による yobs のみのプロット + 実相リスト。RUN REFINEMENT →
+  バックグラウンドで実 `run_auto_rietveld` (数十秒〜数百秒) → 完了で実 metrics / stage 履歴
+  (ΔRwp は隣接差分で計算) / validity (`ValidityReport.checks`) / wt%(esd) / 実曲線 + 子スナップ
+  ショット + ledger。デモ project は git 管理済みの CaTeO3 (m9, 既知 Rwp ~13.4%) を
+  `docs/benchmark/testdata/m9/cateo3/` から使用 (`examples/cateo3_project.json`)。
+- **v1 で残る表示制約 (明示)**: project モードの STRUCTURE 座標 (x/y/z) は
+  `AutoRietveldResult` に含まれないため「―」表示 (occ/Uiso±esd は実値)。PARAMETERS の
+  実値反映は radiation (spec 由来) + 精密化後の `hist_profile` のみ。SEQUENCE 実系列は
+  逐次解析 (M9/M10) の接続後。MEM 密度マップは実 MEM 実行 (FR-601) の配線後。
+  いずれも空データ empty-state として正直に表示する (シード値でごまかさない)。
 - **NiceGUI 等の中間物なし**: ADR-0001 決定の履行。

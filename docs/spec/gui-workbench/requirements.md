@@ -50,17 +50,22 @@
   書かない (トークン CSS のみが値を持つ)。警告状態は色相追加でなく明度反転
   (neutral-900 反転チップ)。
 
-## v1 スコープ境界 (明示)
+## v1 スコープ (実用形 — 2026-07-25 改訂)
 
-- **実配線**: mode 切替 / ledger / snapshot / review queue / 仮説 accept・revert /
-  ReviseStructure 適用 / ModelAction 承認は ① エンジン実体に配線する。
-- **シードデータ**: FIT メトリクス・PARAMETERS 表・PHASE ID 候補・SEQUENCE 系列・
-  STRUCTURE サイト・AUTO transcript は、実解析セッション接続までは決定論シード
-  (プロトタイプ同値) をバックエンドから配信する。**シードもバックエンド供給**とし、
-  フロントにデータをハードコードしない (後続の実 API 差し替えが view 無変更で済む形)。
-- **RUN REFINEMENT**: v1 は要求を ledger 追記して受理 (202)。実 GSAS runner 接続は
-  後続マイルストーン (既存 `auto_rietveld` MCP 経路の再利用)。
+- **REQ-GUI-012 実プロジェクト接続**: `--project <spec.json>` で実データ (パターン +
+  CIF + instprm) に接続する。spec の histograms/phases は ② `auto_rietveld` と同一
+  JSON スキーマ (`HistogramSpec/PhaseSpec.from_dict` 共有 — §4.5 到達可能性)。起動直後に
+  実測パターン (yobs) を表示。demo モード (シード) は引数なし起動として維持。
+- **REQ-GUI-013 実 RUN REFINEMENT**: project モードの RUN REFINEMENT は実
+  `run_auto_rietveld` をバックグラウンド実行 (202 + status ポーリング、二重起動 409)。
+  完了で実 Rwp/GOF/stage 履歴/validity/wt%±esd/フィット曲線に更新 + 子スナップショット +
+  ledger。失敗は status=failed + error 文字列 (例外を境界に貫通させない)。
+- **REQ-GUI-014 実チャート**: プロット領域は実 SVG チャート (FIT: yobs/ycalc/残差/反射
+  ticks、SEQUENCE: 系列折れ線、EVIDENCE: basin 散布)。**データが無い領域は破線
+  empty-state 枠に縮退し、シード値で実データを偽装しない**。
+- **シードデータ**: demo モード専用。フロントにデータをハードコードしない原則は不変。
 - **LLM チャットループ**: AUTO の実 LLM 駆動は本 GUI の外 (③ = Claude Code / MCP)。
-  v1 は transcript の表示・承認カード操作・composer 送信の記録まで。
-- **Tauri**: v1 は scaffold + デバッグビルド成立 + dev 構成 (localhost 接続)。
-  PyInstaller sidecar 完全梱包・署名付きインストーラは M-later。
+  transcript の表示・承認カード操作・composer 送信の記録まで。
+- **v1 残存制約 (明示)**: project モードの STRUCTURE 座標表示は「―」 (result 未収録)、
+  PARAMETERS 実値は radiation + 精密化後 profile のみ、SEQUENCE 実系列は M9/M10 接続後、
+  MEM 密度マップは FR-601 配線後。Tauri は scaffold + dev 構成 (sidecar 梱包 M-later)。
