@@ -587,8 +587,18 @@ def create_workbench_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/transcript/message")
-    def post_transcript_message(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        return holder.session.post_message(body.get("text", ""))
+    def post_transcript_message(body: dict[str, Any] = Body(...)) -> Any:
+        result = holder.session.post_message(body.get("text", ""))
+        success_status = 202 if result.get("status") == "agent_started" else 200
+        return _to_response(result, success_status=success_status)
+
+    # ------------------------------------------------------------------
+    # GET /api/agent/status (V3a)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/agent/status")
+    def get_agent_status() -> dict[str, Any]:
+        return holder.session.agent_status()
 
     # ------------------------------------------------------------------
     # 静的配信 (ビルド済み frontend があれば / で配信、無ければ案内 JSON)

@@ -453,6 +453,78 @@ def test_transcript_message_is_recorded(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
+# V3a AUTO 実 LLM ブリッジ: /api/agent/status + /api/transcript/message の 202/409 分岐
+# ---------------------------------------------------------------------------
+
+
+class _StubBridge:
+    def __init__(self, *, available: bool, accept: bool = True) -> None:
+        self._available = available
+        self._accept = accept
+        self.sent: list[str] = []
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def send(self, text: str) -> bool:
+        if not self._accept:
+            return False
+        self.sent.append(text)
+        return True
+
+    def status(self) -> dict:
+        return {
+            "status": "running" if self.sent else "idle",
+            "available": self._available,
+            "tokens": 7,
+            "wall_time_s": 1.5,
+            "error": None,
+        }
+
+
+def test_get_agent_status_route(client: TestClient, session: WorkbenchSession):
+    resp = client.get("/api/agent/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"status", "available", "tokens", "wall_time_s", "error"}
+
+
+def test_post_transcript_message_returns_202_when_agent_started(
+    client: TestClient, session: WorkbenchSession
+):
+    session.set_mode("auto")
+    session._agent_bridge = _StubBridge(available=True)
+
+    resp = client.post("/api/transcript/message", json={"text": "go"})
+
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "agent_started"}
+
+
+def test_post_transcript_message_returns_409_when_agent_already_running(
+    client: TestClient, session: WorkbenchSession
+):
+    session.set_mode("auto")
+    session._agent_bridge = _StubBridge(available=True, accept=False)
+
+    resp = client.post("/api/transcript/message", json={"text": "go"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+
+
+def test_post_transcript_message_manual_mode_still_returns_200(
+    client: TestClient, session: WorkbenchSession
+):
+    # 既定 manual では bridge が available でも呼ばれず、従来の 200 応答のまま。
+    session._agent_bridge = _StubBridge(available=True)
+    resp = client.post("/api/transcript/message", json={"text": "go"})
+    assert resp.status_code == 200
+    assert resp.json()["message"]["text"] == "go"
+
+
+# ---------------------------------------------------------------------------
 # ledger
 # ---------------------------------------------------------------------------
 

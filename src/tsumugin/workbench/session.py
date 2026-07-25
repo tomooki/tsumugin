@@ -38,6 +38,7 @@ from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
 from . import lifecycle
 from . import seed as _seed
+from .agent_bridge import AgentBridge
 from .jobs import RefinementJobManager, build_default_runner
 from .project import (
     WorkbenchProject,
@@ -262,6 +263,10 @@ class WorkbenchSession:
         # 【viewmodel 更新系の直列化】: FastAPI sync ハンドラは threadpool 実行 + refine ジョブ
         #   スレッドが並走するため、project モードの完了コールバックはこのロック下で状態を更新する。
         self._lock = threading.Lock()
+        # 【V3a AUTO 実 LLM ブリッジ】: `_agent_append` はこの `self._lock` 下で transcript へ
+        #   append する (bridge のバックグラウンドスレッドと GET /api/viewmodel の並走に対して安全)。
+        #   `get_state_summary=self.state` はシステムプロンプトに埋め込む現況要約。
+        self._agent_bridge = AgentBridge(on_event=self._agent_append, get_state_summary=self.state)
 
     # ------------------------------------------------------------------
     # デモシード構築
@@ -392,6 +397,16 @@ class WorkbenchSession:
     def state(self) -> dict[str, Any]:
         agent = dict(self._agent_base)
         agent["idle"] = self.mode == "manual"
+        # 【V3a: 実測値へ差し替え】: tokens/wall_time_s/available は AgentBridge の実測値
+        #   (api-contract.md 「state.agent | tokens/wall_time_s が実測値に。available 追加」)。
+        #   `get_state_summary=self.state` (bridge 構築時に注入) と本メソッドが相互参照する形に
+        #   なるため、ここで `self._agent_bridge.status()` を呼んでも無限再帰しない
+        #   (bridge は `state()` を「システムプロンプト構築時」にのみ呼び、`status()` はこの
+        #   フィールドを読むだけで `state()` を呼び返さない)。
+        bridge_status = self._agent_bridge.status()
+        agent["available"] = bridge_status["available"]
+        agent["tokens"] = bridge_status["tokens"]
+        agent["wall_time_s"] = bridge_status["wall_time_s"]
         # 【gsas_available は毎回動的判定】: Tier1 sidecar は GSAS-II 抜きで同梱され得るため、
         #   status は起動時固定シードでなく現在の import 可否 (`gsasii_available`, lru_cache 済み
         #   なので実質定数コスト) を都度反映する (api-contract.md GET /api/state)。
@@ -1292,10 +1307,43 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def post_message(self, text: str) -> dict[str, Any]:
+        """POST /api/transcript/message (V3a)。
+
+        ``source != "none"`` かつ ``mode == "auto"`` かつ ``AgentBridge.available`` のときのみ
+        エージェントへ非同期送信する (``bridge.send``)。実行中は ``ConflictError`` (呼び出し側が
+        409 へ縮退)。それ以外は従来どおり記録のみ (demo/manual/エージェント不可用時のフォールバック,
+        後方互換)。ユーザーメッセージ自体はどちらの経路でも transcript/ledger へ記録する。
+        """
         msg = {"id": f"t{len(self._transcript) + 1}", "kind": "user", "text": text}
         self._transcript.append(msg)
         self.ledger.append("transcript_message", {"text": text})
+        if self._source != "none" and self.mode == "auto" and self._agent_bridge.available:
+            started = self._agent_bridge.send(text)
+            if not started:
+                return {"error": "agent is already running", "error_type": "ConflictError"}
+            return {"status": "agent_started"}
         return {"message": dict(msg)}
+
+    def _agent_append(self, kind: str, **fields: Any) -> dict[str, Any]:
+        """``AgentBridge.on_event``: transcript へ 1 行 append し、append 済み行 (可変 dict) を返す。
+
+        エージェントのバックグラウンドスレッドから呼ばれるため ``self._lock`` 下で行う
+        (`GET /api/viewmodel` の transcript 読み取りとの並走に対して安全)。返す dict は
+        ``self._transcript`` に格納された同一オブジェクトなので、呼び出し側 (`AgentBridge`) が
+        後から ``row["ret"] = ...`` のように直接書き込めば transcript にも反映される
+        (ToolUseBlock → 対応する ToolResultBlock の遅延反映に使う)。
+        """
+        with self._lock:
+            row: dict[str, Any] = {"id": f"t{len(self._transcript) + 1}", "kind": kind, **fields}
+            self._transcript.append(row)
+            return row
+
+    # ------------------------------------------------------------------
+    # GET /api/agent/status (V3a)
+    # ------------------------------------------------------------------
+
+    def agent_status(self) -> dict[str, Any]:
+        return self._agent_bridge.status()
 
     # ------------------------------------------------------------------
     # POST /api/phaseid, GET /api/phaseid/status, POST /api/phaseid/add (A4)

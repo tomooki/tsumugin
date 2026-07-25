@@ -265,6 +265,117 @@ def test_post_message_appends_transcript_and_ledger():
 
 
 # ---------------------------------------------------------------------------
+# V3a AUTO 実 LLM ブリッジ: post_message の分岐配線
+# ---------------------------------------------------------------------------
+
+
+class _StubBridge:
+    """``AgentBridge`` の代わりに差し込む最小スタブ (session.py が使う面のみ実装)。"""
+
+    def __init__(self, *, available: bool, accept: bool = True) -> None:
+        self._available = available
+        self._accept = accept
+        self.sent: list[str] = []
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def send(self, text: str) -> bool:
+        if not self._accept:
+            return False
+        self.sent.append(text)
+        return True
+
+    def status(self) -> dict:
+        return {"status": "running" if self.sent else "idle", "available": self._available,
+                "tokens": 0, "wall_time_s": 0.0, "error": None}
+
+
+def test_post_message_auto_mode_with_available_bridge_starts_agent():
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello agent")
+
+    assert result == {"status": "agent_started"}
+    assert stub.sent == ["hello agent"]
+    # ユーザーメッセージ自体は従来どおり transcript/ledger に記録される。
+    assert any(m.get("text") == "hello agent" for m in session.viewmodel()["transcript"])
+
+
+def test_post_message_auto_mode_with_unavailable_bridge_falls_back():
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    stub = _StubBridge(available=False)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello agent")
+
+    assert result["message"]["text"] == "hello agent"
+    assert stub.sent == []  # bridge には送られていない (フォールバック)
+
+
+def test_post_message_manual_mode_never_invokes_bridge_even_if_available():
+    session = WorkbenchSession.create_demo()  # 既定 manual
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello")
+
+    assert result["message"]["text"] == "hello"
+    assert stub.sent == []
+
+
+def test_post_message_source_none_never_invokes_bridge():
+    session = WorkbenchSession.create_empty()
+    session.set_mode("auto")
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello")
+
+    assert result["message"]["text"] == "hello"
+    assert stub.sent == []
+
+
+def test_post_message_agent_already_running_returns_conflict():
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    stub = _StubBridge(available=True, accept=False)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello")
+
+    assert result["error_type"] == "ConflictError"
+
+
+def test_agent_status_delegates_to_bridge():
+    session = WorkbenchSession.create_demo()
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+    assert session.agent_status() == stub.status()
+
+
+def test_state_agent_reflects_bridge_tokens_and_available():
+    session = WorkbenchSession.create_demo()
+
+    class _Bridge:
+        available = True
+
+        def status(self):
+            return {"status": "idle", "available": True, "tokens": 42, "wall_time_s": 3.5, "error": None}
+
+    session._agent_bridge = _Bridge()
+    agent = session.state()["agent"]
+    assert agent["available"] is True
+    assert agent["tokens"] == 42
+    assert agent["wall_time_s"] == 3.5
+
+
+# ---------------------------------------------------------------------------
 # hypotheses accept / revert
 # ---------------------------------------------------------------------------
 
