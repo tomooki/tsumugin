@@ -1,0 +1,23 @@
+{
+  "name": "CaTeO3 alpha (M9 replay, frame030)",
+  "background_coeffs": 24,
+  "max_cyc": 20,
+  "histograms": [
+    {
+      "data_path": "../docs/benchmark/testdata/m9/cateo3/NB-LM01MO_030.XRDML",
+      "instrument_path": "../docs/benchmark/testdata/m9/cateo3/cateo3_CuKa.instprm",
+      "radiation": "xray_lab",
+      "geometry": "bragg_brentano",
+      "data_format": "XRDML",
+      "two_theta_limits": [12.0, 70.0]
+    }
+  ],
+  "phases": [
+    {
+      "structure_path": "../docs/benchmark/testdata/m9/cateo3/alpha_CaTeO3_H2O.cif",
+      "phase_name": "alpha",
+      "format_hint": "CIF",
+      "display": {"space_group": "Pna2₁"}
+    }
+  ]
+}

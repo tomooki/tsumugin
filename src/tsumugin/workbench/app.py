@@ -212,12 +212,17 @@ def create_workbench_app(
         return _to_response(result)
 
     # ------------------------------------------------------------------
-    # POST /api/refine (202)
+    # POST /api/refine (202 / 409), GET /api/refine/status
     # ------------------------------------------------------------------
 
-    @app.post("/api/refine", status_code=202)
-    def post_refine() -> dict[str, Any]:
-        return session.request_refine()
+    @app.post("/api/refine")
+    def post_refine() -> Any:
+        result = session.request_refine()
+        return _to_response(result, success_status=202)
+
+    @app.get("/api/refine/status")
+    def get_refine_status() -> dict[str, Any]:
+        return session.refine_status()
 
     # ------------------------------------------------------------------
     # POST /api/transcript/message

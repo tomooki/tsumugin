@@ -16,20 +16,29 @@ L142-153)。同一モードへの切替を no-op (ledger 追記なし) にする
 
 from __future__ import annotations
 
+import math
+import os
+import threading
 from typing import TYPE_CHECKING, Any, Literal
 
+from .._json import finite_or_none
+from ..autorietveld.recipe import build_recipe
+from ..model import LatticeParams, PhaseInstance
 from ..selection.engine import FinalSelectionEngine
 from ..selection.review_queue import ReviewQueue
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
 from . import seed as _seed
+from .jobs import RefinementJobManager, build_default_runner
+from .project import WorkbenchProject, preview_pattern
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import は不要 (numpy 汚染回避と同じ流儀) 🔵
-    from ..model import PhaseInstance
+    from ..autorietveld.model import AutoRietveldResult
     from ..search.tree import SearchResult
 
 GuiMode = Literal["manual", "auto"]
 EngineMode = Literal["human", "agent"]
+GuiSource = Literal["demo", "project"]
 
 _GUI_TO_ENGINE: dict[str, EngineMode] = {"manual": "human", "auto": "agent"}
 _ENGINE_TO_GUI: dict[str, GuiMode] = {"human": "manual", "agent": "auto"}
@@ -45,6 +54,10 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "review_resolve": "HUMAN",
     "stage_action": "HUMAN",
     "refine_request": "HUMAN",
+    "refine_finished": "CORE ①",
+    "refine_failed": "CORE ①",
+    "m7_stage": "CORE ①",
+    "m7_stage_error": "GUARD",
     "transcript_message": "HUMAN",
     "approval_decision": "HUMAN",
     "accept_reason": "HUMAN",
@@ -77,6 +90,14 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"stage {payload.get('nn')} {payload.get('action')}"
     if kind == "refine_request":
         return "refine requested"
+    if kind == "refine_finished":
+        return f"refine finished (rwp={payload.get('rwp')})"
+    if kind == "refine_failed":
+        return f"refine failed: {payload.get('error')}"
+    if kind == "m7_stage":
+        return f"stage {payload.get('stage')} rwp={payload.get('rwp')}"
+    if kind == "m7_stage_error":
+        return f"stage {payload.get('stage')} error"
     if kind == "transcript_message":
         return "transcript message posted"
     if kind == "approval_decision":
@@ -118,6 +139,17 @@ class WorkbenchSession:
         self._structure_sites: list[dict[str, Any]] = []
         self._structure_phases: "tuple[PhaseInstance, ...]" = ()
 
+        # 【実プロジェクト接続 (REQ-GUI-012/013)】: 既定は demo。``from_project`` が "project" へ切替える。
+        self._source: GuiSource = "demo"
+        self._project: "WorkbenchProject | None" = None
+        self._phases_view: list[dict[str, Any]] = []
+        self._parameters_view: dict[str, Any] = {}
+        self._fit: dict[str, Any] = {}
+        self._job = RefinementJobManager(last_event=self._last_ledger_text)
+        # 【viewmodel 更新系の直列化】: FastAPI sync ハンドラは threadpool 実行 + refine ジョブ
+        #   スレッドが並走するため、project モードの完了コールバックはこのロック下で状態を更新する。
+        self._lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # デモシード構築
     # ------------------------------------------------------------------
@@ -149,6 +181,29 @@ class WorkbenchSession:
             }
         return session
 
+    @classmethod
+    def from_project(cls, project: WorkbenchProject) -> "WorkbenchSession":
+        """実プロジェクト spec (`project.load_project_spec`) からセッションを構築する (REQ-GUI-012)。
+
+        demo のシード (hypotheses/phase_id/sequence/transcript/review) は持たない — 実データが無い
+        領域は empty-state (空リスト/None) として正直に表示する (REQ-GUI-014 精神、シード値で
+        実データを偽装しない)。datasets/phases/fit(プレビュー)/stages は実 project から構築する。
+        """
+        session = cls(mode="manual")
+        session._source = "project"
+        session._project = project
+        session.project = {
+            "name": project.name,
+            "dataset": f"{len(project.histograms)} histogram(s)",
+            "frame": None,
+            "echem": None,
+        }
+        session._phases_view = _initial_phases_view(project)
+        session._parameters_view = _initial_parameters_view(project)
+        session._fit = _initial_fit_view(project)
+        session._stages = _stages_from_recipe(project)
+        return session
+
     # ------------------------------------------------------------------
     # モード (FR-402)
     # ------------------------------------------------------------------
@@ -157,6 +212,11 @@ class WorkbenchSession:
     def mode(self) -> GuiMode:
         """現在の GUI モード (``final_selection_mode`` の GUI 語彙写像)。"""
         return _ENGINE_TO_GUI[self.engine.mode]
+
+    @property
+    def source(self) -> GuiSource:
+        """接続元 ("demo"|"project", REQ-GUI-012)。``from_project`` で "project" になる。"""
+        return self._source
 
     def set_mode(self, gui_mode: str) -> bool:
         """GUI モードを切替える。同一モードへの切替は no-op (ledger 追記なし) で ``False`` を返す。
@@ -182,6 +242,8 @@ class WorkbenchSession:
             "project": dict(self.project),
             "mode": self.mode,
             "final_selection_mode": self.engine.mode,
+            "source": self._source,
+            "refine": self.refine_status(),
             "ledger": {"count": len(self.ledger.entries), "verified": self.ledger.verify()},
             "status": dict(self._status),
             "agent": agent,
@@ -192,25 +254,56 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def viewmodel(self) -> dict[str, Any]:
-        seeded_snapshots = _seed.seed_snapshots()
+        is_project = self._source == "project"
+        seeded_snapshots = [] if is_project else _seed.seed_snapshots()
         live_snapshots = [{"id": s.id, "note": s.label} for s in self.snapshots.snapshots]
+        with self._lock:
+            fit = dict(self._fit) if is_project else _seed.seed_fit()
+            phases = [dict(p) for p in self._phases_view] if is_project else _seed.seed_phases()
+            parameters = (
+                {k: dict(v) for k, v in self._parameters_view.items()}
+                if is_project
+                else _seed.seed_parameters()
+            )
         return {
-            "datasets": _seed.seed_datasets(),
-            "phases": _seed.seed_phases(),
-            "channels": _seed.seed_channels(),
+            "datasets": self._datasets_view(),
+            "phases": phases,
+            "channels": [] if is_project else _seed.seed_channels(),
             "snapshots": seeded_snapshots + live_snapshots,
-            "fit": _seed.seed_fit(),
-            "parameters": _seed.seed_parameters(),
+            "fit": fit,
+            "parameters": parameters,
             "hypotheses": self.hypotheses_view(),
-            "phase_id": _seed.seed_phase_id(),
-            "sequence": _seed.seed_sequence(),
+            "phase_id": _EMPTY_PHASE_ID if is_project else _seed.seed_phase_id(),
+            "sequence": _EMPTY_SEQUENCE if is_project else _seed.seed_sequence(),
             "structure": self._structure_view(),
             "stages": [dict(s) for s in self._stages],
             "review": self.review_view(),
             "transcript": self._transcript_view(),
         }
 
+    def _datasets_view(self) -> list[dict[str, Any]]:
+        if self._source != "project" or self._project is None:
+            return _seed.seed_datasets()
+        rows = []
+        for i, h in enumerate(self._project.histograms):
+            rows.append(
+                {
+                    "id": f"h{i}",
+                    "name": os.path.basename(h.data_path),
+                    "meta": h.radiation.value,
+                    "probe": "N" if h.radiation.is_neutron else "X",
+                    "active": i == 0,
+                }
+            )
+        return rows
+
     def _structure_view(self) -> dict[str, Any]:
+        if self._source == "project":
+            return {
+                "sites": [dict(s) for s in self._structure_sites],
+                "constraints": [],
+                "mem_peaks": [],
+            }
         return {
             "sites": [dict(s) for s in self._structure_sites],
             "constraints": _seed.seed_structure_constraints(),
@@ -418,9 +511,104 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def request_refine(self) -> dict[str, Any]:
-        """精密化要求を ledger 追記のみで受理する (v1: 実 GSAS runner は M-later)。"""
-        self.ledger.append("refine_request", {})
-        return {"status": "recorded"}
+        """精密化要求を受理する (REQ-GUI-013)。
+
+        demo モード (source="demo") は従来どおり ledger 追記のみで即時受理する (後方互換)。
+        project モードは実 ``run_auto_rietveld`` をバックグラウンドスレッドで起動する。実行中の
+        二重起動は ``ConflictError`` (呼び出し側 [`app.py`] が 409 へ縮退) を返す。
+        """
+        if self._source == "demo":
+            self.ledger.append("refine_request", {})
+            return {"status": "recorded"}
+        if self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        runner = build_default_runner(self._project, ledger=self.ledger)
+        started = self._job.start(
+            runner,
+            on_success=self._on_refine_success,
+            on_failure=self._on_refine_failure,
+            # 【ledger 順序保証】: on_started はロック保持下・スレッド起動前に同期実行されるため、
+            #   即座に失敗する runner との競合でも "refine_request" は必ず終了系エントリより先に
+            #   現れる (RefinementJobManager.start docstring 参照)。
+            on_started=lambda: self.ledger.append("refine_request", {}),
+        )
+        if not started:
+            return {"error": "refinement already running", "error_type": "ConflictError"}
+        return {"status": "started"}
+
+    def refine_status(self) -> dict[str, Any]:
+        """GET /api/refine/status 契約形を返す。"""
+        return self._job.status()
+
+    def _last_ledger_text(self) -> "str | None":
+        """job manager の ``last_event`` に注入する callable: 直近 ledger エントリの表示テキスト。"""
+        entries = self.ledger.entries
+        if not entries:
+            return None
+        last = entries[-1]
+        return _text_for_kind(last.kind, dict(last.payload))
+
+    def _on_refine_success(self, result: "AutoRietveldResult") -> None:
+        """精密化成功時のコールバック (RefinementJobManager が背景スレッドから呼ぶ)。
+
+        純粋な整形処理 (metrics/history/validity/plot/phases) をロック外で計算し、副作用
+        (viewmodel 更新・SnapshotStore.save・ledger 追記) のみをロック下で行う (部分適用を避ける)。
+        整形処理が例外を送出した場合、ここでの副作用は一切実行されないまま `RefinementJobManager`
+        側へ伝播し ``failed`` へ縮退する (例外貫通禁止は境界である job manager が担保する)。
+        """
+        project = self._project
+        metrics = _build_fit_metrics(result)
+        history = _build_fit_history(result.stage_results)
+        validity_rows = _build_validity_rows(result.validity)
+        plot: dict[str, Any] = {}
+        if result.gpx_path and project is not None:
+            from . import curves
+
+            limits = [h.two_theta_limits for h in project.histograms]
+            plot = curves.extract_curves(result.gpx_path, two_theta_limits=limits)
+        phases_view = _build_phases_view(project, result) if project is not None else []
+        snapshot_phases = (
+            _phase_instances_from_result(project, result) if project is not None else ()
+        )
+
+        with self._lock:
+            self._fit["metrics"] = metrics
+            self._fit["history"] = history
+            self._fit["validity"] = validity_rows
+            if plot:
+                self._fit["plot"] = plot
+            if phases_view:
+                self._phases_view = phases_view
+            self._apply_hist_profile(result.hist_profile)
+            self.snapshots.save(snapshot_phases, label="refine finished")
+            self.ledger.append(
+                "refine_finished",
+                {"rwp": finite_or_none(result.final_rwp), "gof": finite_or_none(result.final_gof)},
+            )
+
+    def _on_refine_failure(self, exc: BaseException) -> None:
+        """精密化失敗時のコールバック (RefinementJobManager が背景スレッドから呼ぶ)。"""
+        with self._lock:
+            self.ledger.append("refine_failed", {"error": str(exc)})
+
+    def _apply_hist_profile(self, hist_profile: "tuple[Any, ...]") -> None:
+        """精密化後の ``hist_profile`` で PARAMETERS の PROFILE カードを更新する (可能な範囲で)。
+
+        呼び出し元 (`_on_refine_success`) がロックを保持している前提 (自前ロックしない)。
+        """
+        for i, prof in enumerate(hist_profile):
+            hist_id = f"h{i}"
+            view = self._parameters_view.get(hist_id)
+            if view is None or not prof:
+                continue
+            for card in view.get("cards", []):
+                if card.get("id") != "profile":
+                    continue
+                card["rows"] = [
+                    _row(str(k), f"{v:.6g}", released=True) for k, v in sorted(dict(prof).items())
+                ]
+                card["note"] = "refined"
+            view["released_count"] = len(prof)
 
     # ------------------------------------------------------------------
     # POST /api/transcript/message
@@ -431,3 +619,217 @@ class WorkbenchSession:
         self._transcript.append(msg)
         self.ledger.append("transcript_message", {"text": text})
         return {"message": dict(msg)}
+
+
+# ---------------------------------------------------------------------------
+# project モード viewmodel 構築ヘルパ (empty-state 契約, REQ-GUI-014)
+# ---------------------------------------------------------------------------
+
+#: project モードは実相同定/逐次解析が未接続 (v1 残存制約) — シード値で偽装せず空を返す。
+_EMPTY_PHASE_ID: dict[str, Any] = {
+    "candidates": [],
+    "unexplained": [],
+    "completeness": {"is_complete": None, "notes": [], "flagged_frames": ""},
+}
+_EMPTY_SEQUENCE: dict[str, Any] = {"charts": [], "anchors": [], "note": "", "segments": []}
+
+
+def _row(field: str, value: str, esd: str = "", *, released: bool = False, locked: bool = False) -> dict[str, Any]:
+    """PARAMETERS カードの 1 行 (`seed._row` と同一形; project モードは実値を渡す)。"""
+    return {"field": field, "value": value, "esd": esd, "released": released, "locked": locked}
+
+
+def _initial_phases_view(project: WorkbenchProject) -> list[dict[str, Any]]:
+    """左レール PHASES の初期状態 (精密化前, wt_frac は未定なので "―")。"""
+    rows: list[dict[str, Any]] = []
+    for i, p in enumerate(project.phases):
+        display = project.phase_display.get(p.phase_name, {})
+        rows.append(
+            {
+                "id": f"p{i + 1}",
+                "name": p.phase_name,
+                "swatch": "accent" if i == 0 else "neutral",
+                "space_group": str(display.get("space_group", "")),
+                "mp_id": str(display.get("mp_id", "")),
+                "wt_frac": "―",
+            }
+        )
+    return rows
+
+
+def _fmt_wt_frac(value: "float | None", esd: "float | None") -> str:
+    if value is None:
+        return "―"
+    pct = value * 100.0
+    if esd:
+        return f"{pct:.1f}({esd * 100:.1f}) %"
+    return f"{pct:.1f} %"
+
+
+def _build_phases_view(
+    project: "WorkbenchProject | None", result: "AutoRietveldResult"
+) -> list[dict[str, Any]]:
+    """精密化後の左レール PHASES (wt%±esd を `phase_weight_fractions`/`_esd` から反映)。"""
+    if project is None:
+        return []
+    rows = _initial_phases_view(project)
+    for row in rows:
+        name = row["name"]
+        wt = result.phase_weight_fractions.get(name)
+        esd = result.phase_weight_fraction_esd.get(name)
+        row["wt_frac"] = _fmt_wt_frac(wt, esd)
+    return rows
+
+
+def _initial_parameters_view(project: WorkbenchProject) -> dict[str, Any]:
+    """PARAMETERS の初期状態: RADIATION は spec 由来の実値、PROFILE は精密化後に埋まる空カード。"""
+    out: dict[str, Any] = {}
+    for i, h in enumerate(project.histograms):
+        hist_id = f"h{i}"
+        cards = [
+            {
+                "id": "radiation",
+                "title": "RADIATION / WAVELENGTH",
+                "note": "spec",
+                "rows": [
+                    _row("radiation", h.radiation.value, locked=True),
+                    _row("geometry", h.geometry.value, locked=True),
+                ],
+                "footer": "",
+            },
+            {
+                "id": "profile",
+                "title": "PROFILE",
+                "note": "精密化前",
+                "rows": [],
+                "footer": "精密化後に hist_profile から実値を反映する。",
+            },
+        ]
+        out[hist_id] = {"released_count": 0, "cards": cards}
+    return out
+
+
+def _initial_fit_view(project: WorkbenchProject) -> dict[str, Any]:
+    """FIT の初期状態: metrics/history/validity は空 (精密化前)、plot は yobs のみのプレビュー。"""
+    histograms_meta = [
+        {"id": f"h{i}", "label": os.path.basename(h.data_path), "active": i == 0}
+        for i, h in enumerate(project.histograms)
+    ]
+    plot: dict[str, Any] = {}
+    for i, h in enumerate(project.histograms):
+        try:
+            plot[f"h{i}"] = preview_pattern(h)
+        except (OSError, ValueError):
+            plot[f"h{i}"] = None
+    limits = project.histograms[0].two_theta_limits if project.histograms else None
+    return {
+        "metrics": [],
+        "histograms": histograms_meta,
+        "limits_note": f"background {project.background_coeffs} terms",
+        "phase_ticks": [p.phase_name for p in project.phases],
+        "two_theta": {"min": limits[0], "max": limits[1]} if limits else {"min": None, "max": None},
+        "history": [],
+        "validity": [],
+        "plot": plot,
+    }
+
+
+def _stages_from_recipe(project: WorkbenchProject) -> list[dict[str, Any]]:
+    """実 project から段階解放レシピを組み STAGES viewmodel の初期状態 (全未 release) を作る。"""
+    try:
+        recipe = build_recipe(
+            project.histograms, project.phases, background_coeffs=project.background_coeffs
+        )
+    except ValueError:
+        return []
+    stages: list[dict[str, Any]] = []
+    for i, stage in enumerate(recipe, start=1):
+        flags = ", ".join(sorted(str(k) for k in stage.flags.keys())) if stage.flags else ""
+        stages.append(
+            {
+                "nn": f"{i:02d}",
+                "name": stage.label,
+                "flags": flags,
+                "delta_rwp": "",
+                "released": False,
+                "gate": None,
+            }
+        )
+    return stages
+
+
+def _build_fit_metrics(result: "AutoRietveldResult") -> list[dict[str, Any]]:
+    """FIT メトリクス (Rwp/GOF/χ²/n_params/n_obs)。χ² = GOF²·(n_obs−n_params)。"""
+    rwp = result.final_rwp
+    gof = result.final_gof
+    n_obs = result.n_obs
+    n_params = result.stage_results[-1].n_params if result.stage_results else 0
+    chi2 = None
+    if gof is not None and n_obs and n_obs > n_params and math.isfinite(gof):
+        chi2 = gof * gof * (n_obs - n_params)
+    rwp_val = finite_or_none(rwp)
+    gof_val = finite_or_none(gof)
+    return [
+        {"key": "rwp", "label": "Rwp", "value": f"{rwp_val:.2f}%" if rwp_val is not None else "―", "note": ""},
+        {"key": "gof", "label": "GOF", "value": f"{gof_val:.2f}" if gof_val is not None else "―", "note": ""},
+        {
+            "key": "chi2", "label": "χ²",
+            "value": f"{chi2:.0f}" if chi2 is not None else "―", "note": "",
+        },
+        {"key": "n_params", "label": "n_params", "value": str(n_params), "note": ""},
+        {"key": "n_obs", "label": "n_obs", "value": str(n_obs), "note": ""},
+    ]
+
+
+def _build_fit_history(stage_results: "tuple[Any, ...]") -> list[dict[str, Any]]:
+    """FIT history: 段階ごとの (stage, rwp, delta_rwp[隣接差分], guard, reverted)。"""
+    rows: list[dict[str, Any]] = []
+    prev_rwp: "float | None" = None
+    for i, s in enumerate(stage_results, start=1):
+        rwp_val = finite_or_none(s.rwp)
+        delta = None if prev_rwp is None or rwp_val is None else rwp_val - prev_rwp
+        rows.append(
+            {
+                "stage": f"{i:02d} {s.label}",
+                "rwp": rwp_val,
+                "delta_rwp": finite_or_none(delta),
+                "guard": s.note if s.reverted else "",
+                "reverted": bool(s.reverted),
+            }
+        )
+        if rwp_val is not None:
+            prev_rwp = rwp_val
+    return rows
+
+
+def _build_validity_rows(validity: "Any") -> list[dict[str, Any]]:
+    """FIT validity: `ValidityReport.checks`→ pass/fail 行 + `warnings`→ warn 行。"""
+    rows = [
+        {"check": name, "status": "pass" if ok else "fail", "detail": detail}
+        for name, ok, detail in validity.checks
+    ]
+    rows.extend({"check": "warning", "status": "warn", "detail": w} for w in validity.warnings)
+    return rows
+
+
+def _phase_instances_from_result(
+    project: "WorkbenchProject | None", result: "AutoRietveldResult"
+) -> "tuple[PhaseInstance, ...]":
+    """精密化結果から STRUCTURE 適用/スナップショット用の `PhaseInstance` を組み立てる。
+
+    座標は `AutoRietveldResult` に含まれないため (v1 残存制約)、占有率/格子/重量分率のみを反映する。
+    """
+    if project is None:
+        return ()
+    out: list[PhaseInstance] = []
+    for p in project.phases:
+        cell = result.refined_cells.get(p.phase_name)
+        if cell is not None and len(cell) == 6:
+            a, b, c, alpha, beta, gamma = (float(x) for x in cell)
+            lattice = LatticeParams(a=a, b=b, c=c, alpha=alpha, beta=beta, gamma=gamma)
+        else:
+            lattice = LatticeParams(a=1.0, b=1.0, c=1.0)
+        wt = result.phase_weight_fractions.get(p.phase_name)
+        occ = {k: float(v) for k, v in dict(result.atom_occupancy.get(p.phase_name, {})).items()}
+        out.append(PhaseInstance(phase_ref=p.phase_name, lattice=lattice, wt_frac=wt, occupancies=occ))
+    return tuple(out)

@@ -8,6 +8,7 @@ read-only 保証 (webui) と対称に、ワークベンチは「削除系ルー�
 from __future__ import annotations
 
 import sys
+import threading
 
 import pytest
 
@@ -15,7 +16,18 @@ pytest.importorskip("fastapi")
 pytest.importorskip("fastapi.testclient")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import tsumugin.workbench.session as workbench_session_module  # noqa: E402
+from tsumugin.autorietveld.model import (  # noqa: E402
+    AutoRietveldResult,
+    Geometry,
+    HistogramSpec,
+    PhaseSpec,
+    Radiation,
+    StageResult,
+    ValidityReport,
+)
 from tsumugin.workbench.app import create_workbench_app  # noqa: E402
+from tsumugin.workbench.project import WorkbenchProject  # noqa: E402
 from tsumugin.workbench.session import WorkbenchSession  # noqa: E402
 
 
@@ -27,6 +39,39 @@ def session() -> WorkbenchSession:
 @pytest.fixture()
 def client(session: WorkbenchSession) -> TestClient:
     return TestClient(create_workbench_app(session))
+
+
+def _fake_project(tmp_path) -> WorkbenchProject:
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "hist.xy"),
+        instrument_path=str(tmp_path / "hist.instprm"),
+        radiation=Radiation.XRAY_LAB,
+        geometry=Geometry.BRAGG_BRENTANO,
+        data_format="XY",
+    )
+    phase = PhaseSpec(structure_path=str(tmp_path / "phase.cif"), phase_name="phaseA")
+    return WorkbenchProject(
+        name="project fixture",
+        histograms=(hist,),
+        phases=(phase,),
+        background_coeffs=6,
+        max_cyc=5,
+        gpx_path=str(tmp_path / "workbench_out" / "refined.gpx"),
+    )
+
+
+def _fake_result() -> AutoRietveldResult:
+    return AutoRietveldResult(
+        stage_results=(StageResult(label="background", rwp=12.0, gof=1.2, n_params=6, converged=True),),
+        final_rwp=12.0,
+        final_gof=1.2,
+        refined_cells={"phaseA": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+        validity=ValidityReport(passed=True, checks=(("occupancy bounds", True, "ok"),)),
+        gpx_path="",
+        n_obs=500,
+        phase_weight_fractions={"phaseA": 1.0},
+        phase_weight_fraction_esd={"phaseA": 0.0},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +110,17 @@ def test_get_state_returns_shell_state(client: TestClient):
     assert data["mode"] == "manual"
     assert data["final_selection_mode"] == "human"
     assert data["ledger"]["verified"] is True
+
+
+def test_get_state_demo_source_and_refine_idle(client: TestClient):
+    # 【契約】: demo モードは source="demo"・refine.status="idle" 固定 (互換)。last_event は
+    #   session ledger の最新エントリを素直に反映する (demo でも ledger は実在するため None 固定ではない)。
+    resp = client.get("/api/state")
+    data = resp.json()
+    assert data["source"] == "demo"
+    assert data["refine"]["status"] == "idle"
+    assert data["refine"]["elapsed_s"] is None
+    assert data["refine"]["error"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +316,121 @@ def test_refine_returns_202_and_appends_ledger_only(client: TestClient, session:
     assert resp.json() == {"status": "recorded"}
     assert len(session.ledger.entries) == before_ledger + 1
     assert len(session.snapshots.snapshots) == before_snaps
+
+
+def test_refine_status_route_returns_contract_shape_for_demo(client: TestClient):
+    resp = client.get("/api/refine/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert set(data) == {"status", "elapsed_s", "last_event", "error"}
+    assert data["status"] == "idle"
+    assert data["elapsed_s"] is None
+    assert data["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# refine (project モード, REQ-GUI-013)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def project_session(tmp_path) -> WorkbenchSession:
+    return WorkbenchSession.from_project(_fake_project(tmp_path))
+
+
+@pytest.fixture()
+def project_client(project_session: WorkbenchSession) -> TestClient:
+    return TestClient(create_workbench_app(project_session))
+
+
+def test_get_state_project_source(project_client: TestClient):
+    resp = project_client.get("/api/state")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "project"
+    assert data["refine"]["status"] == "idle"
+
+
+def test_project_refine_202_then_status_done_after_fake_runner_completes(
+    project_client: TestClient, project_session: WorkbenchSession, monkeypatch
+):
+    monkeypatch.setattr(
+        workbench_session_module, "build_default_runner",
+        lambda project, ledger=None: _fake_result,
+    )
+
+    resp = project_client.post("/api/refine", json={})
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "started"}
+
+    project_session._job.join(timeout=5)
+
+    status_resp = project_client.get("/api/refine/status")
+    assert status_resp.status_code == 200
+    status = status_resp.json()
+    assert status["status"] == "done"
+    assert status["error"] is None
+
+    state_resp = project_client.get("/api/state")
+    assert state_resp.json()["refine"]["status"] == "done"
+
+    vm = project_client.get("/api/viewmodel").json()
+    rwp_row = next(m for m in vm["fit"]["metrics"] if m["key"] == "rwp")
+    assert rwp_row["value"] == "12.00%"
+
+
+def test_project_refine_returns_409_when_already_running(
+    project_client: TestClient, project_session: WorkbenchSession, monkeypatch
+):
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def fake_runner() -> AutoRietveldResult:
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        return _fake_result()
+
+    monkeypatch.setattr(
+        workbench_session_module, "build_default_runner",
+        lambda project, ledger=None: fake_runner,
+    )
+
+    resp1 = project_client.post("/api/refine", json={})
+    assert resp1.status_code == 202
+    assert started_evt.wait(timeout=5)
+
+    resp2 = project_client.post("/api/refine", json={})
+    assert resp2.status_code == 409
+    body = resp2.json()
+    assert body["error_type"] == "ConflictError"
+
+    release_evt.set()
+    project_session._job.join(timeout=5)
+
+
+def test_project_refine_failure_sets_status_failed_with_error(
+    project_client: TestClient, project_session: WorkbenchSession, monkeypatch
+):
+    def bad_runner() -> AutoRietveldResult:
+        raise RuntimeError("gsas exploded")
+
+    monkeypatch.setattr(
+        workbench_session_module, "build_default_runner",
+        lambda project, ledger=None: bad_runner,
+    )
+
+    resp = project_client.post("/api/refine", json={})
+    assert resp.status_code == 202
+
+    project_session._job.join(timeout=5)
+
+    status = project_client.get("/api/refine/status").json()
+    assert status["status"] == "failed"
+    assert "gsas exploded" in status["error"]
+
+    ledger = project_client.get("/api/ledger").json()
+    assert ledger["entries"][-1]["text"].startswith("refine failed")
+    assert ledger["verified"] is True
 
 
 # ---------------------------------------------------------------------------
