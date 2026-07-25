@@ -1,0 +1,114 @@
+.ledger-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ledger-tab__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.ledger-tab__title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.ledger-tab__note {
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+}
+
+.ledger-tab__status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-neutral-600);
+}
+
+.ledger-tab__status--error {
+  color: var(--color-neutral-900);
+}
+
+.ledger-tab__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* — one append-only entry — */
+.ledger-row {
+  display: grid;
+  grid-template-columns: 92px 108px 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--color-divider);
+  border-left: 3px solid var(--color-neutral-400);
+  background: var(--color-neutral-100);
+  padding: 6px 10px;
+}
+
+.ledger-row--agent {
+  border-left-color: var(--color-accent);
+}
+
+.ledger-row--core {
+  border-left-color: var(--color-neutral-400);
+}
+
+.ledger-row--human {
+  border-left-color: var(--color-accent-700);
+}
+
+.ledger-row--guard {
+  border-left-color: var(--color-neutral-900);
+}
+
+.ledger-row__time {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-neutral-600);
+  white-space: nowrap;
+}
+
+.ledger-row__actor {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.ledger-row--agent .ledger-row__actor,
+.ledger-row--human .ledger-row__actor {
+  color: var(--color-accent-800);
+}
+
+.ledger-row--core .ledger-row__actor {
+  color: var(--color-neutral-700);
+}
+
+.ledger-row--guard .ledger-row__actor {
+  color: var(--color-neutral-900);
+  font-weight: 600;
+}
+
+.ledger-row__text {
+  font-size: 12px;
+  min-width: 0;
+}
+
+.ledger-row__hash {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-500);
+  white-space: nowrap;
+}
+
+.ledger-row__revert {
+  font-size: 11px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
