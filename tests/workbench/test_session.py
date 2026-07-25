@@ -548,11 +548,13 @@ def test_state_ledger_verified_is_true():
     assert state["ledger"]["count"] == len(session.ledger.entries)
 
 
-def test_state_agent_idle_reflects_mode():
+def test_state_agent_idle_reflects_turn_not_mode():
+    # V3a: idle は「エージェントのターンが走っていないこと」。旧仕様の「mode==manual」は
+    # AUTO でターン完了後も idle=false に固着する欠陥だった (TestAgentIdleReflectsTurnStatus)。
     session = WorkbenchSession.create_demo()
-    assert session.state()["agent"]["idle"] is True  # manual
+    assert session.state()["agent"]["idle"] is True  # manual, ターンなし
     session.set_mode("auto")
-    assert session.state()["agent"]["idle"] is False  # auto
+    assert session.state()["agent"]["idle"] is True  # auto でもターンが無ければ idle
 
 
 def test_viewmodel_top_level_keys_present_and_json_serializable():
@@ -2388,3 +2390,29 @@ def test_resolve_new_phase_approval_double_approve_returns_409_while_in_progress
     assert call_count["n"] == 1  # 二重実行していない (変異させると 2 になる)
     # エラー経路なのでマーカーは pop され、pending に戻って再試行できる。
     assert "np-0" not in session._approvals
+
+
+class TestAgentIdleReflectsTurnStatus:
+    """state.agent.idle は「ターンが走っていないこと」(実走スモークで発見の回帰)。
+
+    旧実装は ``mode == "manual"`` を idle としていたため、AUTO でターンが完了しても
+    idle=false のまま固着し、UI からはエージェントが動き続けているように見えた。
+    """
+
+    def test_idle_true_in_auto_when_no_turn_running(self) -> None:
+        session = WorkbenchSession.create_demo()
+        session.set_mode("auto")
+        assert session.state()["agent"]["idle"] is True
+
+    def test_idle_false_while_turn_running(self, monkeypatch) -> None:
+        session = WorkbenchSession.create_demo()
+        session.set_mode("auto")
+        monkeypatch.setattr(
+            session._agent_bridge,
+            "status",
+            lambda: {
+                "status": "running", "available": True, "tokens": 5, "wall_time_s": 1.0,
+                "error": None,
+            },
+        )
+        assert session.state()["agent"]["idle"] is False

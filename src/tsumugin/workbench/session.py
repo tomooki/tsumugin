@@ -413,7 +413,6 @@ class WorkbenchSession:
 
     def state(self) -> dict[str, Any]:
         agent = dict(self._agent_base)
-        agent["idle"] = self.mode == "manual"
         # 【V3a: 実測値へ差し替え】: tokens/wall_time_s/available は AgentBridge の実測値
         #   (api-contract.md 「state.agent | tokens/wall_time_s が実測値に。available 追加」)。
         #   `get_state_summary=self.state` (bridge 構築時に注入) と本メソッドが相互参照する形に
@@ -424,6 +423,10 @@ class WorkbenchSession:
         agent["available"] = bridge_status["available"]
         agent["tokens"] = bridge_status["tokens"]
         agent["wall_time_s"] = bridge_status["wall_time_s"]
+        # 【idle = ターンが走っていないこと】: 旧実装は `mode == "manual"` を idle として
+        #   いたため、AUTO でターン完了後も idle=false のまま固着し「エージェントが動き続けて
+        #   いる」ように見えた (実走スモークで発見)。実測ステータスを単一情報源にする。
+        agent["idle"] = bridge_status["status"] != "running"
         # 【gsas_available は毎回動的判定】: Tier1 sidecar は GSAS-II 抜きで同梱され得るため、
         #   status は起動時固定シードでなく現在の import 可否 (`gsasii_available`, lru_cache 済み
         #   なので実質定数コスト) を都度反映する (api-contract.md GET /api/state)。
