@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { ApiError, postApproval, postMode } from "../../api/client";
 import type { TranscriptMessage } from "../../api/types";
 import { useI18n } from "../../i18n";
@@ -16,6 +17,15 @@ interface TranscriptItemProps {
 export function TranscriptItem({ message }: TranscriptItemProps) {
   const { state, dispatch } = useStore();
   const { t, lang } = useI18n();
+  // 【approval の二重 approve/reject 対策 (レビュー指摘 #2 フロント側)】: `busy` は再レンダーで
+  // ボタンを disabled にし待機中の mono 表示を出すための state。だが setState は非同期なので、
+  // 同一 tick 内の連打 (dblClick 等、React が再レンダーを挟まずに 2 回ハンドラを呼ぶケース) は
+  // state だけでは防げない — `inFlightRef` で同期的にガードする (両方揃えて初めて「1 回だけ
+  // postApproval が飛ぶ」を保証できる)。バックエンド側 (session.py resolve_approval の
+  // check-and-set マーカー) と対になる、フロント側の防御。
+  const [busy, setBusy] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const inFlightRef = useRef(false);
 
   const reportError = (err: unknown, fallback: string) => {
     dispatch({ type: "SET_ERROR", error: err instanceof ApiError ? err.message : fallback });
@@ -99,22 +109,46 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
       // pending card that happens to render at the same time.
       const localDecision = message.action_id ? state.approval[message.action_id] : undefined;
       const decided = localDecision ?? message.state ?? "pending";
+      const disabled = decided !== "pending" || busy;
       const approveLabel = decided === "approved" ? t("chat.approval.applied") : t("chat.approval.approveApply");
       const rejectLabel = decided === "rejected" ? t("chat.approval.rejected") : t("chat.approval.reject");
-      const stateLine =
-        decided === "approved"
-          ? t("chat.approval.stateApplied")
-          : decided === "rejected"
-            ? t("chat.approval.stateRejected")
-            : t("chat.approval.stateHeld");
+      const stateLine = busy
+        ? rt(lang, "chat.approval.resolving")
+        : conflict
+          ? rt(lang, "chat.approval.conflict")
+          : decided === "approved"
+            ? t("chat.approval.stateApplied")
+            : decided === "rejected"
+              ? t("chat.approval.stateRejected")
+              : t("chat.approval.stateHeld");
 
       const decide = async (decision: "approve" | "reject") => {
-        if (!message.action_id) return;
+        // `inFlightRef` is checked+set synchronously (unlike `busy`, a useState
+        // value that only takes effect on the next render) so a second
+        // invocation arriving before React re-renders — e.g. a fast
+        // double-click, or an Enter-key repeat — can never slip through and
+        // fire a second POST /api/approval/{action_id}.
+        if (!message.action_id || inFlightRef.current) return;
+        inFlightRef.current = true;
+        setBusy(true);
+        setConflict(false);
         try {
           const res = await postApproval(message.action_id, decision);
           dispatch({ type: "SET_APPROVAL", actionId: message.action_id, approval: res.state });
         } catch (err) {
-          reportError(err, "failed to record approval");
+          // 409 ("already resolved: <action_id>" / in-progress marker, see
+          // session.py resolve_approval) means another resolution already
+          // won the race — this is expected under concurrent clicks/tabs, not
+          // an operator-facing failure, so it stays a local inline note
+          // instead of going through the global SET_ERROR path.
+          if (err instanceof ApiError && err.status === 409) {
+            setConflict(true);
+          } else {
+            reportError(err, "failed to record approval");
+          }
+        } finally {
+          inFlightRef.current = false;
+          setBusy(false);
         }
       };
 
@@ -142,7 +176,7 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
               <Btn
                 type="button"
                 variant="accent"
-                disabled={decided !== "pending"}
+                disabled={disabled}
                 onClick={() => decide("approve")}
               >
                 {approveLabel}
@@ -150,7 +184,7 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
               <Btn
                 type="button"
                 variant="outline"
-                disabled={decided !== "pending"}
+                disabled={disabled}
                 onClick={() => decide("reject")}
               >
                 {rejectLabel}

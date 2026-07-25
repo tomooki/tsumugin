@@ -46,6 +46,17 @@ export const RIGHT_STRINGS = {
   "modelActions.pendingTitle": { en: "PENDING MODEL ACTIONS", ja: "保留中のモデル操作" },
   "modelActions.openCountNote": { en: "{n} pending", ja: "保留 {n} 件" },
   "modelActions.empty": { en: "no pending model actions", ja: "保留中のモデル操作はありません" },
+  // Busy/conflict states for TranscriptItem's approval card while
+  // POST /api/approval/{action_id} is in flight (レビュー指摘 #2 フロント側).
+  // "resolving" replaces the mono state line while the request is pending
+  // (buttons disabled too); "conflict" is the non-fatal 409 case — another
+  // resolution already won the race (session.py resolve_approval's
+  // check-and-set marker) — shown inline instead of the global error path.
+  "chat.approval.resolving": { en: "resolving …", ja: "処理中 …" },
+  "chat.approval.conflict": {
+    en: "already resolved elsewhere · refresh to see the result",
+    ja: "他の操作で解決済み · 更新して結果を確認してください",
+  },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;

@@ -1983,3 +1983,154 @@ class TestNewPhaseApprovalErrorPaths:
         result = session.resolve_approval("np-0", decision="approve")
         assert "error" in result and "MP key missing" in result["error"]
         assert "np-0" not in session._approvals  # pending のまま (再試行可能)
+
+
+# --- B1 レビュー指摘: frames 全置換で旧逐次結果/np カードを整理する ------------------------
+
+
+def test_set_frames_clears_stale_sequence_and_np_approvals(tmp_path, monkeypatch):
+    """フレーム全置換後は sequence が空状態に戻り、旧フレームの np- 承認カードが消える。
+
+    同じ frame_index (0) が次回逐次実行で再び changepoint と判定されれば、新しい np-0
+    カードが再生成されることも併せて検証する — 置換前の解決状態 (``_np_approval_info``/
+    ``_approvals``/transcript の pending カード) が残って再提案をブロックしないことの確認。
+    """
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(
+        insitu_tools_module, "sequential_rietveld",
+        lambda frames, phases, **kw: _fake_seq_result([_fake_frame(0, changepoint=True)]),
+    )
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    vm = session.viewmodel()
+    assert vm["sequence"]["frames"]
+    approvals_before = [t for t in vm["transcript"] if t["kind"] == "approval"]
+    assert any(a["action_id"] == "np-0" for a in approvals_before)
+    assert session._sequential_result is not None
+    assert session._sequence is not None
+    assert session._np_approval_info
+
+    proj_dir = Path(session._project.spec_dir)
+    _write_xy_v2b(proj_dir / "newframe0.xy")
+
+    result = session.set_frames([{"data_path": "newframe0.xy", "data_format": "XY"}])
+    assert "error" not in result
+
+    assert session._sequential_result is None
+    assert session._sequence is None
+    assert session._np_approval_info == {}
+    assert "np-0" not in session._approvals
+
+    vm2 = session.viewmodel()
+    from tsumugin.workbench.session import _EMPTY_SEQUENCE
+
+    assert vm2["sequence"] == _EMPTY_SEQUENCE
+    approvals_after = [t for t in vm2["transcript"] if t["kind"] == "approval"]
+    assert not any(a["action_id"] == "np-0" for a in approvals_after)
+
+    # 同じ frame_index (0) が再び changepoint と判定されれば、新しい np-0 カードが再生成される
+    # (旧カードが _np_approval_info/_approvals/transcript のいずれかに残っていると
+    # `_create_new_phase_approvals` の重複防止チェックに引っかかり再生成されない)。
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    vm3 = session.viewmodel()
+    approvals_regenerated = [t for t in vm3["transcript"] if t["kind"] == "approval"]
+    assert any(
+        a["action_id"] == "np-0" and a["state"] == "pending" for a in approvals_regenerated
+    )
+
+
+def test_set_frames_preserves_unrelated_approvals(tmp_path, monkeypatch):
+    """np- 以外の承認カード (例: 構造編集提案) は frames 置換で消えない。"""
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+    session._transcript.append(
+        {
+            "id": "t-other", "kind": "approval", "action_id": "a1",
+            "title": "unrelated", "rationale": "", "action_json": "{}", "state": "pending",
+        }
+    )
+
+    proj_dir = Path(session._project.spec_dir)
+    _write_xy_v2b(proj_dir / "newframe0.xy")
+    result = session.set_frames([{"data_path": "newframe0.xy", "data_format": "XY"}])
+    assert "error" not in result
+
+    ids = [m["action_id"] for m in session._transcript if m.get("kind") == "approval"]
+    assert "a1" in ids
+
+
+def test_resolve_new_phase_approval_double_approve_returns_409_while_in_progress(tmp_path, monkeypatch):
+    """変異実証: check-and-set マーカーを外すと、実行中の 2 回目呼び出しが 409 でなく通って
+    ``identify_and_add_phase`` を二重実行してしまう (`resolve_approval` の np- 分岐参照)。
+
+    ``_elements_from_project`` が空 (元素導出不能) だと ``identify_and_add_phase`` を呼ぶ前に
+    早期 return してしまう (`test_resolve_new_phase_approval_approve_reaches_add_phase` と同じ
+    落とし穴) ため、実在する CIF を持つ相集合を組み立てる。
+    """
+    pytest.importorskip("pymatgen")
+    cif_path = tmp_path / "nacl.cif"
+    cif_path.write_text(_NACL_CIF, encoding="utf-8")
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "d.xy"), instrument_path=str(tmp_path / "d.instprm"),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XY",
+    )
+    phase = PhaseSpec(structure_path=str(cif_path), phase_name="nacl")
+    frame_path = tmp_path / "frame0.xy"
+    tt, obs = _synthetic_pattern([20.0, 35.0, 52.0])
+    frame_path.write_text(
+        "\n".join(f"{x:.4f} {y:.4f}" for x, y in zip(tt.tolist(), obs.tolist())), encoding="utf-8"
+    )
+    frame = FrameSpec(data_path=str(frame_path), axis_value=0.0, data_format="XY")
+    project = WorkbenchProject(
+        name="double approve fixture", histograms=(hist,), phases=(phase,), frames=(frame,),
+        gpx_path=str(tmp_path / "refined.gpx"), spec_dir=str(tmp_path),
+    )
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(
+        insitu_tools_module, "sequential_rietveld",
+        lambda frames, phases, **kw: _fake_seq_result([_fake_frame(0, changepoint=True)]),
+    )
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    started = threading.Event()
+    release = threading.Event()
+    call_count = {"n": 0}
+
+    def blocking_identify(*a, **k):
+        call_count["n"] += 1
+        started.set()
+        release.wait(timeout=5)
+        return {"error": "still identifying (test canary)", "error_type": "ValueError"}
+
+    monkeypatch.setattr(insitu_tools_module, "identify_and_add_phase", blocking_identify)
+
+    results: dict[str, dict] = {}
+
+    def run_first():
+        results["first"] = session.resolve_approval("np-0", decision="approve")
+
+    t = threading.Thread(target=run_first)
+    t.start()
+    assert started.wait(timeout=5)
+
+    second = session.resolve_approval("np-0", decision="approve")
+
+    release.set()
+    t.join(timeout=5)
+
+    assert second["error_type"] == "ConflictError"
+    assert "error" in results["first"]
+    assert call_count["n"] == 1  # 二重実行していない (変異させると 2 になる)
+    # エラー経路なのでマーカーは pop され、pending に戻って再試行できる。
+    assert "np-0" not in session._approvals

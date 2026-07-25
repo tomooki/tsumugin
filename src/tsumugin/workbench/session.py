@@ -743,7 +743,31 @@ class WorkbenchSession:
 
         if action_id.startswith("np-"):
             # 【B5: 新相承認カード】: structure ReviseStructure 承認とは別経路 (add_phase まで進む)。
-            return self._resolve_new_phase_approval(action_id, decision=decision)
+            # 【二重 approve 対策】: ``_resolve_new_phase_approval`` は ``identify_and_add_phase``
+            #   (MP 問い合わせ) で長時間ブロックしうるが、その間 ``self._approvals`` には何も
+            #   書かれない (完了時に初めて確定状態を書く) ため、上の事前チェックだけでは
+            #   「実行中の 2 回目呼び出し」を検出できない (両方とも「未解決」を見て通過する)。
+            #   ここで呼び出し前に ``self._lock`` 下で check-and-set マーカー
+            #   (state="in_progress") を置き、以降の呼び出しは事前チェックでこのマーカーに
+            #   ヒットして 409 になるようにする。エラー経路 (例外/error dict/承認カード不明) は
+            #   マーカーを pop して pending に戻す (再試行可能, 既存の error 経路契約を維持)。
+            with self._lock:
+                if action_id in self._approvals:
+                    return {
+                        "error": f"approval already resolved: {action_id}",
+                        "error_type": "ConflictError",
+                    }
+                self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
+            try:
+                result = self._resolve_new_phase_approval(action_id, decision=decision)
+            except Exception:
+                with self._lock:
+                    self._approvals.pop(action_id, None)
+                raise
+            if "error" in result:
+                with self._lock:
+                    self._approvals.pop(action_id, None)
+            return result
 
         if decision == "approve":
             # 【単一 ledger 効果】: SnapshotStore.save 自体が ledger.append("snapshot_save", ...) するため、
@@ -1202,8 +1226,37 @@ class WorkbenchSession:
             return {"error": str(exc), "error_type": "ValueError"}
         axis = str(frame_axis) if frame_axis is not None else project.frame_axis
         self._project = dataclasses.replace(project, frames=tuple(specs), frame_axis=axis)
+        self._clear_stale_sequence_and_np_approvals()
         self._save_and_refresh("set_frames", {"n_frames": len(specs)})
         return self.state()
+
+    def _clear_stale_sequence_and_np_approvals(self) -> None:
+        """frames 全置換で無効化される逐次結果 + B5 新相承認カードを一括整理する (B1 残骸対策)。
+
+        旧フレーム列に対して求めた ``_sequential_result``/``_sequence`` (viewmodel の
+        ``sequence``) と、旧フレームの changepoint に基づく新相承認カード (``np-*``) は、
+        フレームが置換された時点で意味を失う — カードが指す ``frame_index`` は新しい
+        フレーム列では別のデータを指しうる。P2 (非破壊性) は解析 ledger (Ledger/Snapshot) の
+        話であり、置換はここで既に ``project_edit`` (op="set_frames") として記録されるため、
+        無効化された「提案」(transcript の approval メッセージ・未解決状態マーカー) 自体の
+        整理は P2 に抵触しない。同じ ``frame_index`` が次回逐次実行で再び changepoint と
+        判定されれば、``_create_new_phase_approvals`` が新しい承認カードを生成する。
+        """
+        with self._lock:
+            self._sequential_result = None
+            self._sequence = None
+            self._np_approval_info = {}
+            stale_ids = [aid for aid in self._approvals if aid.startswith("np-")]
+            for aid in stale_ids:
+                del self._approvals[aid]
+            self._transcript = [
+                msg
+                for msg in self._transcript
+                if not (
+                    msg.get("kind") == "approval"
+                    and str(msg.get("action_id", "")).startswith("np-")
+                )
+            ]
 
     # ------------------------------------------------------------------
     # POST /api/transcript/message
