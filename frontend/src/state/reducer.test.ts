@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
-import type { Site, StageRow, ViewModel } from "../api/types";
+import type { RefineStatus, ShellState, Site, StageRow, ViewModel } from "../api/types";
 import { initialWorkbenchState, reducer, siteList } from "./reducer";
 import type { WorkbenchState } from "./types";
+
+function makeShell(overrides: Partial<ShellState> = {}): ShellState {
+  return {
+    project: { name: "p", dataset: "d", frame: "f", echem: null },
+    mode: "manual",
+    final_selection_mode: "human",
+    ledger: { count: 0, verified: true },
+    status: { backend_build: "b", seed: 0, mcp_tools: 0 },
+    agent: { tokens: 0, wall_time_s: 0, idle: true },
+    ...overrides,
+  };
+}
+
+function refineStatus(overrides: Partial<RefineStatus> = {}): RefineStatus {
+  return { status: "running", elapsed_s: 1, last_event: null, error: null, ...overrides };
+}
 
 function makeSite(overrides: Partial<Site> = {}): Site {
   return {
@@ -185,6 +201,45 @@ describe("reducer — SET_VIEW_MODEL stageOn server sync", () => {
     });
 
     expect(next.stageOn).toEqual({ 1: false, 2: true });
+  });
+});
+
+describe("reducer — SET_SHELL activeJob sync from refine.kind (セルフレビュー指摘 #1 (b))", () => {
+  it("syncs activeJob from shell.refine.kind while a job is running", () => {
+    const next = reducer(initialWorkbenchState, {
+      type: "SET_SHELL",
+      shell: makeShell({ refine: refineStatus({ kind: "phaseid" }) }),
+    });
+    expect(next.activeJob).toBe("phaseid");
+  });
+
+  it('falls back to "refine" when kind is absent (older server)', () => {
+    const status = refineStatus();
+    delete (status as { kind?: unknown }).kind;
+    const next = reducer(initialWorkbenchState, {
+      type: "SET_SHELL",
+      shell: makeShell({ refine: status }),
+    });
+    expect(next.activeJob).toBe("refine");
+  });
+
+  it('falls back to "refine" when kind is explicitly null (older server variant)', () => {
+    const next = reducer(initialWorkbenchState, {
+      type: "SET_SHELL",
+      shell: makeShell({ refine: refineStatus({ kind: null }) }),
+    });
+    expect(next.activeJob).toBe("refine");
+  });
+
+  it("leaves activeJob untouched when no job is running", () => {
+    const state: WorkbenchState = { ...initialWorkbenchState, activeJob: "multistart" };
+    const next = reducer(state, {
+      type: "SET_SHELL",
+      shell: makeShell({
+        refine: refineStatus({ status: "idle", elapsed_s: null, kind: null }),
+      }),
+    });
+    expect(next.activeJob).toBe("multistart");
   });
 });
 

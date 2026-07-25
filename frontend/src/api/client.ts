@@ -9,12 +9,17 @@ import type {
   ApiErrorBody,
   ApprovalDecision,
   ApprovalResponse,
+  JobStartResponse,
   LedgerResponse,
   ModeRequest,
+  MultistartRequest,
+  PhaseIdAddRequest,
+  PhaseIdRequest,
   ProjectCreateRequest,
   ProjectOpenRequest,
   ProjectSettingsRequest,
   RecentProjectsResponse,
+  RefineRequest,
   RefineResponse,
   RefineStatus,
   ReviewQueueResponse,
@@ -145,13 +150,41 @@ export function postStage(nn: string, action: StageAction): Promise<StageActionR
   return post<StageActionResponse>(`/api/stages/${encodeURIComponent(nn)}`, { action });
 }
 
-export function postRefine(): Promise<RefineResponse> {
-  return post<RefineResponse>("/api/refine", {});
+export function postRefine(payload: RefineRequest = {}): Promise<RefineResponse> {
+  return post<RefineResponse>("/api/refine", payload);
 }
 
 export function getRefineStatus(): Promise<RefineStatus> {
   return get<RefineStatus>("/api/refine/status");
 }
+
+// — 解析ループ (V2a' A4/A5/A6, api-contract.md §解析ループ) —
+
+export function postPhaseId(payload: PhaseIdRequest): Promise<JobStartResponse> {
+  return post<JobStartResponse>("/api/phaseid", payload);
+}
+
+export function getPhaseIdStatus(): Promise<RefineStatus> {
+  return get<RefineStatus>("/api/phaseid/status");
+}
+
+export function postPhaseIdAdd(payload: PhaseIdAddRequest): Promise<ShellState> {
+  return post<ShellState>("/api/phaseid/add", payload);
+}
+
+export function postMultistart(payload: MultistartRequest = {}): Promise<JobStartResponse> {
+  return post<JobStartResponse>("/api/multistart", payload);
+}
+
+export function getMultistartStatus(): Promise<RefineStatus> {
+  return get<RefineStatus>("/api/multistart/status");
+}
+
+// GET /api/export/gpx (A6) — a plain download link, not a fetch() call (the
+// browser needs to drive the Content-Disposition download itself), so this
+// is just the single source of truth for the path rather than a request()
+// wrapper function.
+export const EXPORT_GPX_PATH = "/api/export/gpx";
 
 export function postTranscriptMessage(text: string): Promise<TranscriptMessageResponse> {
   return post<TranscriptMessageResponse>("/api/transcript/message", { text });

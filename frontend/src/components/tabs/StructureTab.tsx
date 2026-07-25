@@ -259,6 +259,9 @@ export function StructureTab() {
               {t("struct.addAtom")}
             </Btn>
             <span className={editStateClass}>{editStateText}</span>
+            {!isApplying && state.edits === 0 && state.applied && (
+              <span className="struct-edit-state__hint">{tl("struct.local.appliedNextRun")}</span>
+            )}
             <span className="struct-controls__actions">
               <Btn
                 type="button"

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Site, ViewModel } from "../../api/types";
+import type { Site, StageRow, ViewModel } from "../../api/types";
 import { initialWorkbenchState } from "../../state/reducer";
 import type { WorkbenchState } from "../../state/types";
 import {
+  computeStagesOn,
   formatBic,
   formatTokens,
   formatWallTime,
@@ -90,6 +91,66 @@ describe("isStageGateOpen", () => {
       });
       expect(isStageGateOpen("occ", "sxrd", state)).toBe(true);
     });
+  });
+});
+
+function makeStage(overrides: Partial<StageRow> = {}): StageRow {
+  return {
+    nn: "01",
+    name: "background",
+    flags: "6→24 terms",
+    delta_rwp: "−41.2",
+    released: false,
+    gate: "bkg",
+    ...overrides,
+  };
+}
+
+describe("computeStagesOn (A1 — POST /api/refine stages_on payload)", () => {
+  it("sends true for an ungated stage that is toggled on", () => {
+    const state = stateWith({ stageOn: { 1: true }, paramRel: {} });
+    const stages = [makeStage({ nn: "01", gate: null })];
+    expect(computeStagesOn(stages, state)).toEqual({ "01": true });
+  });
+
+  it("sends false for an ungated stage that is toggled off", () => {
+    const state = stateWith({ stageOn: { 1: false }, paramRel: {} });
+    const stages = [makeStage({ nn: "01", gate: null })];
+    expect(computeStagesOn(stages, state)).toEqual({ "01": false });
+  });
+
+  // Regression/mutation guard: a stage toggled on client-side (state.stageOn
+  // true) whose PARAMETERS gate is still closed must NOT be sent as true —
+  // this is the whole point of A1 (the UI's gating reaching the real run).
+  // Verified by mutation: replacing the `gated ? false : …` branch with the
+  // raw `!!state.stageOn[...]` value makes this test fail (the naive
+  // implementation forwards the stale "on" toggle straight through).
+  it("forces a gated stage to false even when state.stageOn says it is on", () => {
+    const state = stateWith({ stageOn: { 1: true }, paramRel: {} }); // nothing released in PARAMETERS
+    const stages = [makeStage({ nn: "01", gate: "bkg" })];
+    expect(computeStagesOn(stages, state)).toEqual({ "01": false });
+  });
+
+  it("sends true for a gated stage once its gate opens", () => {
+    const state = stateWith({ stageOn: { 1: true }, paramRel: { "sxrd.bkg.1": true } });
+    const stages = [makeStage({ nn: "01", gate: "bkg" })];
+    expect(computeStagesOn(stages, state)).toEqual({ "01": true });
+  });
+
+  it("computes each stage independently across a mixed set", () => {
+    const state = stateWith({
+      stageOn: { 1: true, 2: true, 7: true },
+      paramRel: { "sxrd.bkg.1": true },
+      viewModel: {
+        structure: { sites: [], constraints: [], mem_peaks: [] },
+      } as unknown as ViewModel,
+    });
+    const stages = [
+      makeStage({ nn: "01", gate: "bkg" }), // open — released in PARAMETERS
+      makeStage({ nn: "02", gate: null }), // ungated, on
+      makeStage({ nn: "07", gate: "occ" }), // gated — no site has occ released
+    ];
+    expect(computeStagesOn(stages, state)).toEqual({ "01": true, "02": true, "07": false });
   });
 });
 

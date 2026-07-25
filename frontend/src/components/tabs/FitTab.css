@@ -11,6 +11,30 @@
   gap: 8px;
 }
 
+/* — EXPORT GPX (A6) — */
+.fit-tab__top-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.fit-tab__export-link {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--color-accent-700);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.fit-tab__export-link:hover {
+  color: var(--color-accent-800);
+}
+.fit-tab__export-link--disabled {
+  color: var(--color-neutral-500);
+  text-decoration: none;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .fit-tab__plot-card {
   display: flex;
   flex-direction: column;

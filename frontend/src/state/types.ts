@@ -1,7 +1,7 @@
 // State shape from docs/design/gui-workbench/handoff/README.md §State,
 // extended with the server-supplied shell/viewmodel payloads that App.tsx
 // fetches on mount (see docs/design/gui-workbench/api-contract.md).
-import type { GuiMode, RefineStatus, ShellState, Site, ViewModel } from "../api/types";
+import type { GuiMode, JobKind, RefineStatus, ShellState, Site, ViewModel } from "../api/types";
 import type { Lang } from "../i18n";
 
 // "project" is first (V2a P4 — new PROJECT tab, see CentreCanvas.tsx TAB_ORDER
@@ -15,6 +15,16 @@ export type TabId = "project" | "fit" | "param" | "hyp" | "pid" | "seq" | "struc
 export type HistId = string;
 export type ApprovalState = "pending" | "approved" | "rejected";
 export type ReviewDecision = "accepted" | "sent_back";
+// Which background job currently owns the shared GSAS job slot (api-contract.md
+// §解析ループ: "ジョブ枠は 1 つ (refine/phaseid/multistart は相互に 409)"). The
+// three job kinds all report their running/done/failed status through the
+// single `refine` slot below (so RUN REFINEMENT / IDENTIFY / MULTISTART can
+// disable each other), but each kind is polled on its own endpoint — this
+// field tells each job-owning component whether IT is the one that should be
+// hitting its status endpoint right now (see hooks/usePollJob.ts `enabled`).
+// `null` = no job owns the slot right now. Reuses api/types.ts's JobKind (the
+// server-reported RefineStatus.kind) so the two stay structurally identical.
+export type ActiveJob = JobKind | null;
 
 export interface WorkbenchState {
   lang: Lang;
@@ -48,11 +58,15 @@ export interface WorkbenchState {
   loading: boolean;
   error: string | null;
 
-  // Local, poll-driven refinement job status (RUN REFINEMENT flow). Seeded
-  // from shell.refine on every SET_SHELL (so a reload while a job is running
-  // server-side still shows it), then kept live by OperatorConsole's
-  // getRefineStatus() polling loop — see api-contract.md GET /api/refine/status.
+  // Local, poll-driven job status — SHARED by RUN REFINEMENT (A1), IDENTIFY
+  // (A4) and MULTISTART (A5): all three write/read this one slot, mirroring
+  // the backend's single job slot (api-contract.md §解析ループ). Seeded from
+  // shell.refine on every SET_SHELL (so a reload while a job is running
+  // server-side still shows it — shell.refine only ever describes the RUN
+  // REFINEMENT job, see ActiveJob doc comment above), then kept live by
+  // whichever component's usePollJob is `enabled` per `activeJob` below.
   refine: RefineStatus | null;
+  activeJob: ActiveJob;
 }
 
 export const initialWorkbenchState: WorkbenchState = {
@@ -81,4 +95,5 @@ export const initialWorkbenchState: WorkbenchState = {
   loading: false,
   error: null,
   refine: null,
+  activeJob: null,
 };

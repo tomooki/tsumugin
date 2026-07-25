@@ -1,8 +1,20 @@
+import { useCallback, useState } from "react";
+import {
+  ApiError,
+  getPhaseIdStatus,
+  getViewModel,
+  postPhaseId,
+  postPhaseIdAdd,
+} from "../../api/client";
 import { formatNumber } from "../../api/format";
+import type { PhaseIdCandidate, PhaseIdMode, RefineStatus } from "../../api/types";
+import { resolveJobConflict } from "../../hooks/useJobConflict";
+import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
 import { BlueprintCard, Btn, Chip, PlaceholderPlot } from "../common";
 import "./PhaseIdTab.css";
+import { interpolateLocal, PID_LOCAL_STRINGS, type PidLocalKey } from "./PhaseIdTab.strings";
 
 /** See handoff README §Centre pane item 4 (PHASE ID): candidate table
  * (`# / FORMULA / SOURCE / SG / DARA / m/w/ms/x / STRAIN / CHEM GUARD /
@@ -10,16 +22,132 @@ import "./PhaseIdTab.css";
  * SET COMPLETENESS card (`check_phase_set`). Data comes from
  * `viewModel.phase_id` (api-contract.md); `source`/`chem_guard`/`notes`
  * text is server-supplied and rendered verbatim (API surface, not
- * translated). `ADD AS PHASE` is display-only in v1 — clicking it is a
- * no-op, backend wiring is a later integration step. */
+ * translated).
+ *
+ * A4 (api-contract.md §解析ループ): IDENTIFY runs `identify_pattern`
+ * (mode=pattern|residual) as a background job on the SAME shared job slot
+ * as RUN REFINEMENT / MULTISTART — see state/types.ts ActiveJob and
+ * hooks/usePollJob.ts. ADD AS PHASE materialises a specific candidate's CIF
+ * and appends it to the model; re-refining with it is left to the user (RUN
+ * REFINEMENT), matching the contract's "再精密化はユーザーが RUN で明示". */
 export function PhaseIdTab() {
-  const { t } = useI18n();
-  const { state } = useStore();
+  const { t, lang } = useI18n();
+  const { state, dispatch } = useStore();
   const vm = state.viewModel?.phase_id ?? {
     candidates: [],
     unexplained: [],
     completeness: { is_complete: true, notes: [], flagged_frames: "" },
   };
+
+  const [mode, setMode] = useState<PhaseIdMode>("pattern");
+  const [identifyError, setIdentifyError] = useState<string | null>(null);
+  const [addingFormula, setAddingFormula] = useState<string | null>(null);
+  const [addMessage, setAddMessage] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  function tl(key: PidLocalKey, vars?: Record<string, string | number>): string {
+    const pair = PID_LOCAL_STRINGS[key];
+    return interpolateLocal(lang === "ja" ? pair.ja : pair.en, vars);
+  }
+
+  // state.refine is the SHARED job-status slot (RUN REFINEMENT / IDENTIFY /
+  // MULTISTART) — any of the three running disables the other two's start
+  // buttons (api-contract.md: one job slot, mutually 409).
+  const jobRunning = state.refine?.status === "running";
+  const identifyRunning = jobRunning && state.activeJob === "phaseid";
+
+  const setRefineStatus = useCallback(
+    (refine: RefineStatus) => dispatch({ type: "SET_REFINE_STATUS", refine }),
+    [dispatch],
+  );
+
+  const handleIdentifyDone = useCallback(async () => {
+    dispatch({ type: "SET_ACTIVE_JOB", job: null });
+    try {
+      const viewModel = await getViewModel();
+      dispatch({ type: "SET_VIEW_MODEL", viewModel });
+    } catch (err) {
+      setIdentifyError(err instanceof ApiError ? err.message : String(err));
+    }
+  }, [dispatch]);
+
+  const handleIdentifyFailed = useCallback(
+    (next: RefineStatus) => {
+      dispatch({ type: "SET_ACTIVE_JOB", job: null });
+      setIdentifyError(tl("pid.local.identifyFailed", { message: next.error ?? "unknown error" }));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dispatch, lang],
+  );
+
+  const handleIdentifyPollError = useCallback(
+    (err: unknown) => {
+      const message = err instanceof ApiError ? err.message : String(err);
+      setIdentifyError(tl("pid.local.identifyPollError", { message }));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lang],
+  );
+
+  usePollJob({
+    status: state.refine,
+    setStatus: setRefineStatus,
+    statusFn: getPhaseIdStatus,
+    enabled: state.activeJob === "phaseid",
+    onDone: handleIdentifyDone,
+    onFailed: handleIdentifyFailed,
+    onError: handleIdentifyPollError,
+  });
+
+  function handleIdentifyClick() {
+    if (jobRunning) return;
+    setIdentifyError(null);
+    postPhaseId({ mode })
+      .then((res) => {
+        if (res.status === "started") {
+          dispatch({ type: "SET_ACTIVE_JOB", job: "phaseid" });
+          setRefineStatus({ status: "running", elapsed_s: 0, last_event: null, error: null });
+        }
+      })
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && err.status === 409) {
+          // Non-fatal (api-contract.md: shared job slot) — surface it inline
+          // rather than as a fatal store error. Also sync activeJob from the
+          // real owner's `kind` (セルフレビュー指摘 #1 (c), same helper as
+          // OperatorConsole/HypothesesTab) so whichever tab actually owns the
+          // running job keeps polling it — previously this branch left
+          // activeJob untouched, so a job that turned out to BE "phaseid"
+          // (e.g. started elsewhere, or a stale click racing another start)
+          // was never picked back up here.
+          setIdentifyError(tl("pid.local.identifyBusy"));
+          // best-effort: this status fetch failing is not itself fatal here —
+          // the inline "busy" message above already told the user why their
+          // click did nothing.
+          void resolveJobConflict(dispatch).catch(() => {});
+          return;
+        }
+        const message = err instanceof ApiError ? err.message : String(err);
+        setIdentifyError(tl("pid.local.identifyError", { message }));
+      });
+  }
+
+  function handleAddAsPhase(row: PhaseIdCandidate) {
+    setAddMessage(null);
+    setAddError(null);
+    setAddingFormula(row.formula);
+    postPhaseIdAdd({ formula: row.formula, mp_id: row.mp_id ?? "" })
+      .then(async (shell) => {
+        dispatch({ type: "SET_SHELL", shell });
+        const viewModel = await getViewModel();
+        dispatch({ type: "SET_VIEW_MODEL", viewModel });
+        setAddMessage(tl("pid.local.addSuccess", { formula: row.formula }));
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof ApiError ? err.message : String(err);
+        setAddError(tl("pid.local.addError", { formula: row.formula, message }));
+      })
+      .finally(() => setAddingFormula(null));
+  }
 
   return (
     <div className="pid-tab">
@@ -27,6 +155,27 @@ export function PhaseIdTab() {
         <span className="pid-tab__title">{t("pid.title")}</span>
         <span className="pid-tab__note">{t("pid.note")}</span>
       </div>
+
+      <div className="pid-tab__controls">
+        <label className="pid-tab__mode">
+          <span className="pid-tab__mode-label">{tl("pid.local.modeLabel")}</span>
+          <select
+            aria-label={tl("pid.local.modeLabel")}
+            value={mode}
+            disabled={jobRunning}
+            onChange={(e) => setMode(e.target.value as PhaseIdMode)}
+          >
+            <option value="pattern">{tl("pid.local.modePattern")}</option>
+            <option value="residual">{tl("pid.local.modeResidual")}</option>
+          </select>
+        </label>
+        <Btn type="button" variant="accent" onClick={handleIdentifyClick} disabled={jobRunning}>
+          {identifyRunning ? tl("pid.local.identifying") : tl("pid.local.identify")}
+        </Btn>
+        {identifyError && <span className="pid-tab__message pid-tab__message--error">{identifyError}</span>}
+      </div>
+      {addMessage && <div className="pid-tab__message pid-tab__message--success">{addMessage}</div>}
+      {addError && <div className="pid-tab__message pid-tab__message--error">{addError}</div>}
 
       <table className="pid-table">
         <thead>
@@ -56,8 +205,13 @@ export function PhaseIdTab() {
                 <Chip variant={row.guard_fail ? "inverted" : "hairline"}>{row.chem_guard}</Chip>
               </td>
               <td className="right">
-                <Btn type="button" variant="outline">
-                  {t("pid.action.addAsPhase")}
+                <Btn
+                  type="button"
+                  variant="outline"
+                  disabled={addingFormula === row.formula}
+                  onClick={() => handleAddAsPhase(row)}
+                >
+                  {addingFormula === row.formula ? tl("pid.local.addAdding") : t("pid.action.addAsPhase")}
                 </Btn>
               </td>
             </tr>

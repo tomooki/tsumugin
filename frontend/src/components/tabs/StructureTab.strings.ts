@@ -16,6 +16,14 @@ export const STRUCT_LOCAL_STRINGS = {
     en: "failed to apply structure edits: {message}",
     ja: "構造編集の適用に失敗: {message}",
   },
+  // A3 (api-contract.md §解析ループ): applied occupancy/Uiso edits only feed
+  // initial_occupancies on the NEXT real refinement run, not immediately —
+  // central STRINGS' "edit.applied" (read-only here) says the ReviseStructure
+  // was logged, but not when it actually takes effect.
+  "struct.local.appliedNextRun": {
+    en: "applies on the next RUN REFINEMENT",
+    ja: "次回の RUN REFINEMENT で反映されます",
+  },
 } as const satisfies Record<string, StructLocalPair>;
 
 export type StructLocalKey = keyof typeof STRUCT_LOCAL_STRINGS;

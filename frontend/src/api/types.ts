@@ -38,11 +38,24 @@ export interface AgentStatus {
 // "idle" | "running" | "done" | "failed" (api-contract.md GET /api/refine/status).
 export type RefineJobStatus = "idle" | "running" | "done" | "failed";
 
+// Which background job kind currently (or most recently) owns the shared
+// GSAS job slot (api-contract.md §解析ループ: "ジョブ枠は 1 つ"). Mirrors
+// state/types.ts ActiveJob minus the "no job has ever run yet" case, which
+// RefineStatus.kind represents as `null` instead (see below).
+export type JobKind = "refine" | "phaseid" | "multistart";
+
 export interface RefineStatus {
   status: RefineJobStatus;
   elapsed_s: number | null;
   last_event: string | null;
   error: string | null;
+  // Added by api-contract.md's kind revision (セルフレビュー指摘 #1). Optional
+  // for the same reason as ShellState.source/refine below — existing
+  // fixtures predate this field and a missing key must not crash. `null`
+  // means the shared job slot has never been started this session (server
+  // reports it only while `status !== "idle"`); once started, it retains
+  // the last-started kind even after "done"/"failed".
+  kind?: JobKind | null;
 }
 
 // "none" | "demo" | "project" — no project loaded (Welcome screen) vs real
@@ -241,6 +254,14 @@ export interface PhaseIdCandidate {
   strain: string;
   chem_guard: string;
   guard_fail: boolean;
+  // Optional (judgment call, mirrors the ProjectHistogramRow precedent
+  // above): api-contract.md's candidates example doesn't show this field,
+  // but POST /api/phaseid/add needs {formula, mp_id} to materialise a
+  // specific candidate's CIF, and candidates originate from identify_phases
+  // against Materials Project (the already-in-model PhaseRow above carries
+  // the analogous mp_id). Optional so fixtures that predate it keep
+  // compiling; ADD AS PHASE disables itself when a row has none.
+  mp_id?: string;
 }
 
 export interface UnexplainedFeature {
@@ -591,6 +612,41 @@ export interface StageActionResponse {
 // (job already running) and surfaces as an ApiError, not this shape.
 export interface RefineResponse {
   status: "started" | "recorded";
+}
+
+// api-contract.md `POST /api/refine`: staged-release recipe ON/OFF per
+// stage number ("01".."08"). Omitted key = default; false = actually skipped
+// by the real run, not just hidden client-side (A1 — see gates.ts
+// computeStagesOn, the only path from the UI's gating to a real run).
+export interface RefineRequest {
+  stages_on?: Record<string, boolean>;
+}
+
+// — 解析ループ (V2a' A4/A5/A6, api-contract.md §解析ループ) —
+
+export type PhaseIdMode = "pattern" | "residual";
+
+export interface PhaseIdRequest {
+  mode: PhaseIdMode;
+  top_k?: number;
+}
+
+export interface PhaseIdAddRequest {
+  formula: string;
+  mp_id: string;
+}
+
+export interface MultistartRequest {
+  n_starts?: number;
+  scale?: number;
+}
+
+// 202 {"status": "started"} for POST /api/phaseid and /api/multistart — both
+// only exist in project mode (no demo "recorded" branch like RefineResponse:
+// every project-mode call launches a real background job). 409 (job slot
+// busy) surfaces as an ApiError, not this shape.
+export interface JobStartResponse {
+  status: "started";
 }
 
 export interface TranscriptMessageRequest {

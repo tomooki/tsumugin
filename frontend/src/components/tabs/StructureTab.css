@@ -242,6 +242,12 @@
   color: var(--color-accent-800);
 }
 
+.struct-edit-state__hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-600);
+}
+
 .struct-controls__actions {
   margin-left: auto;
   display: flex;

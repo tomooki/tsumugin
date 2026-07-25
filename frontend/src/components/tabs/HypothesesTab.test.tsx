@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HypothesesViewModel, ViewModel } from "../../api/types";
 import { I18nProvider } from "../../i18n";
 import { StoreProvider } from "../../state/store";
@@ -140,5 +140,155 @@ describe("HypothesesTab — basin scatter", () => {
     expect(container.querySelector(".placeholder-plot__frame")).toBeNull();
     expect(container.querySelectorAll("svg circle.scatter-chart__point").length).toBe(2);
     expect(screen.getByText("start 1")).toBeInTheDocument();
+  });
+});
+
+// — A5: MULTISTART job (api-contract.md §解析ループ) —
+
+function jsonResponse(body: unknown, ok = true, status = 200): Response {
+  return { ok, status, statusText: ok ? "OK" : "error", json: async () => body } as Response;
+}
+
+function installMultistartFetchMock(opts: {
+  multistartRejects?: { status: number; body: unknown };
+  statuses?: unknown[];
+  refetchedHypotheses?: HypothesesViewModel;
+}) {
+  let statusCallIndex = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+
+    if (url.endsWith("/api/multistart") && method === "POST") {
+      if (opts.multistartRejects) {
+        return {
+          ok: false,
+          status: opts.multistartRejects.status,
+          statusText: "Conflict",
+          json: async () => opts.multistartRejects!.body,
+        } as Response;
+      }
+      return jsonResponse({ status: "started" });
+    }
+    if (url.endsWith("/api/multistart/status") && method === "GET") {
+      const statuses = opts.statuses ?? [{ status: "running", elapsed_s: 1, last_event: null, error: null }];
+      const body = statuses[Math.min(statusCallIndex, statuses.length - 1)];
+      statusCallIndex += 1;
+      return jsonResponse(body);
+    }
+    if (url.endsWith("/api/viewmodel") && method === "GET") {
+      return jsonResponse({
+        datasets: [],
+        phases: [],
+        channels: [],
+        snapshots: [],
+        fit: { metrics: [], histograms: [], limits_note: "", phase_ticks: [], two_theta: { min: 0, max: 0 }, history: [], validity: [] },
+        parameters: {},
+        hypotheses: opts.refetchedHypotheses ?? makeHypotheses(),
+        phase_id: { candidates: [], unexplained: [], completeness: { is_complete: true, notes: [], flagged_frames: "" } },
+        sequence: { charts: [], anchors: [], note: "", segments: [] },
+        structure: { sites: [], constraints: [], mem_peaks: [] },
+        stages: [],
+        review: [],
+        transcript: [],
+      } satisfies ViewModel);
+    }
+    throw new Error(`unhandled fetch: ${method} ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+async function flushMicrotasks(times = 6) {
+  await act(async () => {
+    for (let i = 0; i < times; i++) {
+      await Promise.resolve();
+    }
+  });
+}
+
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+describe("HypothesesTab — MULTISTART job (A5)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("posts n_starts=3 by default, polls, and draws real basin points from the refetched viewmodel on done", async () => {
+    vi.useFakeTimers();
+    const refetched: HypothesesViewModel = {
+      ...makeHypotheses(),
+      basin: {
+        points: [
+          { x: 9.372, y: 6.71, label: "start 1" },
+          { x: 9.375, y: 6.9, label: "start 2" },
+          { x: 9.371, y: 6.8, label: "start 3" },
+        ],
+      },
+    };
+    const fetchMock = installMultistartFetchMock({
+      statuses: [
+        { status: "running", elapsed_s: 1, last_event: null, error: null },
+        { status: "done", elapsed_s: 5, last_event: "complete", error: null },
+      ],
+      refetchedHypotheses: refetched,
+    });
+    const { container } = renderTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "MULTISTART" }));
+    await flushMicrotasks();
+
+    const startCall = fetchMock.mock.calls.find(
+      ([u, init]) => String(u).endsWith("/api/multistart") && (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(startCall).toBeDefined();
+    expect(JSON.parse(String((startCall![1] as RequestInit).body))).toEqual({ n_starts: 3 });
+    expect(screen.getByRole("button", { name: "RUNNING …" })).toBeDisabled();
+
+    await advanceTimers(2000); // still running
+    await advanceTimers(2000); // done
+
+    expect(container.querySelectorAll("svg circle.scatter-chart__point").length).toBe(3);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/viewmodel"))).toBe(true);
+    expect(screen.getByRole("button", { name: "MULTISTART" })).not.toBeDisabled();
+  });
+
+  it("posts a custom n_starts value", async () => {
+    const fetchMock = installMultistartFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    const input = screen.getByLabelText("n_starts");
+    await user.clear(input);
+    await user.type(input, "5");
+    await user.click(screen.getByRole("button", { name: "MULTISTART" }));
+
+    await flushMicrotasks();
+    const call = fetchMock.mock.calls.find(
+      ([u, init]) => String(u).endsWith("/api/multistart") && (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(call).toBeDefined();
+    expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ n_starts: 5 });
+  });
+
+  it("409 (job slot busy) shows a non-fatal inline message, not a crash", async () => {
+    installMultistartFetchMock({
+      multistartRejects: { status: 409, body: { error: "job running", error_type: "conflict" } },
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(screen.getByRole("button", { name: "MULTISTART" }));
+
+    await flushMicrotasks();
+    expect(screen.getByText(/already running \(job slot busy\)/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "MULTISTART" })).not.toBeDisabled();
   });
 });
