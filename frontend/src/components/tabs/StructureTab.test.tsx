@@ -246,6 +246,9 @@ describe("StructureTab — APPLY AS ReviseStructure", () => {
     await waitFor(() =>
       expect(screen.getByText("applied · ReviseStructure logged, child snapshot S-0312")).toBeInTheDocument(),
     );
+    // A3: the applied state also carries a hint that the edit is not live
+    // yet — it only feeds initial_occupancies on the next real refine run.
+    expect(screen.getByText("applies on the next RUN REFINEMENT")).toBeInTheDocument();
 
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -274,6 +277,26 @@ describe("StructureTab — APPLY AS ReviseStructure", () => {
 
     await waitFor(() => expect(screen.getByText(/guard rejected/)).toBeInTheDocument());
     expect(screen.getByText(/pending edit/)).toBeInTheDocument();
+  });
+});
+
+describe("StructureTab — A3 'next run' hint", () => {
+  it("does not show the hint before anything has been applied", () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    renderTab({ viewModel: makeViewModel([site]) });
+    expect(screen.queryByText("applies on the next RUN REFINEMENT")).not.toBeInTheDocument();
+  });
+
+  it("does not show the hint while a new edit is pending on top of an applied baseline", async () => {
+    const user = userEvent.setup();
+    const site = makeSite({ id: "s1", label: "K1", lock: {}, occ: "0.500" });
+    renderTab({ viewModel: makeViewModel([site]), applied: true });
+
+    const occInput = screen.getByLabelText("K1 occ");
+    await user.clear(occInput);
+    await user.type(occInput, "0.6");
+
+    expect(screen.queryByText("applies on the next RUN REFINEMENT")).not.toBeInTheDocument();
   });
 });
 

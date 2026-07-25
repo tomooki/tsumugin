@@ -196,6 +196,64 @@ describe("OperatorConsole — staged release recipe gating", () => {
   });
 });
 
+describe("OperatorConsole — RUN REFINEMENT stages_on payload (A1)", () => {
+  let fetchMock: ReturnType<typeof installFetchMock>;
+
+  beforeEach(() => {
+    fetchMock = installFetchMock();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends stages_on with a gated stage forced to false and an ungated stage as toggled", async () => {
+    const user = userEvent.setup();
+    renderConsole({
+      viewModel: makeViewModel({
+        stages: [
+          stage({ nn: "01", gate: "bkg" }), // gated — nothing released in PARAMETERS below
+          stage({ nn: "02", gate: null }),
+        ],
+      }),
+      paramRel: {}, // stage 01's gate stays closed
+      stageOn: { ...initialWorkbenchState.stageOn, 1: true, 2: true },
+    });
+
+    await user.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) => String(u).endsWith("/api/refine") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      const [, init] = call!;
+      const body = JSON.parse(String((init as RequestInit).body));
+      expect(body).toEqual({ stages_on: { "01": false, "02": true } });
+    });
+  });
+
+  it("sends a gated stage as true once its PARAMETERS gate opens", async () => {
+    const user = userEvent.setup();
+    renderConsole({
+      viewModel: makeViewModel({ stages: [stage({ nn: "01", gate: "bkg" })] }),
+      paramRel: { "sxrd.bkg.1": true },
+      stageOn: { ...initialWorkbenchState.stageOn, 1: true },
+    });
+
+    await user.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) => String(u).endsWith("/api/refine") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      const [, init] = call!;
+      const body = JSON.parse(String((init as RequestInit).body));
+      expect(body).toEqual({ stages_on: { "01": true } });
+    });
+  });
+});
+
 describe("OperatorConsole — review queue", () => {
   let fetchMock: ReturnType<typeof installFetchMock>;
 

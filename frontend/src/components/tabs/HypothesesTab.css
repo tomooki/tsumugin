@@ -132,6 +132,44 @@
   background: var(--color-accent-100);
 }
 
+.hyp-multistart {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.hyp-multistart__n {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hyp-multistart__n-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--color-neutral-600);
+}
+
+.hyp-multistart__n input {
+  width: 44px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  padding: 2px 4px;
+  border-radius: 0;
+}
+
+.hyp-multistart__error {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-neutral-900);
+  margin-bottom: 6px;
+}
+
 .hyp-evidence__rows {
   display: flex;
   flex-direction: column;

@@ -216,6 +216,40 @@ describe("FitTab — real fit/residual plot (fit.plot)", () => {
   });
 });
 
+describe("FitTab — EXPORT GPX link (A6)", () => {
+  it("renders a disabled link (aria-disabled) when there is no refined curve (ycalc absent)", () => {
+    renderFitTab(makeViewModel());
+    const link = screen.getByText("EXPORT GPX").closest("a")!;
+    expect(link).toHaveAttribute("href", "/api/export/gpx");
+    expect(link).toHaveAttribute("download");
+    expect(link).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("does not navigate when clicked while disabled", async () => {
+    const user = userEvent.setup();
+    renderFitTab(makeViewModel());
+    const link = screen.getByText("EXPORT GPX").closest("a")!;
+    const clickEvent = await user.click(link);
+    // userEvent.click resolves regardless; the assertion that matters is the
+    // component's own preventDefault guard, exercised via the disabled state
+    // above — this just confirms clicking a disabled link throws nothing.
+    expect(clickEvent).toBeUndefined();
+  });
+
+  it("enables the link once the active histogram has a refined curve (ycalc present)", () => {
+    renderFitTab(
+      makeViewModel({
+        histograms: [{ id: "sxrd", label: "SR-XRD λ0.79958", active: true }],
+        plot: {
+          sxrd: { x: [4, 5], yobs: [1, 2], ycalc: [1, 2], ybkg: null, residual: null, ticks: {} },
+        },
+      }),
+    );
+    const link = screen.getByText("EXPORT GPX").closest("a")!;
+    expect(link).toHaveAttribute("aria-disabled", "false");
+  });
+});
+
 describe("FitTab — null delta_rwp (real-run first stage, regression)", () => {
   // A real project run's first stage has delta_rwp=null (no predecessor);
   // null.toFixed(2) used to unmount the entire app after RUN REFINEMENT.

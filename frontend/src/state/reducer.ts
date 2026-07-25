@@ -139,11 +139,18 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
       // a page reload mid-job still show the running badge/disabled button,
       // not just OperatorConsole's own poll loop. shell.refine is optional
       // (older fixtures), so a missing field leaves the local value as-is.
+      // shell.refine only ever describes the RUN REFINEMENT job (there is no
+      // shell.phaseid/shell.multistart in the contract), so a "running" read
+      // here is also the only reload-safe signal for which job owns the
+      // shared slot (activeJob) — see ActiveJob's doc comment in state/types.ts.
+      // A non-running read leaves activeJob untouched: it says nothing about
+      // whether some other job kind is mid-flight.
       return {
         ...state,
         shell: action.shell,
         mode: action.shell.mode,
         refine: action.shell.refine ?? state.refine,
+        activeJob: action.shell.refine?.status === "running" ? "refine" : state.activeJob,
       };
 
     case "SET_VIEW_MODEL": {
@@ -186,6 +193,9 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
 
     case "SET_REFINE_STATUS":
       return { ...state, refine: action.refine };
+
+    case "SET_ACTIVE_JOB":
+      return { ...state, activeJob: action.job };
 
     case "SET_LOADING":
       return { ...state, loading: action.loading };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useMemo } from "react";
 import {
   ApiError,
   getRefineStatus,
@@ -8,17 +8,14 @@ import {
   postReviewResolve,
   postStage,
 } from "../../api/client";
-import type { ReviewItem, StageRow } from "../../api/types";
+import type { RefineStatus, ReviewItem, StageRow } from "../../api/types";
+import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
 import { Btn, Chip } from "../common";
 import "./OperatorConsole.css";
-import { isStageGateOpen, reviewSeverityChipVariant, reviewSeverityLabelKey } from "./gates";
+import { computeStagesOn, isStageGateOpen, reviewSeverityChipVariant, reviewSeverityLabelKey } from "./gates";
 import { rt } from "./right.strings";
-
-// GET /api/refine/status polling interval (api-contract.md: no push channel —
-// the frontend polls until the job leaves "running").
-const REFINE_POLL_MS = 2000;
 
 /** MANUAL right-pane body — handoff/README.md §Right pane "MANUAL body":
  * STAGED RELEASE RECIPE (gated by PARAMETERS/STRUCTURE) + RUN
@@ -28,7 +25,11 @@ export function OperatorConsole() {
   const { state, dispatch } = useStore();
   const { t, lang } = useI18n();
   const vm = state.viewModel;
-  const stages: StageRow[] = vm?.stages ?? [];
+  // useMemo (not a bare `?? []`) so this array's identity is stable across
+  // renders that don't change vm.stages — handleRunRefinement below depends
+  // on it, and a fresh [] literal every render would otherwise defeat that
+  // useCallback's memoization entirely.
+  const stages: StageRow[] = useMemo(() => vm?.stages ?? [], [vm?.stages]);
   const review: ReviewItem[] = vm?.review ?? [];
 
   const running = state.refine?.status === "running";
@@ -55,51 +56,64 @@ export function OperatorConsole() {
     [dispatch, reportError],
   );
 
-  // One poll tick: fetch /api/refine/status and reflect it into state.refine.
-  // "done" additionally refetches state+viewmodel so the real metrics/history
-  // /curves land (the completed job wrote them server-side, but this client
-  // only sees them via a fresh GET); "failed" surfaces the error. Either way
-  // this stops the polling effect below, since its dependency (refine.status)
-  // moves off "running".
-  const pollRefineStatus = useCallback(async () => {
-    try {
-      const next = await getRefineStatus();
-      dispatch({ type: "SET_REFINE_STATUS", refine: next });
-      if (next.status === "done") {
-        const [shell, viewModel] = await Promise.all([getState(), getViewModel()]);
-        dispatch({ type: "SET_SHELL", shell });
-        dispatch({ type: "SET_VIEW_MODEL", viewModel });
-      } else if (next.status === "failed") {
-        dispatch({ type: "SET_ERROR", error: next.error ?? "refinement failed" });
-      }
-    } catch (err) {
-      reportError(err, "failed to fetch refinement status");
-    }
-  }, [dispatch, reportError]);
+  // state.refine is a SHARED job-status slot (RUN REFINEMENT / IDENTIFY /
+  // MULTISTART all write it — see hooks/usePollJob.ts and state/types.ts
+  // ActiveJob) so RUN REFINEMENT also disables itself while one of the
+  // other two jobs is running (api-contract.md: one job slot).
+  const setRefineStatus = useCallback(
+    (refine: RefineStatus) => dispatch({ type: "SET_REFINE_STATUS", refine }),
+    [dispatch],
+  );
 
-  // Polling loop: only armed while state.refine.status === "running". The
-  // effect re-runs (and therefore clears/re-arms the interval) whenever that
-  // status changes, so it stops itself the moment pollRefineStatus reports
-  // done/failed — no separate "stop polling" call needed.
-  useEffect(() => {
-    if (state.refine?.status !== "running") return;
-    const id = setInterval(() => {
-      pollRefineStatus();
-    }, REFINE_POLL_MS);
-    return () => clearInterval(id);
-  }, [state.refine?.status, pollRefineStatus]);
+  // On done: refetch state+viewmodel so the real metrics/history/curves land
+  // (the completed job wrote them server-side, but this client only sees
+  // them via a fresh GET).
+  const handleRefineDone = useCallback(async () => {
+    dispatch({ type: "SET_ACTIVE_JOB", job: null });
+    const [shell, viewModel] = await Promise.all([getState(), getViewModel()]);
+    dispatch({ type: "SET_SHELL", shell });
+    dispatch({ type: "SET_VIEW_MODEL", viewModel });
+  }, [dispatch]);
+
+  const handleRefineFailed = useCallback(
+    (next: RefineStatus) => {
+      dispatch({ type: "SET_ACTIVE_JOB", job: null });
+      dispatch({ type: "SET_ERROR", error: next.error ?? "refinement failed" });
+    },
+    [dispatch],
+  );
+
+  const handleRefinePollError = useCallback(
+    (err: unknown) => reportError(err, "failed to fetch refinement status"),
+    [reportError],
+  );
+
+  // Polling loop: only armed while state.refine.status === "running" AND
+  // this job kind (activeJob === "refine") owns the shared slot — see
+  // usePollJob's `enabled` doc comment for why the second condition matters.
+  usePollJob({
+    status: state.refine,
+    setStatus: setRefineStatus,
+    statusFn: getRefineStatus,
+    enabled: state.activeJob === "refine",
+    onDone: handleRefineDone,
+    onFailed: handleRefineFailed,
+    onError: handleRefinePollError,
+  });
 
   const handleRunRefinement = useCallback(() => {
     // Second guard against a double press racing the disabled attribute
     // (React state updates are not synchronous with the click handler).
     if (state.refine?.status === "running") return;
-    postRefine()
+    // A1: the recipe UI's gating reaches the real run only through this
+    // payload — a gated stage is always sent as false regardless of its
+    // client-side toggle (see gates.ts computeStagesOn).
+    const stagesOn = computeStagesOn(stages, state);
+    postRefine({ stages_on: stagesOn })
       .then((res) => {
         if (res.status === "started") {
-          dispatch({
-            type: "SET_REFINE_STATUS",
-            refine: { status: "running", elapsed_s: 0, last_event: null, error: null },
-          });
+          dispatch({ type: "SET_ACTIVE_JOB", job: "refine" });
+          setRefineStatus({ status: "running", elapsed_s: 0, last_event: null, error: null });
         }
         // res.status === "recorded": demo mode (no project connected) — a
         // single-shot ledger record, nothing to poll.
@@ -109,15 +123,13 @@ export function OperatorConsole() {
           // Non-fatal: a job is already running (elsewhere, or a stale local
           // state after reload) — reflect "running" so the poll loop above
           // picks up its real status instead of surfacing this as an error.
-          dispatch({
-            type: "SET_REFINE_STATUS",
-            refine: { status: "running", elapsed_s: null, last_event: null, error: null },
-          });
+          dispatch({ type: "SET_ACTIVE_JOB", job: "refine" });
+          setRefineStatus({ status: "running", elapsed_s: null, last_event: null, error: null });
           return;
         }
         reportError(err, "failed to run refinement");
       });
-  }, [state.refine?.status, dispatch, reportError]);
+  }, [state, stages, dispatch, setRefineStatus, reportError]);
 
   const handleReviewAction = useCallback(
     async (item: ReviewItem, action: "accept" | "send_back") => {

@@ -1,3 +1,4 @@
+import { EXPORT_GPX_PATH } from "../../api/client";
 import { formatNumber, formatSigned } from "../../api/format";
 import type { FitHistoryRow, FitValidityRow } from "../../api/types";
 import { useI18n } from "../../i18n";
@@ -6,6 +7,7 @@ import { LinePlot, type LinePlotSeries } from "../charts/LinePlot";
 import { TickRow } from "../charts/TickRow";
 import { BlueprintCard, Chip, MetricCard } from "../common";
 import "./FitTab.css";
+import { FIT_LOCAL_STRINGS } from "./FitTab.strings";
 import { HistogramChips } from "./HistogramChips";
 
 const TICK_SWATCHES = [
@@ -32,7 +34,7 @@ function validityChipVariant(status: FitValidityRow["status"]): "accent" | "inve
  * history + physical validity gate. All data comes from
  * `viewModel.fit` (GET /api/viewmodel, api-contract.md). */
 export function FitTab() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { state, dispatch } = useStore();
   const fit = state.viewModel?.fit;
 
@@ -85,8 +87,31 @@ export function FitTab() {
     ? [{ x: plot.x, y: plot.residual, kind: "line", label: "Δ", color: "var(--color-neutral-600)" }]
     : null;
 
+  // A6 (api-contract.md §解析ループ): GET /api/export/gpx 404s on an
+  // unrefined project — ycalc absent for the active histogram's curve is the
+  // same "not refined yet" signal the rest of this tab already uses (see
+  // mainSeries above), so it doubles as the disabled condition here.
+  const canExport = !!plot?.ycalc;
+  const exportLabel = FIT_LOCAL_STRINGS["fit.local.exportGpx"][lang];
+  const exportDisabledTip = FIT_LOCAL_STRINGS["fit.local.exportDisabledTip"][lang];
+
   return (
     <div className="fit-tab">
+      <div className="fit-tab__top-row">
+        <a
+          href={EXPORT_GPX_PATH}
+          download
+          className={`fit-tab__export-link${canExport ? "" : " fit-tab__export-link--disabled"}`}
+          aria-disabled={!canExport}
+          title={canExport ? undefined : exportDisabledTip}
+          onClick={(e) => {
+            if (!canExport) e.preventDefault();
+          }}
+        >
+          {exportLabel}
+        </a>
+      </div>
+
       <div className="fit-tab__metrics">
         {metrics.map((m) => (
           <MetricCard key={m.key} label={m.label} value={m.value} note={m.note} />
