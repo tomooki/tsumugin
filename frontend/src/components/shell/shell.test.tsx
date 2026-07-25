@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ShellState, ViewModel } from "../../api/types";
@@ -107,7 +107,7 @@ describe("mode toggle — right pane + fsm chip + status sentence swap only", ()
     // centre pane state (STRUCTURE tab) must still be selected after the swap
     const centreBody = document.querySelector(".centre-canvas__body");
     expect(centreBody).not.toBeNull();
-    expect(within(centreBody as HTMLElement).getByText("STRUCTURE")).toBeInTheDocument();
+    expect((centreBody as HTMLElement).querySelector(".struct-tab")).not.toBeNull();
     expect(
       screen.getByRole("button", { name: /STRUCTURE/ }).className,
     ).toContain("tab-strip__btn--active");
