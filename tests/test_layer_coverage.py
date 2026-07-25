@@ -204,6 +204,13 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "mp": (FOUNDATIONAL, "Materials Project 供給元 (FR-101)。reference/insitu.phaseid が内部利用"),
     "mcp": (FOUNDATIONAL, "これ自体が ② 層。露出する能力ではなく露出する機構"),
     "webui": (FOUNDATIONAL, "WebUI は ③ skill ではなくブラウザ UI の別系統"),
+    "workbench": (
+        FOUNDATIONAL,
+        "操作系デスクトップワークベンチ (GUI, docs/spec/gui-workbench)。webui と同じく③ skill 経由"
+        "ではなく直接の operator UI 系統。① Ledger/Snapshot/ReviewQueue/FinalSelectionEngine を直接"
+        "束ねる可変セッション + API であり、AUTO モードでも③=LLM は既存② MCP 32+ ツールを叩く"
+        "(本パッケージ自体は① の新規解析能力を追加しない)",
+    ),
     # --- トップレベルモジュール (パッケージではないが ③ 向け能力/インフラを持ちうる) ---
     "pipeline": (FOUNDATIONAL, "単一パターン自動多相精密化 (M0)。submit_analysis の裏方"),
     "errors": (FOUNDATIONAL, "例外型の集約。全層が共有するインフラ"),
