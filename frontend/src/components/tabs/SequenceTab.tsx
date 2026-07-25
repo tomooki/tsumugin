@@ -87,6 +87,10 @@ export function SequenceTab() {
 
   const jobRunning = state.refine?.status === "running";
   const sequentialRunning = jobRunning && state.activeJob === "sequential";
+  // Tier1 desktop sidecar excludes GSAS-II (desktop/README.md "Tier1 の GSAS 前提") —
+  // status.gsas_available is dynamic per GET /api/state. Default true when shell/status hasn't
+  // loaded yet (mirrors OperatorConsole's identical convention for RUN REFINEMENT).
+  const gsasAvailable = state.shell?.status?.gsas_available ?? true;
 
   function toggleAnchorPhase(frameIdx: number, phaseName: string) {
     setAnchorSelections((prev) => {
@@ -153,6 +157,7 @@ export function SequenceTab() {
 
   function handleRunSequential() {
     if (jobRunning) return;
+    if (!gsasAvailable) return;
     setRunError(null);
     const payload: SequentialRequest = { mode };
     if (mode === "anchored") {
@@ -211,7 +216,13 @@ export function SequenceTab() {
             />
             <span>{tl("seq.run.chargeConstraint")}</span>
           </label>
-          <Btn type="button" variant="accent" onClick={handleRunSequential} disabled={jobRunning}>
+          <Btn
+            type="button"
+            variant="accent"
+            onClick={handleRunSequential}
+            disabled={jobRunning || !gsasAvailable}
+            title={!gsasAvailable ? tl("seq.run.gsasUnavailable") : undefined}
+          >
             {sequentialRunning ? tl("seq.run.running") : tl("seq.run.button")}
           </Btn>
         </div>

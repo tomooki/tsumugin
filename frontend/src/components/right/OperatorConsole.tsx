@@ -57,6 +57,11 @@ export function OperatorConsole() {
   const pendingApprovals = (vm?.transcript ?? []).filter((m) => isPendingApproval(m, state.approval));
 
   const running = state.refine?.status === "running";
+  // Tier1 desktop sidecar excludes GSAS-II (desktop/README.md "Tier1 の GSAS 前提") —
+  // status.gsas_available is dynamic per GET /api/state (api/types.ts BackendStatus). Default
+  // true when shell/status hasn't loaded yet so the button isn't disabled during the initial
+  // fetch (mirrors the existing "unknown → not-yet-gated" convention elsewhere in this file).
+  const gsasAvailable = state.shell?.status?.gsas_available ?? true;
 
   const reportError = useCallback(
     (err: unknown, fallback: string) => {
@@ -134,6 +139,7 @@ export function OperatorConsole() {
     // Second guard against a double press racing the disabled attribute
     // (React state updates are not synchronous with the click handler).
     if (state.refine?.status === "running") return;
+    if (!gsasAvailable) return;
     // A1: the recipe UI's gating reaches the real run only through this
     // payload — a gated stage is always sent as false regardless of its
     // client-side toggle (see gates.ts computeStagesOn).
@@ -166,7 +172,7 @@ export function OperatorConsole() {
         }
         reportError(err, "failed to run refinement");
       });
-  }, [state, stages, dispatch, setRefineStatus, reportError]);
+  }, [state, stages, dispatch, setRefineStatus, reportError, gsasAvailable]);
 
   const handleReviewAction = useCallback(
     async (item: ReviewItem, action: "accept" | "send_back") => {
@@ -223,7 +229,13 @@ export function OperatorConsole() {
           })}
         </div>
         <div className="oc-actions">
-          <Btn type="button" variant="accent" onClick={handleRunRefinement} disabled={running}>
+          <Btn
+            type="button"
+            variant="accent"
+            onClick={handleRunRefinement}
+            disabled={running || !gsasAvailable}
+            title={!gsasAvailable ? rt(lang, "recipe.gsasUnavailable") : undefined}
+          >
             {running ? rt(lang, "recipe.running") : t("recipe.runRefinement")}
           </Btn>
           {/* No dedicated snapshot-creation endpoint exists in the v1 API

@@ -29,6 +29,15 @@
 // mode here, see `status.gsas_available` in the API contract; only "the
 // server never came up" is) an error dialog is shown so the failure is never
 // silent.
+//
+// 【孤児化 / 二重起動対策 (V2c レビュー指摘)】: 素の `std::process::Command` spawn は Windows の
+// ジョブオブジェクト等に紐付けないため、タスクマネージャでこのアプリだけを強制終了した場合
+// sidecar 子プロセスが取り残される (孤児化) おそれがある。対策として自 PID を `--parent-pid` で
+// 子に渡し、子側 (`desktop/sidecar/tsumugin_workbench_sidecar.py`) が Windows API で親の終了を
+// 監視して自ら `os._exit(0)` する (`kill_sidecar` の通常終了経路と独立な安全網)。また spawn 前に
+// ポート 8770 が既に応答していないか確認し、応答していれば (別インスタンス、または前回セッションの
+// 残存プロセス) 新規 spawn をやめて警告ダイアログを出してから既存バックエンドへ接続する
+// (サイレントな相乗りをやめる — `show_existing_backend_dialog`)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -75,20 +84,37 @@ pub fn run() {
 /// health check → 成功なら window を navigate、失敗ならエラーダイアログ、という筋を通す。
 fn bootstrap_backend(app: &AppHandle) {
     if !cfg!(debug_assertions) {
-        match spawn_sidecar(app) {
-            Ok(child) => {
-                if let Some(state) = app.try_state::<SidecarProcess>() {
-                    *state.0.lock().unwrap() = Some(child);
+        // 【二重起動ガード (V2c レビュー指摘)】: spawn する前にポート 8770 が既に 200 を返すか
+        //   確認する。既に何か動いていれば (別インスタンス、または前回セッションの残存プロセス)
+        //   新しい sidecar をさらに spawn せず、警告ダイアログで利用者に明示してから既存のものへ
+        //   接続する — 以前はここを確認せず常に spawn していたため、失敗時のフォールバック
+        //   (下の Err 節) でのみ暗黙に「既存バックエンドへ相乗り」していた。それをサイレントに
+        //   させず、正常系でも明示的な警告を出す。
+        if http_get_is_200(SIDECAR_HOST, SIDECAR_PORT, "/api/state") {
+            eprintln!(
+                "tsumugin workbench: a backend is already responding on \
+                 http://{SIDECAR_HOST}:{SIDECAR_PORT}; not spawning a new sidecar"
+            );
+            show_existing_backend_dialog(app);
+        } else {
+            match spawn_sidecar(app) {
+                Ok(child) => {
+                    if let Some(state) = app.try_state::<SidecarProcess>() {
+                        *state.0.lock().unwrap() = Some(child);
+                    }
                 }
-            }
-            Err(err) => {
-                // 【sidecar 不在時フォールバック】: 起動できなくても即エラーにはしない — 既に
-                //   ポート 8770 で何か (例えば手動起動したバックエンド) が動いていれば、続く
-                //   health check がそれを拾って正常に window を navigate する。
-                eprintln!(
-                    "tsumugin workbench: sidecar spawn failed ({err}); \
-                     falling back to polling for an already-running backend"
-                );
+                Err(err) => {
+                    // 【sidecar 不在時フォールバック】: 起動できなくても即エラーにはしない — 既に
+                    //   ポート 8770 で何か (例えば手動起動したバックエンド) が動いていれば、続く
+                    //   health check がそれを拾って正常に window を navigate する。この分岐に来る
+                    //   時点では上の事前チェックで「まだ応答していない」ことを確認済みなので、
+                    //   ここで拾えるのは spawn 失敗の間に別プロセスが後から立ち上がった場合のみ —
+                    //   稀なので警告ダイアログは出さない (エラーダイアログ側でカバーされる)。
+                    eprintln!(
+                        "tsumugin workbench: sidecar spawn failed ({err}); \
+                         falling back to polling for an already-running backend"
+                    );
+                }
             }
         }
     }
@@ -124,9 +150,29 @@ fn show_backend_unreachable_dialog(app: &AppHandle) {
         .blocking_show();
 }
 
+/// 【二重起動ガード (V2c レビュー指摘)】: spawn 前チェックで既に何かがポート 8770 に応答して
+/// いた場合に表示する警告。エラーではなく続行可能な状態 (この後の health check は既存バックエンド
+/// を拾ってそのまま navigate する) なので `MessageDialogKind::Warning`。
+fn show_existing_backend_dialog(app: &AppHandle) {
+    app.dialog()
+        .message(format!(
+            "A backend is already responding at http://{SIDECAR_HOST}:{SIDECAR_PORT} — \
+             connecting to it instead of starting a new one.\n\n\
+             This may be a separate running instance of Tsumugin Workbench, or a leftover \
+             process from a previous session that did not shut down cleanly."
+        ))
+        .title("Tsumugin Workbench")
+        .kind(MessageDialogKind::Warning)
+        .blocking_show();
+}
+
 /// `desktop/src-tauri/binaries/tsumugin-workbench-sidecar-<triple>.exe` を spawn する
 /// (`app.path().resource_dir()` 配下, `tauri.conf.json` の `bundle.resources` 経由で
 /// バンドルされる — 詳細は desktop/sidecar/build_sidecar.ps1 のコメントを参照)。
+///
+/// `--parent-pid` に自分自身 (このシェルプロセス) の PID を渡す — sidecar 側 (V2c レビュー指摘)
+/// がこれを Windows API で監視し、親 (このプロセス) が強制終了された場合でも自ら終了して孤児化
+/// を防ぐ (`kill_sidecar` による通常終了経路とは独立な安全網)。
 fn spawn_sidecar(app: &AppHandle) -> Result<Child, String> {
     let exe_path = sidecar_exe_path(app)?;
     Command::new(&exe_path)
@@ -134,6 +180,8 @@ fn spawn_sidecar(app: &AppHandle) -> Result<Child, String> {
         .arg(SIDECAR_HOST)
         .arg("--port")
         .arg(SIDECAR_PORT.to_string())
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string())
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", exe_path.display()))
 }

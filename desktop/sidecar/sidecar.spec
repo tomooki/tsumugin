@@ -55,6 +55,13 @@ _HEAVY_EXCLUDES = [
     "pycifrw",
     "scipy",
     "pytest",
+    # 【V2c レビュー指摘】: PIL/Pygments はどの tsumugin モジュールも直接 import しないが、
+    #   matplotlib (pymatgen-core の非 extra 依存) 経由で PyInstaller の静的解析に引っかかり
+    #   同梱されていた (~13MB, PIL のみ確認 — pymatgen 自体は除外済みなのに Pillow だけ残る)。
+    #   matplotlib/pymatgen 系を実際に使う経路が sidecar には無いため、Tier1 exclude リストの
+    #   趣旨 (遅延 import + Unavailable フォールバック済み機能のみ非同梱) に合わせて追加する。
+    "PIL",
+    "pygments",
 ]
 
 hiddenimports = list(

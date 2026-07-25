@@ -143,7 +143,12 @@ GSAS-II/pymatgen/mp_api/dynesty/galvani/mcp/periodictable/pycifrw/scipy を明�
 - GSAS 必須ジョブ (`POST /api/refine`/`/api/multistart`/`/api/sequential`) は GSAS 不在時
   422 `{"error_type": "GSASUnavailableError"}` へ縮退する
   (`WorkbenchSession._guard_gsas_available`, `src/tsumugin/workbench/session.py`)。
-  demo/project 閲覧・プロジェクト編集・phaseid (MP 経由, mp extra が別途必要) 等はそのまま動く。
+  demo/project 閲覧・プロジェクト編集はそのまま動く。
+  **⚠ phaseid (`POST /api/phaseid`, Materials Project 経由の相同定) は Tier1 では動かない** —
+  `sidecar.spec` の `excludes` が `pymatgen`/`mp_api` も除外しているため (`_HEAVY_EXCLUDES`)。
+  GSAS-II と異なり「ローカル導入すれば動く」形の遅延解決ではなく、Tier1 sidecar exe には
+  そもそも同梱されていないので開発機に pymatgen/mp-api を入れても凍結 exe 側は変わらない。
+  既知の制限として明記する (mp まで同梱する Tier1.5 相当は M-later)。
 - 実測: PyInstaller ビルドした sidecar exe を単体起動すると `gsas_available: false`
   (GSAS-II が exclude されているため。開発機に GSAS-II があっても sidecar プロセス自体には
   同梱していないので反映されない — これは意図した Tier1 の挙動)。

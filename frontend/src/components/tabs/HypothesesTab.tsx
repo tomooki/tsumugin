@@ -47,6 +47,10 @@ export function HypothesesTab() {
   // comment. Any of the three job kinds running disables MULTISTART too.
   const jobRunning = state.refine?.status === "running";
   const multistartRunning = jobRunning && state.activeJob === "multistart";
+  // Tier1 desktop sidecar excludes GSAS-II (desktop/README.md "Tier1 の GSAS 前提") —
+  // status.gsas_available is dynamic per GET /api/state. Default true when shell/status hasn't
+  // loaded yet (mirrors OperatorConsole/SequenceTab's identical convention).
+  const gsasAvailable = state.shell?.status?.gsas_available ?? true;
 
   const setRefineStatus = useCallback(
     (refine: RefineStatus) => dispatch({ type: "SET_REFINE_STATUS", refine }),
@@ -93,6 +97,7 @@ export function HypothesesTab() {
 
   function handleMultistartClick() {
     if (jobRunning) return;
+    if (!gsasAvailable) return;
     setMultistartError(null);
     const parsed = Number(nStartsInput);
     const nStarts = Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_N_STARTS;
@@ -204,7 +209,13 @@ export function HypothesesTab() {
                 onChange={(e) => setNStartsInput(e.target.value)}
               />
             </label>
-            <Btn type="button" variant="accent" onClick={handleMultistartClick} disabled={jobRunning}>
+            <Btn
+              type="button"
+              variant="accent"
+              onClick={handleMultistartClick}
+              disabled={jobRunning || !gsasAvailable}
+              title={!gsasAvailable ? tl("hyp.local.gsasUnavailable") : undefined}
+            >
               {multistartRunning ? tl("hyp.local.multistarting") : tl("hyp.local.multistart")}
             </Btn>
           </div>

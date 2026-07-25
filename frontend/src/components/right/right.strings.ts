@@ -57,6 +57,14 @@ export const RIGHT_STRINGS = {
     en: "already resolved elsewhere · refresh to see the result",
     ja: "他の操作で解決済み · 更新して結果を確認してください",
   },
+  // Tooltip for RUN REFINEMENT while status.gsas_available is false (V2c レビュー指摘 #4) —
+  // Tier1 desktop sidecar excludes GSAS-II (desktop/README.md), and this job would otherwise
+  // 422 with GSASUnavailableError server-side; disabling client-side with an explanatory title
+  // makes the reason visible without a failed round-trip.
+  "recipe.gsasUnavailable": {
+    en: "GSAS-II is not available in this backend — refinement jobs cannot run",
+    ja: "このバックエンドでは GSAS-II が利用できません — 精密化ジョブは実行できません",
+  },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;

@@ -160,3 +160,60 @@ describe("mode toggle — right pane + fsm chip + status sentence swap only", ()
     expect(JSON.parse(String((modeInit as RequestInit).body))).toEqual({ mode: "auto" });
   });
 });
+
+// — V2c レビュー指摘 #4: GSAS-II 不在の可視化 —
+// Tier1 desktop sidecar excludes GSAS-II (desktop/README.md "Tier1 の GSAS 前提"), and
+// status.gsas_available (api/types.ts BackendStatus) is dynamic per GET /api/state. Previously
+// this field was fetched into state but never rendered anywhere — a user on a GSAS-less Tier1
+// build had no way to tell why RUN REFINEMENT/RUN SEQUENTIAL/MULTISTART would 422.
+describe("StatusBar — GSAS-II availability chip", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function installFetchMockWithGsas(gsasAvailable: boolean) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/state") && method === "GET") {
+        return jsonResponse(
+          makeShell({
+            status: { backend_build: "tsumugin 0.3.0", seed: 0, mcp_tools: 36, gsas_available: gsasAvailable },
+          }),
+        );
+      }
+      if (url.endsWith("/api/viewmodel") && method === "GET") {
+        return jsonResponse(makeViewModel());
+      }
+      throw new Error(`unhandled fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("shows the inverted GSAS-II NOT FOUND chip once /api/state reports gsas_available: false", async () => {
+    installFetchMockWithGsas(false);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("GSAS-II NOT FOUND")).toBeInTheDocument());
+    expect(screen.getByText("GSAS-II NOT FOUND").className).toContain("chip--inverted");
+  });
+
+  it("does not show the chip when gsas_available is true", async () => {
+    installFetchMockWithGsas(true);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("OPERATOR CONSOLE")).toBeInTheDocument());
+    expect(screen.queryByText("GSAS-II NOT FOUND")).not.toBeInTheDocument();
+  });
+
+  it("shows the chip localised to Japanese", async () => {
+    const user = userEvent.setup();
+    installFetchMockWithGsas(false);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("GSAS-II NOT FOUND")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "日本語" }));
+    await waitFor(() => expect(screen.getByText("GSAS-II 未検出")).toBeInTheDocument());
+  });
+});

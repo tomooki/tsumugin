@@ -29,6 +29,8 @@ describe("SEQUENCE_STRINGS — EN/JA key set invariant", () => {
         "seq.run.pollError",
         "seq.run.chargeConstraint",
         "seq.run.chargeConstraintHint",
+        // V2c レビュー指摘 #4: GSAS-II 不在時の RUN SEQUENTIAL 無効化ツールチップ
+        "seq.run.gsasUnavailable",
         "seq.anchorTable.heading",
         "seq.anchorTable.note",
         "seq.anchorTable.empty",

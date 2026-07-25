@@ -18,6 +18,11 @@ export const SHELL_STRINGS = {
   "frame.nav.label": { en: "fr {k} / {n}", ja: "fr {k} / {n}" },
   "frame.nav.prev": { en: "previous frame", ja: "前のフレーム" },
   "frame.nav.next": { en: "next frame", ja: "次のフレーム" },
+  // GSAS-II unavailability chip (V2c レビュー指摘 #4): Tier1 desktop sidecar excludes GSAS-II
+  // (desktop/README.md "Tier1 の GSAS 前提") — status.gsas_available is dynamic per GET
+  // /api/state (api/types.ts BackendStatus doc comment), so this must render/unrender live, not
+  // just once at load. Inverted chip variant matches Chip.tsx's "the only attention treatment".
+  "status.gsasUnavailable": { en: "GSAS-II NOT FOUND", ja: "GSAS-II 未検出" },
 } as const satisfies Record<string, StringPair>;
 
 export type ShellStringKey = keyof typeof SHELL_STRINGS;
