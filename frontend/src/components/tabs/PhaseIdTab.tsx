@@ -1,3 +1,4 @@
+import { formatNumber } from "../../api/format";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
 import { BlueprintCard, Btn, Chip, PlaceholderPlot } from "../common";
@@ -48,7 +49,7 @@ export function PhaseIdTab() {
               <td>{row.formula}</td>
               <td className="mono">{row.source}</td>
               <td className="mono">{row.sg}</td>
-              <td className="num">{row.dara.toFixed(2)}</td>
+              <td className="num">{formatNumber(row.dara, 2)}</td>
               <td className="num mono">{row.mwmsx}</td>
               <td className="num">{row.strain}</td>
               <td>
@@ -78,7 +79,7 @@ export function PhaseIdTab() {
           <div className="pid-residual__list">
             {vm.unexplained.map((f, i) => (
               <div key={i}>
-                {`2θ ${f.two_theta.toFixed(2)} · S/N ${f.sn.toFixed(1)} · ${f.indexing}`}
+                {`2θ ${formatNumber(f.two_theta, 2)} · S/N ${formatNumber(f.sn, 1)} · ${f.indexing}`}
               </div>
             ))}
           </div>

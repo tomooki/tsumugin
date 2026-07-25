@@ -158,7 +158,15 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
         stages.length > 0
           ? Object.fromEntries(stages.map((s) => [Number(s.nn), s.released]))
           : state.stageOn;
-      return { ...state, viewModel: action.viewModel, stageOn };
+      // hist ids are server data (demo: sxrd/…, project: h0/…). If the current
+      // selection does not exist in this viewmodel, re-point it to the active
+      // (or first) histogram so FIT/PARAMETERS never dereference a stranded id.
+      const hists = action.viewModel.fit?.histograms ?? [];
+      let hist = state.hist;
+      if (hists.length > 0 && !hists.some((h) => h.id === hist)) {
+        hist = (hists.find((h) => h.active) ?? hists[0]).id;
+      }
+      return { ...state, viewModel: action.viewModel, stageOn, hist };
     }
 
     case "APPEND_TRANSCRIPT_MESSAGE": {

@@ -5,7 +5,11 @@ import type { GuiMode, RefineStatus, ShellState, Site, ViewModel } from "../api/
 import type { Lang } from "../i18n";
 
 export type TabId = "fit" | "param" | "hyp" | "pid" | "seq" | "struct" | "ledger";
-export type HistId = "sxrd" | "nd" | "nd2";
+// Histogram ids are server data (demo: sxrd/nd1/nd2, project mode: h0, h1, …),
+// not a closed vocabulary — a union type here silently strands `hist` on a
+// nonexistent id when the data source changes (regression: project mode's
+// "h0" plot never rendered because hist stayed "sxrd").
+export type HistId = string;
 export type ApprovalState = "pending" | "approved" | "rejected";
 export type ReviewDecision = "accepted" | "sent_back";
 

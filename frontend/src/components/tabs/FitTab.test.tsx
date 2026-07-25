@@ -215,3 +215,19 @@ describe("FitTab — real fit/residual plot (fit.plot)", () => {
     expect(container.querySelector(".fit-tab__plot-col .placeholder-plot__frame")).not.toBeNull();
   });
 });
+
+describe("FitTab — null delta_rwp (real-run first stage, regression)", () => {
+  // A real project run's first stage has delta_rwp=null (no predecessor);
+  // null.toFixed(2) used to unmount the entire app after RUN REFINEMENT.
+  it("renders an em-dash instead of crashing", () => {
+    renderFitTab(
+      makeViewModel({
+        history: [
+          { stage: "01 S0 scale+background", rwp: 48.89, delta_rwp: null, guard: "", reverted: false },
+        ],
+      }),
+    );
+    expect(screen.getByText("01 S0 scale+background")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+});

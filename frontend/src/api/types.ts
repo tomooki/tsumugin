@@ -112,7 +112,8 @@ export interface TwoThetaRange {
 export interface FitHistoryRow {
   stage: string;
   rwp: number;
-  delta_rwp: number;
+  /** null for the first stage of a real run — no predecessor to diff against. */
+  delta_rwp: number | null;
   guard: string;
   reverted: boolean;
 }

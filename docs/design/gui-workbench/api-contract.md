@@ -45,7 +45,7 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
     "limits_note": "two_theta_limits = [4.0, 38.0] · background 24 terms · Kα1 instprm",
     "phase_ticks": ["cubic K2Mn[Fe(CN)6]"], "two_theta": { "min": 4.0, "max": 38.0 },
     "history": [{ "stage": "06 phase fractions", "rwp": 7.02, "delta_rwp": -0.31,
-                  "guard": "", "reverted": false }],
+                  "guard": "", "reverted": false }],   // delta_rwp: 実 run の先頭ステージは null (前段なし)
     "validity": [{ "check": "occupancy bounds", "status": "pass", "detail": "0 ≤ occ ≤ 1" }],
     // 実プロット曲線 (hist id →)。null = 曲線なし (placeholder 表示)。配列は
     // バックエンドで ≤2000 点に間引き済み (大配列を境界で無制限に跨がせない)。

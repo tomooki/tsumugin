@@ -1,3 +1,4 @@
+import { formatNumber, formatSigned } from "../../api/format";
 import type { FitHistoryRow, FitValidityRow } from "../../api/types";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
@@ -14,14 +15,11 @@ const TICK_SWATCHES = [
   "var(--color-neutral-400)",
 ];
 
-function formatDelta(n: number): string {
-  const sign = n >= 0 ? "+" : "";
-  return `${sign}${n.toFixed(2)}`;
-}
-
 function deltaClass(row: FitHistoryRow): string {
   if (row.reverted) return "fit-history__delta fit-history__delta--reverted";
-  if (row.delta_rwp < 0) return "fit-history__delta fit-history__delta--negative";
+  if (row.delta_rwp !== null && row.delta_rwp < 0) {
+    return "fit-history__delta fit-history__delta--negative";
+  }
   return "fit-history__delta";
 }
 
@@ -163,9 +161,9 @@ export function FitTab() {
               {history.map((row) => (
                 <tr key={row.stage}>
                   <td className="fit-history__td">{row.stage}</td>
-                  <td className="fit-history__td fit-history__td--right">{row.rwp.toFixed(2)}</td>
+                  <td className="fit-history__td fit-history__td--right">{formatNumber(row.rwp, 2)}</td>
                   <td className={`fit-history__td fit-history__td--right ${deltaClass(row)}`}>
-                    {formatDelta(row.delta_rwp)}
+                    {formatSigned(row.delta_rwp, 2)}
                   </td>
                   <td className="fit-history__td fit-history__guard">{row.guard}</td>
                 </tr>

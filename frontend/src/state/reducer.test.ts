@@ -230,3 +230,42 @@ describe("reducer — APPEND_TRANSCRIPT_MESSAGE", () => {
     expect(next).toBe(initialWorkbenchState);
   });
 });
+
+describe("reducer — SET_VIEW_MODEL hist re-pointing", () => {
+  // Regression: project mode's histograms are "h0"/"h1"/… while the client
+  // default hist is the demo's "sxrd" — the stranded id made fit.plot["sxrd"]
+  // undefined and the real curves never rendered (placeholder fallback).
+  function vmWithHists(ids: string[], active?: string): ViewModel {
+    return {
+      structure: { sites: [], constraints: [], mem_peaks: [] },
+      stages: [],
+      transcript: [],
+      fit: {
+        metrics: [], limits_note: "", phase_ticks: [],
+        two_theta: { min: 4, max: 38 }, history: [], validity: [],
+        histograms: ids.map((id) => ({ id, label: id, active: id === (active ?? ids[0]) })),
+      },
+    } as unknown as ViewModel;
+  }
+
+  it("re-points a stranded hist to the active histogram id", () => {
+    const next = reducer(initialWorkbenchState, {
+      type: "SET_VIEW_MODEL",
+      viewModel: vmWithHists(["h0"]),
+    });
+    expect(next.hist).toBe("h0");
+  });
+
+  it("keeps a hist that exists in the new viewmodel", () => {
+    const loaded = reducer(initialWorkbenchState, {
+      type: "SET_VIEW_MODEL",
+      viewModel: vmWithHists(["sxrd", "nd1"], "sxrd"),
+    });
+    const onNd = reducer(loaded, { type: "SET_HIST", hist: "nd1" });
+    const refetched = reducer(onNd, {
+      type: "SET_VIEW_MODEL",
+      viewModel: vmWithHists(["sxrd", "nd1"], "sxrd"),
+    });
+    expect(refetched.hist).toBe("nd1");
+  });
+});

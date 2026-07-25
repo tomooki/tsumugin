@@ -1,3 +1,4 @@
+import { formatInt, formatNumber } from "../../api/format";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
 import { ScatterChart } from "../charts/ScatterChart";
@@ -46,10 +47,10 @@ export function HypothesesTab() {
               <td>{row.rank}</td>
               <td className="mono">{row.id}</td>
               <td>{row.phases}</td>
-              <td className="num">{row.p.toFixed(2)}</td>
-              <td className="num">{row.rwp.toFixed(2)}</td>
-              <td className="num">{row.gof.toFixed(2)}</td>
-              <td className="num">{Math.round(row.bic).toLocaleString("en-US")}</td>
+              <td className="num">{formatNumber(row.p, 2)}</td>
+              <td className="num">{formatNumber(row.rwp, 2)}</td>
+              <td className="num">{formatNumber(row.gof, 2)}</td>
+              <td className="num">{formatInt(row.bic)}</td>
               <td className="center">
                 {row.close && <span className="hyp-table__close-dot">●</span>}
               </td>
