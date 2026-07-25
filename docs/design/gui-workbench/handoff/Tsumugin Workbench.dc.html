@@ -1,0 +1,1745 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/industry-3248150c-6a0b-4764-97d2-9f54a45f459a/styles.css">
+<script src="_ds/industry-3248150c-6a0b-4764-97d2-9f54a45f459a/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Barlow:wght@400;500;600&family=Noto+Sans+JP:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --font-heading: "Barlow Condensed", "Noto Sans JP", system-ui, sans-serif;
+    --font-body: "Barlow", "Noto Sans JP", system-ui, sans-serif;
+  }
+  html, body { margin: 0; background: var(--color-bg); }
+  a { color: var(--color-accent-700); }
+  a:hover { color: var(--color-accent-800); }
+  .tg-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+  .tg-scroll::-webkit-scrollbar-thumb { background: var(--color-neutral-400); }
+  .tg-scroll::-webkit-scrollbar-track { background: transparent; }
+</style>
+</helmet>
+
+<div style="width: 1920px; height: 1080px; display: grid; grid-template-rows: 56px 38px 1fr 26px; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); overflow: hidden;">
+
+  <!-- title bar -->
+  <div style="display: grid; grid-template-columns: 300px 1fr auto; align-items: center; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-100); padding: 0 16px;">
+    <div style="display: flex; align-items: baseline; gap: 10px;">
+      <span style="font-family: var(--font-heading); font-weight: 700; font-size: 22px; letter-spacing: 0.06em;">TSUMUGIN</span>
+      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.08em; color: var(--color-neutral-600); white-space: nowrap;">v0.3 · M0–M11</span>
+      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.06em; color: var(--color-accent-700); border: 1px solid var(--color-accent-300); background: var(--color-accent-100); padding: 1px 6px; white-space: nowrap;">GSAS-II</span>
+    </div>
+
+    <div style="display: flex; justify-content: center;">
+      <div class="blueprint" style="display: flex; align-items: stretch; background: var(--color-neutral-200); padding: 3px; gap: 3px;">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <sc-for list="{{ modeItems }}" as="m" hint-placeholder-count="2">
+          <button onClick="{{ m.onClick }}" style="display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; padding: 4px 16px 4px 12px; border: 1px solid {{ m.border }}; background: {{ m.bg }}; color: {{ m.color }}; cursor: pointer; text-align: left; border-radius: 0;">
+            <span style="width: 8px; height: 8px; background: {{ m.dot }};"></span>
+            <span style="display: block;">
+              <span style="display: block; font-family: var(--font-heading); font-weight: 600; font-size: 14px; letter-spacing: 0.1em; line-height: 1.1; white-space: nowrap;">{{ m.label }}</span>
+              <span style="display: block; font-size: 10px; letter-spacing: 0.02em; opacity: 0.75; line-height: 1.2; white-space: nowrap;">{{ m.sub }}</span>
+            </span>
+          </button>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;">
+      <div style="display: flex; align-items: stretch; border: 1px solid var(--color-divider); margin-right: 4px;">
+        <sc-for list="{{ langItems }}" as="lg" hint-placeholder-count="2">
+          <button onClick="{{ lg.onClick }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 11.5px; letter-spacing: 0.08em; border: 0; background: {{ lg.bg }}; color: {{ lg.color }}; padding: 4px 10px; cursor: pointer; white-space: nowrap;">{{ lg.label }}</button>
+        </sc-for>
+      </div>
+      <span style="display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--color-divider); padding: 3px 8px; color: var(--color-neutral-700); white-space: nowrap;">
+        <span style="width: 6px; height: 6px; background: var(--color-accent-700); border-radius: 50%;"></span>{{ t.nonDestructive }}
+      </span>
+      <span style="border: 1px solid var(--color-divider); padding: 3px 8px; color: var(--color-neutral-700); white-space: nowrap;">ledger.verify() = TRUE</span>
+      <span style="border: 1px solid var(--color-divider); padding: 3px 8px; color: var(--color-neutral-700); white-space: nowrap;">{{ costChip }}</span>
+    </div>
+  </div>
+
+  <!-- context bar -->
+  <div style="display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-200); padding: 0 16px;">
+    <div style="display: flex; align-items: center; gap: 10px; font-size: 12px; min-width: 0;">
+      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.08em; color: var(--color-neutral-600); white-space: nowrap;">{{ t.project }}</span>
+      <span style="font-family: var(--font-heading); font-weight: 600; font-size: 15px; white-space: nowrap;">{{ t.projectName }}</span>
+      <span style="color: var(--color-neutral-500);">/</span>
+      <span style="font-size: 12px; white-space: nowrap;">{{ t.datasetLine }}</span>
+      <span style="color: var(--color-neutral-500);">/</span>
+      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; background: var(--color-accent-100); border: 1px solid var(--color-accent-300); padding: 1px 7px; white-space: nowrap;">{{ t.frameChip }}</span>
+      <span style="font-size: 11.5px; color: var(--color-neutral-700); white-space: nowrap;">V = 3.94 V · Q = 41.2 mAh g⁻¹ · x_echem = 0.71(2)</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.06em; color: var(--color-neutral-600);">final_selection_mode</span>
+      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; letter-spacing: 0.08em; background: {{ fsmBg }}; color: {{ fsmColor }}; border: 1px solid {{ fsmBorder }}; padding: 2px 9px; white-space: nowrap;">{{ fsmLabel }}</span>
+      <span style="font-size: 11px; color: var(--color-neutral-600); white-space: nowrap;">{{ t.fsmNote }}</span>
+    </div>
+  </div>
+
+  <!-- body -->
+  <div style="display: grid; grid-template-columns: 258px 1fr 428px; min-height: 0;">
+
+    <!-- left rail -->
+    <div class="tg-scroll" style="border-right: 1px solid var(--color-divider); background: var(--color-neutral-100); overflow-y: auto; padding: 12px 0 20px;">
+      <div style="padding: 0 12px 10px;">
+        <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: var(--color-neutral-600); margin-bottom: 7px;">{{ t.datasets }}</div>
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <sc-for list="{{ datasets }}" as="d" hint-placeholder-count="3">
+            <div style="display: grid; grid-template-columns: 1fr auto; gap: 4px; align-items: center; border: 1px solid {{ d.border }}; background: {{ d.bg }}; padding: 6px 8px;">
+              <span style="display: block; min-width: 0;">
+                <span style="display: block; font-size: 12.5px; font-weight: 500; line-height: 1.25;">{{ d.name }}</span>
+                <span style="display: block; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600); line-height: 1.3;">{{ d.meta }}</span>
+              </span>
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.06em; color: var(--color-neutral-700); border: 1px solid var(--color-divider); padding: 1px 5px;">{{ d.probe }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="padding: 10px 12px; border-top: 1px solid var(--color-divider);">
+        <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: var(--color-neutral-600); margin-bottom: 7px;">{{ t.phasesInModel }}</div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <sc-for list="{{ modelPhases }}" as="p" hint-placeholder-count="3">
+            <div style="display: grid; grid-template-columns: 10px 1fr auto; gap: 7px; align-items: center; padding: 4px 2px;">
+              <span style="width: 10px; height: 10px; background: {{ p.swatch }};"></span>
+              <span style="display: block; min-width: 0;">
+                <span style="display: block; font-size: 12px; line-height: 1.25;">{{ p.name }}</span>
+                <span style="display: block; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--color-neutral-600);">{{ p.sg }} · {{ p.src }}</span>
+              </span>
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-800);">{{ p.frac }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="padding: 10px 12px; border-top: 1px solid var(--color-divider);">
+        <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: var(--color-neutral-600); margin-bottom: 7px;">{{ t.externalChannels }}</div>
+        <div style="display: flex; flex-direction: column; gap: 4px; font-size: 11.5px;">
+          <sc-for list="{{ channels }}" as="c" hint-placeholder-count="3">
+            <div style="display: flex; justify-content: space-between; gap: 8px;"><span>{{ c.name }}</span><span style="font-family: ui-monospace, Menlo, monospace; color: var(--color-neutral-600);">{{ c.state }}</span></div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="padding: 10px 12px; border-top: 1px solid var(--color-divider);">
+        <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.14em; color: var(--color-neutral-600); margin-bottom: 7px;">{{ t.snapshots }}</div>
+        <div style="display: flex; flex-direction: column; gap: 3px; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-700);">
+          <sc-for list="{{ snapshots }}" as="s" hint-placeholder-count="4">
+            <div style="display: flex; justify-content: space-between; gap: 6px;"><span>{{ s.id }}</span><span style="color: var(--color-neutral-600);">{{ s.note }}</span></div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <!-- center: shared analysis canvas -->
+    <div style="display: grid; grid-template-rows: 34px 1fr; min-width: 0; min-height: 0;">
+      <div style="display: flex; align-items: stretch; gap: 0; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-100); padding: 0 10px;">
+        <sc-for list="{{ tabs }}" as="t2" hint-placeholder-count="6">
+          <button onClick="{{ t2.onClick }}" style="border: 0; border-bottom: 2px solid {{ t2.mark }}; background: {{ t2.bg }}; color: {{ t2.color }}; font-family: var(--font-heading); font-weight: 600; font-size: 13px; letter-spacing: 0.07em; padding: 0 14px; cursor: pointer; white-space: nowrap;">{{ t2.label }}</button>
+        </sc-for>
+      </div>
+
+      <div class="tg-scroll" style="overflow-y: auto; overflow-x: hidden; padding: 14px 16px 20px; min-height: 0;">
+
+        <!-- FIT -->
+        <sc-if value="{{ isFit }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 12px; min-height: 100%;">
+            <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;">
+              <sc-for list="{{ metrics }}" as="k" hint-placeholder-count="6">
+                <div class="blueprint" style="padding: 8px 10px; background: var(--color-neutral-100);">
+                  <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.1em; color: var(--color-neutral-600); white-space: nowrap;">{{ k.label }}</div>
+                  <div style="font-family: var(--font-heading); font-weight: 600; font-size: 24px; line-height: 1.1;">{{ k.value }}</div>
+                  <div style="font-size: 10.5px; color: var(--color-neutral-600);">{{ k.note }}</div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.1em; color: var(--color-neutral-600); white-space: nowrap;">{{ t.histogram }}</span>
+              <sc-for list="{{ histChips }}" as="h" hint-placeholder-count="3">
+                <button onClick="{{ h.onClick }}" style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; border: 1px solid {{ h.border }}; background: {{ h.bg }}; color: {{ h.color }}; padding: 3px 9px; cursor: pointer; white-space: nowrap;">{{ h.label }}</button>
+              </sc-for>
+              <span style="margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-700); white-space: nowrap;">{{ t.fitLimits }}</span>
+            </div>
+
+            <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px 8px; display: flex; flex-direction: column; flex: 1; min-height: 0;">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
+                <span style="font-family: var(--font-heading); font-weight: 600; font-size: 14px; letter-spacing: 0.06em;">{{ t.fitPlotTitle }}</span>
+                <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-600);">{{ t.fitPlotNote }}</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 40px 1fr; gap: 8px; flex: 1; min-height: 0;">
+                <div style="display: flex; align-items: center; justify-content: center; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600); writing-mode: vertical-rl; transform: rotate(180deg);">{{ t.intensity }}</div>
+                <div style="display: flex; flex-direction: column; gap: 4px; min-height: 0;">
+                  <div style="flex: 1; min-height: 220px; border: 1px dashed var(--color-neutral-400); background: repeating-linear-gradient(90deg, transparent 0 63px, color-mix(in srgb, var(--color-text) 5%, transparent) 63px 64px); display: flex; align-items: center; justify-content: center;">
+                    <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-600); text-align: center; line-height: 1.6;">{{ t.fitPlotPh }}</span>
+                  </div>
+                  <div style="display: flex; flex-direction: column; gap: 3px;">
+                    <sc-for list="{{ tickRows }}" as="r" hint-placeholder-count="3">
+                      <div style="display: grid; grid-template-columns: 132px 1fr; gap: 8px; align-items: center;">
+                        <span style="display: flex; align-items: center; gap: 6px; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-700); white-space: nowrap;">
+                          <span style="width: 9px; height: 9px; background: {{ r.swatch }};"></span>{{ r.name }}
+                        </span>
+                        <span style="display: block; height: 13px; border: 1px dashed var(--color-neutral-400); background: repeating-linear-gradient(90deg, {{ r.swatch }} 0 1px, transparent 1px {{ r.pitch }});"></span>
+                      </div>
+                    </sc-for>
+                  </div>
+                  <div style="height: 74px; border: 1px dashed var(--color-neutral-400); display: flex; align-items: center; justify-content: center; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-600);">{{ t.residualPh }}</div>
+                  <div style="display: flex; justify-content: space-between; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600);">
+                    <span>4.0</span><span>12.5</span><span>21.0</span><span>29.5</span><span>38.0 · 2θ / deg</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+              <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px;">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.historyTitle }}</div>
+                <table style="width: 100%; border-collapse: collapse; font-size: 11.5px;">
+                  <thead><tr>
+                    <sc-for list="{{ histCols }}" as="c" hint-placeholder-count="4">
+                      <th style="text-align: {{ c.align }}; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-divider); padding: 3px 4px; white-space: nowrap;">{{ c.label }}</th>
+                    </sc-for>
+                  </tr></thead>
+                  <tbody>
+                    <sc-for list="{{ historyRows }}" as="h" hint-placeholder-count="6">
+                      <tr>
+                        <td style="padding: 3px 4px; border-bottom: 1px solid var(--color-neutral-200);">{{ h.stage }}</td>
+                        <td style="padding: 3px 4px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ h.rwp }}</td>
+                        <td style="padding: 3px 4px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace; color: {{ h.dcolor }};">{{ h.d }}</td>
+                        <td style="padding: 3px 4px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-700);">{{ h.guard }}</td>
+                      </tr>
+                    </sc-for>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px;">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.validityTitle }}</div>
+                <div style="display: flex; flex-direction: column; gap: 5px;">
+                  <sc-for list="{{ validityRows }}" as="v" hint-placeholder-count="5">
+                    <div style="display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; font-size: 12px; padding-bottom: 4px; border-bottom: 1px solid var(--color-neutral-200);">
+                      <span>{{ v.name }}</span>
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-700);">{{ v.value }}</span>
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.06em; background: {{ v.bg }}; color: {{ v.color }}; border: 1px solid {{ v.border }}; padding: 1px 6px;">{{ v.state }}</span>
+                    </div>
+                  </sc-for>
+                  <div style="font-size: 11px; color: var(--color-neutral-700); line-height: 1.5;">{{ t.validityNote }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- PARAMETERS -->
+        <sc-if value="{{ isParam }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 16px; letter-spacing: 0.05em; white-space: nowrap;">{{ t.paramTitle }}</span>
+              <span style="font-size: 11.5px; color: var(--color-neutral-700);">{{ t.paramNote }}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 3px 1fr; gap: 9px; padding-right: 10px; background: var(--color-accent-100); border: 1px solid var(--color-accent-300);">
+              <span style="background: var(--color-accent-700);"></span>
+              <span style="display: block; padding: 7px 0;">
+                <span style="display: block; font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--color-accent-800); margin-bottom: 3px;">{{ t.precedenceShort }}</span>
+                <span style="display: block; font-size: 11.5px; line-height: 1.5; color: var(--color-neutral-800);">{{ t.paramPrecedence }}</span>
+              </span>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.1em; color: var(--color-neutral-600); white-space: nowrap;">{{ t.histogram }}</span>
+              <sc-for list="{{ histChips }}" as="h" hint-placeholder-count="3">
+                <button onClick="{{ h.onClick }}" style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; border: 1px solid {{ h.border }}; background: {{ h.bg }}; color: {{ h.color }}; padding: 3px 9px; cursor: pointer; white-space: nowrap;">{{ h.label }}</button>
+              </sc-for>
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-accent-800); white-space: nowrap;">{{ paramHistLabel }}</span>
+              <span style="margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-accent-800); white-space: nowrap;">{{ paramReleasedTotal }}</span>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: stretch;">
+              <sc-for list="{{ paramCards }}" as="c" hint-placeholder-count="5">
+                <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px; grid-column: {{ c.span }}; display: flex; flex-direction: column;">
+                  <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px;">
+                    <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em;">{{ c.title }}</span>
+                    <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600);">{{ c.note }}</span>
+                  </div>
+
+                  <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 7px;">
+                    <sc-for list="{{ c.selects }}" as="sel" hint-placeholder-count="2">
+                      <span style="display: inline-flex; align-items: center; gap: 6px;">
+                        <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.06em; color: var(--color-neutral-600);">{{ sel.label }}</span>
+                        <select value="{{ sel.value }}" onChange="{{ sel.onChange }}" style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-divider); padding: 2px 3px; border-radius: 0;" style-hover="border-color: var(--color-accent-400);">
+                          <sc-for list="{{ sel.options }}" as="o" hint-placeholder-count="4">
+                            <option value="{{ o }}">{{ o }}</option>
+                          </sc-for>
+                        </select>
+                      </span>
+                    </sc-for>
+                  </div>
+
+                  <table style="width: 100%; border-collapse: collapse; font-size: 11.5px;">
+                    <thead><tr>
+                      <th style="text-align: left; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-text); padding: 3px 5px;">{{ t.field }}</th>
+                      <th style="text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-text); padding: 3px 5px;">{{ t.paramValueCol }}</th>
+                      <th style="text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-text); padding: 3px 5px;">{{ t.paramEsdCol }}</th>
+                    </tr></thead>
+                    <tbody>
+                      <sc-for list="{{ c.rows }}" as="r" hint-placeholder-count="8">
+                        <tr>
+                          <td style="padding: 2px 5px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 11px;">{{ r.name }}</td>
+                          <td style="padding: 2px 5px; border-bottom: 1px solid var(--color-neutral-200); background: {{ r.cellBg }};">
+                            <span style="display: grid; grid-template-columns: 14px 1fr; gap: 4px; align-items: center;">
+                              <input type="checkbox" checked="{{ r.rel }}" onChange="{{ r.onRel }}" title="{{ r.tip }}" style="width: 12px; height: 12px; margin: 0; accent-color: var(--color-accent); cursor: pointer;">
+                              <input value="{{ r.value }}" onChange="{{ r.onEdit }}" style="width: 100%; text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-text); background: transparent; border: 1px solid transparent; padding: 2px 3px;" style-hover="border-color: var(--color-neutral-400);" style-focus="border-color: var(--color-accent); background: var(--color-bg);">
+                            </span>
+                          </td>
+                          <td style="padding: 2px 5px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: {{ r.esdColor }}; white-space: nowrap;">{{ r.esd }}</td>
+                        </tr>
+                      </sc-for>
+                    </tbody>
+                  </table>
+
+                  <div style="display: flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 8px;">
+                    <button onClick="{{ c.onReleaseAll }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 11px; letter-spacing: 0.06em; border: 1px solid var(--color-accent); background: transparent; color: var(--color-accent-800); padding: 3px 9px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-100);">{{ t.releaseAll }}</button>
+                    <button onClick="{{ c.onFixAll }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 11px; letter-spacing: 0.06em; border: 1px solid var(--color-divider); background: transparent; color: var(--color-text); padding: 3px 9px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-neutral-200);">{{ t.fixAll }}</button>
+                  </div>
+                  <div style="margin-top: 6px; font-size: 11px; color: var(--color-neutral-700); line-height: 1.5;">{{ c.footer }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- HYPOTHESES -->
+        <sc-if value="{{ isHyp }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 12px; min-height: 100%;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 16px; letter-spacing: 0.05em; white-space: nowrap;">{{ t.hypTitle }}</span>
+              <span style="font-size: 11.5px; color: var(--color-neutral-700);">{{ t.hypNote }}</span>
+            </div>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead><tr>
+                <sc-for list="{{ hypCols }}" as="c" hint-placeholder-count="9">
+                  <th style="text-align: {{ c.align }}; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-text); padding: 4px 6px; white-space: nowrap;">{{ c.label }}</th>
+                </sc-for>
+              </tr></thead>
+              <tbody>
+                <sc-for list="{{ hypRows }}" as="h" hint-placeholder-count="5">
+                  <tr onClick="{{ h.onClick }}" style="cursor: pointer; background: {{ h.bg }};">
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace;">{{ h.rank }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace;">{{ h.id }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200);">{{ h.phases }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ h.prob }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ h.rwp }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ h.gof }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ h.bic }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: center; font-family: ui-monospace, Menlo, monospace; color: var(--color-accent-700);">{{ h.close }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-700);">{{ h.status }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; flex: 1; min-height: 0;">
+              <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px;">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 8px;">{{ diffTitle }}</div>
+                <table style="width: 100%; border-collapse: collapse; font-size: 11.5px;">
+                  <thead><tr>
+                    <th style="text-align: left; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-divider); padding: 3px 4px;">{{ t.field }}</th>
+                    <th style="text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-divider); padding: 3px 4px;">{{ diffA }}</th>
+                    <th style="text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-divider); padding: 3px 4px;">{{ diffB }}</th>
+                  </tr></thead>
+                  <tbody>
+                    <sc-for list="{{ diffRows }}" as="d" hint-placeholder-count="7">
+                      <tr>
+                        <td style="padding: 3px 4px; border-bottom: 1px solid var(--color-neutral-200);">{{ d.field }}</td>
+                        <td style="padding: 3px 4px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ d.a }}</td>
+                        <td style="padding: 3px 4px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace; background: {{ d.mark }};">{{ d.b }}</td>
+                      </tr>
+                    </sc-for>
+                  </tbody>
+                </table>
+              </div>
+              <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px; display: flex; flex-direction: column;">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.evidenceTitle }}</div>
+                <div style="flex: 1; min-height: 120px; border: 1px dashed var(--color-neutral-400); display: flex; align-items: center; justify-content: center; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-600); text-align: center; line-height: 1.6;">{{ t.basinPh }}</div>
+                <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 11.5px;">
+                  <sc-for list="{{ evidenceRows }}" as="e" hint-placeholder-count="4">
+                    <div style="display: flex; justify-content: space-between; gap: 10px;"><span>{{ e.k }}</span><span style="font-family: ui-monospace, Menlo, monospace; color: {{ e.color }}; text-align: right;">{{ e.v }}</span></div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- PHASE ID -->
+        <sc-if value="{{ isPid }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 12px; min-height: 100%;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 16px; letter-spacing: 0.05em; white-space: nowrap;">{{ t.pidTitle }}</span>
+              <span style="font-size: 11.5px; color: var(--color-neutral-700);">{{ t.pidNote }}</span>
+            </div>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead><tr>
+                <sc-for list="{{ pidCols }}" as="c" hint-placeholder-count="9">
+                  <th style="text-align: {{ c.align }}; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-text); padding: 4px 6px; white-space: nowrap;">{{ c.label }}</th>
+                </sc-for>
+              </tr></thead>
+              <tbody>
+                <sc-for list="{{ pidRows }}" as="r" hint-placeholder-count="5">
+                  <tr style="background: {{ r.bg }};">
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace;">{{ r.rank }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200);">{{ r.formula }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 11px;">{{ r.mp }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 11px;">{{ r.sg }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ r.score }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-700);">{{ r.mwme }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ r.strain }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: {{ r.guardColor }}; white-space: nowrap;">{{ r.guard }}</td>
+                    <td style="padding: 4px 6px; border-bottom: 1px solid var(--color-neutral-200); text-align: right;">
+                      <button style="font-family: var(--font-heading); font-weight: 600; font-size: 11.5px; letter-spacing: 0.06em; border: 1px solid var(--color-divider); background: transparent; color: var(--color-text); padding: 2px 9px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-100); border-color: var(--color-accent-400);">{{ r.action }}</button>
+                    </td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; flex: 1; min-height: 0;">
+              <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px; display: flex; flex-direction: column;">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.residualTitle }}</div>
+                <div style="flex: 1; min-height: 112px; border: 1px dashed var(--color-neutral-400); display: flex; align-items: center; justify-content: center; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-600); text-align: center; line-height: 1.6;">{{ t.residualDecompPh }}</div>
+                <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 2px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-800);">
+                  <sc-for list="{{ residualFeatures }}" as="f" hint-placeholder-count="3">
+                    <div>{{ f }}</div>
+                  </sc-for>
+                </div>
+              </div>
+              <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px;">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.completenessTitle }}</div>
+                <div style="display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
+                  <sc-for list="{{ completenessRows }}" as="c" hint-placeholder-count="3">
+                    <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; padding-bottom: 5px; border-bottom: 1px solid var(--color-neutral-200);">
+                      <span>{{ c.k }}</span>
+                      <span style="font-family: ui-monospace, Menlo, monospace; background: {{ c.bg }}; color: {{ c.color }}; padding: 0 6px;">{{ c.v }}</span>
+                    </div>
+                  </sc-for>
+                  <div style="font-size: 11px; color: var(--color-neutral-700); line-height: 1.5;">{{ t.completenessNote }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- SEQUENCE -->
+        <sc-if value="{{ isSeq }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 12px; min-height: 100%;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 16px; letter-spacing: 0.05em; white-space: nowrap;">{{ t.seqTitle }}</span>
+              <span style="font-size: 11.5px; color: var(--color-neutral-700);">{{ t.seqNote }}</span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0;">
+              <sc-for list="{{ seqCharts }}" as="c" hint-placeholder-count="3">
+                <div class="blueprint" style="background: var(--color-neutral-100); padding: 8px 12px; display: flex; flex-direction: column; flex: 1; min-height: 0;">
+                  <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px;">
+                    <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13px; letter-spacing: 0.06em;">{{ c.title }}</span>
+                    <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-600);">{{ c.note }}</span>
+                  </div>
+                  <div style="flex: 1; min-height: {{ c.h }}; border: 1px dashed var(--color-neutral-400); background: repeating-linear-gradient(90deg, transparent 0 47px, color-mix(in srgb, var(--color-text) 5%, transparent) 47px 48px); display: flex; align-items: center; justify-content: center; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-600);">{{ c.ph }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; border: 1px solid var(--color-divider); background: var(--color-neutral-100);">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.08em; color: var(--color-neutral-600); margin-right: 6px; white-space: nowrap;">{{ t.anchors }}</span>
+                <sc-for list="{{ anchorChips }}" as="a" hint-placeholder-count="5">
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; border: 1px solid {{ a.border }}; background: {{ a.bg }}; color: {{ a.color }}; padding: 1px 7px; white-space: nowrap;">{{ a.label }}</span>
+                </sc-for>
+              </div>
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-700); white-space: nowrap;">{{ t.crossoverNote }}</span>
+            </div>
+            <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px;">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.segTitle }}</div>
+              <table style="width: 100%; border-collapse: collapse; font-size: 11.5px;">
+                <thead><tr>
+                  <sc-for list="{{ segCols }}" as="c" hint-placeholder-count="6">
+                    <th style="text-align: {{ c.align }}; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-divider); padding: 3px 5px; white-space: nowrap;">{{ c.label }}</th>
+                  </sc-for>
+                </tr></thead>
+                <tbody>
+                  <sc-for list="{{ segRows }}" as="r" hint-placeholder-count="4">
+                    <tr>
+                      <td style="padding: 3px 5px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace;">{{ r.seg }}</td>
+                      <td style="padding: 3px 5px; border-bottom: 1px solid var(--color-neutral-200);">{{ r.left }}</td>
+                      <td style="padding: 3px 5px; border-bottom: 1px solid var(--color-neutral-200);">{{ r.right }}</td>
+                      <td style="padding: 3px 5px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ r.rwp }}</td>
+                      <td style="padding: 3px 5px; border-bottom: 1px solid var(--color-neutral-200); text-align: right; font-family: ui-monospace, Menlo, monospace;">{{ r.bic }}</td>
+                      <td style="padding: 3px 5px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-accent-800);">{{ r.pick }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- STRUCTURE -->
+        <sc-if value="{{ isStruct }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 12px; min-height: 100%;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 16px; letter-spacing: 0.05em; white-space: nowrap;">{{ t.structTitle }}</span>
+              <span style="font-size: 11.5px; color: var(--color-neutral-700);">{{ t.structNote }}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; flex: 1; min-height: 0;">
+              <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px; display: flex; flex-direction: column; min-height: 0;">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px;">
+                  <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em;">{{ t.sites }}</span>
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600);">{{ t.sitesHint }}</span>
+                </div>
+                <div class="tg-scroll" style="flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 11.5px;">
+                  <thead><tr>
+                    <sc-for list="{{ siteCols }}" as="c" hint-placeholder-count="9">
+                      <th style="text-align: {{ c.align }}; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.08em; color: var(--color-neutral-600); border-bottom: 1px solid var(--color-text); padding: 3px 5px; white-space: nowrap;">{{ c.label }}</th>
+                    </sc-for>
+                  </tr></thead>
+                  <tbody>
+                    <sc-for list="{{ siteRows }}" as="s" hint-placeholder-count="7">
+                      <tr style="background: {{ s.rowBg }};">
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200);">
+                          <input value="{{ s.label }}" onChange="{{ s.onLabel }}" style="width: 52px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-text); background: transparent; border: 1px solid transparent; padding: 2px 3px;" style-hover="border-color: var(--color-neutral-400);" style-focus="border-color: var(--color-accent); background: var(--color-bg);">
+                        </td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200);">
+                          <select value="{{ s.el }}" onChange="{{ s.onEl }}" style="width: 74px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-divider); padding: 2px 2px; border-radius: 0;" style-hover="border-color: var(--color-accent-400);">
+                            <sc-for list="{{ elements }}" as="e" hint-placeholder-count="12">
+                              <option value="{{ e.sym }}">{{ e.label }}</option>
+                            </sc-for>
+                          </select>
+                        </td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200); background: {{ s.xCellBg }};">
+                          <span style="display: grid; grid-template-columns: 14px 1fr; gap: 3px; align-items: center;">
+                            <input type="checkbox" checked="{{ s.relX }}" disabled="{{ s.lockX }}" onChange="{{ s.onRelX }}" title="{{ s.xTip }}" style="width: 12px; height: 12px; margin: 0; accent-color: var(--color-accent); cursor: pointer;">
+                            <input value="{{ s.x }}" onChange="{{ s.onX }}" style="width: 100%; text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: {{ s.xInkX }}; background: transparent; border: 1px solid transparent; padding: 2px 3px;" style-hover="border-color: var(--color-neutral-400);" style-focus="border-color: var(--color-accent); background: var(--color-bg);">
+                          </span>
+                        </td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200); background: {{ s.yCellBg }};">
+                          <span style="display: grid; grid-template-columns: 14px 1fr; gap: 3px; align-items: center;">
+                            <input type="checkbox" checked="{{ s.relY }}" disabled="{{ s.lockY }}" onChange="{{ s.onRelY }}" title="{{ s.yTip }}" style="width: 12px; height: 12px; margin: 0; accent-color: var(--color-accent); cursor: pointer;">
+                            <input value="{{ s.y }}" onChange="{{ s.onY }}" style="width: 100%; text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: {{ s.yInk }}; background: transparent; border: 1px solid transparent; padding: 2px 3px;" style-hover="border-color: var(--color-neutral-400);" style-focus="border-color: var(--color-accent); background: var(--color-bg);">
+                          </span>
+                        </td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200); background: {{ s.zCellBg }};">
+                          <span style="display: grid; grid-template-columns: 14px 1fr; gap: 3px; align-items: center;">
+                            <input type="checkbox" checked="{{ s.relZ }}" disabled="{{ s.lockZ }}" onChange="{{ s.onRelZ }}" title="{{ s.zTip }}" style="width: 12px; height: 12px; margin: 0; accent-color: var(--color-accent); cursor: pointer;">
+                            <input value="{{ s.z }}" onChange="{{ s.onZ }}" style="width: 100%; text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: {{ s.zInk }}; background: transparent; border: 1px solid transparent; padding: 2px 3px;" style-hover="border-color: var(--color-neutral-400);" style-focus="border-color: var(--color-accent); background: var(--color-bg);">
+                          </span>
+                        </td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200); background: {{ s.occCellBg }};">
+                          <span style="display: grid; grid-template-columns: 14px 1fr; gap: 3px; align-items: center;">
+                            <input type="checkbox" checked="{{ s.relOcc }}" onChange="{{ s.onRelOcc }}" title="{{ s.occTip }}" style="width: 12px; height: 12px; margin: 0; accent-color: var(--color-accent); cursor: pointer;">
+                            <input value="{{ s.occ }}" onChange="{{ s.onOcc }}" style="width: 100%; text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: {{ s.occInk }}; background: transparent; border: 1px solid transparent; padding: 2px 3px;" style-hover="border-color: var(--color-neutral-400);" style-focus="border-color: var(--color-accent); background: var(--color-bg);">
+                          </span>
+                        </td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200); background: {{ s.uisoCellBg }};">
+                          <span style="display: grid; grid-template-columns: 14px 1fr; gap: 3px; align-items: center;">
+                            <input type="checkbox" checked="{{ s.relUiso }}" onChange="{{ s.onRelUiso }}" title="{{ s.uisoTip }}" style="width: 12px; height: 12px; margin: 0; accent-color: var(--color-accent); cursor: pointer;">
+                            <input value="{{ s.uiso }}" onChange="{{ s.onUiso }}" style="width: 100%; text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: {{ s.uisoInk }}; background: transparent; border: 1px solid transparent; padding: 2px 3px;" style-hover="border-color: var(--color-neutral-400);" style-focus="border-color: var(--color-accent); background: var(--color-bg);">
+                          </span>
+                        </td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200); font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-700); white-space: nowrap;">{{ s.note }}</td>
+                        <td style="padding: 2px 4px; border-bottom: 1px solid var(--color-neutral-200); text-align: right;">
+                          <button onClick="{{ s.onDelete }}" title="{{ t.deleteAtom }}" style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1; color: var(--color-neutral-600); background: transparent; border: 1px solid var(--color-divider); padding: 2px 6px; cursor: pointer;" style-hover="border-color: var(--color-neutral-900); background: var(--color-neutral-900); color: var(--color-neutral-100);">×</button>
+                        </td>
+                      </tr>
+                    </sc-for>
+                  </tbody>
+                </table>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px; margin-top: 7px; padding: 5px 7px; border: 1px solid var(--color-divider); background: var(--color-accent-100); flex-wrap: wrap;">
+                  <span style="display: inline-flex; align-items: center; gap: 5px; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-accent-800);">
+                    <input type="checkbox" checked="{{ true }}" disabled="{{ true }}" style="width: 11px; height: 11px; margin: 0; accent-color: var(--color-accent);">{{ t.relLegend }}
+                  </span>
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-700);">{{ t.lockLegend }}</span>
+                  <span style="margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-accent-800); white-space: nowrap;">{{ releasedSummary }}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
+                  <button onClick="{{ onAddAtom }}" style="display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-heading); font-weight: 600; font-size: 12px; letter-spacing: 0.07em; background: var(--color-accent); color: var(--color-bg); border: 1px solid var(--color-accent); padding: 5px 11px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-600);">+ {{ t.addAtom }}</button>
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: {{ editStateColor }};">{{ editState }}</span>
+                  <span style="margin-left: auto; display: flex; gap: 6px;">
+                    <button onClick="{{ onApplyEdits }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 12px; letter-spacing: 0.07em; background: var(--color-accent-700); color: var(--color-neutral-100); border: 1px solid var(--color-accent-700); padding: 5px 11px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-800);">{{ t.applyEdits }}</button>
+                    <button onClick="{{ onDiscardEdits }}" disabled="{{ discardDisabled }}" title="{{ t.discardTip }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 12px; letter-spacing: 0.07em; background: transparent; color: var(--color-text); border: 1px solid var(--color-divider); padding: 5px 11px; cursor: {{ discardCursor }}; opacity: {{ discardOpacity }}; white-space: nowrap;" style-hover="background: var(--color-neutral-200);">{{ t.discardEdits }}</button>
+                  </span>
+                </div>
+                <div style="margin-top: 7px; display: grid; grid-template-columns: 3px 1fr; gap: 9px;">
+                  <span style="background: var(--color-accent-700);"></span>
+                  <span style="display: block; font-size: 11px; color: var(--color-neutral-800); line-height: 1.55;">{{ t.structPrecedence }} {{ t.editNote }}</span>
+                </div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 12px;">
+                <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px;">
+                  <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.constraints }}</div>
+                  <div style="display: flex; flex-direction: column; gap: 5px; font-size: 11.5px;">
+                    <sc-for list="{{ constraintRows }}" as="c" hint-placeholder-count="4">
+                      <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding-bottom: 4px; border-bottom: 1px solid var(--color-neutral-200);">
+                        <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11px;">{{ c.expr }}</span>
+                        <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.06em; border: 1px solid var(--color-divider); padding: 1px 6px; color: var(--color-neutral-700); white-space: nowrap;">{{ c.kind }}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div class="blueprint" style="background: var(--color-neutral-100); padding: 10px 12px; display: flex; flex-direction: column; flex: 1; min-height: 0;">
+                  <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; margin-bottom: 6px;">{{ t.memTitle }}</div>
+                  <div style="flex: 1; min-height: 130px; border: 1px dashed var(--color-neutral-400); display: flex; align-items: center; justify-content: center; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-600); text-align: center; line-height: 1.6;">{{ t.memPh }}</div>
+                  <div style="margin-top: 7px; display: flex; flex-direction: column; gap: 2px; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-800);">
+                    <sc-for list="{{ memPeaks }}" as="p" hint-placeholder-count="2">
+                      <div>{{ p }}</div>
+                    </sc-for>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- LEDGER -->
+        <sc-if value="{{ isLedger }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 16px; letter-spacing: 0.05em; white-space: nowrap;">{{ t.ledgerTitle }}</span>
+              <span style="font-size: 11.5px; color: var(--color-neutral-700);">{{ t.ledgerNote }}</span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <sc-for list="{{ ledgerRows }}" as="l" hint-placeholder-count="6">
+                <div style="display: grid; grid-template-columns: 92px 108px 1fr auto auto; gap: 10px; align-items: center; border: 1px solid var(--color-divider); border-left: 3px solid {{ l.accent }}; background: var(--color-neutral-100); padding: 6px 10px;">
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-600);">{{ l.time }}</span>
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.06em; color: {{ l.actorColor }};">{{ l.actor }}</span>
+                  <span style="font-size: 12px;">{{ l.text }}</span>
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-500);">{{ l.hash }}</span>
+                  <button style="font-family: var(--font-heading); font-weight: 600; font-size: 11px; letter-spacing: 0.06em; border: 1px solid var(--color-divider); background: transparent; color: var(--color-text); padding: 2px 8px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-100); border-color: var(--color-accent-400);">{{ t.revertTo }}</button>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+      </div>
+    </div>
+
+    <!-- right pane: mode dependent -->
+    <div style="border-left: 1px solid var(--color-divider); background: var(--color-neutral-200); display: grid; grid-template-rows: 30px 1fr; min-height: 0;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--color-divider); background: {{ paneHeadBg }};">
+        <span style="font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.12em; color: {{ paneHeadColor }}; white-space: nowrap;">{{ paneHead }}</span>
+        <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: {{ paneHeadColor }}; opacity: 0.8; white-space: nowrap;">{{ paneHeadNote }}</span>
+      </div>
+
+      <!-- MANUAL -->
+      <sc-if value="{{ isManual }}" hint-placeholder-val="{{ true }}">
+        <div class="tg-scroll" style="overflow-y: auto; overflow-x: hidden; padding: 12px; display: flex; flex-direction: column; gap: 14px; min-height: 0;">
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 7px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; white-space: nowrap;">{{ t.recipeTitle }}</span>
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600); white-space: nowrap;">{{ t.recipeNote }}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 3px 1fr; gap: 8px; margin-bottom: 8px; padding: 7px 9px 7px 0; background: var(--color-accent-100); border: 1px solid var(--color-accent-300);">
+              <span style="background: var(--color-accent-700);"></span>
+              <span style="display: block;">
+                <span style="display: block; font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--color-accent-800); margin-bottom: 3px;">{{ t.precedenceShort }}</span>
+                <span style="display: block; font-size: 11px; line-height: 1.5; color: var(--color-neutral-800);">{{ t.precedence }}</span>
+              </span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 5px;">
+              <sc-for list="{{ stages }}" as="s" hint-placeholder-count="8">
+                <div style="display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; align-items: center; border: 1px solid {{ s.border }}; background: {{ s.bg }}; padding: 6px 8px;">
+                  <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--color-neutral-600);">{{ s.n }}</span>
+                  <span style="display: block; min-width: 0;">
+                    <span style="display: block; font-size: 12.5px; font-weight: 500; line-height: 1.25;">{{ s.name }}</span>
+                    <span style="display: block; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: {{ s.deltaColor }}; line-height: 1.35;">{{ s.flags }} · {{ s.delta }}</span>
+                  </span>
+                  <button onClick="{{ s.onToggle }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 11px; letter-spacing: 0.06em; border: 1px solid {{ s.btnBorder }}; background: {{ s.btnBg }}; color: {{ s.btnColor }}; padding: 3px 9px; cursor: pointer; white-space: nowrap;">{{ s.action }}</button>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display: flex; gap: 6px; margin-top: 8px;">
+              <button style="flex: 1; font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.08em; background: var(--color-accent); color: var(--color-bg); border: 1px solid var(--color-accent); padding: 7px 10px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-600);">{{ t.runRefinement }}</button>
+              <button style="font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.08em; background: transparent; color: var(--color-text); border: 1px solid var(--color-divider); padding: 7px 12px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-100); border-color: var(--color-accent-400);">{{ t.snapshot }}</button>
+            </div>
+          </div>
+
+          <div style="border-top: 1px solid var(--color-divider); padding-top: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 7px;">
+              <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.06em; white-space: nowrap;">{{ t.reviewTitle }}</span>
+              <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600); white-space: nowrap;">{{ t.reviewNote }}</span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 7px;">
+              <sc-for list="{{ reviewItems }}" as="r" hint-placeholder-count="4">
+                <div class="blueprint" style="background: var(--color-neutral-100); padding: 8px 10px;">
+                  <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                  <div style="display: flex; align-items: center; gap: 7px; margin-bottom: 4px;">
+                    <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.06em; background: {{ r.sevBg }}; color: {{ r.sevColor }}; border: 1px solid {{ r.sevBorder }}; padding: 1px 6px; white-space: nowrap;">{{ r.sev }}</span>
+                    <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13px; letter-spacing: 0.04em;">{{ r.title }}</span>
+                    <span style="margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600); white-space: nowrap;">{{ r.ref }}</span>
+                  </div>
+                  <div style="font-size: 11.5px; line-height: 1.5; color: var(--color-neutral-800); margin-bottom: 7px;">{{ r.detail }}</div>
+                  <div style="display: flex; gap: 6px;">
+                    <button onClick="{{ r.onAccept }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 11.5px; letter-spacing: 0.06em; background: {{ r.acceptBg }}; color: {{ r.acceptColor }}; border: 1px solid {{ r.acceptBorder }}; padding: 4px 10px; cursor: pointer; white-space: nowrap;">{{ r.acceptLabel }}</button>
+                    <button onClick="{{ r.onDefer }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 11.5px; letter-spacing: 0.06em; background: transparent; color: var(--color-text); border: 1px solid var(--color-divider); padding: 4px 10px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-100);">{{ t.sendBack }}</button>
+                    <button style="margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; background: transparent; color: var(--color-accent-700); border: 0; padding: 4px 2px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap;">{{ t.ledgerLink }}</button>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- AUTO -->
+      <sc-if value="{{ isAuto }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; grid-template-rows: auto 1fr auto; min-height: 0;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--color-divider); border-bottom: 1px solid var(--color-divider);">
+            <sc-for list="{{ budgetCells }}" as="b" hint-placeholder-count="2">
+              <div style="background: var(--color-neutral-100); padding: 6px 10px;">
+                <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--color-neutral-600);">{{ b.label }}</div>
+                <div style="font-family: var(--font-heading); font-weight: 600; font-size: 15px; line-height: 1.2;">{{ b.value }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div class="tg-scroll" style="overflow-y: auto; overflow-x: hidden; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0;">
+            <sc-for list="{{ chat }}" as="m" hint-placeholder-count="6">
+              <div style="display: block;">
+
+                <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; justify-content: flex-end;">
+                    <div style="max-width: 88%; background: var(--color-accent-800); color: var(--color-neutral-100); padding: 7px 10px; font-size: 12.5px; line-height: 1.55;">{{ m.text }}</div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ m.isAgent }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: grid; grid-template-columns: 54px 1fr; gap: 8px;">
+                    <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.06em; color: var(--color-neutral-600); padding-top: 2px;">{{ m.who }}</span>
+                    <span style="display: block; font-size: 12.5px; line-height: 1.6;">{{ m.text }}</span>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ m.isTool }}" hint-placeholder-val="{{ false }}">
+                  <div style="border: 1px solid var(--color-divider); background: var(--color-neutral-100);">
+                    <button onClick="{{ m.onToggle }}" style="width: 100%; display: grid; grid-template-columns: 14px 1fr auto auto; gap: 8px; align-items: center; background: transparent; border: 0; border-left: 3px solid var(--color-accent); padding: 6px 9px; cursor: pointer; text-align: left;">
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--color-neutral-600);">{{ m.caret }}</span>
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--color-accent-800);">{{ m.tool }}</span>
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: 0.06em; color: var(--color-neutral-600);">MCP ②</span>
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600);">{{ m.ms }}</span>
+                    </button>
+                    <sc-if value="{{ m.open }}" hint-placeholder-val="{{ false }}">
+                      <div style="border-top: 1px solid var(--color-divider); padding: 8px 9px; display: flex; flex-direction: column; gap: 7px;">
+                        <div>
+                          <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--color-neutral-600); margin-bottom: 3px;">{{ t.args }}</div>
+                          <pre style="margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; line-height: 1.5; color: var(--color-neutral-800); background: var(--color-neutral-200); padding: 6px 8px; white-space: pre-wrap;">{{ m.args }}</pre>
+                        </div>
+                        <div>
+                          <div style="font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--color-neutral-600); margin-bottom: 3px;">{{ t.ret }}</div>
+                          <pre style="margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; line-height: 1.5; color: var(--color-neutral-800); background: var(--color-neutral-200); padding: 6px 8px; white-space: pre-wrap;">{{ m.result }}</pre>
+                        </div>
+                        <div style="font-size: 10.5px; color: var(--color-neutral-700); line-height: 1.5;">{{ t.reachability }}</div>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ m.isDecision }}" hint-placeholder-val="{{ false }}">
+                  <div class="blueprint" style="background: var(--color-neutral-100); padding: 9px 11px;">
+                    <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                    <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--color-neutral-600);">{{ t.judgement }}</span>
+                      <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13.5px; letter-spacing: 0.04em;">{{ m.title }}</span>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px;">
+                      <sc-for list="{{ m.rows }}" as="row" hint-placeholder-count="3">
+                        <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; font-size: 11.5px; padding-bottom: 3px; border-bottom: 1px solid var(--color-neutral-200);">
+                          <span>{{ row.k }}</span>
+                          <span style="font-family: ui-monospace, Menlo, monospace; color: {{ row.color }}; white-space: nowrap;">{{ row.v }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                    <div style="font-size: 11.5px; line-height: 1.55; color: var(--color-neutral-800);">{{ m.text }}</div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ m.isApproval }}" hint-placeholder-val="{{ false }}">
+                  <div style="border: 1px solid var(--color-accent-700); background: var(--color-accent-100);">
+                    <div style="display: flex; align-items: center; gap: 8px; background: var(--color-accent-700); padding: 5px 10px;">
+                      <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; color: var(--color-accent-100);">{{ t.modelAction }}</span>
+                      <span style="margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--color-accent-200); white-space: nowrap;">{{ t.proposalNotApply }}</span>
+                    </div>
+                    <div style="padding: 9px 11px;">
+                      <div style="font-family: var(--font-heading); font-weight: 600; font-size: 14.5px; letter-spacing: 0.03em; margin-bottom: 3px;">{{ m.title }}</div>
+                      <div style="font-size: 12px; line-height: 1.55; color: var(--color-neutral-800); margin-bottom: 7px;">{{ m.text }}</div>
+                      <pre style="margin: 0 0 8px; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; line-height: 1.5; background: var(--color-neutral-100); border: 1px solid var(--color-accent-300); padding: 6px 8px; white-space: pre-wrap;">{{ m.args }}</pre>
+                      <div style="display: flex; align-items: center; gap: 6px;">
+                        <button onClick="{{ m.onApprove }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.07em; background: {{ m.approveBg }}; color: {{ m.approveColor }}; border: 1px solid {{ m.approveBorder }}; padding: 5px 12px; cursor: pointer; white-space: nowrap;">{{ m.approveLabel }}</button>
+                        <button onClick="{{ m.onReject }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.07em; background: transparent; color: var(--color-text); border: 1px solid var(--color-divider); padding: 5px 12px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-neutral-200);">{{ m.rejectLabel }}</button>
+                        <button onClick="{{ m.onInspect }}" style="margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; background: transparent; color: var(--color-accent-800); border: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap;">{{ t.inspectManual }}</button>
+                      </div>
+                      <div style="margin-top: 6px; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: {{ m.stateColor }};">{{ m.state }}</div>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ m.isEsc }}" hint-placeholder-val="{{ false }}">
+                  <div style="border: 1px solid var(--color-neutral-900); background: var(--color-neutral-200); padding: 8px 10px 8px 0; display: grid; grid-template-columns: 4px 1fr; gap: 9px;">
+                    <span style="background: var(--color-neutral-900);"></span>
+                    <span style="display: block;">
+                      <span style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap;">
+                        <span style="font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em; background: var(--color-neutral-900); color: var(--color-neutral-100); padding: 1px 6px;">{{ t.escalation }}</span>
+                        <span style="font-family: var(--font-heading); font-weight: 600; font-size: 13px; letter-spacing: 0.04em; color: var(--color-neutral-900);">{{ m.title }}</span>
+                      </span>
+                      <span style="display: block; font-size: 11.5px; line-height: 1.55; color: var(--color-neutral-800);">{{ m.text }}</span>
+                    </span>
+                  </div>
+                </sc-if>
+
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="border-top: 1px solid var(--color-divider); background: var(--color-neutral-100); padding: 9px 12px;">
+            <div style="display: flex; gap: 6px; margin-bottom: 7px; flex-wrap: wrap;">
+              <sc-for list="{{ quickPrompts }}" as="q" hint-placeholder-count="3">
+                <button onClick="{{ q.onClick }}" style="font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; border: 1px solid var(--color-divider); background: transparent; color: var(--color-neutral-800); padding: 3px 8px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-100); border-color: var(--color-accent-400);">{{ q.label }}</button>
+              </sc-for>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr auto; gap: 7px; align-items: end;">
+              <div style="border: 1px solid var(--color-divider); background: var(--color-bg); padding: 7px 9px; font-size: 12.5px; color: {{ draftColor }}; min-height: 42px; line-height: 1.5;">{{ draft }}</div>
+              <button onClick="{{ onSend }}" style="font-family: var(--font-heading); font-weight: 600; font-size: 12.5px; letter-spacing: 0.08em; background: var(--color-accent); color: var(--color-bg); border: 1px solid var(--color-accent); padding: 10px 16px; cursor: pointer; white-space: nowrap;" style-hover="background: var(--color-accent-600);">{{ t.send }}</button>
+            </div>
+            <div style="margin-top: 6px; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--color-neutral-600);">{{ t.composerNote }}</div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+
+  <!-- status bar -->
+  <div style="display: flex; align-items: center; gap: 18px; border-top: 1px solid var(--color-divider); background: var(--color-neutral-900); color: var(--color-neutral-300); padding: 0 14px; font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.04em;">
+    <sc-for list="{{ statusItems }}" as="s" hint-placeholder-count="4">
+      <span style="white-space: nowrap;">{{ s }}</span>
+    </sc-for>
+    <span style="margin-left: auto; color: {{ statusColor }}; white-space: nowrap;">{{ statusText }}</span>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1920,&quot;height&quot;:1080},&quot;lang&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;en&quot;,&quot;ja&quot;],&quot;default&quot;:&quot;en&quot;,&quot;tsType&quot;:&quot;\&quot;en\&quot; | \&quot;ja\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = {
+    lang: null,
+    mode: "manual",
+    tab: "fit",
+    hist: "sxrd",
+    hyp: "H-014",
+    open: { t1: true, t2: false, t3: false },
+    stageOn: { 1: true, 2: true, 3: true, 4: true, 5: true, 6: false, 7: false, 8: false },
+    approval: "pending",
+    review: {},
+    draft: "",
+    sites: null,
+    appliedSites: null,
+    paramRel: {},
+    paramValue: {},
+    edits: 0,
+    applied: false,
+  };
+
+  // lock = 対称性で固定された座標 (GSAS-II GetCSxinel 相当)。rel = 解放フラグ。
+  static BASE_SITES = [
+    { id: 1, label: "Mn1", el: "Mn", x: "0.0000", y: "0.0000", z: "0.0000", occ: "1.000", uiso: "0.014", note: "", lock: { x: true, y: true, z: true }, rel: { uiso: true } },
+    { id: 2, label: "Fe1", el: "Fe", x: "0.5000", y: "0.5000", z: "0.5000", occ: "1.000", uiso: "0.011", note: "", lock: { x: true, y: true, z: true }, rel: { uiso: true } },
+    { id: 3, label: "C1", el: "C", x: "0.3140", y: "0.5000", z: "0.5000", occ: "1.000", uiso: "0.019", note: "", lock: { y: true, z: true }, rel: { x: true, uiso: true } },
+    { id: 4, label: "N1", el: "N", x: "0.1980", y: "0.5000", z: "0.5000", occ: "1.000", uiso: "0.022", note: "", lock: { y: true, z: true }, rel: { x: true, uiso: true } },
+    { id: 5, label: "K1", el: "K", x: "0.2500", y: "0.2500", z: "0.2500", occ: "0.710", uiso: "0.041", note: "free_occ", lock: { x: true, y: true, z: true }, rel: { occ: true, uiso: true } },
+    { id: 6, label: "Ow1", el: "O", x: "0.2410", y: "0.2410", z: "0.0000", occ: "0.345", uiso: "0.058", note: "zeolitic", lock: { z: true }, rel: { x: true, y: true, occ: true, uiso: true } },
+    { id: 7, label: "D1", el: "D", x: "0.2680", y: "0.2100", z: "0.0410", occ: "0.345", uiso: "0.061", note: "equiv", lock: {}, rel: { x: true, y: true, z: true, uiso: true } },
+  ];
+
+  // GSAS-II の元素表と同じ並び (原子番号順)。D は H の同位体として直後に置く。
+  static ELEMENTS = (() => {
+    const syms = ["H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P",
+      "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga",
+      "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag",
+      "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu",
+      "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au",
+      "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am",
+      "Cm", "Bk", "Cf"];
+    const out = [];
+    syms.forEach((sym, i) => {
+      const z = i + 1;
+      out.push({ sym, label: z + " " + sym });
+      if (sym === "H") out.push({ sym: "D", label: "1 D" });
+    });
+    return out;
+  })();
+
+  siteList() {
+    return this.state.sites ?? this.state.appliedSites ?? Component.BASE_SITES;
+  }
+
+  editSite(id, key, value) {
+    this.setState((s) => ({
+      sites: (s.sites ?? s.appliedSites ?? Component.BASE_SITES).map((r) => (r.id === id ? { ...r, [key]: value } : r)),
+      edits: s.edits + 1,
+      applied: false,
+    }));
+  }
+
+  // ヒストグラム/相レベルのパラメータ (背景・プロファイル・size/微小歪み・試料幾何)
+  static PARAMS = {
+    sxrd: {
+      kind: "cw_xray",
+      bkgFunc: "chebyschev",
+      bkgTerms: "24",
+      radiation: [
+        ["wavelength λ / Å", "0.799580", "0.000004", false],
+        ["Kα2 / Kα1 ratio", "0.000", "—", false],
+        ["polarization", "0.980", "—", false],
+      ],
+      bkg: [
+        ["1", "1284.6", "3.1", true], ["2", "-412.8", "2.4", true], ["3", "96.42", "1.8", true],
+        ["4", "-31.07", "1.2", true], ["5", "12.85", "0.9", true], ["6", "-4.918", "0.7", true],
+        ["7", "2.104", "0.6", true], ["8", "-0.883", "0.5", true],
+      ],
+      profile: [
+        ["U", "12.41", "0.42", true], ["V", "-3.86", "0.31", true], ["W", "1.902", "0.11", true],
+        ["X", "2.104", "0.18", true], ["Y", "5.331", "0.24", true], ["Z", "0.000", "—", false],
+        ["SH/L", "0.0021", "—", false], ["Zero", "-0.0184", "0.0009", true],
+      ],
+      micro: [
+        ["cubic · size / µm", "0.842", "0.031", true], ["cubic · mustrain / 10⁻⁶", "1240", "58", true],
+        ["cubic · LGmix", "0.85", "—", false], ["tetragonal · size / µm", "0.611", "0.044", true],
+        ["tetragonal · mustrain / 10⁻⁶", "2180", "96", true], ["monoclinic · size / µm", "0.500", "—", false],
+      ],
+      sample: [
+        ["scale · cubic", "1.284", "0.006", true], ["scale · tetragonal", "0.641", "0.011", true],
+        ["sample displacement X / µm", "-24.1", "3.8", true], ["absorption μt (CellConfig)", "0.318", "—", false],
+        ["preferred orientation (SH, order 4)", "off", "—", false],
+      ],
+    },
+    nd: {
+      kind: "tof",
+      bkgFunc: "lin interpolate",
+      bkgTerms: "12",
+      radiation: [
+        ["λ range / Å (bank 1, 2θ 90°)", "0.35 – 5.20", "—", false],
+        ["flight path / m", "40.020", "—", false],
+        ["2θ bank / deg", "90.00", "—", false],
+      ],
+      bkg: [
+        ["1", "884.2", "4.6", true], ["2", "702.9", "4.1", true], ["3", "611.4", "3.8", true],
+        ["4", "540.8", "3.5", true], ["5", "498.1", "3.2", true], ["6", "462.7", "3.0", true],
+        ["7", "441.3", "2.8", true], ["8", "428.0", "2.7", true],
+      ],
+      profile: [
+        ["difC", "7204.18", "0.21", false], ["difA", "-1.284", "0.04", false], ["difB", "0.000", "—", false],
+        ["Zero", "-6.41", "0.18", true], ["alpha", "1.084", "—", false], ["beta-0", "0.0312", "0.0011", true],
+        ["beta-1", "0.0094", "0.0006", true], ["sig-0", "12.4", "1.1", true], ["sig-1", "48.2", "2.6", true],
+        ["sig-2", "0.00", "—", false],
+      ],
+      micro: [
+        ["cubic · size / µm", "0.842", "—", false], ["cubic · mustrain / 10⁻⁶", "1240", "—", false],
+        ["tetragonal · size / µm", "0.611", "—", false], ["tetragonal · mustrain / 10⁻⁶", "2180", "—", false],
+      ],
+      sample: [
+        ["scale · cubic", "0.914", "0.008", true], ["scale · tetragonal", "0.402", "0.014", true],
+        ["sample displacement / µm", "0.0", "—", false], ["absorption (TOF, λ-dependent)", "0.104", "—", false],
+        ["preferred orientation (SH, order 4)", "off", "—", false],
+      ],
+    },
+    nd2: {
+      kind: "tof",
+      bkgFunc: "lin interpolate",
+      bkgTerms: "12",
+      radiation: [
+        ["λ range / Å (bank 3, 2θ 152°)", "0.24 – 3.60", "—", false],
+        ["flight path / m", "40.020", "—", false],
+        ["2θ bank / deg", "151.68", "—", false],
+      ],
+      bkg: [
+        ["1", "612.7", "5.2", true], ["2", "540.1", "4.8", true], ["3", "498.4", "4.4", true],
+        ["4", "466.2", "4.1", true], ["5", "441.8", "3.9", true], ["6", "421.0", "3.6", true],
+        ["7", "408.6", "3.4", true], ["8", "399.2", "3.2", true],
+      ],
+      profile: [
+        ["difC", "5108.44", "0.28", false], ["difA", "-0.914", "0.05", false], ["difB", "0.000", "—", false],
+        ["Zero", "-4.02", "0.22", true], ["alpha", "1.041", "—", false], ["beta-0", "0.0288", "0.0014", true],
+        ["beta-1", "0.0081", "0.0007", true], ["sig-0", "18.1", "1.6", true], ["sig-1", "62.4", "3.4", true],
+        ["sig-2", "0.00", "—", false],
+      ],
+      micro: [
+        ["cubic · size / µm", "0.842", "—", false], ["cubic · mustrain / 10⁻⁶", "1240", "—", false],
+        ["tetragonal · size / µm", "0.611", "—", false], ["tetragonal · mustrain / 10⁻⁶", "2180", "—", false],
+      ],
+      sample: [
+        ["scale · cubic", "0.688", "0.010", true], ["scale · tetragonal", "0.301", "0.017", true],
+        ["sample displacement / µm", "0.0", "—", false], ["absorption (TOF, λ-dependent)", "0.104", "—", false],
+        ["preferred orientation (SH, order 4)", "off", "—", false],
+      ],
+    },
+  };
+
+  paramRel(hist, group, name, fallback) {
+    const key = hist + "." + group + "." + name;
+    const ov = this.state.paramRel[key];
+    return ov === undefined ? fallback : ov;
+  }
+
+  toggleParam(hist, group, name, fallback) {
+    const key = hist + "." + group + "." + name;
+    this.setState((s) => {
+      const cur = s.paramRel[key] === undefined ? fallback : s.paramRel[key];
+      return { paramRel: { ...s.paramRel, [key]: !cur } };
+    });
+  }
+
+  setParamGroup(hist, group, rows, value) {
+    this.setState((s) => {
+      const next = { ...s.paramRel };
+      rows.forEach((r) => { next[hist + "." + group + "." + r[0]] = value; });
+      return { paramRel: next };
+    });
+  }
+
+  toggleRelease(id, key) {
+    this.setState((s) => ({
+      sites: (s.sites ?? s.appliedSites ?? Component.BASE_SITES).map((r) =>
+        r.id === id ? { ...r, rel: { ...r.rel, [key]: !r.rel[key] } } : r),
+    }));
+  }
+
+  set(patch) { this.setState(patch); }
+
+  renderVals() {
+    const S = this.state;
+    const lang = S.lang ?? this.props.lang ?? "en";
+    const ja = lang === "ja";
+    const L = (en, jp) => (ja ? jp : en);
+    const manual = S.mode === "manual";
+    const A = {
+      dim: "var(--color-neutral-600)", acc: "var(--color-accent)",
+      acc1: "var(--color-accent-100)", acc3: "var(--color-accent-300)",
+      acc7: "var(--color-accent-700)", acc8: "var(--color-accent-800)",
+      n1: "var(--color-neutral-100)", n2: "var(--color-neutral-200)",
+      div: "var(--color-divider)",
+      // 注意状態は色相を足さず、値の反転 (steel を地・紙を文字) で表す
+      warnBg: "var(--color-neutral-900)", warnInk: "var(--color-neutral-100)", warnLine: "var(--color-neutral-900)",
+      // 本文中の注意テキストは濃い neutral で weight を上げる
+      warnText: "var(--color-neutral-900)",
+    };
+
+    const t = {
+      nonDestructive: L("P2 NON-DESTRUCTIVE", "P2 非破壊"),
+      project: L("PROJECT", "プロジェクト"),
+      projectName: L("K₂Mn[Fe(CN)₆] · operando echem", "K₂Mn[Fe(CN)₆] · operando 電気化学"),
+      datasetLine: L("SR-XRD sequence · 247 frames · stride 4", "放射光 XRD 系列 · 247 フレーム · stride 4"),
+      frameChip: L("frame 088", "フレーム 088"),
+      fsmNote: L("FR-402 · switch logged to ledger", "FR-402 · 切替は ledger に記録"),
+      datasets: L("DATASETS", "データセット"),
+      phasesInModel: L("PHASES IN MODEL", "モデル内の相"),
+      externalChannels: L("EXTERNAL CHANNELS", "外部チャンネル"),
+      snapshots: L("SNAPSHOTS", "スナップショット"),
+      histogram: L("HISTOGRAM", "ヒストグラム"),
+      paramTitle: L("REFINEMENT PARAMETERS", "精密化パラメータ"),
+      paramNote: L("per histogram · checkbox = released in the next run · staged order is set in the recipe on the right",
+        "ヒストグラム単位 · チェックボックス = 次回実行で解放 · 解放順序は右のレシピで決める"),
+      paramValueCol: L("VALUE", "値"),
+      paramEsdCol: L("±σ", "±σ"),
+      releaseAll: L("RELEASE ALL", "全解放"),
+      fixAll: L("FIX ALL", "全固定"),
+      fitLimits: L("two_theta_limits = [4.0, 38.0] · background 24 terms · Kα1 instprm",
+        "two_theta_limits = [4.0, 38.0] · 背景 24 項 · Kα1 instprm"),
+      fitPlotTitle: L("FIT · Yobs / Ycalc / Δ", "フィット · Yobs / Ycalc / Δ"),
+      fitPlotNote: L("λ = 0.79958 Å · I(2θ) arb. · log y", "λ = 0.79958 Å · I(2θ) 任意単位 · log y"),
+      intensity: L("Intensity", "強度"),
+      fitPlotPh: L("PLOT PLACEHOLDER — observed vs calculated overlay + peak cursor + 2θ zoom/pan",
+        "プロット枠 — 実測と計算の重ね描き + ピークカーソル + 2θ ズーム/パン"),
+      residualPh: L("RESIDUAL PLACEHOLDER — (Yobs − Ycalc)/σ", "残差プロット枠 — (Yobs − Ycalc)/σ"),
+      historyTitle: L("REFINEMENT HISTORY · THIS FRAME", "精密化履歴 · このフレーム"),
+      validityTitle: L("PHYSICAL VALIDITY GATE", "物理妥当性ゲート"),
+      validityNote: L("Rwp alone cannot see a wrong phase set. The gate checks occupancy bounds, bond distances and coordination — and still cannot prove completeness (see PHASE ID → check_phase_set).",
+        "Rwp だけでは相集合の誤りは見えない。ゲートは占有率の範囲・結合距離・配位数を見るが、相集合の完全性は担保しない (相同定タブ → check_phase_set)。"),
+      hypTitle: L("HYPOTHESIS RANKING", "仮説ランキング"),
+      hypNote: L("14 nodes · deterministic order · softmax over BIC · FR-120 / FR-422",
+        "14 ノード · 決定論的順序 · BIC の softmax · FR-120 / FR-422"),
+      field: L("FIELD", "項目"),
+      evidenceTitle: L("EVIDENCE & BASIN", "Evidence とベイスン"),
+      basinPh: L("PLOT PLACEHOLDER — multistart basins · lattice a vs χ²",
+        "プロット枠 — マルチスタートのベイスン · 格子 a vs χ²"),
+      pidTitle: L("PHASE IDENTIFICATION", "相同定"),
+      pidNote: L("elements K, Mn, Fe, C, N, O · Materials Project · Dara score · background subtracted · refine_lattice on",
+        "元素 K, Mn, Fe, C, N, O · Materials Project · Dara スコア · 背景減算あり · refine_lattice 有効"),
+      residualTitle: L("UNEXPLAINED FEATURES · residual_report", "未説明の特徴 · residual_report"),
+      residualDecompPh: L("PLOT PLACEHOLDER — baseline / peak decomposition of the residual",
+        "プロット枠 — 残差の baseline / peak 分解"),
+      completenessTitle: L("PHASE SET COMPLETENESS · check_phase_set", "相集合の完全性 · check_phase_set"),
+      completenessNote: L("Acceptance criteria only ask whether an added phase explains residual. A missing phase is outside their field of view — this panel is the counterweight.",
+        "受理基準は「追加した相が残差を説明するか」しか見ない。欠落相は視野の外にあり、このパネルがその対になる。"),
+      seqTitle: L("FRAME SERIES", "フレーム系列"),
+      seqNote: L("anchored bidirectional · 63 frames analysed · phase count bounded by BIC, not Rwp",
+        "アンカー基準の双方向解析 · 63 フレーム解析済 · 相数は Rwp でなく BIC で抑制"),
+      anchors: L("ANCHORS", "アンカー"),
+      crossoverNote: L("crossover fr091 · total_bic minimum · x_XRD follows x_echem within esd",
+        "crossover fr091 · total_bic 最小 · x_XRD は x_echem を esd 内で追従"),
+      segTitle: L("SEGMENT SELECTION · forward vs backward", "区間選定 · 前方 vs 後方"),
+      structTitle: L("STRUCTURE MODEL", "構造モデル"),
+      structNote: L("cubic K₂Mn[Fe(CN)₆] · Fm-3m · CIF normalised for GSAS-II · edits are proposals until applied",
+        "cubic K₂Mn[Fe(CN)₆] · Fm-3m · GSAS-II 向けに CIF 正規化済 · 編集は適用まで提案のまま"),
+      sites: L("SITES", "サイト"),
+      sitesHint: L("editable · element list in atomic-number order", "編集可 · 元素は原子番号順"),
+      relLegend: L("checkbox = release this parameter for refinement", "チェックボックス = そのパラメータを精密化で解放"),
+      lockLegend: L("greyed = fixed by symmetry (special position)", "グレー = 対称性で固定 (特殊位置)"),
+      addAtom: L("ADD ATOM", "原子を追加"),
+      deleteAtom: L("delete atom", "この原子を削除"),
+      applyEdits: L("APPLY AS ReviseStructure", "ReviseStructure として適用"),
+      discardEdits: L("DISCARD", "破棄"),
+      discardTip: L("discards unapplied edits only — an applied model is undone from the ledger by revert",
+        "未適用の編集だけを破棄する — 適用済みモデルは ledger の revert で戻す"),
+      editNote: L("Editing here is a ModelAction: it changes nothing until applied, and applying writes a child snapshot plus a ledger entry — the previous model stays reachable by revert.",
+        "ここでの編集は ModelAction。適用するまで状態は変わらず、適用時は子スナップショット + ledger 追記になる — 直前のモデルは revert で常に戻せる。"),
+      constraints: L("CONSTRAINTS", "拘束条件"),
+      memTitle: L("MEM DENSITY · unmodelled", "MEM 密度 · 未モデル分"),
+      memPh: L("MAP PLACEHOLDER — Dysnomia section · z = 0.25", "密度図枠 — Dysnomia 断面 · z = 0.25"),
+      ledgerTitle: L("LEDGER", "ログ (ledger)"),
+      ledgerNote: L("append-only · hash chain · every result traces back here (FR-424) · revert never deletes",
+        "追記専用 · ハッシュチェーン · あらゆる結果はここへ遡及 (FR-424) · revert は削除しない"),
+      revertTo: L("REVERT TO", "ここへ REVERT"),
+      recipeTitle: L("STAGED RELEASE RECIPE", "段階解放レシピ"),
+      recipeNote: L("you drive it", "操作するのは人間"),
+      precedence: L("PARAMETERS and STRUCTURE take precedence over this recipe. A stage only releases parameters that are checked there — anything left fixed stays fixed, and the stage reports it as skipped.",
+        "PARAMETERS / STRUCTURE の設定がこのレシピより優先する。段階が解放するのは両タブでチェックされたパラメータのみ — 固定のままのものは解放されず、段階側では skipped として報告される。"),
+      precedenceShort: L("gated by PARAMETERS / STRUCTURE", "PARAMETERS / STRUCTURE が優先"),
+      paramPrecedence: L("This tab is the gate: a parameter left unchecked here is never released by the staged recipe, whichever stage runs.",
+        "このタブがゲート: ここで未チェックのパラメータは、どの段階が走っても段階解放レシピでは解放されない。"),
+      structPrecedence: L("Per-atom checkboxes gate the recipe too — the occupancy / Uiso stages only release atoms checked here.",
+        "原子ごとのチェックボックスもレシピを制約する — 占有率 / Uiso の段階が解放するのは、ここでチェックされた原子だけ。"),
+      runRefinement: L("RUN REFINEMENT", "精密化を実行"),
+      snapshot: L("SNAPSHOT", "スナップショット"),
+      reviewTitle: L("REVIEW QUEUE", "レビューキュー"),
+      reviewNote: L("FR-421 / 423 · 4 open", "FR-421 / 423 · 未処理 4 件"),
+      sendBack: L("SEND BACK", "差し戻す"),
+      ledgerLink: L("ledger →", "ログを見る →"),
+      args: L("ARGUMENTS", "引数"),
+      ret: L("RETURN", "戻り値"),
+      reachability: L("Every argument traces to another tool's output — nothing here was invented by the model.",
+        "各引数は別ツールの出力に辿れる — モデルが作った値は無い (到達可能性)。"),
+      judgement: L("JUDGEMENT · LAYER ③", "判断 · 第3層"),
+      modelAction: L("MODEL ACTION · NEEDS HUMAN", "MODEL ACTION · 人間の承認が必要"),
+      proposalNotApply: L("proposal ≠ application", "提案 ≠ 適用"),
+      inspectManual: L("inspect in Manual →", "Manual で確認 →"),
+      escalation: L("ESCALATION · FR-403", "エスカレーション · FR-403"),
+      send: L("SEND", "送信"),
+      composerNote: L("skill: operando-diagnose · tools: 32 · safe actions auto-applied, model actions held for you",
+        "skill: operando-diagnose · ツール 32 · SafeAction は自動適用、ModelAction は保留"),
+    };
+
+    const modeItems = [
+      { key: "manual", label: L("MANUAL", "マニュアル"), sub: L("layer ③ = you, in the analysis GUI", "第3層 = 人間 · 通常の解析 GUI") },
+      { key: "auto", label: L("AUTO", "オート"), sub: L("layer ③ = LLM, in a chat loop", "第3層 = LLM · 対話チャット") },
+    ].map((m) => {
+      const on = S.mode === m.key;
+      return {
+        ...m,
+        bg: on ? A.acc : "transparent",
+        color: on ? "var(--color-bg)" : "var(--color-neutral-700)",
+        border: on ? A.acc : "transparent",
+        dot: on ? "var(--color-bg)" : "var(--color-neutral-400)",
+        onClick: () => this.set({ mode: m.key }),
+      };
+    });
+
+    const langItems = [
+      { key: "en", label: "EN" },
+      { key: "ja", label: "日本語" },
+    ].map((l) => {
+      const on = lang === l.key;
+      return {
+        ...l,
+        bg: on ? "var(--color-neutral-900)" : "transparent",
+        color: on ? "var(--color-neutral-100)" : "var(--color-neutral-700)",
+        onClick: () => this.set({ lang: l.key }),
+      };
+    });
+
+    const tabDefs = [
+      ["fit", L("FIT", "フィット")], ["param", L("PARAMETERS", "パラメータ")],
+      ["hyp", L("HYPOTHESES", "仮説")], ["pid", L("PHASE ID", "相同定")],
+      ["seq", L("SEQUENCE", "系列")], ["struct", L("STRUCTURE", "構造")], ["ledger", L("LEDGER", "ログ")],
+    ];
+    const tabs = tabDefs.map(([id, label]) => {
+      const on = S.tab === id;
+      return {
+        label,
+        bg: on ? "var(--color-bg)" : "transparent",
+        color: on ? "var(--color-text)" : "var(--color-neutral-600)",
+        mark: on ? A.acc : "transparent",
+        onClick: () => this.set({ tab: id }),
+      };
+    });
+
+    const histDefs = [
+      ["sxrd", L("SR-XRD λ0.79958", "放射光 λ0.79958")],
+      ["nd", L("ND TOF bank 1", "中性子 TOF bank 1")],
+      ["nd2", L("ND TOF bank 3", "中性子 TOF bank 3")],
+    ];
+    const histChips = histDefs.map(([id, label]) => {
+      const on = S.hist === id;
+      return {
+        label,
+        bg: on ? A.acc1 : "transparent",
+        color: on ? A.acc8 : "var(--color-neutral-700)",
+        border: on ? A.acc3 : A.div,
+        onClick: () => this.set({ hist: id }),
+      };
+    });
+
+    const stageDefs = [
+      [1, L("Background · 24 terms", "背景 · 24 項"), "background"],
+      [2, L("Scale + unit cell", "スケール + 格子定数"), "scale, cell"],
+      [3, L("Zero shift", "ゼロシフト"), "zero"],
+      [4, L("Profile U, V, W", "プロファイル U, V, W"), "profile_cw"],
+      [5, L("Lorentzian X, Y", "Lorentzian X, Y"), "profile_lorentzian"],
+      [6, L("Phase fractions", "相分率"), "phase_frac"],
+      [7, L("Occupancies (K, Ow)", "占有率 (K, Ow)"), "occupancy"],
+      [8, L("Size / microstrain", "サイズ / 微小歪み"), "size, mustrain"],
+    ];
+    const deltas = {
+      1: "ΔRwp −18.4", 2: "ΔRwp −6.1", 3: "ΔRwp −1.9", 4: "ΔRwp −2.4",
+      5: "ΔRwp −1.1", 6: L("not released", "未解放"), 7: L("not released", "未解放"),
+      8: L("reverted · cell collapse guard", "revert · 格子崩壊ガード"),
+    };
+    // どの段階がどのゲート (PARAMETERS / STRUCTURE のチェック) に従うか
+    const gateOf = { 1: ["bkg", "bkg"], 4: ["prof", "profile"], 5: ["prof", "profile"], 6: ["sample", "sample"], 8: ["micro", "micro"] };
+    const gateOpen = (n) => {
+      const g = gateOf[n];
+      if (!g) return true;
+      const p = Component.PARAMS[S.hist];
+      const defs = p[g[1]];
+      return defs.some((d) => this.paramRel(S.hist, g[0], d[0], d[3]));
+    };
+    const occGateOpen = this.siteList().some((r) => (r.rel ?? {}).occ);
+    const stages = stageDefs.map(([n, name, flags]) => {
+      const on = !!S.stageOn[n];
+      const gated = n === 7 ? !occGateOpen : !gateOpen(n);
+      return {
+        n: String(n).padStart(2, "0"), name, flags,
+        delta: gated
+          ? (n === 7
+            ? L("gated · no atom occupancy checked in STRUCTURE", "ゲート · STRUCTURE で占有率が未チェック")
+            : L("gated · nothing released in PARAMETERS", "ゲート · PARAMETERS で未解放"))
+          : deltas[n],
+        deltaColor: gated ? A.warnText : "var(--color-neutral-600)",
+        bg: on ? A.n1 : "transparent",
+        border: on ? A.acc3 : A.div,
+        action: on ? L("REVERT", "戻す") : L("RELEASE", "解放"),
+        btnBg: on ? "transparent" : A.acc,
+        btnColor: on ? "var(--color-text)" : "var(--color-bg)",
+        btnBorder: on ? A.div : A.acc,
+        onToggle: () => this.setState((s) => ({ stageOn: { ...s.stageOn, [n]: !s.stageOn[n] } })),
+      };
+    });
+
+    const reviewDefs = [
+      { id: "r1", sev: L("CLOSE", "僅差"), title: L("ΔlogZ 1.2 below threshold", "ΔlogZ 1.2 が閾値未満"), ref: "H-014 / H-011",
+        detail: L("Nested re-arbitration cannot separate cubic+tetra from cubic+tetra+monoclinic on evidence alone. The agent gave a provisional ranking and flagged it — nothing was accepted.",
+          "nested 再裁定でも cubic+tetra と cubic+tetra+monoclinic を evidence だけで分離できない。エージェントは暫定順位と要確認フラグのみを出し、accepted 化はしていない。"),
+        accept: L("ACCEPT H-014", "H-014 を採用") },
+      { id: "r2", sev: L("UNKNOWN", "未知相"), title: L("Unindexed peaks at 2θ 12.42 / 17.88", "2θ 12.42 / 17.88 の未指数ピーク"), ref: L("frame 088", "フレーム 088"),
+        detail: L("S/N 6.1 residual features survive background subtraction. The candidate list is ranked in PHASE ID; adding a phase is a model action and stays with you.",
+          "背景減算後も S/N 6.1 の残差特徴が残る。候補は相同定タブでランキング済。相追加は ModelAction なので判断は人間に残る。"),
+        accept: L("ADJUDICATE", "裁定する") },
+      { id: "r3", sev: L("GUARD", "ガード"), title: L("Guard fired 3× in a row", "ガードが 3 連続発動"), ref: L("stage 08", "段階 08"),
+        detail: L("Size / microstrain release reverted on cell collapse three times. Low-resolution CW histograms are excluded from microstructure by recipe — confirm or override.",
+          "サイズ / 微小歪みの解放が格子崩壊で 3 回 revert。低分解能 CW ヒストグラムはレシピで微細構造から除外済 — 確認または上書きを。"),
+        accept: L("CONFIRM REVERT", "revert を承認") },
+      { id: "r4", sev: L("ECHEM", "電気化学"), title: L("Coulometric feasibility infeasible", "電気量の実行可能性が infeasible"), ref: L("frame 092", "フレーム 092"),
+        detail: L("x_echem exceeds what the current phase set can host — an irreversible-capacity detector, independently coincident with the BIC crossover at fr091.",
+          "x_echem が現相集合の収容量を超過 — 不可逆容量の検出器として働き、fr091 の BIC crossover と独立に一致した。"),
+        accept: L("ACCEPT DIAGNOSIS", "診断を受理") },
+    ];
+    const sevStyle = {
+      0: [A.warnBg, A.warnInk, A.warnLine], 1: [A.warnBg, A.warnInk, A.warnLine],
+      2: [A.n2, "var(--color-neutral-800)", A.div], 3: [A.acc1, A.acc8, A.acc3],
+    };
+    const reviewItems = reviewDefs.map((r, i) => {
+      const st = S.review[r.id];
+      const [bg, color, border] = sevStyle[i];
+      return {
+        ...r, sevBg: bg, sevColor: color, sevBorder: border,
+        acceptLabel: st === "accepted" ? L("ACCEPTED ✓", "受理 ✓") : st === "sent" ? L("SENT BACK", "差し戻し済") : r.accept,
+        acceptBg: st ? "transparent" : A.acc,
+        acceptColor: st ? "var(--color-neutral-700)" : "var(--color-bg)",
+        acceptBorder: st ? A.div : A.acc,
+        onAccept: () => this.setState((s) => ({ review: { ...s.review, [r.id]: "accepted" } })),
+        onDefer: () => this.setState((s) => ({ review: { ...s.review, [r.id]: "sent" } })),
+      };
+    });
+
+    const toolMsg = (key, tool, ms, args, result) => ({
+      isTool: true, tool, ms, args, result,
+      open: !!S.open[key], caret: S.open[key] ? "▾" : "▸",
+      onToggle: () => this.setState((s) => ({ open: { ...s.open, [key]: !s.open[key] } })),
+    });
+
+    const ap = S.approval;
+    const chat = [
+      { isUser: true, text: L("The tetragonal fraction oscillates across frames 84–96 and Rwp stays near 8%. Something is wrong with the phase set — check it before we go further.",
+        "フレーム 84–96 で tetragonal の分率が振動しているのに Rwp は 8% 付近のまま。相集合を疑って、先へ進む前に確認して。") },
+      { isAgent: true, who: L("AGENT", "エージェント"),
+        text: L("Rwp cannot see a missing phase, so I will not use it as the test. Running the operando-diagnose route: completeness first, then the residual, then bounded phase count by BIC.",
+          "Rwp では欠落相は見えないので検定量には使いません。operando-diagnose の手順で進めます — まず相集合の完全性、次に残差、最後に BIC で相数を抑制します。") },
+      toolMsg("t1", "check_phase_set", "1.8 s",
+        '{\n  "frames": [84, 96],\n  "phases": ["cubic", "tetragonal"],\n  "fraction_monotonicity": true\n}',
+        '{\n  "is_complete": false,\n  "non_monotonic": ["tetragonal"],\n  "flagged_frames": 9,\n  "note": "fraction reversal inside a single transition"\n}'),
+      toolMsg("t2", "residual_report", "2.4 s",
+        '{\n  "frame": 88,\n  "two_theta_limits": [4.0, 38.0],\n  "decompose": "baseline+peak"\n}',
+        '{\n  "top_unexplained": [\n    {"two_theta": 12.42, "snr": 6.1},\n    {"two_theta": 17.88, "snr": 4.4}\n  ]\n}'),
+      { isDecision: true, title: L("Phase count is bounded by BIC, not Rwp", "相数は Rwp でなく BIC で抑制する"),
+        rows: [
+          { k: L("cubic + tetragonal", "cubic + tetragonal"), v: "Rwp 8.04 · bic 41 208", color: "var(--color-neutral-800)" },
+          { k: L("cubic + tetragonal + monoclinic", "cubic + tetragonal + monoclinic"), v: "Rwp 6.71 · bic 39 402", color: A.acc8 },
+          { k: "Δbic", v: L("−1 806 → 3 phases", "−1 806 → 3 相"), color: A.acc8 },
+        ],
+        text: L("Rwp falls monotonically with every added phase, so it always favours more phases and spreads a spurious one across the whole series. The segment total bic is the criterion (anchor/select).",
+          "Rwp は相を足すほど単調に下がるため常に相数の多い方が勝ち、偽相が全域へ広がる。基準は区間の total bic (anchor/select)。") },
+      toolMsg("t3", "identify_phases", "6.1 s",
+        '{\n  "elements": ["K","Mn","Fe","C","N"],\n  "require_full_element_system": true,\n  "refine_lattice": true,\n  "background_subtract": true\n}',
+        '{\n  "top": [\n    {"formula": "K2Mn[Fe(CN)6]", "sg": "P21/n",\n     "dara": 0.71, "strain": 0.004}\n  ]\n}'),
+      { isApproval: true, title: L("AddPhase · monoclinic K₂Mn[Fe(CN)₆]", "AddPhase · monoclinic K₂Mn[Fe(CN)₆]"),
+        text: L("A model action: which phase this is cannot be derived from the residual alone. Approving materialises the CIF, pre-aligns the anisotropic cell and re-refines frames 84–96 in a child snapshot.",
+          "ModelAction: どの相かは残差だけからは導けない。承認すると CIF を物質化し、異方セルをプリアラインしてフレーム 84–96 を子スナップショットで再精密化する。"),
+        args: '{\n  "action": "AddPhase",\n  "mp_id": "mp-561149",\n  "space_group": "P21/n",\n  "refine_new_phase_cell": true,\n  "frames": [84, 96],\n  "accept_if": ["rwp_improves", "cell_not_collapsed"]\n}',
+        approveLabel: ap === "approved" ? L("APPLIED ✓", "適用済 ✓") : L("APPROVE & APPLY", "承認して適用"),
+        rejectLabel: ap === "rejected" ? L("REJECTED", "却下済") : L("REJECT", "却下"),
+        approveBg: ap === "approved" ? "transparent" : A.acc7,
+        approveColor: ap === "approved" ? A.acc8 : "var(--color-neutral-100)",
+        approveBorder: ap === "approved" ? A.acc3 : A.acc7,
+        state: ap === "approved"
+          ? L("applied in snapshot S-0311 · ledger #1284 · revert available", "スナップショット S-0311 に適用 · ledger #1284 · revert 可能")
+          : ap === "rejected"
+            ? L("rejected · proposal kept in ledger, nothing changed", "却下 · 提案は ledger に残り状態は不変")
+            : L("held · no state has changed yet", "保留中 · 状態は何も変わっていない"),
+        stateColor: ap === "pending" ? "var(--color-neutral-600)" : A.acc8,
+        onApprove: () => this.set({ approval: "approved" }),
+        onReject: () => this.set({ approval: "rejected" }),
+        onInspect: () => this.set({ mode: "manual", tab: "pid" }) },
+      { isEsc: true, title: L("Close competitor routed to Review Queue", "僅差競合をレビューキューへ送出"),
+        text: L("ΔlogZ 1.2 < 2.5. The loop is not blocked — a provisional ranking stands with a needs-review flag, and the adjudication waits for you in MANUAL.",
+          "ΔlogZ 1.2 < 2.5。処理はブロックしない — 暫定順位と要確認フラグのまま、裁定は MANUAL 側で待つ。") },
+    ];
+
+    const quickPrompts = [
+      L("Why was stage 08 reverted?", "段階 08 はなぜ revert された?"),
+      L("Compare H-014 against H-011", "H-014 と H-011 を比較"),
+      L("Propose a discriminating measurement", "判別測定を提案して"),
+    ].map((label) => ({ label, onClick: () => this.set({ draft: label }) }));
+
+    const col = (label, align) => ({ label, align });
+
+    return {
+      t, modeItems, langItems, tabs, histChips, stages, reviewItems, chat, quickPrompts,
+      isManual: manual, isAuto: !manual,
+      isFit: S.tab === "fit", isParam: S.tab === "param", isHyp: S.tab === "hyp", isPid: S.tab === "pid",
+      isSeq: S.tab === "seq", isStruct: S.tab === "struct", isLedger: S.tab === "ledger",
+
+      costChip: manual ? L("agent idle", "エージェント待機") : L("1.24 M tok · 18 m", "1.24 M tok · 18 分"),
+      fsmLabel: manual ? L("HUMAN", "人間") : L("AGENT", "エージェント"),
+      fsmBg: manual ? A.n1 : A.acc1,
+      fsmColor: manual ? "var(--color-neutral-800)" : A.acc8,
+      fsmBorder: manual ? A.div : A.acc3,
+      paneHead: manual ? L("OPERATOR CONSOLE", "オペレータ・コンソール") : L("AGENT SESSION", "エージェント・セッション"),
+      paneHeadNote: manual
+        ? L("layer ③ = human · you release, you accept", "第3層 = 人間 · 解放も採用も人間")
+        : L("layer ③ = LLM · ② MCP is the only actuator", "第3層 = LLM · 操作口は ②MCP のみ"),
+      paneHeadBg: manual ? "var(--color-neutral-300)" : A.acc8,
+      paneHeadColor: manual ? "var(--color-text)" : "var(--color-neutral-100)",
+      statusItems: [
+        L("backend: GSASIIscriptable · win_64_p3.12_n2.2", "バックエンド: GSASIIscriptable · win_64_p3.12_n2.2"),
+        L("seed = 0 · bit-identical (NFR-102)", "seed = 0 · ビット同一 (NFR-102)"),
+        L("ledger entries 1284 · chain OK", "ledger 1284 件 · チェーン OK"),
+        L("MCP tools 32 · layer ② reachable", "MCP ツール 32 · ②到達可能"),
+      ],
+      statusText: manual
+        ? L("MANUAL · agent proposals queue up, nothing applies without you", "MANUAL · エージェントの提案はキューに溜まり、人間なしでは適用されない")
+        : L("AUTO · safe actions applied and logged · model actions held for approval", "AUTO · SafeAction は適用して記録 · ModelAction は承認待ちで保留"),
+      statusColor: manual ? "var(--color-neutral-400)" : A.acc3,
+      draft: S.draft || L("Ask about this frame, or send an instruction…", "このフレームについて質問、または指示を入力…"),
+      draftColor: S.draft ? "var(--color-text)" : "var(--color-neutral-500)",
+      onSend: () => this.set({ draft: "" }),
+
+      datasets: [
+        { name: L("SR-XRD operando", "放射光 XRD operando"), meta: L("sequence/potential · 247 fr · stride 4", "系列/電位 · 247 fr · stride 4"), probe: L("XRAY", "X線"), bg: A.acc1, border: A.acc3 },
+        { name: L("iMATERIA TOF", "iMATERIA TOF"), meta: L("bank 1 / 3 · 2 histograms", "bank 1 / 3 · 2 ヒストグラム"), probe: L("ND", "中性子"), bg: "transparent", border: A.div },
+        { name: L("echem GCPL", "電気化学 GCPL"), meta: L("19.628 mg · characteristic mass", "19.628 mg · characteristic mass"), probe: L("ECH", "電化"), bg: "transparent", border: A.div },
+      ],
+      modelPhases: [
+        { name: L("cubic K₂Mn[Fe(CN)₆]", "立方 K₂Mn[Fe(CN)₆]"), sg: "Fm-3m", src: "mp-560842", frac: "0.62(1)", swatch: A.acc7 },
+        { name: L("tetragonal", "正方晶"), sg: "I4/mmm", src: "mp-559013", frac: "0.31(2)", swatch: "var(--color-accent-400)" },
+        { name: L("monoclinic (proposed)", "単斜晶 (提案中)"), sg: "P21/n", src: "mp-561149", frac: L("— pending", "— 保留"), swatch: "var(--color-neutral-400)" },
+      ],
+      channels: [
+        { name: L("echem V / I / Q", "電気化学 V / I / Q"), state: L("synced", "同期済") },
+        { name: L("alkali budget x(t)", "アルカリ量 x(t)"), state: "FR-318" },
+        { name: L("CellConfig μt", "CellConfig μt"), state: L("transmission", "透過法") },
+      ],
+      snapshots: [
+        { id: "S-0311", note: L("frame 088 · stage 05", "fr088 · 段階 05") },
+        { id: "S-0310", note: L("frame 088 · stage 04", "fr088 · 段階 04") },
+        { id: "S-0309", note: L("reverted (guard)", "revert (ガード)") },
+        { id: "S-0308", note: L("anchor fr012 refit", "アンカー fr012 再精密化") },
+      ],
+      metrics: [
+        { label: "Rwp", value: "6.71%", note: L("target ≤ 8.0", "目標 ≤ 8.0") },
+        { label: "GOF", value: "1.29", note: "χ²/dof" },
+        { label: "χ²", value: "3 118", note: "n_obs 2 412" },
+        { label: "n_params", value: "38", note: L("released of 96", "96 中 解放済") },
+        { label: L("Δ vs manual", "手動比 Δ"), value: "−9.53", note: L("manual ref 16.24%", "手動解析 16.24%") },
+        { label: L("basins", "ベイスン"), value: "1 / 3", note: L("global corroborated", "大域最適の傍証") },
+      ],
+      histCols: [col(L("STAGE", "段階"), "left"), col("Rwp", "right"), col("ΔRwp", "right"), col(L("GUARD", "ガード"), "left")],
+      tickRows: [
+        { name: L("cubic Fm-3m", "立方 Fm-3m"), swatch: A.acc7, pitch: "37px" },
+        { name: L("tetragonal I4/mmm", "正方 I4/mmm"), swatch: "var(--color-accent-400)", pitch: "23px" },
+        { name: L("monoclinic P21/n", "単斜 P21/n"), swatch: "var(--color-neutral-500)", pitch: "17px" },
+      ],
+      historyRows: [
+        { stage: L("01 background (24)", "01 背景 (24)"), rwp: "29.61", d: "−18.40", dcolor: A.acc8, guard: "ok" },
+        { stage: L("02 scale + cell", "02 スケール + 格子"), rwp: "23.52", d: "−6.09", dcolor: A.acc8, guard: "ok" },
+        { stage: L("03 zero shift", "03 ゼロシフト"), rwp: "21.60", d: "−1.92", dcolor: A.acc8, guard: "ok" },
+        { stage: L("04 profile U,V,W", "04 プロファイル U,V,W"), rwp: "19.24", d: "−2.36", dcolor: A.acc8, guard: "ok" },
+        { stage: L("05 Lorentzian X,Y", "05 Lorentzian X,Y"), rwp: "18.11", d: "−1.13", dcolor: A.acc8, guard: L("ok · separate revert guard", "ok · revert ガード分離") },
+        { stage: L("08 size / mustrain", "08 サイズ / 歪み"), rwp: "18.11", d: "+0.42", dcolor: A.warnText, guard: L("REVERTED · cell collapse", "REVERT · 格子崩壊") },
+      ],
+      validityRows: [
+        { name: L("occupancy ∈ [0, 1]", "占有率 ∈ [0, 1]"), value: "0.71(3)", state: L("PASS", "適合"), bg: A.acc1, color: A.acc8, border: A.acc3 },
+        { name: L("Uiso plausible", "Uiso が妥当"), value: "0.021 Å²", state: L("PASS", "適合"), bg: A.acc1, color: A.acc8, border: A.acc3 },
+        { name: L("cell not collapsed", "格子が崩壊していない"), value: "a 10.104 Å", state: L("PASS", "適合"), bg: A.acc1, color: A.acc8, border: A.acc3 },
+        { name: L("bond distance Fe–C", "結合距離 Fe–C"), value: "1.91 Å", state: L("PASS", "適合"), bg: A.acc1, color: A.acc8, border: A.acc3 },
+        { name: L("coordination Mn", "配位数 Mn"), value: "5.2", state: L("WARN", "警告"), bg: A.warnBg, color: A.warnInk, border: A.warnLine },
+      ],
+      hypCols: [
+        col("#", "left"), col("ID", "left"), col(L("PHASES", "相"), "left"), col("P", "right"),
+        col("Rwp", "right"), col("GOF", "right"), col("BIC", "right"),
+        col(L("CLOSE", "僅差"), "center"), col(L("STATUS", "状態"), "left"),
+      ],
+      hypRows: [
+        ["1", "H-014", L("cubic + tetra + mono", "立方 + 正方 + 単斜"), "0.48", "6.71", "1.29", "39 402", "●", L("candidate", "候補")],
+        ["2", "H-011", L("cubic + tetra", "立方 + 正方"), "0.39", "8.04", "1.42", "41 208", "●", L("candidate", "候補")],
+        ["3", "H-009", L("cubic + mono", "立方 + 単斜"), "0.08", "9.88", "1.61", "43 771", "", L("refined", "精密化済")],
+        ["4", "H-006", L("cubic only", "立方のみ"), "0.03", "13.42", "2.05", "48 330", "", L("superseded", "置換済")],
+        ["5", "H-013", L("cubic + tetra + Ca₃TeO₆", "立方 + 正方 + Ca₃TeO₆"), "0.02", "6.62", "1.27", "41 990", "", L("demoted · chem", "降格 · 化学")],
+      ].map((r) => ({
+        rank: r[0], id: r[1], phases: r[2], prob: r[3], rwp: r[4], gof: r[5], bic: r[6],
+        close: r[7], status: r[8],
+        bg: S.hyp === r[1] ? A.acc1 : "transparent",
+        onClick: () => this.set({ hyp: r[1] }),
+      })),
+      diffTitle: L("DIFF · " + S.hyp + " vs H-011", "差分 · " + S.hyp + " vs H-011"),
+      diffA: S.hyp, diffB: "H-011",
+      diffRows: [
+        { field: L("phases", "相数"), a: "3", b: "2", mark: A.acc1 },
+        { field: "Rwp / %", a: "6.71", b: "8.04", mark: A.acc1 },
+        { field: "bic", a: "39 402", b: "41 208", mark: A.acc1 },
+        { field: L("cubic a / Å", "立方 a / Å"), a: "10.104(2)", b: "10.106(2)", mark: "transparent" },
+        { field: L("tetra c/a", "正方 c/a"), a: "1.043(1)", b: "1.061(3)", mark: A.acc1 },
+        { field: L("tetra fraction", "正方の分率"), a: "0.31(2)", b: "0.47(4)", mark: A.acc1 },
+        { field: L("validity", "妥当性"), a: L("pass (1 warn)", "適合 (警告 1)"), b: L("pass", "適合"), mark: "transparent" },
+      ],
+      evidenceRows: [
+        { k: L("evidence backend", "evidence バックエンド"), v: L("bic → nested (re-arbitration)", "bic → nested (再裁定)"), color: "var(--color-neutral-800)" },
+        { k: L("ΔlogZ vs runner-up", "ΔlogZ (2 位比)"), v: L("1.2 < 2.5 threshold", "1.2 < 閾値 2.5"), color: A.acc8 },
+        { k: L("multistart", "マルチスタート"), v: L("n = 3 · basins = 1 · corroborated", "n = 3 · ベイスン 1 · 傍証あり"), color: "var(--color-neutral-800)" },
+        { k: L("chem plausibility", "化学妥当性"), v: L("demote only · never exclude", "降格のみ · 除外しない"), color: "var(--color-neutral-800)" },
+      ],
+      pidCols: [
+        col("#", "left"), col(L("FORMULA", "組成"), "left"), col(L("SOURCE", "供給元"), "left"),
+        col(L("SG", "空間群"), "left"), col(L("DARA", "Dara"), "right"), col("m/w/ms/x", "right"),
+        col(L("STRAIN", "歪み"), "right"), col(L("CHEM GUARD", "化学ガード"), "left"), col("", "right"),
+      ],
+      pidRows: [
+        ["1", "K₂Mn[Fe(CN)₆]", "mp-561149", "P21/n", "0.71", "18/1/2/0", "0.004", L("full system", "全元素系"), L("ADD AS PHASE", "相として追加")],
+        ["2", "K₂Mn[Fe(CN)₆]", "mp-559013", "I4/mmm", "0.64", "15/2/4/1", "0.006", L("full system", "全元素系"), L("ADD AS PHASE", "相として追加")],
+        ["3", "KMn[Fe(CN)₆]", "mp-558220", "F-43m", "0.52", "12/3/6/2", "0.011", L("full system", "全元素系"), L("ADD", "追加")],
+        ["4", "Mn[Fe(CN)₆]", "mp-557104", "Pm-3m", "0.38", "9/5/9/4", "0.019", L("K missing", "K 欠落"), L("ADD", "追加")],
+        ["5", "K₄Fe(CN)₆·3H₂O", "mp-24411", "C2/c", "0.21", "6/8/14/7", "0.031", L("demoted", "降格"), L("ADD", "追加")],
+      ].map((r, i) => ({
+        rank: r[0], formula: r[1], mp: r[2], sg: r[3], score: r[4], mwme: r[5], strain: r[6],
+        guard: r[7], action: r[8],
+        bg: i === 0 ? A.acc1 : "transparent",
+        guardColor: i < 3 ? A.acc8 : A.warnText,
+      })),
+      residualFeatures: [
+        L("2θ 12.42 · S/N 6.1 · unindexed", "2θ 12.42 · S/N 6.1 · 未指数"),
+        L("2θ 17.88 · S/N 4.4 · unindexed", "2θ 17.88 · S/N 4.4 · 未指数"),
+        L("2θ 23.10 · S/N 2.9 · shoulder of cubic (110)", "2θ 23.10 · S/N 2.9 · 立方 (110) の肩"),
+      ],
+      completenessRows: [
+        { k: "is_complete", v: "FALSE", bg: A.warnBg, color: A.warnInk },
+        { k: L("non-monotonic fraction", "分率が非単調"), v: L("tetragonal · frames 84–96", "正方 · fr 84–96"), bg: "transparent", color: "var(--color-neutral-800)" },
+        { k: L("flagged frames", "フラグ付きフレーム"), v: "9 / 63", bg: "transparent", color: "var(--color-neutral-800)" },
+      ],
+      seqCharts: [
+        { title: L("Rwp vs frame", "Rwp vs フレーム"), note: L("6.0 – 9.0% · manual reference 16.24%", "6.0 – 9.0% · 手動解析 16.24%"), h: "92px",
+          ph: L("SERIES PLACEHOLDER — Rwp per frame, anchors marked", "系列プロット枠 — フレーム毎の Rwp・アンカー表示") },
+        { title: L("Lattice a, c vs frame", "格子 a, c vs フレーム"), note: L("warm start carried forward", "ウォームスタートを引き継ぎ"), h: "92px",
+          ph: L("SERIES PLACEHOLDER — cell parameters ±σ", "系列プロット枠 — 格子定数 ±σ") },
+        { title: L("Phase fraction vs frame", "相分率 vs フレーム"), note: L("monotonic through the transition", "転移域でも単調"), h: "108px",
+          ph: L("STACK PLACEHOLDER — cubic / tetragonal / monoclinic + x_echem overlay", "積み上げ枠 — 立方 / 正方 / 単斜 + x_echem 重ね描き") },
+      ],
+      anchorChips: [
+        { label: "fr012", bg: A.acc1, color: A.acc8, border: A.acc3 },
+        { label: "fr044", bg: A.acc1, color: A.acc8, border: A.acc3 },
+        { label: L("fr091 ✳ crossover", "fr091 ✳ 転移"), bg: A.warnBg, color: A.warnInk, border: A.warnLine },
+        { label: "fr140", bg: A.acc1, color: A.acc8, border: A.acc3 },
+        { label: "fr228", bg: A.acc1, color: A.acc8, border: A.acc3 },
+      ],
+      segCols: [
+        col(L("SEGMENT", "区間"), "left"), col(L("FORWARD SET", "前方の相集合"), "left"),
+        col(L("BACKWARD SET", "後方の相集合"), "left"), col("Rwp", "right"),
+        col(L("TOTAL BIC", "総 BIC"), "right"), col(L("SELECTED", "採用"), "left"),
+      ],
+      segRows: [
+        { seg: "012–044", left: L("cubic", "立方"), right: L("cubic", "立方"), rwp: "6.2", bic: "38 110", pick: L("forward", "前方") },
+        { seg: "044–091", left: L("cubic + tetra", "立方 + 正方"), right: L("cubic + tetra", "立方 + 正方"), rwp: "6.8", bic: "39 402", pick: L("backward", "後方") },
+        { seg: "091–140", left: L("cubic + tetra + mono", "立方 + 正方 + 単斜"), right: L("cubic + mono", "立方 + 単斜"), rwp: "6.7", bic: "39 118", pick: L("backward ✳", "後方 ✳") },
+        { seg: "140–228", left: L("cubic + mono", "立方 + 単斜"), right: L("cubic + mono", "立方 + 単斜"), rwp: "7.1", bic: "40 002", pick: L("forward", "前方") },
+      ],
+      siteCols: [
+        col(L("LABEL", "ラベル"), "left"), col(L("ELEMENT (Z)", "元素 (Z 順)"), "left"), col("x", "right"), col("y", "right"),
+        col("z", "right"), col("occ", "right"), col("Uiso", "right"), col(L("NOTE", "備考"), "left"), col("", "right"),
+      ],
+      paramHistLabel: (() => {
+        const p = Component.PARAMS[S.hist];
+        return p.kind === "tof"
+          ? L("TOF neutron · profile type 3 (α, β, σ)", "TOF 中性子 · profile type 3 (α, β, σ)")
+          : L("CW X-ray · pseudo-Voigt (U, V, W, X, Y)", "CW X線 · pseudo-Voigt (U, V, W, X, Y)");
+      })(),
+      paramCards: (() => {
+        const h = S.hist;
+        const p = Component.PARAMS[h];
+        const mkRows = (group, defs) => defs.map((d) => {
+          const [name, value, esd, relDefault] = d;
+          const vKey = h + "." + group + "." + name;
+          const on = this.paramRel(h, group, name, relDefault);
+          const fixedOnly = esd === "—" && !on;
+          return {
+            name, esd,
+            value: S.paramValue[vKey] ?? value,
+            rel: on,
+            cellBg: on ? A.acc1 : "transparent",
+            esdColor: on ? A.acc8 : "var(--color-neutral-500)",
+            tip: on ? L("released — click to fix", "解放中 — クリックで固定") : L("fixed — click to release", "固定中 — クリックで解放"),
+            onRel: () => this.toggleParam(h, group, name, relDefault),
+            onEdit: (e) => this.setState((s) => ({ paramValue: { ...s.paramValue, [vKey]: e.target.value } })),
+            hint: fixedOnly ? L("not refined", "未精密化") : "",
+          };
+        });
+        const guard = L("size / microstrain reverted at stage 08 (cell collapse). Low-resolution CW neutron banks are excluded from microstructure by recipe — the high-resolution histogram carries it.",
+          "サイズ / 微小歪みは段階 08 で revert (格子崩壊)。低分解能 CW 中性子はレシピで微細構造から除外 — 高分解能ヒストグラムが担う。");
+        const cards = [
+          {
+            title: L("RADIATION / WAVELENGTH", "線源 / 波長"),
+            note: p.kind === "tof"
+              ? L("TOF · λ set by difC / flight path", "TOF · λ は difC / 飛行距離で決まる")
+              : L("monochromatic · from instprm", "単色 · instprm 由来"),
+            selects: [
+              {
+                label: L("source", "線源"),
+                value: p.kind === "tof" ? "neutron TOF" : "synchrotron X-ray",
+                options: ["synchrotron X-ray", "lab X-ray (Cu Kα)", "lab X-ray (Mo Kα)", "neutron CW", "neutron TOF"],
+                onChange: () => {},
+              },
+            ],
+            rows: mkRows("rad", p.radiation),
+            onReleaseAll: () => this.setParamGroup(h, "rad", p.radiation, true),
+            onFixAll: () => this.setParamGroup(h, "rad", p.radiation, false),
+            footer: p.kind === "tof"
+              ? L("For TOF there is no single λ: the wavelength band follows from difC / difA and the flight path, so releasing λ is not meaningful — calibrate difC instead (PROFILE).",
+                "TOF に単一の λ は無い。波長帯は difC / difA と飛行距離から決まるため λ を解放する意味はない — 較正は PROFILE の difC で行う。")
+              : L("λ = 0.799580 Å from the CeO₂ calibration. Refining λ against the cell is nearly singular — keep it fixed unless the calibration itself is in doubt (the SR_CeO2 file's 0.5 value is not used).",
+                "λ = 0.799580 Å は CeO₂ 較正値。λ と格子は強相関でほぼ特異なので、較正自体を疑う場合以外は固定のまま (SR_CeO2 ファイルの 0.5 は不使用)。"),
+          },
+          {
+            title: L("BACKGROUND", "背景"),
+            note: L(p.bkgTerms + " terms · showing 1–8", p.bkgTerms + " 項 · 1–8 を表示"),
+            selects: [
+              { label: L("function", "関数"), value: p.bkgFunc, options: ["chebyschev", "cosine", "lin interpolate", "log interpolate"], onChange: () => {} },
+              { label: L("terms", "項数"), value: p.bkgTerms, options: ["3", "6", "12", "18", "24", "36"], onChange: () => {} },
+            ],
+            rows: mkRows("bkg", p.bkg),
+            onReleaseAll: () => this.setParamGroup(h, "bkg", p.bkg, true),
+            onFixAll: () => this.setParamGroup(h, "bkg", p.bkg, false),
+            footer: "",
+          },
+          {
+            title: L("PROFILE", "プロファイル"),
+            note: p.kind === "tof" ? L("difC / difA from .zDiffractometer", "difC / difA は .zDiffractometer 由来") : L("instprm · Kα1 monochromatic", "instprm · Kα1 単色"),
+            selects: [],
+            rows: mkRows("prof", p.profile),
+            onReleaseAll: () => this.setParamGroup(h, "prof", p.profile, true),
+            onFixAll: () => this.setParamGroup(h, "prof", p.profile, false),
+            footer: p.kind === "tof"
+              ? L("TOF profile is released only in a dedicated calibration stage.", "TOF プロファイルは較正専用段階でのみ解放する。")
+              : L("Lorentzian X, Y and Zero are released in a stage of their own, with a separate revert guard.", "Lorentzian X, Y と Zero は別段階で解放し、revert ガードも分離する。"),
+          },
+          {
+            title: L("SIZE / MICROSTRAIN", "サイズ / 微小歪み"),
+            note: L("per phase · isotropic model", "相ごと · 等方モデル"),
+            selects: [
+              { label: L("size model", "サイズモデル"), value: "isotropic", options: ["isotropic", "uniaxial", "ellipsoidal"], onChange: () => {} },
+              { label: L("mustrain model", "歪みモデル"), value: "isotropic", options: ["isotropic", "uniaxial", "generalized"], onChange: () => {} },
+            ],
+            rows: mkRows("micro", p.micro),
+            onReleaseAll: () => this.setParamGroup(h, "micro", p.micro, true),
+            onFixAll: () => this.setParamGroup(h, "micro", p.micro, false),
+            footer: guard,
+          },
+          {
+            title: L("SAMPLE & GEOMETRY", "試料 & 幾何"),
+            note: L("scale, displacement, absorption, texture", "スケール・変位・吸収・集合組織"),
+            selects: [],
+            rows: mkRows("sample", p.sample),
+            onReleaseAll: () => this.setParamGroup(h, "sample", p.sample, true),
+            onFixAll: () => this.setParamGroup(h, "sample", p.sample, false),
+            footer: L("Absorption comes from CellConfig layers; when it is estimated instead, the report says so.",
+              "吸収は CellConfig の層構成から算出。経験推定に落ちた場合はレポートに明示される。"),
+          },
+        ];
+        // 並び: RADIATION / SAMPLE&GEOMETRY / BACKGROUND / PROFILE / SIZE (最後の 1 枚は 2 列ぶち抜き)
+        const order = [0, 4, 1, 2, 3];
+        const shown = order.map((i) => cards[i]);
+        return shown.map((c, i) => ({ ...c, span: i === shown.length - 1 ? "span 2" : "auto" }));
+      })(),
+      paramReleasedTotal: (() => {
+        const h = S.hist;
+        const p = Component.PARAMS[h];
+        const groups = { rad: "radiation", bkg: "bkg", prof: "profile", micro: "micro", sample: "sample" };
+        const n = Object.keys(groups).reduce((acc, g) =>
+          acc + p[groups[g]].filter((d) => this.paramRel(h, g, d[0], d[3])).length, 0);
+        return L("released in this histogram: " + n, "このヒストグラムの解放数: " + n);
+      })(),
+      elements: Component.ELEMENTS,
+      siteRows: this.siteList().map((r) => {
+        const noteText = {
+          "": "",
+          free_occ: L("free_occupancy", "占有率を単独解放"),
+          zeolitic: L("zeolitic water", "ゼオライト水"),
+          equiv: L("equiv → Ow1", "等値 → Ow1"),
+          new: L("new · not refined", "新規 · 未精密化"),
+        };
+        const rel = r.rel ?? {};
+        const lock = r.lock ?? {};
+        const cellBg = (k) => (lock[k] ? A.n2 : rel[k] ? A.acc1 : "transparent");
+        const ink = (k) => (lock[k] ? "var(--color-neutral-500)" : "var(--color-text)");
+        const tip = (k) => (lock[k]
+          ? L("fixed by symmetry (special position)", "対称性で固定 (特殊位置)")
+          : rel[k] ? L("released — click to fix", "解放中 — クリックで固定") : L("fixed — click to release", "固定中 — クリックで解放"));
+        return {
+          ...r,
+          note: noteText[r.note] ?? r.note,
+          relX: !!rel.x, relY: !!rel.y, relZ: !!rel.z, relOcc: !!rel.occ, relUiso: !!rel.uiso,
+          lockX: !!lock.x, lockY: !!lock.y, lockZ: !!lock.z,
+          xCellBg: cellBg("x"), yCellBg: cellBg("y"), zCellBg: cellBg("z"),
+          occCellBg: cellBg("occ"), uisoCellBg: cellBg("uiso"),
+          xInkX: ink("x"), yInk: ink("y"), zInk: ink("z"), occInk: ink("occ"), uisoInk: ink("uiso"),
+          xTip: tip("x"), yTip: tip("y"), zTip: tip("z"), occTip: tip("occ"), uisoTip: tip("uiso"),
+          onRelX: () => this.toggleRelease(r.id, "x"),
+          onRelY: () => this.toggleRelease(r.id, "y"),
+          onRelZ: () => this.toggleRelease(r.id, "z"),
+          onRelOcc: () => this.toggleRelease(r.id, "occ"),
+          onRelUiso: () => this.toggleRelease(r.id, "uiso"),
+          onLabel: (e) => this.editSite(r.id, "label", e.target.value),
+          onEl: (e) => this.editSite(r.id, "el", e.target.value),
+          onX: (e) => this.editSite(r.id, "x", e.target.value),
+          onY: (e) => this.editSite(r.id, "y", e.target.value),
+          onZ: (e) => this.editSite(r.id, "z", e.target.value),
+          onOcc: (e) => this.editSite(r.id, "occ", e.target.value),
+          onUiso: (e) => this.editSite(r.id, "uiso", e.target.value),
+          onDelete: () => this.setState((s) => ({
+            sites: (s.sites ?? s.appliedSites ?? Component.BASE_SITES).filter((q) => q.id !== r.id),
+            edits: s.edits + 1,
+            applied: false,
+          })),
+        };
+      }),
+      onAddAtom: () => this.setState((s) => {
+        const list = s.sites ?? s.appliedSites ?? Component.BASE_SITES;
+        const id = Math.max(0, ...list.map((r) => r.id)) + 1;
+        return {
+          sites: [...list, { id, label: "A" + id, el: "O", x: "0.0000", y: "0.0000", z: "0.0000", occ: "1.000", uiso: "0.025", note: "new", lock: {}, rel: {} }],
+          edits: s.edits + 1,
+          applied: false,
+        };
+      }),
+      releasedSummary: (() => {
+        const n = this.siteList().reduce((acc, r) =>
+          acc + ["x", "y", "z", "occ", "uiso"].filter((k) => (r.rel ?? {})[k] && !(r.lock ?? {})[k]).length, 0);
+        return L("released: " + n + " atomic parameters", "解放中: 原子パラメータ " + n + " 個");
+      })(),
+      onApplyEdits: () => this.setState((s) => ({
+        appliedSites: s.sites ?? s.appliedSites ?? Component.BASE_SITES,
+        sites: null, edits: 0, applied: true,
+      })),
+      // 破棄は「未適用の編集」だけを捨てる — 適用済みモデルは ledger/snapshot 側の revert で戻す
+      onDiscardEdits: () => this.setState({ sites: null, edits: 0 }),
+      discardDisabled: S.edits === 0,
+      discardOpacity: S.edits === 0 ? "0.45" : "1",
+      discardCursor: S.edits === 0 ? "not-allowed" : "pointer",
+      editState: S.edits > 0
+        ? L(S.edits + " pending edit(s) · nothing written yet", "未適用の編集 " + S.edits + " 件 · まだ書き込まれていない")
+        : S.applied
+          ? L("applied · ReviseStructure logged, child snapshot S-0312", "適用済 · ReviseStructure を記録、子スナップショット S-0312")
+          : L("no pending edits", "未適用の編集なし"),
+      editStateColor: S.edits > 0 ? A.warnText : S.applied ? A.acc8 : "var(--color-neutral-600)",
+      constraintRows: [
+        { expr: "Σ occ(K1) · Z = x_total(t)", kind: "EqnConstr · FR-318" },
+        { expr: "occ(D1) ≡ occ(Ow1)", kind: "EquivConstr" },
+        { expr: "Uiso(D1) ≡ Uiso(Ow1)", kind: "EquivConstr" },
+        { expr: "0 ≤ occ ≤ 1", kind: "parmMin / parmMax" },
+      ],
+      memPeaks: [
+        L("peak 1 · (0.24, 0.24, 0.00) · 1.9 e Å⁻³ → zeolitic water", "ピーク 1 · (0.24, 0.24, 0.00) · 1.9 e Å⁻³ → ゼオライト水"),
+        L("peak 2 · (0.50, 0.00, 0.00) · 0.7 e Å⁻³ → below threshold", "ピーク 2 · (0.50, 0.00, 0.00) · 0.7 e Å⁻³ → 閾値未満"),
+      ],
+      ledgerRows: [
+        { time: "14:22:07", actor: L("AGENT ③", "エージェント③"), text: L("propose AddPhase monoclinic P21/n (frames 84–96) — held for human approval", "AddPhase 単斜 P21/n (fr 84–96) を提案 — 人間の承認待ちで保留"), hash: "8f2a…c104", accent: A.acc, actorColor: A.acc8 },
+        { time: "14:21:44", actor: "MCP ②", text: L("identify_phases → 5 candidates, Dara top 0.71, full-element-system guard applied", "identify_phases → 候補 5 件、Dara 最高 0.71、全元素系ガード適用"), hash: "3b91…7de2", accent: "var(--color-neutral-400)", actorColor: "var(--color-neutral-700)" },
+        { time: "14:20:58", actor: L("CORE ①", "コア①"), text: L("check_phase_set → is_complete = false, tetragonal fraction non-monotonic on 9 frames", "check_phase_set → is_complete = false、正方の分率が 9 フレームで非単調"), hash: "cc07…19a5", accent: "var(--color-neutral-400)", actorColor: "var(--color-neutral-700)" },
+        { time: "14:18:12", actor: L("HUMAN", "人間"), text: L("mode switch manual → auto (final_selection_mode = agent)", "モード切替 manual → auto (final_selection_mode = agent)"), hash: "1de4…88bb", accent: A.acc7, actorColor: A.acc8 },
+        { time: "14:12:30", actor: L("CORE ①", "コア①"), text: L("stage 08 size/mustrain released → reverted, cell collapse guard, snapshot S-0309 kept", "段階 08 サイズ/歪みを解放 → revert、格子崩壊ガード、S-0309 は保持"), hash: "77aa…2f01", accent: A.warnLine, actorColor: "var(--color-neutral-700)" },
+        { time: "14:09:51", actor: L("HUMAN", "人間"), text: L("accept H-011 as provisional for frames 44–91", "fr 44–91 について H-011 を暫定採用"), hash: "0a5c…b3d7", accent: A.acc7, actorColor: A.acc8 },
+      ],
+      budgetCells: [
+        { label: L("TOKENS", "トークン"), value: "1.24 M" },
+        { label: L("WALL TIME", "経過時間"), value: L("18 m 04 s", "18 分 04 秒") },
+      ],
+    };
+  }
+}
+
+</script>
+</body>
+</html>
