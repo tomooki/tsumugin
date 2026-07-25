@@ -30,10 +30,6 @@ function ParamCardBlock({ card, hist, span2, paramRel, paramValue, dispatch }: P
 
   return (
     <div className={`bp-card blueprint param-card${span2 ? " param-card--span2" : ""}`}>
-      <i className="corner tl" />
-      <i className="corner tr" />
-      <i className="corner bl" />
-      <i className="corner br" />
       <div className="param-card__head">
         <span className="param-card__title">{card.title}</span>
         <span className="param-card__note">{card.note}</span>

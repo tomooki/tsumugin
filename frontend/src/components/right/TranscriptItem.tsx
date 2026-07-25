@@ -73,10 +73,6 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
     case "judgement":
       return (
         <div className="blueprint ts-judgement">
-          <i className="corner tl" />
-          <i className="corner tr" />
-          <i className="corner bl" />
-          <i className="corner br" />
           <div className="ts-judgement__head">
             <span className="ts-judgement__kicker">{t("judgement")}</span>
             {message.title && <span className="ts-judgement__title">{message.title}</span>}

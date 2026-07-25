@@ -219,10 +219,6 @@ export function OperatorConsole() {
                   : rt(lang, "review.acceptPending");
             return (
               <div key={item.id} className="blueprint review-card">
-                <i className="corner tl" />
-                <i className="corner tr" />
-                <i className="corner bl" />
-                <i className="corner br" />
                 <div className="review-card__head">
                   <Chip variant={reviewSeverityChipVariant(item.severity)}>
                     {(() => {

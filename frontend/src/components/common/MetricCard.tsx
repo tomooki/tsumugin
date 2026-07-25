@@ -11,10 +11,6 @@ interface MetricCardProps {
 export function MetricCard({ label, value, note }: MetricCardProps) {
   return (
     <div className="metric-card blueprint">
-      <i className="corner tl" />
-      <i className="corner tr" />
-      <i className="corner bl" />
-      <i className="corner br" />
       <div className="metric-card__label">{label}</div>
       <div className="metric-card__value">{value}</div>
       {note && <div className="metric-card__note">{note}</div>}

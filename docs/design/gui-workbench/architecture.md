@@ -64,8 +64,9 @@ manual/auto ↔ エンジン語彙 human/agent の写像はバックエンドで
 - 状態: React context + reducer (`src/state/`)。ハンドオフ「State」節の形をそのまま採用
   (lang/mode/tab/hist/hyp/sites/edits/paramRel/stageOn/approval/review/draft...)。
 - スタイル: `src/styles/tokens.css` に Industry トークンを 1:1 移植 (唯一 hex を持つ場所)
-  + コンポーネント別 plain CSS。radius 0 / blueprint corner / 反転警告の規約を common
-  コンポーネント (`BlueprintCard`, `Chip`, `CornerFrame`) に集約。
+  + コンポーネント別 plain CSS。radius 0 / blueprint hairline 枠 / 反転警告の規約を common
+  コンポーネント (`BlueprintCard`, `Chip`) に集約。※四隅の `+` レジストレーションマークは
+  Claude Design プロトタイプの演出であり製品には載せない (2026-07-25 全削除)。
 - i18n: `src/i18n/strings.ts` — プロトタイプの `L(en, ja)` 全ペアを抽出した辞書 +
   `useI18n()`。キー欠落は型で防ぐ (en/ja 同一キー集合を型検査)。
 - 元素表: `src/data/elements.ts` — GSAS-II 原子番号順 98 元素 + H 直後に D (99 択)。

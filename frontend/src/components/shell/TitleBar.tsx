@@ -30,10 +30,6 @@ export function TitleBar({ onModeChange }: TitleBarProps) {
 
       <div className="title-bar__mode-wrap">
         <div className="mode-toggle blueprint">
-          <i className="corner tl" />
-          <i className="corner tr" />
-          <i className="corner bl" />
-          <i className="corner br" />
           {modes.map((m) => {
             const active = state.mode === m.key;
             return (
