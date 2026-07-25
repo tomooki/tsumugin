@@ -29,6 +29,7 @@ import numpy as np
 from .._json import finite_or_none
 from ..autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
 from ..autorietveld.recipe import build_recipe
+from ..backends.gsasii import gsasii_available
 from ..insitu.model import FrameSpec
 from ..model import LatticeParams, PhaseInstance
 from ..selection.engine import FinalSelectionEngine
@@ -66,6 +67,14 @@ _EMPTY_PROJECT_META: dict[str, Any] = {"name": None, "dataset": None, "frame": N
 
 _GUI_TO_ENGINE: dict[str, EngineMode] = {"manual": "human", "auto": "agent"}
 _ENGINE_TO_GUI: dict[str, GuiMode] = {"human": "manual", "agent": "auto"}
+
+#: GSAS-II 必須ジョブ (refine/multistart/sequential) が不在環境で起動された場合の error dict
+#: (Tier1 sidecar, api-contract.md GET /api/state `status.gsas_available`)。呼び出し側 (app.py)
+#: が 422 へ縮退する。
+_GSAS_UNAVAILABLE_ERROR: dict[str, Any] = {
+    "error": "GSAS-II が見つかりません — 導入ガイド (desktop/README.md) を参照してください",
+    "error_type": "GSASUnavailableError",
+}
 
 # 【actor 色分けキー】: ledger.kind → LEDGER タブの actor 列 (api-contract.md 末尾) 🔵
 _ACTOR_BY_KIND: dict[str, str] = {
@@ -383,6 +392,11 @@ class WorkbenchSession:
     def state(self) -> dict[str, Any]:
         agent = dict(self._agent_base)
         agent["idle"] = self.mode == "manual"
+        # 【gsas_available は毎回動的判定】: Tier1 sidecar は GSAS-II 抜きで同梱され得るため、
+        #   status は起動時固定シードでなく現在の import 可否 (`gsasii_available`, lru_cache 済み
+        #   なので実質定数コスト) を都度反映する (api-contract.md GET /api/state)。
+        status = dict(self._status)
+        status["gsas_available"] = gsasii_available()
         return {
             "project": dict(self.project),
             "mode": self.mode,
@@ -391,7 +405,7 @@ class WorkbenchSession:
             "refine": self.refine_status(),
             "project_path": self._project_path,
             "ledger": {"count": len(self.ledger.entries), "verified": self.ledger.verify()},
-            "status": dict(self._status),
+            "status": status,
             "agent": agent,
         }
 
@@ -842,6 +856,9 @@ class WorkbenchSession:
             return {"status": "recorded"}
         if self._project is None:
             return {"error": "no project loaded", "error_type": "ValueError"}
+        gsas_guard = self._guard_gsas_available()
+        if gsas_guard is not None:
+            return gsas_guard
         # 【A3: pending occ revisions のスナップショット】: ``self._pending_occupancies`` はジョブが
         #   実際に起動できた場合のみ消費 (クリア) する — 起動が 409 で断られた場合に revision を
         #   取りこぼさないため、クリアは ``started`` 確定後に行う (下記)。
@@ -985,6 +1002,18 @@ class WorkbenchSession:
             return {"error": "no project loaded", "error_type": "ValueError"}
         if self._job.status()["status"] == "running":
             return {"error": "refinement is running", "error_type": "ConflictError"}
+        return None
+
+    def _guard_gsas_available(self) -> "dict[str, Any] | None":
+        """GSAS-II 必須ジョブ (refine/multistart/sequential) 共通ガード (Tier1 sidecar)。
+
+        Tier1 配布はコア + web extra のみを同梱し GSAS-II はローカル導入前提とする
+        (desktop/README.md)。未導入環境でジョブを起動するとバックグラウンドスレッド内で
+        ``GSASUnavailableError`` が起き ``job.status()`` が "failed" になるまで気付けない —
+        起動前に明示チェックして 422 error dict へ縮退させる (呼び出し側 [app.py] が変換)。
+        """
+        if not gsasii_available():
+            return dict(_GSAS_UNAVAILABLE_ERROR)
         return None
 
     def _save_and_refresh(self, op: str, payload: dict[str, Any]) -> None:
@@ -1437,6 +1466,9 @@ class WorkbenchSession:
         """
         if self._source != "project" or self._project is None:
             return {"error": "no project loaded", "error_type": "ValueError"}
+        gsas_guard = self._guard_gsas_available()
+        if gsas_guard is not None:
+            return gsas_guard
         project = self._project
 
         def runner():
@@ -1552,6 +1584,9 @@ class WorkbenchSession:
             return {"error": f"invalid mode: {mode!r}", "error_type": "ValueError"}
         if self._source != "project" or self._project is None:
             return {"error": "no project loaded", "error_type": "ValueError"}
+        gsas_guard = self._guard_gsas_available()
+        if gsas_guard is not None:
+            return gsas_guard
         project = self._project
         guard = self._guard_frames_configured(project)
         if guard is not None:

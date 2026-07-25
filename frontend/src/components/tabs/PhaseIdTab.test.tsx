@@ -190,7 +190,7 @@ function installFetchMock(opts: {
         mode: "manual",
         final_selection_mode: "human",
         ledger: { count: 2, verified: true },
-        status: { backend_build: "b", seed: 0, mcp_tools: 36 },
+        status: { backend_build: "b", seed: 0, mcp_tools: 36, gsas_available: true },
         agent: { tokens: 0, wall_time_s: 0, idle: true },
       });
     }

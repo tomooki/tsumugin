@@ -15,7 +15,7 @@ function makeShell(overrides: Partial<ShellState> = {}): ShellState {
     mode: "manual",
     final_selection_mode: "human",
     ledger: { count: 1281, verified: true },
-    status: { backend_build: "tsumugin 0.3.0", seed: 0, mcp_tools: 36 },
+    status: { backend_build: "tsumugin 0.3.0", seed: 0, mcp_tools: 36, gsas_available: true },
     agent: { tokens: 1240000, wall_time_s: 1084, idle: true },
     ...overrides,
   };

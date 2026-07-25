@@ -22,7 +22,11 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
   "refine": { "status": "idle", "kind": null }, // /api/refine/status と同形 (シェルバッジ用)
   "project_path": null,                // project モード時は project.json の絶対パス
   "ledger": { "count": 1281, "verified": true },
-  "status": { "backend_build": "tsumugin 0.3.0", "seed": 0, "mcp_tools": 36 },
+  "status": { "backend_build": "tsumugin 0.3.0", "seed": 0, "mcp_tools": 36, "gsas_available": true },
+    // gsas_available: GSAS-II (GSASIIscriptable) が import 可能かの動的判定 (毎回評価, 定数コスト)。
+    // false のとき refine/multistart/sequential ジョブ起動は 422
+    // {"error": "...", "error_type": "GSASUnavailableError"} へ縮退する (Tier1 sidecar は
+    // コア+web extra のみ同梱・GSAS-II はローカル導入前提, desktop/README.md)。
   "agent": { "tokens": 1240000, "wall_time_s": 1084, "idle": true }  // idle=true (MANUAL)
 }
 ```

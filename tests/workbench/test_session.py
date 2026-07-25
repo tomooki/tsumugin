@@ -1250,6 +1250,60 @@ def test_request_multistart_without_project_returns_error_dict():
     assert result["error_type"] == "ValueError"
 
 
+# ---------------------------------------------------------------------------
+# Tier1 sidecar (C1): status.gsas_available + GSAS 必須ジョブの 422 縮退
+# ---------------------------------------------------------------------------
+
+
+def test_state_status_includes_gsas_available(project_session: WorkbenchSession):
+    # 【契約】: api-contract.md GET /api/state `status.gsas_available` は毎回動的評価 (この開発機は
+    #   GSAS-II 導入済みなので True)。
+    state = project_session.state()
+    assert state["status"]["gsas_available"] is True
+
+
+def test_request_refine_returns_422_gsas_unavailable_error_when_gsas_missing(
+    project_session: WorkbenchSession, monkeypatch
+):
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module, "gsasii_available", lambda: False)
+    result = project_session.request_refine()
+    assert result["error_type"] == "GSASUnavailableError"
+
+
+def test_request_multistart_returns_422_gsas_unavailable_error_when_gsas_missing(
+    project_session: WorkbenchSession, monkeypatch
+):
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module, "gsasii_available", lambda: False)
+    result = project_session.request_multistart()
+    assert result["error_type"] == "GSASUnavailableError"
+
+
+def test_request_sequential_returns_422_gsas_unavailable_error_when_gsas_missing(
+    project_session: WorkbenchSession, monkeypatch
+):
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module, "gsasii_available", lambda: False)
+    # frames 未設定でも gsas ガードが先に効くことを確認 (guard の順序: gsas → frames)。
+    result = project_session.request_sequential(mode="forward")
+    assert result["error_type"] == "GSASUnavailableError"
+
+
+def test_request_refine_demo_mode_does_not_require_gsas(monkeypatch):
+    # 【後方互換】: demo モードは実 GSAS を呼ばない従来経路 (ledger 追記のみ) なので、
+    #   GSAS 不在でもブロックされない。
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module, "gsasii_available", lambda: False)
+    session = WorkbenchSession.create_demo()
+    result = session.request_refine()
+    assert result == {"status": "recorded"}
+
+
 def test_on_multistart_success_populates_basin_points_and_corroborated_evidence(tmp_path):
     project = lifecycle.create_project("ms", str(tmp_path))
     project = dataclasses.replace(

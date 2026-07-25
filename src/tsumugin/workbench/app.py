@@ -37,6 +37,9 @@ _ERROR_STATUS: dict[str, int] = {
     "ValueError": 422,
     "LedgerIntegrityError": 422,
     "SnapshotIntegrityError": 422,
+    # Tier1 sidecar (GSAS-II 抜き同梱) で GSAS 必須ジョブが起動されたときの縮退 (session.py
+    # `_guard_gsas_available`)。
+    "GSASUnavailableError": 422,
 }
 
 #: POST /api/project 系の「現在のセッションが refine 実行中」ガード共通メッセージ (api-contract.md)。
