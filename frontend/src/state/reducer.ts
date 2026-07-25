@@ -133,25 +133,30 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
     case "SET_DRAFT":
       return { ...state, draft: action.draft };
 
-    case "SET_SHELL":
+    case "SET_SHELL": {
       // Re-sync the local refine status from the server on every shell fetch
       // (initial load, mode switch, post-refine refetch) — this is what makes
       // a page reload mid-job still show the running badge/disabled button,
       // not just OperatorConsole's own poll loop. shell.refine is optional
       // (older fixtures), so a missing field leaves the local value as-is.
-      // shell.refine only ever describes the RUN REFINEMENT job (there is no
-      // shell.phaseid/shell.multistart in the contract), so a "running" read
-      // here is also the only reload-safe signal for which job owns the
-      // shared slot (activeJob) — see ActiveJob's doc comment in state/types.ts.
-      // A non-running read leaves activeJob untouched: it says nothing about
+      // shell.refine describes whichever job (refine/phaseid/multistart)
+      // owns the single shared slot (there is no shell.phaseid/
+      // shell.multistart in the contract) — its `kind` field (セルフレビュー
+      // 指摘 #1) says which one, so a "running" read here is the reload-safe
+      // signal for activeJob — see ActiveJob's doc comment in state/types.ts.
+      // `kind` is optional (older servers omit it): fall back to "refine",
+      // matching the pre-existing assumption from before `kind` existed. A
+      // non-running read leaves activeJob untouched: it says nothing about
       // whether some other job kind is mid-flight.
+      const refine = action.shell.refine;
       return {
         ...state,
         shell: action.shell,
         mode: action.shell.mode,
-        refine: action.shell.refine ?? state.refine,
-        activeJob: action.shell.refine?.status === "running" ? "refine" : state.activeJob,
+        refine: refine ?? state.refine,
+        activeJob: refine?.status === "running" ? (refine.kind ?? "refine") : state.activeJob,
       };
+    }
 
     case "SET_VIEW_MODEL": {
       // stageOn is client-local UI state that mirrors the server's stages[].released

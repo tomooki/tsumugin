@@ -7,6 +7,7 @@
 // open-item count, and the escalation FR tag (the demo baked "FR-403" into
 // the string itself). Everything else the right pane needs already exists
 // centrally and is reused via the normal useI18n() `t()`.
+import type { JobKind } from "../../api/types";
 import type { Lang } from "../../i18n";
 
 export interface StringPair {
@@ -28,6 +29,16 @@ export const RIGHT_STRINGS = {
   // in-progress variant since the handoff prototype never modelled a running
   // job (it was a static mockup).
   "recipe.running": { en: "RUNNING …", ja: "実行中 …" },
+  // Fallback error text when a shared-job-slot poll (state.refine) reports
+  // "failed" without a server-supplied `error` message. Keyed by the job's
+  // real `kind` (セルフレビュー指摘 #1, api-contract.md RefineStatus.kind) so
+  // OperatorConsole never mislabels a phaseid/multistart failure as
+  // "refinement failed" — see jobFailedFallback below. PhaseIdTab/
+  // HypothesesTab have their own kind-specific localized fallbacks already
+  // (pid.local.identifyFailed / hyp.local.multistartFailed) and don't use this.
+  "job.failed.refine": { en: "refinement failed", ja: "精密化に失敗" },
+  "job.failed.phaseid": { en: "phase identification failed", ja: "相同定に失敗" },
+  "job.failed.multistart": { en: "multistart failed", ja: "マルチスタートに失敗" },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;
@@ -47,4 +58,12 @@ export function rt(lang: Lang, key: RightStringKey, vars?: Record<string, string
   // contract): a label bug must degrade to visible text, never unmount the UI.
   if (!pair) return key;
   return interpolate(lang === "ja" ? pair.ja : pair.en, vars);
+}
+
+/** Kind-appropriate fallback text for a "failed" job status that carries no
+ * server `error` message (セルフレビュー指摘 #1 (d)). `kind` defaults to
+ * "refine" when the polled status predates the `kind` field (older server —
+ * mirrors the same fallback used by SET_SHELL / resolveJobConflict). */
+export function jobFailedFallback(lang: Lang, kind: JobKind | null | undefined): string {
+  return rt(lang, `job.failed.${kind ?? "refine"}` as RightStringKey);
 }

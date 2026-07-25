@@ -38,11 +38,24 @@ export interface AgentStatus {
 // "idle" | "running" | "done" | "failed" (api-contract.md GET /api/refine/status).
 export type RefineJobStatus = "idle" | "running" | "done" | "failed";
 
+// Which background job kind currently (or most recently) owns the shared
+// GSAS job slot (api-contract.md §解析ループ: "ジョブ枠は 1 つ"). Mirrors
+// state/types.ts ActiveJob minus the "no job has ever run yet" case, which
+// RefineStatus.kind represents as `null` instead (see below).
+export type JobKind = "refine" | "phaseid" | "multistart";
+
 export interface RefineStatus {
   status: RefineJobStatus;
   elapsed_s: number | null;
   last_event: string | null;
   error: string | null;
+  // Added by api-contract.md's kind revision (セルフレビュー指摘 #1). Optional
+  // for the same reason as ShellState.source/refine below — existing
+  // fixtures predate this field and a missing key must not crash. `null`
+  // means the shared job slot has never been started this session (server
+  // reports it only while `status !== "idle"`); once started, it retains
+  // the last-started kind even after "done"/"failed".
+  kind?: JobKind | null;
 }
 
 // "none" | "demo" | "project" — no project loaded (Welcome screen) vs real

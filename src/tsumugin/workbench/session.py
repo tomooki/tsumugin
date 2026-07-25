@@ -190,9 +190,11 @@ class WorkbenchSession:
         self._review_state: dict[str, str] = {}
         self._structure_sites: list[dict[str, Any]] = []
         self._structure_phases: "tuple[PhaseInstance, ...]" = ()
-        # 【A2/A3: 実サイト抽出とラベル→相ルーティング】: 直近 refine が gpx から抽出した実サイトの
-        #   label→相名 (占有率 revision (A3) を正しい相へ配線するための session 内部専用マップ、
-        #   契約 Site スキーマには現れない)。
+        # 【A2/A3: 実サイト抽出と id→相ルーティング】: 直近 refine が gpx から抽出した実サイトの
+        #   一意 id→相名 (占有率 revision (A3) を正しい相へ配線するための session 内部専用マップ、
+        #   契約 Site スキーマには現れない)。**label でなく id をキーにする**
+        #   (セルフレビュー指摘 #3): label (原子ラベル, 例 "O1") は相ごとに独立して付与されるため
+        #   多相では衝突しうるが、`atoms.extract_sites` が振る `id` は全相を跨いで一意。
         self._site_phase_map: dict[str, str] = {}
         # 【A3: pending occ revisions】: apply_structure が適用した occ 編集のうち、次回 refine の
         #   runner 構築時に initial_occupancies として渡す分 (相名→{ラベル→occ})。refine 開始時に
@@ -624,37 +626,52 @@ class WorkbenchSession:
         """working model (sites) を ``ReviseStructure`` として適用する (子スナップショット + ledger)。
 
         提案 ≠ 適用: STRUCTURE タブでの編集は working model のみを変え、本メソッド呼び出しが
-        明示的な適用操作 (REQ-GUI-008)。占有率は site の ``label`` をキーに ``occupancies`` へ写す。
+        明示的な適用操作 (REQ-GUI-008)。占有率は site の ``label`` をキーに ``occupancies`` へ写す
+        (単相 demo 表示用の ``PhaseInstance.occupancies`` — 契約上 1 相分のみ)。
 
         project モード (A3, api-contract.md POST /api/structure/apply) では、適用した occ 編集を
         次回 ``request_refine`` の ``initial_occupancies`` へ配線するため ``self._pending_occupancies``
         (相名→{ラベル→occ}) を更新する。相名は直近 refine の実サイト抽出が残した
-        ``self._site_phase_map`` (label→相名) を引く — 未精密化 (map 未構築) の label は revision に
-        できないため無視する。**uiso は対象外**: ``run_auto_rietveld`` に uiso を直接シードする API が
-        無いため (occ の ``initial_occupancies`` のような注入点が存在しない)、occ のみを配線する。
+        ``self._site_phase_map`` (site の一意 ``id``→相名, `atoms.extract_sites` が全相を跨いで
+        一意に採番) を引く — **label ではなく id でルーティングする** (セルフレビュー指摘 #3):
+        多相では相を跨いで同じ label (例 "O1") が衝突しうるため、label をキーにした中間辞書を経由
+        すると衝突した相の一方の occ 編集が消える。id で 1 サイトずつルーティングすれば、相ごとに
+        独立した ``revisions[phase_name][label]`` へ正しく振り分けられる。未精密化 (map 未構築) の
+        site は revision にできないため無視する。**uiso は対象外**: ``run_auto_rietveld`` に uiso を
+        直接シードする API が無いため (occ の ``initial_occupancies`` のような注入点が存在しない)、
+        occ のみを配線する。
         """
         occupancies: dict[str, float] = {}
+        revisions: dict[str, dict[str, float]] = {}
         for site in sites:
             label = site.get("label") or site.get("id")
             occ = site.get("occ")
             if label is None or occ is None:
                 continue
             try:
-                occupancies[str(label)] = float(occ)
+                occ_val = float(occ)
             except (TypeError, ValueError):
                 continue
+            occupancies[str(label)] = occ_val
+            if self._source == "project":
+                site_id = site.get("id")
+                phase_name = self._site_phase_map.get(str(site_id)) if site_id is not None else None
+                if phase_name is not None:
+                    revisions.setdefault(phase_name, {})[str(label)] = occ_val
         base = self._structure_phases[0] if self._structure_phases else _seed.seed_structure_base_phase()
         new_phase = base.with_updates(occupancies=occupancies)
         self._structure_phases = (new_phase,) + tuple(self._structure_phases[1:])
         self._structure_sites = [dict(s) for s in sites]
         if self._source == "project":
-            revisions: dict[str, dict[str, float]] = {}
-            for label, occ in occupancies.items():
-                phase_name = self._site_phase_map.get(label)
-                if phase_name is None:
-                    continue
-                revisions.setdefault(phase_name, {})[label] = occ
-            self._pending_occupancies = revisions
+            # 【セルフレビュー指摘 #2: ロック外競合】: この書込みと ``request_refine`` の
+            #   snapshot+clear (下記) を同一 ``self._lock`` に揃える。``request_refine`` は
+            #   「snapshot 読取 → job 起動 → 起動確定後のみ clear」を単一クリティカルセクションで
+            #   行うため、この書込みはその間には割り込めず、必ず「snapshot に含まれてから
+            #   clear される」か「clear の後に残る (次回 refine 用)」のどちらかになる — snapshot
+            #   済みの古い値を読んだ直後に本メソッドが新しい revision で上書きし、それを
+            #   ``request_refine`` が無条件 clear で消してしまう (revision 消失) 隙間を無くす。
+            with self._lock:
+                self._pending_occupancies = revisions
         snap = self.snapshots.save(self._structure_phases, label=note or "ReviseStructure apply")
         return {"snapshot_id": snap.id, "ledger_index": self.ledger.entries[-1].index}
 
@@ -749,23 +766,37 @@ class WorkbenchSession:
         # 【A3: pending occ revisions のスナップショット】: ``self._pending_occupancies`` はジョブが
         #   実際に起動できた場合のみ消費 (クリア) する — 起動が 409 で断られた場合に revision を
         #   取りこぼさないため、クリアは ``started`` 確定後に行う (下記)。
-        initial_occupancies = dict(self._pending_occupancies) if self._pending_occupancies else None
-        runner = build_default_runner(
-            self._project, ledger=self.ledger, stages_on=stages_on,
-            initial_occupancies=initial_occupancies,
-        )
-        started = self._job.start(
-            runner,
-            on_success=self._on_refine_success,
-            on_failure=self._on_refine_failure,
-            # 【ledger 順序保証】: on_started はロック保持下・スレッド起動前に同期実行されるため、
-            #   即座に失敗する runner との競合でも "refine_request" は必ず終了系エントリより先に
-            #   現れる (RefinementJobManager.start docstring 参照)。
-            on_started=lambda: self.ledger.append("refine_request", payload),
-        )
+        #
+        # 【セルフレビュー指摘 #2: ロック外競合】: 「スナップショット読取 → job 起動 →
+        #   起動確定後のみ clear」を単一の ``with self._lock:`` に収める (``apply_structure`` と
+        #   同一ロック)。以前はここが無ロックだったため、read 直後・clear 前に別スレッドの
+        #   ``apply_structure`` が新しい revision を書き込むと、その revision はこの refine の
+        #   ``initial_occupancies`` に一度も含まれないまま直後の無条件 clear で消えていた
+        #   (取りこぼし)。ロックを揃えることで ``apply_structure`` はこの区間には割り込めなくなり、
+        #   「snapshot に含まれてから clear される」か「clear の後に残る (次回 refine 用)」のいずれか
+        #   に一本化される。
+        with self._lock:
+            initial_occupancies = (
+                dict(self._pending_occupancies) if self._pending_occupancies else None
+            )
+            runner = build_default_runner(
+                self._project, ledger=self.ledger, stages_on=stages_on,
+                initial_occupancies=initial_occupancies,
+            )
+            started = self._job.start(
+                runner,
+                on_success=self._on_refine_success,
+                on_failure=self._on_refine_failure,
+                # 【ledger 順序保証】: on_started はロック保持下・スレッド起動前に同期実行されるため、
+                #   即座に失敗する runner との競合でも "refine_request" は必ず終了系エントリより先に
+                #   現れる (RefinementJobManager.start docstring 参照)。
+                on_started=lambda: self.ledger.append("refine_request", payload),
+                kind="refine",
+            )
+            if started:
+                self._pending_occupancies = {}  # A3: この refine で消費済みにする (起動確定後のみ)
         if not started:
             return {"error": "refinement already running", "error_type": "ConflictError"}
-        self._pending_occupancies = {}  # A3: この refine で消費済みにする (起動確定後のみ)
         return {"status": "started"}
 
     def refine_status(self) -> dict[str, Any]:
@@ -807,7 +838,11 @@ class WorkbenchSession:
         #   実 run_auto_rietveld が成功裏に書き出した後のみなので GSAS 未導入は実運用では
         #   到達しない (防御的コードのみ)。失敗時は RefinementJobManager が failed へ縮退する。
         #   "phase" は session 内部専用ルーティングキー (A3) — viewmodel 契約の Site スキーマには
-        #   存在しないため、格納前に取り除く。
+        #   存在しないため、格納前に取り除く。**キーは label でなく site の一意 id**
+        #   (セルフレビュー指摘 #3): `atoms.extract_sites` は全相を跨いで一意な `id` (``"s{idx}"``,
+        #   相をまたぐ通し番号) を振っているが、`label` (原子ラベル, 例 "O1") は相ごとに独立して
+        #   付与されるため多相では衝突しうる。label をキーにすると、後勝ちで別の相の site を
+        #   上書きし、`apply_structure` の occ 編集が誤った相 (または存在しない相) へ配線される。
         sites_view: list[dict[str, Any]] = []
         site_phase_map: dict[str, str] = {}
         if result.gpx_path and project is not None:
@@ -816,7 +851,7 @@ class WorkbenchSession:
             raw_sites = atoms.extract_sites(result.gpx_path, occupancy_esd=result.atom_occupancy_esd)
             for site in raw_sites:
                 site = dict(site)
-                site_phase_map[site["label"]] = site.pop("phase", "")
+                site_phase_map[site["id"]] = site.pop("phase", "")
                 sites_view.append(site)
 
         with self._lock:
@@ -1162,6 +1197,7 @@ class WorkbenchSession:
             on_success=self._on_phaseid_success,
             on_failure=self._on_phaseid_failure,
             on_started=lambda: self.ledger.append("phaseid_request", {"mode": mode, "top_k": top_k}),
+            kind="phaseid",
         )
         if not started:
             return {"error": "a job is already running", "error_type": "ConflictError"}
@@ -1274,6 +1310,7 @@ class WorkbenchSession:
             on_started=lambda: self.ledger.append(
                 "multistart_request", {"n_starts": n_starts, "scale": scale}
             ),
+            kind="multistart",
         )
         if not started:
             return {"error": "a job is already running", "error_type": "ConflictError"}

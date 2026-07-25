@@ -1,7 +1,7 @@
 // State shape from docs/design/gui-workbench/handoff/README.md §State,
 // extended with the server-supplied shell/viewmodel payloads that App.tsx
 // fetches on mount (see docs/design/gui-workbench/api-contract.md).
-import type { GuiMode, RefineStatus, ShellState, Site, ViewModel } from "../api/types";
+import type { GuiMode, JobKind, RefineStatus, ShellState, Site, ViewModel } from "../api/types";
 import type { Lang } from "../i18n";
 
 // "project" is first (V2a P4 — new PROJECT tab, see CentreCanvas.tsx TAB_ORDER
@@ -22,7 +22,9 @@ export type ReviewDecision = "accepted" | "sent_back";
 // disable each other), but each kind is polled on its own endpoint — this
 // field tells each job-owning component whether IT is the one that should be
 // hitting its status endpoint right now (see hooks/usePollJob.ts `enabled`).
-export type ActiveJob = "refine" | "phaseid" | "multistart" | null;
+// `null` = no job owns the slot right now. Reuses api/types.ts's JobKind (the
+// server-reported RefineStatus.kind) so the two stay structurally identical.
+export type ActiveJob = JobKind | null;
 
 export interface WorkbenchState {
   lang: Lang;

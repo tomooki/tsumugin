@@ -9,13 +9,14 @@ import {
   postStage,
 } from "../../api/client";
 import type { RefineStatus, ReviewItem, StageRow } from "../../api/types";
+import { resolveJobConflict } from "../../hooks/useJobConflict";
 import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
 import { Btn, Chip } from "../common";
 import "./OperatorConsole.css";
 import { computeStagesOn, isStageGateOpen, reviewSeverityChipVariant, reviewSeverityLabelKey } from "./gates";
-import { rt } from "./right.strings";
+import { jobFailedFallback, rt } from "./right.strings";
 
 /** MANUAL right-pane body — handoff/README.md §Right pane "MANUAL body":
  * STAGED RELEASE RECIPE (gated by PARAMETERS/STRUCTURE) + RUN
@@ -78,9 +79,14 @@ export function OperatorConsole() {
   const handleRefineFailed = useCallback(
     (next: RefineStatus) => {
       dispatch({ type: "SET_ACTIVE_JOB", job: null });
-      dispatch({ type: "SET_ERROR", error: next.error ?? "refinement failed" });
+      // Kind-aware fallback (セルフレビュー指摘 #1 (d)): this poll only ever
+      // runs while activeJob === "refine" (see usePollJob's `enabled` below),
+      // so next.kind is normally "refine" too — but fall back through the
+      // same jobFailedFallback helper other callers use rather than a
+      // hardcoded string, in case a stale/legacy status ever disagrees.
+      dispatch({ type: "SET_ERROR", error: next.error ?? jobFailedFallback(lang, next.kind) });
     },
-    [dispatch],
+    [dispatch, lang],
   );
 
   const handleRefinePollError = useCallback(
@@ -121,10 +127,18 @@ export function OperatorConsole() {
       .catch((err: unknown) => {
         if (err instanceof ApiError && err.status === 409) {
           // Non-fatal: a job is already running (elsewhere, or a stale local
-          // state after reload) — reflect "running" so the poll loop above
-          // picks up its real status instead of surfacing this as an error.
-          dispatch({ type: "SET_ACTIVE_JOB", job: "refine" });
-          setRefineStatus({ status: "running", elapsed_s: null, last_event: null, error: null });
+          // state after reload) — fetch the shared status ONCE and sync
+          // activeJob from its real `kind` (セルフレビュー指摘 #1 (c)) so the
+          // component that actually owns the job keeps polling it, instead
+          // of hardcoding "refine" (wrong whenever IDENTIFY/MULTISTART is
+          // the real owner — see hooks/useJobConflict.ts).
+          void resolveJobConflict(dispatch).catch(() => {
+            // best-effort sync; the fetch itself failing is not fatal here —
+            // fall back to the pre-existing assumption so the button/status
+            // still reflects "busy" rather than silently doing nothing.
+            dispatch({ type: "SET_ACTIVE_JOB", job: "refine" });
+            setRefineStatus({ status: "running", elapsed_s: null, last_event: null, error: null });
+          });
           return;
         }
         reportError(err, "failed to run refinement");

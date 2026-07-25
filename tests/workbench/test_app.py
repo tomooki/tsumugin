@@ -326,10 +326,11 @@ def test_refine_status_route_returns_contract_shape_for_demo(client: TestClient)
     resp = client.get("/api/refine/status")
     assert resp.status_code == 200
     data = resp.json()
-    assert set(data) == {"status", "elapsed_s", "last_event", "error"}
+    assert set(data) == {"status", "elapsed_s", "last_event", "error", "kind"}
     assert data["status"] == "idle"
     assert data["elapsed_s"] is None
     assert data["error"] is None
+    assert data["kind"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1067,7 +1068,7 @@ def test_phaseid_route_without_project_returns_422(client: TestClient):
 def test_phaseid_status_route_matches_refine_status_shape(project_client: TestClient):
     resp = project_client.get("/api/phaseid/status")
     assert resp.status_code == 200
-    assert set(resp.json()) == {"status", "elapsed_s", "last_event", "error"}
+    assert set(resp.json()) == {"status", "elapsed_s", "last_event", "error", "kind"}
 
 
 def test_phaseid_add_route_missing_fields_returns_422(project_client: TestClient):
@@ -1113,7 +1114,7 @@ def test_multistart_route_without_project_returns_422(client: TestClient):
 def test_multistart_status_route_matches_refine_status_shape(project_client: TestClient):
     resp = project_client.get("/api/multistart/status")
     assert resp.status_code == 200
-    assert set(resp.json()) == {"status", "elapsed_s", "last_event", "error"}
+    assert set(resp.json()) == {"status", "elapsed_s", "last_event", "error", "kind"}
 
 
 def test_multistart_route_returns_409_while_refine_running(

@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { ApiError, getMultistartStatus, getViewModel, postMultistart } from "../../api/client";
 import { formatInt, formatNumber } from "../../api/format";
 import type { RefineStatus } from "../../api/types";
+import { resolveJobConflict } from "../../hooks/useJobConflict";
 import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
@@ -104,7 +105,12 @@ export function HypothesesTab() {
       })
       .catch((err: unknown) => {
         if (err instanceof ApiError && err.status === 409) {
+          // Non-fatal (api-contract.md: shared job slot) — surface it inline,
+          // and sync activeJob from the real owner's `kind` (セルフレビュー
+          // 指摘 #1 (c), same helper as OperatorConsole/PhaseIdTab) so
+          // whichever tab actually owns the running job keeps polling it.
           setMultistartError(tl("hyp.local.multistartBusy"));
+          void resolveJobConflict(dispatch).catch(() => {});
           return;
         }
         const message = err instanceof ApiError ? err.message : String(err);

@@ -108,6 +108,12 @@ class RefinementJobManager:
         self._end_time: float | None = None
         self._error: str | None = None
         self._thread: threading.Thread | None = None
+        # 【ジョブ種別 (セルフレビュー指摘 #1)】: refine/phaseid/multistart は共有ジョブ枠
+        #   (self) を使い回すため、GET */status が「今動いている/最後に動いたのはどれか」を
+        #   報告できるよう ``start`` の ``kind`` を保持する。真に未起動 (idle, 一度も
+        #   ``start`` されていない) の間だけ ``None`` — 一度でも起動されれば running/done/failed
+        #   のいずれでも直近の kind を保持し続ける (次の ``start`` が上書きするまで)。
+        self._kind: str | None = None
 
     def start(
         self,
@@ -116,6 +122,7 @@ class RefinementJobManager:
         on_failure: FailureCallback,
         *,
         on_started: "Callable[[], None] | None" = None,
+        kind: str = "refine",
     ) -> bool:
         """ジョブを開始する。実行中なら何もせず ``False`` を返す (二重起動防止)。
 
@@ -126,6 +133,10 @@ class RefinementJobManager:
             (`on_started` が同期的に完了してから ``Thread.start()`` するため happens-before が
             成立する。逆順で追記すると、即座に失敗する runner との競合で ledger の並びが
             "finished 済み → 後から requested" のように逆転しうる)。
+        :param kind: このジョブの種別 (``"refine"``\\|``"phaseid"``\\|``"multistart"``)。
+            ``status()`` が返す ``"kind"`` に反映される (共有ジョブ枠のどの呼び出し元が
+            今動いているかをフロントの ``activeJob`` に伝える, api-contract.md)。既定は
+            後方互換のため ``"refine"``。
         """
         with self._lock:
             if self._status == "running":
@@ -134,6 +145,7 @@ class RefinementJobManager:
             self._start_time = self._now()
             self._end_time = None
             self._error = None
+            self._kind = kind
             if on_started is not None:
                 on_started()
 
@@ -162,7 +174,7 @@ class RefinementJobManager:
             self._thread.join(timeout)
 
     def status(self) -> dict[str, object]:
-        """GET /api/refine/status 契約形を返す。"""
+        """GET /api/refine/status 契約形を返す (``kind`` はセルフレビュー指摘 #1)。"""
         with self._lock:
             status = self._status
             if status == "running" and self._start_time is not None:
@@ -172,9 +184,11 @@ class RefinementJobManager:
             else:
                 elapsed = None
             error = self._error
+            kind = self._kind
         return {
             "status": status,
             "elapsed_s": elapsed,
             "last_event": self._last_event(),
             "error": error,
+            "kind": kind,
         }

@@ -816,6 +816,74 @@ def test_request_refine_passes_stages_on_and_clears_pending_occupancies_on_start
     assert session._pending_occupancies == {}
 
 
+def test_apply_structure_during_refine_snapshot_does_not_lose_revision(tmp_path, monkeypatch):
+    """セルフレビュー指摘 #2 (ロック外競合): ``request_refine`` の「pending_occupancies
+    スナップショット読取 → job 起動 → 起動確定後のみ clear」と ``apply_structure`` の書込みを
+    同一 ``self._lock`` に揃えたことを、決定論的な並行性テストで実証する。
+
+    ``build_default_runner`` (snapshot 読取の**直後**に呼ばれる, `session.py` 参照) をブロックする
+    フェイクへ差し替え、その間に別スレッドから ``apply_structure`` を割り込ませる。ロックが効いて
+    いれば apply はブロックされ (① で実証)、request_refine 再開後の clear が apply の新しい
+    revision を巻き込まずに済む (② で実証)。``apply_structure``/``request_refine`` いずれか片方でも
+    ``with self._lock:`` を外す変異を入れると、① (即完了してしまう) または ② (0.9 が {} に消える)
+    のいずれかで fail することを手動確認済み。
+    """
+    project = _phaseid_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+    session._site_phase_map = {"s1": "nacl"}  # id→相名 (セルフレビュー指摘 #3, label ではない)
+    session._pending_occupancies = {"nacl": {"O1": 0.5}}
+
+    entered_build = threading.Event()
+    proceed_build = threading.Event()
+
+    def fake_build(project, ledger=None, stages_on=None, initial_occupancies=None):
+        # request_refine のスナップショット読取 (self._pending_occupancies のコピー) は本関数
+        # 呼び出しより前に完了している (session.py の request_refine 参照) — ここで一時停止する
+        # ことで、別スレッドの apply_structure が「読取後・clear 前」の隙間に割り込む機会を作る。
+        entered_build.set()
+        proceed_build.wait(timeout=5)
+        return lambda: _fake_autorietveld_result(rwp=5.0, a=5.0, phase_name="nacl")
+
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module, "build_default_runner", fake_build)
+
+    refine_result: dict[str, object] = {}
+
+    def do_refine():
+        refine_result["value"] = session.request_refine()
+
+    refine_thread = threading.Thread(target=do_refine)
+    refine_thread.start()
+    assert entered_build.wait(timeout=5)
+
+    apply_done = threading.Event()
+
+    def do_apply():
+        session.apply_structure([{"id": "s1", "label": "O1", "occ": "0.9"}])
+        apply_done.set()
+
+    apply_thread = threading.Thread(target=do_apply)
+    apply_thread.start()
+
+    # ①【ロックによる直列化の実証】: request_refine がクリティカルセクションを保持中は
+    #   apply_structure が完了できないはず (ロックを外す変異ではここが即完了し fail する)。
+    assert not apply_done.wait(timeout=0.3), (
+        "apply_structure が refine のクリティカルセクション中に完了した = ロックが効いていない"
+    )
+
+    proceed_build.set()
+    refine_thread.join(timeout=5)
+    apply_thread.join(timeout=5)
+    session._job.join(timeout=5)
+
+    assert refine_result["value"] == {"status": "started"}
+    assert apply_done.is_set()
+    # ②【revision 非消失の実証】: apply の新しい revision (0.9) は、snapshot 済みの古い値 (0.5) の
+    #   clear に巻き込まれず残っている (次回 refine の initial_occupancies として使われる)。
+    assert session._pending_occupancies == {"nacl": {"O1": 0.9}}
+
+
 # ---------------------------------------------------------------------------
 # A3: apply_structure → pending occ revisions
 # ---------------------------------------------------------------------------
@@ -824,18 +892,42 @@ def test_request_refine_passes_stages_on_and_clears_pending_occupancies_on_start
 def test_apply_structure_records_pending_occupancies_via_site_phase_map(
     project_session: WorkbenchSession,
 ):
-    project_session._site_phase_map = {"O1": "phaseA", "Ca1": "phaseA"}
+    # id→相名 (セルフレビュー指摘 #3): _site_phase_map は site の一意 id をキーにする。
+    project_session._site_phase_map = {"s1": "phaseA", "s2": "phaseA"}
 
     project_session.apply_structure(
         [
-            {"label": "O1", "occ": "0.55"},
-            {"label": "Ca1", "occ": "1.0"},
-            {"label": "Unknown1", "occ": "0.9"},  # 直近抽出に無い label は無視
+            {"id": "s1", "label": "O1", "occ": "0.55"},
+            {"id": "s2", "label": "Ca1", "occ": "1.0"},
+            {"id": "s99", "label": "Unknown1", "occ": "0.9"},  # 直近抽出に無い id は無視
         ]
     )
 
     assert project_session._pending_occupancies == {
         "phaseA": {"O1": 0.55, "Ca1": 1.0}
+    }
+
+
+def test_apply_structure_routes_colliding_labels_across_phases_by_unique_id(
+    project_session: WorkbenchSession,
+):
+    """セルフレビュー指摘 #3: 多相で同じ label ("O1") を持つ 2 サイトが別々の相にあっても、
+    id ルーティングにより両方の occ 編集が正しい相へ配信されること (label キーの中間辞書だと
+    後勝ちで一方が消える回帰の恒久ガード)。
+    """
+    project_session._site_phase_map = {"s1": "phaseA", "s7": "phaseB"}
+
+    result = project_session.apply_structure(
+        [
+            {"id": "s1", "label": "O1", "occ": "0.40"},  # phaseA の O1
+            {"id": "s7", "label": "O1", "occ": "0.80"},  # phaseB の (別サイトの) O1 — label 衝突
+        ]
+    )
+
+    assert "error" not in result
+    assert project_session._pending_occupancies == {
+        "phaseA": {"O1": 0.40},
+        "phaseB": {"O1": 0.80},
     }
 
 
@@ -942,6 +1034,84 @@ class TestRequestPhaseidWithInjectedProvider:
         session._job.join(timeout=5)
 
         assert session.viewmodel()["phase_id"]["candidates"] == []
+
+
+def test_phaseid_running_reports_kind_phaseid_in_shared_job_status(tmp_path):
+    """セルフレビュー指摘 #1: phaseid 実行中は共有ジョブ status の kind が "phaseid" になる。
+
+    ``refine_status()`` は GET /api/refine/status・/api/phaseid/status・/api/multistart/status の
+    3 ルート共通の実装 (`app.py` がそのまま返す) なので、ここでの検証はそのままエンドポイント
+    契約の検証になる。
+    """
+    pytest.importorskip("pymatgen")
+    project = _phaseid_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+    # 【mode="pattern" の前提】: `TestRequestPhaseidWithInjectedProvider` と同じ合成パターン —
+    # 平坦なダミー配列だと残差 S/N が閾値に届かず provider.fetch まで到達しない (started_evt が
+    # 立たない = ブロックする前にジョブが即完了する)。
+    tt, obs = _synthetic_pattern([20.0, 35.0, 52.0])
+    session._fit["plot"] = {"h0": {"x": tt.tolist(), "yobs": obs.tolist(), "residual": None}}
+
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    class _BlockingProvider:
+        def fetch(self, elements):
+            started_evt.set()
+            release_evt.wait(timeout=5)
+            return []
+
+    result = session.request_phaseid(mode="pattern", _provider=_BlockingProvider())
+    assert result == {"status": "started"}
+    assert started_evt.wait(timeout=5)
+    try:
+        status = session.refine_status()
+        assert status["status"] == "running"
+        assert status["kind"] == "phaseid"
+    finally:
+        release_evt.set()
+        session._job.join(timeout=5)
+
+    assert session.refine_status()["kind"] == "phaseid"  # 完了後も直近種別を保持
+
+
+def test_multistart_running_reports_kind_multistart_in_shared_job_status(tmp_path, monkeypatch):
+    """セルフレビュー指摘 #1: multistart 実行中は共有ジョブ status の kind が "multistart" になる。"""
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "hist.xy"),
+        instrument_path=str(tmp_path / "hist.instprm"),
+        radiation=Radiation.XRAY_LAB,
+        geometry=Geometry.BRAGG_BRENTANO,
+        data_format="XY",
+    )
+    phase = PhaseSpec(structure_path=str(tmp_path / "phase.cif"), phase_name="phaseA")
+    project = WorkbenchProject(name="ms-kind", histograms=(hist,), phases=(phase,))
+    session = WorkbenchSession.from_project(project)
+
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def blocking_run_multistart_rietveld(*args, **kwargs):
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        raise RuntimeError("unused")
+
+    import tsumugin.autorietveld.multistart as multistart_module
+
+    monkeypatch.setattr(
+        multistart_module, "run_multistart_rietveld", blocking_run_multistart_rietveld
+    )
+
+    result = session.request_multistart()
+    assert result == {"status": "started"}
+    assert started_evt.wait(timeout=5)
+    try:
+        status = session.refine_status()
+        assert status["status"] == "running"
+        assert status["kind"] == "multistart"
+    finally:
+        release_evt.set()
+        session._job.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------

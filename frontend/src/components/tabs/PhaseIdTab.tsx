@@ -8,6 +8,7 @@ import {
 } from "../../api/client";
 import { formatNumber } from "../../api/format";
 import type { PhaseIdCandidate, PhaseIdMode, RefineStatus } from "../../api/types";
+import { resolveJobConflict } from "../../hooks/useJobConflict";
 import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
@@ -111,8 +112,18 @@ export function PhaseIdTab() {
       .catch((err: unknown) => {
         if (err instanceof ApiError && err.status === 409) {
           // Non-fatal (api-contract.md: shared job slot) — surface it inline
-          // rather than as a fatal store error; nothing here changed.
+          // rather than as a fatal store error. Also sync activeJob from the
+          // real owner's `kind` (セルフレビュー指摘 #1 (c), same helper as
+          // OperatorConsole/HypothesesTab) so whichever tab actually owns the
+          // running job keeps polling it — previously this branch left
+          // activeJob untouched, so a job that turned out to BE "phaseid"
+          // (e.g. started elsewhere, or a stale click racing another start)
+          // was never picked back up here.
           setIdentifyError(tl("pid.local.identifyBusy"));
+          // best-effort: this status fetch failing is not itself fatal here —
+          // the inline "busy" message above already told the user why their
+          // click did nothing.
+          void resolveJobConflict(dispatch).catch(() => {});
           return;
         }
         const message = err instanceof ApiError ? err.message : String(err);

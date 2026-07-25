@@ -19,7 +19,7 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
   "final_selection_mode": "human",     // "human" | "agent" (FR-402, エンジン語彙)
   "source": "none",                    // "none" | "demo" | "project"
                                        //   none = プロジェクト未読込 (フロントは Welcome 画面)
-  "refine": { "status": "idle" },      // /api/refine/status と同形 (シェルバッジ用)
+  "refine": { "status": "idle", "kind": null }, // /api/refine/status と同形 (シェルバッジ用)
   "project_path": null,                // project モード時は project.json の絶対パス
   "ledger": { "count": 1281, "verified": true },
   "status": { "backend_build": "tsumugin 0.3.0", "seed": 0, "mcp_tools": 36 },
@@ -176,7 +176,7 @@ refine 実行中のプロジェクト変更系は 409。
 | POST `/api/approval/{action_id}` `{"decision": "approve"\|"reject"}` | `{"state": ..., "snapshot_id": str\|null, "ledger_index": int}` | 両経路 ledger、approve のみ snapshot |
 | POST `/api/stages/{nn}` `{"action": "release"\|"revert"}` | `{"stage": {...updated}}` | セッション状態 + ledger |
 | POST `/api/refine` `{"stages_on"?: {"01": bool, ...}}` | 202 `{"status": "started"}` / 409 (実行中) | 実 `run_auto_rietveld` をバックグラウンドスレッドで起動 + ledger (`refine_request`)。`stages_on` (任意) は staged release recipe の ON/OFF — false の段は recipe から**実際にスキップ**され stage 履歴に現れない (A1: UI のゲートを実 run に反映する唯一の経路)。省略 = 全段既定。不明キーは 422。demo モード (project 未接続) は従来どおり 202 `{"status": "recorded"}` + ledger のみ |
-| GET `/api/refine/status` | `{"status": "idle"\|"running"\|"done"\|"failed", "elapsed_s": float\|null, "last_event": str\|null, "error": str\|null}` | — (ポーリング用。完了時はフロントが state/viewmodel を再フェッチ) |
+| GET `/api/refine/status` | `{"status": "idle"\|"running"\|"done"\|"failed", "elapsed_s": float\|null, "last_event": str\|null, "error": str\|null, "kind": "refine"\|"phaseid"\|"multistart"\|null}` | — (ポーリング用。完了時はフロントが state/viewmodel を再フェッチ)。`kind` はセルフレビュー指摘 #1: 共有ジョブ枠 (refine/phaseid/multistart) のうち今 (または最後に) 動いているのがどれかを示す — `/api/phaseid/status`・`/api/multistart/status` も同形で `kind` を返す (共通実装)。一度も起動していない `idle` のときのみ `null` |
 | POST `/api/transcript/message` `{"text": str}` | `{"message": {...}}` | transcript 追記 |
 | GET `/api/ledger` | `{"entries": [{"index", "time", "actor", "text", "hash", "revert_to"}], "verified": true}` | — |
 | GET `/api/review-queue` | `{"items": [...]}` | — |

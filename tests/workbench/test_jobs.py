@@ -8,6 +8,7 @@ plot/phases が契約形へ更新されること・失敗時 ledger + status=fai
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 
 import pytest
@@ -80,7 +81,38 @@ def _fake_result(*, gpx_path: str = "") -> AutoRietveldResult:
 
 def test_idle_status_before_start():
     job = RefinementJobManager()
-    assert job.status() == {"status": "idle", "elapsed_s": None, "last_event": None, "error": None}
+    assert job.status() == {
+        "status": "idle", "elapsed_s": None, "last_event": None, "error": None, "kind": None,
+    }
+
+
+def test_status_reports_kind_while_running_and_after_done():
+    # 【セルフレビュー指摘 #1】: 共有ジョブ枠は refine/phaseid/multistart で使い回すため、
+    #   status() の "kind" が起動時に渡した種別を反映し、完了後も直近の種別を保持すること。
+    job = RefinementJobManager()
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def runner() -> str:
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        return "ok"
+
+    job.start(runner, on_success=lambda r: None, on_failure=lambda e: None, kind="phaseid")
+    assert started_evt.wait(timeout=5)
+    assert job.status()["kind"] == "phaseid"
+
+    release_evt.set()
+    job.join(timeout=5)
+    assert job.status()["status"] == "done"
+    assert job.status()["kind"] == "phaseid"
+
+
+def test_start_defaults_kind_to_refine_for_backward_compatible_callers():
+    job = RefinementJobManager()
+    job.start(lambda: "ok", on_success=lambda r: None, on_failure=lambda e: None)
+    job.join(timeout=5)
+    assert job.status()["kind"] == "refine"
 
 
 def test_start_success_transitions_to_done_and_calls_on_success():
@@ -339,12 +371,63 @@ def test_on_refine_success_updates_session_in_contract_shape(tmp_path, monkeypat
     site_row = next(s for s in vm["structure"]["sites"] if s["label"] == "O1")
     assert site_row["el"] == "O"
     assert "phase" not in site_row
-    assert session._site_phase_map["O1"] == "phaseA"
+    # セルフレビュー指摘 #3: _site_phase_map は label でなく site の一意 id をキーにする
+    # (多相で label が衝突しうるため)。
+    assert session._site_phase_map["s1"] == "phaseA"
 
     assert len(session.snapshots.snapshots) == before_snaps + 1
     # 副作用は SnapshotStore.save (snapshot_save) + 明示 "refine_finished" の 2 エントリ
     assert len(session.ledger.entries) == before_ledger + 2
     assert session.ledger.entries[-1].kind == "refine_finished"
+
+
+def test_on_refine_success_and_apply_structure_route_colliding_labels_by_id(tmp_path, monkeypatch):
+    """セルフレビュー指摘 #3 (end-to-end): 2 相が同じ label ("O1") を持つ raw_sites を
+    `atoms.extract_sites` から注入し、`_on_refine_success` が構築する `_site_phase_map` が
+    site の一意 id をキーにすること、その後の `apply_structure` の occ 編集が id 経由で
+    正しい相の `_pending_occupancies` へ配信されることを検証する (label キーだと衝突した
+    片方の相の revision が消える回帰の恒久ガード)。
+    """
+    project = _fake_project(tmp_path)
+    project = dataclasses.replace(
+        project,
+        phases=project.phases + (PhaseSpec(structure_path=str(tmp_path / "phaseB.cif"), phase_name="phaseB"),),
+    )
+    session = WorkbenchSession.from_project(project)
+    monkeypatch.setattr(curves, "extract_curves", lambda gpx, **kw: {})
+    fake_sites = [
+        {
+            "id": "s1", "label": "O1", "el": "O", "x": "0.1000", "y": "0.2000", "z": "0.3000",
+            "occ": "1.0000", "uiso": "0.0100", "note": "", "lock": {"x": False, "y": False, "z": False},
+            "rel": {"x": False, "y": False, "z": False, "occ": False, "uiso": False},
+            "phase": "phaseA",
+        },
+        {
+            "id": "s7", "label": "O1", "el": "O", "x": "0.5000", "y": "0.5000", "z": "0.5000",
+            "occ": "1.0000", "uiso": "0.0100", "note": "", "lock": {"x": False, "y": False, "z": False},
+            "rel": {"x": False, "y": False, "z": False, "occ": False, "uiso": False},
+            "phase": "phaseB",
+        },
+    ]
+    monkeypatch.setattr(atoms, "extract_sites", lambda gpx, **kw: fake_sites)
+    result = _fake_result(gpx_path=str(tmp_path / "refined.gpx"))
+
+    session._on_refine_success(result)
+
+    assert session._site_phase_map == {"s1": "phaseA", "s7": "phaseB"}
+
+    apply_result = session.apply_structure(
+        [
+            {"id": "s1", "label": "O1", "occ": "0.40"},
+            {"id": "s7", "label": "O1", "occ": "0.80"},
+        ]
+    )
+
+    assert "error" not in apply_result
+    assert session._pending_occupancies == {
+        "phaseA": {"O1": 0.40},
+        "phaseB": {"O1": 0.80},
+    }
 
 
 def test_on_refine_success_updates_profile_card_from_hist_profile(tmp_path):
