@@ -76,14 +76,18 @@ def open_project(path: "str | Path") -> WorkbenchProject:
     ``path`` がディレクトリなら ``<path>/project.json`` を補って読む。ヒストグラム/相 0 件の
     (作成直後・未設定の) プロジェクトも許容する (``allow_empty=True``)。
 
-    :raises ValueError: spec ファイルが存在しない、または不正な spec のとき
-        (呼び出し側 [`app.py`] が 404/422 へ縮退する)。
+    型でエラー種別を区別する (呼び出し側 [`app.py`] のマッピング, セルフレビュー指摘 #3):
+
+    :raises FileNotFoundError: ``path`` (または ``<path>/project.json``) 自体が存在しないとき
+        (呼び出し側は 404 NotFoundError へ縮退する)。
+    :raises ValueError: spec の内容が不正 (JSON 壊れ/必須キー欠落/不正 enum/参照データファイル欠落
+        等) のとき (呼び出し側は 422 ValueError へ縮退する)。
     """
     p = Path(path)
     if p.is_dir():
         p = p / PROJECT_JSON_NAME
     if not p.exists():
-        raise ValueError(f"プロジェクトが見つかりません: {p}")
+        raise FileNotFoundError(f"プロジェクトが見つかりません: {p}")
     project = load_project_spec(p, allow_empty=True)
     add_recent(project.name, str(p.resolve().parent))
     return project

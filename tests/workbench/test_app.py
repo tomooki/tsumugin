@@ -8,6 +8,7 @@ read-only 保証 (webui) と対称に、ワークベンチは「削除系ルー�
 from __future__ import annotations
 
 import io
+import json
 import sys
 import threading
 from pathlib import Path
@@ -18,6 +19,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("fastapi.testclient")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import tsumugin.workbench.app as workbench_app_module  # noqa: E402
 import tsumugin.workbench.session as workbench_session_module  # noqa: E402
 from tsumugin.autorietveld.model import (  # noqa: E402
     AutoRietveldResult,
@@ -651,6 +653,61 @@ def test_project_open_missing_path_returns_404(client: TestClient, tmp_path: Pat
     assert resp.json()["error_type"] == "NotFoundError"
 
 
+def test_project_open_malformed_json_returns_422_not_404(
+    client: TestClient, tmp_path: Path, fake_home: Path
+):
+    """セルフレビュー指摘 #3: パスは実在するが spec の内容が不正 (JSON 壊れ) なときは 422。
+
+    修正前は ``post_project_open`` が ValueError を一律 404 NotFoundError に丸めていたため、
+    「パスが見つからない」と「spec が壊れている」の区別が付かなかった。
+    """
+    directory = tmp_path / "projects" / "proj1"
+    directory.mkdir(parents=True)
+    (directory / "project.json").write_text("{not valid json", encoding="utf-8")
+
+    resp = client.post("/api/project/open", json={"path": str(directory)})
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_type"] == "ValueError"
+
+
+def test_project_open_missing_referenced_data_file_returns_4xx_not_500(
+    client: TestClient, tmp_path: Path, fake_home: Path
+):
+    """セルフレビュー指摘 #1: project.json が参照する XRDML データファイルが実在しないとき、
+
+    生の 500 (OSError 貫通) ではなく既知の 4xx error dict になることを確認する
+    (`load_project_spec` が OSError を「どのファイルが読めないか」を含む ValueError へ正規化 →
+    `post_project_open` が 422 へ縮退)。
+    """
+    directory = tmp_path / "projects" / "proj1"
+    directory.mkdir(parents=True)
+    (directory / "data").mkdir()
+    spec = {
+        "name": "proj1",
+        "histograms": [
+            {
+                "data_path": "data/missing.xrdml",
+                "instrument_path": "data/missing.instprm",
+                "radiation": "xray_lab",
+                "geometry": "bragg_brentano",
+                "data_format": "XRDML",
+            }
+        ],
+        "phases": [{"structure_path": "data/p.cif", "phase_name": "phaseA"}],
+    }
+    (directory / "project.json").write_text(json.dumps(spec), encoding="utf-8")
+
+    resp = client.post("/api/project/open", json={"path": str(directory)})
+
+    assert resp.status_code != 500
+    assert 400 <= resp.status_code < 500
+    body = resp.json()
+    assert "error" in body and "error_type" in body
+    assert "missing.xrdml" in body["error"]
+
+
 def test_project_recent_lists_after_create(client: TestClient, tmp_path: Path, fake_home: Path):
     directory = tmp_path / "projects"
     directory.mkdir()
@@ -848,6 +905,72 @@ def test_project_lifecycle_routes_return_409_while_refine_running(
             assert resp.json()["error_type"] == "ConflictError"
     finally:
         release_evt.set()
+
+
+# ---------------------------------------------------------------------------
+# open/create⇄refine TOCTOU レース (セルフレビュー指摘 #2, NFR-105)
+# ---------------------------------------------------------------------------
+
+
+def test_project_create_and_refine_are_serialized_by_the_same_lock(
+    client: TestClient, tmp_path: Path, fake_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """POST /api/project (create) の「ガード再確認 + I/O + swap」と POST /api/refine の起動が
+
+    ``_SessionHolder.lock`` で直列化されることを実証する。``lifecycle.create_project`` を
+    threading.Event で遅延させ、その最中に別スレッドから refine を起動しても、create 側の
+    ロック保持が終わるまで refine 側が完了しないことを確認する。
+
+    ロックを外す変異 (`_guarded_swap` から ``with holder.lock:`` を外す、または
+    ``post_refine`` から ``with holder.lock:`` を外す) で本テストが fail することを実証済み
+    (レポート参照)。
+    """
+    directory = tmp_path / "projects"
+    directory.mkdir()
+
+    entered_evt = threading.Event()
+    release_evt = threading.Event()
+    refine_done_evt = threading.Event()
+
+    real_create_project = workbench_app_module.lifecycle.create_project
+
+    def slow_create_project(name: str, dir_arg: str):
+        entered_evt.set()
+        release_evt.wait(timeout=5)
+        return real_create_project(name, dir_arg)
+
+    monkeypatch.setattr(workbench_app_module.lifecycle, "create_project", slow_create_project)
+
+    create_result: list = []
+
+    def _do_create() -> None:
+        create_result.append(
+            client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+        )
+
+    create_thread = threading.Thread(target=_do_create)
+    create_thread.start()
+    assert entered_evt.wait(timeout=5), "create_project が呼ばれなかった"
+
+    def _do_refine() -> None:
+        client.post("/api/refine", json={})
+        refine_done_evt.set()
+
+    refine_thread = threading.Thread(target=_do_refine)
+    refine_thread.start()
+
+    # 【直列化の核心】: create_project が holder.lock を保持したままブロックしている間、
+    #   refine の起動 (post_refine の holder.lock 取得) は完了できないはず。
+    assert not refine_done_evt.wait(timeout=0.5), (
+        "refine がロック保持中に完了した = create/open⇄refine が直列化されていない (TOCTOU 再発)"
+    )
+
+    release_evt.set()
+    create_thread.join(timeout=5)
+    assert refine_done_evt.wait(timeout=5), "create_project 完了後も refine が完了しなかった"
+
+    assert create_result[0].status_code == 200
+    assert create_result[0].json()["source"] == "project"
 
 
 # ---------------------------------------------------------------------------

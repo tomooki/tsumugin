@@ -131,7 +131,17 @@ def load_project_spec(path: "str | Path", *, allow_empty: bool = False) -> Workb
                 data_path=_abspath(spec_dir, hspec.data_path),
                 instrument_path=_abspath(spec_dir, hspec.instrument_path),
             )
-            hspec = _convert_xrdml_if_needed(hspec, spec_dir, i)
+            try:
+                hspec = _convert_xrdml_if_needed(hspec, spec_dir, i)
+            except OSError as os_exc:
+                # 【OSError の 500 貫通防止】: 参照先データファイル欠落 (FileNotFoundError 等) を
+                #   「どのファイルが読めないか」を含む ValueError へ正規化する。外側の except は
+                #   これを再度 "不正なプロジェクト spec です" で包むので二重ラップになるが、
+                #   元メッセージ (ファイルパス) は保持される。呼び出し側 (`app.py`) は ValueError を
+                #   422 へ縮退させる (生の 500 にしない)。
+                raise ValueError(
+                    f"ヒストグラム {i} のデータファイルを読み込めません: {hspec.data_path} ({os_exc})"
+                ) from os_exc
             histograms.append(hspec)
 
         phases: list[PhaseSpec] = []

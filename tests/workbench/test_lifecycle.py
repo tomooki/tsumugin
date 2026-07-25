@@ -81,9 +81,21 @@ def test_open_project_from_directory_and_from_file(tmp_path: Path):
     assert from_file.name == "myproj"
 
 
-def test_open_project_missing_raises_value_error(tmp_path: Path):
-    with pytest.raises(ValueError):
+def test_open_project_missing_raises_file_not_found_error(tmp_path: Path):
+    # 【型でエラー種別を区別 (セルフレビュー指摘 #3)】: パス不存在は FileNotFoundError
+    #   (呼び出し側 [`app.py`] が 404 NotFoundError へ縮退する)。ValueError (422) は spec の
+    #   内容が不正なときに限る (`test_open_project_bad_spec_raises_value_error` 参照)。
+    with pytest.raises(FileNotFoundError):
         lifecycle.open_project(tmp_path / "does-not-exist")
+
+
+def test_open_project_bad_spec_raises_value_error(tmp_path: Path):
+    # 【型でエラー種別を区別 (セルフレビュー指摘 #3)】: パスは存在するが spec の内容が不正
+    #   (JSON 壊れ) なときは ValueError (呼び出し側は 422)。
+    (tmp_path / "project.json").write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        lifecycle.open_project(tmp_path)
 
 
 def test_open_project_reads_added_histograms_and_phases(tmp_path: Path):

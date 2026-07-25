@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..errors import LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
 from . import lifecycle
@@ -49,15 +49,18 @@ class _SessionHolder:
     project の create/open/close/demo が ``.session`` を新しい ``WorkbenchSession`` へ差し替える。
     既存の全ルートハンドラはこのホルダ経由で最新セッションを読む (`create_workbench_app` の
     シグネチャ自体は互換維持 — 渡された ``session`` が初期値になる)。
+
+    ``lock`` は project ライフサイクルルート (create/open/close/demo, セッション差し替え) の
+    「ガード再確認 + I/O + swap」と、POST /api/refine の起動 (``request_refine`` 呼び出し) を
+    **同一ロックで直列化**する (セルフレビュー指摘 #2, TOCTOU レース修正)。両者ともこのロックを
+    保持している間は互いを待つため、「refine 実行中でないことを確認した直後にセッションが
+    差し替わり、旧セッションの ledger へ独立した書き込み経路が生まれる」隙間が無くなる
+    (`_guarded_swap`/`post_refine` 参照)。
     """
 
     def __init__(self, session: WorkbenchSession) -> None:
         self.session = session
-        self._swap_lock = threading.Lock()
-
-    def swap(self, new_session: WorkbenchSession) -> None:
-        with self._swap_lock:
-            self.session = new_session
+        self.lock = threading.Lock()
 
 
 def _require_fastapi() -> Any:
@@ -138,15 +141,35 @@ def create_workbench_app(
         )
 
     def _guard_not_refining() -> "JSONResponse | None":
-        """project の create/open/close/demo (セッション差し替え) 共通ガード:
+        """project の spec 変更系ルート (upload/histograms/phases/settings) 共通ガード:
 
         現在のセッションで refine が実行中なら 409 (api-contract.md §プロジェクトライフサイクル
-        「refine 実行中のプロジェクト変更系は 409」)。バックグラウンドスレッドを孤立させたまま
-        セッションを差し替えないための安全弁。
+        「refine 実行中のプロジェクト変更系は 409」)。これらのルートはセッションを差し替えない
+        (`_guarded_swap` 対象外) ため、`holder.lock` を取らない従来どおりの素通しチェックでよい —
+        二重の防御として `WorkbenchSession._guard_project_editable` も同じ状態を確認する。
         """
         if holder.session.refine_status()["status"] == "running":
             return JSONResponse(status_code=409, content=dict(_REFINING_CONFLICT))
         return None
+
+    def _guarded_swap(build_new_session: "Callable[[], WorkbenchSession]") -> Any:
+        """project ライフサイクルルート (create/open/close/demo) 共通の直列化ヘルパ。
+
+        「refine 実行中でないことの再確認」→「新セッション構築 (I/O)」→「swap」を
+        ``holder.lock`` 保持下で一括して行う。POST /api/refine (``post_refine``) も同じロックを
+        取るため、この関数の実行中は refine の起動が待たされ (逆もまた然り)、guard 確認から
+        swap までの間隙に別スレッドが旧セッションで refine を起動する TOCTOU が起きない
+        (セルフレビュー指摘 #2)。
+
+        ``build_new_session`` が送出する例外はロック解放後にそのまま呼び出し元 (route ハンドラ) へ
+        伝播する — ``with`` 文がロック解放を保証するため、呼び出し元は例外の型ごとに 4xx へ
+        変換すればよい。
+        """
+        with holder.lock:
+            if holder.session.refine_status()["status"] == "running":
+                return JSONResponse(status_code=409, content=dict(_REFINING_CONFLICT))
+            holder.session = build_new_session()
+            return holder.session.state()
 
     # ------------------------------------------------------------------
     # GET /api/state, POST /api/mode
@@ -184,11 +207,12 @@ def create_workbench_app(
             return _invalid("name", name)
         if not isinstance(directory, str) or not directory.strip():
             return _invalid("directory", directory)
-        guard = _guard_not_refining()
-        if guard is not None:
-            return guard
+
+        def _build() -> WorkbenchSession:
+            return WorkbenchSession.open_persistent(lifecycle.create_project(name, directory))
+
         try:
-            project = lifecycle.create_project(name, directory)
+            return _guarded_swap(_build)
         except ValueError as exc:
             return JSONResponse(
                 status_code=409, content={"error": str(exc), "error_type": "ConflictError"}
@@ -197,25 +221,25 @@ def create_workbench_app(
             return JSONResponse(
                 status_code=422, content={"error": str(exc), "error_type": "ValueError"}
             )
-        holder.swap(WorkbenchSession.open_persistent(project))
-        return holder.session.state()
 
     @app.post("/api/project/open")
     def post_project_open(body: dict[str, Any] = Body(...)) -> Any:
         path = body.get("path")
         if not isinstance(path, str) or not path.strip():
             return _invalid("path", path)
-        guard = _guard_not_refining()
-        if guard is not None:
-            return guard
-        try:
+
+        def _build() -> WorkbenchSession:
             project = lifecycle.open_project(path)
-        except ValueError as exc:
+            return WorkbenchSession.open_persistent(project)
+
+        try:
+            return _guarded_swap(_build)
+        except FileNotFoundError as exc:
+            # 【パス不存在 (セルフレビュー指摘 #3)】: `lifecycle.open_project` がプロジェクト
+            #   ディレクトリ/project.json 自体の不在を型で示す (ValueError と区別)。
             return JSONResponse(
                 status_code=404, content={"error": str(exc), "error_type": "NotFoundError"}
             )
-        try:
-            new_session = WorkbenchSession.open_persistent(project)
         except LedgerIntegrityError as exc:
             return JSONResponse(
                 status_code=422,
@@ -226,24 +250,21 @@ def create_workbench_app(
                 status_code=422,
                 content={"error": str(exc), "error_type": "SnapshotIntegrityError"},
             )
-        holder.swap(new_session)
-        return holder.session.state()
+        except ValueError as exc:
+            # 【spec 不正 (セルフレビュー指摘 #3)】: JSON 壊れ/必須キー欠落/不正 enum/参照データ
+            #   ファイル欠落 (`load_project_spec` が OSError から正規化, セルフレビュー指摘 #1) 等。
+            #   パスは見つかっている (found) が内容が不正、という意味で 404 でなく 422。
+            return JSONResponse(
+                status_code=422, content={"error": str(exc), "error_type": "ValueError"}
+            )
 
     @app.post("/api/project/close")
     def post_project_close() -> Any:
-        guard = _guard_not_refining()
-        if guard is not None:
-            return guard
-        holder.swap(WorkbenchSession.create_empty())
-        return holder.session.state()
+        return _guarded_swap(lambda: WorkbenchSession.create_empty())
 
     @app.post("/api/project/demo")
     def post_project_demo() -> Any:
-        guard = _guard_not_refining()
-        if guard is not None:
-            return guard
-        holder.swap(WorkbenchSession.create_demo())
-        return holder.session.state()
+        return _guarded_swap(lambda: WorkbenchSession.create_demo())
 
     @app.get("/api/project/recent")
     def get_project_recent() -> dict[str, Any]:
@@ -412,7 +433,13 @@ def create_workbench_app(
 
     @app.post("/api/refine")
     def post_refine() -> Any:
-        result = holder.session.request_refine()
+        # 【holder.lock で直列化 (セルフレビュー指摘 #2)】: `_guarded_swap` (project
+        #   create/open/close/demo) と同一ロックを取ることで、「refine 起動」と「セッション
+        #   差し替え」が互いを待つ。ロック自体は起動判定のみを覆う (`request_refine` は project
+        #   モードでもバックグラウンドスレッドを起動するだけで即座に返る — 精密化本体の実行中は
+        #   ロックを保持しない)。
+        with holder.lock:
+            result = holder.session.request_refine()
         return _to_response(result, success_status=202)
 
     @app.get("/api/refine/status")
