@@ -27,7 +27,7 @@ export function isStageGateOpen(gate: StageGate, hist: HistId, state: WorkbenchS
   return Object.entries(state.paramRel).some(([key, released]) => released && key.startsWith(prefix));
 }
 
-const SEVERITY_CHIP_VARIANT: Record<ReviewSeverity, ChipVariant> = {
+const SEVERITY_CHIP_VARIANT: Partial<Record<string, ChipVariant>> = {
   close: "inverted",
   unknown: "inverted",
   guard: "neutral",
@@ -37,20 +37,26 @@ const SEVERITY_CHIP_VARIANT: Record<ReviewSeverity, ChipVariant> = {
 /** Industry's warning states carry no extra hue: close/unknown competitors
  * read as the inverted (neutral-900) attention treatment, guard events as
  * plain neutral, and echem items as the accent/positive treatment — mirrors
- * the handoff prototype's `sevStyle` table. */
-export function reviewSeverityChipVariant(severity: ReviewSeverity): ChipVariant {
-  return SEVERITY_CHIP_VARIANT[severity];
+ * the handoff prototype's `sevStyle` table. Out-of-vocabulary severities
+ * (the contract vocabulary can grow server-side first) degrade to the
+ * neutral chip — the UI must never unmount on data (api-contract.md §語彙). */
+export function reviewSeverityChipVariant(severity: ReviewSeverity | string): ChipVariant {
+  return SEVERITY_CHIP_VARIANT[severity] ?? "neutral";
 }
 
-const SEVERITY_LABEL_KEY: Record<ReviewSeverity, RightStringKey> = {
+const SEVERITY_LABEL_KEY: Partial<Record<string, RightStringKey>> = {
   close: "review.severity.close",
   unknown: "review.severity.unknown",
   guard: "review.severity.guard",
   echem: "review.severity.echem",
 };
 
-export function reviewSeverityLabelKey(severity: ReviewSeverity): RightStringKey {
-  return SEVERITY_LABEL_KEY[severity];
+/** Label key for a known severity; null for an out-of-vocabulary one, in
+ * which case callers render the raw severity code uppercased. */
+export function reviewSeverityLabelKey(
+  severity: ReviewSeverity | string,
+): RightStringKey | null {
+  return SEVERITY_LABEL_KEY[severity] ?? null;
 }
 
 /** "1.24 M" / "18.4 k" / "512" — matches the handoff's `1.24 M tok` chip. */

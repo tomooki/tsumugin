@@ -626,12 +626,12 @@ def seed_review_items() -> list[dict[str, Any]]:
         {
             "reason": "unknown_phase", "hypothesis_id": None, "frame_index": 91,
             "detail": "Two observed peaks remain unindexed by the current phase set.",
-            "severity": "warn", "title": "unindexed peaks", "ref": "2θ 12.42, 17.88",
+            "severity": "unknown", "title": "unindexed peaks", "ref": "2θ 12.42, 17.88",
         },
         {
             "reason": "guard_escalated", "hypothesis_id": None, "frame_index": None,
             "detail": "Stage 07 occupancy release fired the physical-validity guard 3 consecutive times.",
-            "severity": "warn", "title": "guard fired 3×", "ref": "3 consecutive",
+            "severity": "guard", "title": "guard fired 3×", "ref": "3 consecutive",
         },
         {
             "reason": "incomparable_evidence", "hypothesis_id": None, "frame_index": 92,
@@ -639,7 +639,7 @@ def seed_review_items() -> list[dict[str, Any]]:
                 "Coulometric feasibility gate rejected the two-phase solution at fr092 "
                 "(x_XRD outside x_echem ± tolerance)."
             ),
-            "severity": "warn", "title": "coulometric feasibility infeasible", "ref": "fr092",
+            "severity": "echem", "title": "coulometric feasibility infeasible", "ref": "fr092",
         },
     ]
 

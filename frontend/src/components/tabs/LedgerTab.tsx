@@ -55,8 +55,8 @@ export function LedgerTab() {
 
   function actorLabel(actor: Actor): string {
     const meta = ACTOR_META[actor];
-    if (meta.centralKey) return t(meta.centralKey);
-    if (meta.localKey) return tl(meta.localKey);
+    if (meta?.centralKey) return t(meta.centralKey);
+    if (meta?.localKey) return tl(meta.localKey);
     return actor;
   }
 
@@ -75,7 +75,8 @@ export function LedgerTab() {
 
       <div className="ledger-tab__rows">
         {(entries ?? []).map((entry) => {
-          const modifier = ACTOR_META[entry.actor].modifier;
+          // out-of-vocabulary actor → neutral "core" rule colour, never a crash (§語彙)
+          const modifier = ACTOR_META[entry.actor]?.modifier ?? "core";
           return (
             <div key={entry.index} className={`ledger-row ledger-row--${modifier}`}>
               <span className="ledger-row__time">{entry.time}</span>

@@ -36,6 +36,9 @@ function interpolate(template: string, vars?: Record<string, string | number>): 
  * colocated dictionary needs its own lookup. Callers pass `useI18n().lang`
  * directly rather than going through a second context provider. */
 export function rt(lang: Lang, key: RightStringKey, vars?: Record<string, string | number>): string {
-  const pair = RIGHT_STRINGS[key];
+  const pair: StringPair | undefined = RIGHT_STRINGS[key];
+  // Missing key → return the key itself (mirrors central t()'s total-function
+  // contract): a label bug must degrade to visible text, never unmount the UI.
+  if (!pair) return key;
   return interpolate(lang === "ja" ? pair.ja : pair.en, vars);
 }

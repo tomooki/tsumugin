@@ -138,7 +138,11 @@ export function OperatorConsole() {
                 <i className="corner br" />
                 <div className="review-card__head">
                   <Chip variant={reviewSeverityChipVariant(item.severity)}>
-                    {rt(lang, reviewSeverityLabelKey(item.severity))}
+                    {(() => {
+                      const key = reviewSeverityLabelKey(item.severity);
+                      // out-of-vocabulary severity → raw code, uppercased (§語彙)
+                      return key === null ? item.severity.toUpperCase() : rt(lang, key);
+                    })()}
                   </Chip>
                   <span className="review-card__title">{item.title}</span>
                   <span className="review-card__ref">{item.ref}</span>

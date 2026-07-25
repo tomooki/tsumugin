@@ -46,7 +46,7 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "stage_action": "HUMAN",
     "refine_request": "HUMAN",
     "transcript_message": "HUMAN",
-    "approval_decision": "AGENT ③",
+    "approval_decision": "HUMAN",
     "accept_reason": "HUMAN",
 }
 

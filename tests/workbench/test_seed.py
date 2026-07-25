@@ -136,3 +136,32 @@ def test_all_seed_top_level_functions_json_serializable_without_nan():
     }
     text = json.dumps(payload, allow_nan=False)
     assert text
+
+
+class TestEnumVocabulary:
+    """フロントエンド型 (frontend/src/api/types.ts) と共有する enum 語彙の回帰ガード。
+
+    【背景】: 統合スモークで seed の severity="warn" がフロントの語彙
+    (close/unknown/guard/echem) に無く、右ペイン描画がクラッシュした (契約に enum 列挙が
+    無かったことによるドリフト)。契約 api-contract.md §語彙 を正とし、ここで固定する。
+    """
+
+    def test_review_severity_vocabulary(self) -> None:
+        allowed = {"close", "unknown", "guard", "echem"}
+        got = {item["severity"] for item in seed.seed_review_items()}
+        assert got <= allowed, f"severity 語彙逸脱: {got - allowed}"
+
+    def test_stage_gate_vocabulary(self) -> None:
+        allowed = {None, "bkg", "profile", "sample", "occ", "micro"}
+        got = {stage["gate"] for stage in seed.seed_stages()}
+        assert got <= allowed
+
+    def test_transcript_kind_vocabulary(self) -> None:
+        allowed = {"user", "agent", "tool", "judgement", "approval", "escalation"}
+        got = {msg["kind"] for msg in seed.seed_transcript()}
+        assert got <= allowed
+
+    def test_validity_status_vocabulary(self) -> None:
+        allowed = {"pass", "warn", "fail"}
+        got = {row["status"] for row in seed.seed_fit()["validity"]}
+        assert got <= allowed

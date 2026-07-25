@@ -118,3 +118,18 @@
 | GET `/api/hypotheses` | viewmodel.hypotheses と同形 | — |
 
 actor は `"AGENT ③" | "MCP ②" | "CORE ①" | "HUMAN" | "GUARD"` (LEDGER タブの色分けキー)。
+
+## 語彙 (enum) — 両側で固定
+
+契約の enum 語彙は以下に限る。バックエンドは逸脱を出さない (`tests/workbench/test_seed.py::
+TestEnumVocabulary` がガード)。フロントは未知語彙を受けても**クラッシュせず** raw 表示へ
+フォールバックする (将来の語彙追加を UI 全損にしないため)。
+
+| フィールド | 語彙 |
+|---|---|
+| `review[].severity` | `close` \| `unknown` \| `guard` \| `echem` |
+| `stages[].gate` | `null` \| `bkg` \| `profile` \| `sample` \| `occ` \| `micro` |
+| `transcript[].kind` | `user` \| `agent` \| `tool` \| `judgement` \| `approval` \| `escalation` |
+| `fit.validity[].status` | `pass` \| `warn` \| `fail` |
+| `ledger.entries[].actor` | `AGENT ③` \| `MCP ②` \| `CORE ①` \| `HUMAN` \| `GUARD` |
+| `mode` / `final_selection_mode` | `manual`/`auto` ↔ `human`/`agent` (FR-402) |

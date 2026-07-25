@@ -235,3 +235,15 @@ describe("OperatorConsole — review queue", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "SENT BACK" })).toBeInTheDocument());
   });
 });
+
+describe("out-of-vocabulary severity (regression — must not unmount)", () => {
+  it("renders an unknown severity as its raw uppercased code on a neutral chip", () => {
+    renderConsole({
+      viewModel: makeViewModel({
+        review: [reviewItem({ severity: "warn" as never, title: "odd item" })],
+      }),
+    });
+    expect(screen.getByText("WARN")).toBeInTheDocument();
+    expect(screen.getByText("odd item")).toBeInTheDocument();
+  });
+});

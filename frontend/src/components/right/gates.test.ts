@@ -142,3 +142,18 @@ describe("formatBic", () => {
     expect(formatBic(42)).toBe("42");
   });
 });
+
+describe("out-of-vocabulary severity fallback (api-contract.md §語彙)", () => {
+  // Regression: the demo backend once sent severity="warn" (not in the
+  // close/unknown/guard/echem vocabulary) and the whole app unmounted.
+  // The selectors must be total functions over arbitrary strings.
+  it("falls back to the neutral chip variant", () => {
+    expect(reviewSeverityChipVariant("warn")).toBe("neutral");
+    expect(reviewSeverityChipVariant("")).toBe("neutral");
+  });
+
+  it("returns null for the label key so callers render the raw code", () => {
+    expect(reviewSeverityLabelKey("warn")).toBeNull();
+    expect(reviewSeverityLabelKey("anything-else")).toBeNull();
+  });
+});
