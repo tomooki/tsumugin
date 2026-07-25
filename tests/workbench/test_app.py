@@ -1053,6 +1053,27 @@ def test_refine_route_stages_on_passes_through_to_session(
     assert captured["stages_on"] == {"01": False, "02": True}
 
 
+# --- Tier1 sidecar (C1): GSAS 不在時の 422 縮退 (HTTP 境界) --------------
+
+
+def test_refine_route_returns_422_when_gsas_unavailable(
+    project_client: TestClient, monkeypatch
+):
+    monkeypatch.setattr(workbench_session_module, "gsasii_available", lambda: False)
+    resp = project_client.post("/api/refine", json={})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "GSASUnavailableError"
+
+
+def test_get_state_route_reflects_gsas_available_false(
+    project_client: TestClient, monkeypatch
+):
+    monkeypatch.setattr(workbench_session_module, "gsasii_available", lambda: False)
+    resp = project_client.get("/api/state")
+    assert resp.status_code == 200
+    assert resp.json()["status"]["gsas_available"] is False
+
+
 # --- A4: 相同定ジョブ ------------------------------------------------------
 
 

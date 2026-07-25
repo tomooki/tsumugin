@@ -30,6 +30,9 @@ export function StatusBar() {
           })}
         </span>
         <span>{t("status.mcp", { n: status?.mcp_tools ?? "…" })}</span>
+        {status?.gsas_available === false && (
+          <Chip variant="inverted">{st(lang, "status.gsasUnavailable")}</Chip>
+        )}
         {refining && <Chip variant="accent">{st(lang, "refine.running")}</Chip>}
       </div>
       <span className={`status-bar__sentence${manual ? "" : " status-bar__sentence--auto"}`}>

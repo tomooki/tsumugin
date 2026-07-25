@@ -76,6 +76,10 @@ dev = [
     # 突然大量 flag される (2026-07-23 に 0.16.0 の新既定規則で 586 件)。ゲートは
     # `uv run ruff check src tests` に固定し、更新は本ピンの引き上げで意図的に行う。
     "ruff==0.14.0",
+    # V2c C1: desktop sidecar (Tauri externalBin/resources) を PyInstaller で固めるための
+    # ビルド専用依存。実行時 (アプリ配布物) には含まれない — `desktop/sidecar/build_sidecar.ps1`
+    # からのみ使う。
+    "pyinstaller>=6.10",
 ]
 
 [build-system]

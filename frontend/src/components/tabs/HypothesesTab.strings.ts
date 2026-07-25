@@ -28,6 +28,13 @@ export const HYP_LOCAL_STRINGS = {
     en: "failed to fetch multistart status: {message}",
     ja: "マルチスタートの状態取得に失敗: {message}",
   },
+  // Tooltip for MULTISTART while status.gsas_available is false (V2c レビュー指摘 #4) —
+  // mirrors right.strings.ts's "recipe.gsasUnavailable" (RUN REFINEMENT) and
+  // SequenceTab.strings.ts's "seq.run.gsasUnavailable" (RUN SEQUENTIAL).
+  "hyp.local.gsasUnavailable": {
+    en: "GSAS-II is not available in this backend — multistart cannot run",
+    ja: "このバックエンドでは GSAS-II が利用できません — マルチスタートは実行できません",
+  },
 } as const satisfies Record<string, StringPair>;
 
 export type HypLocalKey = keyof typeof HYP_LOCAL_STRINGS;

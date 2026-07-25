@@ -493,7 +493,7 @@ function installRefinePollFetchMock(opts: {
         mode: "manual",
         final_selection_mode: "human",
         ledger: { count: 1, verified: true },
-        status: { backend_build: "b", seed: 0, mcp_tools: 36 },
+        status: { backend_build: "b", seed: 0, mcp_tools: 36, gsas_available: true },
         agent: { tokens: 0, wall_time_s: 0, idle: true },
       });
     }
@@ -657,5 +657,62 @@ describe("OperatorConsole — RUN REFINEMENT polling flow", () => {
 
     await advanceTimers(4000);
     expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/refine/status"))).toBe(false);
+  });
+});
+
+// — V2c レビュー指摘 #4: GSAS-II 不在時の RUN REFINEMENT 無効化 —
+// Tier1 desktop sidecar excludes GSAS-II (desktop/README.md), and this job would otherwise 422
+// server-side with GSASUnavailableError. status.shell.status.gsas_available (api/types.ts
+// BackendStatus) is dynamic per GET /api/state; OperatorConsole reads it straight off
+// state.shell rather than a poll/fetch of its own.
+describe("OperatorConsole — RUN REFINEMENT disabled while GSAS-II is unavailable", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function shellWithGsas(gsasAvailable: boolean): WorkbenchState["shell"] {
+    return {
+      project: { name: "p", dataset: "d", frame: "f", echem: null },
+      mode: "manual",
+      final_selection_mode: "human",
+      ledger: { count: 0, verified: true },
+      status: { backend_build: "b", seed: 0, mcp_tools: 0, gsas_available: gsasAvailable },
+      agent: { tokens: 0, wall_time_s: 0, idle: true },
+    };
+  }
+
+  it("disables the button and sets an explanatory title when gsas_available is false", () => {
+    renderConsole({ viewModel: makeViewModel(), shell: shellWithGsas(false) });
+
+    const btn = screen.getByRole("button", { name: "RUN REFINEMENT" });
+    expect(btn).toBeDisabled();
+    expect(btn.getAttribute("title")).toBe(
+      "GSAS-II is not available in this backend — refinement jobs cannot run",
+    );
+  });
+
+  it("keeps the button enabled (no title) when gsas_available is true", () => {
+    renderConsole({ viewModel: makeViewModel(), shell: shellWithGsas(true) });
+
+    const btn = screen.getByRole("button", { name: "RUN REFINEMENT" });
+    expect(btn).not.toBeDisabled();
+    expect(btn.getAttribute("title")).toBeNull();
+  });
+
+  it("keeps the button enabled before shell/status has loaded (defaults to available)", () => {
+    renderConsole({ viewModel: makeViewModel(), shell: null });
+
+    const btn = screen.getByRole("button", { name: "RUN REFINEMENT" });
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("does not call postRefine when clicking the disabled button (mutation-verified: changing the disabled expression to drop !gsasAvailable made this fail)", async () => {
+    const fetchMock = installFetchMock();
+    const user = userEvent.setup();
+    renderConsole({ viewModel: makeViewModel(), shell: shellWithGsas(false) });
+
+    await user.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -292,3 +292,64 @@ describe("HypothesesTab — MULTISTART job (A5)", () => {
     expect(screen.getByRole("button", { name: "MULTISTART" })).not.toBeDisabled();
   });
 });
+
+// — V2c レビュー指摘 #4: GSAS-II 不在時の MULTISTART 無効化 —
+// Tier1 desktop sidecar excludes GSAS-II (desktop/README.md); this job would otherwise 422
+// server-side with GSASUnavailableError. status.shell.status.gsas_available (api/types.ts
+// BackendStatus) is dynamic per GET /api/state.
+describe("HypothesesTab — MULTISTART disabled while GSAS-II is unavailable", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function shellWithGsas(gsasAvailable: boolean) {
+    return {
+      project: { name: "p", dataset: "d", frame: "f", echem: null },
+      mode: "manual" as const,
+      final_selection_mode: "human" as const,
+      ledger: { count: 0, verified: true },
+      status: { backend_build: "b", seed: 0, mcp_tools: 0, gsas_available: gsasAvailable },
+      agent: { tokens: 0, wall_time_s: 0, idle: true },
+    };
+  }
+
+  it("disables the button and sets an explanatory title when gsas_available is false", () => {
+    renderTab({ shell: shellWithGsas(false) });
+
+    const btn = screen.getByRole("button", { name: "MULTISTART" });
+    expect(btn).toBeDisabled();
+    expect(btn.getAttribute("title")).toBe(
+      "GSAS-II is not available in this backend — multistart cannot run",
+    );
+  });
+
+  it("keeps the button enabled (no title) when gsas_available is true", () => {
+    renderTab({ shell: shellWithGsas(true) });
+
+    const btn = screen.getByRole("button", { name: "MULTISTART" });
+    expect(btn).not.toBeDisabled();
+    expect(btn.getAttribute("title")).toBeNull();
+  });
+
+  it("keeps the button enabled before shell/status has loaded (defaults to available)", () => {
+    renderTab();
+
+    expect(screen.getByRole("button", { name: "MULTISTART" })).not.toBeDisabled();
+  });
+
+  it("does not call postMultistart when clicking the disabled button", async () => {
+    const fetchMock = installMultistartFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ shell: shellWithGsas(false) });
+
+    await user.click(screen.getByRole("button", { name: "MULTISTART" }));
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([u, init]) => String(u).endsWith("/api/multistart") && (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+});

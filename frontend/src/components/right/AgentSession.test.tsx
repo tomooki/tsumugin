@@ -32,7 +32,7 @@ function makeShell(): ShellState {
     mode: "auto",
     final_selection_mode: "agent",
     ledger: { count: 1, verified: true },
-    status: { backend_build: "x", seed: 0, mcp_tools: 36 },
+    status: { backend_build: "x", seed: 0, mcp_tools: 36, gsas_available: true },
     agent: { tokens: 1_240_000, wall_time_s: 1084, idle: false },
   };
 }

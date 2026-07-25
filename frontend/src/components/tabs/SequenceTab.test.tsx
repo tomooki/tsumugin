@@ -182,7 +182,7 @@ function shellWithEchem(echem: ShellState["project"]["echem"] = null): ShellStat
     mode: "manual",
     final_selection_mode: "human",
     ledger: { count: 0, verified: true },
-    status: { backend_build: "b", seed: 0, mcp_tools: 0 },
+    status: { backend_build: "b", seed: 0, mcp_tools: 0, gsas_available: true },
     agent: { tokens: 0, wall_time_s: 0, idle: true },
     source: "project",
   };
@@ -489,6 +489,76 @@ describe("SequenceTab — real chart series", () => {
     expect(cards[0].querySelector("svg")).toBeNull();
   });
 
+});
+
+// — V2c レビュー指摘 #4: GSAS-II 不在時の RUN SEQUENTIAL 無効化 —
+// Tier1 desktop sidecar excludes GSAS-II (desktop/README.md); this job would otherwise 422
+// server-side with GSASUnavailableError. status.shell.status.gsas_available (api/types.ts
+// BackendStatus) is dynamic per GET /api/state.
+describe("SequenceTab — RUN SEQUENTIAL disabled while GSAS-II is unavailable", () => {
+  function shellWithGsas(gsasAvailable: boolean): ShellState {
+    return {
+      project: { name: "p", dataset: "d", frame: "f", echem: null },
+      mode: "manual",
+      final_selection_mode: "human",
+      ledger: { count: 0, verified: true },
+      status: { backend_build: "b", seed: 0, mcp_tools: 0, gsas_available: gsasAvailable },
+      agent: { tokens: 0, wall_time_s: 0, idle: true },
+      source: "project",
+    };
+  }
+
+  it("disables the button and sets an explanatory title when gsas_available is false", () => {
+    renderTab(<SequenceTab />, {
+      viewModel: withProjectFramesAndPhases(),
+      extra: { shell: shellWithGsas(false) },
+    });
+
+    const btn = screen.getByRole("button", { name: "RUN SEQUENTIAL" });
+    expect(btn).toBeDisabled();
+    expect(btn.getAttribute("title")).toBe(
+      "GSAS-II is not available in this backend — sequential runs cannot start",
+    );
+  });
+
+  it("keeps the button enabled (no title) when gsas_available is true", () => {
+    renderTab(<SequenceTab />, {
+      viewModel: withProjectFramesAndPhases(),
+      extra: { shell: shellWithGsas(true) },
+    });
+
+    const btn = screen.getByRole("button", { name: "RUN SEQUENTIAL" });
+    expect(btn).not.toBeDisabled();
+    expect(btn.getAttribute("title")).toBeNull();
+  });
+
+  it("keeps the button enabled before shell/status has loaded (defaults to available)", () => {
+    renderTab(<SequenceTab />, { viewModel: withProjectFramesAndPhases() });
+
+    expect(screen.getByRole("button", { name: "RUN SEQUENTIAL" })).not.toBeDisabled();
+  });
+
+  it("does not call postSequential when clicking the disabled button", async () => {
+    const fetchMock = installSequentialFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab(<SequenceTab />, {
+      viewModel: withProjectFramesAndPhases(),
+      extra: { shell: shellWithGsas(false) },
+    });
+
+    await user.click(screen.getByRole("button", { name: "RUN SEQUENTIAL" }));
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([u, init]) => String(u).endsWith("/api/sequential") && (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("SequenceTab — real chart series (legend)", () => {
   it("draws a legend when a chart has more than one series", () => {
     const { container } = renderTab(
       <SequenceTab />,

@@ -27,6 +27,12 @@ export interface BackendStatus {
   backend_build: string;
   seed: number;
   mcp_tools: number;
+  // Dynamic (evaluated per GET /api/state, not seed) — whether GSAS-II
+  // (GSASIIscriptable) is importable in this backend process. Tier1 desktop
+  // sidecar bundles core + web extra only; GSAS-II is a local-install
+  // prerequisite (desktop/README.md). When false, refine/multistart/sequential
+  // job requests fail with 422 {"error_type": "GSASUnavailableError"}.
+  gsas_available: boolean;
 }
 
 export interface AgentStatus {

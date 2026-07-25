@@ -55,6 +55,13 @@ export const SEQUENCE_STRINGS = {
     en: "sync ECHEM on the PROJECT tab first",
     ja: "先に PROJECT タブで ECHEM を同期してください",
   },
+  // Tooltip for RUN SEQUENTIAL while status.gsas_available is false (V2c レビュー指摘 #4) —
+  // mirrors right.strings.ts's "recipe.gsasUnavailable" (RUN REFINEMENT) and
+  // HypothesesTab.strings.ts's "hyp.local.gsasUnavailable" (MULTISTART).
+  "seq.run.gsasUnavailable": {
+    en: "GSAS-II is not available in this backend — sequential runs cannot start",
+    ja: "このバックエンドでは GSAS-II が利用できません — 逐次実行は開始できません",
+  },
 
   "seq.anchorTable.heading": { en: "ANCHOR TABLE", ja: "アンカー表" },
   "seq.anchorTable.note": {
