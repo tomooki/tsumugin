@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -621,3 +622,34 @@ def test_guard_mutation_without_running_check_would_not_conflict(
     finally:
         release.set()
         project_session._job.join(timeout=5)
+
+
+class TestAddHistogramXrdmlConversion:
+    """add_histogram も load_project_spec と同じ XRDML→XYE 自己変換を通ること (回帰)。
+
+    【背景】: WorkbenchProject の不変条件は「histograms はそのまま run_auto_rietveld に
+    渡せる (XRDML は変換済み)」だが、実行時 add_histogram が未変換のまま追記し、GUI 通し
+    実証で refine が 'Could not read file' で failed になった。
+    """
+
+    def test_add_histogram_converts_xrdml_to_xye(self, tmp_path) -> None:
+        project = lifecycle.create_project("conv", str(tmp_path))
+        session = WorkbenchSession.open_persistent(project)
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "docs" / "benchmark" / "testdata" / "m9" / "cateo3" / "NB-LM01MO_030.XRDML"
+        )
+        instprm = src.parent / "cateo3_CuKa.instprm"
+        result = session.add_histogram(
+            data_path=str(src),
+            instrument_path=str(instprm),
+            radiation="xray_lab",
+            geometry="bragg_brentano",
+            data_format="XRDML",
+            two_theta_limits=[12.0, 70.0],
+        )
+        assert "error" not in result
+        hist = session.viewmodel()["project"]["histograms"][0]
+        # runner-ready 不変条件: XRDML のままではなく XYE へ自己変換済み
+        assert hist["data_format"] != "XRDML"
+        assert Path(hist["data_path"]).exists()

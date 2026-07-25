@@ -182,3 +182,15 @@ def preview_pattern(spec: HistogramSpec) -> dict[str, Any]:
         "residual": None,
         "ticks": {},
     }
+
+
+def convert_histogram_for_runner(
+    hist: HistogramSpec, spec_dir: Path, index: int
+) -> HistogramSpec:
+    """GSAS-II が直接読めない形式を runner-ready へ変換する公開ヘルパ。
+
+    ``WorkbenchProject.histograms`` の不変条件「そのまま ``run_auto_rietveld`` に渡せる」を
+    ロード時 (``load_project_spec``) と実行時追加 (``WorkbenchSession.add_histogram``) の
+    両方で満たすための単一情報源。現状は XRDML→XYE 自己変換のみ。
+    """
+    return _convert_xrdml_if_needed(hist, spec_dir, index)

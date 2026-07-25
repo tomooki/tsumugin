@@ -34,7 +34,7 @@ from ..store.snapshot import SnapshotStore
 from . import lifecycle
 from . import seed as _seed
 from .jobs import RefinementJobManager, build_default_runner
-from .project import WorkbenchProject, preview_pattern
+from .project import WorkbenchProject, convert_histogram_for_runner, preview_pattern
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import は不要 (numpy 汚染回避と同じ流儀) 🔵
     from ..autorietveld.model import AutoRietveldResult
@@ -835,6 +835,15 @@ class WorkbenchSession:
             bank=bank_val,
         )
         assert self._project is not None
+        # 【runner-ready 不変条件】: WorkbenchProject.histograms は「そのまま
+        # run_auto_rietveld に渡せる」こと。ロード時 (load_project_spec) と同じ変換を
+        # 実行時追加でも通す (未変換 XRDML が refine 失敗を起こした回帰の恒久修正)。
+        try:
+            hist = convert_histogram_for_runner(
+                hist, Path(self._project.spec_dir), len(self._project.histograms)
+            )
+        except (ValueError, OSError) as exc:
+            return {"error": f"could not read data file: {exc}", "error_type": "ValueError"}
         self._project = dataclasses.replace(
             self._project, histograms=self._project.histograms + (hist,)
         )
