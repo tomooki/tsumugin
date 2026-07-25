@@ -92,10 +92,13 @@ components/right/   OperatorConsole (recipe+gating+review) / AgentSession (trans
 
 ## Tauri `desktop/`
 
-- Tauri 2 最小 shell。`frontendDist` = `../frontend/dist`、
-  開発時は `beforeDevCommand` で vite、本番は FastAPI sidecar
-  (`externalBin` に PyInstaller 生成物を登録する構成だけ用意し、v1 は
-  `desktop/sidecar/build_sidecar.md` に梱包手順を文書化)。
+- Tauri 2 最小 shell。**リモート URL 方式**: `devUrl` = `frontendDist` =
+  `http://127.0.0.1:8770` — UI は FastAPI (workbench) が配信するビルド済み
+  `frontend/dist` をそのまま見る (API と同一オリジンになり、sidecar 本番構成と
+  開発構成が一致する)。vite dev server は Tauri 経路では使わない。
+  本番は FastAPI sidecar (`externalBin` に PyInstaller 生成物を登録する構成は
+  v1 ではバイナリ不在でビルドが落ちるため未設定とし、`desktop/README.md` に
+  梱包手順を文書化)。
 - v1 受け入れ = `cargo build` (debug) が通り、dev 構成でウィンドウが UI を表示できる。
 
 ## 決定と根拠 (要点)
