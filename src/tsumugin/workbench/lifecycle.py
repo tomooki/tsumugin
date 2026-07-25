@@ -117,13 +117,23 @@ def save_project_spec(project: WorkbenchProject) -> None:
             d["display"] = dict(display)
         phases.append(d)
 
-    spec = {
+    spec: dict[str, Any] = {
         "name": project.name,
         "background_coeffs": project.background_coeffs,
         "max_cyc": project.max_cyc,
         "histograms": histograms,
         "phases": phases,
     }
+    if project.frames:
+        frames: list[dict[str, Any]] = []
+        for f in project.frames:
+            d = f.to_dict()
+            d["data_path"] = _relpath(spec_dir, f.data_path)
+            frames.append(d)
+        spec["frames"] = frames
+        spec["frame_axis"] = project.frame_axis
+    if project.charge_constraint_config:
+        spec["charge_constraint_config"] = dict(project.charge_constraint_config)
     (spec_dir / PROJECT_JSON_NAME).write_text(
         json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8"
     )

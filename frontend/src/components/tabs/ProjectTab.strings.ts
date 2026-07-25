@@ -78,6 +78,45 @@ export const PROJECT_STRINGS = {
   "project.settings.save": { en: "SAVE SETTINGS", ja: "設定を保存" },
   "project.settings.saving": { en: "SAVING …", ja: "保存中 …" },
 
+  // — FRAMES (V2b B1, api-contract.md §逐次 / operando) —
+  "project.frames.heading": { en: "FRAMES", ja: "フレーム" },
+  "project.frames.note": {
+    en: "sequence / operando frame column — shares histograms[0]'s instrument condition",
+    ja: "逐次/operando のフレーム列 — histograms[0] の装置条件を共有",
+  },
+  "project.frames.empty": { en: "no frames configured", ja: "フレーム未設定" },
+  "project.frames.col.label": { en: "LABEL", ja: "ラベル" },
+  "project.frames.col.axisValue": { en: "AXIS VALUE", ja: "軸値" },
+  "project.frames.col.dataFile": { en: "DATA FILE", ja: "データファイル" },
+  "project.frames.axis.label": { en: "frame axis", ja: "フレーム軸" },
+  "project.frames.axis.index": { en: "index", ja: "インデックス" },
+  "project.frames.axis.time": { en: "time", ja: "時間" },
+  "project.frames.axis.temperature": { en: "temperature", ja: "温度" },
+  "project.frames.add.heading": { en: "ADD FRAMES", ja: "フレームを追加" },
+  "project.frames.add.files": { en: "data files (multiple)", ja: "データファイル (複数選択可)" },
+  "project.frames.add.axisValue": { en: "axis value", ja: "軸値" },
+  "project.frames.add.remove": { en: "remove", ja: "除去" },
+  "project.frames.add.uploading": { en: "uploading …", ja: "アップロード中 …" },
+  "project.frames.add.submit": { en: "SAVE FRAMES", ja: "フレームを保存" },
+  "project.frames.add.saving": { en: "SAVING …", ja: "保存中 …" },
+
+  // — ECHEM (V2b B4, api-contract.md §逐次 / operando) —
+  "project.echem.heading": { en: "ECHEM", ja: "電気化学" },
+  "project.echem.note": {
+    en: "align_echem + alkali_budget — synchronous, results held for this session",
+    ja: "align_echem + alkali_budget — 同期実行、結果はセッションに保持",
+  },
+  "project.echem.mprFile": { en: "MPR file", ja: "MPR ファイル" },
+  "project.echem.mprPath": { en: "MPR path", ja: "MPR パス" },
+  "project.echem.offsetS": { en: "offset (s)", ja: "オフセット (s)" },
+  "project.echem.intervalS": { en: "interval (s)", ja: "間隔 (s)" },
+  "project.echem.sign": { en: "sign", ja: "符号" },
+  "project.echem.x0": { en: "x0 (optional)", ja: "x0 (任意)" },
+  "project.echem.submit": { en: "SYNC ECHEM", ja: "ECHEM を同期" },
+  "project.echem.syncing": { en: "SYNCING …", ja: "同期中 …" },
+  "project.echem.uploading": { en: "uploading …", ja: "アップロード中 …" },
+  "project.echem.success": { en: "echem synced — channels/fraction overlay updated", ja: "echem 同期完了 — channels/分率重ね描きを更新しました" },
+
   "project.error.generic": { en: "request failed", ja: "リクエストに失敗しました" },
 
   "rail.addHistogram": { en: "add histogram", ja: "ヒストグラムを追加" },

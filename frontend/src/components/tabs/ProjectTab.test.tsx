@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProjectHistogramRow, ProjectPhaseRow, ShellState, ViewModel } from "../../api/types";
+import type { ProjectFrameRow, ProjectHistogramRow, ProjectPhaseRow, ShellState, ViewModel } from "../../api/types";
 import { I18nProvider } from "../../i18n";
 import { StoreProvider } from "../../state/store";
 import type { WorkbenchState } from "../../state/types";
@@ -36,6 +36,10 @@ function histogram(overrides: Partial<ProjectHistogramRow> = {}): ProjectHistogr
 
 function phase(overrides: Partial<ProjectPhaseRow> = {}): ProjectPhaseRow {
   return { name: "alpha CaTeO3", structure_path: "data/alpha.cif", ...overrides };
+}
+
+function frame(overrides: Partial<ProjectFrameRow> = {}): ProjectFrameRow {
+  return { id: "fr0", label: "fr0", axis_value: 0, data_path: "data/fr0.xye", ...overrides };
 }
 
 function makeViewModel(overrides: Partial<ViewModel> = {}): ViewModel {
@@ -82,6 +86,7 @@ interface MockOptions {
   shell?: ShellState;
   viewModel?: ViewModel;
   removeHistogramStatus?: number;
+  echemStatus?: number;
 }
 
 function installFetchMock(opts: MockOptions = {}) {
@@ -111,6 +116,13 @@ function installFetchMock(opts: MockOptions = {}) {
       return jsonResponse(shell);
     }
     if (url.endsWith("/api/project/settings") && method === "POST") return jsonResponse(shell);
+    if (url.endsWith("/api/project/frames") && method === "POST") return jsonResponse(shell);
+    if (url.endsWith("/api/echem") && method === "POST") {
+      if (opts.echemStatus && opts.echemStatus >= 400) {
+        return errorResponse(opts.echemStatus, { error: "invalid mpr file", error_type: "validation" });
+      }
+      return jsonResponse({ curve: [{ t: 0, v: 3.9 }], targets: [{ frame: 0, x_total: 0.5 }] });
+    }
     throw new Error(`unhandled fetch: ${method} ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -249,15 +261,16 @@ describe("ProjectTab — remove flow (confirmation gate)", () => {
 });
 
 describe("ProjectTab — refine running disables project edits", () => {
-  it("disables ADD HISTOGRAM / ADD PHASE / SAVE SETTINGS / remove buttons while a refinement job is running", () => {
+  it("disables ADD HISTOGRAM / ADD PHASE / SAVE SETTINGS / SAVE FRAMES / SYNC ECHEM / remove buttons while a refinement (or sequential) job is running", () => {
     renderProjectTab({ refine: { status: "running", elapsed_s: 5, last_event: null, error: null } });
 
-    for (const label of ["ADD HISTOGRAM", "ADD PHASE", "SAVE SETTINGS"]) {
+    for (const label of ["ADD HISTOGRAM", "ADD PHASE", "SAVE SETTINGS", "SAVE FRAMES", "SYNC ECHEM"]) {
       expect(screen.getByRole("button", { name: label })).toBeDisabled();
     }
     for (const btn of screen.getAllByRole("button", { name: "remove" })) {
       expect(btn).toBeDisabled();
     }
+    expect(screen.getByLabelText("data files (multiple)")).toBeDisabled();
     expect(screen.getByText(/refinement is running/)).toBeInTheDocument();
   });
 
@@ -274,10 +287,10 @@ describe("ProjectTab — refine running disables project edits", () => {
 });
 
 describe("ProjectTab — demo mode is read-only", () => {
-  it("disables ADD HISTOGRAM / ADD PHASE / SAVE SETTINGS / remove buttons and shows the read-only banner", () => {
+  it("disables ADD HISTOGRAM / ADD PHASE / SAVE SETTINGS / SAVE FRAMES / SYNC ECHEM / remove buttons and shows the read-only banner", () => {
     renderProjectTab({}, { shell: makeShell({ source: "demo" }) });
 
-    for (const label of ["ADD HISTOGRAM", "ADD PHASE", "SAVE SETTINGS"]) {
+    for (const label of ["ADD HISTOGRAM", "ADD PHASE", "SAVE SETTINGS", "SAVE FRAMES", "SYNC ECHEM"]) {
       expect(screen.getByRole("button", { name: label })).toBeDisabled();
     }
     for (const btn of screen.getAllByRole("button", { name: "remove" })) {
@@ -321,5 +334,156 @@ describe("ProjectTab — SETTINGS card", () => {
     expect(body.max_cyc).toBe(20);
     expect(body.two_theta_limits).toEqual([10, 90]);
     expect(body.background_coeffs).toBe(12);
+  });
+});
+
+// — V2b B1: FRAMES card —
+
+describe("ProjectTab — FRAMES table", () => {
+  it("renders existing frame rows (label / axis value / data file)", () => {
+    renderProjectTab(
+      {},
+      {
+        viewModel: makeViewModel({
+          project: {
+            histograms: [histogram()],
+            phases: [phase()],
+            settings: { two_theta_limits: [10, 90], background_coeffs: 12, max_cyc: 15 },
+            frames: [frame({ id: "fr0", label: "fr0", axis_value: 0 }), frame({ id: "fr1", label: "fr1", axis_value: 1, data_path: "data/fr1.xye" })],
+          },
+        }),
+      },
+    );
+    expect(screen.getByText("fr0")).toBeInTheDocument();
+    expect(screen.getByText("fr1")).toBeInTheDocument();
+    expect(screen.getByText("data/fr1.xye")).toBeInTheDocument();
+  });
+
+  it("shows the empty-state note when there are no frames configured", () => {
+    renderProjectTab();
+    expect(screen.getByText("no frames configured")).toBeInTheDocument();
+  });
+});
+
+describe("ProjectTab — add frames flow (multi-file select → sequential upload → postProjectFrames full replace)", () => {
+  it("uploads each selected file with kind=data, in order, then saves the full replaced frame list", async () => {
+    const user = userEvent.setup();
+    const fetchMock = renderProjectTab(
+      {},
+      {
+        viewModel: makeViewModel({
+          project: {
+            histograms: [histogram()],
+            phases: [phase()],
+            settings: { two_theta_limits: [10, 90], background_coeffs: 12, max_cyc: 15 },
+            frames: [frame({ id: "fr0", label: "fr0", axis_value: 0, data_path: "data/fr0.xye" })],
+          },
+        }),
+      },
+    );
+
+    const filesInput = screen.getByLabelText("data files (multiple)") as HTMLInputElement;
+    const f1 = new File(["a"], "fr1.xye");
+    const f2 = new File(["b"], "fr2.xye");
+    await user.upload(filesInput, [f1, f2]);
+
+    // sequential upload — two /api/project/upload calls with kind=data, in order.
+    await waitFor(() => {
+      const uploadCalls = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/project/upload"));
+      expect(uploadCalls.length).toBe(2);
+    });
+    const uploadCalls = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/project/upload"));
+    for (const [, init] of uploadCalls) {
+      const form = (init as RequestInit).body as FormData;
+      expect(form.get("kind")).toBe("data");
+    }
+
+    // index-mode axis_value defaults sequentially, continuing after the
+    // existing frame count (existing has 1 row → new rows start at 1, 2).
+    // Scoped by aria-label (not getByDisplayValue("1")/("2")) — the ECHEM
+    // card's default "interval (s)" field is also literally "1", so a bare
+    // display-value query is ambiguous once both cards are on screen.
+    await waitFor(() => expect(screen.getByText("fr1.xye")).toBeInTheDocument());
+    expect(screen.getByLabelText("axis value fr1.xye")).toHaveValue("1");
+    expect(screen.getByLabelText("axis value fr2.xye")).toHaveValue("2");
+
+    const saveBtn = screen.getByRole("button", { name: "SAVE FRAMES" });
+    expect(saveBtn).not.toBeDisabled();
+    await user.click(saveBtn);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/api/project/frames"));
+      expect(call).toBeDefined();
+    });
+    const [, init] = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/api/project/frames"))!;
+    const body = JSON.parse(String((init as RequestInit).body));
+    // full replace: existing frame (fr0) plus both new ones.
+    expect(body.frames).toEqual([
+      { data_path: "data/fr0.xye", axis_value: 0, label: "fr0" },
+      { data_path: "data/data-fr1.xye", axis_value: 1, label: "fr1.xye" },
+      { data_path: "data/data-fr2.xye", axis_value: 2, label: "fr2.xye" },
+    ]);
+  });
+
+  it("keeps SAVE FRAMES disabled until at least one file is staged", () => {
+    renderProjectTab();
+    expect(screen.getByRole("button", { name: "SAVE FRAMES" })).toBeDisabled();
+  });
+});
+
+// — V2b B4: ECHEM card —
+
+describe("ProjectTab — ECHEM sync flow", () => {
+  it("posts the sync form and refetches state/viewmodel on success", async () => {
+    const user = userEvent.setup();
+    const fetchMock = renderProjectTab();
+
+    await user.type(screen.getByLabelText("MPR path"), "data/cell.mpr");
+    await user.clear(screen.getByLabelText("offset (s)"));
+    await user.type(screen.getByLabelText("offset (s)"), "22.1");
+    await user.clear(screen.getByLabelText("interval (s)"));
+    await user.type(screen.getByLabelText("interval (s)"), "283");
+
+    await user.click(screen.getByRole("button", { name: "SYNC ECHEM" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/api/echem"));
+      expect(call).toBeDefined();
+    });
+    const [, init] = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/api/echem"))!;
+    const body = JSON.parse(String((init as RequestInit).body));
+    expect(body).toEqual({ mpr_path: "data/cell.mpr", offset_s: 22.1, interval_s: 283, sign: 1 });
+
+    await waitFor(() => expect(screen.getByText(/echem synced/)).toBeInTheDocument());
+    // session results surface through a fresh GET, not the response body —
+    // refetch (state + viewmodel) must follow the sync call.
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/viewmodel")).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("fills the MPR path field from an uploaded file (kind=echem)", async () => {
+    const user = userEvent.setup();
+    renderProjectTab();
+
+    const fileInput = screen.getByLabelText("MPR file") as HTMLInputElement;
+    await user.upload(fileInput, new File(["x"], "cell.mpr"));
+
+    await waitFor(() => expect(screen.getByDisplayValue(/echem-cell\.mpr/)).toBeInTheDocument());
+  });
+
+  it("keeps SYNC ECHEM disabled until an MPR path is set", () => {
+    renderProjectTab();
+    expect(screen.getByRole("button", { name: "SYNC ECHEM" })).toBeDisabled();
+  });
+
+  it("surfaces a 422 (invalid mpr) as a non-fatal inline error", async () => {
+    const user = userEvent.setup();
+    renderProjectTab({}, { echemStatus: 422 });
+
+    await user.type(screen.getByLabelText("MPR path"), "data/bad.mpr");
+    await user.click(screen.getByRole("button", { name: "SYNC ECHEM" }));
+
+    await waitFor(() => expect(screen.getByText("invalid mpr file")).toBeInTheDocument());
   });
 });

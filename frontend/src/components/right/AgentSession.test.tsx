@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -177,6 +177,87 @@ describe("AgentSession — approval (ModelAction) transcript item", () => {
     const remainingApprove = screen.getByRole("button", { name: "APPROVE & APPLY" });
     expect(remainingApprove).not.toBeDisabled();
     expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/approval/a2"))).toBe(false);
+  });
+
+  it("rapid double-click on APPROVE & APPLY calls postApproval only once", async () => {
+    // fireEvent (not userEvent) so both clicks land synchronously in the same
+    // tick, before React has a chance to re-render the button as disabled —
+    // this is what actually exercises the `inFlightRef` synchronous guard
+    // rather than the (also-present, but slower) `busy` state disabling it.
+    const approvalMsgC: TranscriptMessage = { ...approvalMsg, id: "t7", action_id: "a3" };
+    renderSession({ viewModel: makeViewModel([approvalMsgC]) });
+
+    const btn = screen.getByRole("button", { name: "APPROVE & APPLY" });
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/approval/a3"));
+      expect(calls).toHaveLength(1);
+    });
+    // still exactly one after settling — the second click never reached fetch.
+    const calls = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/approval/a3"));
+    expect(calls).toHaveLength(1);
+  });
+
+  it("shows a mono 'resolving' state and disables both buttons while the request is in flight", async () => {
+    let resolveFetch: (() => void) | null = null;
+    const slowFetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/a5")) {
+        await new Promise<void>((resolve) => {
+          resolveFetch = resolve;
+        });
+        return jsonResponse({ state: "approved", snapshot_id: "S-1", ledger_index: 1 });
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", slowFetchMock);
+
+    const user = userEvent.setup();
+    const approvalMsgE: TranscriptMessage = { ...approvalMsg, id: "t9", action_id: "a5" };
+    renderSession({ viewModel: makeViewModel([approvalMsgE]) });
+
+    await user.click(screen.getByRole("button", { name: "APPROVE & APPLY" }));
+
+    await waitFor(() => expect(screen.getByText("resolving …")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "APPROVE & APPLY" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "REJECT" })).toBeDisabled();
+
+    resolveFetch!();
+    await waitFor(() => expect(screen.getByRole("button", { name: "APPLIED ✓" })).toBeDisabled());
+  });
+
+  it("409 on approve shows a non-fatal inline note instead of the fatal error path, and allows retry", async () => {
+    const conflictFetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/a4")) {
+        return {
+          ok: false,
+          status: 409,
+          statusText: "Conflict",
+          json: async () => ({ error: "approval already resolved: a4", error_type: "ConflictError" }),
+        } as Response;
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", conflictFetchMock);
+
+    const user = userEvent.setup();
+    const approvalMsgD: TranscriptMessage = { ...approvalMsg, id: "t8", action_id: "a4" };
+    renderSession({ viewModel: makeViewModel([approvalMsgD]) });
+
+    await user.click(screen.getByRole("button", { name: "APPROVE & APPLY" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("already resolved elsewhere · refresh to see the result"),
+      ).toBeInTheDocument(),
+    );
+    // non-fatal: the card returns to pending and lets the operator retry
+    // (contrast with a hard failure, which the demo/mode-switch paths still
+    // route through SET_ERROR).
+    expect(screen.getByRole("button", { name: "APPROVE & APPLY" })).not.toBeDisabled();
   });
 });
 

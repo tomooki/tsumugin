@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReviewItem, StageRow, ViewModel } from "../../api/types";
+import type { ReviewItem, StageRow, TranscriptMessage, ViewModel } from "../../api/types";
 import { I18nProvider } from "../../i18n";
 import { initialWorkbenchState } from "../../state/reducer";
 import { StoreProvider, useStore } from "../../state/store";
@@ -58,6 +58,19 @@ function reviewItem(overrides: Partial<ReviewItem> = {}): ReviewItem {
   };
 }
 
+function approvalMessage(overrides: Partial<TranscriptMessage> = {}): TranscriptMessage {
+  return {
+    id: "t5",
+    kind: "approval",
+    action_id: "a1",
+    title: "identify new phase at frame 91",
+    rationale: "Rwp jump + unexplained residual at fr091",
+    action_json: '{"frame": 91}',
+    state: "pending",
+    ...overrides,
+  };
+}
+
 function renderConsole(initialState: Partial<WorkbenchState>) {
   function Wrapper({ children }: { children: ReactNode }) {
     return (
@@ -74,7 +87,7 @@ function jsonResponse(body: unknown): Response {
 }
 
 function installFetchMock() {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/api/stages/")) {
       const nn = url.split("/api/stages/")[1];
@@ -85,6 +98,14 @@ function installFetchMock() {
     }
     if (url.includes("/api/review-queue/")) {
       return jsonResponse({ item: reviewItem() });
+    }
+    if (url.includes("/api/approval/")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { decision: "approve" | "reject" };
+      return jsonResponse({
+        state: body.decision === "approve" ? "approved" : "rejected",
+        snapshot_id: body.decision === "approve" ? "S-9999" : null,
+        ledger_index: 42,
+      });
     }
     throw new Error(`unhandled fetch: ${url}`);
   });
@@ -251,6 +272,77 @@ describe("OperatorConsole — RUN REFINEMENT stages_on payload (A1)", () => {
       const body = JSON.parse(String((init as RequestInit).body));
       expect(body).toEqual({ stages_on: { "01": true } });
     });
+  });
+});
+
+describe("OperatorConsole — PENDING MODEL ACTIONS (V2b B5)", () => {
+  let fetchMock: ReturnType<typeof installFetchMock>;
+
+  beforeEach(() => {
+    fetchMock = installFetchMock();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a pending approval card (kind=approval, state=pending) even in MANUAL mode", () => {
+    renderConsole({ viewModel: makeViewModel({ transcript: [approvalMessage()] }) });
+
+    expect(screen.getByText("PENDING MODEL ACTIONS")).toBeInTheDocument();
+    expect(screen.getByText("identify new phase at frame 91")).toBeInTheDocument();
+    expect(screen.getByText("Rwp jump + unexplained residual at fr091")).toBeInTheDocument();
+  });
+
+  it("shows the empty-state note when there are no pending approvals", () => {
+    renderConsole({ viewModel: makeViewModel({ transcript: [] }) });
+    expect(screen.getByText("no pending model actions")).toBeInTheDocument();
+  });
+
+  it("APPROVE calls postApproval(action_id, 'approve') and the card leaves the pending queue", async () => {
+    const user = userEvent.setup();
+    renderConsole({ viewModel: makeViewModel({ transcript: [approvalMessage()] }) });
+
+    await user.click(screen.getByRole("button", { name: "APPROVE & APPLY" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/approval/a1"));
+      expect(call).toBeDefined();
+    });
+    const [, init] = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/approval/a1"))!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ decision: "approve" });
+
+    await waitFor(() => expect(screen.getByText("no pending model actions")).toBeInTheDocument());
+  });
+
+  it("REJECT calls postApproval(action_id, 'reject') and the card leaves the pending queue", async () => {
+    const user = userEvent.setup();
+    renderConsole({ viewModel: makeViewModel({ transcript: [approvalMessage()] }) });
+
+    await user.click(screen.getByRole("button", { name: "REJECT" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/approval/a1"));
+      expect(call).toBeDefined();
+    });
+    const [, init] = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/approval/a1"))!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ decision: "reject" });
+
+    await waitFor(() => expect(screen.getByText("no pending model actions")).toBeInTheDocument());
+  });
+
+  it("does not show an approval the server already reports as approved", () => {
+    renderConsole({ viewModel: makeViewModel({ transcript: [approvalMessage({ state: "approved" })] }) });
+    expect(screen.getByText("no pending model actions")).toBeInTheDocument();
+    expect(screen.queryByText("identify new phase at frame 91")).not.toBeInTheDocument();
+  });
+
+  it("ignores non-approval transcript kinds", () => {
+    renderConsole({
+      viewModel: makeViewModel({
+        transcript: [{ id: "t1", kind: "agent", text: "hello" } as TranscriptMessage],
+      }),
+    });
+    expect(screen.getByText("no pending model actions")).toBeInTheDocument();
   });
 });
 

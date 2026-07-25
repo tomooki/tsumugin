@@ -17,17 +17,19 @@ L142-153)。同一モードへの切替を no-op (ledger 追記なし) にする
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
 import os
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence
 
 import numpy as np
 
 from .._json import finite_or_none
 from ..autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
 from ..autorietveld.recipe import build_recipe
+from ..insitu.model import FrameSpec
 from ..model import LatticeParams, PhaseInstance
 from ..selection.engine import FinalSelectionEngine
 from ..selection.review_queue import ReviewQueue
@@ -36,7 +38,12 @@ from ..store.snapshot import SnapshotStore
 from . import lifecycle
 from . import seed as _seed
 from .jobs import RefinementJobManager, build_default_runner
-from .project import WorkbenchProject, convert_histogram_for_runner, preview_pattern
+from .project import (
+    WorkbenchProject,
+    convert_frame_for_runner,
+    convert_histogram_for_runner,
+    preview_pattern,
+)
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import は不要 (numpy 汚染回避と同じ流儀) 🔵
     from ..autorietveld.model import AutoRietveldResult
@@ -85,6 +92,11 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "multistart_request": "HUMAN",
     "multistart_finished": "CORE ①",
     "multistart_failed": "GUARD",
+    "sequential_request": "HUMAN",
+    "sequential_finished": "CORE ①",
+    "sequential_failed": "GUARD",
+    "echem_finished": "CORE ①",
+    "echem_failed": "GUARD",
 }
 
 
@@ -142,6 +154,16 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"multistart finished (basins={payload.get('n_basins')})"
     if kind == "multistart_failed":
         return f"multistart failed: {payload.get('error')}"
+    if kind == "sequential_request":
+        return f"sequential requested (mode={payload.get('mode')})"
+    if kind == "sequential_finished":
+        return f"sequential finished (n_frames={payload.get('n_frames')})"
+    if kind == "sequential_failed":
+        return f"sequential failed: {payload.get('error')}"
+    if kind == "echem_finished":
+        return f"echem aligned (n_frames={payload.get('n_frames')})"
+    if kind == "echem_failed":
+        return f"echem failed: {payload.get('error')}"
     return kind
 
 
@@ -208,6 +230,17 @@ class WorkbenchSession:
         #   None は「データなし (empty-state)」(api-contract.md)。
         self._basin: "dict[str, Any] | None" = None
         self._hyp_evidence: list[list[str]] = []
+
+        # 【V2b B2/B3: 逐次/operando】: 直近 sequential ジョブの生結果 (② 出力そのまま) + 構築済み
+        #   viewmodel.sequence (契約形)。None は「未実行 (empty-state)」。
+        self._sequential_result: "dict[str, Any] | None" = None
+        self._sequence: "dict[str, Any] | None" = None
+        # 【B4: echem】: 直近 POST /api/echem の結果 (align_echem + alkali_budget 合成)。
+        self._echem_result: "dict[str, Any] | None" = None
+        self._channels: list[dict[str, Any]] = []
+        # 【B5: 新相承認カードの内部索引】: action_id → {frame_index, data_path, data_format}
+        #   (approve 時に identify_and_add_phase へ渡す生パターンの出所)。
+        self._np_approval_info: dict[str, dict[str, Any]] = {}
 
         # 【実プロジェクト接続 (REQ-GUI-012/013)】: 既定は demo。``from_project`` が "project" へ切替える。
         self._source: GuiSource = "demo"
@@ -380,16 +413,19 @@ class WorkbenchSession:
                 if use_seed
                 else {k: dict(v) for k, v in self._parameters_view.items()}
             )
+        with self._lock:
+            channels = list(self._channels)
+            sequence = dict(self._sequence) if self._sequence is not None else None
         vm: dict[str, Any] = {
             "datasets": self._datasets_view(),
             "phases": phases,
-            "channels": _seed.seed_channels() if use_seed else [],
+            "channels": _seed.seed_channels() if use_seed else channels,
             "snapshots": seeded_snapshots + live_snapshots,
             "fit": fit,
             "parameters": parameters,
             "hypotheses": self.hypotheses_view(),
             "phase_id": self._phase_id_view(use_seed),
-            "sequence": _seed.seed_sequence() if use_seed else _EMPTY_SEQUENCE,
+            "sequence": _seed.seed_sequence() if use_seed else (sequence or _EMPTY_SEQUENCE),
             "structure": self._structure_view(),
             "stages": [dict(s) for s in self._stages],
             "review": self.review_view(),
@@ -432,7 +468,22 @@ class WorkbenchSession:
             "background_coeffs": project.background_coeffs,
             "max_cyc": project.max_cyc,
         }
-        return {"histograms": histograms, "phases": phases, "settings": settings}
+        frames = [
+            {
+                "id": f"f{i}",
+                "data_path": f.data_path,
+                "axis_value": f.axis_value,
+                "label": f.label,
+            }
+            for i, f in enumerate(project.frames)
+        ]
+        return {
+            "histograms": histograms,
+            "phases": phases,
+            "settings": settings,
+            "frames": frames,
+            "frame_axis": project.frame_axis,
+        }
 
     def _phase_id_view(self, use_seed: bool) -> dict[str, Any]:
         """viewmodel.phase_id (A4): demo はシード、project は実 ``identify_pattern`` 候補。"""
@@ -690,6 +741,34 @@ class WorkbenchSession:
         if not known:
             return {"error": f"unknown approval action: {action_id}", "error_type": "NotFoundError"}
 
+        if action_id.startswith("np-"):
+            # 【B5: 新相承認カード】: structure ReviseStructure 承認とは別経路 (add_phase まで進む)。
+            # 【二重 approve 対策】: ``_resolve_new_phase_approval`` は ``identify_and_add_phase``
+            #   (MP 問い合わせ) で長時間ブロックしうるが、その間 ``self._approvals`` には何も
+            #   書かれない (完了時に初めて確定状態を書く) ため、上の事前チェックだけでは
+            #   「実行中の 2 回目呼び出し」を検出できない (両方とも「未解決」を見て通過する)。
+            #   ここで呼び出し前に ``self._lock`` 下で check-and-set マーカー
+            #   (state="in_progress") を置き、以降の呼び出しは事前チェックでこのマーカーに
+            #   ヒットして 409 になるようにする。エラー経路 (例外/error dict/承認カード不明) は
+            #   マーカーを pop して pending に戻す (再試行可能, 既存の error 経路契約を維持)。
+            with self._lock:
+                if action_id in self._approvals:
+                    return {
+                        "error": f"approval already resolved: {action_id}",
+                        "error_type": "ConflictError",
+                    }
+                self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
+            try:
+                result = self._resolve_new_phase_approval(action_id, decision=decision)
+            except Exception:
+                with self._lock:
+                    self._approvals.pop(action_id, None)
+                raise
+            if "error" in result:
+                with self._lock:
+                    self._approvals.pop(action_id, None)
+            return result
+
         if decision == "approve":
             # 【単一 ledger 効果】: SnapshotStore.save 自体が ledger.append("snapshot_save", ...) するため、
             #   ここで追加の ledger.append は行わない (二重記録を避け、reject 経路と対称に 1 効果 = 1 追記)。
@@ -923,11 +1002,17 @@ class WorkbenchSession:
             self._parameters_view = _initial_parameters_view(project)
             self._fit = _initial_fit_view(project)
             self._stages = _stages_from_recipe(project)
+            dataset = f"{len(project.histograms)} histogram(s)"
+            if project.frames:
+                dataset += f" · {len(project.frames)} frame(s)"
+            # 【B1: 既存値の保持】: frame/echem は project spec 編集 (histogram/phase/settings/frames)
+            #   の都度リセットしていた旧実装から変更 — frames 設定後に echem を取得済みの状態で
+            #   別の spec 編集 (例 相追加) を行っても echem 表示が消えないようにする。
             self.project = {
                 "name": project.name,
-                "dataset": f"{len(project.histograms)} histogram(s)",
-                "frame": None,
-                "echem": None,
+                "dataset": dataset,
+                "frame": self.project.get("frame"),
+                "echem": self.project.get("echem"),
             }
 
     def store_upload(self, filename: str, content: bytes) -> dict[str, Any]:
@@ -1105,6 +1190,73 @@ class WorkbenchSession:
         self._project = project
         self._save_and_refresh("settings", {})
         return self.state()
+
+    # ------------------------------------------------------------------
+    # POST /api/project/frames (V2b B1)
+    # ------------------------------------------------------------------
+
+    def set_frames(self, frames: Any, *, frame_axis: Any = None) -> dict[str, Any]:
+        """POST /api/project/frames: フレーム列を**全置換**する (B1, api-contract.md §逐次/operando)。
+
+        パスは spec ディレクトリ基準で絶対化・実在検証する。XRDML は ``load_project_spec`` と同じ
+        流儀で XYE へ自己変換する (``convert_frame_for_runner``, ロード時/実行時追加の単一情報源)。
+        不正な 1 要素があれば全体を受理しない (部分適用を避ける — set は冪等な全置換)。
+        """
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        if not isinstance(frames, list):
+            return {"error": "frames must be a list", "error_type": "ValueError"}
+        assert self._project is not None
+        project = self._project
+        try:
+            specs: list[FrameSpec] = []
+            for i, fr in enumerate(frames):
+                if not isinstance(fr, Mapping):
+                    raise ValueError(f"frames[{i}] must be an object")
+                fs = FrameSpec.from_dict(fr)
+                fs = dataclasses.replace(
+                    fs, data_path=_resolve_frame_path(project.spec_dir, fs.data_path)
+                )
+                if not Path(fs.data_path).exists():
+                    raise ValueError(f"frames[{i}] data file not found: {fs.data_path}")
+                fs = convert_frame_for_runner(fs, Path(project.spec_dir), i)
+                specs.append(fs)
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+            return {"error": str(exc), "error_type": "ValueError"}
+        axis = str(frame_axis) if frame_axis is not None else project.frame_axis
+        self._project = dataclasses.replace(project, frames=tuple(specs), frame_axis=axis)
+        self._clear_stale_sequence_and_np_approvals()
+        self._save_and_refresh("set_frames", {"n_frames": len(specs)})
+        return self.state()
+
+    def _clear_stale_sequence_and_np_approvals(self) -> None:
+        """frames 全置換で無効化される逐次結果 + B5 新相承認カードを一括整理する (B1 残骸対策)。
+
+        旧フレーム列に対して求めた ``_sequential_result``/``_sequence`` (viewmodel の
+        ``sequence``) と、旧フレームの changepoint に基づく新相承認カード (``np-*``) は、
+        フレームが置換された時点で意味を失う — カードが指す ``frame_index`` は新しい
+        フレーム列では別のデータを指しうる。P2 (非破壊性) は解析 ledger (Ledger/Snapshot) の
+        話であり、置換はここで既に ``project_edit`` (op="set_frames") として記録されるため、
+        無効化された「提案」(transcript の approval メッセージ・未解決状態マーカー) 自体の
+        整理は P2 に抵触しない。同じ ``frame_index`` が次回逐次実行で再び changepoint と
+        判定されれば、``_create_new_phase_approvals`` が新しい承認カードを生成する。
+        """
+        with self._lock:
+            self._sequential_result = None
+            self._sequence = None
+            self._np_approval_info = {}
+            stale_ids = [aid for aid in self._approvals if aid.startswith("np-")]
+            for aid in stale_ids:
+                del self._approvals[aid]
+            self._transcript = [
+                msg
+                for msg in self._transcript
+                if not (
+                    msg.get("kind") == "approval"
+                    and str(msg.get("action_id", "")).startswith("np-")
+                )
+            ]
 
     # ------------------------------------------------------------------
     # POST /api/transcript/message
@@ -1362,6 +1514,357 @@ class WorkbenchSession:
         if not path or not Path(path).exists():
             return {"error": "no refined gpx available yet", "error_type": "NotFoundError"}
         return {"path": path, "filename": f"{self._project.name}.gpx"}
+
+    # ------------------------------------------------------------------
+    # POST /api/sequential, GET /api/sequential/status (V2b B2/B3)
+    # ------------------------------------------------------------------
+
+    def _guard_frames_configured(
+        self, project: "WorkbenchProject"
+    ) -> "dict[str, Any] | None":
+        """frames が 1 件以上設定されているかのガード (B2/B3, 独立メソッドに切り出し変異実証可能に)。"""
+        if not project.frames:
+            return {
+                "error": "no frames configured (POST /api/project/frames first)",
+                "error_type": "ValueError",
+            }
+        return None
+
+    def request_sequential(
+        self,
+        *,
+        mode: str,
+        anchor_table: "Mapping[str, Any] | None" = None,
+        use_charge_constraint: bool = False,
+    ) -> dict[str, Any]:
+        """逐次/operando 解析ジョブを起動する (B2/B3, api-contract.md §逐次/operando)。
+
+        ``mode="forward"`` は ② ``sequential_rietveld``、``mode="anchored"`` は ②
+        ``anchored_sequential`` をジョブ化する。**runner はどちらも instrument spec 経由で
+        サーバ側が組む** (``_build_instrument_spec`` — histograms[0] から radiation/geometry/
+        instprm/背景項数/max_cyc を写す。M9 の系列 = 単一装置の前提)。**エンジン内自動受理
+        (``phase_finder``) は渡さない** — 新相採否は B5 の承認カード経由 (提案≠適用)。
+
+        refine/phaseid/multistart と同一ジョブ枠 (``self._job``) を共有する (実行中は 409)。
+        frames 未設定は 422。``mode="anchored"`` で ``anchor_table`` 省略も 422。
+        """
+        if mode not in ("forward", "anchored"):
+            return {"error": f"invalid mode: {mode!r}", "error_type": "ValueError"}
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        project = self._project
+        guard = self._guard_frames_configured(project)
+        if guard is not None:
+            return guard
+        if not project.histograms:
+            return {"error": "no histograms configured", "error_type": "ValueError"}
+        if mode == "anchored" and not anchor_table:
+            return {
+                "error": "anchor_table is required for mode='anchored'",
+                "error_type": "ValueError",
+            }
+        if self._job.status()["status"] == "running":
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+
+        cc_spec: "dict[str, Any] | None" = None
+        if use_charge_constraint:
+            with self._lock:
+                echem = self._echem_result
+            if echem is None or not echem.get("targets"):
+                return {
+                    "error": "no echem targets available (POST /api/echem first)",
+                    "error_type": "ValueError",
+                }
+            cc_config = project.charge_constraint_config
+            if not cc_config:
+                return {
+                    "error": (
+                        "project.json missing charge_constraint_config "
+                        "(required for use_charge_constraint)"
+                    ),
+                    "error_type": "ValueError",
+                }
+            cc_spec = {
+                "config": dict(cc_config),
+                "targets": echem["targets"],
+                "per_phase_content": {},
+            }
+
+        frames_payload = [f.to_dict() for f in project.frames]
+        phases_payload = [p.to_dict() for p in project.phases]
+        instrument = _build_instrument_spec(project)
+        anchor_table_payload = (
+            {str(k): list(v) for k, v in anchor_table.items()} if anchor_table else None
+        )
+
+        def runner() -> dict[str, Any]:
+            if mode == "forward":
+                from ..mcp.insitu_tools import sequential_rietveld
+
+                result = sequential_rietveld(
+                    frames_payload, phases_payload,
+                    instrument=instrument, charge_constraint=cc_spec,
+                )
+            else:
+                from ..mcp.anchor_tools import anchored_sequential
+
+                result = anchored_sequential(
+                    frames_payload, phases_payload,
+                    anchor_table=anchor_table_payload,
+                    instrument=instrument, charge_constraint=cc_spec,
+                )
+            if "error" in result and "error_type" in result:
+                raise RuntimeError(f"{result['error_type']}: {result['error']}")
+            return result
+
+        started = self._job.start(
+            runner,
+            on_success=self._on_sequential_success,
+            on_failure=self._on_sequential_failure,
+            on_started=lambda: self.ledger.append(
+                "sequential_request", {"mode": mode, "n_frames": len(project.frames)}
+            ),
+            kind="sequential",
+        )
+        if not started:
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+        return {"status": "started"}
+
+    def _on_sequential_success(self, result: "dict[str, Any]") -> None:
+        """逐次ジョブ成功時のコールバック (B2/B3)。sequence viewmodel を構築し、FR-403 の
+        infeasible フレームを ReviewQueue へ自動追加、B5 の新相承認カードを生成する。
+        """
+        project = self._project
+        view = _build_sequence_view(result, project)
+        frames = list(result.get("frames", []))
+        infeasible = [f for f in frames if f.get("alkali_feasibility") == "infeasible"]
+        with self._lock:
+            self._sequential_result = result
+            self._sequence = view
+            self.ledger.append("sequential_finished", {"n_frames": len(frames)})
+            for f in infeasible:
+                item = self.review_queue.add(
+                    "incomparable_evidence",
+                    hypothesis_id=None,
+                    frame_index=f.get("frame_index"),
+                    detail=(
+                        f"frame {f.get('frame_index')}: coulometric feasibility infeasible "
+                        f"(x_echem={f.get('alkali_x_echem')}, x_xrd={f.get('alkali_x_xrd')})"
+                    ),
+                )
+                self._review_meta[item.item_id] = {
+                    "severity": "echem",
+                    "title": f"frame {f.get('frame_index')}: coulometric feasibility infeasible",
+                    "ref": "FR-403",
+                }
+            self._create_new_phase_approvals(frames, project)
+
+    def _on_sequential_failure(self, exc: BaseException) -> None:
+        with self._lock:
+            self.ledger.append("sequential_failed", {"error": str(exc)})
+
+    # ------------------------------------------------------------------
+    # B5: 新相承認カード (transcript approval)
+    # ------------------------------------------------------------------
+
+    def _create_new_phase_approvals(
+        self, frames: "list[dict[str, Any]]", project: "WorkbenchProject | None"
+    ) -> None:
+        """changepoint/未説明残差のあるフレームについて承認カードを生成する (B5, 呼び出し元がロック保持)。
+
+        提案≠適用: カードは transcript に積むだけで、相追加は ``resolve_approval`` の approve
+        でのみ起きる (エンジン内自動受理 [``phase_finder``] は使わない, api-contract.md)。
+        """
+        for f in frames:
+            frame_idx = f.get("frame_index")
+            if frame_idx is None:
+                continue
+            rationale = _new_phase_rationale(f)
+            if rationale is None:
+                continue
+            action_id = f"np-{frame_idx}"
+            if action_id in self._np_approval_info or action_id in self._approvals:
+                continue  # 既に提案済み/解決済み (同一フレームへの重複カード生成を避ける)
+            if project is not None and project.frames and 0 <= frame_idx < len(project.frames):
+                fs = project.frames[frame_idx]
+                self._np_approval_info[action_id] = {
+                    "frame_index": frame_idx,
+                    "data_path": fs.data_path,
+                    "data_format": fs.data_format,
+                }
+            msg = {
+                "id": f"t{len(self._transcript) + 1}",
+                "kind": "approval",
+                "action_id": action_id,
+                "title": f"frame {frame_idx}: 新相の可能性",
+                "rationale": rationale,
+                "action_json": json.dumps(
+                    {"frame_index": frame_idx, "mode": "pattern"}, ensure_ascii=False
+                ),
+                "state": "pending",
+            }
+            self._transcript.append(msg)
+
+    def _resolve_new_phase_approval(
+        self, action_id: str, *, decision: Literal["approve", "reject"]
+    ) -> dict[str, Any]:
+        """B5 新相承認カードの解決 (``resolve_approval`` から action_id prefix "np-" で分岐)。"""
+        if decision == "reject":
+            self.ledger.append("approval_decision", {"action_id": action_id, "decision": "reject"})
+            self._approvals[action_id] = {"state": "rejected", "snapshot_id": None}
+            return {
+                "state": "rejected", "snapshot_id": None,
+                "ledger_index": self.ledger.entries[-1].index,
+            }
+
+        info = self._np_approval_info.get(action_id)
+        if info is None or self._project is None:
+            return {"error": f"unknown approval action: {action_id}", "error_type": "NotFoundError"}
+        try:
+            elements = _elements_from_project(self._project)
+        except ImportError as exc:
+            return {"error": str(exc), "error_type": "ValueError"}
+        if not elements:
+            self.ledger.append(
+                "approval_decision", {"action_id": action_id, "decision": "approve", "n_candidates": 0}
+            )
+            self._approvals[action_id] = {"state": "approved", "snapshot_id": None}
+            return {
+                "state": "approved", "snapshot_id": None,
+                "ledger_index": self.ledger.entries[-1].index,
+            }
+        from ..mcp.insitu_tools import identify_and_add_phase
+        from ..reference.io import load_pattern
+
+        try:
+            two_theta, intensity = load_pattern(info["data_path"], info["data_format"])
+        except (OSError, ValueError) as exc:
+            return {"error": f"could not read frame pattern: {exc}", "error_type": "ValueError"}
+        workdir = str(Path(self._project.spec_dir) / "data")
+        try:
+            found = identify_and_add_phase(
+                two_theta.tolist(), intensity.tolist(), elements, workdir, top_k=1
+            )
+        except Exception as exc:  # noqa: BLE001 — 境界縮退 (MP キー欠落/ネットワーク等)
+            return {"error": f"phase identification failed: {exc}", "error_type": "ValueError"}
+        if "error" in found:
+            # ② の error dict を「承認済み・候補 0」と誤読しない — 失敗は失敗として返し、
+            # 承認カードは pending のまま (ユーザーが再試行できる)。
+            return {
+                "error": f"phase identification failed: {found['error']}",
+                "error_type": str(found.get("error_type", "ValueError")),
+            }
+        candidates = found.get("candidates") or []
+        self.ledger.append(
+            "approval_decision",
+            {"action_id": action_id, "decision": "approve", "n_candidates": len(candidates)},
+        )
+        if not candidates:
+            self._approvals[action_id] = {"state": "approved", "snapshot_id": None}
+            return {
+                "state": "approved", "snapshot_id": None,
+                "ledger_index": self.ledger.entries[-1].index,
+            }
+        top = candidates[0]
+        phase_name = _unique_phase_name(self._project, str(top.get("formula", "new_phase")))
+        add_result = self.add_phase(
+            structure_path=top["phase_spec"]["structure_path"], phase_name=phase_name
+        )
+        if "error" in add_result:
+            self._approvals[action_id] = {"state": "approved", "snapshot_id": None}
+            return {
+                "state": "approved", "snapshot_id": None,
+                "ledger_index": self.ledger.entries[-1].index,
+            }
+        self._approvals[action_id] = {"state": "approved", "snapshot_id": None}
+        return {
+            "state": "approved", "snapshot_id": None,
+            "ledger_index": self.ledger.entries[-1].index,
+        }
+
+    # ------------------------------------------------------------------
+    # POST /api/echem (V2b B4)
+    # ------------------------------------------------------------------
+
+    def request_echem(
+        self,
+        *,
+        mpr_path: Any,
+        offset_s: "float | None" = None,
+        interval_s: "float | None" = None,
+        n_frames: "int | None" = None,
+        frame_epoch_s: "Sequence[float] | None" = None,
+        sign: int = 1,
+        x0: "float | None" = None,
+        active_mass_mg: "float | None" = None,
+        formula_weight: "float | None" = None,
+        z: int = 1,
+        x0_source: str = "given",
+        clamp: bool = False,
+    ) -> dict[str, Any]:
+        """電気化学同期を実行する (B4, 同期実行)。② ``align_echem``/``alkali_budget`` を委譲。
+
+        ``x0`` が与えられれば ``alkali_budget`` も実行し ``targets`` を供給する (省略時は
+        ``align_echem`` のみで ``targets=None``)。``n_frames``/``offset_s``/``interval_s`` 省略時、
+        ``frame_epoch_s`` も無ければ project の frames 数を既定にする。
+        """
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        if not isinstance(mpr_path, str) or not mpr_path.strip():
+            return {"error": "mpr_path is required", "error_type": "ValueError"}
+        n = n_frames
+        if n is None and frame_epoch_s is None and self._project.frames:
+            n = len(self._project.frames)
+        if n is None and frame_epoch_s is None:
+            return {
+                "error": "n_frames (or frame_epoch_s) is required (no frames configured to default from)",
+                "error_type": "ValueError",
+            }
+
+        from ..mcp.echem_tools import align_echem, alkali_budget
+
+        cadence_kwargs: dict[str, Any] = {}
+        if frame_epoch_s is not None:
+            cadence_kwargs["frame_epoch_s"] = list(frame_epoch_s)
+        else:
+            cadence_kwargs.update(offset_s=offset_s, interval_s=interval_s, n_frames=n)
+
+        result = align_echem(mpr_path, clamp=clamp, **cadence_kwargs)
+        if "error" in result:
+            self.ledger.append("echem_failed", {"error": result["error"]})
+            return {"error": result["error"], "error_type": "ValueError"}
+
+        out = dict(result)
+        out["targets"] = None
+        if x0 is not None:
+            if active_mass_mg is None or formula_weight is None:
+                return {
+                    "error": "active_mass_mg/formula_weight are required when x0 is given",
+                    "error_type": "ValueError",
+                }
+            budget = alkali_budget(
+                mpr_path, float(active_mass_mg), float(formula_weight),
+                x0=float(x0), z=int(z), sign=int(sign), x0_source=str(x0_source),
+                clamp=clamp, **cadence_kwargs,
+            )
+            if "error" in budget:
+                self.ledger.append("echem_failed", {"error": budget["error"]})
+                return {"error": budget["error"], "error_type": "ValueError"}
+            out["targets"] = budget["targets"]
+            out["x0"] = budget["x0"]
+            out["x0_source"] = budget["x0_source"]
+            out["sign"] = budget["sign"]
+            out["budget_warnings"] = budget["warnings"]
+
+        with self._lock:
+            self._echem_result = out
+            self._channels = _build_echem_channels(out)
+            self.project["echem"] = _echem_state_summary(out)
+            self.ledger.append(
+                "echem_finished",
+                {"n_frames": len(out.get("frames", [])), "has_targets": out["targets"] is not None},
+            )
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -1638,3 +2141,264 @@ def _phase_instances_from_result(
         occ = {k: float(v) for k, v in dict(result.atom_occupancy.get(p.phase_name, {})).items()}
         out.append(PhaseInstance(phase_ref=p.phase_name, lattice=lattice, wt_frac=wt, occupancies=occ))
     return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# V2b 逐次/operando 接続 (B1-B5) ヘルパ
+# ---------------------------------------------------------------------------
+
+
+def _resolve_frame_path(spec_dir: str, raw: str) -> str:
+    """``raw`` を ``spec_dir`` 基準で絶対化する (``project._abspath`` と同じ流儀の公開版)。"""
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    return str((Path(spec_dir) / p).resolve())
+
+
+def _build_instrument_spec(project: WorkbenchProject) -> dict[str, Any]:
+    """② ``sequential_rietveld``/``anchored_sequential`` の ``instrument`` spec を
+    ``histograms[0]`` から組む (B2/B3, api-contract.md: 「フレーム列の装置条件は histograms[0]
+    [...] を共有する」)。
+    """
+    h0 = project.histograms[0]
+    return {
+        "path": h0.instrument_path,
+        "radiation": h0.radiation.value,
+        "geometry": h0.geometry.value,
+        "background_coeffs": project.background_coeffs,
+        "max_cyc": project.max_cyc,
+    }
+
+
+def _new_phase_rationale(f: "Mapping[str, Any]") -> "str | None":
+    """フレームが B5 新相承認カードの対象か判定し、対象なら根拠テキストを返す (対象外は None)。
+
+    トリガ: changepoint (①エンジンの変化点検出) か、残差レポートの ``peak_numerator_fraction``
+    (背景でなくピーク域が Rwp 分子の主因) が高く未説明特徴を持つフレーム。
+    """
+    if f.get("changepoint"):
+        reasons = ", ".join(str(r) for r in (f.get("changepoint_reasons") or ()))
+        return "changepoint detected" + (f" ({reasons})" if reasons else "")
+    rep = f.get("residual_report")
+    if not rep:
+        return None
+    features = rep.get("top_features") or []
+    pnf = rep.get("peak_numerator_fraction")
+    if features and pnf is not None and pnf > 0.5:
+        return (
+            f"{len(features)} unexplained residual feature(s), "
+            f"peak_numerator_fraction={pnf:.2f}"
+        )
+    return None
+
+
+def _cell_component(cell: "list[Any] | None", index: int) -> "float | None":
+    if not cell or len(cell) <= index:
+        return None
+    return cell[index]
+
+
+def _frame_is_crossover(frame_idx: int, crossovers: "list[dict[str, Any]]") -> bool:
+    for c in crossovers:
+        if c.get("crossover_frame") == frame_idx or c.get("onset_frame") == frame_idx:
+            return True
+    return False
+
+
+def _build_segments_view(
+    crossovers: "list[dict[str, Any]]",
+    anchors_raw: "list[dict[str, Any]]",
+    frames: "list[dict[str, Any]]",
+) -> list[dict[str, Any]]:
+    """crossovers (② ``anchored_sequential`` 出力) を契約 ``sequence.segments`` 形へ写す。
+
+    ⚠ ① M10 エンジンは採用経路の ``total_bic`` を 1 つしか持たない (前方/後方それぞれの bic は
+    ledger に残らない) — 契約例の "41 208 / 39 402" のような両側表記はできないため、単一値を
+    そのまま出す (判断点、report 参照)。"forward"/"backward" の相集合は区間左右のアンカーの相集合を
+    充てる (crossover 前後で相集合が変わる区間の意味と整合)。
+    """
+    anchors_by_frame = {a.get("frame"): a for a in anchors_raw}
+    frames_by_index = {f.get("frame_index"): f for f in frames}
+    rows: list[dict[str, Any]] = []
+    for c in crossovers:
+        left, right = c.get("left"), c.get("right")
+        forward_phases = "+".join(anchors_by_frame.get(left, {}).get("phases", []) or ())
+        backward_phases = "+".join(anchors_by_frame.get(right, {}).get("phases", []) or ())
+        cf, onf = c.get("crossover_frame"), c.get("onset_frame")
+        fwd_rwp = frames_by_index.get(cf, {}).get("rwp") if cf is not None else None
+        bwd_rwp = frames_by_index.get(onf, {}).get("rwp") if onf is not None else None
+        if cf is None:
+            selected = "backward"
+        elif onf is None:
+            selected = "forward"
+        else:
+            selected = "mixed"
+        total_bic = c.get("total_bic")
+        rows.append(
+            {
+                "segment": (
+                    f"fr{left:03d}–fr{right:03d}"
+                    if left is not None and right is not None
+                    else ""
+                ),
+                "forward": forward_phases,
+                "backward": backward_phases,
+                "rwp": (
+                    f"{fwd_rwp:.2f} / {bwd_rwp:.2f}"
+                    if fwd_rwp is not None and bwd_rwp is not None
+                    else ""
+                ),
+                "total_bic": f"{total_bic:.0f}" if total_bic is not None else "",
+                "selected": selected,
+            }
+        )
+    return rows
+
+
+def _build_sequence_note(result: "Mapping[str, Any]") -> str:
+    n = len(result.get("frames") or ())
+    warnings = list(result.get("warnings") or ())
+    note = f"{n} frame(s)"
+    if warnings:
+        note += " · " + "; ".join(str(w) for w in warnings[:2])
+    return note
+
+
+def _frame_row(f: "Mapping[str, Any]", project: "WorkbenchProject | None") -> dict[str, Any]:
+    idx = f.get("frame_index")
+    label = ""
+    if project is not None and project.frames and idx is not None and 0 <= idx < len(project.frames):
+        fs = project.frames[idx]
+        label = fs.label or os.path.basename(fs.data_path)
+    cells = {
+        name: [finite_or_none(v) for v in cell]
+        for name, cell in (f.get("refined_cells") or {}).items()
+    }
+    fractions = {k: finite_or_none(v) for k, v in (f.get("phase_weight_fractions") or {}).items()}
+    return {
+        "frame": idx,
+        "label": label,
+        "axis_value": finite_or_none(f.get("axis_value")) if f.get("axis_value") is not None else None,
+        "rwp": finite_or_none(f.get("rwp")),
+        "cells": cells,
+        "fractions": fractions,
+        "changepoint": bool(f.get("changepoint")),
+    }
+
+
+def _build_sequence_view(
+    result: "Mapping[str, Any]", project: "WorkbenchProject | None"
+) -> dict[str, Any]:
+    """② 逐次/operando 結果 dict を契約 ``viewmodel.sequence`` 形へ写す (B2/B3)。
+
+    charts 3 本 (rwp / lattice a,c per 相 / phase_weight_fractions+x_echem overlay) +
+    anchors (anchored 時のみ) + segments (crossovers 写像) + per-frame 表。
+    """
+    frames = list(result.get("frames", []))
+    phase_names = list(result.get("phase_names", []))
+    xs = [f.get("frame_index") for f in frames]
+
+    rwp_series = [finite_or_none(f.get("rwp")) for f in frames]
+    charts: list[dict[str, Any]] = [
+        {
+            "id": "rwp", "title": "Rwp vs frame",
+            "series": {"x": xs, "ys": [rwp_series], "labels": ["Rwp"]},
+        }
+    ]
+
+    lat_ys: list[list[Any]] = []
+    lat_labels: list[str] = []
+    for name in phase_names:
+        a_series, c_series = [], []
+        for f in frames:
+            cell = (f.get("refined_cells") or {}).get(name)
+            a_series.append(_cell_component(cell, 0))
+            c_series.append(_cell_component(cell, 2))
+        lat_ys.append(a_series)
+        lat_labels.append(f"{name} a")
+        lat_ys.append(c_series)
+        lat_labels.append(f"{name} c")
+    charts.append(
+        {
+            "id": "lattice", "title": "lattice a/c vs frame",
+            "series": {"x": xs, "ys": lat_ys, "labels": lat_labels} if lat_labels else None,
+        }
+    )
+
+    frac_ys: list[list[Any]] = []
+    frac_labels: list[str] = []
+    for name in phase_names:
+        series = [(f.get("phase_weight_fractions") or {}).get(name) for f in frames]
+        frac_ys.append(series)
+        frac_labels.append(name)
+    echem_series = [f.get("alkali_x_echem") for f in frames]
+    if any(v is not None for v in echem_series):
+        frac_ys.append(echem_series)
+        frac_labels.append("x_echem")
+    charts.append(
+        {
+            "id": "phase_fraction", "title": "phase fraction vs frame (x_echem overlay)",
+            "series": {"x": xs, "ys": frac_ys, "labels": frac_labels} if frac_labels else None,
+        }
+    )
+
+    crossovers = list(result.get("crossovers") or [])
+    anchors_raw = list(result.get("anchors") or [])
+    anchors = [
+        {"id": f"fr{a.get('frame'):03d}", "crossover": _frame_is_crossover(a.get("frame"), crossovers)}
+        for a in anchors_raw
+    ]
+    segments = _build_segments_view(crossovers, anchors_raw, frames)
+
+    return {
+        "charts": charts,
+        "anchors": anchors,
+        "note": _build_sequence_note(result),
+        "segments": segments,
+        "frames": [_frame_row(f, project) for f in frames],
+    }
+
+
+def _build_echem_channels(echem: "Mapping[str, Any]") -> list[dict[str, Any]]:
+    """B4: echem 結果から viewmodel.channels の echem チャンネルを構築する (直近 in_span フレーム)。"""
+    frames = list(echem.get("frames") or [])
+    last = next((f for f in reversed(frames) if f.get("in_span")), None)
+    if last is None:
+        return []
+    v = last.get("voltage_v")
+    charge = last.get("charge_mah")
+    parts = []
+    if v is not None:
+        parts.append(f"V {v:.3f}")
+    if charge is not None:
+        parts.append(f"Q {charge:.1f} mAh")
+    value = " · ".join(parts) if parts else "no in-span frames"
+    channels = [{"id": "echem", "label": "echem", "value": value}]
+    targets = echem.get("targets")
+    if targets:
+        last_target = next((t for t in reversed(targets) if t.get("x_total") is not None), None)
+        if last_target is not None:
+            channels.append(
+                {
+                    "id": "alkali",
+                    "label": "alkali budget x(t)",
+                    "value": f"x_total {last_target['x_total']:.3f}",
+                }
+            )
+    return channels
+
+
+def _echem_state_summary(echem: "Mapping[str, Any]") -> "dict[str, Any] | None":
+    """GET /api/state の ``project.echem`` (直近 in_span フレームの要約)。"""
+    frames = list(echem.get("frames") or [])
+    last = next((f for f in reversed(frames) if f.get("in_span")), None)
+    if last is None:
+        return None
+    out: dict[str, Any] = {"v": last.get("voltage_v"), "q_mah_g": last.get("charge_mah")}
+    targets = echem.get("targets")
+    if targets:
+        last_target = next((t for t in reversed(targets) if t.get("x_total") is not None), None)
+        if last_target is not None:
+            out["x_echem"] = last_target.get("x_total")
+    return out

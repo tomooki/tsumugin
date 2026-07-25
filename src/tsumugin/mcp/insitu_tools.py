@@ -755,12 +755,19 @@ def identify_and_add_phase(
 
     from ..insitu.phaseid import MPMaterializer, identify_new_phases
 
-    if provider is None:
-        from ..mp.provider import MPReferenceProvider
+    if provider is None or materializer is None:
+        # 【DOA バグ修正】: 旧実装は MPReferenceProvider()/MPMaterializer() を client 無しで
+        # 構築しており TypeError で即死 = 既定経路が呼び手不在だった (§4.5 到達可能性)。
+        # insitu.engine._ensure と同じ構築 (キーは環境変数 MATERIALS_PROJECT_API) に揃える。
+        from ..mp.client import MPRestClient
 
-        provider = MPReferenceProvider()
-    if materializer is None:
-        materializer = MPMaterializer()
+        client = MPRestClient()
+        if provider is None:
+            from ..mp.provider import MPReferenceProvider
+
+            provider = MPReferenceProvider(client)
+        if materializer is None:
+            materializer = MPMaterializer(client)
 
     found = identify_new_phases(
         np.asarray(two_theta, dtype=float),

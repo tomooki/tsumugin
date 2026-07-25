@@ -20,9 +20,16 @@ from typing import Any, Mapping
 import numpy as np
 
 from ..autorietveld.model import HistogramSpec, PhaseSpec
+from ..insitu.model import FrameSpec
 from ..reference.io import load_pattern
 
-__all__ = ["WorkbenchProject", "load_project_spec", "preview_pattern"]
+__all__ = [
+    "WorkbenchProject",
+    "load_project_spec",
+    "preview_pattern",
+    "convert_histogram_for_runner",
+    "convert_frame_for_runner",
+]
 
 _MAX_PREVIEW_POINTS = 2000
 
@@ -43,6 +50,13 @@ class WorkbenchProject:
     :param phase_display: 相名→表示用メタ (``space_group``/``mp_id`` 等、任意キー)。spec の
         phases 要素の ``display`` キーを退避したもの (``PhaseSpec.from_dict`` は無視するため)。
     :param spec_dir: spec ファイルのディレクトリ (絶対パス文字列)
+    :param frames: 逐次/operando 解析用フレーム列 (V2b B1, api-contract.md §逐次/operando)。
+        絶対パス化済み・XRDML は XYE へ自己変換済み (``histograms`` と同じ不変条件)。空 (既定) は
+        逐次未設定のプロジェクト。装置条件は ``histograms[0]`` を共有する (M9 の前提)。
+    :param frame_axis: フレーム列の軸種別 ("temperature"|"time"|"index"、既定 "index")。
+    :param charge_constraint_config: FR-318 電気化学制約の系列設定 (`ChargeConstraintConfig.to_dict`
+        形)。``None`` (既定) は制約機能を使わない (project.json の任意キー ``charge_constraint_config``
+        由来)。
     """
 
     name: str
@@ -53,6 +67,9 @@ class WorkbenchProject:
     gpx_path: str = ""
     phase_display: Mapping[str, Mapping[str, Any]] = dataclasses.field(default_factory=dict)
     spec_dir: str = "."
+    frames: tuple[FrameSpec, ...] = ()
+    frame_axis: str = "index"
+    charge_constraint_config: "Mapping[str, Any] | None" = None
 
 
 def _abspath(spec_dir: Path, raw: str) -> str:
@@ -83,6 +100,27 @@ def _convert_xrdml_if_needed(hist: HistogramSpec, spec_dir: Path, index: int) ->
         for x, y, e in zip(two_theta, intensity, esd):
             fh.write(f"{float(x):.6f} {float(y):.4f} {float(e):.4f}\n")
     return dataclasses.replace(hist, data_path=str(out_path), data_format="XYE")
+
+
+def _convert_frame_xrdml_if_needed(frame: FrameSpec, spec_dir: Path, index: int) -> FrameSpec:
+    """XRDML フレームを ``workbench_out/frameN.xye`` へ自己変換した ``FrameSpec`` を返す (B1)。
+
+    ``_convert_xrdml_if_needed`` (ヒストグラム版) と同じ流儀の独立実装 — ``FrameSpec`` は
+    ``instrument_path`` を持たない (装置条件は ``histograms[0]`` 共有) ため専用に用意する。
+    """
+    if frame.data_format.upper() != "XRDML":
+        return frame
+    from ..reference.io import load_xrdml
+
+    two_theta, intensity = load_xrdml(frame.data_path)
+    out_dir = spec_dir / "workbench_out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"frame{index}.xye"
+    esd = np.sqrt(np.clip(np.asarray(intensity, dtype=float), 1.0, None))
+    with open(out_path, "w", encoding="utf-8") as fh:
+        for x, y, e in zip(two_theta, intensity, esd):
+            fh.write(f"{float(x):.6f} {float(y):.4f} {float(e):.4f}\n")
+    return dataclasses.replace(frame, data_path=str(out_path), data_format="XYE")
 
 
 def load_project_spec(path: "str | Path", *, allow_empty: bool = False) -> WorkbenchProject:
@@ -152,6 +190,21 @@ def load_project_spec(path: "str | Path", *, allow_empty: bool = False) -> Workb
             phases.append(pspec)
             if isinstance(p, dict) and "display" in p:
                 phase_display[pspec.phase_name] = dict(p["display"])
+        raw_frames = list(data.get("frames", []))
+        frame_axis = str(data.get("frame_axis", "index"))
+        frames: list[FrameSpec] = []
+        for i, fr in enumerate(raw_frames):
+            fspec = FrameSpec.from_dict(fr)
+            fspec = dataclasses.replace(fspec, data_path=_abspath(spec_dir, fspec.data_path))
+            try:
+                fspec = _convert_frame_xrdml_if_needed(fspec, spec_dir, i)
+            except OSError as os_exc:
+                raise ValueError(
+                    f"フレーム {i} のデータファイルを読み込めません: {fspec.data_path} ({os_exc})"
+                ) from os_exc
+            frames.append(fspec)
+        raw_cc = data.get("charge_constraint_config")
+        charge_constraint_config = dict(raw_cc) if isinstance(raw_cc, dict) else None
     except (KeyError, TypeError, ValueError, IndexError, AttributeError) as exc:
         raise ValueError(f"不正なプロジェクト spec です: {exc}") from exc
 
@@ -164,6 +217,9 @@ def load_project_spec(path: "str | Path", *, allow_empty: bool = False) -> Workb
         gpx_path=str(spec_dir / "workbench_out" / "refined.gpx"),
         phase_display=phase_display,
         spec_dir=str(spec_dir),
+        frames=tuple(frames),
+        frame_axis=frame_axis,
+        charge_constraint_config=charge_constraint_config,
     )
 
 
@@ -204,3 +260,12 @@ def convert_histogram_for_runner(
     両方で満たすための単一情報源。現状は XRDML→XYE 自己変換のみ。
     """
     return _convert_xrdml_if_needed(hist, spec_dir, index)
+
+
+def convert_frame_for_runner(frame: FrameSpec, spec_dir: Path, index: int) -> FrameSpec:
+    """GSAS-II が直接読めない形式のフレームを runner-ready へ変換する公開ヘルパ (B1)。
+
+    ``convert_histogram_for_runner`` のフレーム版 — ロード時 (``load_project_spec``) と実行時追加
+    (``WorkbenchSession.set_frames``) の両方で同じ変換を通す単一情報源。
+    """
+    return _convert_frame_xrdml_if_needed(frame, spec_dir, index)

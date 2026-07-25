@@ -324,3 +324,19 @@ describe("reducer — SET_VIEW_MODEL hist re-pointing", () => {
     expect(refetched.hist).toBe("nd1");
   });
 });
+
+describe("SET_FRAME_INDEX (V2b B2/B3 — ContextBar frame nav)", () => {
+  it("defaults frameIndex to 0", () => {
+    expect(initialWorkbenchState.frameIndex).toBe(0);
+  });
+
+  it("sets frameIndex to the given value", () => {
+    const next = reducer(initialWorkbenchState, { type: "SET_FRAME_INDEX", index: 3 });
+    expect(next.frameIndex).toBe(3);
+  });
+
+  it("clamps a negative index to 0 rather than storing it", () => {
+    const next = reducer(initialWorkbenchState, { type: "SET_FRAME_INDEX", index: -1 });
+    expect(next.frameIndex).toBe(0);
+  });
+});

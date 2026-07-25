@@ -26,6 +26,7 @@ export type Action =
   | { type: "SET_VIEW_MODEL"; viewModel: ViewModel }
   | { type: "SET_REFINE_STATUS"; refine: RefineStatus | null }
   | { type: "SET_ACTIVE_JOB"; job: ActiveJob }
+  | { type: "SET_FRAME_INDEX"; index: number }
   | { type: "APPEND_TRANSCRIPT_MESSAGE"; message: TranscriptMessage }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_ERROR"; error: string | null };

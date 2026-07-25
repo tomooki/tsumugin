@@ -67,6 +67,14 @@ export interface WorkbenchState {
   // whichever component's usePollJob is `enabled` per `activeJob` below.
   refine: RefineStatus | null;
   activeJob: ActiveJob;
+
+  // Client-only selected-frame cursor for the ContextBar's "fr k / N" nav
+  // (V2b B2/B3) — not server state. Index into viewModel.project.frames
+  // (input spec) / viewModel.sequence.frames (per-frame results), which are
+  // expected to be positionally aligned once a sequential run has completed.
+  // Consumers clamp against their own array length rather than trusting this
+  // is always in range (e.g. after a frame column edit shrinks the count).
+  frameIndex: number;
 }
 
 export const initialWorkbenchState: WorkbenchState = {
@@ -96,4 +104,5 @@ export const initialWorkbenchState: WorkbenchState = {
   error: null,
   refine: null,
   activeJob: null,
+  frameIndex: 0,
 };
