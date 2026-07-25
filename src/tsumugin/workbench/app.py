@@ -13,10 +13,12 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
-from ..errors import WebUIUnavailableError
+from ..errors import LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
+from . import lifecycle
 from .session import WorkbenchSession
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import を避けコア依存を汚染しない 🔵
@@ -33,7 +35,32 @@ _ERROR_STATUS: dict[str, int] = {
     "KeyError": 404,
     "ConflictError": 409,
     "ValueError": 422,
+    "LedgerIntegrityError": 422,
+    "SnapshotIntegrityError": 422,
 }
+
+#: POST /api/project 系の「現在のセッションが refine 実行中」ガード共通メッセージ (api-contract.md)。
+_REFINING_CONFLICT = {"error": "refinement is running", "error_type": "ConflictError"}
+
+
+class _SessionHolder:
+    """「現在のセッション」の差し替え口 (create_workbench_app が保持する可変ホルダ)。
+
+    project の create/open/close/demo が ``.session`` を新しい ``WorkbenchSession`` へ差し替える。
+    既存の全ルートハンドラはこのホルダ経由で最新セッションを読む (`create_workbench_app` の
+    シグネチャ自体は互換維持 — 渡された ``session`` が初期値になる)。
+
+    ``lock`` は project ライフサイクルルート (create/open/close/demo, セッション差し替え) の
+    「ガード再確認 + I/O + swap」と、POST /api/refine の起動 (``request_refine`` 呼び出し) を
+    **同一ロックで直列化**する (セルフレビュー指摘 #2, TOCTOU レース修正)。両者ともこのロックを
+    保持している間は互いを待つため、「refine 実行中でないことを確認した直後にセッションが
+    差し替わり、旧セッションの ledger へ独立した書き込み経路が生まれる」隙間が無くなる
+    (`_guarded_swap`/`post_refine` 参照)。
+    """
+
+    def __init__(self, session: WorkbenchSession) -> None:
+        self.session = session
+        self.lock = threading.Lock()
 
 
 def _require_fastapi() -> Any:
@@ -66,10 +93,22 @@ def create_workbench_app(
         WebUIUnavailableError: optional extra ``web`` (fastapi) 未導入のとき。
     """
     _require_fastapi()
-    from fastapi import Body, FastAPI
+    from fastapi import Body, FastAPI, File, Form, UploadFile
     from fastapi.responses import JSONResponse
 
+    # 【from __future__ import annotations との相互作用】: 本モジュールは PEP 563 (遅延評価) が
+    #   有効なため、ルートハンドラの型注釈は文字列として保持され、FastAPI が
+    #   ``handler.__globals__`` (= このモジュールのグローバル名前空間) を使って解決する。
+    #   ``UploadFile``/``File``/``Form`` はここ (関数ローカル) でしか import していないため、
+    #   何もしないと ``post_project_upload`` の注釈解決が失敗する (`UploadFile` が未定義)。
+    #   ``globals()`` はこの関数内で呼んでもモジュールの globals を指す (クロージャの
+    #   ``__globals__`` は常にモジュール辞書) ので、ここへ差し込んで解決可能にする。
+    globals().setdefault("UploadFile", UploadFile)
+    globals().setdefault("File", File)
+    globals().setdefault("Form", Form)
+
     app = FastAPI(title="tsumugin Workbench", description="操作系 GUI バックエンド (v1)")
+    holder = _SessionHolder(session)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(_request: Any, _exc: Exception) -> JSONResponse:
@@ -101,21 +140,52 @@ def create_workbench_app(
             content={"error": f"invalid {field}: {value!r}", "error_type": "ValueError"},
         )
 
+    def _guard_not_refining() -> "JSONResponse | None":
+        """project の spec 変更系ルート (upload/histograms/phases/settings) 共通ガード:
+
+        現在のセッションで refine が実行中なら 409 (api-contract.md §プロジェクトライフサイクル
+        「refine 実行中のプロジェクト変更系は 409」)。これらのルートはセッションを差し替えない
+        (`_guarded_swap` 対象外) ため、`holder.lock` を取らない従来どおりの素通しチェックでよい —
+        二重の防御として `WorkbenchSession._guard_project_editable` も同じ状態を確認する。
+        """
+        if holder.session.refine_status()["status"] == "running":
+            return JSONResponse(status_code=409, content=dict(_REFINING_CONFLICT))
+        return None
+
+    def _guarded_swap(build_new_session: "Callable[[], WorkbenchSession]") -> Any:
+        """project ライフサイクルルート (create/open/close/demo) 共通の直列化ヘルパ。
+
+        「refine 実行中でないことの再確認」→「新セッション構築 (I/O)」→「swap」を
+        ``holder.lock`` 保持下で一括して行う。POST /api/refine (``post_refine``) も同じロックを
+        取るため、この関数の実行中は refine の起動が待たされ (逆もまた然り)、guard 確認から
+        swap までの間隙に別スレッドが旧セッションで refine を起動する TOCTOU が起きない
+        (セルフレビュー指摘 #2)。
+
+        ``build_new_session`` が送出する例外はロック解放後にそのまま呼び出し元 (route ハンドラ) へ
+        伝播する — ``with`` 文がロック解放を保証するため、呼び出し元は例外の型ごとに 4xx へ
+        変換すればよい。
+        """
+        with holder.lock:
+            if holder.session.refine_status()["status"] == "running":
+                return JSONResponse(status_code=409, content=dict(_REFINING_CONFLICT))
+            holder.session = build_new_session()
+            return holder.session.state()
+
     # ------------------------------------------------------------------
     # GET /api/state, POST /api/mode
     # ------------------------------------------------------------------
 
     @app.get("/api/state")
     def get_state() -> dict[str, Any]:
-        return session.state()
+        return holder.session.state()
 
     @app.post("/api/mode")
     def post_mode(body: dict[str, Any] = Body(...)) -> Any:
         mode = body.get("mode")
         if mode not in ("manual", "auto"):
             return _invalid("mode", mode)
-        session.set_mode(mode)
-        return session.state()
+        holder.session.set_mode(mode)
+        return holder.session.state()
 
     # ------------------------------------------------------------------
     # GET /api/viewmodel
@@ -123,7 +193,149 @@ def create_workbench_app(
 
     @app.get("/api/viewmodel")
     def get_viewmodel() -> dict[str, Any]:
-        return session.viewmodel()
+        return holder.session.viewmodel()
+
+    # ------------------------------------------------------------------
+    # プロジェクトライフサイクル (V2a P1/P2, api-contract.md §プロジェクトライフサイクル)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/project")
+    def post_project_create(body: dict[str, Any] = Body(...)) -> Any:
+        name = body.get("name")
+        directory = body.get("directory")
+        if not isinstance(name, str) or not name.strip():
+            return _invalid("name", name)
+        if not isinstance(directory, str) or not directory.strip():
+            return _invalid("directory", directory)
+
+        def _build() -> WorkbenchSession:
+            return WorkbenchSession.open_persistent(lifecycle.create_project(name, directory))
+
+        try:
+            return _guarded_swap(_build)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=409, content={"error": str(exc), "error_type": "ConflictError"}
+            )
+        except OSError as exc:
+            return JSONResponse(
+                status_code=422, content={"error": str(exc), "error_type": "ValueError"}
+            )
+
+    @app.post("/api/project/open")
+    def post_project_open(body: dict[str, Any] = Body(...)) -> Any:
+        path = body.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return _invalid("path", path)
+
+        def _build() -> WorkbenchSession:
+            project = lifecycle.open_project(path)
+            return WorkbenchSession.open_persistent(project)
+
+        try:
+            return _guarded_swap(_build)
+        except FileNotFoundError as exc:
+            # 【パス不存在 (セルフレビュー指摘 #3)】: `lifecycle.open_project` がプロジェクト
+            #   ディレクトリ/project.json 自体の不在を型で示す (ValueError と区別)。
+            return JSONResponse(
+                status_code=404, content={"error": str(exc), "error_type": "NotFoundError"}
+            )
+        except LedgerIntegrityError as exc:
+            return JSONResponse(
+                status_code=422,
+                content={"error": str(exc), "error_type": "LedgerIntegrityError"},
+            )
+        except SnapshotIntegrityError as exc:
+            return JSONResponse(
+                status_code=422,
+                content={"error": str(exc), "error_type": "SnapshotIntegrityError"},
+            )
+        except ValueError as exc:
+            # 【spec 不正 (セルフレビュー指摘 #3)】: JSON 壊れ/必須キー欠落/不正 enum/参照データ
+            #   ファイル欠落 (`load_project_spec` が OSError から正規化, セルフレビュー指摘 #1) 等。
+            #   パスは見つかっている (found) が内容が不正、という意味で 404 でなく 422。
+            return JSONResponse(
+                status_code=422, content={"error": str(exc), "error_type": "ValueError"}
+            )
+
+    @app.post("/api/project/close")
+    def post_project_close() -> Any:
+        return _guarded_swap(lambda: WorkbenchSession.create_empty())
+
+    @app.post("/api/project/demo")
+    def post_project_demo() -> Any:
+        return _guarded_swap(lambda: WorkbenchSession.create_demo())
+
+    @app.get("/api/project/recent")
+    def get_project_recent() -> dict[str, Any]:
+        return {"projects": lifecycle.load_recent()}
+
+    @app.post("/api/project/upload")
+    async def post_project_upload(
+        file: UploadFile = File(...), kind: str = Form(...)
+    ) -> Any:
+        if kind not in ("data", "instrument", "structure"):
+            return _invalid("kind", kind)
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        content = await file.read()
+        result = holder.session.store_upload(file.filename or "upload.bin", content)
+        return _to_response(result)
+
+    @app.post("/api/project/histograms")
+    def post_project_histograms(body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        result = holder.session.add_histogram(
+            data_path=body.get("data_path"),
+            instrument_path=body.get("instrument_path"),
+            radiation=body.get("radiation"),
+            geometry=body.get("geometry"),
+            data_format=body.get("data_format", "GSAS"),
+            two_theta_limits=body.get("two_theta_limits"),
+            bank=body.get("bank"),
+        )
+        return _to_response(result)
+
+    @app.post("/api/project/histograms/{hist_id}/remove")
+    def post_project_histograms_remove(hist_id: str, body: dict[str, Any] = Body(default={})) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        result = holder.session.remove_histogram(hist_id)
+        return _to_response(result)
+
+    @app.post("/api/project/phases")
+    def post_project_phases(body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        result = holder.session.add_phase(
+            structure_path=body.get("structure_path"), phase_name=body.get("phase_name")
+        )
+        return _to_response(result)
+
+    @app.post("/api/project/phases/{phase_name}/remove")
+    def post_project_phases_remove(phase_name: str, body: dict[str, Any] = Body(default={})) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        result = holder.session.remove_phase(phase_name)
+        return _to_response(result)
+
+    @app.post("/api/project/settings")
+    def post_project_settings(body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        result = holder.session.update_settings(
+            two_theta_limits=body.get("two_theta_limits"),
+            background_coeffs=body.get("background_coeffs"),
+            max_cyc=body.get("max_cyc"),
+        )
+        return _to_response(result)
 
     # ------------------------------------------------------------------
     # GET /api/hypotheses, POST /api/hypotheses/{id}/accept, POST /api/revert
@@ -131,14 +343,16 @@ def create_workbench_app(
 
     @app.get("/api/hypotheses")
     def get_hypotheses() -> dict[str, Any]:
-        return session.hypotheses_view()
+        return holder.session.hypotheses_view()
 
     @app.post("/api/hypotheses/{hypothesis_id}/accept")
     def post_accept(hypothesis_id: str, body: dict[str, Any] = Body(default={})) -> Any:
         by = body.get("by", "human")
         if by not in ("human", "agent"):
             return _invalid("by", by)
-        result = session.accept_hypothesis(hypothesis_id, by=by, reason=body.get("reason", ""))
+        result = holder.session.accept_hypothesis(
+            hypothesis_id, by=by, reason=body.get("reason", "")
+        )
         return _to_response(result)
 
     @app.post("/api/revert")
@@ -146,7 +360,7 @@ def create_workbench_app(
         hypothesis_id = body.get("hypothesis_id")
         if not hypothesis_id:
             return _invalid("hypothesis_id", hypothesis_id)
-        result = session.revert_hypothesis(hypothesis_id, note=body.get("note", ""))
+        result = holder.session.revert_hypothesis(hypothesis_id, note=body.get("note", ""))
         return _to_response(result)
 
     # ------------------------------------------------------------------
@@ -155,14 +369,16 @@ def create_workbench_app(
 
     @app.get("/api/review-queue")
     def get_review_queue() -> dict[str, Any]:
-        return {"items": session.review_view()}
+        return {"items": holder.session.review_view()}
 
     @app.post("/api/review-queue/{item_id}/resolve")
     def post_review_resolve(item_id: str, body: dict[str, Any] = Body(...)) -> Any:
         action = body.get("action")
         if action not in ("accept", "send_back"):
             return _invalid("action", action)
-        result = session.resolve_review_item(item_id, action=action, note=body.get("note", ""))
+        result = holder.session.resolve_review_item(
+            item_id, action=action, note=body.get("note", "")
+        )
         return _to_response(result)
 
     # ------------------------------------------------------------------
@@ -171,7 +387,7 @@ def create_workbench_app(
 
     @app.get("/api/ledger")
     def get_ledger() -> dict[str, Any]:
-        return session.ledger_view()
+        return holder.session.ledger_view()
 
     # ------------------------------------------------------------------
     # POST /api/structure/apply
@@ -184,7 +400,7 @@ def create_workbench_app(
             return _invalid("sites", sites)
         if not all(isinstance(site, dict) for site in sites):
             return _invalid("sites", sites)
-        result = session.apply_structure(sites, note=body.get("note", ""))
+        result = holder.session.apply_structure(sites, note=body.get("note", ""))
         return _to_response(result)
 
     # ------------------------------------------------------------------
@@ -196,7 +412,7 @@ def create_workbench_app(
         decision = body.get("decision")
         if decision not in ("approve", "reject"):
             return _invalid("decision", decision)
-        result = session.resolve_approval(action_id, decision=decision)
+        result = holder.session.resolve_approval(action_id, decision=decision)
         return _to_response(result)
 
     # ------------------------------------------------------------------
@@ -208,7 +424,7 @@ def create_workbench_app(
         action = body.get("action")
         if action not in ("release", "revert"):
             return _invalid("action", action)
-        result = session.stage_action(nn, action=action)
+        result = holder.session.stage_action(nn, action=action)
         return _to_response(result)
 
     # ------------------------------------------------------------------
@@ -217,12 +433,18 @@ def create_workbench_app(
 
     @app.post("/api/refine")
     def post_refine() -> Any:
-        result = session.request_refine()
+        # 【holder.lock で直列化 (セルフレビュー指摘 #2)】: `_guarded_swap` (project
+        #   create/open/close/demo) と同一ロックを取ることで、「refine 起動」と「セッション
+        #   差し替え」が互いを待つ。ロック自体は起動判定のみを覆う (`request_refine` は project
+        #   モードでもバックグラウンドスレッドを起動するだけで即座に返る — 精密化本体の実行中は
+        #   ロックを保持しない)。
+        with holder.lock:
+            result = holder.session.request_refine()
         return _to_response(result, success_status=202)
 
     @app.get("/api/refine/status")
     def get_refine_status() -> dict[str, Any]:
-        return session.refine_status()
+        return holder.session.refine_status()
 
     # ------------------------------------------------------------------
     # POST /api/transcript/message
@@ -230,7 +452,7 @@ def create_workbench_app(
 
     @app.post("/api/transcript/message")
     def post_transcript_message(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        return session.post_message(body.get("text", ""))
+        return holder.session.post_message(body.get("text", ""))
 
     # ------------------------------------------------------------------
     # 静的配信 (ビルド済み frontend があれば / で配信、無ければ案内 JSON)

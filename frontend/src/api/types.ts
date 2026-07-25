@@ -45,8 +45,9 @@ export interface RefineStatus {
   error: string | null;
 }
 
-// "demo" | "project" — real project connection vs seeded demo data.
-export type SourceMode = "demo" | "project";
+// "none" | "demo" | "project" — no project loaded (Welcome screen) vs real
+// project connection vs seeded demo data (api-contract.md §プロジェクトライフサイクル).
+export type SourceMode = "none" | "demo" | "project";
 
 export interface ShellState {
   project: ProjectInfo;
@@ -59,6 +60,9 @@ export interface ShellState {
   // existing seeded test fixtures (which predate these fields) keep compiling.
   source?: SourceMode;
   refine?: RefineStatus;
+  // project モード時は project.json の絶対パス。demo/none では null (api-contract.md
+  // §プロジェクトライフサイクル). Optional for the same reason as `source` above.
+  project_path?: string | null;
 }
 
 // — GET /api/viewmodel —
@@ -361,6 +365,47 @@ export interface ReviewItem {
   state: ReviewState;
 }
 
+// — PROJECT tab (V2a P3/P4, api-contract.md §プロジェクトライフサイクル) —
+
+/** Row shape for the PROJECT tab's HISTOGRAMS table. NOTE (judgment call):
+ * api-contract.md documents the add/remove/settings *mutating* endpoints for
+ * histograms but does not yet document a read shape carrying data_path /
+ * instrument_path / radiation / geometry / data_format / two_theta_limits /
+ * bank together (viewmodel.datasets is a display summary — id/name/meta/probe
+ * — not structured enough to drive per-field edit/remove controls). This
+ * mirrors the existing precedent of FitViewModel.plot / SequenceChart.series /
+ * HypothesesViewModel.basin: an additive, optional field anticipating a
+ * doc revision. docs/ is read-only for this task (parallel backend work), so
+ * the contract update is left for reconciliation — see the frontend agent's
+ * final report. */
+export interface ProjectHistogramRow {
+  id: string;
+  data_path: string;
+  instrument_path: string;
+  radiation: string;
+  geometry: string;
+  data_format: string;
+  two_theta_limits: [number, number] | null;
+  bank: number | null;
+}
+
+export interface ProjectPhaseRow {
+  name: string;
+  structure_path: string;
+}
+
+export interface ProjectSettingsData {
+  two_theta_limits: [number, number] | null;
+  background_coeffs: number | null;
+  max_cyc: number | null;
+}
+
+export interface ProjectViewModel {
+  histograms: ProjectHistogramRow[];
+  phases: ProjectPhaseRow[];
+  settings: ProjectSettingsData;
+}
+
 export type TranscriptKind = "user" | "agent" | "tool" | "judgement" | "approval" | "escalation";
 
 export interface TranscriptJudgementRow {
@@ -404,6 +449,10 @@ export interface ViewModel {
   stages: StageRow[];
   review: ReviewItem[];
   transcript: TranscriptMessage[];
+  // Optional: see ProjectViewModel's doc comment above (FitViewModel.plot
+  // precedent). Absent/undefined ⇒ ProjectTab renders empty-state tables
+  // (empty-state principle, V2_PLAN.md §横断の不変条件 — never fabricate rows).
+  project?: ProjectViewModel;
 }
 
 // — mutating endpoints —
@@ -464,6 +513,54 @@ export interface StructureApplyRequest {
 export interface StructureApplyResponse {
   snapshot_id: string;
   ledger_index: number;
+}
+
+// — PROJECT lifecycle mutating endpoints (api-contract.md §プロジェクトライフサイクル) —
+
+export interface ProjectCreateRequest {
+  name: string;
+  directory: string;
+}
+
+export interface ProjectOpenRequest {
+  path: string;
+}
+
+export interface RecentProject {
+  name: string;
+  path: string;
+  last_opened: string;
+}
+
+export interface RecentProjectsResponse {
+  projects: RecentProject[];
+}
+
+export type UploadKind = "data" | "instrument" | "structure";
+
+export interface UploadResponse {
+  stored_path: string;
+}
+
+export interface AddHistogramRequest {
+  data_path: string;
+  instrument_path: string;
+  radiation: string;
+  geometry: string;
+  data_format: string;
+  two_theta_limits?: [number, number] | null;
+  bank?: number | null;
+}
+
+export interface AddPhaseRequest {
+  structure_path: string;
+  phase_name: string;
+}
+
+export interface ProjectSettingsRequest {
+  two_theta_limits?: [number, number] | null;
+  background_coeffs?: number | null;
+  max_cyc?: number | null;
 }
 
 export type ApprovalDecision = "approve" | "reject";

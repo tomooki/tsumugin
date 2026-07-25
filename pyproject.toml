@@ -17,9 +17,12 @@ gsas = [
     "requests>=2.31",
 ]
 # M1 Web UI 最小版 (read-only): FastAPI アプリ + uvicorn 起動。
+# python-multipart は V2a workbench の POST /api/project/upload (multipart フォーム) に必要
+# (fastapi の UploadFile/Form パーサが実行時に要求する; 未導入時は fastapi 側が明示エラーを出す)。
 web = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
 ]
 # M4 MCP サーバ (SDK 依存アダプタ層): 公式 Model Context Protocol Python SDK。
 # ``mcp.server`` は本 extra を遅延 import する。未導入時は MCPUnavailableError へ縮退する。

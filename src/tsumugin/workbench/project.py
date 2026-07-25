@@ -85,7 +85,7 @@ def _convert_xrdml_if_needed(hist: HistogramSpec, spec_dir: Path, index: int) ->
     return dataclasses.replace(hist, data_path=str(out_path), data_format="XYE")
 
 
-def load_project_spec(path: "str | Path") -> WorkbenchProject:
+def load_project_spec(path: "str | Path", *, allow_empty: bool = False) -> WorkbenchProject:
     """JSON プロジェクト spec をロードし ``WorkbenchProject`` を返す。
 
     spec の形は ② ``auto_rietveld`` (``HistogramSpec.to_dict``/``PhaseSpec.to_dict``) と同一。
@@ -93,8 +93,12 @@ def load_project_spec(path: "str | Path") -> WorkbenchProject:
     "max_cyc"?}``。phases の各要素は任意で ``"display": {...}`` を持てる (表示専用メタ、
     ``PhaseSpec.from_dict`` の余分キー無視により素通しされないため本関数側で退避する)。
 
-    :raises ValueError: 必須キー欠落・空配列・不明な enum 値等、不正な spec のとき
-        (呼び出し側 [CLI/API] が error dict へ縮退する)。
+    :param allow_empty: ``True`` なら ``histograms``/``phases`` の空配列を許容する
+        (V2a プロジェクトライフサイクル `lifecycle.py`: 作成直後・ファイル未読込のプロジェクトを
+        開けるようにするため)。既定 ``False`` は ② ``auto_rietveld`` 経路と同じ厳格な検証を維持する
+        (後方互換)。
+    :raises ValueError: 必須キー欠落・空配列 (``allow_empty=False`` のとき)・不明な enum 値等、
+        不正な spec のとき (呼び出し側 [CLI/API] が error dict へ縮退する)。
     """
     spec_path = Path(path)
     try:
@@ -112,9 +116,9 @@ def load_project_spec(path: "str | Path") -> WorkbenchProject:
         name = str(data["name"])
         raw_histograms = list(data["histograms"])
         raw_phases = list(data["phases"])
-        if not raw_histograms:
+        if not raw_histograms and not allow_empty:
             raise ValueError("histograms が空です")
-        if not raw_phases:
+        if not raw_phases and not allow_empty:
             raise ValueError("phases が空です")
         background_coeffs = int(data.get("background_coeffs", 6))
         max_cyc = int(data.get("max_cyc", 12))
@@ -127,7 +131,17 @@ def load_project_spec(path: "str | Path") -> WorkbenchProject:
                 data_path=_abspath(spec_dir, hspec.data_path),
                 instrument_path=_abspath(spec_dir, hspec.instrument_path),
             )
-            hspec = _convert_xrdml_if_needed(hspec, spec_dir, i)
+            try:
+                hspec = _convert_xrdml_if_needed(hspec, spec_dir, i)
+            except OSError as os_exc:
+                # 【OSError の 500 貫通防止】: 参照先データファイル欠落 (FileNotFoundError 等) を
+                #   「どのファイルが読めないか」を含む ValueError へ正規化する。外側の except は
+                #   これを再度 "不正なプロジェクト spec です" で包むので二重ラップになるが、
+                #   元メッセージ (ファイルパス) は保持される。呼び出し側 (`app.py`) は ValueError を
+                #   422 へ縮退させる (生の 500 にしない)。
+                raise ValueError(
+                    f"ヒストグラム {i} のデータファイルを読み込めません: {hspec.data_path} ({os_exc})"
+                ) from os_exc
             histograms.append(hspec)
 
         phases: list[PhaseSpec] = []
@@ -178,3 +192,15 @@ def preview_pattern(spec: HistogramSpec) -> dict[str, Any]:
         "residual": None,
         "ticks": {},
     }
+
+
+def convert_histogram_for_runner(
+    hist: HistogramSpec, spec_dir: Path, index: int
+) -> HistogramSpec:
+    """GSAS-II が直接読めない形式を runner-ready へ変換する公開ヘルパ。
+
+    ``WorkbenchProject.histograms`` の不変条件「そのまま ``run_auto_rietveld`` に渡せる」を
+    ロード時 (``load_project_spec``) と実行時追加 (``WorkbenchSession.add_histogram``) の
+    両方で満たすための単一情報源。現状は XRDML→XYE 自己変換のみ。
+    """
+    return _convert_xrdml_if_needed(hist, spec_dir, index)

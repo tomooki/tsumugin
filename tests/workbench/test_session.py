@@ -7,9 +7,12 @@ structure apply / approval / stages / refine / transcript message / ledger view�
 from __future__ import annotations
 
 import json
+import threading
+from pathlib import Path
 
 import pytest
 
+from tsumugin.workbench import lifecycle
 from tsumugin.workbench.session import WorkbenchSession
 
 
@@ -362,3 +365,291 @@ def test_ledger_view_entries_have_required_keys_and_are_verified():
         assert {"index", "time", "actor", "text", "hash", "revert_to"} <= set(row)
     mode_row = next(r for r in view["entries"] if "mode switch" in r["text"])
     assert "manual" in mode_row["text"] and "auto" in mode_row["text"]
+
+
+# ---------------------------------------------------------------------------
+# プロジェクト spec 編集 (V2a P2: add/remove histogram・phase・settings・upload)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def project_session(tmp_path) -> WorkbenchSession:
+    project = lifecycle.create_project("proj", str(tmp_path))
+    return WorkbenchSession.from_project(project)
+
+
+def _block_refine(session: WorkbenchSession) -> "tuple[threading.Event, threading.Event]":
+    """session._job を実行中状態に固定する (refine 実行中 409 ガードのテスト用)。"""
+    started = threading.Event()
+    release = threading.Event()
+
+    def runner():
+        started.set()
+        release.wait(timeout=5)
+        raise RuntimeError("test runner (unused result)")
+
+    session._job.start(runner, on_success=lambda r: None, on_failure=lambda e: None)
+    started.wait(timeout=5)
+    return started, release
+
+
+def test_viewmodel_project_config_echo_present_only_in_project_mode(tmp_path):
+    # 【契約 (frontend PROJECT タブ, api-contract.md viewmodel.project)】: demo/none は省略、
+    #   project モードのみ histograms/phases/settings を 1:1 で echo する。
+    demo = WorkbenchSession.create_demo()
+    assert "project" not in demo.viewmodel()
+
+    empty = WorkbenchSession.create_empty()
+    assert "project" not in empty.viewmodel()
+
+    project = lifecycle.create_project("proj", str(tmp_path))
+    session = WorkbenchSession.from_project(project)
+    session.add_histogram(
+        data_path="d.xy", instrument_path="d.instprm", radiation="xray_lab",
+        geometry="bragg_brentano", data_format="xy", two_theta_limits=[10.0, 70.0],
+    )
+    session.add_phase(structure_path="p.cif", phase_name="phaseA")
+
+    vm = session.viewmodel()
+    assert vm["project"]["histograms"] == [
+        {
+            "id": "h0", "data_path": "d.xy", "instrument_path": "d.instprm",
+            "radiation": "xray_lab", "geometry": "bragg_brentano", "data_format": "XY",
+            "two_theta_limits": [10.0, 70.0], "bank": None,
+        }
+    ]
+    assert vm["project"]["phases"] == [{"name": "phaseA", "structure_path": "p.cif"}]
+    assert vm["project"]["settings"] == {
+        "two_theta_limits": [10.0, 70.0], "background_coeffs": 6, "max_cyc": 12,
+    }
+
+
+def test_add_histogram_appends_spec_persists_and_refreshes_viewmodel(
+    project_session: WorkbenchSession, tmp_path
+):
+    before_ledger = len(project_session.ledger.entries)
+
+    result = project_session.add_histogram(
+        data_path="data/hist.xy",
+        instrument_path="data/hist.instprm",
+        radiation="xray_lab",
+        geometry="bragg_brentano",
+        data_format="xy",
+        two_theta_limits=[10.0, 70.0],
+    )
+
+    assert "error" not in result
+    assert len(project_session._project.histograms) == 1
+    assert project_session._project.histograms[0].data_format == "XY"
+    assert len(project_session.ledger.entries) == before_ledger + 1
+
+    # project.json に自動保存されている
+    spec_path = tmp_path / "proj" / "project.json"
+    saved = json.loads(spec_path.read_text(encoding="utf-8"))
+    assert len(saved["histograms"]) == 1
+
+    # PARAMETERS/FIT viewmodel が再構築されている
+    vm = project_session.viewmodel()
+    assert "h0" in vm["parameters"]
+    assert vm["fit"]["histograms"][0]["id"] == "h0"
+
+
+def test_add_histogram_invalid_radiation_returns_422_error_dict(project_session: WorkbenchSession):
+    result = project_session.add_histogram(
+        data_path="d", instrument_path="i", radiation="bogus", geometry="bragg_brentano"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_add_histogram_invalid_data_format_returns_422_error_dict(project_session: WorkbenchSession):
+    result = project_session.add_histogram(
+        data_path="d", instrument_path="i", radiation="xray_lab",
+        geometry="bragg_brentano", data_format="bogus",
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_add_histogram_without_project_returns_error_dict():
+    session = WorkbenchSession.create_demo()
+    result = session.add_histogram(
+        data_path="d", instrument_path="i", radiation="xray_lab", geometry="bragg_brentano"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_remove_histogram_removes_from_spec_and_persists(
+    project_session: WorkbenchSession, tmp_path
+):
+    project_session.add_histogram(
+        data_path="d", instrument_path="i", radiation="xray_lab", geometry="bragg_brentano"
+    )
+    assert len(project_session._project.histograms) == 1
+
+    result = project_session.remove_histogram("h0")
+
+    assert "error" not in result
+    assert len(project_session._project.histograms) == 0
+    saved = json.loads((tmp_path / "proj" / "project.json").read_text(encoding="utf-8"))
+    assert saved["histograms"] == []
+
+
+def test_remove_histogram_unknown_id_returns_404(project_session: WorkbenchSession):
+    result = project_session.remove_histogram("h99")
+    assert result["error_type"] == "NotFoundError"
+
+
+def test_add_phase_and_remove_phase_roundtrip(project_session: WorkbenchSession, tmp_path):
+    result = project_session.add_phase(structure_path="p.cif", phase_name="phaseA")
+    assert "error" not in result
+    assert len(project_session._project.phases) == 1
+
+    dup = project_session.add_phase(structure_path="p2.cif", phase_name="phaseA")
+    assert dup["error_type"] == "ValueError"
+
+    removed = project_session.remove_phase("phaseA")
+    assert "error" not in removed
+    assert len(project_session._project.phases) == 0
+
+    missing = project_session.remove_phase("phaseA")
+    assert missing["error_type"] == "NotFoundError"
+
+
+def test_update_settings_changes_background_and_two_theta_limits(
+    project_session: WorkbenchSession, tmp_path
+):
+    project_session.add_histogram(
+        data_path="d", instrument_path="i", radiation="xray_lab", geometry="bragg_brentano"
+    )
+
+    result = project_session.update_settings(
+        two_theta_limits=[5.0, 60.0], background_coeffs=12, max_cyc=8
+    )
+
+    assert "error" not in result
+    assert project_session._project.background_coeffs == 12
+    assert project_session._project.max_cyc == 8
+    assert project_session._project.histograms[0].two_theta_limits == (5.0, 60.0)
+
+
+def test_update_settings_invalid_two_theta_limits_returns_422(project_session: WorkbenchSession):
+    result = project_session.update_settings(two_theta_limits=["not", "numbers"])
+    assert result["error_type"] == "ValueError"
+
+
+def test_store_upload_writes_file_into_data_dir_and_sanitizes_name(
+    project_session: WorkbenchSession, tmp_path
+):
+    result = project_session.store_upload("../evil/../hist.xy", b"1 2 3\n")
+
+    assert "error" not in result
+    stored = tmp_path / "proj" / "data" / "hist.xy"
+    assert stored.exists()
+    assert result["stored_path"] == str(stored)
+
+
+def test_store_upload_dedups_same_filename(project_session: WorkbenchSession, tmp_path):
+    first = project_session.store_upload("hist.xy", b"a")
+    second = project_session.store_upload("hist.xy", b"b")
+
+    assert first["stored_path"] != second["stored_path"]
+    assert (tmp_path / "proj" / "data" / "hist.xy").read_bytes() == b"a"
+    assert (tmp_path / "proj" / "data" / "hist_1.xy").read_bytes() == b"b"
+
+
+def test_store_upload_rejects_oversized_file(project_session: WorkbenchSession, monkeypatch):
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module, "_MAX_UPLOAD_BYTES", 4)
+    result = project_session.store_upload("hist.xy", b"12345")
+    assert result["error_type"] == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# refine 実行中の spec 変更系ガード (api-contract.md 「refine 実行中は 409」)
+# ---------------------------------------------------------------------------
+
+
+def test_add_histogram_returns_409_while_refine_running(project_session: WorkbenchSession):
+    started, release = _block_refine(project_session)
+    try:
+        result = project_session.add_histogram(
+            data_path="d", instrument_path="i", radiation="xray_lab", geometry="bragg_brentano"
+        )
+        assert result["error_type"] == "ConflictError"
+    finally:
+        release.set()
+        project_session._job.join(timeout=5)
+
+
+def test_store_upload_returns_409_while_refine_running(project_session: WorkbenchSession):
+    started, release = _block_refine(project_session)
+    try:
+        result = project_session.store_upload("hist.xy", b"1")
+        assert result["error_type"] == "ConflictError"
+    finally:
+        release.set()
+        project_session._job.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# ガード変異実証: _guard_project_editable を無効化すると 409 が消えることを確認する
+# (変異させて fail することの実証 — 恒久ガードのテスト自体が意味を持つことの確認)
+# ---------------------------------------------------------------------------
+
+
+def test_guard_mutation_without_running_check_would_not_conflict(
+    project_session: WorkbenchSession, monkeypatch
+):
+    """ガードから running チェックを外すと 409 が返らなくなることを示し、ガードの意味を実証する。"""
+    import tsumugin.workbench.session as session_module
+
+    def _no_guard(self):  # refine 実行中チェックを外した変異版
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        return None
+
+    started, release = _block_refine(project_session)
+    try:
+        monkeypatch.setattr(
+            session_module.WorkbenchSession, "_guard_project_editable", _no_guard
+        )
+        result = project_session.add_histogram(
+            data_path="d", instrument_path="i", radiation="xray_lab", geometry="bragg_brentano"
+        )
+        # 【変異で意図的に破壊】: ガードを無効化すると refine 実行中でも受理されてしまう
+        #   (= 元のガードが実際に 409 を作り出していたことの証明)。
+        assert "error" not in result
+    finally:
+        release.set()
+        project_session._job.join(timeout=5)
+
+
+class TestAddHistogramXrdmlConversion:
+    """add_histogram も load_project_spec と同じ XRDML→XYE 自己変換を通ること (回帰)。
+
+    【背景】: WorkbenchProject の不変条件は「histograms はそのまま run_auto_rietveld に
+    渡せる (XRDML は変換済み)」だが、実行時 add_histogram が未変換のまま追記し、GUI 通し
+    実証で refine が 'Could not read file' で failed になった。
+    """
+
+    def test_add_histogram_converts_xrdml_to_xye(self, tmp_path) -> None:
+        project = lifecycle.create_project("conv", str(tmp_path))
+        session = WorkbenchSession.open_persistent(project)
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "docs" / "benchmark" / "testdata" / "m9" / "cateo3" / "NB-LM01MO_030.XRDML"
+        )
+        instprm = src.parent / "cateo3_CuKa.instprm"
+        result = session.add_histogram(
+            data_path=str(src),
+            instrument_path=str(instprm),
+            radiation="xray_lab",
+            geometry="bragg_brentano",
+            data_format="XRDML",
+            two_theta_limits=[12.0, 70.0],
+        )
+        assert "error" not in result
+        hist = session.viewmodel()["project"]["histograms"][0]
+        # runner-ready 不変条件: XRDML のままではなく XYE へ自己変換済み
+        assert hist["data_format"] != "XRDML"
+        assert Path(hist["data_path"]).exists()

@@ -20,7 +20,27 @@ empty-state 原則 = シードで偽装しない / 変更系は ledger / ガー�
 | MEM マップ | empty-state | ② `mem_density` + `.grd` リーダ (FR-601) |
 | 配布 | Tauri scaffold + dev 構成のみ | ADR-0001 sidecar 設計 (README 文書化済) |
 
-## V2a — 単一フレーム解析ループの完成 (最優先)
+## 方針転換 (2026-07-25, ユーザー指示)
+
+**プロトタイプはデザインイメージであり「正」ではない**。以後は通常の Rietveld 解析
+アプリとして必要な機能・画面を要件が正として設計する (Industry トークンの見た目の
+骨格は維持)。これに伴い V2a を「アプリ基盤」に再定義し、旧 V2a (解析ループ完成) は
+V2a' として後続させる。
+
+## V2a — アプリ基盤: プロジェクト管理・ファイル読み込み・画面再構成 (最優先)
+
+GUI からプロジェクトを作成し、データ/装置/構造ファイルを読み込み、設定して精密化まで
+到達できる「普通のアプリ」の骨格。契約は api-contract.md §プロジェクトライフサイクル。
+
+| # | タスク | 内容 |
+|---|---|---|
+| P1 | プロジェクトライフサイクル (backend) | create/open/close/demo/recent + project.json 自動保存 + **PersistentLedger/PersistentSnapshotStore** をプロジェクトディレクトリに配線 (再起動しても監査履歴が残る)。セッション切替、refine 実行中の変更 409 |
+| P2 | ファイル取り込み | multipart upload → プロジェクト `data/` へコピー (自己完結)。histograms/phases の追加・除去・settings 変更 API (全て ledger 記録・DELETE ルート不使用) |
+| P3 | Welcome 画面 (frontend) | source=none 時に 3 ペインの代わりに表示: 新規作成フォーム (名前+保存先) / 開く (パス入力+recent 一覧) / サンプル (demo)。プロジェクト読込で workbench 本体へ |
+| P4 | PROJECT タブ (frontend) | センターペイン先頭に新設: ヒストグラム表 (追加=ファイル選択+radiation/geometry フォーム, 除去)、相表 (CIF 追加, 除去)、精密化設定 (2θ 範囲/背景項数/max_cyc)。LeftRail の DATASETS/PHASES に + ボタン (PROJECT タブへ誘導) |
+| P5 | 統合 | CaTeO3 を GUI だけで新規プロジェクト作成→ファイル読込→精密化→再起動→再オープン (ledger 継続) の通し実証 |
+
+## V2a' — 単一フレーム解析ループの完成 (旧 V2a)
 
 「読み込む → 精密化 → 診る → モデルを直す → 再精密化」を GUI だけで閉じる。
 

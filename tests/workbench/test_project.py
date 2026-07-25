@@ -169,6 +169,27 @@ _XRDML = """<?xml version="1.0"?>
 """
 
 
+def test_load_project_spec_missing_xrdml_data_file_raises_value_error_not_oserror(
+    project_dir: Path,
+):
+    """OSError の 500 貫通防止 (セルフレビュー指摘 #1)。
+
+    XRDML ヒストグラムの ``data_path`` がロード時に実在しないファイルを指すと、変換
+    (``load_xrdml``) は ``FileNotFoundError`` (OSError のサブクラス) を送出する。修正前は
+    ``load_project_spec`` の内側 try が OSError を捕捉しないため生の OSError が呼び出し側
+    (`app.py` の ``post_project_open``) まで貫通し、既知の 4xx マッピングに乗らず 500 になって
+    いた。修正後は「どのファイルが読めないか」を含む ValueError へ正規化される。
+    """
+    spec = _minimal_spec_dict(data_rel="missing.xrdml")
+    spec["histograms"][0]["data_format"] = "XRDML"
+    spec_path = _write_spec(project_dir, spec)
+
+    with pytest.raises(ValueError, match="missing.xrdml") as exc_info:
+        load_project_spec(spec_path)
+
+    assert not isinstance(exc_info.value, OSError)
+
+
 def test_load_project_spec_converts_xrdml_to_xye(project_dir: Path):
     (project_dir / "hist.xrdml").write_text(_XRDML, encoding="utf-8")
     spec = _minimal_spec_dict(data_rel="hist.xrdml")

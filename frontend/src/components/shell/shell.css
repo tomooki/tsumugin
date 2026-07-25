@@ -80,6 +80,11 @@
   border-color: var(--color-accent);
 }
 
+.mode-toggle__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .mode-toggle__dot {
   width: 8px;
   height: 8px;
@@ -307,6 +312,43 @@
   letter-spacing: 0.14em;
   color: var(--color-neutral-600);
   margin-bottom: 7px;
+}
+
+.left-rail__heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.left-rail__heading-row .left-rail__heading {
+  margin-bottom: 0;
+}
+
+/* "+" shortcut next to DATASETS / PHASES IN MODEL — jumps to the PROJECT tab
+   (V2a P4) so a new histogram/phase is always one click away, not buried in
+   a tab the user has to already know to visit. */
+.left-rail__add-btn {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: 0;
+  background: var(--color-bg);
+  color: var(--color-neutral-700);
+  cursor: pointer;
+  padding: 0;
+}
+
+.left-rail__add-btn:hover {
+  background: var(--color-accent-100);
+  color: var(--color-accent-800);
+  border-color: var(--color-accent-400);
 }
 
 .left-rail__datasets {

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tsumugin.workbench import __main__ as entry
+from tsumugin.workbench.session import WorkbenchSession
 
 
 @pytest.fixture()
@@ -71,3 +72,31 @@ def test_main_uses_none_static_dir_when_default_dist_missing_and_unspecified(
 
     assert len(fake_serve) == 1
     assert fake_serve[0]["static_dir"] is None
+
+
+# ---------------------------------------------------------------------------
+# セッション既定 (V2a: 引数なし = 空 (Welcome) / --demo = デモ / --project = 実プロジェクト)
+# ---------------------------------------------------------------------------
+
+
+def test_main_without_args_serves_empty_session(monkeypatch: pytest.MonkeyPatch, fake_serve):
+    monkeypatch.setattr("sys.argv", ["tsumugin-workbench"])
+    monkeypatch.setattr(entry, "_DEFAULT_DIST", Path("no-such-dist-dir"))
+
+    entry.main()
+
+    assert len(fake_serve) == 1
+    session = fake_serve[0]["session"]
+    assert isinstance(session, WorkbenchSession)
+    assert session.source == "none"
+
+
+def test_main_with_demo_flag_serves_demo_session(monkeypatch: pytest.MonkeyPatch, fake_serve):
+    monkeypatch.setattr("sys.argv", ["tsumugin-workbench", "--demo"])
+    monkeypatch.setattr(entry, "_DEFAULT_DIST", Path("no-such-dist-dir"))
+
+    entry.main()
+
+    assert len(fake_serve) == 1
+    session = fake_serve[0]["session"]
+    assert session.source == "demo"

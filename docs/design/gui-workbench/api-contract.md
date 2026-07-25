@@ -17,8 +17,10 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
   },
   "mode": "manual",                    // "manual" | "auto" (GUI 語彙)
   "final_selection_mode": "human",     // "human" | "agent" (FR-402, エンジン語彙)
-  "source": "demo",                    // "demo" | "project" (実プロジェクト接続時 "project")
+  "source": "none",                    // "none" | "demo" | "project"
+                                       //   none = プロジェクト未読込 (フロントは Welcome 画面)
   "refine": { "status": "idle" },      // /api/refine/status と同形 (シェルバッジ用)
+  "project_path": null,                // project モード時は project.json の絶対パス
   "ledger": { "count": 1281, "verified": true },
   "status": { "backend_build": "tsumugin 0.3.0", "seed": 0, "mcp_tools": 36 },
   "agent": { "tokens": 1240000, "wall_time_s": 1084, "idle": true }  // idle=true (MANUAL)
@@ -98,6 +100,16 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
     "constraints": [{ "kind": "EqnConstr", "text": "Σ occ(K1) · Z = x_total(t)", "ref": "FR-318" }],
     "mem_peaks": [{ "position": "(0.5, 0.25, 0.0)", "density": "0.82 fm Å⁻³", "assign": "Ow?" }]
   },
+  // PROJECT タブ用の入力設定 (V2a)。project モードで供給、demo/none では省略可
+  // (省略 = 空表示。行を偽装しない)。HistogramSpec/PhaseSpec の設定を 1:1 で映す。
+  "project": {
+    "histograms": [{ "id": "h0", "data_path": "data/NB-LM01MO_030.XRDML",
+                     "instrument_path": "data/cateo3_CuKa.instprm", "radiation": "xray_lab",
+                     "geometry": "bragg_brentano", "data_format": "XRDML",
+                     "two_theta_limits": [12.0, 70.0], "bank": null }],
+    "phases": [{ "name": "alpha", "structure_path": "data/alpha_CaTeO3_H2O.cif" }],
+    "settings": { "two_theta_limits": [12.0, 70.0], "background_coeffs": 24, "max_cyc": 20 }
+  },
   "stages": [{ "nn": "01", "name": "background", "flags": "6→24 terms", "delta_rwp": "−41.2",
                "released": true, "gate": "bkg" }],   // gate: null | bkg|profile|sample|occ|micro
   "review": [{ "id": "rv1", "severity": "close", "title": "close competitor",
@@ -115,6 +127,27 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
   ]
 }
 ```
+
+## プロジェクトライフサイクル (V2a — アプリ基盤)
+
+プロジェクト = ディレクトリ + `project.json` (spec スキーマは ② `auto_rietveld` と同一) +
+`data/` (取り込みファイル) + `ledger.jsonl` (PersistentLedger) + `snapshots.jsonl` +
+`workbench_out/`。**project.json は全ての設定変更で自動保存**。設定変更は ledger 記録。
+refine 実行中のプロジェクト変更系は 409。
+
+| 呼び出し | 成功レスポンス | 副作用 |
+|---|---|---|
+| POST `/api/project` `{"name": str, "directory": str}` | state | `<directory>/<name>/` 作成 + 空 project.json + 永続 ledger 開始。既存ディレクトリは 409 |
+| POST `/api/project/open` `{"path": str}` | state | project.json (またはそのディレクトリ) を読みセッション切替。永続 ledger/snapshot を再オープン (verify 必須) |
+| POST `/api/project/close` `{}` | state (source=none) | セッション解放 (refine 実行中 409)。ledger はファイルに残る |
+| POST `/api/project/demo` `{}` | state (source=demo) | シードのデモセッション (サンプル閲覧用) |
+| GET `/api/project/recent` | `{"projects": [{"name","path","last_opened"}]}` | — (`~/.tsumugin/workbench_recent.json`) |
+| POST `/api/project/upload` (multipart: `file`, `kind`=`data`\|`instrument`\|`structure`) | `{"stored_path": str}` | プロジェクト `data/` へ保存 (自己完結性のためコピー方式) |
+| POST `/api/project/histograms` `{data_path, instrument_path, radiation, geometry, data_format, two_theta_limits?, bank?}` | state+viewmodel 反映 | spec 追記 + 自動保存 + ledger |
+| POST `/api/project/histograms/{hist_id}/remove` `{}` | 同上 | spec から除去 + ledger (**DELETE ルートは使わない** — P2 構造ガード維持。解析履歴 ledger/snapshot は不可侵、除去できるのは入力設定のみ) |
+| POST `/api/project/phases` `{structure_path, phase_name}` | 同上 | spec 追記 + ledger |
+| POST `/api/project/phases/{phase_name}/remove` `{}` | 同上 | spec から除去 + ledger |
+| POST `/api/project/settings` `{two_theta_limits?, background_coeffs?, max_cyc?}` | 同上 | spec 更新 + ledger |
 
 ## その他の変更系
 

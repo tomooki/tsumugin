@@ -16,29 +16,44 @@ L142-153)。同一モードへの切替を no-op (ledger 追記なし) にする
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from .._json import finite_or_none
+from ..autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
 from ..autorietveld.recipe import build_recipe
 from ..model import LatticeParams, PhaseInstance
 from ..selection.engine import FinalSelectionEngine
 from ..selection.review_queue import ReviewQueue
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
+from . import lifecycle
 from . import seed as _seed
 from .jobs import RefinementJobManager, build_default_runner
-from .project import WorkbenchProject, preview_pattern
+from .project import WorkbenchProject, convert_histogram_for_runner, preview_pattern
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import は不要 (numpy 汚染回避と同じ流儀) 🔵
     from ..autorietveld.model import AutoRietveldResult
     from ..search.tree import SearchResult
+    from ..store.persistent import PersistentLedger, PersistentSnapshotStore
 
 GuiMode = Literal["manual", "auto"]
 EngineMode = Literal["human", "agent"]
-GuiSource = Literal["demo", "project"]
+#: "none" = プロジェクト未読込 (Welcome 画面, V2a P1)。
+GuiSource = Literal["demo", "project", "none"]
+
+#: POST /api/project/histograms が受け付ける data_format (`reference.io._LOADERS` の語彙と同一)。
+_VALID_DATA_FORMATS = frozenset({"XRDML", "FXYE", "GSAS", "XYE", "XY", "INT", "IGOR"})
+
+#: POST /api/project/upload のファイルサイズ上限 (50MB, api-contract.md)。
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+#: source="none" (Welcome 画面) の project meta (api-contract.md GET /api/state)。
+_EMPTY_PROJECT_META: dict[str, Any] = {"name": None, "dataset": None, "frame": None, "echem": None}
 
 _GUI_TO_ENGINE: dict[str, EngineMode] = {"manual": "human", "auto": "agent"}
 _ENGINE_TO_GUI: dict[str, GuiMode] = {"human": "manual", "agent": "auto"}
@@ -61,6 +76,7 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "transcript_message": "HUMAN",
     "approval_decision": "HUMAN",
     "accept_reason": "HUMAN",
+    "project_edit": "HUMAN",
 }
 
 
@@ -104,6 +120,8 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"approval {payload.get('action_id')} {payload.get('decision')}"
     if kind == "accept_reason":
         return f"accept reason: {payload.get('reason')}"
+    if kind == "project_edit":
+        return f"project edit: {payload.get('op')}"
     return kind
 
 
@@ -115,11 +133,25 @@ class WorkbenchSession:
     approval approve は ``SnapshotStore.save`` で子スナップショットも作る (REQ-GUI-008/009)。
     """
 
-    def __init__(self, *, mode: GuiMode = "manual") -> None:
+    def __init__(
+        self,
+        *,
+        mode: GuiMode = "manual",
+        ledger: "Ledger | PersistentLedger | None" = None,
+        snapshots: "SnapshotStore | PersistentSnapshotStore | None" = None,
+    ) -> None:
+        """
+        :param mode: 初期 GUI モード。
+        :param ledger: 注入する ledger 実体 (既定 ``None`` は in-memory ``Ledger()``, demo 用)。
+            project モードでは ``open_persistent`` が ``PersistentLedger`` を注入する (P1)。
+        :param snapshots: 注入する snapshot ストア (既定 ``None`` は ``ledger`` を束ねる
+            in-memory ``SnapshotStore``)。``ledger`` を注入しても ``snapshots`` を省略すると
+            in-memory のままになる点に注意 (``open_persistent`` は両方を揃えて渡す)。
+        """
         if mode not in _GUI_TO_ENGINE:
             raise ValueError(f"unknown mode: {mode!r}")
-        self.ledger = Ledger()
-        self.snapshots = SnapshotStore(ledger=self.ledger)
+        self.ledger = ledger if ledger is not None else Ledger()
+        self.snapshots = snapshots if snapshots is not None else SnapshotStore(ledger=self.ledger)
         self.review_queue = ReviewQueue(ledger=self.ledger)
         self.engine = FinalSelectionEngine(
             mode=_GUI_TO_ENGINE[mode], ledger=self.ledger, queue=self.review_queue
@@ -142,6 +174,7 @@ class WorkbenchSession:
         # 【実プロジェクト接続 (REQ-GUI-012/013)】: 既定は demo。``from_project`` が "project" へ切替える。
         self._source: GuiSource = "demo"
         self._project: "WorkbenchProject | None" = None
+        self._project_path: "str | None" = None
         self._phases_view: list[dict[str, Any]] = []
         self._parameters_view: dict[str, Any] = {}
         self._fit: dict[str, Any] = {}
@@ -182,16 +215,28 @@ class WorkbenchSession:
         return session
 
     @classmethod
-    def from_project(cls, project: WorkbenchProject) -> "WorkbenchSession":
+    def from_project(
+        cls,
+        project: WorkbenchProject,
+        *,
+        ledger: "Ledger | PersistentLedger | None" = None,
+        snapshots: "SnapshotStore | PersistentSnapshotStore | None" = None,
+    ) -> "WorkbenchSession":
         """実プロジェクト spec (`project.load_project_spec`) からセッションを構築する (REQ-GUI-012)。
 
         demo のシード (hypotheses/phase_id/sequence/transcript/review) は持たない — 実データが無い
         領域は empty-state (空リスト/None) として正直に表示する (REQ-GUI-014 精神、シード値で
-        実データを偽装しない)。datasets/phases/fit(プレビュー)/stages は実 project から構築する。
+        実データを偽装しない)。datasets/phases/fit(プレビュー)/stages は実 project から構築する
+        (ヒストグラム/相 0 件の作成直後プロジェクトでも空リストとして安全に構築できる)。
+
+        :param ledger: 注入する ledger (既定 ``None`` は in-memory, テスト/`--project` CLI 用)。
+            プロジェクトディレクトリへの永続配線は ``open_persistent`` を使う (P1)。
+        :param snapshots: 注入する snapshot ストア (既定は ``ledger`` を束ねる in-memory)。
         """
-        session = cls(mode="manual")
+        session = cls(mode="manual", ledger=ledger, snapshots=snapshots)
         session._source = "project"
         session._project = project
+        session._project_path = _project_json_path(project)
         session.project = {
             "name": project.name,
             "dataset": f"{len(project.histograms)} histogram(s)",
@@ -202,6 +247,35 @@ class WorkbenchSession:
         session._parameters_view = _initial_parameters_view(project)
         session._fit = _initial_fit_view(project)
         session._stages = _stages_from_recipe(project)
+        return session
+
+    @classmethod
+    def open_persistent(cls, project: WorkbenchProject) -> "WorkbenchSession":
+        """``project.spec_dir`` に永続 ledger/snapshot を配線してプロジェクトセッションを開く (P1)。
+
+        ``<spec_dir>/ledger.jsonl``/``<spec_dir>/snapshots.jsonl`` を ``PersistentLedger``/
+        ``PersistentSnapshotStore`` で (再) オープンする。再起動を跨いでも監査履歴が続く
+        (REQ-GUI-015)。既存ファイルが破損していれば ``LedgerIntegrityError``/
+        ``SnapshotIntegrityError`` を送出する (呼び出し側 [`app.py`] が 4xx error dict へ縮退する、
+        無修復 / P2)。
+        """
+        from ..store.persistent import PersistentLedger, PersistentSnapshotStore
+
+        spec_dir = Path(project.spec_dir).resolve()
+        ledger = PersistentLedger(spec_dir / "ledger.jsonl")
+        snapshots = PersistentSnapshotStore(spec_dir / "snapshots.jsonl", ledger=ledger)
+        return cls.from_project(project, ledger=ledger, snapshots=snapshots)
+
+    @classmethod
+    def create_empty(cls) -> "WorkbenchSession":
+        """プロジェクト未読込の空セッション (``source="none"``, Welcome 画面用, REQ-GUI-017)。
+
+        demo のシード表示を一切持たない — シードで実データ不在を偽装しない (REQ-GUI-014 精神)。
+        """
+        session = cls(mode="manual")
+        session._source = "none"
+        session.project = dict(_EMPTY_PROJECT_META)
+        session._stages = []
         return session
 
     # ------------------------------------------------------------------
@@ -244,6 +318,7 @@ class WorkbenchSession:
             "final_selection_mode": self.engine.mode,
             "source": self._source,
             "refine": self.refine_status(),
+            "project_path": self._project_path,
             "ledger": {"count": len(self.ledger.entries), "verified": self.ledger.verify()},
             "status": dict(self._status),
             "agent": agent,
@@ -254,36 +329,78 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def viewmodel(self) -> dict[str, Any]:
-        is_project = self._source == "project"
-        seeded_snapshots = [] if is_project else _seed.seed_snapshots()
+        # 【シード使用は demo のみ】: "project"/"none" (V2a P1) はどちらも実データ不在を
+        #   empty-state で正直に表示する (REQ-GUI-014 精神、シード値で実データを偽装しない)。
+        use_seed = self._source == "demo"
+        seeded_snapshots = _seed.seed_snapshots() if use_seed else []
         live_snapshots = [{"id": s.id, "note": s.label} for s in self.snapshots.snapshots]
         with self._lock:
-            fit = dict(self._fit) if is_project else _seed.seed_fit()
-            phases = [dict(p) for p in self._phases_view] if is_project else _seed.seed_phases()
+            fit = _seed.seed_fit() if use_seed else dict(self._fit)
+            phases = _seed.seed_phases() if use_seed else [dict(p) for p in self._phases_view]
             parameters = (
-                {k: dict(v) for k, v in self._parameters_view.items()}
-                if is_project
-                else _seed.seed_parameters()
+                _seed.seed_parameters()
+                if use_seed
+                else {k: dict(v) for k, v in self._parameters_view.items()}
             )
-        return {
+        vm: dict[str, Any] = {
             "datasets": self._datasets_view(),
             "phases": phases,
-            "channels": [] if is_project else _seed.seed_channels(),
+            "channels": _seed.seed_channels() if use_seed else [],
             "snapshots": seeded_snapshots + live_snapshots,
             "fit": fit,
             "parameters": parameters,
             "hypotheses": self.hypotheses_view(),
-            "phase_id": _EMPTY_PHASE_ID if is_project else _seed.seed_phase_id(),
-            "sequence": _EMPTY_SEQUENCE if is_project else _seed.seed_sequence(),
+            "phase_id": _seed.seed_phase_id() if use_seed else _EMPTY_PHASE_ID,
+            "sequence": _seed.seed_sequence() if use_seed else _EMPTY_SEQUENCE,
             "structure": self._structure_view(),
             "stages": [dict(s) for s in self._stages],
             "review": self.review_view(),
             "transcript": self._transcript_view(),
         }
+        project_config = self._project_config_view()
+        if project_config is not None:
+            vm["project"] = project_config
+        return vm
+
+    def _project_config_view(self) -> "dict[str, Any] | None":
+        """PROJECT タブ用の入力設定 echo (V2a, api-contract.md ``viewmodel.project``)。
+
+        ``HistogramSpec``/``PhaseSpec``/精密化設定を 1:1 で映す (PROJECT タブのフォーム初期値・
+        一覧表示用)。project モードでのみ供給し、demo/none は ``None`` (呼び出し元がキー自体を
+        省略する — 契約注記どおり「省略 = 空表示。行を偽装しない」)。
+        """
+        if self._source != "project" or self._project is None:
+            return None
+        project = self._project
+        histograms = [
+            {
+                "id": f"h{i}",
+                "data_path": h.data_path,
+                "instrument_path": h.instrument_path,
+                "radiation": h.radiation.value,
+                "geometry": h.geometry.value,
+                "data_format": h.data_format,
+                "two_theta_limits": list(h.two_theta_limits) if h.two_theta_limits else None,
+                "bank": h.bank,
+            }
+            for i, h in enumerate(project.histograms)
+        ]
+        phases = [
+            {"name": p.phase_name, "structure_path": p.structure_path} for p in project.phases
+        ]
+        limits = project.histograms[0].two_theta_limits if project.histograms else None
+        settings = {
+            "two_theta_limits": list(limits) if limits else None,
+            "background_coeffs": project.background_coeffs,
+            "max_cyc": project.max_cyc,
+        }
+        return {"histograms": histograms, "phases": phases, "settings": settings}
 
     def _datasets_view(self) -> list[dict[str, Any]]:
-        if self._source != "project" or self._project is None:
+        if self._source == "demo":
             return _seed.seed_datasets()
+        if self._source != "project" or self._project is None:
+            return []
         rows = []
         for i, h in enumerate(self._project.histograms):
             rows.append(
@@ -298,7 +415,7 @@ class WorkbenchSession:
         return rows
 
     def _structure_view(self) -> dict[str, Any]:
-        if self._source == "project":
+        if self._source != "demo":
             return {
                 "sites": [dict(s) for s in self._structure_sites],
                 "constraints": [],
@@ -611,6 +728,216 @@ class WorkbenchSession:
             view["released_count"] = len(prof)
 
     # ------------------------------------------------------------------
+    # POST /api/project/upload, /histograms(/remove), /phases(/remove), /settings (P2)
+    # ------------------------------------------------------------------
+
+    def _guard_project_editable(self) -> "dict[str, Any] | None":
+        """spec 変更系メソッドの共通ガード: project 未読込 (422) / refine 実行中 (409)。"""
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        if self._job.status()["status"] == "running":
+            return {"error": "refinement is running", "error_type": "ConflictError"}
+        return None
+
+    def _save_and_refresh(self, op: str, payload: dict[str, Any]) -> None:
+        """project.json へ自動保存 + ledger 追記 + PHASES/PARAMETERS/FIT/STAGES viewmodel 再構築。"""
+        assert self._project is not None
+        lifecycle.save_project_spec(self._project)
+        self.ledger.append("project_edit", {"op": op, **payload})
+        self._refresh_project_views()
+
+    def _refresh_project_views(self) -> None:
+        project = self._project
+        assert project is not None
+        with self._lock:
+            self._phases_view = _initial_phases_view(project)
+            self._parameters_view = _initial_parameters_view(project)
+            self._fit = _initial_fit_view(project)
+            self._stages = _stages_from_recipe(project)
+            self.project = {
+                "name": project.name,
+                "dataset": f"{len(project.histograms)} histogram(s)",
+                "frame": None,
+                "echem": None,
+            }
+
+    def store_upload(self, filename: str, content: bytes) -> dict[str, Any]:
+        """アップロードされたファイルをプロジェクト ``data/`` へコピーする (自己完結方式, REQ-GUI-016)。
+
+        ファイル名は `lifecycle.sanitize_filename` でパス区切り等を除去し、同名衝突は連番で回避する。
+        """
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        if len(content) > _MAX_UPLOAD_BYTES:
+            return {"error": "file too large (max 50MB)", "error_type": "ValueError"}
+        assert self._project is not None
+        data_dir = Path(self._project.spec_dir) / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = lifecycle.sanitize_filename(filename)
+        target = data_dir / safe_name
+        stem, suffix = target.stem, target.suffix
+        i = 1
+        while target.exists():
+            target = data_dir / f"{stem}_{i}{suffix}"
+            i += 1
+        target.write_bytes(content)
+        return {"stored_path": str(target)}
+
+    def add_histogram(
+        self,
+        *,
+        data_path: Any,
+        instrument_path: Any,
+        radiation: Any,
+        geometry: Any,
+        data_format: Any = "GSAS",
+        two_theta_limits: Any = None,
+        bank: Any = None,
+    ) -> dict[str, Any]:
+        """POST /api/project/histograms: spec へ 1 ヒストグラムを追記する (REQ-GUI-016)。"""
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        if not data_path or not instrument_path:
+            return {"error": "data_path/instrument_path is required", "error_type": "ValueError"}
+        try:
+            rad = Radiation(radiation)
+        except ValueError:
+            return {"error": f"invalid radiation: {radiation!r}", "error_type": "ValueError"}
+        try:
+            geo = Geometry(geometry)
+        except ValueError:
+            return {"error": f"invalid geometry: {geometry!r}", "error_type": "ValueError"}
+        fmt = str(data_format).upper()
+        if fmt not in _VALID_DATA_FORMATS:
+            return {"error": f"invalid data_format: {data_format!r}", "error_type": "ValueError"}
+        limits: "tuple[float, float] | None" = None
+        if two_theta_limits is not None:
+            try:
+                limits = (float(two_theta_limits[0]), float(two_theta_limits[1]))
+            except (TypeError, ValueError, IndexError, KeyError):
+                return {
+                    "error": f"invalid two_theta_limits: {two_theta_limits!r}",
+                    "error_type": "ValueError",
+                }
+        try:
+            bank_val = int(bank) if bank is not None else None
+        except (TypeError, ValueError):
+            return {"error": f"invalid bank: {bank!r}", "error_type": "ValueError"}
+        hist = HistogramSpec(
+            data_path=str(data_path),
+            instrument_path=str(instrument_path),
+            radiation=rad,
+            geometry=geo,
+            data_format=fmt,
+            two_theta_limits=limits,
+            bank=bank_val,
+        )
+        assert self._project is not None
+        # 【runner-ready 不変条件】: WorkbenchProject.histograms は「そのまま
+        # run_auto_rietveld に渡せる」こと。ロード時 (load_project_spec) と同じ変換を
+        # 実行時追加でも通す (未変換 XRDML が refine 失敗を起こした回帰の恒久修正)。
+        try:
+            hist = convert_histogram_for_runner(
+                hist, Path(self._project.spec_dir), len(self._project.histograms)
+            )
+        except (ValueError, OSError) as exc:
+            return {"error": f"could not read data file: {exc}", "error_type": "ValueError"}
+        self._project = dataclasses.replace(
+            self._project, histograms=self._project.histograms + (hist,)
+        )
+        self._save_and_refresh("add_histogram", {"data_path": hist.data_path})
+        return self.state()
+
+    def remove_histogram(self, hist_id: str) -> dict[str, Any]:
+        """POST /api/project/histograms/{hist_id}/remove: spec からヒストグラムを除去する。"""
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        assert self._project is not None
+        idx = _hist_index(hist_id, len(self._project.histograms))
+        if idx is None:
+            return {"error": f"unknown histogram: {hist_id}", "error_type": "NotFoundError"}
+        histograms = self._project.histograms[:idx] + self._project.histograms[idx + 1 :]
+        self._project = dataclasses.replace(self._project, histograms=histograms)
+        self._save_and_refresh("remove_histogram", {"hist_id": hist_id})
+        return self.state()
+
+    def add_phase(self, *, structure_path: Any, phase_name: Any) -> dict[str, Any]:
+        """POST /api/project/phases: spec へ 1 相を追記する (REQ-GUI-016)。"""
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        if not structure_path or not phase_name:
+            return {"error": "structure_path/phase_name is required", "error_type": "ValueError"}
+        assert self._project is not None
+        name = str(phase_name)
+        if any(p.phase_name == name for p in self._project.phases):
+            return {"error": f"phase already exists: {name}", "error_type": "ValueError"}
+        phase = PhaseSpec(structure_path=str(structure_path), phase_name=name)
+        self._project = dataclasses.replace(self._project, phases=self._project.phases + (phase,))
+        self._save_and_refresh("add_phase", {"phase_name": name})
+        return self.state()
+
+    def remove_phase(self, phase_name: str) -> dict[str, Any]:
+        """POST /api/project/phases/{phase_name}/remove: spec から相を除去する。"""
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        assert self._project is not None
+        phases = tuple(p for p in self._project.phases if p.phase_name != phase_name)
+        if len(phases) == len(self._project.phases):
+            return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
+        self._project = dataclasses.replace(self._project, phases=phases)
+        self._save_and_refresh("remove_phase", {"phase_name": phase_name})
+        return self.state()
+
+    def update_settings(
+        self,
+        *,
+        two_theta_limits: Any = None,
+        background_coeffs: Any = None,
+        max_cyc: Any = None,
+    ) -> dict[str, Any]:
+        """POST /api/project/settings: 精密化設定 (2θ範囲/背景項数/max_cyc) を更新する。"""
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        assert self._project is not None
+        project = self._project
+        if two_theta_limits is not None:
+            try:
+                lo, hi = float(two_theta_limits[0]), float(two_theta_limits[1])
+            except (TypeError, ValueError, IndexError, KeyError):
+                return {
+                    "error": f"invalid two_theta_limits: {two_theta_limits!r}",
+                    "error_type": "ValueError",
+                }
+            project = dataclasses.replace(
+                project,
+                histograms=tuple(
+                    dataclasses.replace(h, two_theta_limits=(lo, hi)) for h in project.histograms
+                ),
+            )
+        if background_coeffs is not None:
+            try:
+                project = dataclasses.replace(project, background_coeffs=int(background_coeffs))
+            except (TypeError, ValueError):
+                return {
+                    "error": f"invalid background_coeffs: {background_coeffs!r}",
+                    "error_type": "ValueError",
+                }
+        if max_cyc is not None:
+            try:
+                project = dataclasses.replace(project, max_cyc=int(max_cyc))
+            except (TypeError, ValueError):
+                return {"error": f"invalid max_cyc: {max_cyc!r}", "error_type": "ValueError"}
+        self._project = project
+        self._save_and_refresh("settings", {})
+        return self.state()
+
+    # ------------------------------------------------------------------
     # POST /api/transcript/message
     # ------------------------------------------------------------------
 
@@ -632,6 +959,30 @@ _EMPTY_PHASE_ID: dict[str, Any] = {
     "completeness": {"is_complete": None, "notes": [], "flagged_frames": ""},
 }
 _EMPTY_SEQUENCE: dict[str, Any] = {"charts": [], "anchors": [], "note": "", "segments": []}
+
+
+def _project_json_path(project: WorkbenchProject) -> "str | None":
+    """``GET /api/state`` の ``project_path`` (project.json の絶対パス)。
+
+    テスト fixture 由来の ``WorkbenchProject`` (``spec_dir`` 既定 "." / 未設定) は ``None`` を返す
+    (実プロジェクトディレクトリと結び付いていないため)。
+    """
+    if not project.spec_dir or project.spec_dir == ".":
+        return None
+    return str(Path(project.spec_dir).resolve() / lifecycle.PROJECT_JSON_NAME)
+
+
+def _hist_index(hist_id: str, n_histograms: int) -> "int | None":
+    """``"h{i}"`` 形式のヒストグラム id を index へ変換する (範囲外/不正形式は ``None``)。"""
+    if not hist_id.startswith("h"):
+        return None
+    try:
+        idx = int(hist_id[1:])
+    except ValueError:
+        return None
+    if not (0 <= idx < n_histograms):
+        return None
+    return idx
 
 
 def _row(field: str, value: str, esd: str = "", *, released: bool = False, locked: bool = False) -> dict[str, Any]:
