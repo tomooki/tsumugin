@@ -187,3 +187,46 @@ describe("reducer — SET_VIEW_MODEL stageOn server sync", () => {
     expect(next.stageOn).toEqual({ 1: false, 2: true });
   });
 });
+
+describe("reducer — APPEND_TRANSCRIPT_MESSAGE", () => {
+  function transcriptViewModel(stages: StageRow[]): ViewModel {
+    return {
+      structure: { sites: [], constraints: [], mem_peaks: [] },
+      stages,
+      transcript: [],
+    } as unknown as ViewModel;
+  }
+
+  // Regression (self-review round 2): AgentSession's composer used to reuse
+  // SET_VIEW_MODEL with a stale local viewModel, whose new stageOn resync then
+  // silently undid optimistic TOGGLE_STAGE updates. The transcript-only action
+  // must append without ever touching stageOn.
+  it("appends to the transcript and leaves stageOn untouched", () => {
+    const stages: StageRow[] = [
+      { nn: "01", name: "background", flags: "", delta_rwp: "", released: false, gate: null },
+    ];
+    const loaded = reducer(initialWorkbenchState, {
+      type: "SET_VIEW_MODEL",
+      viewModel: transcriptViewModel(stages),
+    });
+    // optimistic local toggle diverging from the (now stale) viewModel.stages
+    const toggled = reducer(loaded, { type: "TOGGLE_STAGE", nn: 1 });
+    expect(toggled.stageOn[1]).toBe(true);
+
+    const next = reducer(toggled, {
+      type: "APPEND_TRANSCRIPT_MESSAGE",
+      message: { id: "tX", kind: "user", text: "hello" },
+    });
+
+    expect(next.viewModel?.transcript.map((m) => m.id)).toContain("tX");
+    expect(next.stageOn[1]).toBe(true); // NOT reverted to the stale server value
+  });
+
+  it("is a no-op before the first viewmodel fetch", () => {
+    const next = reducer(initialWorkbenchState, {
+      type: "APPEND_TRANSCRIPT_MESSAGE",
+      message: { id: "tX", kind: "user", text: "hello" },
+    });
+    expect(next).toBe(initialWorkbenchState);
+  });
+});

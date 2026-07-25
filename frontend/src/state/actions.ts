@@ -1,4 +1,4 @@
-import type { GuiMode, ShellState, Site, ViewModel } from "../api/types";
+import type { GuiMode, ShellState, Site, TranscriptMessage, ViewModel } from "../api/types";
 import type { Lang } from "../i18n";
 import type { ApprovalState, HistId, ReviewDecision, TabId } from "./types";
 
@@ -24,5 +24,6 @@ export type Action =
   | { type: "SET_DRAFT"; draft: string }
   | { type: "SET_SHELL"; shell: ShellState }
   | { type: "SET_VIEW_MODEL"; viewModel: ViewModel }
+  | { type: "APPEND_TRANSCRIPT_MESSAGE"; message: TranscriptMessage }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_ERROR"; error: string | null };

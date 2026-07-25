@@ -31,12 +31,9 @@ export function AgentSession() {
     try {
       const res = await postTranscriptMessage(text);
       dispatch({ type: "SET_DRAFT", draft: "" });
-      if (vm) {
-        dispatch({
-          type: "SET_VIEW_MODEL",
-          viewModel: { ...vm, transcript: [...vm.transcript, res.message] },
-        });
-      }
+      // transcript-only append — SET_VIEW_MODEL would resync stageOn from this
+      // stale (non-refetched) viewModel and undo optimistic stage toggles.
+      dispatch({ type: "APPEND_TRANSCRIPT_MESSAGE", message: res.message });
     } catch (err) {
       dispatch({
         type: "SET_ERROR",

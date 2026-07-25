@@ -151,6 +151,21 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
       return { ...state, viewModel: action.viewModel, stageOn };
     }
 
+    case "APPEND_TRANSCRIPT_MESSAGE": {
+      // Local-only transcript append (composer echo). Deliberately does NOT go
+      // through SET_VIEW_MODEL: that action treats its payload as server truth
+      // and resyncs stageOn from stages[].released, which would silently undo
+      // optimistic TOGGLE_STAGE updates when the reused viewModel is stale.
+      if (!state.viewModel) return state;
+      return {
+        ...state,
+        viewModel: {
+          ...state.viewModel,
+          transcript: [...state.viewModel.transcript, action.message],
+        },
+      };
+    }
+
     case "SET_LOADING":
       return { ...state, loading: action.loading };
 
