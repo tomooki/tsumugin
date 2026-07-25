@@ -2209,6 +2209,7 @@ nested = [
 ]
 web = [
     { name = "fastapi" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
 ]
 
@@ -2231,6 +2232,7 @@ requires-dist = [
     { name = "periodictable", marker = "extra == 'absorption'", specifier = ">=1.6" },
     { name = "pycifrw", marker = "extra == 'gsas'", specifier = ">=4.4" },
     { name = "pymatgen", marker = "extra == 'mp'", specifier = ">=2024.3" },
+    { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.9" },
     { name = "requests", marker = "extra == 'gsas'", specifier = ">=2.31" },
     { name = "scipy", marker = "extra == 'gsas'", specifier = ">=1.11" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.29" },

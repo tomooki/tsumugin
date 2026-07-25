@@ -85,7 +85,7 @@ def _convert_xrdml_if_needed(hist: HistogramSpec, spec_dir: Path, index: int) ->
     return dataclasses.replace(hist, data_path=str(out_path), data_format="XYE")
 
 
-def load_project_spec(path: "str | Path") -> WorkbenchProject:
+def load_project_spec(path: "str | Path", *, allow_empty: bool = False) -> WorkbenchProject:
     """JSON プロジェクト spec をロードし ``WorkbenchProject`` を返す。
 
     spec の形は ② ``auto_rietveld`` (``HistogramSpec.to_dict``/``PhaseSpec.to_dict``) と同一。
@@ -93,8 +93,12 @@ def load_project_spec(path: "str | Path") -> WorkbenchProject:
     "max_cyc"?}``。phases の各要素は任意で ``"display": {...}`` を持てる (表示専用メタ、
     ``PhaseSpec.from_dict`` の余分キー無視により素通しされないため本関数側で退避する)。
 
-    :raises ValueError: 必須キー欠落・空配列・不明な enum 値等、不正な spec のとき
-        (呼び出し側 [CLI/API] が error dict へ縮退する)。
+    :param allow_empty: ``True`` なら ``histograms``/``phases`` の空配列を許容する
+        (V2a プロジェクトライフサイクル `lifecycle.py`: 作成直後・ファイル未読込のプロジェクトを
+        開けるようにするため)。既定 ``False`` は ② ``auto_rietveld`` 経路と同じ厳格な検証を維持する
+        (後方互換)。
+    :raises ValueError: 必須キー欠落・空配列 (``allow_empty=False`` のとき)・不明な enum 値等、
+        不正な spec のとき (呼び出し側 [CLI/API] が error dict へ縮退する)。
     """
     spec_path = Path(path)
     try:
@@ -112,9 +116,9 @@ def load_project_spec(path: "str | Path") -> WorkbenchProject:
         name = str(data["name"])
         raw_histograms = list(data["histograms"])
         raw_phases = list(data["phases"])
-        if not raw_histograms:
+        if not raw_histograms and not allow_empty:
             raise ValueError("histograms が空です")
-        if not raw_phases:
+        if not raw_phases and not allow_empty:
             raise ValueError("phases が空です")
         background_coeffs = int(data.get("background_coeffs", 6))
         max_cyc = int(data.get("max_cyc", 12))

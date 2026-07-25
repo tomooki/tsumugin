@@ -7,8 +7,10 @@ read-only 保証 (webui) と対称に、ワークベンチは「削除系ルー�
 
 from __future__ import annotations
 
+import io
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -576,3 +578,310 @@ def test_unhandled_exception_degrades_to_500_error_dict(
     assert resp.status_code == 500
     body = resp.json()
     assert body == {"error": "internal server error", "error_type": "internal_error"}
+
+
+# ---------------------------------------------------------------------------
+# プロジェクトライフサイクル (V2a P1/P2, api-contract.md §プロジェクトライフサイクル)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """recent 一覧の保存先をテスト用ホームへ隔離する。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    return home
+
+
+def test_project_create_open_close_demo_round_trip(
+    client: TestClient, tmp_path: Path, fake_home: Path
+):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+
+    resp = client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"] == "project"
+    assert data["project"]["name"] == "proj1"
+    assert data["project_path"] is not None
+
+    resp2 = client.post("/api/project/close", json={})
+    assert resp2.status_code == 200
+    assert resp2.json()["source"] == "none"
+    assert resp2.json()["project_path"] is None
+
+    resp3 = client.post(
+        "/api/project/open", json={"path": str(directory / "proj1")}
+    )
+    assert resp3.status_code == 200
+    assert resp3.json()["source"] == "project"
+    assert resp3.json()["project"]["name"] == "proj1"
+
+    resp4 = client.post("/api/project/demo", json={})
+    assert resp4.status_code == 200
+    assert resp4.json()["source"] == "demo"
+
+
+def test_project_create_existing_directory_returns_409(
+    client: TestClient, tmp_path: Path, fake_home: Path
+):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    resp = client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+
+
+def test_project_create_missing_name_or_directory_returns_422(client: TestClient, tmp_path: Path):
+    resp = client.post("/api/project", json={"name": "", "directory": str(tmp_path)})
+    assert resp.status_code == 422
+
+    resp2 = client.post("/api/project", json={"name": "x"})
+    assert resp2.status_code == 422
+
+
+def test_project_open_missing_path_returns_404(client: TestClient, tmp_path: Path):
+    resp = client.post("/api/project/open", json={"path": str(tmp_path / "does-not-exist")})
+    assert resp.status_code == 404
+    assert resp.json()["error_type"] == "NotFoundError"
+
+
+def test_project_recent_lists_after_create(client: TestClient, tmp_path: Path, fake_home: Path):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    resp = client.get("/api/project/recent")
+
+    assert resp.status_code == 200
+    projects = resp.json()["projects"]
+    assert len(projects) == 1
+    assert projects[0]["name"] == "proj1"
+    assert "last_opened" in projects[0]
+
+
+def test_project_upload_stores_file_and_returns_stored_path(
+    client: TestClient, tmp_path: Path, fake_home: Path
+):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    resp = client.post(
+        "/api/project/upload",
+        data={"kind": "data"},
+        files={"file": ("hist.xy", io.BytesIO(b"10.0 100\n10.1 105\n"), "text/plain")},
+    )
+
+    assert resp.status_code == 200
+    stored_path = resp.json()["stored_path"]
+    assert Path(stored_path).exists()
+    assert Path(stored_path).parent.name == "data"
+
+
+def test_project_upload_invalid_kind_returns_422(client: TestClient, tmp_path: Path, fake_home: Path):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    resp = client.post(
+        "/api/project/upload",
+        data={"kind": "bogus"},
+        files={"file": ("hist.xy", io.BytesIO(b"x"), "text/plain")},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_project_upload_without_project_returns_422(client: TestClient):
+    # 【demo セッション (source != "project")】: upload はプロジェクト未読込では拒否される
+    resp = client.post(
+        "/api/project/upload",
+        data={"kind": "data"},
+        files={"file": ("hist.xy", io.BytesIO(b"x"), "text/plain")},
+    )
+    assert resp.status_code == 422
+
+
+def test_project_histograms_add_and_remove(client: TestClient, tmp_path: Path, fake_home: Path):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    resp = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": "data/hist.xy",
+            "instrument_path": "data/hist.instprm",
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XY",
+        },
+    )
+    assert resp.status_code == 200
+    vm = client.get("/api/viewmodel").json()
+    assert len(vm["datasets"]) == 1
+    hist_id = vm["datasets"][0]["id"]
+
+    resp_bad_radiation = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": "data/hist2.xy",
+            "instrument_path": "data/hist2.instprm",
+            "radiation": "not-a-radiation",
+            "geometry": "bragg_brentano",
+        },
+    )
+    assert resp_bad_radiation.status_code == 422
+
+    resp_remove = client.post(f"/api/project/histograms/{hist_id}/remove", json={})
+    assert resp_remove.status_code == 200
+    vm2 = client.get("/api/viewmodel").json()
+    assert vm2["datasets"] == []
+
+
+def test_project_phases_add_and_remove(client: TestClient, tmp_path: Path, fake_home: Path):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    resp = client.post(
+        "/api/project/phases", json={"structure_path": "data/p.cif", "phase_name": "phaseA"}
+    )
+    assert resp.status_code == 200
+    vm = client.get("/api/viewmodel").json()
+    assert len(vm["phases"]) == 1
+
+    resp_remove = client.post("/api/project/phases/phaseA/remove", json={})
+    assert resp_remove.status_code == 200
+
+    resp_remove_again = client.post("/api/project/phases/phaseA/remove", json={})
+    assert resp_remove_again.status_code == 404
+
+
+def test_project_settings_update(client: TestClient, tmp_path: Path, fake_home: Path):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+    client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": "data/hist.xy",
+            "instrument_path": "data/hist.instprm",
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XY",
+        },
+    )
+
+    resp = client.post(
+        "/api/project/settings",
+        json={"two_theta_limits": [8.0, 65.0], "background_coeffs": 10, "max_cyc": 15},
+    )
+
+    assert resp.status_code == 200
+    vm = client.get("/api/viewmodel").json()
+    assert vm["fit"]["two_theta"] == {"min": 8.0, "max": 65.0}
+
+
+# ---------------------------------------------------------------------------
+# refine 実行中のプロジェクト変更系ガード (409, api-contract.md)
+# ---------------------------------------------------------------------------
+
+
+def test_project_lifecycle_routes_return_409_while_refine_running(
+    client: TestClient, tmp_path: Path, fake_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+    client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": "data/hist.xy",
+            "instrument_path": "data/hist.instprm",
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XY",
+        },
+    )
+    client.post(
+        "/api/project/phases", json={"structure_path": "data/p.cif", "phase_name": "phaseA"}
+    )
+
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def fake_runner() -> AutoRietveldResult:
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        return _fake_result()
+
+    monkeypatch.setattr(
+        workbench_session_module, "build_default_runner",
+        lambda project, ledger=None: fake_runner,
+    )
+
+    resp = client.post("/api/refine", json={})
+    assert resp.status_code == 202
+    assert started_evt.wait(timeout=5)
+
+    try:
+        for method, path, body in [
+            ("post", "/api/project/close", {}),
+            ("post", "/api/project/demo", {}),
+            ("post", "/api/project/histograms/h0/remove", {}),
+            (
+                "post",
+                "/api/project/phases",
+                {"structure_path": "x.cif", "phase_name": "phaseB"},
+            ),
+            ("post", "/api/project/settings", {"max_cyc": 3}),
+        ]:
+            resp = getattr(client, method)(path, json=body)
+            assert resp.status_code == 409, f"{path} did not 409 while refine running"
+            assert resp.json()["error_type"] == "ConflictError"
+    finally:
+        release_evt.set()
+
+
+# ---------------------------------------------------------------------------
+# ガード変異実証 (b): DELETE ルート不在ガードが project ルート追加後も落ちること
+# ---------------------------------------------------------------------------
+
+
+def test_no_delete_or_put_routes_guard_detects_injected_delete_route(client: TestClient):
+    """DELETE ルートを一時的に注入すると `test_no_delete_or_put_routes_are_defined` 相当の
+
+    走査ガードが検知することを、本テスト内で実証する (恒久ガード自体は上の
+    ``test_no_delete_or_put_routes_are_defined`` — ここでは新設した project ルート追加後も
+    ガードの検知力が損なわれていないことを変異実証する)。
+    """
+    app = client.app
+
+    @app.delete("/api/project/__mutation_test__")
+    def _injected_delete() -> dict:
+        return {}
+
+    offending = [
+        (getattr(route, "path", "?"), route.methods)
+        for route in app.routes
+        if getattr(route, "methods", None) and "DELETE" in route.methods
+    ]
+    assert offending, "注入した DELETE ルートが検知されなかった (ガードが機能していない)"
+
+    # 【復元】: 注入したルートを取り除き、恒久ガードへの影響を残さない
+    app.router.routes = [
+        r for r in app.router.routes if getattr(r, "path", None) != "/api/project/__mutation_test__"
+    ]
+    offending_after = [
+        (getattr(route, "path", "?"), route.methods)
+        for route in app.routes
+        if getattr(route, "methods", None) and "DELETE" in route.methods
+    ]
+    assert offending_after == []

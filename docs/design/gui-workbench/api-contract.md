@@ -100,6 +100,16 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
     "constraints": [{ "kind": "EqnConstr", "text": "Σ occ(K1) · Z = x_total(t)", "ref": "FR-318" }],
     "mem_peaks": [{ "position": "(0.5, 0.25, 0.0)", "density": "0.82 fm Å⁻³", "assign": "Ow?" }]
   },
+  // PROJECT タブ用の入力設定 (V2a)。project モードで供給、demo/none では省略可
+  // (省略 = 空表示。行を偽装しない)。HistogramSpec/PhaseSpec の設定を 1:1 で映す。
+  "project": {
+    "histograms": [{ "id": "h0", "data_path": "data/NB-LM01MO_030.XRDML",
+                     "instrument_path": "data/cateo3_CuKa.instprm", "radiation": "xray_lab",
+                     "geometry": "bragg_brentano", "data_format": "XRDML",
+                     "two_theta_limits": [12.0, 70.0], "bank": null }],
+    "phases": [{ "name": "alpha", "structure_path": "data/alpha_CaTeO3_H2O.cif" }],
+    "settings": { "two_theta_limits": [12.0, 70.0], "background_coeffs": 24, "max_cyc": 20 }
+  },
   "stages": [{ "nn": "01", "name": "background", "flags": "6→24 terms", "delta_rwp": "−41.2",
                "released": true, "gate": "bkg" }],   // gate: null | bkg|profile|sample|occ|micro
   "review": [{ "id": "rv1", "severity": "close", "title": "close competitor",

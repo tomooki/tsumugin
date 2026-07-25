@@ -1,7 +1,9 @@
-"""``python -m tsumugin.workbench`` — デモセッションで workbench を配信する開発用エントリ。
+"""``python -m tsumugin.workbench`` — workbench を配信する開発用エントリ。
 
-【機能概要】: `WorkbenchSession.create_demo()` を `serve()` (uvicorn, localhost 既定) で配信する。
-`frontend/dist` (リポジトリ開発時の既定位置) が存在すれば静的配信し、無ければ API のみ。
+【機能概要】: 既定 (引数なし) は空セッション (`WorkbenchSession.create_empty()`, source="none",
+Welcome 画面 REQ-GUI-017) を配信する。``--demo`` でシードのデモセッション、``--project`` で実
+プロジェクト spec (`load_project_spec`, 従来どおり in-memory ledger) を配信する。`frontend/dist`
+(リポジトリ開発時の既定位置) が存在すれば静的配信し、無ければ API のみ。
 【非目標】: 配布用エントリポイントではない (Tauri sidecar 梱包は desktop/ 側の責務)。
 🟡 信頼性レベル: 開発用途の便宜エントリ (docs/design/gui-workbench/architecture.md §Tauri)。
 """
@@ -34,8 +36,13 @@ def main() -> None:
         "--project",
         default=None,
         help=(
-            "実プロジェクト spec (JSON, REQ-GUI-012)。省略時はデモセッション (シード) を配信する。"
+            "実プロジェクト spec (JSON, REQ-GUI-012)。省略時は既定で空セッション (Welcome 画面) を配信する。"
         ),
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="デモセッション (シード, ハンドオフのプロトタイプ相当) を配信する。--project と併用不可。",
     )
     args = parser.parse_args()
     static_dir: Path | None
@@ -51,8 +58,12 @@ def main() -> None:
             print(f"tsumugin workbench: 不正なプロジェクト spec です: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
         session: WorkbenchSession = WorkbenchSession.from_project(project)
-    else:
+    elif args.demo:
         session = WorkbenchSession.create_demo()
+    else:
+        # 【既定 = Welcome (REQ-GUI-017)】: source="none" で起動し、frontend が
+        #   新規作成/開く/サンプルの導線を表示する (2026-07-25 方針転換, V2_PLAN.md V2a)。
+        session = WorkbenchSession.create_empty()
 
     serve(
         session,
