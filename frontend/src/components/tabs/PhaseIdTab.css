@@ -1,0 +1,128 @@
+/* PHASE ID tab — candidate table + UNEXPLAINED FEATURES / PHASE SET
+   COMPLETENESS bottom cards. See docs/design/gui-workbench/handoff/
+   README.md §Centre pane item 4 and the `.dc.html` template lines
+   ~388-445 for the reference layout. */
+
+.pid-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.pid-tab__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.pid-tab__title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.pid-tab__note {
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+}
+
+.pid-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.pid-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-600);
+  border-bottom: 1px solid var(--color-text);
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+.pid-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.pid-table__row--top {
+  background: var(--color-accent-100);
+}
+
+.pid-table td.num,
+.pid-table th.num {
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+.pid-table td.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.pid-table td.right {
+  text-align: right;
+}
+
+.pid-bottom {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.pid-bottom__card {
+  display: flex;
+  flex-direction: column;
+}
+
+.pid-residual__list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-neutral-800);
+}
+
+.pid-completeness {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.pid-completeness__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.pid-completeness__note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-neutral-800);
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.pid-completeness__value {
+  font-family: var(--font-mono);
+}
+
+.pid-completeness__footer {
+  font-size: 11px;
+  color: var(--color-neutral-700);
+  line-height: 1.5;
+}
