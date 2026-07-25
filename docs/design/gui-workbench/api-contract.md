@@ -70,6 +70,7 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
     "diff": { "vs": "H-011", "rows": [{ "field": "phases", "a": "…", "b": "…", "changed": true }] },
     "evidence": [["evidence backend", "bic → nested"], ["ΔlogZ", "1.2 < 2.5 threshold"]],
     // basin 散布 (マルチスタート格子ベイスン)。null = データなし (empty-state)。
+    // ※ v1 時点では demo/project ともデータソース未配線 (run_multistart_rietveld 接続後に供給)
     "basin": { "points": [{ "x": 9.372, "y": 6.71, "label": "start 1" }] }
   },
   "phase_id": {
