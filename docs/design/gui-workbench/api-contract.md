@@ -165,6 +165,23 @@ refine 実行中のプロジェクト変更系は 409。
 
 ジョブ枠は 1 つ (refine/phaseid/multistart は相互に 409) — GSAS 直列実行の前提を単純に保つ。
 
+## 逐次 / operando (V2b — B1〜B5)
+
+project.json は任意の `"frames": [{"data_path", "axis_value", "label"?}]` +
+`"frame_axis": "temperature"|"time"|"index"` を持てる (B1)。フレーム列の装置条件は
+histograms[0] (instrument_path/radiation/geometry/data_format/two_theta_limits) を共有する
+(M9 の系列 = 単一装置の前提)。ジョブ枠は既存と同一 (kind に "sequential" が加わる)。
+
+| 呼び出し | 成功レスポンス | 副作用 / 備考 |
+|---|---|---|
+| POST `/api/project/frames` `{"frames": [...]}` | state | フレーム列を**全置換** (冪等 set)。spec 自動保存 + ledger。パスは data/ 基準絶対化・実在検証 |
+| POST `/api/sequential` `{"mode": "forward"\|"anchored", "anchor_table"?: {frame_index: [phase,...]}, "use_charge_constraint"?: bool}` | 202 / 409 | ② `sequential_rietveld`/`anchored_sequential` の instrument JSON spec 経路をジョブ化 (B2/B3)。frames 未設定は 422。進捗 = ledger (frame k/N)。**operando 既定は anchored を推奨** (CLAUDE.md: 相数は bic で抑制) |
+| GET `/api/sequential/status` | refine/status と同形 (kind="sequential") | ポーリング |
+| (viewmodel) `sequence` | 完了後: charts 3 本の series 実データ (rwp / lattice a,c per 相 / **phase_weight_fractions** [Scale でなく出版値] + x_echem overlay)、anchors (anchored 時: crossover=total_bic 最小)、segments (crossovers 写像)、per-frame 表 `sequence.frames[]` ({frame, label, axis_value, rwp, cells, fractions, changepoint}) | — |
+| POST `/api/echem` `{"mpr_path": str, "offset_s": float, "interval_s": float, "sign": -1\|1, "x0"?: float}` | `{"curve", "targets", ...}` (② align_echem+alkali_budget の出力) | 同期実行 (軽量)。mpr は upload (kind="echem") 経由も可。結果はセッション保持 → channels 実値 + fraction chart overlay + sequential の charge_constraint に使用可 (B4)。galvani 未導入/ファイル不正は 422 |
+| (B5 新相提案) | — | sequential 完了時、changepoint/未説明残差のフレームがあれば **ModelAction 承認カード** (transcript approval) を生成: 「frame N で新相を同定して追加するか」。APPROVE → phaseid ジョブ (残差, elements は現相集合由来) → top 候補を物質化して相追加 (ledger)。再実行はユーザーの明示 RUN。REJECT → 提案は ledger に残る。**エンジン内自動受理は GUI 経路では使わない** (提案≠適用) |
+| (B4 FR-403) | — | alkali feasibility infeasible フレームは ReviewQueue へ自動追加 (severity=echem) |
+
 ## その他の変更系
 
 | 呼び出し | 成功レスポンス | 副作用 |
