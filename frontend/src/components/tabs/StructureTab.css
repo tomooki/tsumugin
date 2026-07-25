@@ -1,0 +1,330 @@
+/* STRUCTURE tab — see docs/design/gui-workbench/handoff/README.md §Centre
+   pane item 6 and the `Tsumugin Workbench.dc.html` STRUCTURE template
+   (search "STRUCTURE" in the file) for the pixel reference this ports. */
+
+.struct-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.struct-tab__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.struct-tab__title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.struct-tab__note {
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+}
+
+.struct-tab__grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* — SITES card — */
+
+.struct-sites__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.struct-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.struct-table th {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-600);
+  border-bottom: 1px solid var(--color-text);
+  padding: 3px 5px;
+  white-space: nowrap;
+}
+
+.struct-table th.ta-left {
+  text-align: left;
+}
+.struct-table th.ta-right {
+  text-align: right;
+}
+
+.struct-cell {
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.struct-cell--del {
+  text-align: right;
+}
+
+.struct-label-input {
+  width: 52px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 2px 3px;
+}
+.struct-label-input:hover {
+  border-color: var(--color-neutral-400);
+}
+.struct-label-input:focus {
+  border-color: var(--color-accent);
+  background: var(--color-bg);
+  outline: none;
+}
+
+.struct-el-select {
+  width: 74px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  padding: 2px;
+  border-radius: 0;
+}
+.struct-el-select:hover {
+  border-color: var(--color-accent-400);
+}
+
+.struct-num-cell {
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+.struct-num-cell--locked {
+  background: var(--color-neutral-200);
+}
+.struct-num-cell--released {
+  background: var(--color-accent-100);
+}
+
+.struct-num-cell__inner {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 3px;
+  align-items: center;
+}
+
+.struct-checkbox {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+.struct-checkbox:disabled {
+  cursor: not-allowed;
+}
+
+.struct-num-input {
+  width: 100%;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 2px 3px;
+}
+.struct-num-input:hover:not(:disabled) {
+  border-color: var(--color-neutral-400);
+}
+.struct-num-input:focus {
+  border-color: var(--color-accent);
+  background: var(--color-bg);
+  outline: none;
+}
+.struct-num-input:disabled {
+  cursor: not-allowed;
+}
+.struct-num-input--locked {
+  color: var(--color-neutral-500);
+}
+
+.struct-note-cell {
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--color-neutral-200);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-700);
+  white-space: nowrap;
+}
+
+.struct-del-btn {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--color-neutral-600);
+  background: transparent;
+  border: 1px solid var(--color-divider);
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.struct-del-btn:hover {
+  border-color: var(--color-neutral-900);
+  background: var(--color-neutral-900);
+  color: var(--color-neutral-100);
+}
+
+.struct-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 7px;
+  padding: 5px 7px;
+  border: 1px solid var(--color-divider);
+  background: var(--color-accent-100);
+  flex-wrap: wrap;
+}
+
+.struct-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-accent-800);
+}
+
+.struct-legend__note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-700);
+}
+
+.struct-legend__summary {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-accent-800);
+  white-space: nowrap;
+}
+
+.struct-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.struct-edit-state {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-neutral-600);
+}
+.struct-edit-state--pending {
+  color: var(--color-neutral-900);
+}
+.struct-edit-state--applied {
+  color: var(--color-accent-800);
+}
+
+.struct-controls__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.struct-apply-btn {
+  background: var(--color-accent-700) !important;
+  border-color: var(--color-accent-700) !important;
+  color: var(--color-neutral-100) !important;
+}
+.struct-apply-btn:hover:not(:disabled) {
+  background: var(--color-accent-800) !important;
+}
+
+.struct-precedence {
+  margin-top: 7px;
+  display: grid;
+  grid-template-columns: 3px 1fr;
+  gap: 9px;
+}
+.struct-precedence__bar {
+  background: var(--color-accent-700);
+}
+.struct-precedence__text {
+  display: block;
+  font-size: 11px;
+  color: var(--color-neutral-800);
+  line-height: 1.55;
+}
+
+.struct-apply-error {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-neutral-900);
+}
+
+/* — right column (CONSTRAINTS + MEM DENSITY) — */
+
+.struct-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.struct-constraints__list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+}
+
+.struct-constraints__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.struct-constraints__expr {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.struct-constraints__kind {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--color-divider);
+  padding: 1px 6px;
+  color: var(--color-neutral-700);
+  white-space: nowrap;
+}
+
+.struct-mem__peaks {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-neutral-800);
+}
