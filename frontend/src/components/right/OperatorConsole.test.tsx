@@ -1,11 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewItem, StageRow, ViewModel } from "../../api/types";
 import { I18nProvider } from "../../i18n";
 import { initialWorkbenchState } from "../../state/reducer";
-import { StoreProvider } from "../../state/store";
+import { StoreProvider, useStore } from "../../state/store";
 import type { WorkbenchState } from "../../state/types";
 import { OperatorConsole } from "./OperatorConsole";
 
@@ -272,5 +272,240 @@ describe("out-of-vocabulary severity (regression — must not unmount)", () => {
     });
     expect(screen.getByText("WARN")).toBeInTheDocument();
     expect(screen.getByText("odd item")).toBeInTheDocument();
+  });
+});
+
+// — RUN REFINEMENT / GET /api/refine/status polling flow —
+
+/** Exposes state.refine/state.error as text nodes so polling tests can
+ * assert on store state that OperatorConsole itself doesn't fully render
+ * (e.g. the exact RefineStatus object, or the error message text). */
+function DebugState() {
+  const { state } = useStore();
+  return (
+    <div data-testid="debug">
+      <span data-testid="refine-status">{state.refine?.status ?? "none"}</span>
+      <span data-testid="refine-error">{state.error ?? ""}</span>
+    </div>
+  );
+}
+
+function renderConsoleWithDebug(initialState: Partial<WorkbenchState>) {
+  function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <I18nProvider lang="en">
+        <StoreProvider initialState={initialState}>{children}</StoreProvider>
+      </I18nProvider>
+    );
+  }
+  return render(
+    <>
+      <OperatorConsole />
+      <DebugState />
+    </>,
+    { wrapper: Wrapper },
+  );
+}
+
+/** Fetch mock for the polling flow: POST /api/refine → refineResponse (once);
+ * GET /api/refine/status → the next entry of `statuses` each call (repeats
+ * the last entry once exhausted); GET /api/state / /api/viewmodel → minimal
+ * valid payloads (for the post-"done" refetch). */
+function installRefinePollFetchMock(opts: {
+  refineResponse?: unknown;
+  refineRejects?: { status: number; body: unknown };
+  statuses: unknown[];
+}) {
+  let statusCallIndex = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+
+    if (url.endsWith("/api/refine") && method === "POST") {
+      if (opts.refineRejects) {
+        return {
+          ok: false,
+          status: opts.refineRejects.status,
+          statusText: "Conflict",
+          json: async () => opts.refineRejects!.body,
+        } as Response;
+      }
+      return jsonResponse(opts.refineResponse ?? { status: "started" });
+    }
+    if (url.endsWith("/api/refine/status") && method === "GET") {
+      const body = opts.statuses[Math.min(statusCallIndex, opts.statuses.length - 1)];
+      statusCallIndex += 1;
+      return jsonResponse(body);
+    }
+    if (url.endsWith("/api/state") && method === "GET") {
+      return jsonResponse({
+        project: { name: "p", dataset: "d", frame: "f", echem: null },
+        mode: "manual",
+        final_selection_mode: "human",
+        ledger: { count: 1, verified: true },
+        status: { backend_build: "b", seed: 0, mcp_tools: 36 },
+        agent: { tokens: 0, wall_time_s: 0, idle: true },
+      });
+    }
+    if (url.endsWith("/api/viewmodel") && method === "GET") {
+      return jsonResponse(makeViewModel());
+    }
+    throw new Error(`unhandled fetch: ${method} ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** Flushes pending microtasks (promise .then chains) without advancing fake
+ * timers — needed because the initial `postRefine().then(...)` chain isn't
+ * scheduled via any timer, so `vi.advanceTimersByTimeAsync(0)` has nothing
+ * to wait on. Wrapped in `act` so the resulting dispatch is batched like a
+ * real event. */
+async function flushMicrotasks(times = 6) {
+  await act(async () => {
+    for (let i = 0; i < times; i++) {
+      await Promise.resolve();
+    }
+  });
+}
+
+/** Advances fake timers (running the setInterval poll tick + its promise
+ * chain) inside `act` so the resulting store dispatch is flushed before the
+ * next assertion. */
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+describe("OperatorConsole — RUN REFINEMENT polling flow", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("posts /api/refine, then polls /api/refine/status every 2s while running, disabling the button", async () => {
+    vi.useFakeTimers();
+    const fetchMock = installRefinePollFetchMock({
+      refineResponse: { status: "started" },
+      statuses: [{ status: "running", elapsed_s: 2, last_event: "stage 04", error: null }],
+    });
+    renderConsoleWithDebug({ viewModel: makeViewModel() });
+
+    fireEvent.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+    await flushMicrotasks(); // flush the postRefine() promise chain
+
+    expect(screen.getByTestId("refine-status").textContent).toBe("running");
+    expect(screen.getByRole("button", { name: "RUNNING …" })).toBeDisabled();
+
+    await advanceTimers(2000); // tick 1
+    await advanceTimers(2000); // tick 2
+
+    const statusCalls = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/refine/status"));
+    expect(statusCalls.length).toBe(2);
+  });
+
+  it("on done, stops polling and refetches state + viewmodel", async () => {
+    vi.useFakeTimers();
+    const fetchMock = installRefinePollFetchMock({
+      refineResponse: { status: "started" },
+      statuses: [
+        { status: "running", elapsed_s: 2, last_event: "stage 04", error: null },
+        { status: "done", elapsed_s: 4, last_event: "complete", error: null },
+      ],
+    });
+    renderConsoleWithDebug({ viewModel: makeViewModel() });
+
+    fireEvent.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+    await flushMicrotasks();
+    await advanceTimers(2000); // tick 1 → still running
+    expect(screen.getByTestId("refine-status").textContent).toBe("running");
+
+    await advanceTimers(2000); // tick 2 → done
+    expect(screen.getByTestId("refine-status").textContent).toBe("done");
+
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/state"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/viewmodel"))).toBe(true);
+
+    // polling must have stopped — no further /api/refine/status calls after "done"
+    const statusCallsAtDone = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/refine/status")).length;
+    await advanceTimers(4000);
+    const statusCallsAfter = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/refine/status")).length;
+    expect(statusCallsAfter).toBe(statusCallsAtDone);
+
+    // the RUN REFINEMENT button is enabled again once the job is no longer running
+    expect(screen.getByRole("button", { name: "RUN REFINEMENT" })).not.toBeDisabled();
+  });
+
+  it("on failed, surfaces the error and stops polling", async () => {
+    vi.useFakeTimers();
+    installRefinePollFetchMock({
+      refineResponse: { status: "started" },
+      statuses: [{ status: "failed", elapsed_s: 3, last_event: "stage 08", error: "cell collapsed" }],
+    });
+    renderConsoleWithDebug({ viewModel: makeViewModel() });
+
+    fireEvent.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+    await flushMicrotasks();
+    await advanceTimers(2000);
+
+    expect(screen.getByTestId("refine-status").textContent).toBe("failed");
+    expect(screen.getByTestId("refine-error").textContent).toBe("cell collapsed");
+    expect(screen.getByRole("button", { name: "RUN REFINEMENT" })).not.toBeDisabled();
+  });
+
+  it("treats a 409 (already running) as non-fatal and reflects running state", async () => {
+    vi.useFakeTimers();
+    installRefinePollFetchMock({
+      refineRejects: { status: 409, body: { error: "already running", error_type: "conflict" } },
+      statuses: [{ status: "running", elapsed_s: 10, last_event: "stage 06", error: null }],
+    });
+    renderConsoleWithDebug({ viewModel: makeViewModel() });
+
+    fireEvent.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+    await flushMicrotasks();
+
+    expect(screen.getByTestId("refine-status").textContent).toBe("running");
+    expect(screen.getByTestId("refine-error").textContent).toBe("");
+  });
+
+  it("does not double-post /api/refine when RUN REFINEMENT is clicked again while running (button is disabled)", async () => {
+    vi.useFakeTimers();
+    const fetchMock = installRefinePollFetchMock({
+      refineResponse: { status: "started" },
+      statuses: [{ status: "running", elapsed_s: 2, last_event: "stage 04", error: null }],
+    });
+    renderConsoleWithDebug({ viewModel: makeViewModel() });
+
+    const btn = screen.getByRole("button", { name: "RUN REFINEMENT" });
+    fireEvent.click(btn);
+    await flushMicrotasks();
+    expect(screen.getByRole("button", { name: "RUNNING …" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "RUNNING …" }));
+    await flushMicrotasks();
+
+    const refineCalls = fetchMock.mock.calls.filter(
+      ([u, init]) => String(u).endsWith("/api/refine") && (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(refineCalls.length).toBe(1);
+  });
+
+  it("demo mode ('recorded') stays single-shot — no polling starts", async () => {
+    vi.useFakeTimers();
+    const fetchMock = installRefinePollFetchMock({
+      refineResponse: { status: "recorded" },
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    renderConsoleWithDebug({ viewModel: makeViewModel() });
+
+    fireEvent.click(screen.getByRole("button", { name: "RUN REFINEMENT" }));
+    await flushMicrotasks();
+
+    expect(screen.getByTestId("refine-status").textContent).toBe("none");
+    expect(screen.getByRole("button", { name: "RUN REFINEMENT" })).not.toBeDisabled();
+
+    await advanceTimers(4000);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/refine/status"))).toBe(false);
   });
 });

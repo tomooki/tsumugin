@@ -50,34 +50,6 @@
   gap: 3px;
 }
 
-.fit-tab__tick-row {
-  display: grid;
-  grid-template-columns: 132px 1fr;
-  gap: 8px;
-  align-items: center;
-}
-
-.fit-tab__tick-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--color-neutral-700);
-  white-space: nowrap;
-}
-
-.fit-tab__tick-swatch {
-  width: 9px;
-  height: 9px;
-}
-
-.fit-tab__tick-strip {
-  display: block;
-  height: 13px;
-  border: 1px dashed var(--color-neutral-400);
-}
-
 .fit-tab__scale {
   display: flex;
   justify-content: space-between;

@@ -114,3 +114,31 @@ describe("HypothesesTab — demoted status + close-competitor dot", () => {
     expect(rankingRow("H-013").textContent).not.toContain("●");
   });
 });
+
+describe("HypothesesTab — basin scatter", () => {
+  it("falls back to the empty-state placeholder when hypotheses.basin is absent", () => {
+    const { container } = renderTab();
+    expect(container.querySelector(".placeholder-plot__frame")).not.toBeNull();
+    expect(container.querySelector("svg")).toBeNull();
+  });
+
+  it("draws real basin points as svg circles when hypotheses.basin is present", () => {
+    const { container } = renderTab({
+      viewModel: {
+        hypotheses: {
+          ...makeHypotheses(),
+          basin: {
+            points: [
+              { x: 9.372, y: 6.71, label: "start 1" },
+              { x: 9.375, y: 6.9, label: "start 2" },
+            ],
+          },
+        },
+      } as unknown as ViewModel,
+    });
+
+    expect(container.querySelector(".placeholder-plot__frame")).toBeNull();
+    expect(container.querySelectorAll("svg circle.scatter-chart__point").length).toBe(2);
+    expect(screen.getByText("start 1")).toBeInTheDocument();
+  });
+});

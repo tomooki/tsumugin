@@ -1,6 +1,7 @@
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
-import { BlueprintCard, PlaceholderPlot } from "../common";
+import { ScatterChart } from "../charts/ScatterChart";
+import { BlueprintCard } from "../common";
 import "./HypothesesTab.css";
 
 /** See handoff README §Centre pane item 3 (HYPOTHESES): ranking table
@@ -88,7 +89,7 @@ export function HypothesesTab() {
           className="hyp-bottom__card"
           bodyStyle={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
         >
-          <PlaceholderPlot label={t("evidence.basinPlaceholder")} height="120px" style={{ flex: 1 }} />
+          <ScatterChart points={vm.basin?.points} height="120px" emptyLabel={t("evidence.basinPlaceholder")} />
           <div className="hyp-evidence__rows">
             {vm.evidence.map(([k, v], i) => (
               <div key={i} className="hyp-evidence__row">

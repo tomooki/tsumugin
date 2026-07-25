@@ -35,6 +35,19 @@ export interface AgentStatus {
   idle: boolean;
 }
 
+// "idle" | "running" | "done" | "failed" (api-contract.md GET /api/refine/status).
+export type RefineJobStatus = "idle" | "running" | "done" | "failed";
+
+export interface RefineStatus {
+  status: RefineJobStatus;
+  elapsed_s: number | null;
+  last_event: string | null;
+  error: string | null;
+}
+
+// "demo" | "project" — real project connection vs seeded demo data.
+export type SourceMode = "demo" | "project";
+
 export interface ShellState {
   project: ProjectInfo;
   mode: GuiMode;
@@ -42,6 +55,10 @@ export interface ShellState {
   ledger: LedgerStatus;
   status: BackendStatus;
   agent: AgentStatus;
+  // Added by the backend's api-contract.md revision. Optional here so the
+  // existing seeded test fixtures (which predate these fields) keep compiling.
+  source?: SourceMode;
+  refine?: RefineStatus;
 }
 
 // — GET /api/viewmodel —
@@ -106,6 +123,21 @@ export interface FitValidityRow {
   detail: string;
 }
 
+// Real fit/residual curve for one histogram (hist id → FitPlotData | null).
+// null = no curve yet (empty-state). Arrays are ≤2000 points, pre-decimated
+// server-side (api-contract.md). yobs-only (ycalc/ybkg/residual/ticks null)
+// means "loaded, not yet refined".
+export interface FitPlotData {
+  x: number[];
+  yobs: number[];
+  ycalc: number[] | null;
+  ybkg: number[] | null;
+  residual: number[] | null;
+  ticks: Record<string, number[]>;
+}
+
+export type FitPlotMap = Record<string, FitPlotData | null>;
+
 export interface FitViewModel {
   metrics: FitMetric[];
   histograms: FitHistogramChip[];
@@ -114,6 +146,10 @@ export interface FitViewModel {
   two_theta: TwoThetaRange;
   history: FitHistoryRow[];
   validity: FitValidityRow[];
+  // Optional: added by the api-contract.md plot revision. Absent/undefined is
+  // treated the same as an empty map (no curve for the active histogram) so
+  // existing fixtures that predate this field keep compiling.
+  plot?: FitPlotMap;
 }
 
 export interface ParamDropdown {
@@ -171,10 +207,23 @@ export interface HypothesisDiff {
   rows: HypothesisDiffRow[];
 }
 
+export interface BasinPoint {
+  x: number;
+  y: number;
+  label: string;
+}
+
+// Multistart lattice-basin scatter. null = no basin data (empty-state).
+export interface BasinData {
+  points: BasinPoint[];
+}
+
 export interface HypothesesViewModel {
   rows: HypothesisRow[];
   diff: HypothesisDiff;
   evidence: [string, string][];
+  // Optional: added by the api-contract.md basin revision (see FitViewModel.plot note).
+  basin?: BasinData | null;
 }
 
 export interface PhaseIdCandidate {
@@ -207,9 +256,18 @@ export interface PhaseIdViewModel {
   completeness: PhaseSetCompleteness;
 }
 
+export interface ChartSeriesData {
+  x: number[];
+  ys: number[][];
+  labels: string[];
+}
+
 export interface SequenceChart {
   id: string;
   title: string;
+  // Optional: added by the api-contract.md series revision (see FitViewModel.plot note).
+  // null = no series data yet (empty-state); undefined = fixture predates this field.
+  series?: ChartSeriesData | null;
 }
 
 export interface SequenceAnchor {
@@ -429,8 +487,12 @@ export interface StageActionResponse {
   stage: StageRow;
 }
 
+// 202 {"status": "started"} when a real refinement job is launched in the
+// background, or {"status": "recorded"} in demo mode (project not connected,
+// no background job — recorded to ledger only). 409 is a rejected request
+// (job already running) and surfaces as an ApiError, not this shape.
 export interface RefineResponse {
-  status: "recorded";
+  status: "started" | "recorded";
 }
 
 export interface TranscriptMessageRequest {

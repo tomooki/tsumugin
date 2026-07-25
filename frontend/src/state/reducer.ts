@@ -134,7 +134,17 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
       return { ...state, draft: action.draft };
 
     case "SET_SHELL":
-      return { ...state, shell: action.shell, mode: action.shell.mode };
+      // Re-sync the local refine status from the server on every shell fetch
+      // (initial load, mode switch, post-refine refetch) — this is what makes
+      // a page reload mid-job still show the running badge/disabled button,
+      // not just OperatorConsole's own poll loop. shell.refine is optional
+      // (older fixtures), so a missing field leaves the local value as-is.
+      return {
+        ...state,
+        shell: action.shell,
+        mode: action.shell.mode,
+        refine: action.shell.refine ?? state.refine,
+      };
 
     case "SET_VIEW_MODEL": {
       // stageOn is client-local UI state that mirrors the server's stages[].released
@@ -165,6 +175,9 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
         },
       };
     }
+
+    case "SET_REFINE_STATUS":
+      return { ...state, refine: action.refine };
 
     case "SET_LOADING":
       return { ...state, loading: action.loading };

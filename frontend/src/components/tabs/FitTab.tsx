@@ -1,7 +1,9 @@
 import type { FitHistoryRow, FitValidityRow } from "../../api/types";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
-import { BlueprintCard, Chip, MetricCard, PlaceholderPlot } from "../common";
+import { LinePlot, type LinePlotSeries } from "../charts/LinePlot";
+import { TickRow } from "../charts/TickRow";
+import { BlueprintCard, Chip, MetricCard } from "../common";
 import "./FitTab.css";
 import { HistogramChips } from "./HistogramChips";
 
@@ -43,11 +45,47 @@ export function FitTab() {
   const validity = fit?.validity ?? [];
   const twoTheta = fit?.two_theta ?? { min: 0, max: 0 };
 
-  const step = (twoTheta.max - twoTheta.min) / 4;
+  // Real curve for the active histogram (api-contract.md fit.plot: hist id →
+  // {x,yobs,ycalc,ybkg,residual,ticks} | null). null/undefined = no curve
+  // yet — LinePlot/TickRow fall back to the dashed empty-state on their own.
+  const plot = fit?.plot?.[state.hist];
+
+  // The 2θ scale row (and the shared x domain for the plot/residual/tick
+  // panels) follows the real curve's x range once it exists; before that it
+  // falls back to fit.two_theta, per the task brief.
+  const xRange =
+    plot && plot.x.length > 0 ? { min: Math.min(...plot.x), max: Math.max(...plot.x) } : twoTheta;
+
+  const step = (xRange.max - xRange.min) / 4;
   const scaleMarks =
     step > 0
-      ? [0, 1, 2, 3, 4].map((i) => (twoTheta.min + i * step).toFixed(1))
-      : [twoTheta.min.toFixed(1), twoTheta.max.toFixed(1)];
+      ? [0, 1, 2, 3, 4].map((i) => (xRange.min + i * step).toFixed(1))
+      : [xRange.min.toFixed(1), xRange.max.toFixed(1)];
+
+  const mainSeries: LinePlotSeries[] | null = plot
+    ? [
+        { x: plot.x, y: plot.yobs, kind: "points", label: "Yobs", color: "var(--color-neutral-700)" },
+        ...(plot.ycalc
+          ? [{ x: plot.x, y: plot.ycalc, kind: "line" as const, label: "Ycalc", color: "var(--color-accent-600)" }]
+          : []),
+        ...(plot.ybkg
+          ? [
+              {
+                x: plot.x,
+                y: plot.ybkg,
+                kind: "line" as const,
+                label: "Ybkg",
+                color: "var(--color-neutral-400)",
+                dashed: true,
+              },
+            ]
+          : []),
+      ]
+    : null;
+
+  const residualSeries: LinePlotSeries[] | null = plot?.residual
+    ? [{ x: plot.x, y: plot.residual, kind: "line", label: "Δ", color: "var(--color-neutral-600)" }]
+    : null;
 
   return (
     <div className="fit-tab">
@@ -73,25 +111,31 @@ export function FitTab() {
         <div className="fit-tab__plot-layout">
           <div className="fit-tab__axis-label">{t("fit.intensity")}</div>
           <div className="fit-tab__plot-col">
-            <PlaceholderPlot label={t("fit.plotPlaceholder")} height="220px" />
+            <LinePlot
+              series={mainSeries}
+              height="220px"
+              emptyLabel={t("fit.plotPlaceholder")}
+              xDomain={plot ? xRange : undefined}
+              showAxis={false}
+            />
             <div className="fit-tab__ticks">
               {phaseTicks.map((label, i) => (
-                <div className="fit-tab__tick-row" key={label}>
-                  <span className="fit-tab__tick-label">
-                    <span
-                      className="fit-tab__tick-swatch"
-                      style={{ background: TICK_SWATCHES[i % TICK_SWATCHES.length] }}
-                    />
-                    {label}
-                  </span>
-                  <span
-                    className="fit-tab__tick-strip"
-                    style={{ borderColor: TICK_SWATCHES[i % TICK_SWATCHES.length] }}
-                  />
-                </div>
+                <TickRow
+                  key={label}
+                  label={label}
+                  color={TICK_SWATCHES[i % TICK_SWATCHES.length]}
+                  positions={plot?.ticks?.[label]}
+                  xDomain={plot ? xRange : undefined}
+                />
               ))}
             </div>
-            <PlaceholderPlot label={t("fit.residualPlaceholder")} height="74px" />
+            <LinePlot
+              series={residualSeries}
+              height="74px"
+              emptyLabel={t("fit.residualPlaceholder")}
+              xDomain={plot ? xRange : undefined}
+              showAxis={false}
+            />
             <div className="fit-tab__scale">
               {scaleMarks.map((mark, i) => (
                 <span key={mark + i}>

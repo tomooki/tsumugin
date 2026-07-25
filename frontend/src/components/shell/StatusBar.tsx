@@ -1,6 +1,8 @@
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
+import { Chip } from "../common";
 import "./shell.css";
+import { st } from "./shell.strings";
 
 /** 26px status bar: backend build / seed / ledger / MCP tool chips on the
  * left, mode sentence right-aligned (neutral-400 MANUAL, accent-300 AUTO).
@@ -10,10 +12,11 @@ import "./shell.css";
  * that stayed English regardless of state.lang (see CLAUDE.md item 4 fix). */
 export function StatusBar() {
   const { state } = useStore();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const manual = state.mode === "manual";
   const status = state.shell?.status;
   const ledger = state.shell?.ledger;
+  const refining = state.refine?.status === "running";
 
   return (
     <div className="status-bar">
@@ -27,6 +30,7 @@ export function StatusBar() {
           })}
         </span>
         <span>{t("status.mcp", { n: status?.mcp_tools ?? "…" })}</span>
+        {refining && <Chip variant="accent">{st(lang, "refine.running")}</Chip>}
       </div>
       <span className={`status-bar__sentence${manual ? "" : " status-bar__sentence--auto"}`}>
         {manual ? t("status.text.manual") : t("status.text.auto")}

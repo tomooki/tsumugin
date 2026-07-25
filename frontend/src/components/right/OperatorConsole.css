@@ -112,6 +112,15 @@
   flex: 1;
 }
 
+.oc-refine-status {
+  display: flex;
+  gap: 8px;
+  margin-top: 5px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-neutral-600);
+}
+
 /* — review queue — */
 .oc-review {
   border-top: 1px solid var(--color-divider);

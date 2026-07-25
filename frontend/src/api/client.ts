@@ -10,6 +10,7 @@ import type {
   LedgerResponse,
   ModeRequest,
   RefineResponse,
+  RefineStatus,
   ReviewQueueResponse,
   ReviewResolveRequest,
   ReviewResolveResponse,
@@ -132,6 +133,10 @@ export function postStage(nn: string, action: StageAction): Promise<StageActionR
 
 export function postRefine(): Promise<RefineResponse> {
   return post<RefineResponse>("/api/refine", {});
+}
+
+export function getRefineStatus(): Promise<RefineStatus> {
+  return get<RefineStatus>("/api/refine/status");
 }
 
 export function postTranscriptMessage(text: string): Promise<TranscriptMessageResponse> {

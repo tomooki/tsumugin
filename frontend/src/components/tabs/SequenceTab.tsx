@@ -1,6 +1,8 @@
+import type { SequenceChart } from "../../api/types";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
-import { BlueprintCard, Chip, PlaceholderPlot } from "../common";
+import { SeriesChart } from "../charts/SeriesChart";
+import { BlueprintCard, Chip } from "../common";
 import { SEQUENCE_STRINGS, type SequenceStringKey } from "./SequenceTab.strings";
 import "./SequenceTab.css";
 
@@ -44,10 +46,10 @@ export function SequenceTab() {
     return SEQUENCE_STRINGS[key][lang];
   }
 
-  const charts =
+  const charts: SequenceChart[] =
     seq && seq.charts.length > 0
       ? seq.charts
-      : FALLBACK_CHARTS.map((c) => ({ id: c.id, title: t(c.title) }));
+      : FALLBACK_CHARTS.map((c) => ({ id: c.id, title: t(c.title), series: null }));
 
   const anchors = seq?.anchors ?? [];
   const crossoverNote = seq?.note ?? t("seq.crossoverNote");
@@ -71,10 +73,10 @@ export function SequenceTab() {
               className="seq-tab__chart-card"
               bodyStyle={{ display: "flex", flex: 1, minHeight: 0 }}
             >
-              <PlaceholderPlot
-                label={chrome ? t(chrome.placeholderKey) : tl("chart.fallback.placeholder")}
+              <SeriesChart
+                series={chart.series}
                 height={chrome?.height ?? "96px"}
-                style={{ flex: 1 }}
+                emptyLabel={chrome ? t(chrome.placeholderKey) : tl("chart.fallback.placeholder")}
               />
             </BlueprintCard>
           );

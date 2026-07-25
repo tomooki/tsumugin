@@ -1,7 +1,7 @@
 // State shape from docs/design/gui-workbench/handoff/README.md §State,
 // extended with the server-supplied shell/viewmodel payloads that App.tsx
 // fetches on mount (see docs/design/gui-workbench/api-contract.md).
-import type { GuiMode, ShellState, Site, ViewModel } from "../api/types";
+import type { GuiMode, RefineStatus, ShellState, Site, ViewModel } from "../api/types";
 import type { Lang } from "../i18n";
 
 export type TabId = "fit" | "param" | "hyp" | "pid" | "seq" | "struct" | "ledger";
@@ -40,6 +40,12 @@ export interface WorkbenchState {
   viewModel: ViewModel | null;
   loading: boolean;
   error: string | null;
+
+  // Local, poll-driven refinement job status (RUN REFINEMENT flow). Seeded
+  // from shell.refine on every SET_SHELL (so a reload while a job is running
+  // server-side still shows it), then kept live by OperatorConsole's
+  // getRefineStatus() polling loop — see api-contract.md GET /api/refine/status.
+  refine: RefineStatus | null;
 }
 
 export const initialWorkbenchState: WorkbenchState = {
@@ -67,4 +73,5 @@ export const initialWorkbenchState: WorkbenchState = {
   viewModel: null,
   loading: false,
   error: null,
+  refine: null,
 };

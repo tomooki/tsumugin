@@ -132,3 +132,64 @@ describe("SequenceTab — language switch", () => {
     expect(screen.getByText("fr091 ✳ 転移")).toBeInTheDocument();
   });
 });
+
+describe("SequenceTab — real chart series", () => {
+  it("draws an svg line for a chart whose series is present", () => {
+    const { container } = renderTab(
+      <SequenceTab />,
+      {
+        viewModel: makeViewModel({
+          charts: [
+            { id: "rwp", title: "Rwp vs frame", series: { x: [0, 1, 2], ys: [[13.4, 12.1, 9.8]], labels: ["Rwp"] } },
+            { id: "lattice", title: "Lattice a, c vs frame", series: null },
+            { id: "fraction", title: "Phase fraction vs frame", series: null },
+          ],
+        }),
+      },
+    );
+
+    const cards = container.querySelectorAll(".seq-tab__chart-card");
+    expect(within(cards[0] as HTMLElement).getByRole("img")).toBeInTheDocument();
+    expect(cards[0].querySelector("svg path")).not.toBeNull();
+  });
+
+  it("falls back to the empty-state placeholder for a chart whose series is null", () => {
+    const { container } = renderTab(
+      <SequenceTab />,
+      {
+        viewModel: makeViewModel({
+          charts: [
+            { id: "rwp", title: "Rwp vs frame", series: null },
+            { id: "lattice", title: "Lattice a, c vs frame", series: null },
+            { id: "fraction", title: "Phase fraction vs frame", series: null },
+          ],
+        }),
+      },
+    );
+
+    const cards = container.querySelectorAll(".seq-tab__chart-card");
+    expect(cards[0].querySelector(".placeholder-plot__frame")).not.toBeNull();
+    expect(cards[0].querySelector("svg")).toBeNull();
+  });
+
+  it("draws a legend when a chart has more than one series", () => {
+    const { container } = renderTab(
+      <SequenceTab />,
+      {
+        viewModel: makeViewModel({
+          charts: [
+            {
+              id: "fraction",
+              title: "Phase fraction vs frame",
+              series: { x: [0, 1], ys: [[0.6, 0.5], [0.4, 0.5]], labels: ["cubic", "tetragonal"] },
+            },
+          ],
+        }),
+      },
+    );
+    const legend = within(container.querySelector(".series-chart__legend") as HTMLElement);
+    expect(legend.getByText("cubic")).toBeInTheDocument();
+    expect(legend.getByText("tetragonal")).toBeInTheDocument();
+    expect(container.querySelectorAll(".series-chart__legend-item").length).toBe(2);
+  });
+});

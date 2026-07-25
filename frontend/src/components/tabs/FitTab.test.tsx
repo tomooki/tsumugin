@@ -149,3 +149,69 @@ describe("FitTab — physical validity gate", () => {
     expect(screen.getByText(/Rwp alone cannot see a wrong phase set/)).toBeInTheDocument();
   });
 });
+
+describe("FitTab — real fit/residual plot (fit.plot)", () => {
+  it("falls back to the dashed placeholder when fit.plot is absent", () => {
+    const { container } = renderFitTab(makeViewModel());
+    expect(container.querySelector(".placeholder-plot__frame")).not.toBeNull();
+    expect(container.querySelector(".fit-tab__plot-col svg")).toBeNull();
+    expect(screen.getByText("PLOT PLACEHOLDER — observed vs calculated overlay + peak cursor + 2θ zoom/pan")).toBeInTheDocument();
+  });
+
+  it("draws yobs points and an ycalc svg <path> for the active histogram's curve", () => {
+    const { container } = renderFitTab(
+      makeViewModel({
+        histograms: [{ id: "sxrd", label: "SR-XRD λ0.79958", active: true }],
+        plot: {
+          sxrd: {
+            x: [4, 5, 6],
+            yobs: [10, 20, 15],
+            ycalc: [11, 19, 16],
+            ybkg: [2, 2, 2],
+            residual: [-1, 1, -1],
+            ticks: { "cubic Fm-3m": [4.5, 5.5] },
+          },
+        },
+      }),
+    );
+
+    expect(container.querySelectorAll(".fit-tab__plot-col svg circle.line-plot__point").length).toBe(3);
+    const ycalcPath = container.querySelector('svg path[data-series-label="Ycalc"]');
+    expect(ycalcPath).not.toBeNull();
+    expect(ycalcPath!.getAttribute("d")).not.toBe("");
+    // residual panel also gets a real curve
+    expect(container.querySelector('svg path[data-series-label="Δ"]')).not.toBeNull();
+  });
+
+  it("re-points the plot when the histogram chip changes", async () => {
+    const user = userEvent.setup();
+    const { container } = renderFitTab(
+      makeViewModel({
+        histograms: [
+          { id: "sxrd", label: "SR-XRD λ0.79958", active: true },
+          { id: "nd", label: "ND TOF bank 1", active: false },
+        ],
+        plot: {
+          sxrd: {
+            x: [4, 5],
+            yobs: [10, 20],
+            ycalc: [11, 19],
+            ybkg: null,
+            residual: null,
+            ticks: {},
+          },
+          nd: null,
+        },
+      }),
+    );
+
+    // sxrd is active first — a real curve is drawn.
+    expect(container.querySelector('svg path[data-series-label="Ycalc"]')).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "ND TOF bank 1" }));
+
+    // nd's plot entry is null → falls back to the placeholder.
+    expect(container.querySelector('svg path[data-series-label="Ycalc"]')).toBeNull();
+    expect(container.querySelector(".fit-tab__plot-col .placeholder-plot__frame")).not.toBeNull();
+  });
+});

@@ -1,0 +1,22 @@
+.scatter-chart {
+  display: flex;
+  flex: 1;
+  min-height: 40px;
+}
+
+.scatter-chart__svg {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--color-neutral-300);
+  background: var(--color-neutral-100);
+}
+
+.scatter-chart__point {
+  fill: var(--color-accent-600);
+}
+
+.scatter-chart__label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  fill: var(--color-neutral-700);
+}

@@ -22,6 +22,12 @@ export const RIGHT_STRINGS = {
   "review.acceptPending": { en: "ACCEPT …", ja: "承認 …" },
   "review.openCountNote": { en: "FR-421 / 423 · {n} open", ja: "FR-421 / 423 · 未処理 {n} 件" },
   "escalationLabel": { en: "ESCALATION", ja: "エスカレーション" },
+  // RUN REFINEMENT button label while a background job is polling (real
+  // project mode only — demo mode's postRefine resolves "recorded" and never
+  // reaches this state). Central STRINGS' "recipe.runRefinement" has no
+  // in-progress variant since the handoff prototype never modelled a running
+  // job (it was a static mockup).
+  "recipe.running": { en: "RUNNING …", ja: "実行中 …" },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;
