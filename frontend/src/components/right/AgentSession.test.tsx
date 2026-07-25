@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ShellState, TranscriptMessage, ViewModel } from "../../api/types";
+import type { AgentJobStatus, ShellState, TranscriptMessage, ViewModel } from "../../api/types";
 import { I18nProvider } from "../../i18n";
-import { StoreProvider } from "../../state/store";
+import { StoreProvider, useStore } from "../../state/store";
 import type { WorkbenchState } from "../../state/types";
 import { AgentSession } from "./AgentSession";
 
@@ -307,5 +307,246 @@ describe("AgentSession — composer", () => {
     expect(fetchMock).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
+  });
+});
+
+// — V3a: AUTO 実 LLM ブリッジ (api-contract.md §AUTO 実 LLM ブリッジ) —
+
+/** Exposes state.error as a text node so the polling tests below can assert
+ * on the non-fatal-vs-fatal distinction (409 / failed) that AgentSession
+ * itself doesn't fully render — mirrors OperatorConsole.test.tsx's
+ * DebugState precedent. */
+function DebugState() {
+  const { state } = useStore();
+  return <span data-testid="debug-error">{state.error ?? ""}</span>;
+}
+
+function renderSessionWithDebug(initialState: Partial<WorkbenchState>) {
+  function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <I18nProvider lang="en">
+        <StoreProvider initialState={{ shell: makeShell(), ...initialState }}>{children}</StoreProvider>
+      </I18nProvider>
+    );
+  }
+  return render(
+    <>
+      <AgentSession />
+      <DebugState />
+    </>,
+    { wrapper: Wrapper },
+  );
+}
+
+/** Fetch mock for the V3a bridge flow: POST /api/transcript/message →
+ * `transcriptResponse` (or rejects with `transcriptRejects`, once); GET
+ * /api/agent/status → the next entry of `statuses` each call (repeats the
+ * last entry once exhausted); GET /api/viewmodel → the next entry of
+ * `viewModels` each call (repeats the last entry once exhausted, defaults to
+ * an empty-transcript viewmodel so tests that don't care can omit it). */
+function installAgentBridgeFetchMock(opts: {
+  transcriptResponse?: unknown;
+  transcriptRejects?: { status: number; body: unknown };
+  statuses?: AgentJobStatus[];
+  viewModels?: ViewModel[];
+}) {
+  let statusCallIndex = 0;
+  let vmCallIndex = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+
+    if (url.endsWith("/api/transcript/message") && method === "POST") {
+      if (opts.transcriptRejects) {
+        return {
+          ok: false,
+          status: opts.transcriptRejects.status,
+          statusText: "Conflict",
+          json: async () => opts.transcriptRejects!.body,
+        } as Response;
+      }
+      return jsonResponse(opts.transcriptResponse ?? { status: "agent_started" });
+    }
+    if (url.endsWith("/api/agent/status") && method === "GET") {
+      const statuses = opts.statuses ?? [];
+      const body = statuses[Math.min(statusCallIndex, statuses.length - 1)];
+      statusCallIndex += 1;
+      return jsonResponse(body);
+    }
+    if (url.endsWith("/api/viewmodel") && method === "GET") {
+      const viewModels = opts.viewModels ?? [makeViewModel([])];
+      const body = viewModels[Math.min(vmCallIndex, viewModels.length - 1)];
+      vmCallIndex += 1;
+      return jsonResponse(body);
+    }
+    throw new Error(`unhandled fetch: ${method} ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** Flushes pending microtasks (the postTranscriptMessage().then(...) chain)
+ * without advancing fake timers, wrapped in `act` so the resulting dispatch
+ * is batched like a real event (mirrors OperatorConsole.test.tsx's
+ * precedent). */
+async function flushMicrotasks(times = 6) {
+  await act(async () => {
+    for (let i = 0; i < times; i++) {
+      await Promise.resolve();
+    }
+  });
+}
+
+/** Advances fake timers (running the setInterval poll tick + its promise
+ * chain) inside `act` so the resulting store dispatch is flushed before the
+ * next assertion. */
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+describe("AgentSession — V3a agent bridge: SEND starts an agent turn (202)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("202 agent_started polls /api/agent/status every 2s, refetches the viewmodel while running (transcript grows), and stops polling at idle", async () => {
+    vi.useFakeTimers();
+    const runningStatus: AgentJobStatus = {
+      status: "running",
+      available: true,
+      tokens: 500,
+      wall_time_s: 4,
+      error: null,
+    };
+    const idleStatus: AgentJobStatus = {
+      status: "idle",
+      available: true,
+      tokens: 12_400,
+      wall_time_s: 96,
+      error: null,
+    };
+    const grownViewModel = makeViewModel([
+      { id: "a1", kind: "agent", text: "checking phase set completeness first" },
+    ]);
+    const fetchMock = installAgentBridgeFetchMock({
+      statuses: [runningStatus, idleStatus],
+      viewModels: [grownViewModel],
+    });
+
+    renderSessionWithDebug({ viewModel: makeViewModel([]), draft: "check the phase set" });
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+
+    // draft cleared and SEND disabled immediately (optimistic — before the
+    // first poll tick), same as the fallback path's draft-clear behaviour.
+    expect(screen.getByPlaceholderText("Ask about this frame, or send an instruction…")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+
+    await advanceTimers(2000); // tick 1 → running: status polled + viewmodel refetched
+    expect(screen.getByText("checking phase set completeness first")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+    // budget strip reflects the LIVE polled values, not the shell-seeded ones
+    expect(screen.getByText("500")).toBeInTheDocument();
+    expect(screen.getByText("0 m 04 s")).toBeInTheDocument();
+
+    await advanceTimers(2000); // tick 2 → idle: polling stops, SEND re-enabled
+    expect(screen.getByRole("button", { name: "SEND" })).not.toBeDisabled();
+    expect(screen.getByText("12.4 k")).toBeInTheDocument();
+
+    const statusCallsAtIdle = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith("/api/agent/status"),
+    ).length;
+    await advanceTimers(4000);
+    const statusCallsAfter = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith("/api/agent/status"),
+    ).length;
+    expect(statusCallsAfter).toBe(statusCallsAtIdle); // no further ticks once idle
+
+    expect(screen.getByTestId("debug-error").textContent).toBe("");
+  });
+
+  it("a 409 (a turn is already running) is treated as non-fatal and starts polling instead of a fatal error", async () => {
+    vi.useFakeTimers();
+    installAgentBridgeFetchMock({
+      transcriptRejects: { status: 409, body: { error: "agent turn already running", error_type: "ConflictError" } },
+      statuses: [{ status: "running", available: true, tokens: 10, wall_time_s: 1, error: null }],
+    });
+
+    renderSessionWithDebug({ viewModel: makeViewModel([]), draft: "hello" });
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+    expect(screen.getByTestId("debug-error").textContent).toBe("");
+  });
+
+  it("a failed agent turn shows the error inline (non-fatal path) and re-enables SEND", async () => {
+    vi.useFakeTimers();
+    installAgentBridgeFetchMock({
+      statuses: [{ status: "failed", available: true, tokens: 20, wall_time_s: 3, error: "max_turns exceeded" }],
+    });
+
+    renderSessionWithDebug({ viewModel: makeViewModel([]), draft: "do something long-running" });
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+    await advanceTimers(2000);
+
+    expect(screen.getByText("agent failed: max_turns exceeded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).not.toBeDisabled();
+    // a job failure is not routed through the global/fatal error path (mirrors
+    // TranscriptItem's approval-409 precedent: inline text, not state.error).
+    expect(screen.getByTestId("debug-error").textContent).toBe("");
+  });
+});
+
+describe("AgentSession — V3a agent bridge: agent unavailable", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function unavailableShell(): ShellState {
+    return {
+      ...makeShell(),
+      agent: { tokens: 0, wall_time_s: 0, idle: true, available: false },
+    };
+  }
+
+  it("state.shell.agent.available === false disables SEND and shows the AGENT UNAVAILABLE chip", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ shell: unavailableShell(), viewModel: makeViewModel([]), draft: "anything" });
+
+    expect(screen.getByText("AGENT UNAVAILABLE — claude CLI / agent extra required")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+
+    // A disabled button never dispatches a click — this is the DOM-level
+    // guard a mutation of the `disabled={... || !available}` wiring would
+    // break (verified by hand: removing `!available` from that expression
+    // makes this assertion fail — the button is enabled and the click below
+    // reaches fetch).
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("available === true (or omitted) leaves SEND enabled and shows no chip", () => {
+    renderSession({ viewModel: makeViewModel([]) });
+    expect(
+      screen.queryByText("AGENT UNAVAILABLE — claude CLI / agent extra required"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).not.toBeDisabled();
+  });
+});
+
+describe("AgentSession — V3a composer footer", () => {
+  it("shows the real-bridge footer note (not the demo skill/tool-count text) when idle", () => {
+    renderSession({ viewModel: makeViewModel([]) });
+    expect(screen.getByText("local Claude Code · custody: approvals stay human")).toBeInTheDocument();
   });
 });

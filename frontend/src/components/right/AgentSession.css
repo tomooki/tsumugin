@@ -302,6 +302,9 @@
   background: var(--color-neutral-100);
   padding: 9px 12px;
 }
+.composer__availability {
+  margin-bottom: 7px;
+}
 .composer__chips {
   display: flex;
   gap: 6px;

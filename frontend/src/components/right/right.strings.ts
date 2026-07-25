@@ -65,6 +65,39 @@ export const RIGHT_STRINGS = {
     en: "GSAS-II is not available in this backend — refinement jobs cannot run",
     ja: "このバックエンドでは GSAS-II が利用できません — 精密化ジョブは実行できません",
   },
+  // — AUTO 実 LLM ブリッジ (V3a, api-contract.md §AUTO 実 LLM ブリッジ) —
+  // Replaces src/i18n/strings.ts' demo-era "composerNote" (a hardcoded
+  // handoff-prototype skill name/tool count) now that AgentSession is backed
+  // by a real local `claude` CLI bridge — central i18n/strings.ts is a
+  // read-only 1:1 extraction of that prototype (see this file's header), so
+  // the reality-facing replacement is colocated here instead of edited in.
+  "composer.note.real": {
+    en: "local Claude Code · custody: approvals stay human",
+    ja: "ローカル Claude Code · custody: 承認は人間に残る",
+  },
+  // Composer footer while an agent turn is in flight (SEND disabled) —
+  // shown in place of composer.note.real. {tokens}/{elapsed} are the live
+  // polled values (formatTokens/formatWallTime), not the pre-turn strip.
+  "agent.running": {
+    en: "agent running… ({tokens} · {elapsed})",
+    ja: "エージェント実行中…（{tokens}・{elapsed}）",
+  },
+  // Non-fatal inline failure line (mirrors chat.approval.conflict's
+  // precedent — a 409/failed-job outcome stays local text, not the global
+  // SET_ERROR path) for when GET /api/agent/status reports status=failed.
+  // {detail} is `: <server error>` when the server supplied one, else "".
+  "agent.failed": {
+    en: "agent failed{detail}",
+    ja: "エージェントが失敗しました{detail}",
+  },
+  // Inverted attention chip (mirrors Chip's "inverted" precedent for WARN/
+  // CLOSE/UNKNOWN states) shown in the composer when state.shell.agent.available
+  // is false — the local `claude` CLI / claude-agent-sdk optional extra is
+  // not importable in this backend process.
+  "agent.unavailable.chip": {
+    en: "AGENT UNAVAILABLE — claude CLI / agent extra required",
+    ja: "AGENT UNAVAILABLE — claude CLI / agent extra が必要",
+  },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;

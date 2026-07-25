@@ -39,6 +39,32 @@ export interface AgentStatus {
   tokens: number;
   wall_time_s: number;
   idle: boolean;
+  // Added by api-contract.md §AUTO 実 LLM ブリッジ (V3a): whether the local
+  // `claude` CLI / claude-agent-sdk bridge is importable in this backend
+  // process (mirrors BackendStatus.gsas_available's precedent — a runtime
+  // capability flag, not seed data). Optional so pre-V3a fixtures (which
+  // predate this field) keep compiling; a missing value is treated as
+  // available (see AgentSession.tsx) so the composer isn't spuriously
+  // disabled against an older server.
+  available?: boolean;
+}
+
+// GET /api/agent/status (api-contract.md §AUTO 実 LLM ブリッジ, V3a) — the
+// dedicated poll endpoint AgentSession hits every 2s while an agent turn is
+// in flight. Deliberately NOT reusing RefineStatus/JobKind's "idle" |
+// "running" | "done" | "failed" vocabulary: there is no terminal "done" here
+// (the bridge just returns to "idle" once the agent turn completes), and the
+// shape carries `available`/`tokens`/`wall_time_s`/`error` inline rather than
+// elapsed_s/last_event/kind — hence hooks/usePollJob.ts (typed to
+// RefineStatus) is not reused for this poll loop (see AgentSession.tsx).
+export type AgentJobState = "idle" | "running" | "failed";
+
+export interface AgentJobStatus {
+  status: AgentJobState;
+  available: boolean;
+  tokens: number;
+  wall_time_s: number;
+  error: string | null;
 }
 
 // "idle" | "running" | "done" | "failed" (api-contract.md GET /api/refine/status).
@@ -710,6 +736,21 @@ export interface TranscriptMessageRequest {
 export interface TranscriptMessageResponse {
   message: TranscriptMessage;
 }
+
+// api-contract.md §AUTO 実 LLM ブリッジ (V3a): POST /api/transcript/message's
+// OTHER success shape — mode=auto AND the agent bridge is available routes
+// the message to the local Claude Code agent session and starts it
+// asynchronously (202) instead of recording it as a plain transcript entry
+// (200 TranscriptMessageResponse, the demo/manual/agent-unavailable
+// fallback — unchanged). 409 (a turn is already running) surfaces as an
+// ApiError, not this shape.
+export interface TranscriptMessageAgentStartedResponse {
+  status: "agent_started";
+}
+
+export type TranscriptMessagePostResponse =
+  | TranscriptMessageResponse
+  | TranscriptMessageAgentStartedResponse;
 
 export interface ModeRequest {
   mode: GuiMode;
