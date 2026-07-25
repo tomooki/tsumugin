@@ -7,7 +7,7 @@ import type { Lang } from "../i18n";
 export type TabId = "fit" | "param" | "hyp" | "pid" | "seq" | "struct" | "ledger";
 export type HistId = "sxrd" | "nd" | "nd2";
 export type ApprovalState = "pending" | "approved" | "rejected";
-export type ReviewDecision = "accepted" | "sent";
+export type ReviewDecision = "accepted" | "sent_back";
 
 export interface WorkbenchState {
   lang: Lang;
@@ -27,7 +27,11 @@ export interface WorkbenchState {
 
   open: Record<string, boolean>;
   stageOn: Record<number, boolean>;
-  approval: ApprovalState;
+  // key = TranscriptMessage.action_id — one decision per approval card, so two
+  // pending ModelAction cards never leak state into each other (a single
+  // ApprovalState here previously meant deciding card A also disabled/labelled
+  // card B, since both read the same value).
+  approval: Record<string, ApprovalState>;
   review: Record<string, ReviewDecision>;
   draft: string;
 
@@ -55,7 +59,7 @@ export const initialWorkbenchState: WorkbenchState = {
 
   open: {},
   stageOn: { 1: true, 2: true, 3: true, 4: true, 5: true, 6: false, 7: false, 8: false },
-  approval: "pending",
+  approval: {},
   review: {},
   draft: "",
 

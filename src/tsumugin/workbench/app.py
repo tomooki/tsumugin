@@ -71,6 +71,20 @@ def create_workbench_app(
 
     app = FastAPI(title="tsumugin Workbench", description="操作系 GUI バックエンド (v1)")
 
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(_request: Any, _exc: Exception) -> JSONResponse:
+        """未知の例外を JSON error dict へ縮退させる恒久ガード (PR #120 系統欠陥の再発防止)。
+
+        ハンドラ内で個別に捕捉していない例外 (実装漏れ・想定外のバグ) がここに落ちる。
+        ③ は LLM であり、生の HTML/traceback は境界を貫通した時点でハード失敗になる —
+        既知の失敗経路 (``_to_response``/``_invalid``) と同じ ``{"error", "error_type"}`` 形状を
+        必ず維持する。
+        """
+        return JSONResponse(
+            status_code=500,
+            content={"error": "internal server error", "error_type": "internal_error"},
+        )
+
     def _to_response(result: dict[str, Any], *, success_status: int = 200) -> Any:
         """session の返す純 dict をそのまま、または error dict なら 4xx JSONResponse へ変換する。"""
         if "error" in result and "error_type" in result:
@@ -167,6 +181,8 @@ def create_workbench_app(
     def post_structure_apply(body: dict[str, Any] = Body(...)) -> Any:
         sites = body.get("sites")
         if not isinstance(sites, list):
+            return _invalid("sites", sites)
+        if not all(isinstance(site, dict) for site in sites):
             return _invalid("sites", sites)
         result = session.apply_structure(sites, note=body.get("note", ""))
         return _to_response(result)

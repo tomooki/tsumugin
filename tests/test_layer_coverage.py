@@ -208,7 +208,7 @@ PACKAGE_COVERAGE: dict[str, str] = {
         FOUNDATIONAL,
         "操作系デスクトップワークベンチ (GUI, docs/spec/gui-workbench)。webui と同じく③ skill 経由"
         "ではなく直接の operator UI 系統。① Ledger/Snapshot/ReviewQueue/FinalSelectionEngine を直接"
-        "束ねる可変セッション + API であり、AUTO モードでも③=LLM は既存② MCP 32+ ツールを叩く"
+        "束ねる可変セッション + API であり、AUTO モードでも③=LLM は既存② MCP 36 ツールを叩く"
         "(本パッケージ自体は① の新規解析能力を追加しない)",
     ),
     # --- トップレベルモジュール (パッケージではないが ③ 向け能力/インフラを持ちうる) ---

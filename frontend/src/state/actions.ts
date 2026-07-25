@@ -19,7 +19,7 @@ export type Action =
   | { type: "DISCARD_EDITS" }
   | { type: "TOGGLE_OPEN"; id: string }
   | { type: "TOGGLE_STAGE"; nn: number }
-  | { type: "SET_APPROVAL"; approval: ApprovalState }
+  | { type: "SET_APPROVAL"; actionId: string; approval: ApprovalState }
   | { type: "SET_REVIEW"; id: string; decision: ReviewDecision }
   | { type: "SET_DRAFT"; draft: string }
   | { type: "SET_SHELL"; shell: ShellState }

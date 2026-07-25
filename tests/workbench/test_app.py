@@ -168,6 +168,19 @@ def test_structure_apply_rejects_non_list_sites(client: TestClient):
     assert resp.status_code == 422
 
 
+def test_structure_apply_rejects_non_dict_site_elements(client: TestClient):
+    # 【Red→Green】: 修正前は sites の各要素を dict と仮定して素通しするため
+    #   ``session.apply_structure`` 内の ``site.get(...)`` が str に対して AttributeError を送出し、
+    #   ハンドラの外へ貫通していた (raise_server_exceptions=True の TestClient は Python 例外として
+    #   再送出する = 422 どころか応答すら返らない)。修正後は各要素が dict であることを検証し、
+    #   ハンドラ内で 422 error dict へ縮退させる。
+    resp = client.post("/api/structure/apply", json={"sites": ["x"]})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_type"] == "ValueError"
+    assert "error" in body
+
+
 # ---------------------------------------------------------------------------
 # approval
 # ---------------------------------------------------------------------------
@@ -365,3 +378,30 @@ def test_root_with_static_dir_serves_index_html(session: WorkbenchSession, tmp_p
 
 def test_unknown_route_returns_404(client: TestClient):
     assert client.get("/api/does-not-exist").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 汎用例外ハンドラ (PR #120 系統欠陥の再発防止)
+# ---------------------------------------------------------------------------
+
+
+def test_unhandled_exception_degrades_to_500_error_dict(
+    session: WorkbenchSession, monkeypatch: pytest.MonkeyPatch
+):
+    """個別ハンドラが捕捉していない例外 (実装漏れ) でも、生の traceback ではなく
+
+    ``{"error", "error_type"}`` 形状の 500 で返ることを担保する。session.state を
+    monkeypatch して ValueError/KeyError/ConflictError のどれでもない例外 (RuntimeError) を
+    誘発する — 本番アプリにテスト専用ルートは足さない。
+    """
+    monkeypatch.setattr(
+        session, "state", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    app = create_workbench_app(session)
+    no_raise_client = TestClient(app, raise_server_exceptions=False)
+
+    resp = no_raise_client.get("/api/state")
+
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body == {"error": "internal server error", "error_type": "internal_error"}

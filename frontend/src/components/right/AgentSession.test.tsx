@@ -155,6 +155,29 @@ describe("AgentSession — approval (ModelAction) transcript item", () => {
       ).toBeInTheDocument(),
     );
   });
+
+  it("deciding one approval card does not leak state into another pending card (per-action_id)", async () => {
+    const user = userEvent.setup();
+    const approvalMsgA: TranscriptMessage = { ...approvalMsg, id: "t5", action_id: "a1", title: "card A" };
+    const approvalMsgB: TranscriptMessage = { ...approvalMsg, id: "t6", action_id: "a2", title: "card B" };
+    renderSession({ viewModel: makeViewModel([approvalMsgA, approvalMsgB]) });
+
+    const approveButtons = screen.getAllByRole("button", { name: "APPROVE & APPLY" });
+    expect(approveButtons).toHaveLength(2);
+
+    await user.click(approveButtons[0]);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/api/approval/a1"));
+      expect(call).toBeDefined();
+    });
+    // card A resolved: its own APPROVE & APPLY button becomes APPLIED ✓ and disabled.
+    await waitFor(() => expect(screen.getByRole("button", { name: "APPLIED ✓" })).toBeDisabled());
+    // card B is untouched: still exactly one pending APPROVE & APPLY button, enabled.
+    const remainingApprove = screen.getByRole("button", { name: "APPROVE & APPLY" });
+    expect(remainingApprove).not.toBeDisabled();
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/approval/a2"))).toBe(false);
+  });
 });
 
 describe("AgentSession — composer", () => {

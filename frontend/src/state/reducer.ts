@@ -125,7 +125,7 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
       return { ...state, stageOn: { ...state.stageOn, [action.nn]: !state.stageOn[action.nn] } };
 
     case "SET_APPROVAL":
-      return { ...state, approval: action.approval };
+      return { ...state, approval: { ...state.approval, [action.actionId]: action.approval } };
 
     case "SET_REVIEW":
       return { ...state, review: { ...state.review, [action.id]: action.decision } };
@@ -136,8 +136,20 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
     case "SET_SHELL":
       return { ...state, shell: action.shell, mode: action.shell.mode };
 
-    case "SET_VIEW_MODEL":
-      return { ...state, viewModel: action.viewModel };
+    case "SET_VIEW_MODEL": {
+      // stageOn is client-local UI state that mirrors the server's stages[].released
+      // truth (see docs/design/gui-workbench/api-contract.md). On every fresh
+      // viewmodel fetch we resync it from the server so a page reload (or a
+      // stage change made through another path) never leaves stageOn stale. An
+      // empty stages array (e.g. some test fixtures) means "no data yet" — keep
+      // whatever stageOn already holds rather than clobbering it with {}.
+      const stages = action.viewModel.stages;
+      const stageOn =
+        stages.length > 0
+          ? Object.fromEntries(stages.map((s) => [Number(s.nn), s.released]))
+          : state.stageOn;
+      return { ...state, viewModel: action.viewModel, stageOn };
+    }
 
     case "SET_LOADING":
       return { ...state, loading: action.loading };

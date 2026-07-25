@@ -4,6 +4,8 @@
 本文書の JSON 形状を正とする。破壊的変更は本文書の更新を伴うこと。
 全レスポンスは純 JSON (numpy 型・NaN/inf を出さない。非有限は null)。
 既知の失敗は HTTP 4xx + `{"error": str, "error_type": str}`。
+FastAPI 自身のリクエスト検証エラー (例: body が dict でない) は `{"detail": [...]}` 形状の 422 で
+返る。クライアントはこの形状もエラーとして扱う (`client.ts` の `http_error` フォールバック)。
 
 ## GET /api/state — シェル状態
 
@@ -128,6 +130,7 @@ TestEnumVocabulary` がガード)。フロントは未知語彙を受けても**
 | フィールド | 語彙 |
 |---|---|
 | `review[].severity` | `close` \| `unknown` \| `guard` \| `echem` |
+| `review[].state` | `pending` \| `accepted` \| `sent_back` |
 | `stages[].gate` | `null` \| `bkg` \| `profile` \| `sample` \| `occ` \| `micro` |
 | `transcript[].kind` | `user` \| `agent` \| `tool` \| `judgement` \| `approval` \| `escalation` |
 | `fit.validity[].status` | `pass` \| `warn` \| `fail` |

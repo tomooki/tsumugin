@@ -36,10 +36,10 @@ export const STRINGS = {
   "context.fsm.agent": { en: "AGENT", ja: "エージェント" },
 
   // — status bar —
-  "status.backend": { en: "backend: GSASIIscriptable · win_64_p3.12_n2.2", ja: "バックエンド: GSASIIscriptable · win_64_p3.12_n2.2" },
-  "status.seed": { en: "seed = 0 · bit-identical (NFR-102)", ja: "seed = 0 · ビット同一 (NFR-102)" },
-  "status.ledger": { en: "ledger entries 1284 · chain OK", ja: "ledger 1284 件 · チェーン OK" },
-  "status.mcp": { en: "MCP tools 32 · layer ② reachable", ja: "MCP ツール 32 · ②到達可能" },
+  "status.backend": { en: "backend: {build}", ja: "バックエンド: {build}" },
+  "status.seed": { en: "seed = {seed} · bit-identical (NFR-102)", ja: "seed = {seed} · ビット同一 (NFR-102)" },
+  "status.ledger": { en: "ledger entries {n} · chain {chain}", ja: "ledger {n} 件 · チェーン {chain}" },
+  "status.mcp": { en: "MCP tools {n} · layer ② reachable", ja: "MCP ツール {n} 個 · ②到達可能" },
   "status.text.manual": { en: "MANUAL · agent proposals queue up, nothing applies without you", ja: "MANUAL · エージェントの提案はキューに溜まり、人間なしでは適用されない" },
   "status.text.auto": { en: "AUTO · safe actions applied and logged · model actions held for approval", ja: "AUTO · SafeAction は適用して記録 · ModelAction は承認待ちで保留" },
   "status.cost.idle": { en: "agent idle", ja: "エージェント待機" },

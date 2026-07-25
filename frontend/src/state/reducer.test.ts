@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Site, ViewModel } from "../api/types";
+import type { Site, StageRow, ViewModel } from "../api/types";
 import { initialWorkbenchState, reducer, siteList } from "./reducer";
 import type { WorkbenchState } from "./types";
 
@@ -144,5 +144,46 @@ describe("reducer — APPLY_EDITS", () => {
     expect(applied.applied).toBe(true);
     expect(applied.sites).toBeNull();
     expect(applied.appliedSites?.[0].occ).toBe("0.5");
+  });
+});
+
+describe("reducer — SET_VIEW_MODEL stageOn server sync", () => {
+  function makeStage(nn: string, released: boolean): StageRow {
+    return { nn, name: nn, flags: "", delta_rwp: "", released, gate: null };
+  }
+
+  function viewModelWithStages(stages: StageRow[]): ViewModel {
+    return { structure: { sites: [], constraints: [], mem_peaks: [] }, stages } as unknown as ViewModel;
+  }
+
+  it("overwrites stageOn from viewModel.stages[].released — server truth wins", () => {
+    // Mirrors seed.py's seed_stages(): 01-06 and 08 released, 07 not — the
+    // opposite of the client-side default (stageOn 1-5 true, 6-8 false).
+    const stages = [
+      makeStage("01", true),
+      makeStage("02", true),
+      makeStage("03", true),
+      makeStage("04", true),
+      makeStage("05", true),
+      makeStage("06", true),
+      makeStage("07", false),
+      makeStage("08", true),
+    ];
+    const next = reducer(initialWorkbenchState, {
+      type: "SET_VIEW_MODEL",
+      viewModel: viewModelWithStages(stages),
+    });
+
+    expect(next.stageOn).toEqual({ 1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: false, 8: true });
+  });
+
+  it("keeps the existing stageOn when stages[] is empty (no data yet, not a reset to {})", () => {
+    const withCustomStageOn: WorkbenchState = { ...initialWorkbenchState, stageOn: { 1: false, 2: true } };
+    const next = reducer(withCustomStageOn, {
+      type: "SET_VIEW_MODEL",
+      viewModel: viewModelWithStages([]),
+    });
+
+    expect(next.stageOn).toEqual({ 1: false, 2: true });
   });
 });

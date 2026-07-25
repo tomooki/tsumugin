@@ -125,6 +125,25 @@ describe("mode toggle — right pane + fsm chip + status sentence swap only", ()
     expect(screen.queryByText("HUMAN")).not.toBeInTheDocument();
   });
 
+  it("shows the status-bar labels in Japanese after switching language, even with real fetched data", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    // wait for the real /api/state payload to land (English label first).
+    await waitFor(() => expect(screen.getByText(/backend: tsumugin 0\.3\.0/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "日本語" }));
+
+    // Previously the post-fetch status-bar text was built with raw English
+    // template literals (`backend: ${...}`, `ledger entries ${...}`, ...)
+    // that ignored state.lang entirely — this asserts the fix: switching to
+    // JA re-localises the labels even though the values came from the server.
+    await waitFor(() => expect(screen.getByText("バックエンド: tsumugin 0.3.0")).toBeInTheDocument());
+    expect(screen.getByText("seed = 0 · ビット同一 (NFR-102)")).toBeInTheDocument();
+    expect(screen.getByText("ledger 1281 件 · チェーン OK")).toBeInTheDocument();
+    expect(screen.getByText("MCP ツール 36 個 · ②到達可能")).toBeInTheDocument();
+  });
+
   it("calls POST /api/mode with the new mode", async () => {
     const user = userEvent.setup();
     const fetchMock = installFetchMock("manual");

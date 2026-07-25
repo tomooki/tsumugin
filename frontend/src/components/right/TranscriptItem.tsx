@@ -98,7 +98,11 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
       );
 
     case "approval": {
-      const decided = state.approval !== "pending" ? state.approval : (message.state ?? "pending");
+      // Per-action_id: state.approval is keyed by action_id (see state/types.ts)
+      // so resolving one ModelAction card never leaks its decision into another
+      // pending card that happens to render at the same time.
+      const localDecision = message.action_id ? state.approval[message.action_id] : undefined;
+      const decided = localDecision ?? message.state ?? "pending";
       const approveLabel = decided === "approved" ? t("chat.approval.applied") : t("chat.approval.approveApply");
       const rejectLabel = decided === "rejected" ? t("chat.approval.rejected") : t("chat.approval.reject");
       const stateLine =
@@ -112,7 +116,7 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
         if (!message.action_id) return;
         try {
           const res = await postApproval(message.action_id, decision);
-          dispatch({ type: "SET_APPROVAL", approval: res.state });
+          dispatch({ type: "SET_APPROVAL", actionId: message.action_id, approval: res.state });
         } catch (err) {
           reportError(err, "failed to record approval");
         }

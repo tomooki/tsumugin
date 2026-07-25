@@ -49,7 +49,7 @@ export function OperatorConsole() {
     async (item: ReviewItem, action: "accept" | "send_back") => {
       try {
         await postReviewResolve(item.id, { action, note: "" });
-        dispatch({ type: "SET_REVIEW", id: item.id, decision: action === "accept" ? "accepted" : "sent" });
+        dispatch({ type: "SET_REVIEW", id: item.id, decision: action === "accept" ? "accepted" : "sent_back" });
       } catch (err) {
         reportError(err, "failed to resolve review item");
       }
@@ -123,11 +123,18 @@ export function OperatorConsole() {
         </div>
         <div className="oc-review-list">
           {review.map((item) => {
-            const decision = state.review[item.id] ?? (item.state !== "pending" ? item.state : undefined);
+            // Local decision (this session's own resolve action) takes precedence
+            // over the server-fetched state, but on a fresh page load there is no
+            // local decision yet — item.state (from viewmodel.review[]) is then the
+            // only source of truth, so a previously-resolved item still shows
+            // ACCEPTED ✓ / SENT BACK instead of resetting to "pending" (§語彙,
+            // review[].state: pending | accepted | sent_back).
+            const decision =
+              state.review[item.id] ?? (item.state !== "pending" ? item.state : undefined);
             const acceptLabel =
               decision === "accepted"
                 ? t("review.accepted")
-                : decision === "sent"
+                : decision === "sent_back"
                   ? t("review.sentBack")
                   : rt(lang, "review.acceptPending");
             return (

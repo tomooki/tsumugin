@@ -236,6 +236,33 @@ describe("OperatorConsole — review queue", () => {
   });
 });
 
+describe("OperatorConsole — review state from the server survives a reload", () => {
+  let fetchMock: ReturnType<typeof installFetchMock>;
+
+  beforeEach(() => {
+    fetchMock = installFetchMock();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows ACCEPTED ✓ (disabled) for an item the server already reports as accepted, with no local decision", () => {
+    renderConsole({ viewModel: makeViewModel({ review: [reviewItem({ state: "accepted" })] }) });
+
+    const acceptedBtn = screen.getByRole("button", { name: "ACCEPTED ✓" });
+    expect(acceptedBtn).toBeDisabled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows SENT BACK (disabled) for an item the server already reports as sent_back, with no local decision", () => {
+    renderConsole({ viewModel: makeViewModel({ review: [reviewItem({ state: "sent_back" })] }) });
+
+    const sentBackBtn = screen.getByRole("button", { name: "SENT BACK" });
+    expect(sentBackBtn).toBeDisabled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("out-of-vocabulary severity (regression — must not unmount)", () => {
   it("renders an unknown severity as its raw uppercased code on a neutral chip", () => {
     renderConsole({

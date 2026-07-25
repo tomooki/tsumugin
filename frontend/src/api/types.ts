@@ -291,7 +291,7 @@ export interface StageRow {
 }
 
 export type ReviewSeverity = "close" | "unknown" | "guard" | "echem";
-export type ReviewState = "pending" | "accepted" | "sent";
+export type ReviewState = "pending" | "accepted" | "sent_back";
 
 export interface ReviewItem {
   id: string;
