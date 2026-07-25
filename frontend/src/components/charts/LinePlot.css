@@ -1,0 +1,57 @@
+.line-plot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.line-plot__row {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  min-height: 0;
+}
+
+.line-plot__y-axis {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: space-between;
+  width: 30px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-neutral-600);
+  text-align: right;
+  line-height: 1;
+}
+
+.line-plot__svg {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid var(--color-neutral-300);
+  background: var(--color-neutral-100);
+}
+
+.line-plot__x-axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-neutral-600);
+}
+
+.line-plot__line {
+  fill: none;
+  stroke: var(--color-text);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.line-plot__line--dashed {
+  stroke-dasharray: 4 3;
+}
+
+.line-plot__point {
+  fill: var(--color-neutral-700);
+}

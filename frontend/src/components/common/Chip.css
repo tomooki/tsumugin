@@ -1,0 +1,41 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border: 1px solid var(--color-divider);
+  background: transparent;
+  color: var(--color-neutral-700);
+  white-space: nowrap;
+}
+
+.chip--mono {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.chip--hairline {
+  border-color: var(--color-divider);
+  color: var(--color-neutral-700);
+  background: transparent;
+}
+
+.chip--accent {
+  background: var(--color-accent-100);
+  border-color: var(--color-accent-300);
+  color: var(--color-accent-800);
+}
+
+.chip--neutral {
+  background: var(--color-neutral-200);
+  border-color: var(--color-divider);
+  color: var(--color-neutral-800);
+}
+
+.chip--inverted {
+  background: var(--color-neutral-900);
+  border-color: var(--color-neutral-900);
+  color: var(--color-neutral-100);
+}

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/industry-3248150c-6a0b-4764-97d2-9f54a45f459a/styles.css">
+<script src="_ds/industry-3248150c-6a0b-4764-97d2-9f54a45f459a/_ds_bundle.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Barlow:wght@400;500;600&display=swap">
+<style>
+  body { margin: 0; background: var(--color-bg); font-family: var(--font-body); }
+  a { color: var(--color-accent-700); }
+  a:hover { color: var(--color-accent-800); }
+  .dv-turn { padding: 40px 44px 32px; border-bottom: 1px solid var(--color-divider); scroll-margin-top: 16px; }
+  .dv-thd { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px; }
+  .dv-tid { font: 600 10px ui-monospace, Menlo, monospace; padding: 3px 7px; background: var(--color-neutral-900); color: var(--color-neutral-100); text-decoration: none; }
+  .dv-tname { font-family: var(--font-heading); font-weight: 600; font-size: 16px; letter-spacing: 0.04em; color: var(--color-text); }
+  .dv-opts { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .dv-opt { flex: none; display: flex; flex-direction: column; gap: 9px; scroll-margin-top: 16px; }
+  .dv-oid { font: 600 10.5px ui-monospace, Menlo, monospace; padding: 3px 7px; background: var(--color-neutral-200); color: var(--color-text); text-decoration: none; }
+  .dv-olabel { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; color: var(--color-neutral-700); max-width: 470px; line-height: 1.45; }
+  .dv-card { background: var(--color-neutral-100); border: 1px solid var(--color-divider); position: relative; }
+  .dv-opt:target .dv-oid { background: var(--color-accent); color: var(--color-bg); }
+  .dv-next { margin: 22px 0 0; font-size: 12px; color: var(--color-neutral-700); }
+</style>
+</helmet>
+
+<section class="dv-turn" id="t1">
+  <div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">MANUAL / AUTO — WHERE THE THIRD LAYER LIVES</span></div>
+  <p style="margin: 0 0 22px; font-size: 12.5px; color: var(--color-neutral-700); max-width: 1120px; line-height: 1.6;">Layer ① core and layer ② MCP never change. Only layer ③ — the judge — swaps between a person driving the analysis GUI and an LLM driving the same MCP tools through a chat. Every option below shares one project state and one ledger; they differ in how much of both third layers you see at once. <a href="#1a">1a</a> is the built prototype (<a href="Tsumugin%20Workbench.dc.html">open the workbench</a>).</p>
+
+  <div class="dv-opts">
+
+    <!-- 1a -->
+    <div class="dv-opt" id="1a">
+      <div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a><span><strong>Three-pane console · built.</strong> Rail + shared canvas stay put; only the right pane swaps. Cheapest to reason about — the analysis never moves under you when you switch.</span></div>
+      <div class="dv-card" style="width: 470px;">
+        <div style="height: 26px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-200); padding: 0 8px;">
+          <span style="font-family: var(--font-heading); font-weight: 700; font-size: 11px; letter-spacing: 0.1em;">TSUMUGIN</span>
+          <span style="display: flex; gap: 2px; padding: 2px; background: var(--color-neutral-300);">
+            <span style="font: 600 8.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; background: var(--color-accent); color: var(--color-bg); padding: 2px 8px;">MANUAL</span>
+            <span style="font: 600 8.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-700); padding: 2px 8px;">AUTO</span>
+          </span>
+          <span style="font: 8.5px ui-monospace, Menlo, monospace; color: var(--color-neutral-600); text-align: right;">ledger ✓</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 84px 1fr 140px; height: 252px;">
+          <div style="border-right: 1px solid var(--color-divider); background: var(--color-neutral-200); padding: 6px; display: flex; flex-direction: column; gap: 5px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600);">PROJECT</span>
+            <span style="height: 16px; border: 1px solid var(--color-accent-300); background: var(--color-accent-100);"></span>
+            <span style="height: 12px; border: 1px solid var(--color-divider);"></span>
+            <span style="height: 12px; border: 1px solid var(--color-divider);"></span>
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600); margin-top: 6px;">PHASES</span>
+            <span style="height: 10px; border: 1px solid var(--color-divider);"></span>
+            <span style="height: 10px; border: 1px solid var(--color-divider);"></span>
+          </div>
+          <div style="display: flex; flex-direction: column; min-width: 0;">
+            <div style="height: 18px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--color-divider); padding: 0 7px; font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-neutral-600);">
+              <span style="color: var(--color-text); border-bottom: 2px solid var(--color-accent); padding-bottom: 2px;">FIT</span><span>HYP</span><span>PHASE ID</span><span>SEQ</span><span>STRUCT</span><span>LEDGER</span>
+            </div>
+            <div style="flex: 1; padding: 7px; display: flex; flex-direction: column; gap: 6px;">
+              <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;">
+                <span style="height: 24px; border: 1px solid var(--color-divider);"></span>
+                <span style="height: 24px; border: 1px solid var(--color-divider);"></span>
+                <span style="height: 24px; border: 1px solid var(--color-divider);"></span>
+                <span style="height: 24px; border: 1px solid var(--color-divider);"></span>
+              </div>
+              <div style="flex: 1; border: 1px dashed var(--color-neutral-400); display: flex; align-items: center; justify-content: center; font: 8.5px ui-monospace, Menlo, monospace; color: var(--color-neutral-600);">SHARED ANALYSIS CANVAS</div>
+              <div style="height: 26px; border: 1px dashed var(--color-neutral-400);"></div>
+            </div>
+          </div>
+          <div style="border-left: 1px solid var(--color-divider); background: var(--color-accent-100); padding: 6px; display: flex; flex-direction: column; gap: 5px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-accent-800);">OPERATOR CONSOLE</span>
+            <span style="height: 13px; border: 1px solid var(--color-accent-300); background: var(--color-neutral-100);"></span>
+            <span style="height: 13px; border: 1px solid var(--color-accent-300); background: var(--color-neutral-100);"></span>
+            <span style="height: 13px; border: 1px solid var(--color-divider);"></span>
+            <span style="height: 13px; border: 1px solid var(--color-divider);"></span>
+            <span style="height: 18px; background: var(--color-accent); margin-top: 3px;"></span>
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-accent-800); margin-top: 6px;">REVIEW QUEUE</span>
+            <span style="height: 30px; border: 1px solid var(--color-accent-300); background: var(--color-neutral-100);"></span>
+            <span style="height: 30px; border: 1px solid var(--color-accent-300); background: var(--color-neutral-100);"></span>
+          </div>
+        </div>
+        <div style="height: 16px; background: var(--color-neutral-900); color: var(--color-neutral-300); font: 7.5px ui-monospace, Menlo, monospace; display: flex; align-items: center; padding: 0 7px; letter-spacing: 0.06em;">seed 0 · chain OK · 32 MCP tools</div>
+      </div>
+    </div>
+
+    <!-- 1b -->
+    <div class="dv-opt" id="1b">
+      <div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a><span><strong>Workspace tabs.</strong> Manual and Auto are two full-width workspaces. Auto gets the whole window for the transcript with a live canvas strip; Manual gets the whole window for plots and tables.</span></div>
+      <div class="dv-card" style="width: 470px;">
+        <div style="height: 26px; display: flex; align-items: stretch; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-200);">
+          <span style="font: 600 9.5px var(--font-heading); letter-spacing: 0.12em; display: flex; align-items: center; padding: 0 12px; background: var(--color-neutral-100); border-right: 1px solid var(--color-divider); border-bottom: 2px solid var(--color-accent);">MANUAL WORKSPACE</span>
+          <span style="font: 600 9.5px var(--font-heading); letter-spacing: 0.12em; display: flex; align-items: center; padding: 0 12px; color: var(--color-neutral-600); border-right: 1px solid var(--color-divider);">AUTO WORKSPACE</span>
+          <span style="margin-left: auto; font: 8.5px ui-monospace, Menlo, monospace; color: var(--color-neutral-600); display: flex; align-items: center; padding: 0 8px;">same project · same ledger</span>
+        </div>
+        <div style="height: 252px; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--color-divider);">
+          <div style="background: var(--color-neutral-100); padding: 7px; display: flex; flex-direction: column; gap: 6px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600);">MANUAL — full width when active</span>
+            <div style="flex: 1; border: 1px dashed var(--color-neutral-400); display: flex; align-items: center; justify-content: center; font: 8.5px ui-monospace, Menlo, monospace; color: var(--color-neutral-600); text-align: center; line-height: 1.6;">FIT + RESIDUAL<br>full bleed</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; height: 60px;">
+              <span style="border: 1px dashed var(--color-neutral-400);"></span>
+              <span style="border: 1px dashed var(--color-neutral-400);"></span>
+            </div>
+          </div>
+          <div style="background: var(--color-accent-900); padding: 7px; display: flex; flex-direction: column; gap: 5px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-accent-300);">AUTO — transcript owns the window</span>
+            <span style="height: 22px; background: var(--color-accent-700); border: 1px solid var(--color-accent-600);"></span>
+            <span style="height: 34px; border: 1px solid var(--color-accent-700);"></span>
+            <span style="height: 16px; border-left: 3px solid var(--color-accent-400); border-top: 1px solid var(--color-accent-700); border-right: 1px solid var(--color-accent-700); border-bottom: 1px solid var(--color-accent-700);"></span>
+            <span style="height: 16px; border-left: 3px solid var(--color-accent-400); border-top: 1px solid var(--color-accent-700); border-right: 1px solid var(--color-accent-700); border-bottom: 1px solid var(--color-accent-700);"></span>
+            <span style="flex: 1; border: 1px dashed var(--color-accent-600); display: flex; align-items: center; justify-content: center; font: 8px ui-monospace, Menlo, monospace; color: var(--color-accent-300); text-align: center;">CANVAS STRIP<br>(read-only echo)</span>
+            <span style="height: 20px; border: 1px solid var(--color-accent-600); background: var(--color-accent-800);"></span>
+          </div>
+        </div>
+        <div style="height: 16px; background: var(--color-neutral-900); color: var(--color-neutral-300); font: 7.5px ui-monospace, Menlo, monospace; display: flex; align-items: center; padding: 0 7px; letter-spacing: 0.06em;">switching workspace never re-runs anything</div>
+      </div>
+    </div>
+
+    <!-- 1c -->
+    <div class="dv-opt" id="1c">
+      <div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a><span><strong>One weighted split.</strong> Both third layers are always on screen; the switch just re-weights them (80/20 → 20/80). Best for watching an agent while keeping your hands on the recipe.</span></div>
+      <div class="dv-card" style="width: 470px;">
+        <div style="height: 26px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-200); padding: 0 8px;">
+          <span style="font: 600 9px ui-monospace, Menlo, monospace; letter-spacing: 0.1em;">MANUAL</span>
+          <span style="position: relative; height: 6px; background: var(--color-neutral-300);">
+            <span style="position: absolute; left: 0; top: 0; bottom: 0; width: 62%; background: var(--color-accent);"></span>
+            <span style="position: absolute; left: 62%; top: -4px; width: 8px; height: 14px; background: var(--color-neutral-900);"></span>
+          </span>
+          <span style="font: 600 9px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600);">AUTO</span>
+        </div>
+        <div style="height: 252px; display: grid; grid-template-columns: 62% 1px 1fr;">
+          <div style="padding: 7px; display: flex; flex-direction: column; gap: 6px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600);">HUMAN SIDE · plots, recipe, queue</span>
+            <div style="flex: 1; border: 1px dashed var(--color-neutral-400); display: flex; align-items: center; justify-content: center; font: 8.5px ui-monospace, Menlo, monospace; color: var(--color-neutral-600);">FIT / RESIDUAL</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; height: 46px;">
+              <span style="border: 1px dashed var(--color-neutral-400);"></span>
+              <span style="border: 1px dashed var(--color-neutral-400);"></span>
+              <span style="border: 1px dashed var(--color-neutral-400);"></span>
+            </div>
+            <div style="height: 34px; border: 1px solid var(--color-accent-300); background: var(--color-accent-100); display: flex; align-items: center; padding: 0 7px; font: 8px ui-monospace, Menlo, monospace; color: var(--color-accent-800);">staged release · release / revert</div>
+          </div>
+          <div style="background: var(--color-divider);"></div>
+          <div style="background: var(--color-accent-900); padding: 7px; display: flex; flex-direction: column; gap: 4px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-accent-300);">AGENT</span>
+            <span style="height: 18px; background: var(--color-accent-700);"></span>
+            <span style="height: 26px; border: 1px solid var(--color-accent-700);"></span>
+            <span style="height: 12px; border-left: 3px solid var(--color-accent-400); border-top: 1px solid var(--color-accent-700); border-right: 1px solid var(--color-accent-700); border-bottom: 1px solid var(--color-accent-700);"></span>
+            <span style="height: 12px; border-left: 3px solid var(--color-accent-400); border-top: 1px solid var(--color-accent-700); border-right: 1px solid var(--color-accent-700); border-bottom: 1px solid var(--color-accent-700);"></span>
+            <span style="flex: 1;"></span>
+            <span style="height: 18px; border: 1px solid var(--color-accent-400); background: var(--color-accent-800); display: flex; align-items: center; justify-content: center; font: 7.5px ui-monospace, Menlo, monospace; color: var(--color-accent-200);">APPROVE ·  REJECT</span>
+          </div>
+        </div>
+        <div style="height: 16px; background: var(--color-neutral-900); color: var(--color-neutral-300); font: 7.5px ui-monospace, Menlo, monospace; display: flex; align-items: center; padding: 0 7px; letter-spacing: 0.06em;">drag the weight — no mode, just attention</div>
+      </div>
+    </div>
+
+    <!-- 1d -->
+    <div class="dv-opt" id="1d">
+      <div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a><span><strong>Evidence board.</strong> A zoomable board of panels instead of fixed panes. In Auto the agent's tool calls draw themselves onto the board as a trace, so its reasoning and your evidence occupy the same space.</span></div>
+      <div class="dv-card" style="width: 470px;">
+        <div style="height: 26px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-200); padding: 0 8px;">
+          <span style="font: 600 9px ui-monospace, Menlo, monospace; letter-spacing: 0.1em;">BOARD · frame 088</span>
+          <span></span>
+          <span style="display: flex; gap: 2px;">
+            <span style="font: 600 8.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-neutral-700); border: 1px solid var(--color-divider); padding: 1px 7px;">MANUAL</span>
+            <span style="font: 600 8.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; background: var(--color-accent-800); color: var(--color-neutral-100); padding: 1px 7px;">AUTO</span>
+          </span>
+        </div>
+        <div style="height: 252px; position: relative; background: var(--color-neutral-100); background-image: radial-gradient(circle, color-mix(in srgb, var(--color-text) 14%, transparent) 1px, transparent 1px); background-size: 16px 16px;">
+          <div style="position: absolute; left: 14px; top: 14px; width: 190px; height: 92px; border: 1px solid var(--color-divider); background: var(--color-neutral-100); box-shadow: var(--shadow-sm); padding: 5px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-neutral-600);">FIT</span>
+            <span style="display: block; height: 62px; border: 1px dashed var(--color-neutral-400); margin-top: 3px;"></span>
+          </div>
+          <div style="position: absolute; left: 222px; top: 30px; width: 150px; height: 70px; border: 1px solid var(--color-divider); background: var(--color-neutral-100); box-shadow: var(--shadow-sm); padding: 5px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-neutral-600);">CANDIDATES</span>
+            <span style="display: block; height: 42px; border: 1px dashed var(--color-neutral-400); margin-top: 3px;"></span>
+          </div>
+          <div style="position: absolute; left: 40px; top: 128px; width: 170px; height: 84px; border: 1px solid var(--color-divider); background: var(--color-neutral-100); box-shadow: var(--shadow-sm); padding: 5px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-neutral-600);">SEQUENCE</span>
+            <span style="display: block; height: 54px; border: 1px dashed var(--color-neutral-400); margin-top: 3px;"></span>
+          </div>
+          <div style="position: absolute; right: 12px; top: 118px; width: 176px; height: 118px; border: 1px solid var(--color-accent-700); background: var(--color-accent-900); box-shadow: var(--shadow-md); padding: 6px; display: flex; flex-direction: column; gap: 4px;">
+            <span style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--color-accent-300);">AGENT TRACE</span>
+            <span style="height: 12px; background: var(--color-accent-700);"></span>
+            <span style="height: 12px; border-left: 3px solid var(--color-accent-400); border-top: 1px solid var(--color-accent-700); border-right: 1px solid var(--color-accent-700); border-bottom: 1px solid var(--color-accent-700);"></span>
+            <span style="height: 12px; border-left: 3px solid var(--color-accent-400); border-top: 1px solid var(--color-accent-700); border-right: 1px solid var(--color-accent-700); border-bottom: 1px solid var(--color-accent-700);"></span>
+            <span style="flex: 1; border: 1px dashed var(--color-accent-600);"></span>
+          </div>
+          <span style="position: absolute; left: 205px; top: 60px; width: 20px; height: 1px; background: var(--color-accent);"></span>
+          <span style="position: absolute; left: 288px; top: 100px; width: 1px; height: 28px; background: var(--color-accent);"></span>
+          <span style="position: absolute; left: 210px; top: 168px; width: 70px; height: 1px; background: var(--color-accent);"></span>
+        </div>
+        <div style="height: 16px; background: var(--color-neutral-900); color: var(--color-neutral-300); font: 7.5px ui-monospace, Menlo, monospace; display: flex; align-items: center; padding: 0 7px; letter-spacing: 0.06em;">panels are pinned evidence · the trace links them</div>
+      </div>
+    </div>
+
+    <!-- 1e -->
+    <div class="dv-opt" id="1e">
+      <div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a><span><strong>Switch treatments.</strong> The same state change, three readings — a quiet segmented control, a consequential two-position lever that stamps the ledger, and a status line that says who holds the decision.</span></div>
+      <div class="dv-card" style="width: 470px; padding: 14px; display: flex; flex-direction: column; gap: 14px;">
+        <div>
+          <div style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600); margin-bottom: 5px;">i · SEGMENTED (built)</div>
+          <div style="display: inline-flex; gap: 3px; padding: 3px; background: var(--color-neutral-200); border: 1px solid var(--color-divider);">
+            <span style="display: flex; align-items: center; gap: 7px; background: var(--color-accent); color: var(--color-bg); padding: 4px 12px;">
+              <span style="width: 7px; height: 7px; background: var(--color-bg);"></span>
+              <span><span style="display: block; font: 600 12px var(--font-heading); letter-spacing: 0.1em; line-height: 1.1;">MANUAL</span><span style="display: block; font-size: 9px; opacity: 0.8;">layer ③ = you</span></span>
+            </span>
+            <span style="display: flex; align-items: center; gap: 7px; color: var(--color-neutral-700); padding: 4px 12px;">
+              <span style="width: 7px; height: 7px; background: var(--color-neutral-400);"></span>
+              <span><span style="display: block; font: 600 12px var(--font-heading); letter-spacing: 0.1em; line-height: 1.1;">AUTO</span><span style="display: block; font-size: 9px; opacity: 0.8;">layer ③ = LLM</span></span>
+            </span>
+          </div>
+        </div>
+        <div>
+          <div style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600); margin-bottom: 5px;">ii · LEVER — throwing it writes to the ledger</div>
+          <div style="display: flex; align-items: stretch; border: 1px solid var(--color-neutral-900); width: 300px;">
+            <span style="flex: 1; background: var(--color-neutral-900); color: var(--color-neutral-100); font: 600 12px var(--font-heading); letter-spacing: 0.12em; padding: 8px 10px; display: flex; align-items: center;">MANUAL</span>
+            <span style="width: 26px; background: var(--color-neutral-300); border-left: 1px solid var(--color-neutral-900); border-right: 1px solid var(--color-neutral-900); display: flex; align-items: center; justify-content: center;">
+              <span style="width: 10px; height: 22px; background: var(--color-accent); border: 1px solid var(--color-neutral-900);"></span>
+            </span>
+            <span style="flex: 1; color: var(--color-neutral-600); font: 600 12px var(--font-heading); letter-spacing: 0.12em; padding: 8px 10px; display: flex; align-items: center; justify-content: flex-end;">AUTO</span>
+          </div>
+          <div style="font: 8.5px ui-monospace, Menlo, monospace; color: var(--color-neutral-600); margin-top: 4px;">#1284 · 14:18:12 · HUMAN · mode manual → auto</div>
+        </div>
+        <div>
+          <div style="font: 7.5px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; color: var(--color-neutral-600); margin-bottom: 5px;">iii · CUSTODY LINE — always says who decides</div>
+          <div style="display: flex; align-items: center; gap: 0; border: 1px solid var(--color-divider);">
+            <span style="background: var(--color-accent-800); color: var(--color-neutral-100); font: 8.5px ui-monospace, Menlo, monospace; letter-spacing: 0.08em; padding: 6px 9px;">FINAL SELECTION</span>
+            <span style="font: 600 11px var(--font-heading); letter-spacing: 0.1em; padding: 6px 10px;">HUMAN</span>
+            <span style="font-size: 10.5px; color: var(--color-neutral-700); padding: 6px 10px; border-left: 1px solid var(--color-divider);">agent may propose · only you accept</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <p class="dv-next">Try next: “build out <a class="dv-oid" href="#1c">1c</a> as the real workbench” · “keep <a class="dv-oid" href="#1a">1a</a> but use the lever from <a class="dv-oid" href="#1e">1e</a>” · “show a calmer, lower-density version of the FIT tab”</p>
+</section>
+
+</x-dc>
+</body>
+</html>

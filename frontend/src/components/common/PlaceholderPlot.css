@@ -1,0 +1,32 @@
+.placeholder-plot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.placeholder-plot__frame {
+  flex: 1;
+  min-height: 96px;
+  border: 1px dashed var(--color-neutral-400);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+
+.placeholder-plot__label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-neutral-600);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.placeholder-plot__axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-neutral-600);
+}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -41,6 +42,9 @@ class PersistentLedger:
         # 【状態初期化】: パスと内部エントリリストを準備（in-memory Ledger と同じ保持形式）🔵
         self._path = Path(path)
         self._entries: list[LedgerEntry] = []
+        # 【NFR-105 スレッド安全性】: in-memory Ledger と同じ理由 (ledger.py 参照) で
+        # append の「index 読取 → 構築 → 追記」列 + ファイル追記 I/O を内部ロックで直列化 🟡
+        self._append_lock = threading.Lock()
         # 【既存ファイル読込】: 存在する場合のみ復元＋検証。不在なら空 ledger（GENESIS 起点）🔵
         if self._path.exists():
             self._load_and_verify()
@@ -89,35 +93,38 @@ class PersistentLedger:
         【テスト対応】: TC-106-01/02/07、初回 append でのファイル新規作成、決定論。
         🔵 信頼性レベル: 要件定義 §2.2 / ledger.py Ledger.append と同一規約
         """
-        # 【チェーン連結】: index 連番と直前 hash（空なら GENESIS）を決定 🔵
-        index = len(self._entries)
-        prev_hash = self._entries[-1].hash if self._entries else GENESIS_HASH
         # 【隔離コピー】: 呼び出し側の後続変更から payload を隔離（in-memory 版と同一）🔵
         payload = dict(payload)
-        entry = LedgerEntry(
-            index=index,
-            kind=kind,
-            payload=payload,
-            prev_hash=prev_hash,
-            hash=_compute_hash(index, kind, payload, prev_hash),
-        )
-        # 【追記 I/O】: "a" モードで to_dict() の JSON 1 行 + 改行のみを書く（既存バイト列不変）🔵
-        with open(self._path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry.to_dict()) + "\n")
-        self._entries.append(entry)
-        return entry
+        with self._append_lock:
+            # 【チェーン連結】: index 連番と直前 hash（空なら GENESIS）を決定 🔵
+            index = len(self._entries)
+            prev_hash = self._entries[-1].hash if self._entries else GENESIS_HASH
+            entry = LedgerEntry(
+                index=index,
+                kind=kind,
+                payload=payload,
+                prev_hash=prev_hash,
+                hash=_compute_hash(index, kind, payload, prev_hash),
+            )
+            # 【追記 I/O】: "a" モードで to_dict() の JSON 1 行 + 改行のみを書く（既存バイト列不変）🔵
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry.to_dict()) + "\n")
+            self._entries.append(entry)
+            return entry
 
     @property
     def entries(self) -> tuple[LedgerEntry, ...]:
         """【機能概要】: 全エントリの不変タプル（in-memory Ledger.entries と同一契約）。🔵"""
-        return tuple(self._entries)
+        with self._append_lock:
+            return tuple(self._entries)
 
     def verify(self) -> bool:
         """【機能概要】: ハッシュチェーンの整合性を検証する。
 
         【実装方針】: ledger.py の verify_entries へ委譲し in-memory 版と単一ロジック共有。🔵
+        並行 append 中でも一貫したスナップショットを検証するため entries 経由で読む。
         """
-        return verify_entries(self._entries)
+        return verify_entries(self.entries)
 
 
 class PersistentSnapshotStore:

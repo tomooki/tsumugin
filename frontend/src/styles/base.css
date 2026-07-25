@@ -1,0 +1,36 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+/* Scrollbars — ported from the prototype's .tg-scroll helper. */
+.tg-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-neutral-400) transparent;
+}
+.tg-scroll::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.tg-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-neutral-400);
+}
+.tg-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}

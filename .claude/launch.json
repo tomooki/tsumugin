@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "workbench",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "-m", "tsumugin.workbench"],
+      "port": 8770
+    },
+    {
+      "name": "workbench-cateo3",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run", "python", "-m", "tsumugin.workbench",
+        "--project", "examples/cateo3_project.json"
+      ],
+      "port": 8770
+    }
+  ]
+}
