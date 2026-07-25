@@ -22,7 +22,7 @@ from tsumugin.autorietveld.model import (
     StageResult,
     ValidityReport,
 )
-from tsumugin.workbench import curves
+from tsumugin.workbench import atoms, curves
 from tsumugin.workbench.jobs import RefinementJobManager, build_default_runner
 from tsumugin.workbench.project import WorkbenchProject
 from tsumugin.workbench.session import WorkbenchSession
@@ -198,11 +198,14 @@ def test_build_default_runner_wires_project_settings(tmp_path, monkeypatch):
         captured["background_coeffs"] = background_coeffs
         return ("STAGE",)
 
-    def fake_run_auto_rietveld(histograms, phases, *, recipe, ledger, max_cyc, keep_gpx):
+    def fake_run_auto_rietveld(
+        histograms, phases, *, recipe, ledger, max_cyc, keep_gpx, initial_occupancies=None
+    ):
         captured["recipe"] = recipe
         captured["max_cyc"] = max_cyc
         captured["keep_gpx"] = keep_gpx
         captured["ledger"] = ledger
+        captured["initial_occupancies"] = initial_occupancies
         return "RESULT"
 
     import tsumugin.autorietveld.engine as engine_mod
@@ -221,6 +224,61 @@ def test_build_default_runner_wires_project_settings(tmp_path, monkeypatch):
     assert captured["keep_gpx"] == project.gpx_path
     assert captured["ledger"] is sentinel_ledger
     assert captured["recipe"] == ("STAGE",)
+    assert captured["initial_occupancies"] is None
+
+
+def test_build_default_runner_filters_recipe_by_stages_on(tmp_path, monkeypatch):
+    # 【A1】: stages_on で False にした段は build_recipe が返す段列から実際に除かれる。
+    project = _fake_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_build_recipe(histograms, phases, *, background_coeffs):
+        return ("S1", "S2", "S3")
+
+    def fake_run_auto_rietveld(
+        histograms, phases, *, recipe, ledger, max_cyc, keep_gpx, initial_occupancies=None
+    ):
+        captured["recipe"] = recipe
+        return "RESULT"
+
+    import tsumugin.autorietveld.engine as engine_mod
+    import tsumugin.autorietveld.recipe as recipe_mod
+
+    monkeypatch.setattr(recipe_mod, "build_recipe", fake_build_recipe)
+    monkeypatch.setattr(engine_mod, "run_auto_rietveld", fake_run_auto_rietveld)
+
+    runner = build_default_runner(project, stages_on={"02": False})
+    out = runner()
+
+    assert out == "RESULT"
+    assert captured["recipe"] == ("S1", "S3")
+
+
+def test_build_default_runner_passes_initial_occupancies_through(tmp_path, monkeypatch):
+    # 【A3】: initial_occupancies は run_auto_rietveld へそのまま透過する。
+    project = _fake_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_build_recipe(histograms, phases, *, background_coeffs):
+        return ("STAGE",)
+
+    def fake_run_auto_rietveld(
+        histograms, phases, *, recipe, ledger, max_cyc, keep_gpx, initial_occupancies=None
+    ):
+        captured["initial_occupancies"] = initial_occupancies
+        return "RESULT"
+
+    import tsumugin.autorietveld.engine as engine_mod
+    import tsumugin.autorietveld.recipe as recipe_mod
+
+    monkeypatch.setattr(recipe_mod, "build_recipe", fake_build_recipe)
+    monkeypatch.setattr(engine_mod, "run_auto_rietveld", fake_run_auto_rietveld)
+
+    occ = {"phaseA": {"O1": 0.5}}
+    runner = build_default_runner(project, initial_occupancies=occ)
+    runner()
+
+    assert captured["initial_occupancies"] == occ
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +296,15 @@ def test_on_refine_success_updates_session_in_contract_shape(tmp_path, monkeypat
         }
     }
     monkeypatch.setattr(curves, "extract_curves", lambda gpx, **kw: fake_plot)
+    fake_sites = [
+        {
+            "id": "s1", "label": "O1", "el": "O", "x": "0.1000", "y": "0.2000", "z": "0.3000",
+            "occ": "1.0000", "uiso": "0.0100", "note": "", "lock": {"x": False, "y": False, "z": False},
+            "rel": {"x": False, "y": False, "z": False, "occ": False, "uiso": False},
+            "phase": "phaseA",
+        }
+    ]
+    monkeypatch.setattr(atoms, "extract_sites", lambda gpx, **kw: fake_sites)
     result = _fake_result(gpx_path=str(tmp_path / "refined.gpx"))
 
     before_snaps = len(session.snapshots.snapshots)
@@ -267,6 +334,12 @@ def test_on_refine_success_updates_session_in_contract_shape(tmp_path, monkeypat
 
     phase_row = next(p for p in vm["phases"] if p["name"] == "phaseA")
     assert phase_row["wt_frac"] == "100.0 %"  # esd=0.0 (単相の自明値) は括弧を出さない
+
+    # A2: 実サイトが反映され、内部専用の "phase" キーは viewmodel から取り除かれている
+    site_row = next(s for s in vm["structure"]["sites"] if s["label"] == "O1")
+    assert site_row["el"] == "O"
+    assert "phase" not in site_row
+    assert session._site_phase_map["O1"] == "phaseA"
 
     assert len(session.snapshots.snapshots) == before_snaps + 1
     # 副作用は SnapshotStore.save (snapshot_save) + 明示 "refine_finished" の 2 エントリ
@@ -318,7 +391,7 @@ def test_request_refine_conflict_when_already_running(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         workbench_session_module, "build_default_runner",
-        lambda project, ledger=None: fake_runner,
+        lambda project, ledger=None, stages_on=None, initial_occupancies=None: fake_runner,
     )
 
     result1 = session.request_refine()

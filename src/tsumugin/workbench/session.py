@@ -21,7 +21,9 @@ import math
 import os
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Mapping
+
+import numpy as np
 
 from .._json import finite_or_none
 from ..autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
@@ -77,6 +79,12 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "approval_decision": "HUMAN",
     "accept_reason": "HUMAN",
     "project_edit": "HUMAN",
+    "phaseid_request": "HUMAN",
+    "phaseid_finished": "CORE ①",
+    "phaseid_failed": "GUARD",
+    "multistart_request": "HUMAN",
+    "multistart_finished": "CORE ①",
+    "multistart_failed": "GUARD",
 }
 
 
@@ -122,6 +130,18 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"accept reason: {payload.get('reason')}"
     if kind == "project_edit":
         return f"project edit: {payload.get('op')}"
+    if kind == "phaseid_request":
+        return f"phase id requested ({payload.get('mode')})"
+    if kind == "phaseid_finished":
+        return f"phase id finished (n={payload.get('n_candidates')})"
+    if kind == "phaseid_failed":
+        return f"phase id failed: {payload.get('error')}"
+    if kind == "multistart_request":
+        return f"multistart requested (n_starts={payload.get('n_starts')})"
+    if kind == "multistart_finished":
+        return f"multistart finished (basins={payload.get('n_basins')})"
+    if kind == "multistart_failed":
+        return f"multistart failed: {payload.get('error')}"
     return kind
 
 
@@ -170,6 +190,22 @@ class WorkbenchSession:
         self._review_state: dict[str, str] = {}
         self._structure_sites: list[dict[str, Any]] = []
         self._structure_phases: "tuple[PhaseInstance, ...]" = ()
+        # 【A2/A3: 実サイト抽出とラベル→相ルーティング】: 直近 refine が gpx から抽出した実サイトの
+        #   label→相名 (占有率 revision (A3) を正しい相へ配線するための session 内部専用マップ、
+        #   契約 Site スキーマには現れない)。
+        self._site_phase_map: dict[str, str] = {}
+        # 【A3: pending occ revisions】: apply_structure が適用した occ 編集のうち、次回 refine の
+        #   runner 構築時に initial_occupancies として渡す分 (相名→{ラベル→occ})。refine 開始時に
+        #   消費 (クリア) される。uiso は run_auto_rietveld に直接注入する API が無いため対象外。
+        self._pending_occupancies: dict[str, dict[str, float]] = {}
+        # 【A4: 相同定候補】: viewmodel.phase_id.candidates (project モード) + mp_id→AcceptedPhase
+        #   (ADD AS PHASE 時の再物質化用、strain を引き継ぐ)。
+        self._phaseid_candidates: list[dict[str, Any]] = []
+        self._phaseid_accepted_by_id: dict[str, Any] = {}
+        # 【A5: basin 散布 + corroborated evidence】: run_multistart_rietveld 完了で供給。
+        #   None は「データなし (empty-state)」(api-contract.md)。
+        self._basin: "dict[str, Any] | None" = None
+        self._hyp_evidence: list[list[str]] = []
 
         # 【実プロジェクト接続 (REQ-GUI-012/013)】: 既定は demo。``from_project`` が "project" へ切替える。
         self._source: GuiSource = "demo"
@@ -350,7 +386,7 @@ class WorkbenchSession:
             "fit": fit,
             "parameters": parameters,
             "hypotheses": self.hypotheses_view(),
-            "phase_id": _seed.seed_phase_id() if use_seed else _EMPTY_PHASE_ID,
+            "phase_id": self._phase_id_view(use_seed),
             "sequence": _seed.seed_sequence() if use_seed else _EMPTY_SEQUENCE,
             "structure": self._structure_view(),
             "stages": [dict(s) for s in self._stages],
@@ -395,6 +431,20 @@ class WorkbenchSession:
             "max_cyc": project.max_cyc,
         }
         return {"histograms": histograms, "phases": phases, "settings": settings}
+
+    def _phase_id_view(self, use_seed: bool) -> dict[str, Any]:
+        """viewmodel.phase_id (A4): demo はシード、project は実 ``identify_pattern`` 候補。"""
+        if use_seed:
+            return _seed.seed_phase_id()
+        if self._source != "project":
+            return dict(_EMPTY_PHASE_ID)
+        with self._lock:
+            candidates = [dict(c) for c in self._phaseid_candidates]
+        return {
+            "candidates": candidates,
+            "unexplained": [],
+            "completeness": {"is_complete": None, "notes": [], "flagged_frames": ""},
+        }
 
     def _datasets_view(self) -> list[dict[str, Any]]:
         if self._source == "demo":
@@ -443,10 +493,22 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def hypotheses_view(self) -> dict[str, Any]:
+        if self._source == "demo":
+            diff = _seed.seed_hypotheses_diff()
+            evidence = _seed.seed_hypotheses_evidence()
+        else:
+            # 【empty-state (REQ-GUI-014)】: project/none はシードで実データ不在を偽装しない。
+            #   evidence は A5 (multistart) の corroborated 行のみ蓄積する。
+            diff = {"vs": None, "rows": []}
+            with self._lock:
+                evidence = [list(e) for e in self._hyp_evidence]
+        with self._lock:
+            basin = dict(self._basin) if self._basin is not None else None
         return {
             "rows": [dict(r) for r in self._hyp_rows],
-            "diff": _seed.seed_hypotheses_diff(),
-            "evidence": _seed.seed_hypotheses_evidence(),
+            "diff": diff,
+            "evidence": evidence,
+            "basin": basin,
         }
 
     def accept_hypothesis(
@@ -563,6 +625,13 @@ class WorkbenchSession:
 
         提案 ≠ 適用: STRUCTURE タブでの編集は working model のみを変え、本メソッド呼び出しが
         明示的な適用操作 (REQ-GUI-008)。占有率は site の ``label`` をキーに ``occupancies`` へ写す。
+
+        project モード (A3, api-contract.md POST /api/structure/apply) では、適用した occ 編集を
+        次回 ``request_refine`` の ``initial_occupancies`` へ配線するため ``self._pending_occupancies``
+        (相名→{ラベル→occ}) を更新する。相名は直近 refine の実サイト抽出が残した
+        ``self._site_phase_map`` (label→相名) を引く — 未精密化 (map 未構築) の label は revision に
+        できないため無視する。**uiso は対象外**: ``run_auto_rietveld`` に uiso を直接シードする API が
+        無いため (occ の ``initial_occupancies`` のような注入点が存在しない)、occ のみを配線する。
         """
         occupancies: dict[str, float] = {}
         for site in sites:
@@ -578,6 +647,14 @@ class WorkbenchSession:
         new_phase = base.with_updates(occupancies=occupancies)
         self._structure_phases = (new_phase,) + tuple(self._structure_phases[1:])
         self._structure_sites = [dict(s) for s in sites]
+        if self._source == "project":
+            revisions: dict[str, dict[str, float]] = {}
+            for label, occ in occupancies.items():
+                phase_name = self._site_phase_map.get(label)
+                if phase_name is None:
+                    continue
+                revisions.setdefault(phase_name, {})[label] = occ
+            self._pending_occupancies = revisions
         snap = self.snapshots.save(self._structure_phases, label=note or "ReviseStructure apply")
         return {"snapshot_id": snap.id, "ledger_index": self.ledger.entries[-1].index}
 
@@ -627,19 +704,49 @@ class WorkbenchSession:
     # POST /api/refine
     # ------------------------------------------------------------------
 
-    def request_refine(self) -> dict[str, Any]:
+    def _validate_stages_on(self, stages_on: "Mapping[str, bool] | None") -> "dict[str, Any] | None":
+        """``stages_on`` の nn キーが ``viewmodel.stages`` に存在するか検証する (A1)。
+
+        不明なキーがあれば ``ValueError`` error dict (呼び出し側が 422 へ縮退)、問題なければ
+        ``None``。独立メソッドに切り出すことで、ガード自体の変異実証 (「検証を外すと不明キーが
+        通ってしまう」) を `_guard_project_editable` と同じ流儀で書けるようにする。
+        """
+        if stages_on is None:
+            return None
+        known_nn = {s["nn"] for s in self._stages}
+        unknown = sorted(set(stages_on) - known_nn)
+        if unknown:
+            return {"error": f"unknown stage nn: {unknown}", "error_type": "ValueError"}
+        return None
+
+    def request_refine(self, stages_on: "Mapping[str, bool] | None" = None) -> dict[str, Any]:
         """精密化要求を受理する (REQ-GUI-013)。
 
         demo モード (source="demo") は従来どおり ledger 追記のみで即時受理する (後方互換)。
         project モードは実 ``run_auto_rietveld`` をバックグラウンドスレッドで起動する。実行中の
-        二重起動は ``ConflictError`` (呼び出し側 [`app.py`] が 409 へ縮退) を返す。
+        二重起動は ``ConflictError`` (呼び出し側 [`app.py`] が 409 へ縮退) を返す — refine/phaseid/
+        multistart は同一ジョブ枠 (``self._job``) を共有するため、いずれかの実行中も 409 になる。
+
+        :param stages_on: 段階 nn → 解放するか (A1)。不明な nn キー (``viewmodel.stages`` に無い)
+            は ``ValueError`` error dict (呼び出し側が 422 へ縮退)。``None``/省略は全段既定。
         """
+        guard = self._validate_stages_on(stages_on)
+        if guard is not None:
+            return guard
+        payload = {"stages_on": dict(stages_on) if stages_on else None}
         if self._source == "demo":
-            self.ledger.append("refine_request", {})
+            self.ledger.append("refine_request", payload)
             return {"status": "recorded"}
         if self._project is None:
             return {"error": "no project loaded", "error_type": "ValueError"}
-        runner = build_default_runner(self._project, ledger=self.ledger)
+        # 【A3: pending occ revisions のスナップショット】: ``self._pending_occupancies`` はジョブが
+        #   実際に起動できた場合のみ消費 (クリア) する — 起動が 409 で断られた場合に revision を
+        #   取りこぼさないため、クリアは ``started`` 確定後に行う (下記)。
+        initial_occupancies = dict(self._pending_occupancies) if self._pending_occupancies else None
+        runner = build_default_runner(
+            self._project, ledger=self.ledger, stages_on=stages_on,
+            initial_occupancies=initial_occupancies,
+        )
         started = self._job.start(
             runner,
             on_success=self._on_refine_success,
@@ -647,14 +754,15 @@ class WorkbenchSession:
             # 【ledger 順序保証】: on_started はロック保持下・スレッド起動前に同期実行されるため、
             #   即座に失敗する runner との競合でも "refine_request" は必ず終了系エントリより先に
             #   現れる (RefinementJobManager.start docstring 参照)。
-            on_started=lambda: self.ledger.append("refine_request", {}),
+            on_started=lambda: self.ledger.append("refine_request", payload),
         )
         if not started:
             return {"error": "refinement already running", "error_type": "ConflictError"}
+        self._pending_occupancies = {}  # A3: この refine で消費済みにする (起動確定後のみ)
         return {"status": "started"}
 
     def refine_status(self) -> dict[str, Any]:
-        """GET /api/refine/status 契約形を返す。"""
+        """GET /api/refine/status 契約形を返す (refine/phaseid/multistart 共有ジョブ枠)。"""
         return self._job.status()
 
     def _last_ledger_text(self) -> "str | None":
@@ -687,6 +795,22 @@ class WorkbenchSession:
         snapshot_phases = (
             _phase_instances_from_result(project, result) if project is not None else ()
         )
+        # 【A2: 実サイト抽出】: gpx から label/el/x/y/z/occ/uiso + 特殊位置 lock を読む。
+        #   `curves.extract_curves` (直上) と同じ流儀で例外は握らない — gpx_path が非空なのは
+        #   実 run_auto_rietveld が成功裏に書き出した後のみなので GSAS 未導入は実運用では
+        #   到達しない (防御的コードのみ)。失敗時は RefinementJobManager が failed へ縮退する。
+        #   "phase" は session 内部専用ルーティングキー (A3) — viewmodel 契約の Site スキーマには
+        #   存在しないため、格納前に取り除く。
+        sites_view: list[dict[str, Any]] = []
+        site_phase_map: dict[str, str] = {}
+        if result.gpx_path and project is not None:
+            from . import atoms
+
+            raw_sites = atoms.extract_sites(result.gpx_path, occupancy_esd=result.atom_occupancy_esd)
+            for site in raw_sites:
+                site = dict(site)
+                site_phase_map[site["label"]] = site.pop("phase", "")
+                sites_view.append(site)
 
         with self._lock:
             self._fit["metrics"] = metrics
@@ -696,6 +820,9 @@ class WorkbenchSession:
                 self._fit["plot"] = plot
             if phases_view:
                 self._phases_view = phases_view
+            if sites_view:
+                self._structure_sites = sites_view
+                self._site_phase_map = site_phase_map
             self._apply_hist_profile(result.hist_profile)
             self.snapshots.save(snapshot_phases, label="refine finished")
             self.ledger.append(
@@ -947,6 +1074,251 @@ class WorkbenchSession:
         self.ledger.append("transcript_message", {"text": text})
         return {"message": dict(msg)}
 
+    # ------------------------------------------------------------------
+    # POST /api/phaseid, GET /api/phaseid/status, POST /api/phaseid/add (A4)
+    # ------------------------------------------------------------------
+
+    def request_phaseid(
+        self, *, mode: Literal["pattern", "residual"], top_k: int = 5, _provider: object = None
+    ) -> dict[str, Any]:
+        """相同定ジョブを起動する (A4, api-contract.md POST /api/phaseid)。
+
+        refine/phaseid/multistart は同一ジョブ枠 (``self._job``) を共有する — いずれかの実行中は
+        ``ConflictError`` (呼び出し側が 409 へ縮退)。``mode="residual"`` は直近 refine の残差
+        (``self._fit.plot.h0.residual``) が無ければ ``ConflictError`` (409) を返す。元素系は
+        現相集合の CIF から導出する (``_elements_from_project``, pymatgen 遅延 import)。
+        Materials Project API キー (環境変数 ``MATERIALS_PROJECT_API``) 未設定は ``ValueError``
+        (422)。
+
+        :param _provider: **テスト専用**の供給元注入シーム (§4.5)。実運用は常に ``None`` で
+            ``MPReferenceProvider(MPRestClient())`` を使う — callable/オブジェクト注入を実運用経路
+            にしない (`docs/design/operando-diagnosis/architecture.md` §4.5)。
+        """
+        if mode not in ("pattern", "residual"):
+            return {"error": f"invalid mode: {mode!r}", "error_type": "ValueError"}
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        # 【共有ジョブ枠の優先確認】: refine/multistart 実行中はここで即 409 にする — 入力
+        #   (plot/elements/key) の検証より先に確認することで、実行中はどんな入力であれ一貫して
+        #   409 を返す (`add_histogram` 等 `_guard_project_editable` と同じ順序規律)。
+        if self._job.status()["status"] == "running":
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+        project = self._project
+        plot = (self._fit.get("plot") or {}).get("h0") or {}
+        if mode == "residual":
+            residual = plot.get("residual")
+            if not residual:
+                return {
+                    "error": "no refine residual available (run refine first)",
+                    "error_type": "ConflictError",
+                }
+            x, y = plot.get("x"), residual
+        else:
+            x, y = plot.get("x"), plot.get("yobs")
+            if not x or not y:
+                return {"error": "no pattern available", "error_type": "ValueError"}
+        try:
+            elements = _elements_from_project(project)
+        except ImportError as exc:
+            return {"error": str(exc), "error_type": "ValueError"}
+        if not elements:
+            return {
+                "error": "no elements derivable from current phase CIFs",
+                "error_type": "ValueError",
+            }
+        if _provider is None:
+            try:
+                from ..mp.client import MPRestClient
+
+                MPRestClient()  # 事前キー検証のみ (ネットワークアクセスなし)
+            except ValueError as exc:
+                return {"error": str(exc), "error_type": "ValueError"}
+
+        def runner():
+            from ..reference.iterative import IdentifyConfig
+            from ..reference.iterative import identify_pattern as _identify_pattern
+
+            provider = _provider
+            if provider is None:
+                from ..mp.client import MPRestClient
+                from ..mp.provider import MPReferenceProvider
+
+                provider = MPReferenceProvider(MPRestClient())
+            cfg = IdentifyConfig(max_phases=max(1, int(top_k)))
+            return _identify_pattern(
+                np.asarray(x, dtype=float), np.asarray(y, dtype=float), provider,
+                elements=elements, cfg=cfg, ledger=self.ledger,
+            )
+
+        started = self._job.start(
+            runner,
+            on_success=self._on_phaseid_success,
+            on_failure=self._on_phaseid_failure,
+            on_started=lambda: self.ledger.append("phaseid_request", {"mode": mode, "top_k": top_k}),
+        )
+        if not started:
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+        return {"status": "started"}
+
+    def _on_phaseid_success(self, result: Any) -> None:
+        """相同定成功時のコールバック (`reference.iterative.IterativeIdentification`)。"""
+        candidates: list[dict[str, Any]] = []
+        accepted_by_id: dict[str, Any] = {}
+        for i, accepted in enumerate(result.accepted):
+            ref = accepted.reference
+            candidates.append(
+                {
+                    "rank": i + 1,
+                    "formula": ref.formula,
+                    "source": accepted.source,
+                    "sg": ref.spacegroup or "",
+                    "dara": finite_or_none(accepted.score),
+                    "mwmsx": "",
+                    "strain": f"{accepted.strain * 100:.1f}%",
+                    "chem_guard": "ok",
+                    "guard_fail": False,
+                    "mp_id": ref.phase_id,
+                }
+            )
+            accepted_by_id[ref.phase_id] = accepted
+        with self._lock:
+            self._phaseid_candidates = candidates
+            self._phaseid_accepted_by_id = accepted_by_id
+            self.ledger.append("phaseid_finished", {"n_candidates": len(candidates)})
+
+    def _on_phaseid_failure(self, exc: BaseException) -> None:
+        with self._lock:
+            self.ledger.append("phaseid_failed", {"error": str(exc)})
+
+    def phaseid_add(self, *, formula: Any, mp_id: Any) -> dict[str, Any]:
+        """ADD AS PHASE: 相同定候補を CIF 物質化して project の相集合へ追加する (A4)。
+
+        再精密化は行わない (ユーザーが RUN で明示する, api-contract.md)。候補の等方 strain
+        (``request_phaseid`` で求めたもの) が判れば再物質化に引き継ぐ — 直近相同定に無い
+        ``mp_id`` (候補一覧更新後の古い呼び出し等) は strain=0.0 にフォールバックする。
+        """
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        if not formula or not mp_id:
+            return {"error": "formula/mp_id is required", "error_type": "ValueError"}
+        if self._job.status()["status"] == "running":
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+        project = self._project
+        try:
+            elements = _elements_from_project(project)
+        except ImportError as exc:
+            return {"error": str(exc), "error_type": "ValueError"}
+        if not elements:
+            return {
+                "error": "no elements derivable from current phase CIFs",
+                "error_type": "ValueError",
+            }
+        accepted = self._phaseid_accepted_by_id.get(str(mp_id))
+        strain = float(accepted.strain) if accepted is not None else 0.0
+        try:
+            from ..insitu.phaseid import MPMaterializer
+            from ..mp.client import MPRestClient
+
+            materializer = MPMaterializer(MPRestClient())
+            data_dir = Path(project.spec_dir) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = lifecycle.sanitize_filename(f"{formula}_{mp_id}.cif")
+            cif_path = str(data_dir / safe_name)
+            materializer.materialize(str(mp_id), elements, cif_path, strain=strain)
+        except Exception as exc:  # noqa: BLE001 — MP/pymatgen 由来の失敗を error dict へ縮退
+            return {"error": f"could not materialize phase: {exc}", "error_type": "ValueError"}
+        phase_name = _unique_phase_name(project, str(formula))
+        return self.add_phase(structure_path=cif_path, phase_name=phase_name)
+
+    # ------------------------------------------------------------------
+    # POST /api/multistart, GET /api/multistart/status (A5)
+    # ------------------------------------------------------------------
+
+    def request_multistart(self, *, n_starts: int = 3, scale: float = 0.007) -> dict[str, Any]:
+        """マルチスタート大域最適確認ジョブを起動する (A5, api-contract.md POST /api/multistart)。
+
+        refine/phaseid と同一ジョブ枠を共有する (実行中は 409)。完了で ``hypotheses.basin`` +
+        evidence の corroborated 行を供給する (``_on_multistart_success``)。
+        """
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        project = self._project
+
+        def runner():
+            from ..autorietveld.multistart import run_multistart_rietveld
+            from ..autorietveld.recipe import build_recipe
+            from ..multistart.perturb import MultistartConfig, PerturbationSpec
+
+            recipe = build_recipe(
+                project.histograms, project.phases, background_coeffs=project.background_coeffs
+            )
+            config = MultistartConfig(
+                n_starts=int(n_starts), spec=PerturbationSpec(lattice_frac=float(scale))
+            )
+            return run_multistart_rietveld(
+                project.histograms, project.phases, config=config, ledger=self.ledger,
+                recipe=recipe, max_cyc=project.max_cyc,
+            )
+
+        started = self._job.start(
+            runner,
+            on_success=self._on_multistart_success,
+            on_failure=self._on_multistart_failure,
+            on_started=lambda: self.ledger.append(
+                "multistart_request", {"n_starts": n_starts, "scale": scale}
+            ),
+        )
+        if not started:
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+        return {"status": "started"}
+
+    def _on_multistart_success(self, result: Any) -> None:
+        """マルチスタート成功時のコールバック (`autorietveld.multistart.RietveldMultistartResult`)。"""
+        project = self._project
+        first_phase = project.phases[0].phase_name if project and project.phases else None
+        points: list[dict[str, Any]] = []
+        for start in result.starts:
+            if start.result is None:
+                continue
+            cells = start.result.refined_cells
+            a_val = cells.get(first_phase, (None,))[0] if first_phase else None
+            points.append(
+                {
+                    "x": finite_or_none(a_val),
+                    "y": finite_or_none(start.result.final_rwp),
+                    "label": f"start {start.index + 1}",
+                }
+            )
+        corroborated = bool(result.is_global_corroborated)
+        note = (
+            f"n={result.n_starts} · basins={result.n_basins} · "
+            f"corroborated={'yes' if corroborated else 'no'}"
+        )
+        with self._lock:
+            self._basin = {"points": points}
+            self._hyp_evidence.append(["corroborated", note])
+            self.ledger.append(
+                "multistart_finished",
+                {"n_basins": result.n_basins, "corroborated": corroborated},
+            )
+
+    def _on_multistart_failure(self, exc: BaseException) -> None:
+        with self._lock:
+            self.ledger.append("multistart_failed", {"error": str(exc)})
+
+    # ------------------------------------------------------------------
+    # GET /api/export/gpx (A6)
+    # ------------------------------------------------------------------
+
+    def export_gpx_info(self) -> dict[str, Any]:
+        """keep_gpx 生成物のダウンロード情報を返す (A6, FR-424)。未精密化/project 未読込は 404。"""
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "NotFoundError"}
+        path = self._project.gpx_path
+        if not path or not Path(path).exists():
+            return {"error": "no refined gpx available yet", "error_type": "NotFoundError"}
+        return {"path": path, "filename": f"{self._project.name}.gpx"}
+
 
 # ---------------------------------------------------------------------------
 # project モード viewmodel 構築ヘルパ (empty-state 契約, REQ-GUI-014)
@@ -988,6 +1360,38 @@ def _hist_index(hist_id: str, n_histograms: int) -> "int | None":
 def _row(field: str, value: str, esd: str = "", *, released: bool = False, locked: bool = False) -> dict[str, Any]:
     """PARAMETERS カードの 1 行 (`seed._row` と同一形; project モードは実値を渡す)。"""
     return {"field": field, "value": value, "esd": esd, "released": released, "locked": locked}
+
+
+def _elements_from_project(project: WorkbenchProject) -> list[str]:
+    """現相集合の CIF から構成元素を導出する (A4, `insitu.phaseid` の先例に倣い pymatgen 遅延 import)。
+
+    個別 CIF の読込失敗 (壊れた 1 相・非対応形式) は無視して次の相へ進む — 1 相の欠陥で相同定要求
+    全体を失敗させない。pymatgen 自体が未導入なら ``ImportError`` を送出する (呼び出し側が
+    ``ValueError`` error dict へ変換する)。
+
+    :returns: 元素記号の昇順ソート列 (重複排除)。相 0 件/全相読込失敗なら空リスト
+    """
+    from pymatgen.core import Structure
+
+    elements: set[str] = set()
+    for p in project.phases:
+        try:
+            structure = Structure.from_file(p.structure_path)
+        except Exception:  # noqa: BLE001 — 壊れた 1 相で全体を失敗させない (安全側)
+            continue
+        elements.update(str(e) for e in structure.composition.elements)
+    return sorted(elements)
+
+
+def _unique_phase_name(project: WorkbenchProject, base: str) -> str:
+    """``base`` が既存相名と衝突しないよう連番を付けた相名を返す (A4 ADD AS PHASE)。"""
+    existing = {p.phase_name for p in project.phases}
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
 
 
 def _initial_phases_view(project: WorkbenchProject) -> list[dict[str, Any]]:

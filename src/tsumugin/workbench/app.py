@@ -432,19 +432,89 @@ def create_workbench_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/refine")
-    def post_refine() -> Any:
+    def post_refine(body: dict[str, Any] = Body(default={})) -> Any:
         # 【holder.lock で直列化 (セルフレビュー指摘 #2)】: `_guarded_swap` (project
         #   create/open/close/demo) と同一ロックを取ることで、「refine 起動」と「セッション
         #   差し替え」が互いを待つ。ロック自体は起動判定のみを覆う (`request_refine` は project
         #   モードでもバックグラウンドスレッドを起動するだけで即座に返る — 精密化本体の実行中は
         #   ロックを保持しない)。
+        stages_on = body.get("stages_on")
+        if stages_on is not None:
+            if not isinstance(stages_on, dict) or not all(
+                isinstance(k, str) and isinstance(v, bool) for k, v in stages_on.items()
+            ):
+                return _invalid("stages_on", stages_on)
         with holder.lock:
-            result = holder.session.request_refine()
+            result = holder.session.request_refine(stages_on=stages_on)
         return _to_response(result, success_status=202)
 
     @app.get("/api/refine/status")
     def get_refine_status() -> dict[str, Any]:
         return holder.session.refine_status()
+
+    # ------------------------------------------------------------------
+    # POST /api/phaseid, GET /api/phaseid/status, POST /api/phaseid/add (A4)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/phaseid")
+    def post_phaseid(body: dict[str, Any] = Body(default={})) -> Any:
+        mode = body.get("mode", "pattern")
+        if mode not in ("pattern", "residual"):
+            return _invalid("mode", mode)
+        top_k = body.get("top_k", 5)
+        try:
+            top_k = int(top_k)
+        except (TypeError, ValueError):
+            return _invalid("top_k", top_k)
+        result = holder.session.request_phaseid(mode=mode, top_k=top_k)
+        return _to_response(result, success_status=202)
+
+    @app.get("/api/phaseid/status")
+    def get_phaseid_status() -> dict[str, Any]:
+        return holder.session.refine_status()
+
+    @app.post("/api/phaseid/add")
+    def post_phaseid_add(body: dict[str, Any] = Body(...)) -> Any:
+        formula = body.get("formula")
+        mp_id = body.get("mp_id")
+        if not formula or not mp_id:
+            return _invalid("formula/mp_id", body)
+        result = holder.session.phaseid_add(formula=formula, mp_id=mp_id)
+        return _to_response(result)
+
+    # ------------------------------------------------------------------
+    # POST /api/multistart, GET /api/multistart/status (A5)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/multistart")
+    def post_multistart(body: dict[str, Any] = Body(default={})) -> Any:
+        n_starts, scale = body.get("n_starts", 3), body.get("scale", 0.007)
+        try:
+            n_starts = int(n_starts)
+            scale = float(scale)
+        except (TypeError, ValueError):
+            return _invalid("n_starts/scale", body)
+        result = holder.session.request_multistart(n_starts=n_starts, scale=scale)
+        return _to_response(result, success_status=202)
+
+    @app.get("/api/multistart/status")
+    def get_multistart_status() -> dict[str, Any]:
+        return holder.session.refine_status()
+
+    # ------------------------------------------------------------------
+    # GET /api/export/gpx (A6)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/export/gpx")
+    def get_export_gpx() -> Any:
+        from fastapi.responses import FileResponse
+
+        info = holder.session.export_gpx_info()
+        if "error" in info:
+            return _to_response(info)
+        return FileResponse(
+            info["path"], filename=info["filename"], media_type="application/octet-stream"
+        )
 
     # ------------------------------------------------------------------
     # POST /api/transcript/message

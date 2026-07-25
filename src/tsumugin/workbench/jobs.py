@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Mapping
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import は不要 (numpy/GSAS 汚染回避と同じ流儀) 🔵
     from ..autorietveld.model import AutoRietveldResult
@@ -25,7 +25,13 @@ SuccessCallback = Callable[["AutoRietveldResult"], None]
 FailureCallback = Callable[[BaseException], None]
 
 
-def build_default_runner(project: "WorkbenchProject", *, ledger: "Ledger | None" = None) -> RunnerFn:
+def build_default_runner(
+    project: "WorkbenchProject",
+    *,
+    ledger: "Ledger | None" = None,
+    stages_on: "Mapping[str, bool] | None" = None,
+    initial_occupancies: "Mapping[str, Mapping[str, float]] | None" = None,
+) -> RunnerFn:
     """project から実 ``run_auto_rietveld`` runner を組む (実運用の既定経路)。
 
     MCP ``auto_rietveld`` (``rietveld_tools._build_input`` + ``refine_loop.orchestrator.
@@ -33,6 +39,14 @@ def build_default_runner(project: "WorkbenchProject", *, ledger: "Ledger | None"
     ``run_auto_rietveld`` を実行する。``ledger`` を渡すと精密化中の段階進捗
     (``m7_stage``/``m7_stage_error``) が同一台帳に追記され、``RefinementJobManager.status()``
     の ``last_event`` から進捗をポーリングできる (architecture.md §バックエンド jobs.py)。
+
+    :param stages_on: 段階 nn ("01","02",...) → 解放するか (A1, api-contract.md POST /api/refine)。
+        ``False`` の段は ``build_recipe`` が返す段列から**そのまま除外**する — 呼び出し側
+        (``WorkbenchSession.request_refine``) が ``viewmodel.stages`` (``_stages_from_recipe``)
+        と同じ 1 始まり連番採番を単一情報源として使う契約なので、本関数はここで nn を再定義しない。
+        ``None``/空なら全段既定 (後方互換)。
+    :param initial_occupancies: 相名→{原子ラベル→占有率} の初期値シーダー (A3, ``ReviseStructure``
+        で適用された occ revisions)。``run_auto_rietveld`` へそのまま透過する。
 
     .. warning::
         ``RefinementJobManager.start`` の ``runner`` 引数への直接注入は**テスト専用**の内部シーム
@@ -46,6 +60,12 @@ def build_default_runner(project: "WorkbenchProject", *, ledger: "Ledger | None"
         recipe = build_recipe(
             project.histograms, project.phases, background_coeffs=project.background_coeffs
         )
+        if stages_on:
+            recipe = tuple(
+                stage
+                for i, stage in enumerate(recipe, start=1)
+                if stages_on.get(f"{i:02d}", True)
+            )
         return run_auto_rietveld(
             list(project.histograms),
             list(project.phases),
@@ -53,6 +73,7 @@ def build_default_runner(project: "WorkbenchProject", *, ledger: "Ledger | None"
             ledger=ledger,
             max_cyc=project.max_cyc,
             keep_gpx=project.gpx_path or None,
+            initial_occupancies=initial_occupancies,
         )
 
     return runner

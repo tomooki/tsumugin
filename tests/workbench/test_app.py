@@ -360,7 +360,7 @@ def test_project_refine_202_then_status_done_after_fake_runner_completes(
 ):
     monkeypatch.setattr(
         workbench_session_module, "build_default_runner",
-        lambda project, ledger=None: _fake_result,
+        lambda project, ledger=None, stages_on=None, initial_occupancies=None: _fake_result,
     )
 
     resp = project_client.post("/api/refine", json={})
@@ -396,7 +396,7 @@ def test_project_refine_returns_409_when_already_running(
 
     monkeypatch.setattr(
         workbench_session_module, "build_default_runner",
-        lambda project, ledger=None: fake_runner,
+        lambda project, ledger=None, stages_on=None, initial_occupancies=None: fake_runner,
     )
 
     resp1 = project_client.post("/api/refine", json={})
@@ -420,7 +420,7 @@ def test_project_refine_failure_sets_status_failed_with_error(
 
     monkeypatch.setattr(
         workbench_session_module, "build_default_runner",
-        lambda project, ledger=None: bad_runner,
+        lambda project, ledger=None, stages_on=None, initial_occupancies=None: bad_runner,
     )
 
     resp = project_client.post("/api/refine", json={})
@@ -881,7 +881,7 @@ def test_project_lifecycle_routes_return_409_while_refine_running(
 
     monkeypatch.setattr(
         workbench_session_module, "build_default_runner",
-        lambda project, ledger=None: fake_runner,
+        lambda project, ledger=None, stages_on=None, initial_occupancies=None: fake_runner,
     )
 
     resp = client.post("/api/refine", json={})
@@ -1008,3 +1008,159 @@ def test_no_delete_or_put_routes_guard_detects_injected_delete_route(client: Tes
         if getattr(route, "methods", None) and "DELETE" in route.methods
     ]
     assert offending_after == []
+
+
+# ---------------------------------------------------------------------------
+# 解析ループ完成 (V2a' A1-A6) ルート層
+# ---------------------------------------------------------------------------
+
+
+def test_refine_route_stages_on_invalid_shape_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/refine", json={"stages_on": {"01": "not-a-bool"}})
+    assert resp.status_code == 422
+
+
+def test_refine_route_stages_on_unknown_key_returns_422(project_client: TestClient):
+    # 【viewmodel.stages に無い nn】: _fake_project は 1 hist/1 phase を持ち実レシピの段数は
+    #   高々一桁なので "99" はどの構成でも存在しない不明キーになる。
+    resp = project_client.post("/api/refine", json={"stages_on": {"99": False}})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_refine_route_stages_on_passes_through_to_session(
+    project_client: TestClient, project_session: WorkbenchSession, monkeypatch
+):
+    captured: dict[str, object] = {}
+
+    def fake_build(project, ledger=None, stages_on=None, initial_occupancies=None):
+        captured["stages_on"] = stages_on
+        return lambda: _fake_result()
+
+    monkeypatch.setattr(workbench_session_module, "build_default_runner", fake_build)
+    # stages_on の nn 検証を通すため viewmodel.stages に "01" を用意する。
+    project_session._stages = [{"nn": "01", "name": "s", "flags": "", "delta_rwp": "",
+                                 "released": False, "gate": None}]
+
+    resp = project_client.post("/api/refine", json={"stages_on": {"01": False}})
+    assert resp.status_code == 202
+    project_session._job.join(timeout=5)
+    assert captured["stages_on"] == {"01": False}
+
+
+# --- A4: 相同定ジョブ ------------------------------------------------------
+
+
+def test_phaseid_route_invalid_mode_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/phaseid", json={"mode": "bogus"})
+    assert resp.status_code == 422
+
+
+def test_phaseid_route_without_project_returns_422(client: TestClient):
+    resp = client.post("/api/phaseid", json={"mode": "pattern"})
+    assert resp.status_code == 422
+
+
+def test_phaseid_status_route_matches_refine_status_shape(project_client: TestClient):
+    resp = project_client.get("/api/phaseid/status")
+    assert resp.status_code == 200
+    assert set(resp.json()) == {"status", "elapsed_s", "last_event", "error"}
+
+
+def test_phaseid_add_route_missing_fields_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/phaseid/add", json={"formula": ""})
+    assert resp.status_code == 422
+
+
+def test_phaseid_route_returns_409_while_refine_running(
+    project_client: TestClient, project_session: WorkbenchSession
+):
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def fake_runner() -> AutoRietveldResult:
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        return _fake_result()
+
+    project_session._job.start(fake_runner, on_success=lambda r: None, on_failure=lambda e: None)
+    started_evt.wait(timeout=5)
+    try:
+        resp = project_client.post("/api/phaseid", json={"mode": "pattern"})
+        assert resp.status_code == 409
+        assert resp.json()["error_type"] == "ConflictError"
+    finally:
+        release_evt.set()
+        project_session._job.join(timeout=5)
+
+
+# --- A5: マルチスタート -----------------------------------------------------
+
+
+def test_multistart_route_invalid_types_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/multistart", json={"n_starts": "not-an-int"})
+    assert resp.status_code == 422
+
+
+def test_multistart_route_without_project_returns_422(client: TestClient):
+    resp = client.post("/api/multistart", json={})
+    assert resp.status_code == 422
+
+
+def test_multistart_status_route_matches_refine_status_shape(project_client: TestClient):
+    resp = project_client.get("/api/multistart/status")
+    assert resp.status_code == 200
+    assert set(resp.json()) == {"status", "elapsed_s", "last_event", "error"}
+
+
+def test_multistart_route_returns_409_while_refine_running(
+    project_client: TestClient, project_session: WorkbenchSession
+):
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def fake_runner() -> AutoRietveldResult:
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        return _fake_result()
+
+    project_session._job.start(fake_runner, on_success=lambda r: None, on_failure=lambda e: None)
+    started_evt.wait(timeout=5)
+    try:
+        resp = project_client.post("/api/multistart", json={"n_starts": 3, "scale": 0.007})
+        assert resp.status_code == 409
+        assert resp.json()["error_type"] == "ConflictError"
+    finally:
+        release_evt.set()
+        project_session._job.join(timeout=5)
+
+
+# --- A6: gpx エクスポート ----------------------------------------------------
+
+
+def test_export_gpx_route_returns_404_before_refine(project_client: TestClient):
+    resp = project_client.get("/api/export/gpx")
+    assert resp.status_code == 404
+    assert resp.json()["error_type"] == "NotFoundError"
+
+
+def test_export_gpx_route_returns_404_without_project(client: TestClient):
+    resp = client.get("/api/export/gpx")
+    assert resp.status_code == 404
+
+
+def test_export_gpx_route_downloads_file_with_project_name(
+    project_client: TestClient, project_session: WorkbenchSession
+):
+    gpx_path = Path(project_session._project.gpx_path)
+    gpx_path.parent.mkdir(parents=True, exist_ok=True)
+    gpx_path.write_bytes(b"fake gpx contents")
+
+    resp = project_client.get("/api/export/gpx")
+
+    assert resp.status_code == 200
+    assert resp.content == b"fake gpx contents"
+    from urllib.parse import unquote
+
+    disposition = unquote(resp.headers.get("content-disposition", ""))
+    assert f"{project_session._project.name}.gpx" in disposition

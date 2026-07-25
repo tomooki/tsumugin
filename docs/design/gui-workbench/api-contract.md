@@ -78,7 +78,8 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
   "phase_id": {
     "candidates": [{ "rank": 1, "formula": "KMnFe(CN)6", "source": "MP", "sg": "P21/n",
                      "dara": 0.86, "mwmsx": "41/2/1/3", "strain": "0.4%",
-                     "chem_guard": "ok", "guard_fail": false }],
+                     "chem_guard": "ok", "guard_fail": false, "mp_id": "mp-19017" }],
+                     // mp_id: POST /api/phaseid/add にそのまま渡す MP material_id (A4)
     "unexplained": [{ "two_theta": 12.42, "sn": 8.1, "indexing": "unindexed" }],
     "completeness": { "is_complete": false, "notes": ["tetra fraction non-monotonic …"],
                       "flagged_frames": "fr088–fr101" }
