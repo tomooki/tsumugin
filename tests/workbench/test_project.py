@@ -209,6 +209,111 @@ def test_load_project_spec_converts_xrdml_to_xye(project_dir: Path):
 
 
 # ---------------------------------------------------------------------------
+# frames (V2b B1)
+# ---------------------------------------------------------------------------
+
+
+def test_load_project_spec_absent_frames_key_yields_empty_frames(project_dir: Path):
+    spec = _minimal_spec_dict()
+    spec_path = _write_spec(project_dir, spec)
+
+    project = load_project_spec(spec_path)
+
+    assert project.frames == ()
+    assert project.frame_axis == "index"
+
+
+def test_load_project_spec_parses_frames_and_absolutizes_data_path(project_dir: Path):
+    _write_xy(project_dir / "frame0.xy", n=10)
+    _write_xy(project_dir / "frame1.xy", n=10)
+    spec = _minimal_spec_dict()
+    spec["frames"] = [
+        {"data_path": "frame0.xy", "axis_value": 30.0, "data_format": "XY", "label": "f0"},
+        {"data_path": "frame1.xy", "axis_value": 180.0, "data_format": "XY", "label": "f1"},
+    ]
+    spec["frame_axis"] = "temperature"
+    spec_path = _write_spec(project_dir, spec)
+
+    project = load_project_spec(spec_path)
+
+    assert len(project.frames) == 2
+    assert project.frame_axis == "temperature"
+    assert project.frames[0].axis_value == 30.0
+    assert Path(project.frames[0].data_path).is_absolute()
+    assert Path(project.frames[0].data_path) == (project_dir / "frame0.xy").resolve()
+    assert project.frames[1].label == "f1"
+
+
+def test_load_project_spec_converts_xrdml_frame_to_xye(project_dir: Path):
+    (project_dir / "frame0.xrdml").write_text(_XRDML, encoding="utf-8")
+    spec = _minimal_spec_dict()
+    spec["frames"] = [
+        {"data_path": "frame0.xrdml", "axis_value": 30.0, "data_format": "XRDML"},
+    ]
+    spec_path = _write_spec(project_dir, spec)
+
+    project = load_project_spec(spec_path)
+
+    frame = project.frames[0]
+    assert frame.data_format == "XYE"
+    out_path = Path(frame.data_path)
+    assert out_path.exists()
+    assert out_path.parent.name == "workbench_out"
+    assert out_path.name.startswith("frame")
+
+
+def test_load_project_spec_missing_frame_data_file_raises_value_error_not_oserror(
+    project_dir: Path,
+):
+    """OSError の 500 貫通防止 (ヒストグラムの先例と同型ガード, B1)。"""
+    spec = _minimal_spec_dict()
+    spec["frames"] = [{"data_path": "missing_frame.xrdml", "data_format": "XRDML"}]
+    spec_path = _write_spec(project_dir, spec)
+
+    with pytest.raises(ValueError, match="missing_frame.xrdml") as exc_info:
+        load_project_spec(spec_path)
+
+    assert not isinstance(exc_info.value, OSError)
+
+
+def test_load_project_spec_parses_charge_constraint_config(project_dir: Path):
+    spec = _minimal_spec_dict()
+    spec["charge_constraint_config"] = {"mobile_sites": [{"phase": "phaseA", "site_labels": ["K"]}]}
+    spec_path = _write_spec(project_dir, spec)
+
+    project = load_project_spec(spec_path)
+
+    assert project.charge_constraint_config == {
+        "mobile_sites": [{"phase": "phaseA", "site_labels": ["K"]}]
+    }
+
+
+def test_save_project_spec_round_trips_frames(project_dir: Path):
+    import dataclasses
+
+    from tsumugin.insitu.model import FrameSpec
+    from tsumugin.workbench.lifecycle import save_project_spec
+
+    spec = _minimal_spec_dict()
+    spec_path = _write_spec(project_dir, spec)
+    project = load_project_spec(spec_path)
+    _write_xy(project_dir / "frame0.xy", n=5)
+    project = dataclasses.replace(
+        project,
+        frames=(FrameSpec(data_path=str(project_dir / "frame0.xy"), axis_value=30.0, data_format="XY"),),
+        frame_axis="time",
+    )
+
+    save_project_spec(project)
+    reloaded = load_project_spec(spec_path)
+
+    assert len(reloaded.frames) == 1
+    assert reloaded.frame_axis == "time"
+    assert reloaded.frames[0].axis_value == 30.0
+    assert Path(reloaded.frames[0].data_path) == (project_dir / "frame0.xy").resolve()
+
+
+# ---------------------------------------------------------------------------
 # preview_pattern (契約 fit.plot 形 / ≤2000 点間引き)
 # ---------------------------------------------------------------------------
 

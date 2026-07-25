@@ -1361,3 +1361,559 @@ class TestStagesDefaultOnAndEmptyRecipeGuard:
         result = session.request_refine(stages_on=all_off)
         assert "error" in result
         assert result["error_type"] == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# V2b 逐次/operando 接続 (B1-B5)
+# ---------------------------------------------------------------------------
+
+from tsumugin.insitu.model import FrameSpec  # noqa: E402
+
+
+def _write_xy_v2b(path: Path, n: int = 10) -> None:
+    lines = [f"{10.0 + i * 0.01:.4f} {100.0 + 5.0 * (i % 7):.2f}" for i in range(n)]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _sequential_project(tmp_path: Path, *, n_frames: int = 2, with_frames: bool = True) -> WorkbenchProject:
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "d.xy"),
+        instrument_path=str(tmp_path / "d.instprm"),
+        radiation=Radiation.XRAY_LAB,
+        geometry=Geometry.BRAGG_BRENTANO,
+        data_format="XY",
+    )
+    phase = PhaseSpec(structure_path=str(tmp_path / "phase.cif"), phase_name="alpha")
+    frames: tuple[FrameSpec, ...] = ()
+    if with_frames:
+        frames = tuple(
+            FrameSpec(data_path=str(tmp_path / f"frame{i}.xy"), axis_value=float(i), data_format="XY")
+            for i in range(n_frames)
+        )
+    return WorkbenchProject(
+        name="seq fixture", histograms=(hist,), phases=(phase,), frames=frames,
+        gpx_path=str(tmp_path / "refined.gpx"), spec_dir=str(tmp_path),
+    )
+
+
+def _fake_frame(
+    idx: int, *, rwp: float = 8.0, changepoint: bool = False,
+    alkali_feasibility: str = "", x_echem=None, residual_report=None,
+    cells=None, wt=None,
+) -> dict:
+    return {
+        "frame_index": idx, "axis_value": float(idx), "data_path": f"frame{idx}.xy",
+        "rwp": rwp, "gof": 1.2, "phase_names": ["alpha"],
+        "refined_cells": cells or {"alpha": [5.0, 5.0, 5.0, 90.0, 90.0, 90.0]},
+        "phase_fractions": {"alpha": 1.0}, "changepoint": changepoint,
+        "changepoint_reasons": ["rwp_jump"] if changepoint else [],
+        "validity_passed": True, "refine_failed": False,
+        "residual_report": residual_report,
+        "phase_weight_fractions": wt if wt is not None else {"alpha": 1.0},
+        "phase_weight_fraction_esd": {}, "cell_esd": {},
+        "alkali_x_echem": x_echem, "alkali_x_xrd": None, "alkali_x_xrd_esd": None,
+        "alkali_per_phase": {}, "alkali_residual": None,
+        "alkali_constraint_applied": "", "alkali_feasibility": alkali_feasibility,
+    }
+
+
+def _fake_seq_result(frames: list, *, phase_names=("alpha",), anchors=None, crossovers=None, warnings=()) -> dict:
+    out = {
+        "phase_names": list(phase_names), "frames": frames, "appearances": [],
+        "warnings": list(warnings),
+    }
+    if anchors is not None:
+        out["anchors"] = anchors
+    if crossovers is not None:
+        out["crossovers"] = crossovers
+    out["ledger_verified"] = True
+    out["reason"] = ""
+    return out
+
+
+# --- B1: POST /api/project/frames (set_frames) --------------------------------------
+
+
+def test_set_frames_without_project_returns_error_dict():
+    session = WorkbenchSession.create_demo()
+    result = session.set_frames([{"data_path": "x.xy"}])
+    assert result["error_type"] == "ValueError"
+
+
+def test_set_frames_rejects_non_list(project_session: WorkbenchSession):
+    result = project_session.set_frames({"data_path": "x.xy"})
+    assert result["error_type"] == "ValueError"
+
+
+def test_set_frames_rejects_missing_data_file(project_session: WorkbenchSession):
+    result = project_session.set_frames([{"data_path": "missing.xy", "data_format": "XY"}])
+    assert result["error_type"] == "ValueError"
+    assert project_session._project.frames == ()
+
+
+def test_set_frames_stores_specs_and_appends_ledger(project_session: WorkbenchSession, tmp_path):
+    _write_xy_v2b(tmp_path / "proj" / "frame0.xy")
+    before = len(project_session.ledger.entries)
+
+    result = project_session.set_frames(
+        [{"data_path": "frame0.xy", "axis_value": 30.0, "data_format": "XY"}],
+        frame_axis="temperature",
+    )
+
+    assert "error" not in result
+    assert len(project_session._project.frames) == 1
+    assert project_session._project.frame_axis == "temperature"
+    assert len(project_session.ledger.entries) == before + 1
+    assert project_session.ledger.entries[-1].kind == "project_edit"
+
+
+def test_set_frames_full_replace_is_idempotent(project_session: WorkbenchSession, tmp_path):
+    proj_dir = Path(project_session._project.spec_dir)
+    _write_xy_v2b(proj_dir / "frame0.xy")
+    _write_xy_v2b(proj_dir / "frame1.xy")
+
+    project_session.set_frames([{"data_path": "frame0.xy", "data_format": "XY"}])
+    assert len(project_session._project.frames) == 1
+
+    project_session.set_frames(
+        [{"data_path": "frame0.xy", "data_format": "XY"}, {"data_path": "frame1.xy", "data_format": "XY"}]
+    )
+    assert len(project_session._project.frames) == 2
+
+
+def test_set_frames_guard_refining_returns_409(project_session: WorkbenchSession):
+    started, release = _block_refine(project_session)
+    try:
+        result = project_session.set_frames([{"data_path": "x.xy"}])
+        assert result["error_type"] == "ConflictError"
+    finally:
+        release.set()
+        project_session._job.join(timeout=5)
+
+
+def test_set_frames_reflects_frame_count_in_state_dataset(project_session: WorkbenchSession):
+    proj_dir = Path(project_session._project.spec_dir)
+    _write_xy_v2b(proj_dir / "frame0.xy")
+
+    project_session.set_frames([{"data_path": "frame0.xy", "data_format": "XY"}])
+
+    assert "1 frame(s)" in project_session.state()["project"]["dataset"]
+
+
+# --- B2/B3: POST /api/sequential ------------------------------------------------------
+
+
+def test_request_sequential_without_frames_returns_422(tmp_path):
+    project = _sequential_project(tmp_path, with_frames=False)
+    session = WorkbenchSession.from_project(project)
+    result = session.request_sequential(mode="forward")
+    assert result["error_type"] == "ValueError"
+
+
+def test_request_sequential_frames_guard_mutation_would_not_reject(tmp_path, monkeypatch):
+    """変異実証: frames 未設定 422 ガード (`_guard_frames_configured`) を無効化すると通ってしまう。"""
+    project = _sequential_project(tmp_path, with_frames=False)
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(
+        insitu_tools_module, "sequential_rietveld",
+        lambda *a, **kw: _fake_seq_result([]),
+    )
+    monkeypatch.setattr(session, "_guard_frames_configured", lambda project: None)
+
+    result = session.request_sequential(mode="forward")
+    # 【変異で意図的に破壊】: ガードを無効化すると frames=() でもジョブが受理されてしまう。
+    assert result == {"status": "started"}
+    session._job.join(timeout=5)
+
+
+def test_request_sequential_invalid_mode_returns_422(tmp_path):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+    result = session.request_sequential(mode="bogus")
+    assert result["error_type"] == "ValueError"
+
+
+def test_request_sequential_anchored_without_anchor_table_returns_422(tmp_path):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+    result = session.request_sequential(mode="anchored")
+    assert result["error_type"] == "ValueError"
+
+
+def test_request_sequential_forward_builds_instrument_spec_from_histograms0(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    captured = {}
+
+    def fake_sequential_rietveld(frames, phases, *, instrument=None, charge_constraint=None):
+        captured["frames"] = frames
+        captured["phases"] = phases
+        captured["instrument"] = instrument
+        captured["charge_constraint"] = charge_constraint
+        return _fake_seq_result([_fake_frame(0), _fake_frame(1)])
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", fake_sequential_rietveld)
+
+    result = session.request_sequential(mode="forward")
+    assert result == {"status": "started"}
+    session._job.join(timeout=5)
+
+    assert len(captured["frames"]) == 2
+    assert captured["instrument"]["path"] == project.histograms[0].instrument_path
+    assert captured["instrument"]["radiation"] == "xray_lab"
+    assert captured["charge_constraint"] is None
+    assert session.refine_status()["status"] == "done"
+    assert session.refine_status()["kind"] == "sequential"
+
+
+def test_request_sequential_anchored_calls_anchored_sequential_with_anchor_table(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    captured = {}
+
+    def fake_anchored_sequential(frames, phases, *, anchor_table=None, instrument=None, charge_constraint=None, **kw):
+        captured["anchor_table"] = anchor_table
+        return _fake_seq_result(
+            [_fake_frame(0), _fake_frame(1)],
+            anchors=[{"frame": 0, "phases": ["alpha"], "rwp": 8.0, "confidence": 1.0, "fallback": False, "alkali": {}}],
+            crossovers=[],
+        )
+
+    import tsumugin.mcp.anchor_tools as anchor_tools_module
+
+    monkeypatch.setattr(anchor_tools_module, "anchored_sequential", fake_anchored_sequential)
+
+    result = session.request_sequential(mode="anchored", anchor_table={"0": ["alpha"]})
+    assert result == {"status": "started"}
+    session._job.join(timeout=5)
+
+    assert captured["anchor_table"] == {"0": ["alpha"]}
+    vm = session.viewmodel()
+    assert vm["sequence"]["anchors"] == [{"id": "fr000", "crossover": False}]
+
+
+def test_on_sequential_success_populates_charts_and_frames_table(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    def fake_sequential_rietveld(frames, phases, **kw):
+        return _fake_seq_result(
+            [_fake_frame(0, rwp=9.0), _fake_frame(1, rwp=8.0)]
+        )
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", fake_sequential_rietveld)
+
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    vm = session.viewmodel()
+    seq = vm["sequence"]
+    chart_ids = {c["id"] for c in seq["charts"]}
+    assert chart_ids == {"rwp", "lattice", "phase_fraction"}
+    rwp_chart = next(c for c in seq["charts"] if c["id"] == "rwp")
+    assert rwp_chart["series"]["x"] == [0, 1]
+    assert rwp_chart["series"]["ys"] == [[9.0, 8.0]]
+    assert len(seq["frames"]) == 2
+    assert seq["frames"][0]["frame"] == 0
+    assert seq["frames"][0]["rwp"] == 9.0
+    assert seq["frames"][0]["fractions"] == {"alpha": 1.0}
+
+
+def test_on_sequential_success_infeasible_frame_adds_review_item_severity_echem(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    def fake_sequential_rietveld(frames, phases, **kw):
+        return _fake_seq_result(
+            [_fake_frame(0, alkali_feasibility="infeasible", x_echem=0.5)]
+        )
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", fake_sequential_rietveld)
+
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    rows = session.review_view()
+    echem_rows = [r for r in rows if r["severity"] == "echem"]
+    assert len(echem_rows) == 1
+    assert echem_rows[0]["ref"] == "FR-403"
+    assert echem_rows[0]["state"] == "pending"
+
+
+def test_on_sequential_success_changepoint_frame_creates_approval_card(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    def fake_sequential_rietveld(frames, phases, **kw):
+        return _fake_seq_result([_fake_frame(0, changepoint=True)])
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", fake_sequential_rietveld)
+
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    vm = session.viewmodel()
+    approvals = [t for t in vm["transcript"] if t["kind"] == "approval"]
+    assert len(approvals) == 1
+    assert approvals[0]["action_id"] == "np-0"
+    assert approvals[0]["state"] == "pending"
+
+
+def test_request_sequential_returns_409_while_job_running(tmp_path):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+    started, release = _block_refine(session)
+    try:
+        result = session.request_sequential(mode="forward")
+        assert result["error_type"] == "ConflictError"
+    finally:
+        release.set()
+        session._job.join(timeout=5)
+
+
+def test_sequential_failure_appends_ledger_and_status_failed(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    def failing_sequential_rietveld(frames, phases, **kw):
+        return {"error": "boom", "error_type": "RuntimeError"}
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", failing_sequential_rietveld)
+
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    assert session.refine_status()["status"] == "failed"
+    assert any(e.kind == "sequential_failed" for e in session.ledger.entries)
+
+
+# --- B4: POST /api/echem --------------------------------------------------------------
+
+
+def test_request_echem_without_project_returns_error_dict():
+    session = WorkbenchSession.create_demo()
+    result = session.request_echem(mpr_path="x.mpr")
+    assert result["error_type"] == "ValueError"
+
+
+def test_request_echem_align_error_returns_422(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.echem_tools as echem_tools_module
+
+    monkeypatch.setattr(
+        echem_tools_module, "align_echem",
+        lambda *a, **kw: {"error": "galvani missing", "error_type": "EchemUnavailableError"},
+    )
+
+    result = session.request_echem(mpr_path="x.mpr", offset_s=0.0, interval_s=1.0)
+    assert result["error_type"] == "ValueError"
+    assert any(e.kind == "echem_failed" for e in session.ledger.entries)
+
+
+def test_request_echem_populates_channels_and_state_echem(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    def fake_align_echem(mpr_path, *, clamp=False, **kw):
+        return {
+            "curve": {"start_timestamp": 0.0, "n_points": 2, "duration_s": 100.0,
+                      "voltage_min": 1.0, "voltage_max": 2.0, "source_path": mpr_path},
+            "frames": [
+                {"frame": 0, "time_s": 0.0, "time_h": 0.0, "voltage_v": 1.5,
+                 "charge_mah": 10.0, "state": "charge", "in_span": True},
+                {"frame": 1, "time_s": 283.0, "time_h": 0.08, "voltage_v": 1.8,
+                 "charge_mah": 20.0, "state": "charge", "in_span": True},
+            ],
+            "n_in_span": 2, "reason": "",
+        }
+
+    import tsumugin.mcp.echem_tools as echem_tools_module
+
+    monkeypatch.setattr(echem_tools_module, "align_echem", fake_align_echem)
+
+    result = session.request_echem(mpr_path="x.mpr", offset_s=0.0, interval_s=283.0)
+    assert "error" not in result
+    assert result["targets"] is None
+
+    channels = session.viewmodel()["channels"]
+    echem_channel = next(c for c in channels if c["id"] == "echem")
+    assert "1.8" in echem_channel["value"]
+    assert session.state()["project"]["echem"]["v"] == 1.8
+
+
+def test_request_echem_x0_without_mass_returns_422(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.echem_tools as echem_tools_module
+
+    monkeypatch.setattr(
+        echem_tools_module, "align_echem",
+        lambda *a, **kw: {"curve": {}, "frames": [], "n_in_span": 0, "reason": ""},
+    )
+
+    result = session.request_echem(mpr_path="x.mpr", offset_s=0.0, interval_s=1.0, x0=1.9)
+    assert result["error_type"] == "ValueError"
+
+
+def test_request_echem_with_x0_calls_alkali_budget_and_supplies_targets(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.echem_tools as echem_tools_module
+
+    monkeypatch.setattr(
+        echem_tools_module, "align_echem",
+        lambda *a, **kw: {"curve": {}, "frames": [
+            {"frame": 0, "time_s": 0.0, "time_h": 0.0, "voltage_v": 1.5,
+             "charge_mah": 0.0, "state": "rest", "in_span": True},
+        ], "n_in_span": 1, "reason": ""},
+    )
+    captured = {}
+
+    def fake_alkali_budget(mpr_path, active_mass_mg, formula_weight, *, x0, **kw):
+        captured["active_mass_mg"] = active_mass_mg
+        captured["formula_weight"] = formula_weight
+        captured["x0"] = x0
+        return {
+            "targets": [{"frame": 0, "x_total": 1.9, "n_e": 0.0, "state": "rest", "in_span": True,
+                         "time_h": 0.0, "voltage_v": 1.5, "charge_mah": 0.0}],
+            "x0": x0, "x0_source": "given", "sign": 1, "warnings": [], "n_with_target": 1, "reason": "",
+        }
+
+    monkeypatch.setattr(echem_tools_module, "alkali_budget", fake_alkali_budget)
+
+    result = session.request_echem(
+        mpr_path="x.mpr", offset_s=0.0, interval_s=283.0, x0=1.944,
+        active_mass_mg=19.628, formula_weight=678.8,
+    )
+    assert "error" not in result
+    assert result["targets"][0]["x_total"] == 1.9
+    assert captured["active_mass_mg"] == 19.628
+    assert captured["x0"] == 1.944
+
+
+# --- B5: 新相承認カード (approve/reject) -----------------------------------------------
+
+
+def test_resolve_new_phase_approval_reject_records_ledger_no_add_phase(tmp_path, monkeypatch):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    def fake_sequential_rietveld(frames, phases, **kw):
+        return _fake_seq_result([_fake_frame(0, changepoint=True)])
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", fake_sequential_rietveld)
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+    n_phases_before = len(session._project.phases)
+
+    result = session.resolve_approval("np-0", decision="reject")
+    assert result["state"] == "rejected"
+    assert len(session._project.phases) == n_phases_before
+    assert any(e.kind == "approval_decision" for e in session.ledger.entries)
+
+
+def test_resolve_new_phase_approval_unknown_action_id_not_found(tmp_path):
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+    result = session.resolve_approval("np-999", decision="reject")
+    assert result["error_type"] == "NotFoundError"
+
+
+def test_resolve_new_phase_approval_approve_reaches_add_phase(tmp_path, monkeypatch):
+    """変異実証: approve → identify_and_add_phase → add_phase まで実際に到達することを検証する。
+
+    ``WorkbenchSession.add_phase`` をスパイに差し替え、approve 経路がそれを呼ぶことを直接示す
+    (呼ばれなければ ``called`` が空のまま残り、下のアサーションで検出される)。
+    """
+    pytest.importorskip("pymatgen")
+    cif_path = tmp_path / "nacl.cif"
+    cif_path.write_text(_NACL_CIF, encoding="utf-8")
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "d.xy"), instrument_path=str(tmp_path / "d.instprm"),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XY",
+    )
+    phase = PhaseSpec(structure_path=str(cif_path), phase_name="nacl")
+    frame_path = tmp_path / "frame0.xy"
+    tt, obs = _synthetic_pattern([20.0, 35.0, 52.0])
+    frame_path.write_text(
+        "\n".join(f"{x:.4f} {y:.4f}" for x, y in zip(tt.tolist(), obs.tolist())), encoding="utf-8"
+    )
+    frame = FrameSpec(data_path=str(frame_path), axis_value=0.0, data_format="XY")
+    project = WorkbenchProject(
+        name="approve fixture", histograms=(hist,), phases=(phase,), frames=(frame,),
+        gpx_path=str(tmp_path / "refined.gpx"), spec_dir=str(tmp_path),
+    )
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(
+        insitu_tools_module, "sequential_rietveld",
+        lambda frames, phases, **kw: _fake_seq_result([_fake_frame(0, changepoint=True)]),
+    )
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+
+    called = {}
+    original_add_phase = session.add_phase
+
+    def spy_add_phase(*, structure_path, phase_name):
+        called["structure_path"] = structure_path
+        called["phase_name"] = phase_name
+        return original_add_phase(structure_path=structure_path, phase_name=phase_name)
+
+    monkeypatch.setattr(session, "add_phase", spy_add_phase)
+
+    from tsumugin.reference.model import ReferencePhase
+    from tsumugin.search.peaks import Peak
+
+    class _FakeMaterializer:
+        def __init__(self, client=None):
+            pass
+
+        def materialize(self, phase_id, elements, out_path, strain=0.0, cell=None):
+            Path(out_path).write_text(_NACL_CIF, encoding="utf-8")
+            return out_path
+
+    class _FakeProvider:
+        def fetch(self, elements):
+            return [
+                ReferencePhase(
+                    phase_id="mp-1", formula="NaCl", element_system=("Cl", "Na"),
+                    peaks=(Peak(position=20.0, height=100.0),), energy_above_hull=0.0,
+                )
+            ]
+
+    import tsumugin.insitu.phaseid as phaseid_module
+    import tsumugin.mp.provider as mp_provider_module
+
+    monkeypatch.setattr(phaseid_module, "MPMaterializer", _FakeMaterializer)
+    monkeypatch.setattr(mp_provider_module, "MPReferenceProvider", lambda *a, **kw: _FakeProvider())
+
+    result = session.resolve_approval("np-0", decision="approve")
+
+    assert "error" not in result
+    assert result["state"] == "approved"
+    assert called.get("phase_name") is not None
+    assert any(p.phase_name == called["phase_name"] for p in session._project.phases)

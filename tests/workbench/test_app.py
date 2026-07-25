@@ -900,6 +900,7 @@ def test_project_lifecycle_routes_return_409_while_refine_running(
                 {"structure_path": "x.cif", "phase_name": "phaseB"},
             ),
             ("post", "/api/project/settings", {"max_cyc": 3}),
+            ("post", "/api/project/frames", {"frames": []}),
         ]:
             resp = getattr(client, method)(path, json=body)
             assert resp.status_code == 409, f"{path} did not 409 while refine running"
@@ -1168,3 +1169,212 @@ def test_export_gpx_route_downloads_file_with_project_name(
 
     disposition = unquote(resp.headers.get("content-disposition", ""))
     assert f"{project_session._project.name}.gpx" in disposition
+
+
+# ---------------------------------------------------------------------------
+# V2b B1-B4: フレーム/逐次/echem ルート
+# ---------------------------------------------------------------------------
+
+
+def _seq_route_project(tmp_path: Path) -> "WorkbenchProject":
+    from tsumugin.insitu.model import FrameSpec
+
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "d.xy"), instrument_path=str(tmp_path / "d.instprm"),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XY",
+    )
+    phase = PhaseSpec(structure_path=str(tmp_path / "phase.cif"), phase_name="alpha")
+    (tmp_path / "frame0.xy").write_text("10.0 100.0\n10.1 110.0\n", encoding="utf-8")
+    frame = FrameSpec(data_path=str(tmp_path / "frame0.xy"), axis_value=30.0, data_format="XY")
+    return WorkbenchProject(
+        name="seq route fixture", histograms=(hist,), phases=(phase,), frames=(frame,),
+        gpx_path=str(tmp_path / "refined.gpx"), spec_dir=str(tmp_path),
+    )
+
+
+@pytest.fixture()
+def seq_session(tmp_path) -> WorkbenchSession:
+    return WorkbenchSession.from_project(_seq_route_project(tmp_path))
+
+
+@pytest.fixture()
+def seq_client(seq_session: WorkbenchSession) -> TestClient:
+    return TestClient(create_workbench_app(seq_session))
+
+
+def test_post_project_frames_replaces_and_reflects_in_viewmodel(tmp_path: Path):
+    # 【spec_dir を明示 (project_client/project_session は使わない)】: `_fake_project` は
+    #   spec_dir 既定 "." のため、frames 設定 (自動保存が伴う) にそれを使うとリポジトリ直下の
+    #   カレントディレクトリへ project.json を書き出してしまう (実害: 初版実装で発生・report 参照)。
+    seq_session = WorkbenchSession.from_project(_seq_route_project(tmp_path))
+    seq_client_local = TestClient(create_workbench_app(seq_session))
+
+    data_path = tmp_path / "frame_extra.xy"
+    data_path.write_text("10.0 100.0\n10.1 110.0\n", encoding="utf-8")
+    resp = seq_client_local.post(
+        "/api/project/frames",
+        json={"frames": [{"data_path": str(data_path), "axis_value": 30.0, "data_format": "XY"}]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    vm = seq_client_local.get("/api/viewmodel").json()
+    assert len(vm["project"]["frames"]) == 1
+    assert vm["project"]["frames"][0]["axis_value"] == 30.0
+    assert Path(seq_session._project.spec_dir).resolve() == tmp_path.resolve()
+
+
+def test_post_project_frames_non_list_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/project/frames", json={"frames": "nope"})
+    assert resp.status_code == 422
+
+
+def test_post_sequential_without_frames_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/sequential", json={"mode": "forward"})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_post_sequential_invalid_mode_returns_422(seq_client: TestClient):
+    resp = seq_client.post("/api/sequential", json={"mode": "bogus"})
+    assert resp.status_code == 422
+
+
+def test_post_sequential_anchored_without_anchor_table_returns_422(seq_client: TestClient):
+    resp = seq_client.post("/api/sequential", json={"mode": "anchored"})
+    assert resp.status_code == 422
+
+
+def test_post_sequential_starts_job_and_status_route_matches_refine_status_shape(
+    seq_client: TestClient, seq_session: WorkbenchSession, monkeypatch: pytest.MonkeyPatch
+):
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    def fake_sequential_rietveld(frames, phases, **kw):
+        return {
+            "phase_names": ["alpha"],
+            "frames": [
+                {
+                    "frame_index": 0, "axis_value": 30.0, "data_path": "frame0.xy",
+                    "rwp": 9.0, "gof": 1.2, "phase_names": ["alpha"],
+                    "refined_cells": {"alpha": [5.0, 5.0, 5.0, 90.0, 90.0, 90.0]},
+                    "phase_fractions": {"alpha": 1.0}, "changepoint": False,
+                    "changepoint_reasons": [], "validity_passed": True, "refine_failed": False,
+                    "residual_report": None, "phase_weight_fractions": {"alpha": 1.0},
+                    "phase_weight_fraction_esd": {}, "cell_esd": {},
+                    "alkali_x_echem": None, "alkali_x_xrd": None, "alkali_x_xrd_esd": None,
+                    "alkali_per_phase": {}, "alkali_residual": None,
+                    "alkali_constraint_applied": "", "alkali_feasibility": "",
+                }
+            ],
+            "appearances": [], "warnings": [], "reason": "",
+        }
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", fake_sequential_rietveld)
+
+    resp = seq_client.post("/api/sequential", json={"mode": "forward"})
+    assert resp.status_code == 202
+
+    seq_session._job.join(timeout=5)
+
+    status = seq_client.get("/api/sequential/status").json()
+    assert status["status"] == "done"
+    assert status["kind"] == "sequential"
+    assert set(status.keys()) == {"status", "elapsed_s", "last_event", "error", "kind"}
+
+    vm = seq_client.get("/api/viewmodel").json()
+    assert len(vm["sequence"]["frames"]) == 1
+    assert vm["sequence"]["frames"][0]["rwp"] == 9.0
+
+
+def test_post_sequential_returns_409_while_refine_running(
+    seq_client: TestClient, seq_session: WorkbenchSession, monkeypatch: pytest.MonkeyPatch
+):
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def blocking_runner() -> AutoRietveldResult:
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        return _fake_result()
+
+    monkeypatch.setattr(
+        workbench_session_module, "build_default_runner",
+        lambda project, ledger=None, stages_on=None, initial_occupancies=None: blocking_runner,
+    )
+    resp = seq_client.post("/api/refine", json={})
+    assert resp.status_code == 202
+    assert started_evt.wait(timeout=5)
+    try:
+        resp = seq_client.post("/api/sequential", json={"mode": "forward"})
+        assert resp.status_code == 409
+        assert resp.json()["error_type"] == "ConflictError"
+    finally:
+        release_evt.set()
+        seq_session._job.join(timeout=5)
+
+
+def test_post_echem_missing_mpr_path_returns_422(seq_client: TestClient):
+    resp = seq_client.post("/api/echem", json={})
+    assert resp.status_code == 422
+
+
+def test_post_echem_invalid_sign_returns_422(seq_client: TestClient):
+    resp = seq_client.post("/api/echem", json={"mpr_path": "x.mpr", "sign": 2})
+    assert resp.status_code == 422
+
+
+def test_post_echem_align_failure_returns_422(
+    seq_client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    import tsumugin.mcp.echem_tools as echem_tools_module
+
+    monkeypatch.setattr(
+        echem_tools_module, "align_echem",
+        lambda *a, **kw: {"error": "galvani not installed", "error_type": "EchemUnavailableError"},
+    )
+    resp = seq_client.post(
+        "/api/echem", json={"mpr_path": "x.mpr", "offset_s": 0.0, "interval_s": 1.0}
+    )
+    assert resp.status_code == 422
+
+
+def test_post_echem_success_returns_curve_and_null_targets(
+    seq_client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    import tsumugin.mcp.echem_tools as echem_tools_module
+
+    monkeypatch.setattr(
+        echem_tools_module, "align_echem",
+        lambda *a, **kw: {
+            "curve": {"start_timestamp": 0.0, "n_points": 1, "duration_s": 0.0,
+                      "voltage_min": 1.0, "voltage_max": 1.0, "source_path": "x.mpr"},
+            "frames": [{"frame": 0, "time_s": 0.0, "time_h": 0.0, "voltage_v": 1.5,
+                        "charge_mah": 0.0, "state": "rest", "in_span": True}],
+            "n_in_span": 1, "reason": "",
+        },
+    )
+    resp = seq_client.post(
+        "/api/echem", json={"mpr_path": "x.mpr", "offset_s": 0.0, "interval_s": 1.0}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["targets"] is None
+    assert body["curve"]["n_points"] == 1
+
+
+def test_project_upload_allows_echem_kind(
+    client: TestClient, tmp_path: Path, fake_home: Path
+):
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    resp = client.post(
+        "/api/project/upload",
+        files={"file": ("run.mpr", io.BytesIO(b"fake mpr bytes"), "application/octet-stream")},
+        data={"kind": "echem"},
+    )
+    assert resp.status_code == 200, resp.text
+    stored_path = resp.json()["stored_path"]
+    assert Path(stored_path).exists()
+    assert Path(stored_path).name == "run.mpr"

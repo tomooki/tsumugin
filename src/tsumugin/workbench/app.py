@@ -274,7 +274,7 @@ def create_workbench_app(
     async def post_project_upload(
         file: UploadFile = File(...), kind: str = Form(...)
     ) -> Any:
-        if kind not in ("data", "instrument", "structure"):
+        if kind not in ("data", "instrument", "structure", "echem"):
             return _invalid("kind", kind)
         guard = _guard_not_refining()
         if guard is not None:
@@ -334,6 +334,69 @@ def create_workbench_app(
             two_theta_limits=body.get("two_theta_limits"),
             background_coeffs=body.get("background_coeffs"),
             max_cyc=body.get("max_cyc"),
+        )
+        return _to_response(result)
+
+    # ------------------------------------------------------------------
+    # POST /api/project/frames (V2b B1)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/project/frames")
+    def post_project_frames(body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        frames = body.get("frames")
+        if not isinstance(frames, list):
+            return _invalid("frames", frames)
+        result = holder.session.set_frames(frames, frame_axis=body.get("frame_axis"))
+        return _to_response(result)
+
+    # ------------------------------------------------------------------
+    # POST /api/sequential, GET /api/sequential/status (V2b B2/B3)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/sequential")
+    def post_sequential(body: dict[str, Any] = Body(default={})) -> Any:
+        mode = body.get("mode", "forward")
+        if mode not in ("forward", "anchored"):
+            return _invalid("mode", mode)
+        result = holder.session.request_sequential(
+            mode=mode,
+            anchor_table=body.get("anchor_table"),
+            use_charge_constraint=bool(body.get("use_charge_constraint", False)),
+        )
+        return _to_response(result, success_status=202)
+
+    @app.get("/api/sequential/status")
+    def get_sequential_status() -> dict[str, Any]:
+        return holder.session.refine_status()
+
+    # ------------------------------------------------------------------
+    # POST /api/echem (V2b B4)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/echem")
+    def post_echem(body: dict[str, Any] = Body(...)) -> Any:
+        mpr_path = body.get("mpr_path")
+        if not isinstance(mpr_path, str) or not mpr_path.strip():
+            return _invalid("mpr_path", mpr_path)
+        sign = body.get("sign", 1)
+        if sign not in (1, -1):
+            return _invalid("sign", sign)
+        result = holder.session.request_echem(
+            mpr_path=mpr_path,
+            offset_s=body.get("offset_s"),
+            interval_s=body.get("interval_s"),
+            n_frames=body.get("n_frames"),
+            frame_epoch_s=body.get("frame_epoch_s"),
+            sign=sign,
+            x0=body.get("x0"),
+            active_mass_mg=body.get("active_mass_mg"),
+            formula_weight=body.get("formula_weight"),
+            z=body.get("z", 1),
+            x0_source=body.get("x0_source", "given"),
+            clamp=bool(body.get("clamp", False)),
         )
         return _to_response(result)
 
