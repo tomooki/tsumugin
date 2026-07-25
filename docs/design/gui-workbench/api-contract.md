@@ -149,6 +149,21 @@ refine 実行中のプロジェクト変更系は 409。
 | POST `/api/project/phases/{phase_name}/remove` `{}` | 同上 | spec から除去 + ledger |
 | POST `/api/project/settings` `{two_theta_limits?, background_coeffs?, max_cyc?}` | 同上 | spec 更新 + ledger |
 
+## 解析ループ (V2a' — A2〜A6)
+
+| 呼び出し | 成功レスポンス | 副作用 / 備考 |
+|---|---|---|
+| (viewmodel) `structure.sites` | 精密化完了後、**gpx から実サイト** (label/el/x/y/z/occ/uiso + esd 併記 note + 特殊位置 lock) が入る (A2)。未精密化 project は空 (empty-state)。demo は従来シード | — |
+| POST `/api/structure/apply` | 従来どおり + **適用済み revisions は次回 refine に実反映** (occ → `initial_occupancies`、site 削除等の構造編集は v2a' では occ/uiso のみ対象と明記) (A3) | snapshot + ledger (従来) |
+| POST `/api/phaseid` `{"mode": "pattern"\|"residual", "top_k"?: int}` | 202 `{"status": "started"}` / 409 | 相同定ジョブ (A4): `identify_pattern` を MP 供給元 (env `MATERIALS_PROJECT_API`) で実行。元素系は現相集合の CIF から導出。完了で viewmodel.phase_id.candidates が実候補に。key 未設定は 422 error dict |
+| GET `/api/phaseid/status` | refine/status と同形 | ポーリング (refine と同一ジョブ枠 = 同時実行 409) |
+| POST `/api/phaseid/add` `{"formula": str, "mp_id": str}` | state | ADD AS PHASE (A4): 候補 CIF を物質化して `data/` へ保存 → `add_phase` (ledger)。再精密化はユーザーが RUN で明示 |
+| POST `/api/multistart` `{"n_starts"?: int (既定3), "scale"?: float (既定0.007)}` | 202 / 409 | `run_multistart_rietveld` ジョブ (A5)。完了で viewmodel.hypotheses.basin (points: x=主格子軸 a, y=Rwp, label=start) + `corroborated` 行が evidence に |
+| GET `/api/multistart/status` | 同形 | ポーリング (同一ジョブ枠) |
+| GET `/api/export/gpx` | gpx ファイル (application/octet-stream) / 404 (未精密化) | keep_gpx 生成物のダウンロード (A6, FR-424: ファイル名に project 名) |
+
+ジョブ枠は 1 つ (refine/phaseid/multistart は相互に 409) — GSAS 直列実行の前提を単純に保つ。
+
 ## その他の変更系
 
 | 呼び出し | 成功レスポンス | 副作用 |
@@ -159,7 +174,7 @@ refine 実行中のプロジェクト変更系は 409。
 | POST `/api/structure/apply` `{"sites": [...], "note": str}` | `{"snapshot_id": str, "ledger_index": int}` | SnapshotStore.save + ledger |
 | POST `/api/approval/{action_id}` `{"decision": "approve"\|"reject"}` | `{"state": ..., "snapshot_id": str\|null, "ledger_index": int}` | 両経路 ledger、approve のみ snapshot |
 | POST `/api/stages/{nn}` `{"action": "release"\|"revert"}` | `{"stage": {...updated}}` | セッション状態 + ledger |
-| POST `/api/refine` `{}` | 202 `{"status": "started"}` / 409 (実行中) | 実 `run_auto_rietveld` をバックグラウンドスレッドで起動 + ledger (`refine_request`)。demo モード (project 未接続) は従来どおり 202 `{"status": "recorded"}` + ledger のみ |
+| POST `/api/refine` `{"stages_on"?: {"01": bool, ...}}` | 202 `{"status": "started"}` / 409 (実行中) | 実 `run_auto_rietveld` をバックグラウンドスレッドで起動 + ledger (`refine_request`)。`stages_on` (任意) は staged release recipe の ON/OFF — false の段は recipe から**実際にスキップ**され stage 履歴に現れない (A1: UI のゲートを実 run に反映する唯一の経路)。省略 = 全段既定。不明キーは 422。demo モード (project 未接続) は従来どおり 202 `{"status": "recorded"}` + ledger のみ |
 | GET `/api/refine/status` | `{"status": "idle"\|"running"\|"done"\|"failed", "elapsed_s": float\|null, "last_event": str\|null, "error": str\|null}` | — (ポーリング用。完了時はフロントが state/viewmodel を再フェッチ) |
 | POST `/api/transcript/message` `{"text": str}` | `{"message": {...}}` | transcript 追記 |
 | GET `/api/ledger` | `{"entries": [{"index", "time", "actor", "text", "hash", "revert_to"}], "verified": true}` | — |
