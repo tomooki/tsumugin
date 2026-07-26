@@ -21,6 +21,7 @@ import json
 import math
 import os
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
@@ -37,6 +38,7 @@ from ..selection.engine import FinalSelectionEngine
 from ..selection.review_queue import ReviewQueue
 from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
+from . import density as _density
 from . import lifecycle
 from . import seed as _seed
 from .agent_bridge import AgentBridge
@@ -63,6 +65,10 @@ _VALID_DATA_FORMATS = frozenset({"XRDML", "FXYE", "GSAS", "XYE", "XY", "INT", "I
 
 #: POST /api/project/upload のファイルサイズ上限 (50MB, api-contract.md)。
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+#: `request_sequential` のハートビート間隔 (秒, api-contract.md「進捗 = ledger」の可視化)。
+#: モジュールレベルにして単体テストが monkeypatch で短縮できるようにする。
+_SEQUENTIAL_HEARTBEAT_INTERVAL_S = 15.0
 
 #: source="none" (Welcome 画面) の project meta (api-contract.md GET /api/state)。
 _EMPTY_PROJECT_META: dict[str, Any] = {"name": None, "dataset": None, "frame": None, "echem": None}
@@ -111,12 +117,16 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "multistart_finished": "CORE ①",
     "multistart_failed": "GUARD",
     "sequential_request": "HUMAN",
+    "sequential_progress": "CORE ①",
     "sequential_finished": "CORE ①",
     "sequential_failed": "GUARD",
     "echem_finished": "CORE ①",
     "echem_failed": "GUARD",
     "agent_policy_change": "HUMAN",
     "approval_abandoned": "GUARD",
+    "mem_request": "HUMAN",
+    "mem_finished": "CORE ①",
+    "mem_failed": "GUARD",
 }
 
 #: 承認カード action_id 接頭辞 → kind (``abandon_pending_approvals`` が ledger payload に積む
@@ -207,6 +217,11 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"multistart failed: {payload.get('error')}"
     if kind == "sequential_request":
         return f"sequential requested (mode={payload.get('mode')})"
+    if kind == "sequential_progress":
+        return (
+            f"sequential running (mode={payload.get('mode')}, "
+            f"n_frames={payload.get('n_frames')}, elapsed={payload.get('elapsed_s')}s)"
+        )
     if kind == "sequential_finished":
         return f"sequential finished (n_frames={payload.get('n_frames')})"
     if kind == "sequential_failed":
@@ -219,6 +234,12 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"agent policy → {payload.get('policy')}"
     if kind == "approval_abandoned":
         return f"approval {payload.get('action_id')} ({payload.get('kind')}) abandoned: {payload.get('reason')}"
+    if kind == "mem_request":
+        return f"mem requested (map_type={payload.get('map_type')})"
+    if kind == "mem_finished":
+        return f"mem finished (n_peaks={payload.get('n_peaks')})"
+    if kind == "mem_failed":
+        return f"mem failed: {payload.get('error')}"
     return kind
 
 
@@ -303,6 +324,12 @@ class WorkbenchSession:
         # 【B5: 新相承認カードの内部索引】: action_id → {frame_index, data_path, data_format}
         #   (approve 時に identify_and_add_phase へ渡す生パターンの出所)。
         self._np_approval_info: dict[str, dict[str, Any]] = {}
+
+        # 【V3b: MEM 密度マップ】: 直近 POST /api/mem 完了の viewmodel.structure.mem 契約形
+        #   (map+peaks+note)。None は「未実行 (empty-state)」(api-contract.md)。mem_peaks は
+        #   既存キー (`structure.mem_peaks`) との二重供給用に別途保持する。
+        self._mem_view: "dict[str, Any] | None" = None
+        self._mem_peaks: list[dict[str, Any]] = []
 
         # 【実プロジェクト接続 (REQ-GUI-012/013)】: 既定は demo。``from_project`` が "project" へ切替える。
         self._source: GuiSource = "demo"
@@ -667,16 +694,23 @@ class WorkbenchSession:
         return rows
 
     def _structure_view(self) -> dict[str, Any]:
+        # 【V3b: MEM は demo/project 共通】: 実 MEM が完了していれば mem_peaks を実ピークへ差し替え、
+        #   viewmodel.structure.mem (map+peaks+note) を供給する。未実行は None (empty-state)。
+        with self._lock:
+            mem = dict(self._mem_view) if self._mem_view is not None else None
+            mem_peaks_override = [dict(p) for p in self._mem_peaks] if self._mem_peaks else None
         if self._source != "demo":
             return {
                 "sites": [dict(s) for s in self._structure_sites],
                 "constraints": [],
-                "mem_peaks": [],
+                "mem_peaks": mem_peaks_override or [],
+                "mem": mem,
             }
         return {
             "sites": [dict(s) for s in self._structure_sites],
             "constraints": _seed.seed_structure_constraints(),
-            "mem_peaks": _seed.seed_mem_peaks(),
+            "mem_peaks": mem_peaks_override or _seed.seed_mem_peaks(),
+            "mem": mem,
         }
 
     def _transcript_view(self) -> list[dict[str, Any]]:
@@ -2008,6 +2042,133 @@ class WorkbenchSession:
             self.ledger.append("multistart_failed", {"error": str(exc)})
 
     # ------------------------------------------------------------------
+    # POST /api/mem, GET /api/mem/status (V3b, FR-601)
+    # ------------------------------------------------------------------
+
+    def request_mem(
+        self,
+        *,
+        phase: "str | None" = None,
+        hist: "str | None" = None,
+        map_type: str = "Fobs",
+        dmin: float = 0.9,
+        grid_step: float = 0.25,
+    ) -> dict[str, Any]:
+        """MEM 密度マップジョブを起動する (api-contract.md POST /api/mem)。
+
+        refine/phaseid/multistart/sequential と同一ジョブ枠 (``self._job``) を共有する
+        (kind="mem" — GSAS/Dysnomia の直列実行の前提を保つ, api-contract.md §MEM 密度マップ)。
+
+        未精密化 (project の gpx が無い/未存在) と Dysnomia バイナリ未解決は、いずれもジョブ
+        起動前にここで検出し 422 error dict へ縮退させる (``_guard_gsas_available`` と同じ
+        「起動前検出」の流儀 — バックグラウンド失敗 [job.status()="failed"] まで持ち越すと
+        ③/人間が気付くまでポーリングを要する)。Dysnomia 未解決は ``MEMUnavailableError``
+        (api-contract.md「Dysnomia バイナリ不在は 422」)。
+        """
+        if self._source != "project" or self._project is None:
+            return {"error": "no project loaded", "error_type": "ValueError"}
+        if map_type not in ("Fobs", "delt-F"):
+            return {"error": f"invalid map_type: {map_type!r}", "error_type": "ValueError"}
+        # 【共有ジョブ枠の優先確認】: request_phaseid と同じ順序規律 — gpx/Dysnomia の実体チェックより
+        #   先に確認することで、実行中はどんな入力であれ一貫して 409 を返す。
+        if self._job.status()["status"] == "running":
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+        gpx_path = self._project.gpx_path
+        if not gpx_path or not Path(gpx_path).exists():
+            return {
+                "error": "no refined gpx available (run refine first)",
+                "error_type": "ValueError",
+            }
+        if map_type == "Fobs":
+            # 【delt-F は Dysnomia 不要】: `mem.gsas.run_dysnomia_mem` は map_type="Fobs" のときのみ
+            #   Dysnomia バイナリを要求する (差フーリエは GSAS ネイティブ FourierMap のみ)。
+            from ..mem.gsas import resolve_dysnomia_binary
+
+            if resolve_dysnomia_binary() is None:
+                return {
+                    "error": (
+                        "Dysnomia binary not found "
+                        "(see tsumugin.mem.gsas.resolve_dysnomia_binary search order)"
+                    ),
+                    "error_type": "MEMUnavailableError",
+                }
+
+        def runner() -> dict[str, Any]:
+            from ..mcp.mem_tools import mem_density
+
+            result = mem_density(
+                gpx_path, phase=phase, hist=hist, map_type=map_type,
+                dmin=dmin, grid_step=grid_step,
+            )
+            if "error" in result:
+                # ② mem_density は例外を送出せず error dict へ縮退する契約 (`_degrade.degrade_oserror`
+                #   + `MEMUnavailableError` 捕捉) — ジョブ枠の failed 経路 (on_failure/ledger
+                #   "mem_failed") へ載せ直す。
+                raise RuntimeError(str(result.get("error")))
+            return result
+
+        started = self._job.start(
+            runner,
+            on_success=self._on_mem_success,
+            on_failure=self._on_mem_failure,
+            on_started=lambda: self.ledger.append(
+                "mem_request", {"map_type": map_type, "phase": phase, "hist": hist}
+            ),
+            kind="mem",
+        )
+        if not started:
+            return {"error": "a job is already running", "error_type": "ConflictError"}
+        return {"status": "started"}
+
+    def _on_mem_success(self, result: dict[str, Any]) -> None:
+        """MEM 密度ジョブ成功時のコールバック (``mcp.mem_tools.mem_density`` の戻り値そのまま)。"""
+        kind = str(result.get("density_kind") or "")
+        unit = _density.UNIT_BY_DENSITY_KIND.get(kind, "")
+        peaks_view: list[dict[str, Any]] = []
+        for p in result.get("peaks") or []:
+            frac = p.get("frac") or (None, None, None)
+            fx, fy, fz = (finite_or_none(x) for x in frac)
+            mag = finite_or_none(p.get("magnitude"))
+            dist = p.get("distance")
+            peaks_view.append(
+                {
+                    "position": f"({fx}, {fy}, {fz})",
+                    "density": f"{mag} {unit}".strip() if mag is not None else f"n/a {unit}".strip(),
+                    "assign": (p.get("nearest_atom") or "")
+                    + ("" if dist is not None and dist < 1.0 else "?"),
+                }
+            )
+        grd_path = result.get("grd_path")
+        map_view: "dict[str, Any] | None" = None
+        if grd_path:
+            try:
+                map_view = _density.extract_mem_map(
+                    grd_path,
+                    density_kind=kind,
+                    vmin=result.get("density_min") or 0.0,
+                    vmax=result.get("density_max") or 0.0,
+                )
+            except (OSError, ValueError):
+                # .grd が読めない (テスト注入 fake 等) 場合は map なし・peaks のみ供給する。
+                map_view = None
+        note = (
+            f"{result.get('density_kind', '')} · converged="
+            f"{'yes' if result.get('converged') else 'no'} · "
+            f"n_reflections={result.get('n_reflections')}"
+        )
+        with self._lock:
+            self._mem_peaks = peaks_view
+            self._mem_view = {"map": map_view, "peaks": list(peaks_view), "note": note}
+            self.ledger.append(
+                "mem_finished",
+                {"n_peaks": len(peaks_view), "converged": bool(result.get("converged"))},
+            )
+
+    def _on_mem_failure(self, exc: BaseException) -> None:
+        with self._lock:
+            self.ledger.append("mem_failed", {"error": str(exc)})
+
+    # ------------------------------------------------------------------
     # GET /api/export/gpx (A6)
     # ------------------------------------------------------------------
 
@@ -2105,22 +2266,52 @@ class WorkbenchSession:
             {str(k): list(v) for k, v in anchor_table.items()} if anchor_table else None
         )
 
+        n_frames = len(project.frames)
+
         def runner() -> dict[str, Any]:
-            if mode == "forward":
-                from ..mcp.insitu_tools import sequential_rietveld
+            # 【進捗可視化】: api-contract.md は「進捗 = ledger (frame k/N)」を約束するが、
+            #   ① sequential_rietveld/anchored_sequential は同期呼び出しで完了までフレーム単位の
+            #   進捗を返さない (engine 内部 Ledger は結果に畳まれるだけで実行中は見えない)。
+            #   ①②の呼び出し契約 (runner/instrument spec) を変えずに実行中も session ledger が
+            #   動いていることを示すため、一定間隔でハートビートを追記する (elapsed_s のみ; 厳密な
+            #   frame k/N は ①②側の ledger 注入が必要で本セッション層の変更では届かない — 既知の
+            #   残課題)。GSAS 実行は数十分かかりうるため、無音の 202→ポーリングだけでは「動いて
+            #   いるのか固まっているのか」を LEDGER タブから判別できなかった (実走で確認した欠陥)。
+            stop_heartbeat = threading.Event()
+            start_t = time.monotonic()
 
-                result = sequential_rietveld(
-                    frames_payload, phases_payload,
-                    instrument=instrument, charge_constraint=cc_spec,
-                )
-            else:
-                from ..mcp.anchor_tools import anchored_sequential
+            def _heartbeat() -> None:
+                while not stop_heartbeat.wait(_SEQUENTIAL_HEARTBEAT_INTERVAL_S):
+                    self.ledger.append(
+                        "sequential_progress",
+                        {
+                            "mode": mode,
+                            "n_frames": n_frames,
+                            "elapsed_s": round(time.monotonic() - start_t, 1),
+                        },
+                    )
 
-                result = anchored_sequential(
-                    frames_payload, phases_payload,
-                    anchor_table=anchor_table_payload,
-                    instrument=instrument, charge_constraint=cc_spec,
-                )
+            hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+            hb_thread.start()
+            try:
+                if mode == "forward":
+                    from ..mcp.insitu_tools import sequential_rietveld
+
+                    result = sequential_rietveld(
+                        frames_payload, phases_payload,
+                        instrument=instrument, charge_constraint=cc_spec,
+                    )
+                else:
+                    from ..mcp.anchor_tools import anchored_sequential
+
+                    result = anchored_sequential(
+                        frames_payload, phases_payload,
+                        anchor_table=anchor_table_payload,
+                        instrument=instrument, charge_constraint=cc_spec,
+                    )
+            finally:
+                stop_heartbeat.set()
+                hb_thread.join(timeout=2.0)
             if "error" in result and "error_type" in result:
                 raise RuntimeError(f"{result['error_type']}: {result['error']}")
             return result

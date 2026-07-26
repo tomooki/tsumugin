@@ -24,6 +24,25 @@ export const STRUCT_LOCAL_STRINGS = {
     en: "applies on the next RUN REFINEMENT",
     ja: "次回の RUN REFINEMENT で反映されます",
   },
+  // V3b (FR-601, api-contract.md §MEM 密度マップ): RUN MEM job lifecycle text
+  // for the MEM DENSITY card — no counterpart in the static handoff prototype.
+  "struct.local.runMem": { en: "RUN MEM", ja: "MEM 実行" },
+  "struct.local.runningMem": { en: "running…", ja: "実行中…" },
+  "struct.local.mapTypeLabel": { en: "map", ja: "map" },
+  "struct.local.memBusyTip": {
+    en: "another job is running (shared job slot)",
+    ja: "他のジョブが実行中です (共有ジョブ枠)",
+  },
+  "struct.local.memUnrefinedTip": {
+    en: "run REFINEMENT first",
+    ja: "先に REFINEMENT を実行してください",
+  },
+  "struct.local.memBusy": { en: "a job is already running", ja: "他のジョブが実行中です" },
+  "struct.local.memError": { en: "MEM failed: {message}", ja: "MEM 実行に失敗: {message}" },
+  "struct.local.memPollError": {
+    en: "MEM status poll failed: {message}",
+    ja: "MEM 状態取得に失敗: {message}",
+  },
 } as const satisfies Record<string, StructLocalPair>;
 
 export type StructLocalKey = keyof typeof STRUCT_LOCAL_STRINGS;

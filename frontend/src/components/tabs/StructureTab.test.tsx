@@ -1,7 +1,7 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConstraintRow, MemPeak, Site, ViewModel } from "../../api/types";
+import type { ConstraintRow, MemMap, MemPeak, MemViewModel, Site, ViewModel } from "../../api/types";
 import { I18nProvider } from "../../i18n";
 import type { WorkbenchState } from "../../state/types";
 import { StoreProvider } from "../../state/store";
@@ -308,6 +308,241 @@ describe("StructureTab — CONSTRAINTS and MEM DENSITY cards", () => {
     expect(screen.getByText("Σ occ(K1) · Z = x_total(t)")).toBeInTheDocument();
     expect(screen.getByText("EqnConstr · FR-318")).toBeInTheDocument();
     expect(screen.getByText("(0.5, 0.25, 0.0) · 0.82 fm Å⁻³ → Ow?")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V3b: MEM DENSITY heatmap + RUN MEM job (FR-601, api-contract.md §MEM 密度マップ)
+// ---------------------------------------------------------------------------
+
+function makeMemMap(overrides: Partial<MemMap> = {}): MemMap {
+  return {
+    axis: "c",
+    index: 0,
+    nx: 2,
+    ny: 2,
+    values: [
+      [0, 1],
+      [2, 3],
+    ],
+    vmin: 0,
+    vmax: 3,
+    unit: "e·Å⁻³",
+    ...overrides,
+  };
+}
+
+/** Extends `makeViewModel` with structure.mem and (optionally) a refined
+ * plot for the default active histogram ("sxrd", see state/types.ts
+ * initialWorkbenchState) — RUN MEM's disabled condition reuses FitTab's
+ * existing "has this histogram been refined" signal (plot.ycalc presence). */
+function makeViewModelWithMem(
+  sites: Site[],
+  mem: MemViewModel | null,
+  refined = false,
+): ViewModel {
+  const vm = makeViewModel(sites);
+  return {
+    ...vm,
+    structure: { ...vm.structure, mem },
+    fit: refined
+      ? {
+          ...vm.fit,
+          plot: {
+            sxrd: { x: [1, 2], yobs: [1, 2], ycalc: [1, 2], ybkg: null, residual: null, ticks: {} },
+          },
+        }
+      : vm.fit,
+  };
+}
+
+function jsonResponseMem(body: unknown, ok = true, status = 200): Response {
+  return { ok, status, statusText: ok ? "OK" : "error", json: async () => body } as Response;
+}
+
+function installMemFetchMock(opts: {
+  memRejects?: { status: number; body: unknown };
+  statuses?: unknown[];
+  refetchedViewModel?: ViewModel;
+}) {
+  let statusCallIndex = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+
+    if (url.endsWith("/api/mem") && method === "POST") {
+      if (opts.memRejects) {
+        return {
+          ok: false,
+          status: opts.memRejects.status,
+          statusText: "error",
+          json: async () => opts.memRejects!.body,
+        } as Response;
+      }
+      return jsonResponseMem({ status: "started" });
+    }
+    if (url.endsWith("/api/mem/status") && method === "GET") {
+      const statuses = opts.statuses ?? [
+        { status: "running", elapsed_s: 1, last_event: null, error: null, kind: "mem" },
+      ];
+      const body = statuses[Math.min(statusCallIndex, statuses.length - 1)];
+      statusCallIndex += 1;
+      return jsonResponseMem(body);
+    }
+    if (url.endsWith("/api/refine/status") && method === "GET") {
+      return jsonResponseMem({ status: "idle", elapsed_s: null, last_event: null, error: null });
+    }
+    if (url.endsWith("/api/viewmodel") && method === "GET") {
+      return jsonResponseMem(
+        opts.refetchedViewModel ??
+          makeViewModelWithMem([], { map: makeMemMap(), peaks: [], note: "" }, true),
+      );
+    }
+    throw new Error(`unhandled fetch: ${method} ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+async function flushMicrotasksMem(times = 6) {
+  await act(async () => {
+    for (let i = 0; i < times; i++) {
+      await Promise.resolve();
+    }
+  });
+}
+
+async function advanceTimersMem(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+describe("StructureTab — MEM DENSITY heatmap (V3b)", () => {
+  it("shows the placeholder empty-state when structure.mem is absent", () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    renderTab({ viewModel: makeViewModelWithMem([site], null) });
+    expect(screen.getByText("MAP PLACEHOLDER — Dysnomia section · z = 0.25")).toBeInTheDocument();
+  });
+
+  it("renders an SVG heatmap sized nx×ny with a vmin–vmax legend when structure.mem.map is present", () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    const mem: MemViewModel = {
+      map: makeMemMap(),
+      peaks: [makeMemPeak()],
+      note: "electron · converged=yes",
+    };
+    renderTab({ viewModel: makeViewModelWithMem([site], mem) });
+
+    expect(
+      screen.queryByText("MAP PLACEHOLDER — Dysnomia section · z = 0.25"),
+    ).not.toBeInTheDocument();
+    const svg = document.querySelector(".heat-map__svg");
+    expect(svg).not.toBeNull();
+    expect(svg?.querySelectorAll("rect").length).toBe(4); // nx=2 × ny=2
+    expect(screen.getByText(/0\.00 – 3\.00 e·Å⁻³/)).toBeInTheDocument();
+  });
+});
+
+describe("StructureTab — RUN MEM job (V3b, FR-601)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("is disabled before anything has been refined", () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    renderTab({ viewModel: makeViewModelWithMem([site], null, false) });
+    expect(screen.getByRole("button", { name: "RUN MEM" })).toBeDisabled();
+  });
+
+  it("is disabled while another job owns the shared job slot", () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    renderTab({
+      viewModel: makeViewModelWithMem([site], null, true),
+      refine: { status: "running", elapsed_s: 1, last_event: null, error: null, kind: "refine" },
+      activeJob: "refine",
+    });
+    // 【変異実証】: `memDisabled` を `!hasRefined` だけにする (jobRunning を落とす) と、この
+    //   アサーションは fail する — RUN MEM が有効なままになってしまい、共有ジョブ枠の 409 を
+    //   起動側でなく応答側でしか検知できなくなる (元の実装は事前に disabled で防いでいる)。
+    expect(screen.getByRole("button", { name: "RUN MEM" })).toBeDisabled();
+  });
+
+  it("is enabled once the active histogram has been refined and no job is running", () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    renderTab({ viewModel: makeViewModelWithMem([site], null, true) });
+    expect(screen.getByRole("button", { name: "RUN MEM" })).not.toBeDisabled();
+  });
+
+  it("posts map_type=Fobs by default, polls, and refreshes the heatmap from the refetched viewmodel on done", async () => {
+    vi.useFakeTimers();
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    const refetched = makeViewModelWithMem(
+      [site],
+      { map: makeMemMap({ vmin: -0.5, vmax: 3.2, unit: "e·Å⁻³" }), peaks: [makeMemPeak()], note: "" },
+      true,
+    );
+    const fetchMock = installMemFetchMock({
+      statuses: [
+        { status: "running", elapsed_s: 1, last_event: null, error: null, kind: "mem" },
+        { status: "done", elapsed_s: 5, last_event: "mem finished", error: null, kind: "mem" },
+      ],
+      refetchedViewModel: refetched,
+    });
+    renderTab({ viewModel: makeViewModelWithMem([site], null, true) });
+
+    fireEvent.click(screen.getByRole("button", { name: "RUN MEM" }));
+    await flushMicrotasksMem();
+
+    const startCall = fetchMock.mock.calls.find(
+      ([u, init]) => String(u).endsWith("/api/mem") && (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(startCall).toBeDefined();
+    expect(JSON.parse(String((startCall![1] as RequestInit).body))).toEqual({ map_type: "Fobs" });
+    expect(screen.getByRole("button", { name: "running…" })).toBeDisabled();
+
+    await advanceTimersMem(2000); // still running
+    await advanceTimersMem(2000); // done
+
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/viewmodel"))).toBe(true);
+    expect(document.querySelectorAll(".heat-map__svg rect").length).toBe(4);
+    expect(screen.getByText(/-0\.50 – 3\.20 e·Å⁻³/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "RUN MEM" })).not.toBeDisabled();
+  });
+
+  it("posts the selected map_type (delt-F)", async () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    const fetchMock = installMemFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ viewModel: makeViewModelWithMem([site], null, true) });
+
+    await user.selectOptions(screen.getByLabelText("map"), "delt-F");
+    await user.click(screen.getByRole("button", { name: "RUN MEM" }));
+    await flushMicrotasksMem();
+
+    const call = fetchMock.mock.calls.find(
+      ([u, init]) => String(u).endsWith("/api/mem") && (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(call).toBeDefined();
+    expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ map_type: "delt-F" });
+  });
+
+  it("409 (job slot busy) shows a non-fatal inline message, not a crash", async () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    installMemFetchMock({
+      memRejects: { status: 409, body: { error: "a job is already running", error_type: "ConflictError" } },
+    });
+    const user = userEvent.setup();
+    renderTab({ viewModel: makeViewModelWithMem([site], null, true) });
+
+    await user.click(screen.getByRole("button", { name: "RUN MEM" }));
+    await flushMicrotasksMem();
+
+    expect(screen.getByText("a job is already running")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "RUN MEM" })).not.toBeDisabled();
   });
 });
 

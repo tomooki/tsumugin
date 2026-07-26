@@ -25,6 +25,7 @@ _EXPECTED_TOOL_NAMES = frozenset(
         "run_phaseid",
         "run_multistart",
         "run_echem",
+        "run_mem",
         "propose_structure_revision",
         "propose_review_resolution",
         "propose_phase_change",
@@ -145,9 +146,9 @@ def test_allowed_tool_names_for_bypass_adds_exactly_the_four_project_lifecycle_t
     assert added == _EXPECTED_BYPASS_ONLY_TOOL_NAMES
 
 
-def test_allowed_tool_ids_bypass_covers_all_eighteen_names():
+def test_allowed_tool_ids_bypass_covers_all_nineteen_names():
     ids = agent_mcp.allowed_tool_ids("bypass")
-    assert len(ids) == 18
+    assert len(ids) == 19
     names = {tid[len(f"mcp__{agent_mcp.SERVER_NAME}__") :] for tid in ids}
     assert names == agent_mcp.allowed_tool_names("bypass")
 
@@ -202,7 +203,7 @@ def test_self_escalation_markers_mutation_flags_injected_set_agent_policy_tool()
 
 
 def test_forbidden_markers_still_apply_only_to_base_allowed_tool_names():
-    """`_FORBIDDEN_MARKERS` (project ライフサイクル語幹込み) は base 14 (全 policy 共通部分) にのみ
+    """`_FORBIDDEN_MARKERS` (project ライフサイクル語幹込み) は base 15 (全 policy 共通部分) にのみ
     適用する不変条件 — bypass の +4 本自体にこの集合を適用すると自己矛盾で必ず fail するため、
     誤って `allowed_tool_names("bypass")` へ適用していないことを回帰ガードする。
     """

@@ -325,6 +325,45 @@
   white-space: nowrap;
 }
 
+/* V3b (FR-601, api-contract.md §MEM 密度マップ): RUN MEM controls above the heatmap. */
+.struct-mem__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 7px;
+}
+
+.struct-mem__map-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.struct-mem__map-type-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--color-neutral-600);
+}
+
+.struct-mem__map-type select {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  padding: 3px 4px;
+  border-radius: 0;
+}
+
+.struct-mem__error {
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-neutral-900);
+}
+
 .struct-mem__peaks {
   margin-top: 7px;
   display: flex;

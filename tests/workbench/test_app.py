@@ -1543,6 +1543,108 @@ def test_multistart_route_returns_409_while_refine_running(
         project_session._job.join(timeout=5)
 
 
+# --- V3b: MEM 密度マップ (FR-601) --------------------------------------------
+
+
+def test_mem_route_invalid_map_type_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/mem", json={"map_type": "bogus"})
+    assert resp.status_code == 422
+
+
+def test_mem_route_without_project_returns_422(client: TestClient):
+    resp = client.post("/api/mem", json={})
+    assert resp.status_code == 422
+
+
+def test_mem_route_without_refined_gpx_returns_422(project_client: TestClient):
+    resp = project_client.post("/api/mem", json={})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_mem_status_route_matches_refine_status_shape(project_client: TestClient):
+    resp = project_client.get("/api/mem/status")
+    assert resp.status_code == 200
+    assert set(resp.json()) == {"status", "elapsed_s", "last_event", "error", "kind"}
+
+
+def test_mem_route_returns_409_while_refine_running(
+    project_client: TestClient, project_session: WorkbenchSession
+):
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def fake_runner() -> AutoRietveldResult:
+        started_evt.set()
+        release_evt.wait(timeout=5)
+        return _fake_result()
+
+    project_session._job.start(fake_runner, on_success=lambda r: None, on_failure=lambda e: None)
+    started_evt.wait(timeout=5)
+    try:
+        resp = project_client.post("/api/mem", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error_type"] == "ConflictError"
+    finally:
+        release_evt.set()
+        project_session._job.join(timeout=5)
+
+
+def test_mem_route_dysnomia_unavailable_returns_422(
+    project_client: TestClient, project_session: WorkbenchSession, monkeypatch
+):
+    gpx_path = Path(project_session._project.gpx_path)
+    gpx_path.parent.mkdir(parents=True, exist_ok=True)
+    gpx_path.write_bytes(b"fake gpx contents")
+
+    import tsumugin.mem.gsas as mem_gsas_module
+
+    monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: None)
+
+    resp = project_client.post("/api/mem", json={"map_type": "Fobs"})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "MEMUnavailableError"
+
+
+def test_mem_route_success_returns_202_and_updates_structure_mem_viewmodel(
+    project_client: TestClient, project_session: WorkbenchSession, monkeypatch
+):
+    gpx_path = Path(project_session._project.gpx_path)
+    gpx_path.parent.mkdir(parents=True, exist_ok=True)
+    gpx_path.write_bytes(b"fake gpx contents")
+
+    import tsumugin.mcp.mem_tools as mem_tools_module
+    import tsumugin.mem.gsas as mem_gsas_module
+
+    monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: "fake-binary")
+    monkeypatch.setattr(
+        mem_tools_module,
+        "mem_density",
+        lambda gpx_path, **kw: {
+            "density_kind": "electron",
+            "density_min": 0.0,
+            "density_max": 1.0,
+            "pre_min": 0.0,
+            "pre_max": 1.0,
+            "n_reflections": 1,
+            "converged": True,
+            "mem_r_factor": None,
+            "grd_path": "",
+            "peaks": [],
+        },
+    )
+
+    resp = project_client.post("/api/mem", json={})
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "started"}
+
+    project_session._job.join(timeout=5)
+
+    vm = project_client.get("/api/viewmodel").json()
+    assert vm["structure"]["mem"]["peaks"] == []
+    assert vm["structure"]["mem"]["map"] is None  # grd_path="" → no map to extract
+
+
 # --- A6: gpx エクスポート ----------------------------------------------------
 
 

@@ -40,6 +40,9 @@ _ERROR_STATUS: dict[str, int] = {
     # Tier1 sidecar (GSAS-II 抜き同梱) で GSAS 必須ジョブが起動されたときの縮退 (session.py
     # `_guard_gsas_available`)。
     "GSASUnavailableError": 422,
+    # V3b (FR-601): POST /api/mem で Dysnomia バイナリが未解決のときの縮退 (session.py
+    # `request_mem`)。
+    "MEMUnavailableError": 422,
 }
 
 #: POST /api/project 系の「現在のセッションが refine 実行中」ガード共通メッセージ (api-contract.md)。
@@ -610,6 +613,31 @@ def create_workbench_app(
 
     @app.get("/api/multistart/status")
     def get_multistart_status() -> dict[str, Any]:
+        return holder.session.refine_status()
+
+    # ------------------------------------------------------------------
+    # POST /api/mem, GET /api/mem/status (V3b, FR-601)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/mem")
+    def post_mem(body: dict[str, Any] = Body(default={})) -> Any:
+        map_type = body.get("map_type", "Fobs")
+        if map_type not in ("Fobs", "delt-F"):
+            return _invalid("map_type", map_type)
+        dmin, grid_step = body.get("dmin", 0.9), body.get("grid_step", 0.25)
+        try:
+            dmin = float(dmin)
+            grid_step = float(grid_step)
+        except (TypeError, ValueError):
+            return _invalid("dmin/grid_step", body)
+        result = holder.session.request_mem(
+            phase=body.get("phase"), hist=body.get("hist"),
+            map_type=map_type, dmin=dmin, grid_step=grid_step,
+        )
+        return _to_response(result, success_status=202)
+
+    @app.get("/api/mem/status")
+    def get_mem_status() -> dict[str, Any]:
         return holder.session.refine_status()
 
     # ------------------------------------------------------------------
