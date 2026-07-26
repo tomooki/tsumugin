@@ -90,7 +90,7 @@ export type RefineJobStatus = "idle" | "running" | "done" | "failed";
 // RefineStatus.kind represents as `null` instead (see below).
 // "sequential" added by api-contract.md §逐次 / operando (V2b): "ジョブ枠は
 // 既存と同一 (kind に "sequential" が加わる)".
-export type JobKind = "refine" | "phaseid" | "multistart" | "sequential";
+export type JobKind = "refine" | "phaseid" | "multistart" | "sequential" | "mem";
 
 export interface RefineStatus {
   status: RefineJobStatus;
@@ -425,10 +425,33 @@ export interface MemPeak {
   assign: string;
 }
 
+// api-contract.md §MEM 密度マップ (V3b — FR-601): c 軸に垂直な中央スライス, values は
+// ≤128×128 に間引き済み (values[nx][ny], row-major on the "a" axis).
+export interface MemMap {
+  axis: "c";
+  index: number;
+  nx: number;
+  ny: number;
+  values: number[][];
+  vmin: number;
+  vmax: number;
+  unit: string;
+}
+
+export interface MemViewModel {
+  map: MemMap | null;
+  peaks: MemPeak[];
+  note: string;
+}
+
 export interface StructureViewModel {
   sites: Site[];
   constraints: ConstraintRow[];
   mem_peaks: MemPeak[];
+  // null/absent = MEM not yet run (empty-state) — see api-contract.md §MEM 密度マップ. Optional
+  // (rather than required-but-nullable) so existing fixtures/tests that predate V3b need not all
+  // grow a `mem: null` line — call sites already read it via `structure?.mem?.map ?? null`.
+  mem?: MemViewModel | null;
 }
 
 export type StageGate = "bkg" | "profile" | "sample" | "occ" | "micro" | null;
@@ -831,6 +854,18 @@ export interface EchemSyncResponse {
   curve: unknown[];
   targets: unknown[];
   [key: string]: unknown;
+}
+
+// — MEM 密度マップ (V3b — FR-601, api-contract.md §MEM 密度マップ) —
+
+export type MemMapType = "Fobs" | "delt-F";
+
+export interface MemRequest {
+  phase?: string;
+  hist?: string;
+  map_type?: MemMapType;
+  dmin?: number;
+  grid_step?: number;
 }
 
 // — errors —

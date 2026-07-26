@@ -16,6 +16,7 @@ import type {
   EchemSyncResponse,
   JobStartResponse,
   LedgerResponse,
+  MemRequest,
   ModeRequest,
   MultistartRequest,
   PhaseIdAddRequest,
@@ -303,4 +304,16 @@ export function getSequentialStatus(): Promise<RefineStatus> {
 // Synchronous (not a background job) — no .../status polling counterpart.
 export function postEchem(payload: EchemRequest): Promise<EchemSyncResponse> {
   return post<EchemSyncResponse>("/api/echem", payload);
+}
+
+// — MEM 密度マップ (V3b — FR-601, api-contract.md §MEM 密度マップ) —
+// Shares the refine/phaseid/multistart/sequential job slot (kind="mem"), same
+// polling shape as getRefineStatus/getMultistartStatus.
+
+export function postMem(payload: MemRequest = {}): Promise<JobStartResponse> {
+  return post<JobStartResponse>("/api/mem", payload);
+}
+
+export function getMemStatus(): Promise<RefineStatus> {
+  return get<RefineStatus>("/api/mem/status");
 }

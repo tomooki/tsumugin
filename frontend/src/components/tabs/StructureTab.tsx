@@ -1,11 +1,20 @@
-import { useState } from "react";
-import { ApiError, postStructureApply } from "../../api/client";
-import type { Site } from "../../api/types";
+import { useCallback, useState } from "react";
+import {
+  ApiError,
+  getMemStatus,
+  getViewModel,
+  postMem,
+  postStructureApply,
+} from "../../api/client";
+import type { MemMapType, RefineStatus, Site } from "../../api/types";
 import { ELEMENTS, elementLabel } from "../../data/elements";
+import { resolveJobConflict } from "../../hooks/useJobConflict";
+import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
 import { siteList } from "../../state/reducer";
 import { useStore } from "../../state/store";
-import { BlueprintCard, Btn, PlaceholderPlot } from "../common";
+import { HeatMap } from "../charts/HeatMap";
+import { BlueprintCard, Btn } from "../common";
 import "./StructureTab.css";
 import { interpolateLocal, STRUCT_LOCAL_STRINGS, type StructLocalKey } from "./StructureTab.strings";
 
@@ -134,6 +143,8 @@ export function StructureTab() {
   const { state, dispatch } = useStore();
   const [isApplying, setIsApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [mapType, setMapType] = useState<MemMapType>("Fobs");
+  const [memError, setMemError] = useState<string | null>(null);
 
   function tl(key: StructLocalKey, vars?: Record<string, string | number>): string {
     const pair = STRUCT_LOCAL_STRINGS[key];
@@ -144,6 +155,91 @@ export function StructureTab() {
   const structure = state.viewModel?.structure;
   const constraints = structure?.constraints ?? [];
   const memPeaks = structure?.mem_peaks ?? [];
+  const memMap = structure?.mem?.map ?? null;
+
+  // V3b (FR-601, api-contract.md §MEM 密度マップ): RUN MEM shares the
+  // refine/phaseid/multistart/sequential job slot (kind="mem") — see
+  // hooks/usePollJob.ts and state/types.ts ActiveJob. "refined" reuses
+  // FitTab's existing signal (plot.ycalc presence for the active
+  // histogram) rather than inventing a new one.
+  const jobRunning = state.refine?.status === "running";
+  const memRunning = jobRunning && state.activeJob === "mem";
+  const activePlot = state.viewModel?.fit?.plot?.[state.hist];
+  const hasRefined = !!activePlot?.ycalc;
+  const memDisabled = jobRunning || !hasRefined;
+  const memDisabledTip = !hasRefined
+    ? tl("struct.local.memUnrefinedTip")
+    : jobRunning
+      ? tl("struct.local.memBusyTip")
+      : undefined;
+
+  const setRefineStatus = useCallback(
+    (refine: RefineStatus) => dispatch({ type: "SET_REFINE_STATUS", refine }),
+    [dispatch],
+  );
+
+  const handleMemDone = useCallback(async () => {
+    dispatch({ type: "SET_ACTIVE_JOB", job: null });
+    try {
+      const viewModel = await getViewModel();
+      dispatch({ type: "SET_VIEW_MODEL", viewModel });
+    } catch (err) {
+      setMemError(err instanceof ApiError ? err.message : String(err));
+    }
+  }, [dispatch]);
+
+  const handleMemFailed = useCallback(
+    (next: RefineStatus) => {
+      dispatch({ type: "SET_ACTIVE_JOB", job: null });
+      setMemError(tl("struct.local.memError", { message: next.error ?? "unknown error" }));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dispatch, lang],
+  );
+
+  const handleMemPollError = useCallback(
+    (err: unknown) => {
+      const message = err instanceof ApiError ? err.message : String(err);
+      setMemError(tl("struct.local.memPollError", { message }));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lang],
+  );
+
+  usePollJob({
+    status: state.refine,
+    setStatus: setRefineStatus,
+    statusFn: getMemStatus,
+    enabled: state.activeJob === "mem",
+    onDone: handleMemDone,
+    onFailed: handleMemFailed,
+    onError: handleMemPollError,
+  });
+
+  function handleRunMem() {
+    if (jobRunning) return;
+    setMemError(null);
+    postMem({ map_type: mapType })
+      .then((res) => {
+        if (res.status === "started") {
+          dispatch({ type: "SET_ACTIVE_JOB", job: "mem" });
+          setRefineStatus({ status: "running", elapsed_s: 0, last_event: null, error: null });
+        }
+      })
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && err.status === 409) {
+          // Non-fatal (shared job slot, api-contract.md) — mirror
+          // PhaseIdTab/HypothesesTab: sync activeJob from the real owner's
+          // `kind` so whichever tab actually owns the running job keeps
+          // polling it.
+          setMemError(tl("struct.local.memBusy"));
+          void resolveJobConflict(dispatch).catch(() => {});
+          return;
+        }
+        const message = err instanceof ApiError ? err.message : String(err);
+        setMemError(tl("struct.local.memError", { message }));
+      });
+  }
 
   const lockedTip = t("site.tip.lockedSymmetry");
   const deleteTip = t("struct.deleteAtom");
@@ -309,7 +405,31 @@ export function StructureTab() {
             style={{ display: "flex", flexDirection: "column", minHeight: 0 }}
             bodyStyle={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
           >
-            <PlaceholderPlot label={t("struct.memPlaceholder")} />
+            <div className="struct-mem__controls">
+              <label className="struct-mem__map-type">
+                <span className="struct-mem__map-type-label">{tl("struct.local.mapTypeLabel")}</span>
+                <select
+                  aria-label={tl("struct.local.mapTypeLabel")}
+                  value={mapType}
+                  disabled={jobRunning}
+                  onChange={(e) => setMapType(e.target.value as MemMapType)}
+                >
+                  <option value="Fobs">Fobs</option>
+                  <option value="delt-F">delt-F</option>
+                </select>
+              </label>
+              <Btn
+                type="button"
+                variant="accent"
+                onClick={handleRunMem}
+                disabled={memDisabled}
+                title={memDisabledTip}
+              >
+                {memRunning ? tl("struct.local.runningMem") : tl("struct.local.runMem")}
+              </Btn>
+            </div>
+            {memError && <div className="struct-mem__error">{memError}</div>}
+            <HeatMap map={memMap} emptyLabel={t("struct.memPlaceholder")} />
             <div className="struct-mem__peaks">
               {memPeaks.map((p, i) => (
                 <div key={i}>{`${p.position} · ${p.density} → ${p.assign}`}</div>

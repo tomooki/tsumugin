@@ -179,12 +179,29 @@ histograms[0] (instrument_path/radiation/geometry/data_format/two_theta_limits) 
 | 呼び出し | 成功レスポンス | 副作用 / 備考 |
 |---|---|---|
 | POST `/api/project/frames` `{"frames": [...]}` | state | フレーム列を**全置換** (冪等 set)。spec 自動保存 + ledger。パスは data/ 基準絶対化・実在検証 |
-| POST `/api/sequential` `{"mode": "forward"\|"anchored", "anchor_table"?: {frame_index: [phase,...]}, "use_charge_constraint"?: bool}` | 202 / 409 | ② `sequential_rietveld`/`anchored_sequential` の instrument JSON spec 経路をジョブ化 (B2/B3)。frames 未設定は 422。進捗 = ledger (frame k/N)。**operando 既定は anchored を推奨** (CLAUDE.md: 相数は bic で抑制) |
+| POST `/api/sequential` `{"mode": "forward"\|"anchored", "anchor_table"?: {frame_index: [phase,...]}, "use_charge_constraint"?: bool}` | 202 / 409 | ② `sequential_rietveld`/`anchored_sequential` の instrument JSON spec 経路をジョブ化 (B2/B3)。frames 未設定は 422。**進捗 = ledger の `sequential_progress` ハートビート (15s 間隔・`elapsed_s`)** — 「動いているか固まっているか」を LEDGER タブで判別できる粒度。厳密な frame k/N は ①/② への ledger 注入が要るため次段 (`docs/benchmark/gui-sequential-14frames.md`)。**operando 既定は anchored を推奨** (CLAUDE.md: 相数は bic で抑制) |
 | GET `/api/sequential/status` | refine/status と同形 (kind="sequential") | ポーリング |
 | (viewmodel) `sequence` | 完了後: charts 3 本の series 実データ (rwp / lattice a,c per 相 / **phase_weight_fractions** [Scale でなく出版値] + x_echem overlay)、anchors (anchored 時: crossover=total_bic 最小)、segments (crossovers 写像)、per-frame 表 `sequence.frames[]` ({frame, label, axis_value, rwp, cells, fractions, changepoint}) | — |
 | POST `/api/echem` `{"mpr_path": str, "offset_s": float, "interval_s": float, "sign": -1\|1, "x0"?: float}` | `{"curve", "targets", ...}` (② align_echem+alkali_budget の出力) | 同期実行 (軽量)。mpr は upload (kind="echem") 経由も可。結果はセッション保持 → channels 実値 + fraction chart overlay + sequential の charge_constraint に使用可 (B4)。galvani 未導入/ファイル不正は 422 |
 | (B5 新相提案) | — | sequential 完了時、changepoint/未説明残差のフレームがあれば **ModelAction 承認カード** (transcript approval) を生成: 「frame N で新相を同定して追加するか」。APPROVE → phaseid ジョブ (残差, elements は現相集合由来) → top 候補を物質化して相追加 (ledger)。再実行はユーザーの明示 RUN。REJECT → 提案は ledger に残る。**エンジン内自動受理は GUI 経路では使わない** (提案≠適用) |
 | (B4 FR-403) | — | alkali feasibility infeasible フレームは ReviewQueue へ自動追加 (severity=echem) |
+
+## MEM 密度マップ (V3b — FR-601)
+
+精密化済み gpx から実 Dysnomia MEM を回し、断面を STRUCTURE タブに描く。ジョブ枠は共有
+(kind に `"mem"` が加わる — GSAS/Dysnomia 直列実行の前提を保つ)。Dysnomia バイナリ不在は 422
+(`error_type: "MEMUnavailableError"`)。
+
+| 呼び出し | 内容 |
+|---|---|
+| POST `/api/mem` `{"phase"?: str, "hist"?: str, "map_type"?: "Fobs"\|"delt-F", "dmin"?: float, "grid_step"?: float}` | 202 / 409。② `mem_density` をジョブ実行。未精密化 (gpx 無し) は 422 |
+| GET `/api/mem/status` | refine/status と同形 (kind="mem") |
+| (viewmodel) `structure.mem` | 完了後: `{"map": {"axis": "c", "index": 0, "nx": int, "ny": int, "values": [[...]], "vmin": float, "vmax": float, "unit": str}, "peaks": [...], "note": str}`。**values は ≤128×128 に縮約** (大配列を境界で無制限に跨がせない)。縮約は点サンプリングではなく**ブロック内の絶対値最大** — 隙間に落ちたピークが図から消えて「未モデル密度なし」と誤読されるのを防ぐ (Fobs の正ピーク・delt-F の負ローブとも保存、代わりに幅は 1 セル広く見える)。ピーク一覧 `peaks` は生グリッドから算出され本縮約の影響を受けない。null = 未実行 (empty-state) |
+| (viewmodel) `structure.mem_peaks` | 既存キー。実 MEM のピーク (position/density/assign) に差し替わる |
+
+断面は既定で c 軸に垂直な中央スライス。フロントは SVG heatmap (トークンの neutral↔accent
+ランプで塗り分け、凡例に vmin/vmax + 単位)。**エージェントには `run_mem` を SafeAction として
+公開** (再実行可能な計算であり ledger に残る)。
 
 ## AUTO 実 LLM ブリッジ (V3a — ローカル Claude Code サブスクリプション)
 

@@ -44,6 +44,7 @@ ALLOWED_TOOL_NAMES: frozenset[str] = frozenset(
         "run_phaseid",
         "run_multistart",
         "run_echem",
+        "run_mem",
         "propose_structure_revision",
         "propose_review_resolution",
         "propose_phase_change",
@@ -61,7 +62,7 @@ BYPASS_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
     {"open_project", "close_project", "create_project", "demo_project"}
 )
 
-#: 到達不能な (=人間専用の) 直接実行操作を表す語幹。**``ALLOWED_TOOL_NAMES`` (常設 14 本, 全 policy
+#: 到達不能な (=人間専用の) 直接実行操作を表す語幹。**``ALLOWED_TOOL_NAMES`` (常設 15 本, 全 policy
 #: 共通の基底集合) にのみ適用する** — `test_agent_mcp.py::test_no_forbidden_tool_categories` が
 #: ガードする。**broad な名詞 ("structure"/"review"/"approval" 等) ではなく直接実行を指す具体的な
 #: 動詞トークンを列挙する** (2026-07-26 改訂): `propose_structure_revision`/
@@ -215,6 +216,19 @@ async def _h_run_echem(args: dict[str, Any]) -> dict[str, Any]:
         }
     )
     return _tool_result(await asyncio.to_thread(_request, "POST", "/api/echem", payload))
+
+
+async def _h_run_mem(args: dict[str, Any]) -> dict[str, Any]:
+    payload = _strip_none(
+        {
+            "phase": args.get("phase"),
+            "hist": args.get("hist"),
+            "map_type": args.get("map_type"),
+            "dmin": args.get("dmin"),
+            "grid_step": args.get("grid_step"),
+        }
+    )
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/mem", payload))
 
 
 async def _h_propose_structure_revision(args: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +406,23 @@ _TOOL_SPECS: "tuple[tuple[str, str, dict[str, Any], Callable[[dict[str, Any]], A
             "required": ["mpr_path"],
         },
         _h_run_echem,
+    ),
+    (
+        "run_mem",
+        "MEM 密度マップジョブを起動する (POST /api/mem)。実 Dysnomia MEM を回し STRUCTURE タブの "
+        "断面/未モデルピークを更新する再実行可能な計算 (ledger 追記)。未精密化/Dysnomia 未解決は 422。",
+        {
+            "type": "object",
+            "properties": {
+                "phase": {"type": "string", "description": "対象相名 (省略時は既定選択)。"},
+                "hist": {"type": "string", "description": "対象ヒストグラム id (省略時は既定選択)。"},
+                "map_type": {"type": "string", "enum": ["Fobs", "delt-F"]},
+                "dmin": {"type": "number"},
+                "grid_step": {"type": "number"},
+            },
+            "required": [],
+        },
+        _h_run_mem,
     ),
     (
         "propose_structure_revision",

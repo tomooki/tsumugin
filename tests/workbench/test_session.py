@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -2400,6 +2401,55 @@ def test_request_sequential_forward_builds_instrument_spec_from_histograms0(tmp_
     assert session.refine_status()["kind"] == "sequential"
 
 
+def test_request_sequential_emits_heartbeat_progress_ledger_entries_while_running(tmp_path, monkeypatch):
+    """進捗可視化ハートビート: 長時間 runner の間、``sequential_progress`` が ledger に載る。
+
+    api-contract.md は「進捗 = ledger (frame k/N)」を約束するが、実走で確認すると
+    sequential_request → (無音) → sequential_finished/failed の間は ledger が一切動かず、
+    数十分規模の実 GSAS 実行中に GUI が「動いているのか固まっているのか」を判別できない欠陥が
+    あった (14 フレーム実データ検証で発見)。`request_sequential` の runner はハートビートスレッドで
+    ``_SEQUENTIAL_HEARTBEAT_INTERVAL_S`` 間隔で ``sequential_progress`` を追記する — 本テストは
+    その間隔を monkeypatch で短縮し、runner 実行中に 1 件以上現れ、runner 完了後は増え続けない
+    (スレッドが確実に停止する) ことを確認する。
+    """
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module, "_SEQUENTIAL_HEARTBEAT_INTERVAL_S", 0.05)
+
+    project = _sequential_project(tmp_path)
+    session = WorkbenchSession.from_project(project)
+
+    def slow_fake_sequential_rietveld(frames, phases, **kw):
+        time.sleep(0.3)  # ハートビート間隔 (0.05s) の複数倍だけ runner を「実行中」に保つ
+        return _fake_seq_result([_fake_frame(0), _fake_frame(1)])
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(insitu_tools_module, "sequential_rietveld", slow_fake_sequential_rietveld)
+
+    result = session.request_sequential(mode="forward")
+    assert result == {"status": "started"}
+    session._job.join(timeout=5)
+
+    assert session.refine_status()["status"] == "done"
+    progress_entries = [e for e in session.ledger.entries if e.kind == "sequential_progress"]
+    assert len(progress_entries) >= 1, "expected at least one heartbeat entry during a slow run"
+    assert progress_entries[0].payload["mode"] == "forward"
+    assert progress_entries[0].payload["n_frames"] == 2
+    assert progress_entries[0].payload["elapsed_s"] >= 0.0
+
+    n_after_done = len(progress_entries)
+    time.sleep(0.3)  # スレッドが停止していれば、完了後に ledger エントリが増えないはず
+    progress_entries_later = [e for e in session.ledger.entries if e.kind == "sequential_progress"]
+    assert len(progress_entries_later) == n_after_done, (
+        "heartbeat thread kept appending after runner completed (not stopped/joined correctly)"
+    )
+
+    ledger_view = session.ledger_view()
+    hb_texts = [e["text"] for e in ledger_view["entries"] if e["text"].startswith("sequential running")]
+    assert hb_texts and hb_texts[0].startswith("sequential running (mode=forward")
+
+
 def test_request_sequential_anchored_calls_anchored_sequential_with_anchor_table(tmp_path, monkeypatch):
     project = _sequential_project(tmp_path)
     session = WorkbenchSession.from_project(project)
@@ -2988,3 +3038,163 @@ class TestAgentIdleReflectsTurnStatus:
             },
         )
         assert session.state()["agent"]["idle"] is False
+
+
+# ---------------------------------------------------------------------------
+# V3b: MEM 密度マップ (FR-601, POST /api/mem, GET /api/mem/status)
+# ---------------------------------------------------------------------------
+
+
+def _mem_project(tmp_path: Path, *, write_gpx: bool = True) -> WorkbenchProject:
+    """MEM ジョブ用の project フィクスチャ (gpx_path を実在ファイルにする)。"""
+    gpx_path = tmp_path / "refined.gpx"
+    if write_gpx:
+        gpx_path.write_bytes(b"")  # 存在だけを見る (実 mem_density はテストで monkeypatch する)
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "d.xy"), instrument_path=str(tmp_path / "d.instprm"),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XY",
+    )
+    phase = PhaseSpec(structure_path=str(tmp_path / "p.cif"), phase_name="p1")
+    return WorkbenchProject(
+        name="mem fixture", histograms=(hist,), phases=(phase,),
+        gpx_path=str(gpx_path), spec_dir=str(tmp_path),
+    )
+
+
+def _fake_mem_result(grd_path: str, *, n_peaks: int = 1) -> dict[str, Any]:
+    """``mcp.mem_tools.mem_density`` の戻り値の代役 (成功系)。"""
+    peaks = [{"frac": [0.5, 0.25, 0.0], "magnitude": 0.82, "nearest_atom": "Ow1", "distance": 1.5}]
+    return {
+        "density_kind": "electron",
+        "density_min": -0.5,
+        "density_max": 3.2,
+        "pre_min": -0.1,
+        "pre_max": 2.0,
+        "n_reflections": 42,
+        "converged": True,
+        "mem_r_factor": 0.03,
+        "grd_path": grd_path,
+        "peaks": peaks[:n_peaks],
+    }
+
+
+class TestRequestMem:
+    """``request_mem`` (POST /api/mem) の起動ガード + 成功/失敗経路。"""
+
+    def test_without_project_returns_error_dict(self):
+        session = WorkbenchSession.create_demo()
+        result = session.request_mem()
+        assert result["error_type"] == "ValueError"
+
+    def test_without_refined_gpx_returns_422_value_error(self, project_session: WorkbenchSession):
+        # project_session (lifecycle.create_project) は gpx_path を持つが未生成 (refine 前)。
+        result = project_session.request_mem()
+        assert result["error_type"] == "ValueError"
+        assert "gpx" in result["error"]
+
+    def test_invalid_map_type_returns_422(self, tmp_path):
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        result = session.request_mem(map_type="bogus")
+        assert result["error_type"] == "ValueError"
+
+    def test_dysnomia_unavailable_returns_422_mem_unavailable_error(self, tmp_path, monkeypatch):
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        import tsumugin.mem.gsas as mem_gsas_module
+
+        monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: None)
+        result = session.request_mem(map_type="Fobs")
+        assert result["error_type"] == "MEMUnavailableError"
+
+    def test_delt_f_does_not_require_dysnomia_binary(self, tmp_path, monkeypatch):
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        import tsumugin.mcp.mem_tools as mem_tools_module
+        import tsumugin.mem.gsas as mem_gsas_module
+
+        monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: None)
+        monkeypatch.setattr(
+            mem_tools_module, "mem_density", lambda gpx_path, **kw: _fake_mem_result("")
+        )
+        result = session.request_mem(map_type="delt-F")
+        assert result == {"status": "started"}
+        session._job.join(timeout=5)
+
+    def test_job_already_running_returns_409(self, tmp_path):
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        started, release = _block_refine(session)
+        try:
+            result = session.request_mem()
+            assert result["error_type"] == "ConflictError"
+        finally:
+            release.set()
+            session._job.join(timeout=5)
+
+    def test_success_builds_structure_mem_viewmodel_contract_shape(self, tmp_path, monkeypatch):
+        import numpy as np
+
+        from tsumugin.mem.output import save_density_grid
+
+        grd_path = tmp_path / "d.grd"
+        save_density_grid(
+            str(grd_path), np.arange(4, dtype=float).reshape(2, 2, 1),
+            (10.0, 10.0, 10.0, 90.0, 90.0, 90.0),
+        )
+
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        import tsumugin.mcp.mem_tools as mem_tools_module
+        import tsumugin.mem.gsas as mem_gsas_module
+
+        monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: "fake-binary")
+        monkeypatch.setattr(
+            mem_tools_module, "mem_density",
+            lambda gpx_path, **kw: _fake_mem_result(str(grd_path)),
+        )
+        before = len(session.ledger.entries)
+
+        result = session.request_mem()
+        assert result == {"status": "started"}
+        session._job.join(timeout=5)
+
+        assert len(session.ledger.entries) == before + 2  # mem_request + mem_finished
+        assert session.ledger.entries[-1].kind == "mem_finished"
+
+        vm = session.viewmodel()
+        mem = vm["structure"]["mem"]
+        assert mem is not None
+        assert mem["map"]["axis"] == "c"
+        assert mem["map"]["nx"] == 2
+        assert mem["map"]["ny"] == 2
+        assert mem["map"]["vmin"] == -0.5
+        assert mem["map"]["vmax"] == 3.2
+        assert mem["map"]["unit"] == "e·Å⁻³"
+        assert len(mem["peaks"]) == 1
+        assert mem["peaks"][0]["assign"] == "Ow1?"  # distance 1.5 >= 1.0 → 未モデル候補マーク
+        # 既存キー structure.mem_peaks も同じ実ピークへ差し替わる (契約)。
+        assert vm["structure"]["mem_peaks"] == mem["peaks"]
+
+    def test_failure_records_mem_failed_ledger_entry(self, tmp_path, monkeypatch):
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        import tsumugin.mcp.mem_tools as mem_tools_module
+        import tsumugin.mem.gsas as mem_gsas_module
+
+        monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: "fake-binary")
+        monkeypatch.setattr(
+            mem_tools_module, "mem_density",
+            lambda gpx_path, **kw: {"error": "boom", "error_type": "MEMUnavailableError"},
+        )
+        session.request_mem()
+        session._job.join(timeout=5)
+        assert session.ledger.entries[-1].kind == "mem_failed"
+        assert session.viewmodel()["structure"]["mem"] is None
+
+    def test_refine_status_reports_mem_kind_after_run(self, tmp_path, monkeypatch):
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        import tsumugin.mcp.mem_tools as mem_tools_module
+        import tsumugin.mem.gsas as mem_gsas_module
+
+        monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: "fake-binary")
+        monkeypatch.setattr(
+            mem_tools_module, "mem_density", lambda gpx_path, **kw: _fake_mem_result("")
+        )
+        session.request_mem()
+        session._job.join(timeout=5)
+        assert session.refine_status()["kind"] == "mem"
