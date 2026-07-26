@@ -525,6 +525,89 @@ def test_create_proposal_approve_policy_default_still_creates_pending_only():
     assert "approval_decision" not in kinds
 
 
+# ---------------------------------------------------------------------------
+# 並行 create_proposal(auto) の lost update (レビュー指摘 #2: self._lock を RLock 化)
+# ---------------------------------------------------------------------------
+
+
+def test_create_proposal_auto_concurrent_phase_change_add_no_lost_update(
+    project_session: WorkbenchSession, monkeypatch
+):
+    """指摘2: auto ポリシーで 2 件の propose_phase_change(op=add) が同一ターンで並走しても、
+    ``self._project`` の read-modify-write (``add_phase``) が ``self._lock`` (RLock) 下で直列化
+    され、どちらの変更も消えないことを実証する。
+
+    ``dataclasses.replace(project, phases=...)`` 呼び出し (``add_phase``/``remove_phase`` の
+    書込み直前) へ ``threading.Barrier(2)`` を仕込み、2 スレッドが「``self._project.phases`` の
+    読取直後・``self._project`` への書込み直前」に同時到達できてしまう場合を deterministic に
+    再現する。
+
+    - **ロックが効いていれば**: 片方のスレッドは ``add_phase`` 冒頭の ``with self._lock:`` の
+      外で足止めされ、barrier の相手が来ないため待機は timeout する (``BrokenBarrierError`` を
+      握りつぶしてそのまま処理を続ける — 直列実行なので待つ意味がない)。ロックを保持したまま
+      読取→書込みが完結するため、後続スレッドは前者が反映した相を含む最新の ``self._project``
+      から読み直し、**両方の相が最終的に残る**。
+    - **ロックを外す変異では**: 両スレッドが無防備に「読取直後」へほぼ同時到達でき、barrier が
+      高確率で解消する。両者とも同一の (まだ相手の追加を含まない) 古い ``self._project`` から
+      新タプルを計算し、後勝ちの代入がもう片方の相追加を丸ごと消す — このテストは phaseA/phaseB
+      のどちらかが最終的に欠落することで検知する (手動で ``add_phase``/``create_proposal`` の
+      ``with self._lock:`` を外して本テストを実行し fail することを確認済み)。
+    """
+    session = project_session
+    session.set_agent_policy("auto")
+
+    barrier = threading.Barrier(2)
+    original_replace = dataclasses.replace
+
+    def hooked_replace(obj, **changes):
+        if "phases" in changes:
+            try:
+                barrier.wait(timeout=0.3)
+            except threading.BrokenBarrierError:
+                pass
+        return original_replace(obj, **changes)
+
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module.dataclasses, "replace", hooked_replace)
+
+    results: dict[str, Any] = {}
+    errors: list[BaseException] = []
+    out_lock = threading.Lock()
+
+    def _propose(name: str, path: str) -> None:
+        try:
+            r = session.create_proposal(
+                "phase_change",
+                {"op": "add", "phase_name": name, "structure_path": path},
+                rationale="x",
+            )
+            with out_lock:
+                results[name] = r
+        except BaseException as exc:  # noqa: BLE001 — 収集して assert で可視化する
+            with out_lock:
+                errors.append(exc)
+
+    t1 = threading.Thread(target=_propose, args=("phaseA", "a.cif"))
+    t2 = threading.Thread(target=_propose, args=("phaseB", "b.cif"))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not errors, f"unexpected exceptions: {errors}"
+    assert results["phaseA"]["state"] == "auto_applied", results["phaseA"]
+    assert results["phaseB"]["state"] == "auto_applied", results["phaseB"]
+
+    names = {p.phase_name for p in session._project.phases}
+    assert "phaseA" in names, "phaseA lost — read-modify-write race (指摘2, lost update)"
+    assert "phaseB" in names, "phaseB lost — read-modify-write race (指摘2, lost update)"
+
+    project_edits = [e for e in session.ledger.entries if e.kind == "project_edit"]
+    assert len(project_edits) == 2
+    assert session.ledger.verify() is True
+
+
 def test_resolve_generic_proposal_structure_revision_approve_creates_snapshot():
     session = WorkbenchSession.create_demo()
     session.create_proposal(
@@ -669,6 +752,81 @@ def test_pending_approvals_lists_only_pending_cards_across_kinds():
     assert rv_result["action_id"] in pending_ids
     # demo シードの一般承認カード "a1" も pending として一覧に含まれる (機構問わず)。
     assert "a1" in pending_ids
+
+
+# ---------------------------------------------------------------------------
+# abandon_pending_approvals (レビュー指摘 #1: セッション差し替え時の pending カード記録)
+# ---------------------------------------------------------------------------
+
+
+def test_abandon_pending_approvals_records_one_entry_per_pending_card():
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="reject")  # demo 既定の pending カードを解消
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="y"
+    )
+    before = len(session.ledger.entries)
+
+    count = session.abandon_pending_approvals()
+
+    # action_id の連番 (``_proposal_seq``) は kind を跨いで共有される (`create_proposal` 参照) —
+    # review_resolution が先なので "rv-1"、structure_revision は "sr-2"。
+    assert count == 2
+    new_entries = session.ledger.entries[before:]
+    assert [e.kind for e in new_entries] == ["approval_abandoned", "approval_abandoned"]
+    action_ids = {e.payload["action_id"] for e in new_entries}
+    assert action_ids == {"rv-1", "sr-2"}
+    kinds = {e.payload["action_id"]: e.payload["kind"] for e in new_entries}
+    assert kinds == {"rv-1": "review_resolution", "sr-2": "structure_revision"}
+    assert all(e.payload["reason"] == "session swap" for e in new_entries)
+    assert session.ledger.verify() is True
+    assert session._approvals["rv-1"]["state"] == "abandoned"
+    assert session._approvals["sr-2"]["state"] == "abandoned"
+    # 以後 pending 一覧・resolve_approval の対象から外れる。
+    assert session.pending_approvals() == []
+    result = session.resolve_approval("rv-1", decision="approve")
+    assert result["error_type"] == "ConflictError"
+
+
+def test_abandon_pending_approvals_custom_reason():
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="reject")
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    session.abandon_pending_approvals(reason="custom reason")
+
+    assert session.ledger.entries[-1].payload["reason"] == "custom reason"
+
+
+def test_abandon_pending_approvals_noop_when_none_pending():
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="reject")
+    before = len(session.ledger.entries)
+
+    count = session.abandon_pending_approvals()
+
+    assert count == 0
+    assert len(session.ledger.entries) == before
+
+
+def test_abandon_pending_approvals_skips_already_resolved_card():
+    """既に approve/reject 済みのカード ("a1", demo 既定) は対象外 — 二重記録しない。"""
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="approve")
+    before = len(session.ledger.entries)
+
+    count = session.abandon_pending_approvals()
+
+    assert count == 0
+    assert len(session.ledger.entries) == before
+    assert session._approvals["a1"]["state"] == "approved"
 
 
 # ---------------------------------------------------------------------------

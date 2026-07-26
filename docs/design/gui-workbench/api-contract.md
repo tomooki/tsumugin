@@ -221,7 +221,10 @@ revert 可能なので、過剰な制限より自律性を優先する (2026-07-
 
 **全モード共通で変わらないもの (安全弁ではなく監査可能性の担保)**:
 - ledger 追記 + snapshot は常に記録され **revert 可能** (P2)。auto/bypass でも「何が起きたか」は
-  完全に追跡でき、いつでも巻き戻せる。
+  完全に追跡でき、いつでも巻き戻せる。**未決の承認カードも例外ではない**: project ライフサイクル
+  (create/open/close/demo) がセッションを差し替える直前、旧セッションに残る pending カード
+  (np-/sr-/rv-/pc-/st-) は 1 件ごと `approval_abandoned` として ledger に記録してから破棄される
+  (`WorkbenchSession.abandon_pending_approvals`) — 記録は人間の swap 操作をブロックしない。
 - **`agent_policy` の変更はエージェントから不可** (shim にツールを作らない) — 自己昇格の禁止。
   自己承認 (`POST /api/approval/{id}`) の禁止と同じ理由で、これがモード分けを意味あるものにする
   唯一の絶対境界。

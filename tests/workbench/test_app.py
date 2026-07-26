@@ -746,6 +746,95 @@ def test_project_open_returns_409_while_agent_running(
 
 
 # ---------------------------------------------------------------------------
+# pending 承認カードの無記録消滅 (レビュー指摘 #1)
+# ---------------------------------------------------------------------------
+
+
+def test_project_close_abandons_pending_approval_card(
+    client: TestClient, session: WorkbenchSession
+):
+    """project ライフサイクル (close/open/create/demo) によるセッション差し替え直前に、旧
+    セッションの未決承認カードが ``approval_abandoned`` として ledger に記録されてから破棄
+    されることを確認する (P2: agent_proposal だけが残り対応する決定が永久に現れない、を防ぐ)。
+
+    demo シードは既定で 1 件の pending カード ("a1") を含む — まずそれを解決してクリーンな
+    0 pending の基線を作ってから、テスト対象の rv-1 だけを起票する。
+    """
+    session.resolve_approval("a1", decision="reject")
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    before_ledger = len(session.ledger.entries)
+
+    resp = client.post("/api/project/close", json={})
+
+    assert resp.status_code == 200
+    # holder.session は差し替わっているが、旧セッション (このテストの `session`) の ledger に
+    # abandoned が記録されている。
+    assert len(session.ledger.entries) == before_ledger + 1
+    last = session.ledger.entries[-1]
+    assert last.kind == "approval_abandoned"
+    assert last.payload == {
+        "action_id": "rv-1", "kind": "review_resolution", "reason": "session swap",
+    }
+    assert session.ledger.verify() is True
+    assert session._approvals["rv-1"]["state"] == "abandoned"
+
+
+def test_project_demo_swap_abandons_all_pending_cards(
+    client: TestClient, session: WorkbenchSession
+):
+    """未決カードが複数件あれば件数分だけ記録される (demo への swap でも同じ経路)。"""
+    session.resolve_approval("a1", decision="reject")
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="y"
+    )
+    before_ledger = len(session.ledger.entries)
+
+    resp = client.post("/api/project/demo", json={})
+
+    assert resp.status_code == 200
+    new_entries = session.ledger.entries[before_ledger:]
+    assert [e.kind for e in new_entries] == ["approval_abandoned", "approval_abandoned"]
+    # action_id の連番は kind を跨いで共有される — review_resolution が先なので "rv-1"、
+    # structure_revision は "sr-2"。
+    assert {e.payload["action_id"] for e in new_entries} == {"rv-1", "sr-2"}
+
+
+def test_project_close_without_pending_cards_appends_nothing(
+    client: TestClient, session: WorkbenchSession
+):
+    """未決カードが 0 件なら abandoned の追記も 0 件 (空振りで監査ノイズを生まない)。"""
+    session.resolve_approval("a1", decision="reject")  # demo 既定の pending カードを解消
+    before_ledger = len(session.ledger.entries)
+
+    resp = client.post("/api/project/close", json={})
+
+    assert resp.status_code == 200
+    assert len(session.ledger.entries) == before_ledger
+
+
+def test_project_close_with_pending_card_still_succeeds_for_human(
+    client: TestClient, session: WorkbenchSession
+):
+    """指摘1: 未決カードの存在自体は人間の swap 操作をブロックしない (記録して進む)。"""
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    resp = client.post("/api/project/close", json={})
+
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "none"
+
+
+# ---------------------------------------------------------------------------
 # ledger
 # ---------------------------------------------------------------------------
 

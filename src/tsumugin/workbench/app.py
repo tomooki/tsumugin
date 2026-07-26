@@ -163,8 +163,9 @@ def create_workbench_app(
     def _guarded_swap(build_new_session: "Callable[[], WorkbenchSession]") -> Any:
         """project ライフサイクルルート (create/open/close/demo) 共通の直列化ヘルパ。
 
-        「refine 実行中でないことの再確認」→「新セッション構築 (I/O)」→「swap」を
-        ``holder.lock`` 保持下で一括して行う。POST /api/refine (``post_refine``) も同じロックを
+        「refine 実行中でないことの再確認」→「旧セッションの pending 承認カードを
+        ``approval_abandoned`` として記録」→「新セッション構築 (I/O)」→「swap」を
+        ``holder.lock`` 保持下で一括して行う (レビュー指摘 #1)。POST /api/refine (``post_refine``) も同じロックを
         取るため、この関数の実行中は refine の起動が待たされ (逆もまた然り)、guard 確認から
         swap までの間隙に別スレッドが旧セッションで refine を起動する TOCTOU が起きない
         (セルフレビュー指摘 #2)。
@@ -184,6 +185,13 @@ def create_workbench_app(
                 return JSONResponse(status_code=409, content=dict(_REFINING_CONFLICT))
             if holder.session.agent_running():
                 return JSONResponse(status_code=409, content=dict(_AGENT_RUNNING_CONFLICT))
+            # 【レビュー指摘 #1: pending 承認カードの無記録消滅】: 旧セッションに未決
+            #   (np-/sr-/rv-/pc-/st-) の承認カードが残っていれば、破棄する前に 1 件ごと
+            #   ``approval_abandoned`` を旧セッションの ledger へ追記する — 何も記録せず消えると
+            #   「agent_proposal はあるのに対応する決定が永久に現れない」状態になり、bypass では
+            #   エージェント自身が自分の起票をこの経路で無記録に消せてしまう (P2 違反)。
+            #   **人間の操作はブロックしない** (閉じられないと不便) — 記録した上で swap を進める。
+            holder.session.abandon_pending_approvals()
             holder.session = build_new_session()
             return holder.session.state()
 
