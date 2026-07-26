@@ -59,6 +59,14 @@ export function AgentSession() {
 
   const running = agentTurn?.status === "running";
   const failed = agentTurn?.status === "failed";
+
+  // Syncs just the boolean to the store (see state/types.ts
+  // agentTurnRunning's doc comment) so AgentPolicySegment — a sibling in the
+  // same pane-head, not a child of this component — can gate its 3-way
+  // segment on "a turn is in flight" without a second independent poll.
+  useEffect(() => {
+    dispatch({ type: "SET_AGENT_TURN_RUNNING", running });
+  }, [running, dispatch]);
   // `available` defaults to true when neither the live poll nor the shell
   // snapshot has an opinion (older server predating this field) — mirrors
   // the existing gsasAvailable / status.gsas_available precedent in

@@ -7,6 +7,8 @@ import type {
   AddHistogramRequest,
   AddPhaseRequest,
   AgentJobStatus,
+  AgentPolicy,
+  AgentPolicyRequest,
   ApiErrorBody,
   ApprovalDecision,
   ApprovalResponse,
@@ -215,6 +217,15 @@ export function isAgentStartedResponse(
 // AgentJobStatus for why this is not RefineStatus/usePollJob).
 export function getAgentStatus(): Promise<AgentJobStatus> {
   return get<AgentJobStatus>("/api/agent/status");
+}
+
+// POST /api/agent/policy (api-contract.md §エージェント権限モード, V3a) —
+// human-only switch (the shim has no matching tool: self-escalation is the
+// one absolute boundary alongside self-approval). 200 returns the updated
+// ShellState, mirroring postMode's shape/caller pattern (AgentPolicySegment
+// dispatches SET_SHELL with the result).
+export function postAgentPolicy(policy: AgentPolicy): Promise<ShellState> {
+  return post<ShellState>("/api/agent/policy", { policy } satisfies AgentPolicyRequest);
 }
 
 // — PROJECT lifecycle (V2a P3/P4, api-contract.md §プロジェクトライフサイクル) —

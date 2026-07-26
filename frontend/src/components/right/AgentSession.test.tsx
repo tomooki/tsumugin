@@ -390,6 +390,121 @@ describe("AgentSession — approval card kind badges (propose_* V3a)", () => {
   });
 });
 
+// — V3a: エージェント権限モード (api-contract.md §エージェント権限モード) —
+// auto_applied approval cards (auto/bypass policy) carry no APPROVE/REJECT.
+describe("AgentSession — auto_applied (agent policy auto/bypass) approval card", () => {
+  const autoAppliedMsg: TranscriptMessage = {
+    id: "t20",
+    kind: "approval",
+    action_id: "pc-9",
+    title: "AddPhase · monoclinic",
+    rationale: "residual unexplained at fr091",
+    action_json: '{"action":"AddPhase"}',
+    state: "auto_applied",
+  };
+
+  it("shows the AUTO-APPLIED chip and status row instead of APPROVE/REJECT buttons", () => {
+    renderSession({ viewModel: makeViewModel([autoAppliedMsg]) });
+
+    expect(screen.getByText("AUTO-APPLIED")).toBeInTheDocument();
+    expect(
+      screen.getByText("auto-applied under agent policy · revert available"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("PHASE")).toBeInTheDocument(); // pc- kind badge, unaffected
+  });
+
+  // Mutation-provable guard (task brief: "変異実証"): proves the auto_applied
+  // branch in TranscriptItem actually replaces the action buttons rather than
+  // just adding text alongside them — a card that was never held for human
+  // review must never expose a re-approve/re-reject control (removing the
+  // early `return` for the auto_applied branch would make this assertion
+  // fail, since the generic pending/approved/rejected buttons render below).
+  it("renders no APPROVE & APPLY / REJECT buttons at all", () => {
+    renderSession({ viewModel: makeViewModel([autoAppliedMsg]) });
+
+    expect(screen.queryByRole("button", { name: "APPROVE & APPLY" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "APPLIED ✓" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "REJECT" })).not.toBeInTheDocument();
+  });
+
+  it("an unprefixed auto_applied action_id still renders the status row without a kind badge", () => {
+    renderSession({
+      viewModel: makeViewModel([{ ...autoAppliedMsg, action_id: "a9" }]),
+    });
+    expect(screen.getByText("AUTO-APPLIED")).toBeInTheDocument();
+    expect(screen.queryByText("PHASE")).not.toBeInTheDocument();
+  });
+});
+
+// — V3a: agentTurnRunning sync (api-contract.md §エージェント権限モード) —
+// AgentSession is the sole owner of AgentJobStatus polling; it syncs just the
+// running boolean to the store so AgentPolicySegment (a header sibling, not
+// a child) can gate its 3-way segment on it without a second poll loop.
+describe("AgentSession — syncs state.agentTurnRunning for AgentPolicySegment", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Exposes state.agentTurnRunning as a text node (mirrors this file's
+   * DebugState precedent). */
+  function DebugAgentTurnRunning() {
+    const { state } = useStore();
+    return <span data-testid="debug-turn-running">{String(state.agentTurnRunning)}</span>;
+  }
+
+  function renderWithTurnRunningDebug(initialState: Partial<WorkbenchState>) {
+    function Wrapper({ children }: { children: ReactNode }) {
+      return (
+        <I18nProvider lang="en">
+          <StoreProvider initialState={{ shell: makeShell(), ...initialState }}>{children}</StoreProvider>
+        </I18nProvider>
+      );
+    }
+    return render(
+      <>
+        <AgentSession />
+        <DebugAgentTurnRunning />
+      </>,
+      { wrapper: Wrapper },
+    );
+  }
+
+  it("is false before any turn starts, true once one starts, and false again at idle", async () => {
+    vi.useFakeTimers();
+    const runningStatus: AgentJobStatus = {
+      status: "running",
+      available: true,
+      tokens: 1,
+      wall_time_s: 1,
+      error: null,
+    };
+    const idleStatus: AgentJobStatus = {
+      status: "idle",
+      available: true,
+      tokens: 2,
+      wall_time_s: 2,
+      error: null,
+    };
+    installAgentBridgeFetchMock({ statuses: [runningStatus, idleStatus] });
+
+    renderWithTurnRunningDebug({ viewModel: makeViewModel([]), draft: "hello" });
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+    // optimistic "running" set synchronously on the 202 response, before the
+    // first poll tick.
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("true");
+
+    await advanceTimers(2000); // tick 1 → running
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("true");
+
+    await advanceTimers(2000); // tick 2 → idle
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("false");
+  });
+});
+
 describe("AgentSession — composer", () => {
   it("SEND calls postTranscriptMessage and clears the draft", async () => {
     const user = userEvent.setup();

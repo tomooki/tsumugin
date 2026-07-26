@@ -273,6 +273,19 @@
   color: var(--color-accent-800);
 }
 
+/* auto_applied cards (api-contract.md §エージェント権限モード) carry no
+   APPROVE/REJECT — a muted neutral bar (vs the actionable accent bar above)
+   reads as "already settled, audit only". */
+.ts-approval--auto {
+  border-color: var(--color-neutral-700);
+}
+.ts-approval--auto .ts-approval__bar {
+  background: var(--color-neutral-700);
+}
+.ts-approval--auto .ts-approval__state {
+  color: var(--color-neutral-700);
+}
+
 .ts-escalation {
   border: 1px solid var(--color-neutral-900);
   background: var(--color-neutral-200);

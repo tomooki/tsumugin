@@ -117,13 +117,45 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
       // pending card that happens to render at the same time.
       const localDecision = message.action_id ? state.approval[message.action_id] : undefined;
       const decided = localDecision ?? message.state ?? "pending";
+      const kindForBadge = approvalKind(message.action_id);
+
+      // auto_applied (api-contract.md §エージェント権限モード): the server
+      // already applied this ModelAction under agent_policy=auto/bypass — it
+      // was never held for a human decision, so there is no APPROVE/REJECT
+      // to offer. Rendering this before the disabled/label plumbing below
+      // (which assumes a pending|approved|rejected card) keeps that logic
+      // from having to reason about a fourth state it can never act on.
+      if (decided === "auto_applied") {
+        return (
+          <div className="ts-approval ts-approval--auto">
+            <div className="ts-approval__bar">
+              <span className="ts-approval__kicker">{t("modelAction")}</span>
+              {kindForBadge && (
+                <Chip variant="inverted" className="ts-approval__kind">
+                  {rt(lang, KIND_BADGE_KEY[kindForBadge])}
+                </Chip>
+              )}
+              <Chip variant="inverted" className="ts-approval__auto-chip">
+                {rt(lang, "agentPolicy.autoApplied.chip")}
+              </Chip>
+            </div>
+            <div className="ts-approval__body">
+              <div className="ts-approval__title">{message.title}</div>
+              <div className="ts-approval__rationale">{message.rationale}</div>
+              {message.action_json && <pre className="ts-approval__pre">{message.action_json}</pre>}
+              <div className="ts-approval__state">{rt(lang, "agentPolicy.autoApplied.note")}</div>
+            </div>
+          </div>
+        );
+      }
+
       const disabled = decided !== "pending" || busy;
       const approveLabel = decided === "approved" ? t("chat.approval.applied") : t("chat.approval.approveApply");
       const rejectLabel = decided === "rejected" ? t("chat.approval.rejected") : t("chat.approval.reject");
       // Which propose_* kind this card is (gates.ts approvalKind) — null for
       // ids with no recognised np-/sr-/rv-/pc-/st- prefix, which is also the
       // pre-V3a "a1"-style fixture shape, so this must never throw on it.
-      const kind = approvalKind(message.action_id);
+      const kind = kindForBadge;
       const stateLine = busy
         ? rt(lang, "chat.approval.resolving")
         : conflict

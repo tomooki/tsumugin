@@ -5,6 +5,14 @@
 export type GuiMode = "manual" | "auto";
 export type FinalSelectionMode = "human" | "agent";
 
+// api-contract.md §エージェント権限モード (`agent_policy`): "approve" (既定,
+// propose_* は起票のみ・人間の承認で実行) | "auto" (propose_* が即時自動適用,
+// カードは auto_applied) | "bypass" (即時自動適用 + project ライフサイクルも
+// エージェントに開放). Changing it is human-only (shim has no tool for it —
+// self-escalation is the one absolute boundary, mirrored by approval
+// self-decision).
+export type AgentPolicy = "approve" | "auto" | "bypass";
+
 export interface EchemReadout {
   v: number;
   q_mah_g: number;
@@ -47,6 +55,12 @@ export interface AgentStatus {
   // available (see AgentSession.tsx) so the composer isn't spuriously
   // disabled against an older server.
   available?: boolean;
+  // Added by api-contract.md §エージェント権限モード (V3a agent_policy):
+  // "approve"|"auto"|"bypass", human-switchable via POST /api/agent/policy.
+  // Optional for the same pre-V3a-fixture reason as `available` above — a
+  // missing value is treated as "approve" (the documented default) by
+  // AgentPolicySegment rather than crashing against an older server.
+  policy?: AgentPolicy;
 }
 
 // GET /api/agent/status (api-contract.md §AUTO 実 LLM ブリッジ, V3a) — the
@@ -516,6 +530,15 @@ export interface TranscriptJudgementRow {
 
 export type ApprovalState = "pending" | "approved" | "rejected";
 
+// api-contract.md §エージェント権限モード: "承認カードの state に
+// `auto_applied` が加わる (auto/bypass で即時自動適用されたもの)" — a
+// server-driven ModelAction card state distinct from ApprovalState above
+// (which is also POST /api/approval's response shape — that endpoint is
+// human-only and never returns "auto_applied"; see §人間専用 in the
+// contract). Kept as its own type rather than widening ApprovalState so
+// ApprovalResponse.state stays exactly "approved" | "rejected".
+export type ApprovalCardState = ApprovalState | "auto_applied";
+
 export interface TranscriptMessage {
   id: string;
   kind: TranscriptKind;
@@ -530,7 +553,7 @@ export interface TranscriptMessage {
   title?: string;
   rationale?: string;
   action_json?: string;
-  state?: ApprovalState;
+  state?: ApprovalCardState;
   fr?: string;
 }
 
@@ -754,6 +777,14 @@ export type TranscriptMessagePostResponse =
 
 export interface ModeRequest {
   mode: GuiMode;
+}
+
+// POST /api/agent/policy (api-contract.md §エージェント権限モード). 200 →
+// the updated ShellState (mirrors ModeRequest/postMode's shape); a turn in
+// flight is 409, an unrecognised policy string is 422 — both ApiError, not
+// this shape.
+export interface AgentPolicyRequest {
+  policy: AgentPolicy;
 }
 
 // — 逐次 / operando (V2b — B1〜B5, api-contract.md §逐次 / operando) —

@@ -126,6 +126,34 @@ export const RIGHT_STRINGS = {
   "modelAction.state.rejected.rv": { en: "rejected · review item left pending", ja: "却下 · レビュー項目は保留のまま" },
   "modelAction.state.rejected.pc": { en: "rejected · phase set unchanged", ja: "却下 · 相構成は変更されない" },
   "modelAction.state.rejected.st": { en: "rejected · settings unchanged", ja: "却下 · 設定は変更されない" },
+  // — エージェント権限モード (api-contract.md §エージェント権限モード, V3a) —
+  // AgentPolicySegment's 3-way segment labels (small, mono — mirrors
+  // TitleBar's MANUAL/AUTO mode-toggle style but sized for the 30px
+  // pane-head).
+  "agentPolicy.segment.approve": { en: "APPROVE", ja: "承認" },
+  "agentPolicy.segment.auto": { en: "AUTO", ja: "自動" },
+  "agentPolicy.segment.bypass": { en: "BYPASS", ja: "バイパス" },
+  // Header chip making the current policy explicit when it is NOT the quiet
+  // default ("approve" shows no chip — api-contract.md: "approve のときは
+  // チップ無し (既定なので静か)").
+  "agentPolicy.modeChip.auto": { en: "AUTO-APPLY", ja: "自動適用" },
+  "agentPolicy.modeChip.bypass": { en: "BYPASS", ja: "バイパス" },
+  // Non-fatal inline note for a 409 on POST /api/agent/policy (a turn
+  // started between the disabled-check and the click landing — mirrors
+  // chat.approval.conflict's precedent above).
+  "agentPolicy.conflict": {
+    en: "a turn is in progress · try again once it finishes",
+    ja: "ターン実行中です · 完了後にもう一度お試しください",
+  },
+  // TranscriptItem's auto_applied branch (api-contract.md: "承認カードの
+  // state に auto_applied が加わる (auto/bypass で即時自動適用されたもの)")
+  // — replaces the APPROVE & APPLY/REJECT buttons with a status row, so a
+  // card that was never held for human review can never be re-approved.
+  "agentPolicy.autoApplied.chip": { en: "AUTO-APPLIED", ja: "自動適用済み" },
+  "agentPolicy.autoApplied.note": {
+    en: "auto-applied under agent policy · revert available",
+    ja: "エージェント権限モードで自動適用済み · revert 可能",
+  },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;

@@ -68,6 +68,17 @@ export interface WorkbenchState {
   refine: RefineStatus | null;
   activeJob: ActiveJob;
 
+  // Whether an agent turn (the V3a AUTO bridge, api-contract.md §AUTO 実
+  // LLM ブリッジ) is currently running. AgentSession owns the detailed
+  // AgentJobStatus (tokens/wall_time/error) as local component state (see
+  // its file docstring — the bridge is its own independent job lane, not
+  // the shared GSAS `refine`/`activeJob` slot above) and syncs just this
+  // boolean here so sibling components in the same right-pane header —
+  // AgentPolicySegment — can gate on "a turn is in flight" (api-contract.md
+  // §エージェント権限モード: "エージェントのターン実行中は 409") without a
+  // second independent poll loop.
+  agentTurnRunning: boolean;
+
   // Client-only selected-frame cursor for the ContextBar's "fr k / N" nav
   // (V2b B2/B3) — not server state. Index into viewModel.project.frames
   // (input spec) / viewModel.sequence.frames (per-frame results), which are
@@ -104,5 +115,6 @@ export const initialWorkbenchState: WorkbenchState = {
   error: null,
   refine: null,
   activeJob: null,
+  agentTurnRunning: false,
   frameIndex: 0,
 };
