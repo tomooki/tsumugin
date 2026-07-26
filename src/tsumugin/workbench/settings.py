@@ -63,13 +63,19 @@ def load_settings() -> dict[str, Any]:
 def _write_settings(data: dict[str, Any]) -> None:
     path = _settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    # 【アトミック書き込み】: 一時ファイル + os.replace。直接上書きだと書き込み中のクラッシュで
+    #   壊れた JSON が残り、load_settings がそれを {} として握りつぶすため**無言で設定が消える**。
+    #   資格情報ファイルなので「気づかず失われる」を避ける (レビュー指摘)。
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     # 【POSIX 0600】: 所有者のみ読み書き可 (資格情報ファイル)。Windows では os.chmod が実効を
     #   持たないため best-effort — 失敗しても書き込み自体は成功として扱う (呼び出し元をブロックしない)。
+    #   rename 前に付けることで、他者から読める窓を作らない。
     try:
-        os.chmod(path, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
+    os.replace(tmp, path)
 
 
 def save_setting(key: str, value: str) -> None:
@@ -80,16 +86,26 @@ def save_setting(key: str, value: str) -> None:
 
 
 def clear_setting(key: str) -> None:
-    """``key`` を設定ファイルから削除し、対応する環境変数 (あれば) もプロセスから除去する。
+    """``key`` を設定ファイルから削除する。**アプリが env へ反映した分のみ**取り消す。
 
-    ファイルに無い/env に無い場合も例外にせず no-op として扱う (冪等)。
+    【アプリ管理外の env を壊さない】: プロセス env から消してよいのは
+    ``apply_mp_api_key_to_env``/``save_setting`` が「設定ファイルの値で上書きした分」だけ。
+    ユーザがシェルで直接 export した ``MATERIALS_PROJECT_API`` を CLEAR で消すと、
+    **アプリが一度も預かっていない資格情報を奪って MP 機能を全滅させる** (プロセス再起動
+    まで復旧しない)。設定ファイルに値が無ければ env には触らない。
+    ファイルに無い場合も例外にせず no-op として扱う (冪等)。
     """
     data = load_settings()
-    if key in data:
-        del data[key]
-        _write_settings(data)
+    if key not in data:
+        # 設定ファイルに預かっていない = env はアプリ管理外。触らない。
+        return
+    stored = data.pop(key)
+    _write_settings(data)
     env_key = _ENV_KEY_MAP.get(key)
-    if env_key is not None:
+    if env_key is None:
+        return
+    # 設定由来の値がそのまま env に載っているときだけ取り消す (ユーザ由来の別値は残す)。
+    if os.environ.get(env_key) == stored:
         os.environ.pop(env_key, None)
 
 

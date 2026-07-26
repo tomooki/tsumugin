@@ -83,9 +83,12 @@ def test_clear_setting_on_missing_key_is_noop():
     assert settings.load_settings() == {}
 
 
-def test_clear_setting_also_removes_process_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MATERIALS_PROJECT_API", "env-leftover")
+def test_clear_setting_removes_env_the_app_applied(monkeypatch: pytest.MonkeyPatch):
+    """アプリが反映した値のみ env から取り消す (アプリ管理外の値は TestClearDoesNotStealUnmanagedEnv)。"""
+    monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
     settings.save_setting("mp_api_key", "sk-abcd1234")
+    settings.apply_mp_api_key_to_env()
+    assert os.environ.get("MATERIALS_PROJECT_API") == "sk-abcd1234"
 
     settings.clear_setting("mp_api_key")
 
@@ -236,3 +239,31 @@ class TestDotenvFallbackAvailability:
         monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
         monkeypatch.setattr(settings, "_read_dotenv_mp_key", lambda: None)
         assert settings.mp_available() is False
+
+
+class TestClearDoesNotStealUnmanagedEnv:
+    """CLEAR はアプリが預かっていない env を壊さない (レビュー指摘の実害)。
+
+    ユーザがシェルで export した ``MATERIALS_PROJECT_API`` を CLEAR が消すと、アプリが
+    一度も預かっていない資格情報を奪い MP 機能がプロセス再起動まで全滅する。
+    """
+
+    def test_clear_keeps_user_exported_env_when_never_saved(self, monkeypatch) -> None:
+        monkeypatch.setenv("MATERIALS_PROJECT_API", "USER_EXPORTED_KEY_abcd")
+        settings.clear_setting("mp_api_key")  # アプリは一度も保存していない
+        assert os.environ.get("MATERIALS_PROJECT_API") == "USER_EXPORTED_KEY_abcd"
+        assert settings.mp_available() is True
+
+    def test_clear_removes_only_the_value_the_app_applied(self, monkeypatch) -> None:
+        monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+        settings.save_setting("mp_api_key", "APP_MANAGED_KEY_wxyz")
+        settings.apply_mp_api_key_to_env()
+        assert os.environ.get("MATERIALS_PROJECT_API") == "APP_MANAGED_KEY_wxyz"
+        settings.clear_setting("mp_api_key")
+        assert "MATERIALS_PROJECT_API" not in os.environ
+
+    def test_clear_keeps_env_that_differs_from_stored_value(self, monkeypatch) -> None:
+        settings.save_setting("mp_api_key", "APP_MANAGED_KEY_wxyz")
+        monkeypatch.setenv("MATERIALS_PROJECT_API", "USER_OVERRODE_LATER_1234")
+        settings.clear_setting("mp_api_key")
+        assert os.environ.get("MATERIALS_PROJECT_API") == "USER_OVERRODE_LATER_1234"
