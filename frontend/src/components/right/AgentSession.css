@@ -207,6 +207,9 @@
   letter-spacing: 0.1em;
   color: var(--color-accent-100);
 }
+.ts-approval__kind {
+  font-size: 9px;
+}
 .ts-approval__not-apply {
   margin-left: auto;
   font-family: var(--font-mono);
@@ -229,6 +232,12 @@
   line-height: 1.55;
   color: var(--color-neutral-800);
   margin-bottom: 7px;
+}
+.ts-approval__summary {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-accent-800);
+  margin-bottom: 6px;
 }
 .ts-approval__pre {
   margin: 0 0 8px;

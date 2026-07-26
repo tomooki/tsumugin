@@ -3,6 +3,7 @@ import type { Site, StageRow, ViewModel } from "../../api/types";
 import { initialWorkbenchState } from "../../state/reducer";
 import type { WorkbenchState } from "../../state/types";
 import {
+  approvalKind,
   computeStagesOn,
   formatBic,
   formatTokens,
@@ -10,6 +11,7 @@ import {
   isStageGateOpen,
   reviewSeverityChipVariant,
   reviewSeverityLabelKey,
+  structureRevisionSiteCount,
 } from "./gates";
 
 function makeSite(overrides: Partial<Site> = {}): Site {
@@ -216,5 +218,58 @@ describe("out-of-vocabulary severity fallback (api-contract.md §語彙)", () =>
   it("returns null for the label key so callers render the raw code", () => {
     expect(reviewSeverityLabelKey("warn")).toBeNull();
     expect(reviewSeverityLabelKey("anything-else")).toBeNull();
+  });
+});
+
+describe("approvalKind (api-contract.md §`propose_*` ツールと承認カード)", () => {
+  it.each([
+    ["np-91", "np"],
+    ["sr-4", "sr"],
+    ["rv-2", "rv"],
+    ["pc-1", "pc"],
+    ["st-3", "st"],
+  ] as const)("maps action_id %s to kind %s", (actionId, kind) => {
+    expect(approvalKind(actionId)).toBe(kind);
+  });
+
+  it("returns null for an unprefixed action_id (pre-V3a 'a1' fixture shape)", () => {
+    expect(approvalKind("a1")).toBeNull();
+  });
+
+  it("returns null for an unrecognised prefix rather than throwing (§語彙 総関数フォールバック)", () => {
+    expect(approvalKind("xx-1")).toBeNull();
+  });
+
+  it("returns null for undefined", () => {
+    expect(approvalKind(undefined)).toBeNull();
+  });
+
+  it("requires the hyphen — a bare two-letter id is not treated as a kind", () => {
+    // Regression guard: a naive `actionId.startsWith("np")` (no hyphen check)
+    // would misclassify an id like "npx-1" as kind "np". The prefix regex
+    // anchors on "np-" specifically.
+    expect(approvalKind("npx-1")).toBeNull();
+  });
+});
+
+describe("structureRevisionSiteCount (sr- card summary line)", () => {
+  it("counts the sites array in a well-formed payload", () => {
+    expect(structureRevisionSiteCount('{"sites":[{"id":"s1"},{"id":"s2"}]}')).toBe(2);
+  });
+
+  it("returns 0 for an empty sites array", () => {
+    expect(structureRevisionSiteCount('{"sites":[]}')).toBe(0);
+  });
+
+  it("returns null for undefined action_json", () => {
+    expect(structureRevisionSiteCount(undefined)).toBeNull();
+  });
+
+  it("returns null for malformed JSON rather than throwing", () => {
+    expect(structureRevisionSiteCount("{not json")).toBeNull();
+  });
+
+  it("returns null when the payload has no sites field", () => {
+    expect(structureRevisionSiteCount('{"other":1}')).toBeNull();
   });
 });

@@ -261,6 +261,135 @@ describe("AgentSession — approval (ModelAction) transcript item", () => {
   });
 });
 
+// — V3a agent bridge: propose_* ModelAction kinds (api-contract.md
+// §`propose_*` ツールと承認カード) — action_id prefix → kind badge on the
+// approval card. gates.test.ts covers the pure approvalKind/
+// structureRevisionSiteCount mapping; these tests cover the rendering.
+describe("AgentSession — approval card kind badges (propose_* V3a)", () => {
+  function approvalOf(overrides: Partial<TranscriptMessage>): TranscriptMessage {
+    return {
+      id: "t10",
+      kind: "approval",
+      action_id: "np-91",
+      title: "identify new phase at frame 91",
+      rationale: "Rwp jump + unexplained residual at fr091",
+      action_json: '{"frame": 91}',
+      state: "pending",
+      ...overrides,
+    };
+  }
+
+  it.each([
+    ["np-91", "NEW PHASE"],
+    ["sr-4", "REVISE STRUCTURE"],
+    ["rv-2", "REVIEW"],
+    ["pc-1", "PHASE"],
+    ["st-3", "SETTINGS"],
+  ] as const)("shows the %s badge as %s", (actionId, label) => {
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: actionId })]) });
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("shows no kind badge for an unprefixed action_id (pre-V3a 'a1' fixture) and does not crash", () => {
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "a1" })]) });
+    for (const label of ["NEW PHASE", "REVISE STRUCTURE", "REVIEW", "PHASE", "SETTINGS"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    // the rest of the card still renders normally
+    expect(screen.getByRole("button", { name: "APPROVE & APPLY" })).toBeInTheDocument();
+  });
+
+  it("shows no kind badge for an unrecognised prefix and does not crash (§語彙 総関数フォールバック)", () => {
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "xx-1" })]) });
+    for (const label of ["NEW PHASE", "REVISE STRUCTURE", "REVIEW", "PHASE", "SETTINGS"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: "APPROVE & APPLY" })).toBeInTheDocument();
+  });
+
+  it("sr- card shows a 'N site(s) changed' summary line above the raw JSON, without hiding the JSON", () => {
+    renderSession({
+      viewModel: makeViewModel([
+        approvalOf({
+          action_id: "sr-4",
+          action_json: '{"sites":[{"id":"s1"},{"id":"s2"},{"id":"s3"}]}',
+        }),
+      ]),
+    });
+    expect(screen.getByText("3 site(s) changed")).toBeInTheDocument();
+    expect(screen.getByText('{"sites":[{"id":"s1"},{"id":"s2"},{"id":"s3"}]}')).toBeInTheDocument();
+  });
+
+  it("a non-sr- card shows no summary line even with a 'sites'-shaped payload", () => {
+    renderSession({
+      viewModel: makeViewModel([approvalOf({ action_id: "pc-1", action_json: '{"sites":[{"id":"s1"}]}' })]),
+    });
+    expect(screen.queryByText(/site\(s\) changed/)).not.toBeInTheDocument();
+  });
+
+  it("kind-specific state line after APPROVE (np-)", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/np-91")) {
+        return jsonResponse({ state: "approved", snapshot_id: "S-1", ledger_index: 1 });
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "np-91" })]) });
+    await user.click(screen.getByRole("button", { name: "APPROVE & APPLY" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("applied · new phase added to the phase set")).toBeInTheDocument(),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("kind-specific state line after REJECT (rv-)", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/rv-2")) {
+        return jsonResponse({ state: "rejected", snapshot_id: null, ledger_index: 2 });
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "rv-2" })]) });
+    await user.click(screen.getByRole("button", { name: "REJECT" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("rejected · review item left pending")).toBeInTheDocument(),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("unprefixed action_id keeps the pre-existing generic state line verbatim (backward compatibility)", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/a1")) {
+        return jsonResponse({ state: "approved", snapshot_id: "S-0311", ledger_index: 1284 });
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "a1" })]) });
+    await user.click(screen.getByRole("button", { name: "APPROVE & APPLY" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("applied in snapshot S-0311 · ledger #1284 · revert available"),
+      ).toBeInTheDocument(),
+    );
+    vi.unstubAllGlobals();
+  });
+});
+
 describe("AgentSession — composer", () => {
   it("SEND calls postTranscriptMessage and clears the draft", async () => {
     const user = userEvent.setup();

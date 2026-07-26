@@ -98,6 +98,34 @@ export const RIGHT_STRINGS = {
     en: "AGENT UNAVAILABLE — claude CLI / agent extra required",
     ja: "AGENT UNAVAILABLE — claude CLI / agent extra が必要",
   },
+  // Kind badge on an approval card (api-contract.md §`propose_*` ツールと承認
+  // カード) — mono inverted chip, one per gates.ts ApprovalKind. Keyed by the
+  // action_id prefix (np-/sr-/rv-/pc-/st-); see gates.ts `approvalKind`.
+  "modelAction.badge.np": { en: "NEW PHASE", ja: "新相" },
+  "modelAction.badge.sr": { en: "REVISE STRUCTURE", ja: "構造改訂" },
+  "modelAction.badge.rv": { en: "REVIEW", ja: "レビュー" },
+  "modelAction.badge.pc": { en: "PHASE", ja: "相" },
+  "modelAction.badge.st": { en: "SETTINGS", ja: "設定" },
+  // `sr-` card summary line above the raw action_json (gates.ts
+  // structureRevisionSiteCount) — kept to one line so it doesn't compete with
+  // the JSON pre for attention (task brief: "過剰にしない").
+  "modelAction.summary.sr": { en: "{n} site(s) changed", ja: "{n} サイト変更" },
+  // Kind-specific post-decision state lines (task: "承認/却下後の状態行に
+  // kind 別文言"). Only used when gates.ts `approvalKind` recognises the
+  // action_id's prefix — an unprefixed/unknown id keeps the pre-existing
+  // generic chat.approval.state* text from src/i18n/strings.ts unchanged, so
+  // the AgentSession/OperatorConsole tests written against the "a1" fixture
+  // (predates the propose_* prefixes) keep passing verbatim.
+  "modelAction.state.applied.np": { en: "applied · new phase added to the phase set", ja: "適用 · 新相を相構成に追加" },
+  "modelAction.state.applied.sr": { en: "applied · structure revision saved to a child snapshot", ja: "適用 · 構造改訂を子スナップショットに保存" },
+  "modelAction.state.applied.rv": { en: "applied · review item resolved", ja: "適用 · レビュー項目を解決" },
+  "modelAction.state.applied.pc": { en: "applied · phase set updated", ja: "適用 · 相構成を更新" },
+  "modelAction.state.applied.st": { en: "applied · refinement settings updated", ja: "適用 · 精密化設定を更新" },
+  "modelAction.state.rejected.np": { en: "rejected · new phase not added", ja: "却下 · 新相は追加されない" },
+  "modelAction.state.rejected.sr": { en: "rejected · structure revision not applied", ja: "却下 · 構造改訂は適用されない" },
+  "modelAction.state.rejected.rv": { en: "rejected · review item left pending", ja: "却下 · レビュー項目は保留のまま" },
+  "modelAction.state.rejected.pc": { en: "rejected · phase set unchanged", ja: "却下 · 相構成は変更されない" },
+  "modelAction.state.rejected.st": { en: "rejected · settings unchanged", ja: "却下 · 設定は変更されない" },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;

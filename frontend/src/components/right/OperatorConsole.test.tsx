@@ -346,6 +346,69 @@ describe("OperatorConsole — PENDING MODEL ACTIONS (V2b B5)", () => {
   });
 });
 
+// — V3a agent bridge: propose_* ModelAction kinds surfaced in MANUAL mode
+// (task brief §2). OperatorConsole renders each pending card via the same
+// TranscriptItem used in AUTO — these tests cover the section-level count
+// badge and that the kind badges (asserted per-kind in AgentSession.test.tsx)
+// come along for free through that reuse.
+describe("OperatorConsole — pending model actions: kind badges + count (V3a)", () => {
+  let fetchMock: ReturnType<typeof installFetchMock>;
+
+  beforeEach(() => {
+    fetchMock = installFetchMock();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("the section heading's pending count reflects a mix of propose_* kinds", () => {
+    renderConsole({
+      viewModel: makeViewModel({
+        transcript: [
+          approvalMessage({ id: "t1", action_id: "np-91" }),
+          approvalMessage({ id: "t2", action_id: "sr-4" }),
+          approvalMessage({ id: "t3", action_id: "rv-2" }),
+        ],
+      }),
+    });
+    expect(screen.getByText("3 pending")).toBeInTheDocument();
+  });
+
+  it("shows a kind badge per card (e.g. sr- REVISE STRUCTURE) inside PENDING MODEL ACTIONS", () => {
+    renderConsole({
+      viewModel: makeViewModel({
+        transcript: [approvalMessage({ id: "t2", action_id: "sr-4", action_json: '{"sites":[{"id":"s1"}]}' })],
+      }),
+    });
+    expect(screen.getByText("REVISE STRUCTURE")).toBeInTheDocument();
+    expect(screen.getByText("1 site(s) changed")).toBeInTheDocument();
+  });
+
+  it("the count drops to 2 pending after one card is approved, and the resolved card's badge is gone", async () => {
+    const user = userEvent.setup();
+    renderConsole({
+      viewModel: makeViewModel({
+        transcript: [
+          approvalMessage({ id: "t1", action_id: "np-91" }),
+          approvalMessage({ id: "t2", action_id: "pc-1", title: "add phase" }),
+        ],
+      }),
+    });
+    expect(screen.getByText("2 pending")).toBeInTheDocument();
+
+    const approveButtons = screen.getAllByRole("button", { name: "APPROVE & APPLY" });
+    await user.click(approveButtons[0]);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/approval/np-91"));
+      expect(call).toBeDefined();
+    });
+    await waitFor(() => expect(screen.getByText("1 pending")).toBeInTheDocument());
+    expect(screen.queryByText("NEW PHASE")).not.toBeInTheDocument();
+    expect(screen.getByText("PHASE")).toBeInTheDocument();
+  });
+});
+
 describe("OperatorConsole — review queue", () => {
   let fetchMock: ReturnType<typeof installFetchMock>;
 
