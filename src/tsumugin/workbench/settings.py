@@ -103,6 +103,22 @@ def _mask_hint(value: str) -> str:
     return f"…{value[-4:]}"
 
 
+
+def _read_dotenv_mp_key() -> str | None:
+    """``.env`` の ``MATERIALS_PROJECT_API`` を読む (① ``mp.client`` の解決経路を再利用)。
+
+    ``mp`` extra 未導入などで import できない場合は ``None`` (判定は「未設定」へ倒す)。
+    """
+    try:
+        from ..mp.client import _read_dotenv_key
+    except Exception:  # noqa: BLE001 — mp 未導入/循環などは「未設定」扱いで十分
+        return None
+    try:
+        raw = _read_dotenv_key(_MP_API_KEY_ENV, None)
+    except Exception:  # noqa: BLE001 — .env の読み取り失敗で GUI を落とさない
+        return None
+    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
 def mp_api_key_status() -> dict[str, Any]:
     """GET /api/settings が返すマスク済み状態。優先順位: settings > env。
 
@@ -115,6 +131,13 @@ def mp_api_key_status() -> dict[str, Any]:
     env_value = os.environ.get(_MP_API_KEY_ENV)
     if env_value:
         return {"set": True, "hint": _mask_hint(env_value), "source": "env"}
+    # 【.env フォールバック】: ``MPRestClient`` は env → .env の順で読む (mp/client.py) ため、
+    #   ここで .env を見ないと「実際には MP が動くのに mp_available=false になり UI が
+    #   IDENTIFY を disabled にする」誤判定が起きる (実機スモークで踏んだ)。判定は必ず
+    #   実際にキーを解決する側と同じ順序にする。source は利用者視点で "env" に含める。
+    dotenv_value = _read_dotenv_mp_key()
+    if dotenv_value:
+        return {"set": True, "hint": _mask_hint(dotenv_value), "source": "env"}
     return {"set": False, "hint": None, "source": None}
 
 

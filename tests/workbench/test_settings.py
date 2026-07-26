@@ -196,3 +196,43 @@ def test_mp_available_true_from_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MATERIALS_PROJECT_API", "env-value")
 
     assert settings.mp_available() is True
+
+
+class TestDotenvFallbackAvailability:
+    """`.env` のキーも「設定済み」と判定する (実機スモークで踏んだ誤判定の回帰)。
+
+    ``MPRestClient`` は env → `.env` の順でキーを解決する (mp/client.py)。判定側が `.env` を
+    見ないと「実際には MP が動くのに mp_available=false → UI が IDENTIFY を disabled」と
+    いう**使えるのに使わせない**誤判定になる。判定は必ず解決側と同じ順序にする。
+    """
+
+    def test_dotenv_key_makes_mp_available(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+        monkeypatch.setattr(
+            settings, "_read_dotenv_mp_key", lambda: "DOTENV_ONLY_KEY_abcd"
+        )
+        status = settings.mp_api_key_status()
+        assert status["set"] is True
+        assert status["source"] == "env"
+        assert status["hint"] == "…abcd"
+        assert settings.mp_available() is True
+
+    def test_dotenv_key_does_not_leak_in_status(self, tmp_path, monkeypatch) -> None:
+        secret = "DOTENV_ONLY_KEY_abcd"
+        monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+        monkeypatch.setattr(settings, "_read_dotenv_mp_key", lambda: secret)
+        text = str(settings.mp_api_key_status())
+        assert secret not in text and secret[:-4] not in text
+
+    def test_settings_file_still_wins_over_dotenv(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+        monkeypatch.setattr(settings, "_read_dotenv_mp_key", lambda: "DOTENV_KEY_zzzz")
+        settings.save_setting("mp_api_key", "SETTINGS_KEY_wxyz")
+        status = settings.mp_api_key_status()
+        assert status["source"] == "settings"
+        assert status["hint"] == "…wxyz"
+
+    def test_no_key_anywhere_reports_unset(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+        monkeypatch.setattr(settings, "_read_dotenv_mp_key", lambda: None)
+        assert settings.mp_available() is False

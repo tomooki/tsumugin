@@ -196,7 +196,7 @@ MP API キーを**環境変数/.env でなく GUI から**入力できるよう�
 - **API はキー本体を返さない**。`GET /api/settings` は `{"mp_api_key_set": bool, "mp_api_key_hint": str|null, "mp_api_key_source": "settings"|"env"|null}` のみ (hint は末尾 4 文字程度のマスク表示)。
 - **ledger にキーを書かない**。記録するのは `settings_change` (payload は `{"key": "mp_api_key", "action": "set"|"clear"}` のみで値を含まない)。
 - **エージェントに読ませない**: shim にキーを返すツールを作らない。`get_state` に載るのは `mp_available: bool` だけ。
-- 優先順位: 設定ファイル > 環境変数 `MATERIALS_PROJECT_API`。保存時にプロセスの環境変数へも反映し、既存の `MPRestClient()` 遅延構築経路がそのまま使えるようにする (① の変更なし)。
+- 優先順位: 設定ファイル > 環境変数 `MATERIALS_PROJECT_API` > `.env`。**判定は実際にキーを解決する `MPRestClient` と同じ順序にする** — `.env` を見ないと「実際は動くのに `mp_available=false` で IDENTIFY が disabled」という*使えるのに使わせない*誤判定になる (実機で踏んだ)。`.env` 由来は利用者視点で `source: "env"` に含める。保存時にプロセスの環境変数へも反映し、既存の `MPRestClient()` 遅延構築経路がそのまま使えるようにする (① の変更なし)。
 
 | 呼び出し | 内容 |
 |---|---|
