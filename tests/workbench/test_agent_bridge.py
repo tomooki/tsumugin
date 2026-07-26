@@ -293,6 +293,88 @@ def test_state_summary_exception_does_not_break_turn():
     assert captured[0]["options"]["system_prompt"]  # ヘッダのみでも空でない
 
 
+# ---------------------------------------------------------------------------
+# エージェント権限モード (agent_policy, 2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_default_policy_is_approve_when_get_policy_absent():
+    captured: list[dict[str, Any]] = []
+    bridge = AgentBridge(on_event=lambda *a, **k: {}, query_fn=_make_query_fn([], captured))
+    bridge.send("hi")
+    _wait_terminal(bridge)
+    assert captured[0]["options"]["policy"] == "approve"
+
+
+def test_build_options_reads_current_policy_via_get_policy():
+    captured: list[dict[str, Any]] = []
+    current = {"policy": "auto"}
+    bridge = AgentBridge(
+        on_event=lambda *a, **k: {},
+        get_policy=lambda: current["policy"],
+        query_fn=_make_query_fn([], captured),
+    )
+    bridge.send("turn1")
+    _wait_terminal(bridge)
+    assert captured[0]["options"]["policy"] == "auto"
+
+    current["policy"] = "bypass"
+    bridge.send("turn2")
+    _wait_terminal(bridge)
+    assert captured[1]["options"]["policy"] == "bypass"
+
+
+def test_build_options_get_policy_exception_falls_back_to_approve():
+    def _boom() -> str:
+        raise RuntimeError("no policy yet")
+
+    captured: list[dict[str, Any]] = []
+    bridge = AgentBridge(
+        on_event=lambda *a, **k: {}, get_policy=_boom, query_fn=_make_query_fn([], captured)
+    )
+    bridge.send("hi")
+    _wait_terminal(bridge)
+    assert captured[0]["options"]["policy"] == "approve"
+
+
+def test_build_options_unknown_policy_value_falls_back_to_approve():
+    captured: list[dict[str, Any]] = []
+    bridge = AgentBridge(
+        on_event=lambda *a, **k: {},
+        get_policy=lambda: "bogus",
+        query_fn=_make_query_fn([], captured),
+    )
+    bridge.send("hi")
+    _wait_terminal(bridge)
+    assert captured[0]["options"]["policy"] == "approve"
+
+
+def test_system_prompt_mentions_current_policy():
+    captured: list[dict[str, Any]] = []
+    bridge = AgentBridge(
+        on_event=lambda *a, **k: {},
+        get_policy=lambda: "bypass",
+        query_fn=_make_query_fn([], captured),
+    )
+    bridge.send("hi")
+    _wait_terminal(bridge)
+    prompt = captured[0]["options"]["system_prompt"]
+    assert "bypass" in prompt
+    assert "open_project" in prompt  # bypass 固有の説明が入っている
+
+
+def test_build_options_real_sdk_bypass_expands_allowed_tools_but_keeps_tools_empty():
+    """非注入 (実 SDK) 経路: bypass は ``allowed_tools`` が +4 拡張されるが ``tools=[]`` は不変。"""
+    from tsumugin.workbench import agent_mcp
+
+    bridge = AgentBridge(on_event=lambda *a, **k: {}, get_policy=lambda: "bypass")
+    options = bridge._build_options()
+
+    assert options.tools == []  # 絶対境界 (c): policy に関わらず不変
+    assert set(options.allowed_tools) == set(agent_mcp.allowed_tool_ids("bypass"))
+    assert len(options.allowed_tools) == len(agent_mcp.allowed_tool_ids()) + 4
+
+
 def test_config_path_overrides_max_turns(tmp_path: Path):
     config_path = tmp_path / "agent.json"
     config_path.write_text(json.dumps({"max_turns": 7}), encoding="utf-8")

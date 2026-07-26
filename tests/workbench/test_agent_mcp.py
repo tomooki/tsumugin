@@ -33,6 +33,10 @@ _EXPECTED_TOOL_NAMES = frozenset(
     }
 )
 
+_EXPECTED_BYPASS_ONLY_TOOL_NAMES = frozenset(
+    {"open_project", "close_project", "create_project", "demo_project"}
+)
+
 
 # ---------------------------------------------------------------------------
 # 権限境界 (単一情報源)
@@ -43,10 +47,10 @@ def test_allowed_tool_names_match_permission_boundary():
     assert agent_mcp.ALLOWED_TOOL_NAMES == _EXPECTED_TOOL_NAMES
 
 
-def test_tool_specs_names_match_allowed_tool_names():
-    """_TOOL_SPECS (実装) と ALLOWED_TOOL_NAMES (契約) がずれていないこと。"""
+def test_tool_specs_names_match_allowed_tool_names_plus_bypass_only():
+    """_TOOL_SPECS (実装) は ALLOWED_TOOL_NAMES ∪ BYPASS_ONLY_TOOL_NAMES (契約) とちょうど一致する。"""
     spec_names = {spec[0] for spec in agent_mcp._TOOL_SPECS}
-    assert spec_names == agent_mcp.ALLOWED_TOOL_NAMES
+    assert spec_names == agent_mcp.ALLOWED_TOOL_NAMES | agent_mcp.BYPASS_ONLY_TOOL_NAMES
 
 
 def test_no_forbidden_tool_categories():
@@ -115,6 +119,95 @@ def test_allowed_tool_ids_use_mcp_prefix_and_cover_all_names():
     for tool_id in ids:
         assert tool_id.startswith(f"mcp__{agent_mcp.SERVER_NAME}__")
         assert tool_id[len(f"mcp__{agent_mcp.SERVER_NAME}__") :] in agent_mcp.ALLOWED_TOOL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# エージェント権限モード (agent_policy, 2026-07-26 権限境界改訂): ツール表の policy 別切替
+# ---------------------------------------------------------------------------
+
+
+def test_allowed_tool_names_for_approve_is_unchanged_base_set():
+    assert agent_mcp.allowed_tool_names("approve") == _EXPECTED_TOOL_NAMES
+    assert agent_mcp.allowed_tool_names() == _EXPECTED_TOOL_NAMES  # 既定引数も approve
+
+
+def test_allowed_tool_names_for_auto_is_unchanged_base_set():
+    """auto は即時適用こそするが、ツール表自体 (何を呼べるか) は approve と同一。"""
+    assert agent_mcp.allowed_tool_names("auto") == _EXPECTED_TOOL_NAMES
+
+
+def test_allowed_tool_names_for_bypass_adds_exactly_the_four_project_lifecycle_tools():
+    assert (
+        agent_mcp.allowed_tool_names("bypass")
+        == _EXPECTED_TOOL_NAMES | _EXPECTED_BYPASS_ONLY_TOOL_NAMES
+    )
+    added = agent_mcp.allowed_tool_names("bypass") - agent_mcp.allowed_tool_names("approve")
+    assert added == _EXPECTED_BYPASS_ONLY_TOOL_NAMES
+
+
+def test_allowed_tool_ids_bypass_covers_all_eighteen_names():
+    ids = agent_mcp.allowed_tool_ids("bypass")
+    assert len(ids) == 18
+    names = {tid[len(f"mcp__{agent_mcp.SERVER_NAME}__") :] for tid in ids}
+    assert names == agent_mcp.allowed_tool_names("bypass")
+
+
+def test_build_tools_bypass_smoke_includes_project_lifecycle_tools():
+    pytest.importorskip("claude_agent_sdk")
+    tools = agent_mcp.build_tools("bypass")
+    assert {t.name for t in tools} == agent_mcp.allowed_tool_names("bypass")
+
+
+def test_build_tools_approve_smoke_excludes_project_lifecycle_tools():
+    pytest.importorskip("claude_agent_sdk")
+    tools = agent_mcp.build_tools("approve")
+    assert {t.name for t in tools} == _EXPECTED_TOOL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# 絶対境界 (全 policy 共通, 変更禁止): 自己承認・自己昇格ツールは bypass でも現れない
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("policy", ["approve", "auto", "bypass"])
+def test_no_self_escalation_markers_for_any_policy(policy: str):
+    """(a) 承認解決ツールが存在しない・(b) agent_policy 自己変更ツールが存在しない絶対境界。
+
+    ``bypass`` は project ライフサイクル語幹 (open_project 等) を意図的に含むため
+    `_FORBIDDEN_MARKERS` はここでは使わず、承認自己解決 + policy 自己変更のみを見る
+    `_SELF_ESCALATION_MARKERS` を使う (全 policy で不変)。
+    """
+    names = agent_mcp.allowed_tool_names(policy)
+    for name in names:
+        assert not any(marker in name for marker in agent_mcp._SELF_ESCALATION_MARKERS), name
+
+
+def test_self_escalation_markers_mutation_flags_injected_approval_resolution_tool():
+    """変異実証 (a): bypass のツール表に承認解決ツールが紛れ込んだ場合を検知する。"""
+    mutated = agent_mcp.allowed_tool_names("bypass") | {"resolve_approval", "reject_approval"}
+    violations = sorted(
+        name for name in mutated if any(m in name for m in agent_mcp._SELF_ESCALATION_MARKERS)
+    )
+    assert violations == ["reject_approval", "resolve_approval"]
+
+
+def test_self_escalation_markers_mutation_flags_injected_set_agent_policy_tool():
+    """変異実証 (b): どの policy のツール表にも agent_policy 自己変更ツールが紛れ込んだ場合を検知する。"""
+    for policy in ("approve", "auto", "bypass"):
+        mutated = agent_mcp.allowed_tool_names(policy) | {"set_agent_policy"}
+        violations = sorted(
+            name for name in mutated if any(m in name for m in agent_mcp._SELF_ESCALATION_MARKERS)
+        )
+        assert violations == ["set_agent_policy"], policy
+
+
+def test_forbidden_markers_still_apply_only_to_base_allowed_tool_names():
+    """`_FORBIDDEN_MARKERS` (project ライフサイクル語幹込み) は base 14 (全 policy 共通部分) にのみ
+    適用する不変条件 — bypass の +4 本自体にこの集合を適用すると自己矛盾で必ず fail するため、
+    誤って `allowed_tool_names("bypass")` へ適用していないことを回帰ガードする。
+    """
+    for name in agent_mcp.ALLOWED_TOOL_NAMES:
+        assert not any(marker in name for marker in agent_mcp._FORBIDDEN_MARKERS), name
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +390,59 @@ def test_list_pending_approvals_handler_calls_get_proposals(monkeypatch: pytest.
     assert calls == [("GET", "/api/proposals", None)]
     payload = json.loads(result["content"][0]["text"])
     assert payload == {"status": 200, "body": {"pending": []}}
+
+
+def test_open_project_handler_posts_path(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured.update(method=method, path=path, payload=payload)
+        return {"status": 200, "body": {"source": "project"}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(agent_mcp._h_open_project({"path": "/tmp/proj"}))
+    assert captured == {
+        "method": "POST", "path": "/api/project/open", "payload": {"path": "/tmp/proj"},
+    }
+
+
+def test_close_project_handler_posts_empty_body(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured.update(method=method, path=path, payload=payload)
+        return {"status": 200, "body": {"source": "none"}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(agent_mcp._h_close_project({}))
+    assert captured == {"method": "POST", "path": "/api/project/close", "payload": {}}
+
+
+def test_create_project_handler_posts_name_and_directory(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured.update(method=method, path=path, payload=payload)
+        return {"status": 200, "body": {}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(agent_mcp._h_create_project({"name": "proj1", "directory": "/tmp"}))
+    assert captured == {
+        "method": "POST", "path": "/api/project",
+        "payload": {"name": "proj1", "directory": "/tmp"},
+    }
+
+
+def test_demo_project_handler_posts_empty_body(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured.update(method=method, path=path, payload=payload)
+        return {"status": 200, "body": {"source": "demo"}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(agent_mcp._h_demo_project({}))
+    assert captured == {"method": "POST", "path": "/api/project/demo", "payload": {}}
 
 
 def test_base_url_uses_env_port(monkeypatch: pytest.MonkeyPatch):

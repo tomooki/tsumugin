@@ -605,6 +605,57 @@ def test_get_agent_status_route(client: TestClient, session: WorkbenchSession):
     assert set(body) == {"status", "available", "tokens", "wall_time_s", "error"}
 
 
+# ---------------------------------------------------------------------------
+# POST /api/agent/policy (エージェント権限モード, 2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_get_state_includes_agent_policy_default(client: TestClient):
+    resp = client.get("/api/state")
+    assert resp.status_code == 200
+    assert resp.json()["agent"]["policy"] == "approve"
+
+
+def test_post_agent_policy_switches_and_returns_state(
+    client: TestClient, session: WorkbenchSession
+):
+    resp = client.post("/api/agent/policy", json={"policy": "auto"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["agent"]["policy"] == "auto"
+    assert session.agent_policy == "auto"
+    assert session.ledger.entries[-1].kind == "agent_policy_change"
+
+
+def test_post_agent_policy_same_value_does_not_grow_ledger(
+    client: TestClient, session: WorkbenchSession
+):
+    before = len(session.ledger.entries)
+    resp = client.post("/api/agent/policy", json={"policy": "approve"})
+    assert resp.status_code == 200
+    assert len(session.ledger.entries) == before
+
+
+def test_post_agent_policy_invalid_value_returns_422_error_dict(client: TestClient):
+    resp = client.post("/api/agent/policy", json={"policy": "bogus"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_type"] == "ValueError"
+    assert "error" in body
+
+
+def test_post_agent_policy_returns_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    resp = client.post("/api/agent/policy", json={"policy": "auto"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+    assert client.get("/api/state").json()["agent"]["policy"] == "approve"
+
+
 def test_post_transcript_message_returns_202_when_agent_started(
     client: TestClient, session: WorkbenchSession
 ):

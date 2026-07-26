@@ -367,6 +367,164 @@ def test_create_proposal_settings_change_invalid_two_theta_limits_returns_422(
     assert result["error_type"] == "ValueError"
 
 
+# ---------------------------------------------------------------------------
+# エージェント権限モード (agent_policy, 2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_policy_defaults_to_approve():
+    session = WorkbenchSession.create_demo()
+    assert session.agent_policy == "approve"
+    assert session.state()["agent"]["policy"] == "approve"
+
+
+def test_set_agent_policy_switches_and_appends_single_ledger_entry():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    changed = session.set_agent_policy("auto")
+
+    assert changed is True
+    assert session.agent_policy == "auto"
+    assert session.state()["agent"]["policy"] == "auto"
+    assert len(session.ledger.entries) == before + 1
+    assert session.ledger.entries[-1].kind == "agent_policy_change"
+    assert session.ledger.entries[-1].payload["policy"] == "auto"
+
+
+def test_set_agent_policy_same_value_is_noop_and_does_not_append_ledger():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    changed = session.set_agent_policy("approve")
+
+    assert changed is False
+    assert session.agent_policy == "approve"
+    assert len(session.ledger.entries) == before
+
+
+def test_set_agent_policy_rejects_unknown_value():
+    session = WorkbenchSession.create_demo()
+    with pytest.raises(ValueError):
+        session.set_agent_policy("bogus")
+
+
+def test_set_agent_policy_round_trip_appends_three_entries():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    session.set_agent_policy("auto")
+    session.set_agent_policy("bypass")
+    session.set_agent_policy("approve")
+
+    assert len(session.ledger.entries) == before + 3
+    assert session.agent_policy == "approve"
+
+
+def test_set_agent_policy_rejects_switch_while_agent_running():
+    from tsumugin.errors import ConflictError
+
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    with pytest.raises(ConflictError):
+        session.set_agent_policy("auto")
+
+    assert session.agent_policy == "approve"
+    assert len(session.ledger.entries) == before
+
+
+# ---------------------------------------------------------------------------
+# create_proposal の agent_policy 分岐 (auto/bypass 即時自動適用)
+# ---------------------------------------------------------------------------
+
+
+def test_create_proposal_auto_policy_immediately_executes_review_resolution():
+    session = WorkbenchSession.create_demo()
+    session.set_agent_policy("auto")
+    item_id = session.review_queue.items[0].item_id
+    before_ledger = len(session.ledger.entries)
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    assert result["action_id"] == "rv-1"
+    assert result["state"] == "auto_applied"
+    assert "result" in result
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is True
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "rv-1")
+    assert card["state"] == "auto_applied"
+    # agent_proposal + review_resolve (実操作) + approval_decision(auto) の 3 件が追記される。
+    kinds = [e.kind for e in session.ledger.entries[before_ledger:]]
+    assert kinds == ["agent_proposal", "review_resolve", "approval_decision"]
+    assert session.ledger.entries[-1].payload["decision"] == "auto"
+
+
+def test_create_proposal_bypass_policy_immediately_executes_structure_revision():
+    session = WorkbenchSession.create_demo()
+    session.set_agent_policy("bypass")
+    before_snaps = len(session.snapshots.snapshots)
+
+    result = session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.9}]}, rationale="x"
+    )
+
+    assert result["state"] == "auto_applied"
+    assert len(session.snapshots.snapshots) == before_snaps + 1
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "sr-1")
+    assert card["state"] == "auto_applied"
+
+
+def test_create_proposal_auto_policy_execution_failure_leaves_card_pending():
+    """auto 適用の実操作が失敗すれば error dict + カードは pending 相当に残る (再試行可能)。"""
+    session = WorkbenchSession.create_demo()
+    session.set_agent_policy("auto")
+    item_id = session.review_queue.items[0].item_id
+    # 【失敗を決定論的に再現】: _execute_proposal 呼び出しの直前に、別経路 (人間の GUI 操作を
+    #   模擬) で同じ項目を先に解決してしまう競合を注入する (resolve_review_item は「既に
+    #   解決済み」を ConflictError error dict で返す — session.py L705 付近)。
+    original_execute = session._execute_proposal
+
+    def _fail_once(kind, payload):
+        session.resolve_review_item(item_id, action="send_back")
+        return original_execute(kind, payload)
+
+    session._execute_proposal = _fail_once
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    assert "error" in result
+    assert result["action_id"] == "rv-1"
+    assert result["state"] == "pending"
+    assert "rv-1" not in session._approvals
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "rv-1")
+    assert card["state"] == "pending"
+    # approve 経路で人間が承認/却下できるよう、起票 (create_proposal 側の validation) は
+    # 通っていたことを確認する — pending_approvals にも引き続き現れる。
+    assert any(row["action_id"] == "rv-1" for row in session.pending_approvals())
+
+
+def test_create_proposal_approve_policy_default_still_creates_pending_only():
+    """既定 (approve) の回帰: create_proposal は実操作を起こさずカードのみを作る。"""
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    assert result == {"action_id": "rv-1", "state": "pending"}
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is False
+    kinds = [e.kind for e in session.ledger.entries]
+    assert "approval_decision" not in kinds
+
+
 def test_resolve_generic_proposal_structure_revision_approve_creates_snapshot():
     session = WorkbenchSession.create_demo()
     session.create_proposal(

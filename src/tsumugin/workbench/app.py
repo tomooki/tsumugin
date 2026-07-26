@@ -638,6 +638,23 @@ def create_workbench_app(
         return holder.session.agent_status()
 
     # ------------------------------------------------------------------
+    # POST /api/agent/policy (エージェント権限モード, 2026-07-26 権限境界改訂)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/agent/policy")
+    def post_agent_policy(body: dict[str, Any] = Body(...)) -> Any:
+        policy = body.get("policy")
+        if policy not in ("approve", "auto", "bypass"):
+            return _invalid("policy", policy)
+        try:
+            holder.session.set_agent_policy(policy)
+        except ConflictError as exc:
+            return JSONResponse(
+                status_code=409, content={"error": str(exc), "error_type": "ConflictError"}
+            )
+        return holder.session.state()
+
+    # ------------------------------------------------------------------
     # 静的配信 (ビルド済み frontend があれば / で配信、無ければ案内 JSON)
     # ------------------------------------------------------------------
 

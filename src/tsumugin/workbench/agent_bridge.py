@@ -47,11 +47,39 @@ _SYSTEM_PROMPT_HEADER = (
     "モデルを変える操作 (構造改訂・レビュー解決・相の追加/除去・精密化設定の変更) が必要だと"
     "判断した場合は、直接実行するのではなく propose_structure_revision/"
     "propose_review_resolution/propose_phase_change/propose_settings_change で「起票」してください"
-    "— 承認カードが作られるだけで、実行は人間が承認したときにのみ起きます (提案 ≠ 適用)。"
-    "承認 (approval) の解決自体を行うツールは存在しません (自己承認の禁止) — それは人間専用です。"
-    "起票後は承認を待つ間、他の作業 (別のジョブ起動や調査) を続けてよく、必要なら "
-    "list_pending_approvals で自分の起票の状態 (pending/approved/rejected) を確認してください。"
+    "— 承認カードが作られるだけで、実行はあなたの現在の権限モード (下記) に従います (提案 ≠ 適用の"
+    "原則は常に成立: 実行の主体は常にワークベンチであり、あなたが直接ファイルやデータを書き換える"
+    "手段は持ちません)。承認 (approval) の解決自体を行うツールは存在しません (自己承認の禁止) —"
+    "それは人間専用です。あなたの権限モード自体を変更するツールも存在しません (自己昇格の禁止)。"
+    "起票後は承認/自動適用を待つ間、他の作業 (別のジョブ起動や調査) を続けてよく、必要なら "
+    "list_pending_approvals で自分の起票の状態 (pending/auto_applied/approved/rejected) を"
+    "確認してください。"
 )
+
+#: 【エージェント権限モード, 2026-07-26 権限境界改訂】: 現在の policy をシステムプロンプトへ
+#: 明記する (`WorkbenchSession.set_agent_policy` docstring, api-contract.md §エージェント権限モード
+#: 「UI は…今モードを常に見えるように」— エージェント自身にも見える必要がある)。
+_POLICY_PROMPT_TEXT: dict[str, str] = {
+    "approve": (
+        "現在のエージェント権限モードは approve (承認制) です。propose_* で起票した提案は、"
+        "人間が承認するまで実行されません。安心して積極的に起票してください。"
+    ),
+    "auto": (
+        "現在のエージェント権限モードは auto (自動適用) です。propose_* で起票した提案は人間の承認を"
+        "待たず**即時に実行**されます (project ライフサイクル操作は引き続き利用できません)。"
+        "実行前提の内容を精査してから起票してください。"
+    ),
+    "bypass": (
+        "現在のエージェント権限モードは bypass (許可をバイパス) です。propose_* の即時実行に加え、"
+        "open_project/close_project/create_project/demo_project でプロジェクトの切替・作成・"
+        "クローズも直接行えます。実行はすべて ledger に記録され revert 可能ですが、"
+        "セッション/データの取り扱いには特に慎重に判断してください。"
+    ),
+}
+
+
+def _policy_prompt_text(policy: str) -> str:
+    return _POLICY_PROMPT_TEXT.get(policy, _POLICY_PROMPT_TEXT["approve"])
 
 #: tokens 集計に使う usage キー ($ は保持しない、FR-404)。
 #: 【実測で確定】: ``ResultMessage.usage``/``AssistantMessage.usage`` は Anthropic Messages API の
@@ -125,6 +153,7 @@ class AgentBridge:
         *,
         on_event: "Callable[..., dict[str, Any]]",
         get_state_summary: "Callable[[], dict[str, Any]] | None" = None,
+        get_policy: "Callable[[], str] | None" = None,
         query_fn: "Callable[..., Any] | None" = None,
         config_path: "Path | None" = None,
     ) -> None:
@@ -134,6 +163,11 @@ class AgentBridge:
             スレッドセーフに実装する。
         :param get_state_summary: システムプロンプトに埋め込む現在の state 要約を返す callable
             (``WorkbenchSession.state`` を渡す想定)。``None`` なら要約なし。
+        :param get_policy: 現在の ``agent_policy`` (``"approve"|"auto"|"bypass"``) を返す callable
+            (``WorkbenchSession`` が ``lambda: self._agent_policy`` を渡す想定)。``None`` は
+            ``"approve"`` 固定 (後方互換)。**ターン開始時 (``_build_options`` 呼び出し時点) の
+            policy でツール表を確定する** — ターン中の policy 変更は次ターンから有効になる
+            (api-contract.md §エージェント権限モード)。
         :param query_fn: **テスト専用**の SDK ``query`` 差し替えシーム。``None`` (既定) は実行時に
             ``claude_agent_sdk.query`` を遅延 import する。注入時は SDK 型 (``ClaudeAgentOptions``)
             を一切構築せず、プレーンな dict を ``options`` として渡す (フェイク側は中身を見ない)。
@@ -141,6 +175,7 @@ class AgentBridge:
         """
         self._on_event = on_event
         self._get_state_summary = get_state_summary
+        self._get_policy = get_policy
         self._query_fn = query_fn
         self._config = _load_agent_config(config_path if config_path is not None else _default_config_path())
         self._injected = query_fn is not None
@@ -222,8 +257,19 @@ class AgentBridge:
         if turn_error is not None:
             raise RuntimeError(turn_error)
 
+    def _current_policy(self) -> str:
+        """ターン開始時点の ``agent_policy`` を読む (未注入は ``"approve"`` 固定, 後方互換)。"""
+        if self._get_policy is None:
+            return "approve"
+        try:
+            policy = self._get_policy()
+        except Exception:
+            return "approve"
+        return policy if policy in ("approve", "auto", "bypass") else "approve"
+
     def _build_system_prompt(self) -> str:
-        prompt = _SYSTEM_PROMPT_HEADER
+        policy = self._current_policy()
+        prompt = f"{_SYSTEM_PROMPT_HEADER}\n\n{_policy_prompt_text(policy)}"
         if self._get_state_summary is not None:
             try:
                 summary = self._get_state_summary()
@@ -234,7 +280,13 @@ class AgentBridge:
         return prompt
 
     def _build_options(self) -> Any:
-        """``ClaudeAgentOptions`` (実行時) または注入テスト用のプレーン dict を構築する。"""
+        """``ClaudeAgentOptions`` (実行時) または注入テスト用のプレーン dict を構築する。
+
+        **ツール表はターン開始時点の ``agent_policy`` で確定する** (``_current_policy()``) —
+        ``send()`` → ``_run_turn()`` → 本メソッドの呼び出しはターンごとに 1 回だけなので、
+        ターン実行中に policy が変わっても当該ターンのツール表には影響しない (次ターンから反映)。
+        """
+        policy = self._current_policy()
         if self._injected:
             # 【テスト注入経路】: フェイク query_fn は options の中身を実際には解釈しないため、
             #   実 SDK 型 (claude_agent_sdk/mcp 依存) を組み立てない。resume/system_prompt は
@@ -243,12 +295,13 @@ class AgentBridge:
                 "system_prompt": self._build_system_prompt(),
                 "resume": self._session_id,
                 "max_turns": int(self._config.get("max_turns", _DEFAULT_MAX_TURNS)),
+                "policy": policy,
             }
         from claude_agent_sdk import ClaudeAgentOptions
 
         kwargs: dict[str, Any] = {
             "system_prompt": self._build_system_prompt(),
-            "mcp_servers": {agent_mcp.SERVER_NAME: agent_mcp.build_server()},
+            "mcp_servers": {agent_mcp.SERVER_NAME: agent_mcp.build_server(policy)},
             # 【CRITICAL: ビルトインツール全無効】: ``tools=None`` (SDK 既定) は CLI へ `--tools` を
             #   一切渡さず、CLI 側の既定 (Bash/Read/Write/Edit/WebFetch 等が全て有効) が生きる。
             #   `permission_mode="bypassPermissions"` はこれらへの対話的許可プロンプトも素通し
@@ -258,12 +311,13 @@ class AgentBridge:
             #   ``--tools ""`` に変換され、ベースのビルトインツール集合を空にする。MCP shim の
             #   ツールは `--tools` の対象外で `--allowedTools` (下記) のみで制御されるため、
             #   このリストを空にしても shim ツールは引き続き使える (実 CLI 引数列で確認済み,
-            #   `tests/workbench/test_agent_bridge.py`)。
+            #   `tests/workbench/test_agent_bridge.py`)。**policy に関わらず不変** (bypass でも
+            #   ローカルシェルへは到達しない — それは workbench の操作権限とは別軸, api-contract.md)。
             "tools": [],
             # allowed_tools には shim (`agent_mcp`) が公開する mcp__tsumugin__* の完全修飾 id のみを
             # 明示する — ビルトインは上記 tools=[] で不在なので、ここに列挙されるのは事実上
-            # 到達可能な唯一の手段になる (権限境界の単一情報源は `agent_mcp.ALLOWED_TOOL_NAMES`)。
-            "allowed_tools": agent_mcp.allowed_tool_ids(),
+            # 到達可能な唯一の手段になる (権限境界の単一情報源は `agent_mcp.allowed_tool_names(policy)`)。
+            "allowed_tools": agent_mcp.allowed_tool_ids(policy),
             # 【bypassPermissions】: shim のツール表自体が権限境界 (承認/レビュー/構造/project は
             #   非公開) なので、CLI 側の対話的許可プロンプトは不要かつ非対話実行では単にハング
             #   する。既に安全なツール集合に絞られている前提で許可を素通しする。

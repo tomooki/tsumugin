@@ -70,6 +70,12 @@ _EMPTY_PROJECT_META: dict[str, Any] = {"name": None, "dataset": None, "frame": N
 _GUI_TO_ENGINE: dict[str, EngineMode] = {"manual": "human", "auto": "agent"}
 _ENGINE_TO_GUI: dict[str, GuiMode] = {"human": "manual", "agent": "auto"}
 
+#: エージェント権限モード (`agent_policy`, api-contract.md §エージェント権限モード, FR-402 拡張)。
+#: 人間が `POST /api/agent/policy` で切り替える — エージェント自身がこれを変更するツールは
+#: shim (`agent_mcp`) に存在しない (自己昇格の禁止)。
+AgentPolicy = Literal["approve", "auto", "bypass"]
+_VALID_AGENT_POLICIES: "tuple[AgentPolicy, ...]" = ("approve", "auto", "bypass")
+
 #: GSAS-II 必須ジョブ (refine/multistart/sequential) が不在環境で起動された場合の error dict
 #: (Tier1 sidecar, api-contract.md GET /api/state `status.gsas_available`)。呼び出し側 (app.py)
 #: が 422 へ縮退する。
@@ -109,6 +115,7 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "sequential_failed": "GUARD",
     "echem_finished": "CORE ①",
     "echem_failed": "GUARD",
+    "agent_policy_change": "HUMAN",
 }
 
 
@@ -196,6 +203,8 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"echem aligned (n_frames={payload.get('n_frames')})"
     if kind == "echem_failed":
         return f"echem failed: {payload.get('error')}"
+    if kind == "agent_policy_change":
+        return f"agent policy → {payload.get('policy')}"
     return kind
 
 
@@ -292,10 +301,20 @@ class WorkbenchSession:
         # 【viewmodel 更新系の直列化】: FastAPI sync ハンドラは threadpool 実行 + refine ジョブ
         #   スレッドが並走するため、project モードの完了コールバックはこのロック下で状態を更新する。
         self._lock = threading.Lock()
+        # 【2026-07-26 権限境界改訂: agent_policy】: 既定 "approve"。人間が `set_agent_policy` で
+        #   切り替える (エージェント自身が変更するツールは shim に存在しない — 自己昇格の禁止)。
+        #   `AgentBridge` に `get_policy` として束ねることで、ターン開始時点の policy に応じて
+        #   shim のツール表 (bypass のみ project ライフサイクル 4 本を追加) とシステムプロンプトの
+        #   説明文を切り替える (`agent_mcp.build_server(policy)`/`allowed_tool_ids(policy)`)。
+        self._agent_policy: AgentPolicy = "approve"
         # 【V3a AUTO 実 LLM ブリッジ】: `_agent_append` はこの `self._lock` 下で transcript へ
         #   append する (bridge のバックグラウンドスレッドと GET /api/viewmodel の並走に対して安全)。
         #   `get_state_summary=self.state` はシステムプロンプトに埋め込む現況要約。
-        self._agent_bridge = AgentBridge(on_event=self._agent_append, get_state_summary=self.state)
+        self._agent_bridge = AgentBridge(
+            on_event=self._agent_append,
+            get_state_summary=self.state,
+            get_policy=lambda: self._agent_policy,
+        )
 
     # ------------------------------------------------------------------
     # デモシード構築
@@ -436,6 +455,37 @@ class WorkbenchSession:
         return True
 
     # ------------------------------------------------------------------
+    # エージェント権限モード (`agent_policy`, POST /api/agent/policy, 2026-07-26 権限境界改訂)
+    # ------------------------------------------------------------------
+
+    @property
+    def agent_policy(self) -> AgentPolicy:
+        """現在のエージェント権限モード (``"approve"|"auto"|"bypass"``, 既定 ``"approve"``)。"""
+        return self._agent_policy
+
+    def set_agent_policy(self, policy: str) -> bool:
+        """エージェント権限モードを切替える (人間専用 — shim にこれを呼ぶツールは存在しない)。
+
+        ``set_mode`` (FR-402) と同じ規律: 不正値は ``ValueError``、同一値への切替は no-op
+        (ledger 追記なし) で ``False``、エージェントのターン実行中の切替は ``ConflictError``
+        (呼び出し側 [`app.py`] が 409 へ縮退) — 実行中のターンが束縛している shim のツール表
+        (`agent_mcp.allowed_tool_ids(policy)`) を実行中に差し替えると、そのターン内のツール呼び出し
+        前提が壊れる。変更時のみ ``ledger.append("agent_policy_change", ...)`` する
+        (api-contract.md 「切替 + ledger 追記」)。
+        """
+        if policy not in _VALID_AGENT_POLICIES:
+            raise ValueError(f"unknown agent_policy: {policy!r}")
+        if policy == self._agent_policy:
+            return False
+        if self.agent_running():
+            raise ConflictError(
+                "agent is running — cannot switch agent_policy while a turn is in progress"
+            )
+        self._agent_policy = policy  # type: ignore[assignment]
+        self.ledger.append("agent_policy_change", {"policy": policy})
+        return True
+
+    # ------------------------------------------------------------------
     # GET /api/state
     # ------------------------------------------------------------------
 
@@ -455,6 +505,8 @@ class WorkbenchSession:
         #   いたため、AUTO でターン完了後も idle=false のまま固着し「エージェントが動き続けて
         #   いる」ように見えた (実走スモークで発見)。実測ステータスを単一情報源にする。
         agent["idle"] = bridge_status["status"] != "running"
+        # 【エージェント権限モード】: 人間が切り替える単一情報源 (`self._agent_policy`)。
+        agent["policy"] = self._agent_policy
         # 【gsas_available は毎回動的判定】: Tier1 sidecar は GSAS-II 抜きで同梱され得るため、
         #   status は起動時固定シードでなく現在の import 可否 (`gsasii_available`, lru_cache 済み
         #   なので実質定数コスト) を都度反映する (api-contract.md GET /api/state)。
@@ -891,8 +943,13 @@ class WorkbenchSession:
         起票時に error dict へ縮退させる — 承認時まで持ち越さない, api-contract.md
         「payload の各引数は他ツールの出力から作れること」)。妥当なら transcript へ
         approval カード (state=pending) を追加し、ledger ``agent_proposal`` を追記する。
-        実行 (add_phase/resolve_review_item 等) は ``resolve_approval`` の approve でのみ起きる
-        (提案 ≠ 適用)。
+
+        **エージェント権限モード分岐 (§エージェント権限モード, 2026-07-26 改訂)**: ``approve``
+        (既定) はカードを作って終わり — 実行 (add_phase/resolve_review_item 等) は
+        ``resolve_approval`` の人間 approve でのみ起きる (提案 ≠ 適用)。``auto``/``bypass`` は
+        カード作成に続けて ``_execute_proposal`` を**即時**呼び、成功すればカード state を
+        ``"auto_applied"`` にする。実行が失敗すれば (error dict) カードは pending へ戻し
+        (人間が後で承認/却下できる)、返り値にも同じ error を載せる。
         """
         if not isinstance(kind, str) or kind not in _PROPOSAL_KIND_PREFIX:
             return {"error": f"unknown proposal kind: {kind!r}", "error_type": "ValueError"}
@@ -921,7 +978,31 @@ class WorkbenchSession:
                 "state": "pending",
             }
             self._transcript.append(msg)
-        return {"action_id": action_id, "state": "pending"}
+            policy = self._agent_policy
+            if policy != "approve":
+                # 【即時自動適用の in_progress マーカー】: ``_resolve_with_in_progress_guard`` と
+                #   同じ check-and-set を、ここでは「起票直後」に同一ロック内で置く。この
+                #   action_id は今このロック内で採番されたばかりなので既存エントリとの競合は
+                #   起きない (二重解決防止と同じ考え方を先取りして塞ぐ)。
+                self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
+        if policy == "approve":
+            return {"action_id": action_id, "state": "pending"}
+        # 【auto/bypass: 即時自動適用】: ``_execute_proposal`` は ``apply_structure`` 等
+        #   ``self._lock`` を自前で取るメソッドを呼ぶため、ロック保持のまま呼ぶとデッドロック
+        #   しうる — ここはロック解放後に実行する (``_resolve_generic_proposal`` と同じ流儀)。
+        exec_result = self._execute_proposal(kind, payload)
+        if "error" in exec_result:
+            with self._lock:
+                self._approvals.pop(action_id, None)  # pending へ復帰 (再試行可能)
+            return {**exec_result, "action_id": action_id, "state": "pending"}
+        self.ledger.append(
+            "approval_decision", {"action_id": action_id, "decision": "auto", "kind": kind}
+        )
+        with self._lock:
+            self._approvals[action_id] = {
+                "state": "auto_applied", "snapshot_id": exec_result.get("snapshot_id"),
+            }
+        return {"action_id": action_id, "state": "auto_applied", "result": exec_result}
 
     def _validate_proposal_payload(self, kind: str, payload: dict[str, Any]) -> "dict[str, Any] | None":
         """``create_proposal`` の起票時 payload 検証 (kind ごと)。問題なければ ``None``。"""

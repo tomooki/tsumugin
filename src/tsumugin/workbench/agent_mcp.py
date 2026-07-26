@@ -52,14 +52,27 @@ ALLOWED_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-#: 到達不能な (=人間専用の) 直接実行操作を表す語幹。ツール名にこれらが部分文字列として現れないことを
-#: `test_agent_mcp.py::test_no_forbidden_tool_categories` がガードする。**broad な名詞
-#: ("structure"/"review"/"approval" 等) ではなく直接実行を指す具体的な動詞トークンを列挙する**
-#: (2026-07-26 改訂): `propose_structure_revision`/`propose_review_resolution`/
-#: `list_pending_approvals` は「起票/読み取り」であり実行そのものではないため、意図的にこの
-#: 集合の対象外 — 一方で `apply_structure`/`resolve_review`/`resolve_approval`/`add_phase`/
-#: `remove_phase`/`update_settings` (直接実行) や `open_project`/`close_project`/`create_project`/
-#: `demo_project` (セッション/ledger のすり替え) が紛れ込めば検知する。
+#: 【エージェント権限モード, 2026-07-26 権限境界改訂】: ``agent_policy="bypass"`` のときのみ
+#: ``ALLOWED_TOOL_NAMES`` に追加公開する project ライフサイクル 4 本 (api-contract.md
+#: §エージェント権限モード「bypass: project ライフサイクルもエージェントに開放」)。``approve``/
+#: ``auto`` では従来どおり ``ALLOWED_TOOL_NAMES`` のみ (このツール表は増えない) — `allowed_tool_names`
+#: が policy に応じてどちらを合成するかを一元管理する (単一情報源)。
+BYPASS_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
+    {"open_project", "close_project", "create_project", "demo_project"}
+)
+
+#: 到達不能な (=人間専用の) 直接実行操作を表す語幹。**``ALLOWED_TOOL_NAMES`` (常設 14 本, 全 policy
+#: 共通の基底集合) にのみ適用する** — `test_agent_mcp.py::test_no_forbidden_tool_categories` が
+#: ガードする。**broad な名詞 ("structure"/"review"/"approval" 等) ではなく直接実行を指す具体的な
+#: 動詞トークンを列挙する** (2026-07-26 改訂): `propose_structure_revision`/
+#: `propose_review_resolution`/`list_pending_approvals` は「起票/読み取り」であり実行そのものでは
+#: ないため、意図的にこの集合の対象外 — 一方で `apply_structure`/`resolve_review`/
+#: `resolve_approval`/`add_phase`/`remove_phase`/`update_settings` (直接実行) や
+#: `open_project`/`close_project`/`create_project`/`demo_project` (セッション/ledger のすり替え) が
+#: 紛れ込めば検知する。**``BYPASS_ONLY_TOOL_NAMES`` は意図的にこれらの語幹そのものを名前に持つ**
+#: (bypass 限定で project ライフサイクルを開放する設計) ため、この集合を ``allowed_tool_names(
+#: "bypass")`` の結果へ適用してはならない — bypass の絶対境界チェックは ``_SELF_ESCALATION_MARKERS``
+#: (自己承認 + 自己昇格のみ、project ライフサイクルは含まない) を使う。
 _FORBIDDEN_MARKERS: tuple[str, ...] = (
     "approve",
     "reject",
@@ -75,6 +88,20 @@ _FORBIDDEN_MARKERS: tuple[str, ...] = (
     "demo_project",
     "revert",
     "accept",
+)
+
+#: 【絶対境界, 全 policy 共通 (2026-07-26 権限境界改訂)】: ``bypass`` を含む**どの policy でも**
+#: 現れてはならない語幹 — 承認の自己解決 (自己承認の禁止) と ``agent_policy`` 自体の自己変更
+#: (自己昇格の禁止) のみを指す。`_FORBIDDEN_MARKERS` と異なり project ライフサイクル語幹は含めない
+#: (bypass ではそれ自体が意図的に許可される)。`test_agent_mcp.py` の policy 別テストがこれを
+#: ``allowed_tool_names("approve"|"auto"|"bypass")`` それぞれへ適用する。
+_SELF_ESCALATION_MARKERS: tuple[str, ...] = (
+    "approve",
+    "reject",
+    "resolve_approval",
+    "resolve_review",
+    "agent_policy",
+    "set_policy",
 )
 
 _HTTP_TIMEOUT_S = 60.0
@@ -234,6 +261,29 @@ async def _h_propose_settings_change(args: dict[str, Any]) -> dict[str, Any]:
 
 async def _h_list_pending_approvals(_args: dict[str, Any]) -> dict[str, Any]:
     return _tool_result(await asyncio.to_thread(_request, "GET", "/api/proposals"))
+
+
+# ---------------------------------------------------------------------------
+# bypass 限定: project ライフサイクル (2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+async def _h_open_project(args: dict[str, Any]) -> dict[str, Any]:
+    payload = {"path": args.get("path")}
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/project/open", payload))
+
+
+async def _h_close_project(_args: dict[str, Any]) -> dict[str, Any]:
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/project/close", {}))
+
+
+async def _h_create_project(args: dict[str, Any]) -> dict[str, Any]:
+    payload = {"name": args.get("name"), "directory": args.get("directory")}
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/project", payload))
+
+
+async def _h_demo_project(_args: dict[str, Any]) -> dict[str, Any]:
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/project/demo", {}))
 
 
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
@@ -421,23 +471,75 @@ _TOOL_SPECS: "tuple[tuple[str, str, dict[str, Any], Callable[[dict[str, Any]], A
         _EMPTY_SCHEMA,
         _h_list_pending_approvals,
     ),
+    # 【bypass 限定, BYPASS_ONLY_TOOL_NAMES】: build_tools(policy="bypass") のときのみ公開される。
+    (
+        "open_project",
+        "既存プロジェクトを開く (POST /api/project/open)。agent_policy=bypass 限定。",
+        {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        _h_open_project,
+    ),
+    (
+        "close_project",
+        "現在のプロジェクトを閉じる (POST /api/project/close, source=none へ)。"
+        "agent_policy=bypass 限定。",
+        _EMPTY_SCHEMA,
+        _h_close_project,
+    ),
+    (
+        "create_project",
+        "新規プロジェクトを作成する (POST /api/project)。agent_policy=bypass 限定。",
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "directory": {"type": "string"}},
+            "required": ["name", "directory"],
+        },
+        _h_create_project,
+    ),
+    (
+        "demo_project",
+        "シードのデモセッションへ切り替える (POST /api/project/demo)。agent_policy=bypass 限定。",
+        _EMPTY_SCHEMA,
+        _h_demo_project,
+    ),
 )
 
 
-def build_tools() -> "list[Any]":
-    """``claude_agent_sdk.tool`` で装飾した ``SdkMcpTool`` のリストを構築する (遅延 import)。"""
+def allowed_tool_names(policy: str = "approve") -> "frozenset[str]":
+    """``agent_policy`` (``"approve"|"auto"|"bypass"``) に応じたツール名集合の単一情報源。
+
+    ``bypass`` のときのみ ``BYPASS_ONLY_TOOL_NAMES`` (project ライフサイクル 4 本) を追加する
+    (api-contract.md §エージェント権限モード)。``approve``/``auto`` は ``ALLOWED_TOOL_NAMES`` の
+    まま変わらない — ModelAction の即時適用の有無 (`WorkbenchSession.create_proposal` が分岐) は
+    ツール表とは独立した挙動であり、ここでは扱わない。
+    """
+    if policy == "bypass":
+        return ALLOWED_TOOL_NAMES | BYPASS_ONLY_TOOL_NAMES
+    return ALLOWED_TOOL_NAMES
+
+
+def build_tools(policy: str = "approve") -> "list[Any]":
+    """``claude_agent_sdk.tool`` で装飾した ``SdkMcpTool`` のリストを構築する (遅延 import)。
+
+    ``policy`` に応じて ``allowed_tool_names(policy)`` に含まれる分だけを ``_TOOL_SPECS`` から
+    抽出する (bypass だけ project ライフサイクル 4 本が加わる)。
+    """
     from claude_agent_sdk import tool
 
-    return [tool(name, description, schema)(handler) for name, description, schema, handler in _TOOL_SPECS]
+    names = allowed_tool_names(policy)
+    return [
+        tool(name, description, schema)(handler)
+        for name, description, schema, handler in _TOOL_SPECS
+        if name in names
+    ]
 
 
-def build_server() -> Any:
+def build_server(policy: str = "approve") -> Any:
     """``ClaudeAgentOptions.mcp_servers`` に渡す in-process SDK MCP server を構築する (遅延 import)。"""
     from claude_agent_sdk import create_sdk_mcp_server
 
-    return create_sdk_mcp_server(name=SERVER_NAME, tools=build_tools())
+    return create_sdk_mcp_server(name=SERVER_NAME, tools=build_tools(policy))
 
 
-def allowed_tool_ids() -> "list[str]":
+def allowed_tool_ids(policy: str = "approve") -> "list[str]":
     """``ClaudeAgentOptions.allowed_tools`` 用の完全修飾ツール名 (``mcp__<server>__<tool>``)。"""
-    return [f"mcp__{SERVER_NAME}__{name}" for name in sorted(ALLOWED_TOOL_NAMES)]
+    return [f"mcp__{SERVER_NAME}__{name}" for name in sorted(allowed_tool_names(policy))]
