@@ -186,6 +186,23 @@ histograms[0] (instrument_path/radiation/geometry/data_format/two_theta_limits) 
 | (B5 新相提案) | — | sequential 完了時、changepoint/未説明残差のフレームがあれば **ModelAction 承認カード** (transcript approval) を生成: 「frame N で新相を同定して追加するか」。APPROVE → phaseid ジョブ (残差, elements は現相集合由来) → top 候補を物質化して相追加 (ledger)。再実行はユーザーの明示 RUN。REJECT → 提案は ledger に残る。**エンジン内自動受理は GUI 経路では使わない** (提案≠適用) |
 | (B4 FR-403) | — | alkali feasibility infeasible フレームは ReviewQueue へ自動追加 (severity=echem) |
 
+## MEM 密度マップ (V3b — FR-601)
+
+精密化済み gpx から実 Dysnomia MEM を回し、断面を STRUCTURE タブに描く。ジョブ枠は共有
+(kind に `"mem"` が加わる — GSAS/Dysnomia 直列実行の前提を保つ)。Dysnomia バイナリ不在は 422
+(`error_type: "MEMUnavailableError"`)。
+
+| 呼び出し | 内容 |
+|---|---|
+| POST `/api/mem` `{"phase"?: str, "hist"?: str, "map_type"?: "Fobs"\|"delt-F", "dmin"?: float, "grid_step"?: float}` | 202 / 409。② `mem_density` をジョブ実行。未精密化 (gpx 無し) は 422 |
+| GET `/api/mem/status` | refine/status と同形 (kind="mem") |
+| (viewmodel) `structure.mem` | 完了後: `{"map": {"axis": "c", "index": 0, "nx": int, "ny": int, "values": [[...]], "vmin": float, "vmax": float, "unit": str}, "peaks": [...], "note": str}`。**values は ≤128×128 に間引き** (大配列を境界で無制限に跨がせない)。null = 未実行 (empty-state) |
+| (viewmodel) `structure.mem_peaks` | 既存キー。実 MEM のピーク (position/density/assign) に差し替わる |
+
+断面は既定で c 軸に垂直な中央スライス。フロントは SVG heatmap (トークンの neutral↔accent
+ランプで塗り分け、凡例に vmin/vmax + 単位)。**エージェントには `run_mem` を SafeAction として
+公開** (再実行可能な計算であり ledger に残る)。
+
 ## AUTO 実 LLM ブリッジ (V3a — ローカル Claude Code サブスクリプション)
 
 ③ = ローカル `claude` CLI (claude-agent-sdk 経由, optional extra `agent`)。エージェントは
