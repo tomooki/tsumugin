@@ -66,6 +66,13 @@ absorption = [
 echem = [
     "galvani>=0.4",
 ]
+# V3a AUTO 実 LLM ブリッジ: ローカル `claude` CLI サブスクリプションを Python から駆動する
+# 公式 Agent SDK。``workbench.agent_bridge``/``workbench.agent_mcp`` は本 extra を遅延 import し、
+# 未導入時は AgentBridge.available=False (GET /api/agent/status) へ縮退する (POST
+# /api/transcript/message は従来の記録のみ動作へフォールバックする)。
+agent = [
+    "claude-agent-sdk>=0.1",
+]
 
 [dependency-groups]
 dev = [
@@ -103,6 +110,7 @@ markers = [
     "mem: MEM 外部バイナリ (Dysnomia) がインストールされている環境でのみ実行する",
     "oed: OED 獲得関数 (optional extra oed: pyboed) がインストールされている環境でのみ実行する",
     "mp: Materials Project 供給元 (optional extra mp: pymatgen/mp-api) がインストールされている環境でのみ実行する",
+    "agent: ローカル claude CLI + claude-agent-sdk (optional extra agent) が利用可能な環境でのみ実行する実サブスクリプション疎通テスト",
 ]
 
 [tool.ruff]

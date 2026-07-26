@@ -202,6 +202,9 @@ export function reducer(state: WorkbenchState, action: Action): WorkbenchState {
     case "SET_ACTIVE_JOB":
       return { ...state, activeJob: action.job };
 
+    case "SET_AGENT_TURN_RUNNING":
+      return { ...state, agentTurnRunning: action.running };
+
     case "SET_FRAME_INDEX":
       return { ...state, frameIndex: Math.max(0, action.index) };
 

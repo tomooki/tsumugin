@@ -286,6 +286,119 @@ def test_approval_keeps_transcript_proposal_both_paths(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
+# proposals (ModelAction 起票, V3a 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_post_proposal_structure_revision_returns_pending_action_id(client: TestClient):
+    resp = client.post(
+        "/api/proposals",
+        json={
+            "kind": "structure_revision",
+            "payload": {"sites": [{"id": "s1", "label": "O1", "occ": 0.71}]},
+            "rationale": "occupancy drift",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["action_id"] == "sr-1"
+    assert data["state"] == "pending"
+
+
+def test_post_proposal_missing_kind_returns_422(client: TestClient):
+    resp = client.post("/api/proposals", json={"payload": {}, "rationale": "x"})
+    assert resp.status_code == 422
+
+
+def test_post_proposal_non_object_payload_returns_422(client: TestClient):
+    resp = client.post(
+        "/api/proposals", json={"kind": "structure_revision", "payload": "nope", "rationale": "x"}
+    )
+    assert resp.status_code == 422
+
+
+def test_post_proposal_unknown_kind_returns_422(client: TestClient):
+    resp = client.post(
+        "/api/proposals", json={"kind": "bogus_kind", "payload": {}, "rationale": "x"}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_post_proposal_review_resolution_unknown_item_id_returns_404(client: TestClient):
+    resp = client.post(
+        "/api/proposals",
+        json={
+            "kind": "review_resolution",
+            "payload": {"item_id": "nope", "action": "accept"},
+            "rationale": "x",
+        },
+    )
+    assert resp.status_code == 404
+
+
+def test_get_proposals_lists_pending_and_excludes_resolved(client: TestClient):
+    items = client.get("/api/review-queue").json()["items"]
+    item_id = items[1]["id"]
+    created = client.post(
+        "/api/proposals",
+        json={
+            "kind": "review_resolution",
+            "payload": {"item_id": item_id, "action": "accept"},
+            "rationale": "x",
+        },
+    ).json()
+
+    pending_before = client.get("/api/proposals").json()["pending"]
+    assert any(row["action_id"] == created["action_id"] for row in pending_before)
+
+    approve = client.post(f"/api/approval/{created['action_id']}", json={"decision": "approve"})
+    assert approve.status_code == 200
+
+    pending_after = client.get("/api/proposals").json()["pending"]
+    assert not any(row["action_id"] == created["action_id"] for row in pending_after)
+
+
+def test_proposal_approve_reaches_underlying_operation(client: TestClient, session: WorkbenchSession):
+    """sr 起票 → 承認で apply_structure 相当が実行され snapshot が増えることを HTTP 経由で確認する。"""
+    before_snaps = len(session.snapshots.snapshots)
+    created = client.post(
+        "/api/proposals",
+        json={
+            "kind": "structure_revision",
+            "payload": {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]},
+            "rationale": "x",
+        },
+    ).json()
+
+    resp = client.post(f"/api/approval/{created['action_id']}", json={"decision": "approve"})
+
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "approved"
+    assert len(session.snapshots.snapshots) == before_snaps + 1
+
+
+def test_proposal_reject_does_not_execute_underlying_operation(client: TestClient):
+    items = client.get("/api/review-queue").json()["items"]
+    item_id = items[2]["id"]
+    created = client.post(
+        "/api/proposals",
+        json={
+            "kind": "review_resolution",
+            "payload": {"item_id": item_id, "action": "accept"},
+            "rationale": "x",
+        },
+    ).json()
+
+    resp = client.post(f"/api/approval/{created['action_id']}", json={"decision": "reject"})
+
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "rejected"
+    row = next(r for r in client.get("/api/review-queue").json()["items"] if r["id"] == item_id)
+    assert row["state"] == "pending"  # reject では実操作は起きない
+
+
+# ---------------------------------------------------------------------------
 # stages
 # ---------------------------------------------------------------------------
 
@@ -450,6 +563,275 @@ def test_transcript_message_is_recorded(client: TestClient):
 
     transcript = client.get("/api/viewmodel").json()["transcript"]
     assert any(m.get("text") == "hello" for m in transcript)
+
+
+# ---------------------------------------------------------------------------
+# V3a AUTO 実 LLM ブリッジ: /api/agent/status + /api/transcript/message の 202/409 分岐
+# ---------------------------------------------------------------------------
+
+
+class _StubBridge:
+    def __init__(self, *, available: bool, accept: bool = True, running: bool = False) -> None:
+        self._available = available
+        self._accept = accept
+        self._running = running
+        self.sent: list[str] = []
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def send(self, text: str) -> bool:
+        if not self._accept:
+            return False
+        self.sent.append(text)
+        return True
+
+    def status(self) -> dict:
+        is_running = self._running or bool(self.sent)
+        return {
+            "status": "running" if is_running else "idle",
+            "available": self._available,
+            "tokens": 7,
+            "wall_time_s": 1.5,
+            "error": None,
+        }
+
+
+def test_get_agent_status_route(client: TestClient, session: WorkbenchSession):
+    resp = client.get("/api/agent/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"status", "available", "tokens", "wall_time_s", "error"}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/agent/policy (エージェント権限モード, 2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_get_state_includes_agent_policy_default(client: TestClient):
+    resp = client.get("/api/state")
+    assert resp.status_code == 200
+    assert resp.json()["agent"]["policy"] == "approve"
+
+
+def test_post_agent_policy_switches_and_returns_state(
+    client: TestClient, session: WorkbenchSession
+):
+    resp = client.post("/api/agent/policy", json={"policy": "auto"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["agent"]["policy"] == "auto"
+    assert session.agent_policy == "auto"
+    assert session.ledger.entries[-1].kind == "agent_policy_change"
+
+
+def test_post_agent_policy_same_value_does_not_grow_ledger(
+    client: TestClient, session: WorkbenchSession
+):
+    before = len(session.ledger.entries)
+    resp = client.post("/api/agent/policy", json={"policy": "approve"})
+    assert resp.status_code == 200
+    assert len(session.ledger.entries) == before
+
+
+def test_post_agent_policy_invalid_value_returns_422_error_dict(client: TestClient):
+    resp = client.post("/api/agent/policy", json={"policy": "bogus"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_type"] == "ValueError"
+    assert "error" in body
+
+
+def test_post_agent_policy_returns_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    resp = client.post("/api/agent/policy", json={"policy": "auto"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+    assert client.get("/api/state").json()["agent"]["policy"] == "approve"
+
+
+def test_post_transcript_message_returns_202_when_agent_started(
+    client: TestClient, session: WorkbenchSession
+):
+    session.set_mode("auto")
+    session._agent_bridge = _StubBridge(available=True)
+
+    resp = client.post("/api/transcript/message", json={"text": "go"})
+
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "agent_started"}
+
+
+def test_post_transcript_message_returns_409_when_agent_already_running(
+    client: TestClient, session: WorkbenchSession
+):
+    session.set_mode("auto")
+    session._agent_bridge = _StubBridge(available=True, accept=False)
+
+    resp = client.post("/api/transcript/message", json={"text": "go"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+
+
+def test_post_transcript_message_manual_mode_still_returns_200(
+    client: TestClient, session: WorkbenchSession
+):
+    # 既定 manual では bridge が available でも呼ばれず、従来の 200 応答のまま。
+    session._agent_bridge = _StubBridge(available=True)
+    resp = client.post("/api/transcript/message", json={"text": "go"})
+    assert resp.status_code == 200
+    assert resp.json()["message"]["text"] == "go"
+
+
+# ---------------------------------------------------------------------------
+# V3a レビュー指摘 #2: 実行中エージェントと mode 切替/project swap の衝突
+# ---------------------------------------------------------------------------
+
+
+def test_post_mode_returns_409_while_agent_running(client: TestClient, session: WorkbenchSession):
+    session.set_mode("auto")
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    resp = client.post("/api/mode", json={"mode": "manual"})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+    # 拒否された切替でモードは変わらない。
+    assert client.get("/api/state").json()["mode"] == "auto"
+
+
+def test_project_lifecycle_routes_return_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    for method, path, body in [
+        ("post", "/api/project/close", {}),
+        ("post", "/api/project/demo", {}),
+    ]:
+        resp = getattr(client, method)(path, json=body)
+        assert resp.status_code == 409, f"{path} did not 409 while agent running"
+        assert resp.json()["error_type"] == "ConflictError"
+
+
+def test_project_create_returns_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession, tmp_path: Path
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+    directory = tmp_path / "projects"
+    directory.mkdir()
+
+    resp = client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+
+
+def test_project_open_returns_409_while_agent_running(
+    client: TestClient, session: WorkbenchSession, tmp_path: Path
+):
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    resp = client.post("/api/project/open", json={"path": str(tmp_path)})
+
+    assert resp.status_code == 409
+    assert resp.json()["error_type"] == "ConflictError"
+
+
+# ---------------------------------------------------------------------------
+# pending 承認カードの無記録消滅 (レビュー指摘 #1)
+# ---------------------------------------------------------------------------
+
+
+def test_project_close_abandons_pending_approval_card(
+    client: TestClient, session: WorkbenchSession
+):
+    """project ライフサイクル (close/open/create/demo) によるセッション差し替え直前に、旧
+    セッションの未決承認カードが ``approval_abandoned`` として ledger に記録されてから破棄
+    されることを確認する (P2: agent_proposal だけが残り対応する決定が永久に現れない、を防ぐ)。
+
+    demo シードは既定で 1 件の pending カード ("a1") を含む — まずそれを解決してクリーンな
+    0 pending の基線を作ってから、テスト対象の rv-1 だけを起票する。
+    """
+    session.resolve_approval("a1", decision="reject")
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    before_ledger = len(session.ledger.entries)
+
+    resp = client.post("/api/project/close", json={})
+
+    assert resp.status_code == 200
+    # holder.session は差し替わっているが、旧セッション (このテストの `session`) の ledger に
+    # abandoned が記録されている。
+    assert len(session.ledger.entries) == before_ledger + 1
+    last = session.ledger.entries[-1]
+    assert last.kind == "approval_abandoned"
+    assert last.payload == {
+        "action_id": "rv-1", "kind": "review_resolution", "reason": "session swap",
+    }
+    assert session.ledger.verify() is True
+    assert session._approvals["rv-1"]["state"] == "abandoned"
+
+
+def test_project_demo_swap_abandons_all_pending_cards(
+    client: TestClient, session: WorkbenchSession
+):
+    """未決カードが複数件あれば件数分だけ記録される (demo への swap でも同じ経路)。"""
+    session.resolve_approval("a1", decision="reject")
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="y"
+    )
+    before_ledger = len(session.ledger.entries)
+
+    resp = client.post("/api/project/demo", json={})
+
+    assert resp.status_code == 200
+    new_entries = session.ledger.entries[before_ledger:]
+    assert [e.kind for e in new_entries] == ["approval_abandoned", "approval_abandoned"]
+    # action_id の連番は kind を跨いで共有される — review_resolution が先なので "rv-1"、
+    # structure_revision は "sr-2"。
+    assert {e.payload["action_id"] for e in new_entries} == {"rv-1", "sr-2"}
+
+
+def test_project_close_without_pending_cards_appends_nothing(
+    client: TestClient, session: WorkbenchSession
+):
+    """未決カードが 0 件なら abandoned の追記も 0 件 (空振りで監査ノイズを生まない)。"""
+    session.resolve_approval("a1", decision="reject")  # demo 既定の pending カードを解消
+    before_ledger = len(session.ledger.entries)
+
+    resp = client.post("/api/project/close", json={})
+
+    assert resp.status_code == 200
+    assert len(session.ledger.entries) == before_ledger
+
+
+def test_project_close_with_pending_card_still_succeeds_for_human(
+    client: TestClient, session: WorkbenchSession
+):
+    """指摘1: 未決カードの存在自体は人間の swap 操作をブロックしない (記録して進む)。"""
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    resp = client.post("/api/project/close", json={})
+
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "none"
 
 
 # ---------------------------------------------------------------------------

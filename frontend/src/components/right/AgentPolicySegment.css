@@ -1,0 +1,57 @@
+/* AGENT SESSION header's 3-way policy segment (api-contract.md
+   §エージェント権限モード) — mirrors shell.css .mode-toggle's style, scaled
+   down for the 30px pane-head--auto strip (accent-800 background). */
+.agent-policy-seg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-policy-seg__toggle {
+  display: flex;
+  align-items: stretch;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 2px;
+  gap: 2px;
+}
+
+.agent-policy-seg__btn {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  border: 0;
+  background: transparent;
+  color: var(--color-neutral-100);
+  opacity: 0.72;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agent-policy-seg__btn:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.agent-policy-seg__btn--active {
+  background: var(--color-neutral-100);
+  color: var(--color-accent-800);
+  opacity: 1;
+}
+
+.agent-policy-seg__btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.agent-policy-seg__chip {
+  font-size: 9px;
+}
+
+.agent-policy-seg__conflict {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-neutral-100);
+  opacity: 0.85;
+  white-space: nowrap;
+}

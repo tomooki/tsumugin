@@ -65,6 +65,95 @@ export const RIGHT_STRINGS = {
     en: "GSAS-II is not available in this backend — refinement jobs cannot run",
     ja: "このバックエンドでは GSAS-II が利用できません — 精密化ジョブは実行できません",
   },
+  // — AUTO 実 LLM ブリッジ (V3a, api-contract.md §AUTO 実 LLM ブリッジ) —
+  // Replaces src/i18n/strings.ts' demo-era "composerNote" (a hardcoded
+  // handoff-prototype skill name/tool count) now that AgentSession is backed
+  // by a real local `claude` CLI bridge — central i18n/strings.ts is a
+  // read-only 1:1 extraction of that prototype (see this file's header), so
+  // the reality-facing replacement is colocated here instead of edited in.
+  "composer.note.real": {
+    en: "local Claude Code · custody: approvals stay human",
+    ja: "ローカル Claude Code · custody: 承認は人間に残る",
+  },
+  // Composer footer while an agent turn is in flight (SEND disabled) —
+  // shown in place of composer.note.real. {tokens}/{elapsed} are the live
+  // polled values (formatTokens/formatWallTime), not the pre-turn strip.
+  "agent.running": {
+    en: "agent running… ({tokens} · {elapsed})",
+    ja: "エージェント実行中…（{tokens}・{elapsed}）",
+  },
+  // Non-fatal inline failure line (mirrors chat.approval.conflict's
+  // precedent — a 409/failed-job outcome stays local text, not the global
+  // SET_ERROR path) for when GET /api/agent/status reports status=failed.
+  // {detail} is `: <server error>` when the server supplied one, else "".
+  "agent.failed": {
+    en: "agent failed{detail}",
+    ja: "エージェントが失敗しました{detail}",
+  },
+  // Inverted attention chip (mirrors Chip's "inverted" precedent for WARN/
+  // CLOSE/UNKNOWN states) shown in the composer when state.shell.agent.available
+  // is false — the local `claude` CLI / claude-agent-sdk optional extra is
+  // not importable in this backend process.
+  "agent.unavailable.chip": {
+    en: "AGENT UNAVAILABLE — claude CLI / agent extra required",
+    ja: "AGENT UNAVAILABLE — claude CLI / agent extra が必要",
+  },
+  // Kind badge on an approval card (api-contract.md §`propose_*` ツールと承認
+  // カード) — mono inverted chip, one per gates.ts ApprovalKind. Keyed by the
+  // action_id prefix (np-/sr-/rv-/pc-/st-); see gates.ts `approvalKind`.
+  "modelAction.badge.np": { en: "NEW PHASE", ja: "新相" },
+  "modelAction.badge.sr": { en: "REVISE STRUCTURE", ja: "構造改訂" },
+  "modelAction.badge.rv": { en: "REVIEW", ja: "レビュー" },
+  "modelAction.badge.pc": { en: "PHASE", ja: "相" },
+  "modelAction.badge.st": { en: "SETTINGS", ja: "設定" },
+  // `sr-` card summary line above the raw action_json (gates.ts
+  // structureRevisionSiteCount) — kept to one line so it doesn't compete with
+  // the JSON pre for attention (task brief: "過剰にしない").
+  "modelAction.summary.sr": { en: "{n} site(s) changed", ja: "{n} サイト変更" },
+  // Kind-specific post-decision state lines (task: "承認/却下後の状態行に
+  // kind 別文言"). Only used when gates.ts `approvalKind` recognises the
+  // action_id's prefix — an unprefixed/unknown id keeps the pre-existing
+  // generic chat.approval.state* text from src/i18n/strings.ts unchanged, so
+  // the AgentSession/OperatorConsole tests written against the "a1" fixture
+  // (predates the propose_* prefixes) keep passing verbatim.
+  "modelAction.state.applied.np": { en: "applied · new phase added to the phase set", ja: "適用 · 新相を相構成に追加" },
+  "modelAction.state.applied.sr": { en: "applied · structure revision saved to a child snapshot", ja: "適用 · 構造改訂を子スナップショットに保存" },
+  "modelAction.state.applied.rv": { en: "applied · review item resolved", ja: "適用 · レビュー項目を解決" },
+  "modelAction.state.applied.pc": { en: "applied · phase set updated", ja: "適用 · 相構成を更新" },
+  "modelAction.state.applied.st": { en: "applied · refinement settings updated", ja: "適用 · 精密化設定を更新" },
+  "modelAction.state.rejected.np": { en: "rejected · new phase not added", ja: "却下 · 新相は追加されない" },
+  "modelAction.state.rejected.sr": { en: "rejected · structure revision not applied", ja: "却下 · 構造改訂は適用されない" },
+  "modelAction.state.rejected.rv": { en: "rejected · review item left pending", ja: "却下 · レビュー項目は保留のまま" },
+  "modelAction.state.rejected.pc": { en: "rejected · phase set unchanged", ja: "却下 · 相構成は変更されない" },
+  "modelAction.state.rejected.st": { en: "rejected · settings unchanged", ja: "却下 · 設定は変更されない" },
+  // — エージェント権限モード (api-contract.md §エージェント権限モード, V3a) —
+  // AgentPolicySegment's 3-way segment labels (small, mono — mirrors
+  // TitleBar's MANUAL/AUTO mode-toggle style but sized for the 30px
+  // pane-head).
+  "agentPolicy.segment.approve": { en: "APPROVE", ja: "承認" },
+  "agentPolicy.segment.auto": { en: "AUTO", ja: "自動" },
+  "agentPolicy.segment.bypass": { en: "BYPASS", ja: "バイパス" },
+  // Header chip making the current policy explicit when it is NOT the quiet
+  // default ("approve" shows no chip — api-contract.md: "approve のときは
+  // チップ無し (既定なので静か)").
+  "agentPolicy.modeChip.auto": { en: "AUTO-APPLY", ja: "自動適用" },
+  "agentPolicy.modeChip.bypass": { en: "BYPASS", ja: "バイパス" },
+  // Non-fatal inline note for a 409 on POST /api/agent/policy (a turn
+  // started between the disabled-check and the click landing — mirrors
+  // chat.approval.conflict's precedent above).
+  "agentPolicy.conflict": {
+    en: "a turn is in progress · try again once it finishes",
+    ja: "ターン実行中です · 完了後にもう一度お試しください",
+  },
+  // TranscriptItem's auto_applied branch (api-contract.md: "承認カードの
+  // state に auto_applied が加わる (auto/bypass で即時自動適用されたもの)")
+  // — replaces the APPROVE & APPLY/REJECT buttons with a status row, so a
+  // card that was never held for human review can never be re-approved.
+  "agentPolicy.autoApplied.chip": { en: "AUTO-APPLIED", ja: "自動適用済み" },
+  "agentPolicy.autoApplied.note": {
+    en: "auto-applied under agent policy · revert available",
+    ja: "エージェント権限モードで自動適用済み · revert 可能",
+  },
 } as const satisfies Record<string, StringPair>;
 
 export type RightStringKey = keyof typeof RIGHT_STRINGS;

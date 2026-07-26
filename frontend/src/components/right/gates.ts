@@ -98,3 +98,41 @@ export function formatWallTime(seconds: number): string {
 export function formatBic(n: number): string {
   return Math.round(n).toLocaleString("en-US").replace(/,/g, " ");
 }
+
+/** `propose_*` ModelAction kinds (api-contract.md §`propose_*` ツールと承認
+ * カード): each shim tool mints its action_id with one of these prefixes —
+ * `np-<frame>` (existing new-phase proposal, B5) / `sr-<n>`
+ * (propose_structure_revision) / `rv-<n>` (propose_review_resolution) /
+ * `pc-<n>` (propose_phase_change) / `st-<n>` (propose_settings_change). */
+export type ApprovalKind = "np" | "sr" | "rv" | "pc" | "st";
+
+const APPROVAL_KIND_PREFIX = /^(np|sr|rv|pc|st)-/;
+
+/** Which ModelAction kind an approval card's action_id belongs to, for the
+ * kind badge/state-line text. Returns null for anything that doesn't match a
+ * known prefix — an unprefixed id (the pre-V3a "a1"-style fixtures still
+ * used by earlier tests) or a future prefix this build doesn't recognise —
+ * so callers degrade to the generic MODEL ACTION treatment instead of
+ * crashing on unrecognised data (§語彙 の総関数フォールバック原則: 未知は
+ * 無視して安全側に倒す、落ちない). */
+export function approvalKind(actionId: string | undefined): ApprovalKind | null {
+  if (!actionId) return null;
+  const m = APPROVAL_KIND_PREFIX.exec(actionId);
+  return (m?.[1] as ApprovalKind | undefined) ?? null;
+}
+
+/** Number of sites an `sr-` (propose_structure_revision) card's action_json
+ * payload touches, for the "N site(s) changed" summary line above the raw
+ * JSON. action_json is server-supplied free-form text, so this parses
+ * defensively and returns null (→ no summary line, JSON pre still shows)
+ * rather than throwing on anything that isn't `{"sites": [...]}`-shaped. */
+export function structureRevisionSiteCount(actionJson: string | undefined): number | null {
+  if (!actionJson) return null;
+  try {
+    const parsed: unknown = JSON.parse(actionJson);
+    const sites = (parsed as { sites?: unknown } | null)?.sites;
+    return Array.isArray(sites) ? sites.length : null;
+  } catch {
+    return null;
+  }
+}

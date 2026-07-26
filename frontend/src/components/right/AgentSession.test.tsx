@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ShellState, TranscriptMessage, ViewModel } from "../../api/types";
+import type { AgentJobStatus, ShellState, TranscriptMessage, ViewModel } from "../../api/types";
 import { I18nProvider } from "../../i18n";
-import { StoreProvider } from "../../state/store";
+import { StoreProvider, useStore } from "../../state/store";
 import type { WorkbenchState } from "../../state/types";
 import { AgentSession } from "./AgentSession";
 
@@ -261,6 +261,250 @@ describe("AgentSession — approval (ModelAction) transcript item", () => {
   });
 });
 
+// — V3a agent bridge: propose_* ModelAction kinds (api-contract.md
+// §`propose_*` ツールと承認カード) — action_id prefix → kind badge on the
+// approval card. gates.test.ts covers the pure approvalKind/
+// structureRevisionSiteCount mapping; these tests cover the rendering.
+describe("AgentSession — approval card kind badges (propose_* V3a)", () => {
+  function approvalOf(overrides: Partial<TranscriptMessage>): TranscriptMessage {
+    return {
+      id: "t10",
+      kind: "approval",
+      action_id: "np-91",
+      title: "identify new phase at frame 91",
+      rationale: "Rwp jump + unexplained residual at fr091",
+      action_json: '{"frame": 91}',
+      state: "pending",
+      ...overrides,
+    };
+  }
+
+  it.each([
+    ["np-91", "NEW PHASE"],
+    ["sr-4", "REVISE STRUCTURE"],
+    ["rv-2", "REVIEW"],
+    ["pc-1", "PHASE"],
+    ["st-3", "SETTINGS"],
+  ] as const)("shows the %s badge as %s", (actionId, label) => {
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: actionId })]) });
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("shows no kind badge for an unprefixed action_id (pre-V3a 'a1' fixture) and does not crash", () => {
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "a1" })]) });
+    for (const label of ["NEW PHASE", "REVISE STRUCTURE", "REVIEW", "PHASE", "SETTINGS"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    // the rest of the card still renders normally
+    expect(screen.getByRole("button", { name: "APPROVE & APPLY" })).toBeInTheDocument();
+  });
+
+  it("shows no kind badge for an unrecognised prefix and does not crash (§語彙 総関数フォールバック)", () => {
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "xx-1" })]) });
+    for (const label of ["NEW PHASE", "REVISE STRUCTURE", "REVIEW", "PHASE", "SETTINGS"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: "APPROVE & APPLY" })).toBeInTheDocument();
+  });
+
+  it("sr- card shows a 'N site(s) changed' summary line above the raw JSON, without hiding the JSON", () => {
+    renderSession({
+      viewModel: makeViewModel([
+        approvalOf({
+          action_id: "sr-4",
+          action_json: '{"sites":[{"id":"s1"},{"id":"s2"},{"id":"s3"}]}',
+        }),
+      ]),
+    });
+    expect(screen.getByText("3 site(s) changed")).toBeInTheDocument();
+    expect(screen.getByText('{"sites":[{"id":"s1"},{"id":"s2"},{"id":"s3"}]}')).toBeInTheDocument();
+  });
+
+  it("a non-sr- card shows no summary line even with a 'sites'-shaped payload", () => {
+    renderSession({
+      viewModel: makeViewModel([approvalOf({ action_id: "pc-1", action_json: '{"sites":[{"id":"s1"}]}' })]),
+    });
+    expect(screen.queryByText(/site\(s\) changed/)).not.toBeInTheDocument();
+  });
+
+  it("kind-specific state line after APPROVE (np-)", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/np-91")) {
+        return jsonResponse({ state: "approved", snapshot_id: "S-1", ledger_index: 1 });
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "np-91" })]) });
+    await user.click(screen.getByRole("button", { name: "APPROVE & APPLY" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("applied · new phase added to the phase set")).toBeInTheDocument(),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("kind-specific state line after REJECT (rv-)", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/rv-2")) {
+        return jsonResponse({ state: "rejected", snapshot_id: null, ledger_index: 2 });
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "rv-2" })]) });
+    await user.click(screen.getByRole("button", { name: "REJECT" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("rejected · review item left pending")).toBeInTheDocument(),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("unprefixed action_id keeps the pre-existing generic state line verbatim (backward compatibility)", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/approval/a1")) {
+        return jsonResponse({ state: "approved", snapshot_id: "S-0311", ledger_index: 1284 });
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ viewModel: makeViewModel([approvalOf({ action_id: "a1" })]) });
+    await user.click(screen.getByRole("button", { name: "APPROVE & APPLY" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("applied in snapshot S-0311 · ledger #1284 · revert available"),
+      ).toBeInTheDocument(),
+    );
+    vi.unstubAllGlobals();
+  });
+});
+
+// — V3a: エージェント権限モード (api-contract.md §エージェント権限モード) —
+// auto_applied approval cards (auto/bypass policy) carry no APPROVE/REJECT.
+describe("AgentSession — auto_applied (agent policy auto/bypass) approval card", () => {
+  const autoAppliedMsg: TranscriptMessage = {
+    id: "t20",
+    kind: "approval",
+    action_id: "pc-9",
+    title: "AddPhase · monoclinic",
+    rationale: "residual unexplained at fr091",
+    action_json: '{"action":"AddPhase"}',
+    state: "auto_applied",
+  };
+
+  it("shows the AUTO-APPLIED chip and status row instead of APPROVE/REJECT buttons", () => {
+    renderSession({ viewModel: makeViewModel([autoAppliedMsg]) });
+
+    expect(screen.getByText("AUTO-APPLIED")).toBeInTheDocument();
+    expect(
+      screen.getByText("auto-applied under agent policy · revert available"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("PHASE")).toBeInTheDocument(); // pc- kind badge, unaffected
+  });
+
+  // Mutation-provable guard (task brief: "変異実証"): proves the auto_applied
+  // branch in TranscriptItem actually replaces the action buttons rather than
+  // just adding text alongside them — a card that was never held for human
+  // review must never expose a re-approve/re-reject control (removing the
+  // early `return` for the auto_applied branch would make this assertion
+  // fail, since the generic pending/approved/rejected buttons render below).
+  it("renders no APPROVE & APPLY / REJECT buttons at all", () => {
+    renderSession({ viewModel: makeViewModel([autoAppliedMsg]) });
+
+    expect(screen.queryByRole("button", { name: "APPROVE & APPLY" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "APPLIED ✓" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "REJECT" })).not.toBeInTheDocument();
+  });
+
+  it("an unprefixed auto_applied action_id still renders the status row without a kind badge", () => {
+    renderSession({
+      viewModel: makeViewModel([{ ...autoAppliedMsg, action_id: "a9" }]),
+    });
+    expect(screen.getByText("AUTO-APPLIED")).toBeInTheDocument();
+    expect(screen.queryByText("PHASE")).not.toBeInTheDocument();
+  });
+});
+
+// — V3a: agentTurnRunning sync (api-contract.md §エージェント権限モード) —
+// AgentSession is the sole owner of AgentJobStatus polling; it syncs just the
+// running boolean to the store so AgentPolicySegment (a header sibling, not
+// a child) can gate its 3-way segment on it without a second poll loop.
+describe("AgentSession — syncs state.agentTurnRunning for AgentPolicySegment", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Exposes state.agentTurnRunning as a text node (mirrors this file's
+   * DebugState precedent). */
+  function DebugAgentTurnRunning() {
+    const { state } = useStore();
+    return <span data-testid="debug-turn-running">{String(state.agentTurnRunning)}</span>;
+  }
+
+  function renderWithTurnRunningDebug(initialState: Partial<WorkbenchState>) {
+    function Wrapper({ children }: { children: ReactNode }) {
+      return (
+        <I18nProvider lang="en">
+          <StoreProvider initialState={{ shell: makeShell(), ...initialState }}>{children}</StoreProvider>
+        </I18nProvider>
+      );
+    }
+    return render(
+      <>
+        <AgentSession />
+        <DebugAgentTurnRunning />
+      </>,
+      { wrapper: Wrapper },
+    );
+  }
+
+  it("is false before any turn starts, true once one starts, and false again at idle", async () => {
+    vi.useFakeTimers();
+    const runningStatus: AgentJobStatus = {
+      status: "running",
+      available: true,
+      tokens: 1,
+      wall_time_s: 1,
+      error: null,
+    };
+    const idleStatus: AgentJobStatus = {
+      status: "idle",
+      available: true,
+      tokens: 2,
+      wall_time_s: 2,
+      error: null,
+    };
+    installAgentBridgeFetchMock({ statuses: [runningStatus, idleStatus] });
+
+    renderWithTurnRunningDebug({ viewModel: makeViewModel([]), draft: "hello" });
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+    // optimistic "running" set synchronously on the 202 response, before the
+    // first poll tick.
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("true");
+
+    await advanceTimers(2000); // tick 1 → running
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("true");
+
+    await advanceTimers(2000); // tick 2 → idle
+    expect(screen.getByTestId("debug-turn-running").textContent).toBe("false");
+  });
+});
+
 describe("AgentSession — composer", () => {
   it("SEND calls postTranscriptMessage and clears the draft", async () => {
     const user = userEvent.setup();
@@ -307,5 +551,246 @@ describe("AgentSession — composer", () => {
     expect(fetchMock).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
+  });
+});
+
+// — V3a: AUTO 実 LLM ブリッジ (api-contract.md §AUTO 実 LLM ブリッジ) —
+
+/** Exposes state.error as a text node so the polling tests below can assert
+ * on the non-fatal-vs-fatal distinction (409 / failed) that AgentSession
+ * itself doesn't fully render — mirrors OperatorConsole.test.tsx's
+ * DebugState precedent. */
+function DebugState() {
+  const { state } = useStore();
+  return <span data-testid="debug-error">{state.error ?? ""}</span>;
+}
+
+function renderSessionWithDebug(initialState: Partial<WorkbenchState>) {
+  function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <I18nProvider lang="en">
+        <StoreProvider initialState={{ shell: makeShell(), ...initialState }}>{children}</StoreProvider>
+      </I18nProvider>
+    );
+  }
+  return render(
+    <>
+      <AgentSession />
+      <DebugState />
+    </>,
+    { wrapper: Wrapper },
+  );
+}
+
+/** Fetch mock for the V3a bridge flow: POST /api/transcript/message →
+ * `transcriptResponse` (or rejects with `transcriptRejects`, once); GET
+ * /api/agent/status → the next entry of `statuses` each call (repeats the
+ * last entry once exhausted); GET /api/viewmodel → the next entry of
+ * `viewModels` each call (repeats the last entry once exhausted, defaults to
+ * an empty-transcript viewmodel so tests that don't care can omit it). */
+function installAgentBridgeFetchMock(opts: {
+  transcriptResponse?: unknown;
+  transcriptRejects?: { status: number; body: unknown };
+  statuses?: AgentJobStatus[];
+  viewModels?: ViewModel[];
+}) {
+  let statusCallIndex = 0;
+  let vmCallIndex = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+
+    if (url.endsWith("/api/transcript/message") && method === "POST") {
+      if (opts.transcriptRejects) {
+        return {
+          ok: false,
+          status: opts.transcriptRejects.status,
+          statusText: "Conflict",
+          json: async () => opts.transcriptRejects!.body,
+        } as Response;
+      }
+      return jsonResponse(opts.transcriptResponse ?? { status: "agent_started" });
+    }
+    if (url.endsWith("/api/agent/status") && method === "GET") {
+      const statuses = opts.statuses ?? [];
+      const body = statuses[Math.min(statusCallIndex, statuses.length - 1)];
+      statusCallIndex += 1;
+      return jsonResponse(body);
+    }
+    if (url.endsWith("/api/viewmodel") && method === "GET") {
+      const viewModels = opts.viewModels ?? [makeViewModel([])];
+      const body = viewModels[Math.min(vmCallIndex, viewModels.length - 1)];
+      vmCallIndex += 1;
+      return jsonResponse(body);
+    }
+    throw new Error(`unhandled fetch: ${method} ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** Flushes pending microtasks (the postTranscriptMessage().then(...) chain)
+ * without advancing fake timers, wrapped in `act` so the resulting dispatch
+ * is batched like a real event (mirrors OperatorConsole.test.tsx's
+ * precedent). */
+async function flushMicrotasks(times = 6) {
+  await act(async () => {
+    for (let i = 0; i < times; i++) {
+      await Promise.resolve();
+    }
+  });
+}
+
+/** Advances fake timers (running the setInterval poll tick + its promise
+ * chain) inside `act` so the resulting store dispatch is flushed before the
+ * next assertion. */
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+describe("AgentSession — V3a agent bridge: SEND starts an agent turn (202)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("202 agent_started polls /api/agent/status every 2s, refetches the viewmodel while running (transcript grows), and stops polling at idle", async () => {
+    vi.useFakeTimers();
+    const runningStatus: AgentJobStatus = {
+      status: "running",
+      available: true,
+      tokens: 500,
+      wall_time_s: 4,
+      error: null,
+    };
+    const idleStatus: AgentJobStatus = {
+      status: "idle",
+      available: true,
+      tokens: 12_400,
+      wall_time_s: 96,
+      error: null,
+    };
+    const grownViewModel = makeViewModel([
+      { id: "a1", kind: "agent", text: "checking phase set completeness first" },
+    ]);
+    const fetchMock = installAgentBridgeFetchMock({
+      statuses: [runningStatus, idleStatus],
+      viewModels: [grownViewModel],
+    });
+
+    renderSessionWithDebug({ viewModel: makeViewModel([]), draft: "check the phase set" });
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+
+    // draft cleared and SEND disabled immediately (optimistic — before the
+    // first poll tick), same as the fallback path's draft-clear behaviour.
+    expect(screen.getByPlaceholderText("Ask about this frame, or send an instruction…")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+
+    await advanceTimers(2000); // tick 1 → running: status polled + viewmodel refetched
+    expect(screen.getByText("checking phase set completeness first")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+    // budget strip reflects the LIVE polled values, not the shell-seeded ones
+    expect(screen.getByText("500")).toBeInTheDocument();
+    expect(screen.getByText("0 m 04 s")).toBeInTheDocument();
+
+    await advanceTimers(2000); // tick 2 → idle: polling stops, SEND re-enabled
+    expect(screen.getByRole("button", { name: "SEND" })).not.toBeDisabled();
+    expect(screen.getByText("12.4 k")).toBeInTheDocument();
+
+    const statusCallsAtIdle = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith("/api/agent/status"),
+    ).length;
+    await advanceTimers(4000);
+    const statusCallsAfter = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith("/api/agent/status"),
+    ).length;
+    expect(statusCallsAfter).toBe(statusCallsAtIdle); // no further ticks once idle
+
+    expect(screen.getByTestId("debug-error").textContent).toBe("");
+  });
+
+  it("a 409 (a turn is already running) is treated as non-fatal and starts polling instead of a fatal error", async () => {
+    vi.useFakeTimers();
+    installAgentBridgeFetchMock({
+      transcriptRejects: { status: 409, body: { error: "agent turn already running", error_type: "ConflictError" } },
+      statuses: [{ status: "running", available: true, tokens: 10, wall_time_s: 1, error: null }],
+    });
+
+    renderSessionWithDebug({ viewModel: makeViewModel([]), draft: "hello" });
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+    expect(screen.getByTestId("debug-error").textContent).toBe("");
+  });
+
+  it("a failed agent turn shows the error inline (non-fatal path) and re-enables SEND", async () => {
+    vi.useFakeTimers();
+    installAgentBridgeFetchMock({
+      statuses: [{ status: "failed", available: true, tokens: 20, wall_time_s: 3, error: "max_turns exceeded" }],
+    });
+
+    renderSessionWithDebug({ viewModel: makeViewModel([]), draft: "do something long-running" });
+
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    await flushMicrotasks();
+    await advanceTimers(2000);
+
+    expect(screen.getByText("agent failed: max_turns exceeded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).not.toBeDisabled();
+    // a job failure is not routed through the global/fatal error path (mirrors
+    // TranscriptItem's approval-409 precedent: inline text, not state.error).
+    expect(screen.getByTestId("debug-error").textContent).toBe("");
+  });
+});
+
+describe("AgentSession — V3a agent bridge: agent unavailable", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function unavailableShell(): ShellState {
+    return {
+      ...makeShell(),
+      agent: { tokens: 0, wall_time_s: 0, idle: true, available: false },
+    };
+  }
+
+  it("state.shell.agent.available === false disables SEND and shows the AGENT UNAVAILABLE chip", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSession({ shell: unavailableShell(), viewModel: makeViewModel([]), draft: "anything" });
+
+    expect(screen.getByText("AGENT UNAVAILABLE — claude CLI / agent extra required")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).toBeDisabled();
+
+    // A disabled button never dispatches a click — this is the DOM-level
+    // guard a mutation of the `disabled={... || !available}` wiring would
+    // break (verified by hand: removing `!available` from that expression
+    // makes this assertion fail — the button is enabled and the click below
+    // reaches fetch).
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("available === true (or omitted) leaves SEND enabled and shows no chip", () => {
+    renderSession({ viewModel: makeViewModel([]) });
+    expect(
+      screen.queryByText("AGENT UNAVAILABLE — claude CLI / agent extra required"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SEND" })).not.toBeDisabled();
+  });
+});
+
+describe("AgentSession — V3a composer footer", () => {
+  it("shows the real-bridge footer note (not the demo skill/tool-count text) when idle", () => {
+    renderSession({ viewModel: makeViewModel([]) });
+    expect(screen.getByText("local Claude Code · custody: approvals stay human")).toBeInTheDocument();
   });
 });

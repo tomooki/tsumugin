@@ -80,6 +80,17 @@ class OEDUnavailableError(TsumuginError):
     """
 
 
+class ConflictError(TsumuginError):
+    """操作が現在の状態と両立しないため拒否されたとき (HTTP 409 相当)。🔵 V3a レビュー指摘 #2
+
+    workbench 層 (`tsumugin.workbench.session`/`app`) が使う: 実行中の AUTO エージェントの
+    1 ターン (`AgentBridge`) やジョブと衝突するモード切替/プロジェクト swap を拒否する際に送出する。
+    多くの workbench メソッドは同種の衝突を ``{"error", "error_type": "ConflictError"}`` dict へ
+    縮退させて返す規約だが (`request_refine` 等)、``set_mode`` は成功時に ``bool`` を返す既存契約
+    (呼び出し側が真偽で分岐) のため、衝突時のみ本例外を送出し呼び出し側 (`app.py`) が 409 へ変換する。
+    """
+
+
 class MPUnavailableError(TsumuginError):
     """optional extra ``mp`` (pymatgen / mp-api) 未導入で Materials Project 供給元を要求したとき。🔵 FR-101
 

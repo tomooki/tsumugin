@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from ..errors import LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
+from ..errors import ConflictError, LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
 from . import lifecycle
 from .session import WorkbenchSession
 
@@ -44,6 +44,11 @@ _ERROR_STATUS: dict[str, int] = {
 
 #: POST /api/project 系の「現在のセッションが refine 実行中」ガード共通メッセージ (api-contract.md)。
 _REFINING_CONFLICT = {"error": "refinement is running", "error_type": "ConflictError"}
+
+#: project ライフサイクルルート (create/open/close/demo) の「AUTO エージェントが実行中」ガード
+#: 共通メッセージ (V3a レビュー指摘 #2)。実行中に swap すると、バックグラウンドスレッドが
+#: 差し替え前後どちらのセッションに書き込むべきかが不定になる (`WorkbenchSession.agent_running`)。
+_AGENT_RUNNING_CONFLICT = {"error": "agent is running", "error_type": "ConflictError"}
 
 
 class _SessionHolder:
@@ -158,11 +163,18 @@ def create_workbench_app(
     def _guarded_swap(build_new_session: "Callable[[], WorkbenchSession]") -> Any:
         """project ライフサイクルルート (create/open/close/demo) 共通の直列化ヘルパ。
 
-        「refine 実行中でないことの再確認」→「新セッション構築 (I/O)」→「swap」を
-        ``holder.lock`` 保持下で一括して行う。POST /api/refine (``post_refine``) も同じロックを
+        「refine 実行中でないことの再確認」→「旧セッションの pending 承認カードを
+        ``approval_abandoned`` として記録」→「新セッション構築 (I/O)」→「swap」を
+        ``holder.lock`` 保持下で一括して行う (レビュー指摘 #1)。POST /api/refine (``post_refine``) も同じロックを
         取るため、この関数の実行中は refine の起動が待たされ (逆もまた然り)、guard 確認から
         swap までの間隙に別スレッドが旧セッションで refine を起動する TOCTOU が起きない
         (セルフレビュー指摘 #2)。
+
+        同様に AUTO エージェント (`AgentBridge`) が実行中の swap も拒否する (V3a レビュー指摘 #2):
+        ``AgentBridge`` は construction 時に束縛したクロージャ (``on_event``/``get_state_summary``)
+        で旧セッションを指し続けるため、実行中に swap すると完了時のバックグラウンドスレッドが
+        差し替え後のセッションから見えない旧セッションへ書き込む (更新が消える) か、新旧セッションの
+        状態が混線する。
 
         ``build_new_session`` が送出する例外はロック解放後にそのまま呼び出し元 (route ハンドラ) へ
         伝播する — ``with`` 文がロック解放を保証するため、呼び出し元は例外の型ごとに 4xx へ
@@ -171,6 +183,15 @@ def create_workbench_app(
         with holder.lock:
             if holder.session.refine_status()["status"] == "running":
                 return JSONResponse(status_code=409, content=dict(_REFINING_CONFLICT))
+            if holder.session.agent_running():
+                return JSONResponse(status_code=409, content=dict(_AGENT_RUNNING_CONFLICT))
+            # 【レビュー指摘 #1: pending 承認カードの無記録消滅】: 旧セッションに未決
+            #   (np-/sr-/rv-/pc-/st-) の承認カードが残っていれば、破棄する前に 1 件ごと
+            #   ``approval_abandoned`` を旧セッションの ledger へ追記する — 何も記録せず消えると
+            #   「agent_proposal はあるのに対応する決定が永久に現れない」状態になり、bypass では
+            #   エージェント自身が自分の起票をこの経路で無記録に消せてしまう (P2 違反)。
+            #   **人間の操作はブロックしない** (閉じられないと不便) — 記録した上で swap を進める。
+            holder.session.abandon_pending_approvals()
             holder.session = build_new_session()
             return holder.session.state()
 
@@ -187,7 +208,12 @@ def create_workbench_app(
         mode = body.get("mode")
         if mode not in ("manual", "auto"):
             return _invalid("mode", mode)
-        holder.session.set_mode(mode)
+        try:
+            holder.session.set_mode(mode)
+        except ConflictError as exc:
+            return JSONResponse(
+                status_code=409, content={"error": str(exc), "error_type": "ConflictError"}
+            )
         return holder.session.state()
 
     # ------------------------------------------------------------------
@@ -482,6 +508,25 @@ def create_workbench_app(
         return _to_response(result)
 
     # ------------------------------------------------------------------
+    # POST /api/proposals, GET /api/proposals (ModelAction 起票, V3a 権限境界改訂)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/proposals")
+    def post_proposal(body: dict[str, Any] = Body(...)) -> Any:
+        kind = body.get("kind")
+        payload = body.get("payload")
+        if not isinstance(kind, str):
+            return _invalid("kind", kind)
+        if not isinstance(payload, dict):
+            return _invalid("payload", payload)
+        result = holder.session.create_proposal(kind, payload, rationale=body.get("rationale", ""))
+        return _to_response(result)
+
+    @app.get("/api/proposals")
+    def get_proposals() -> dict[str, Any]:
+        return {"pending": holder.session.pending_approvals()}
+
+    # ------------------------------------------------------------------
     # POST /api/stages/{nn}
     # ------------------------------------------------------------------
 
@@ -587,8 +632,35 @@ def create_workbench_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/transcript/message")
-    def post_transcript_message(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        return holder.session.post_message(body.get("text", ""))
+    def post_transcript_message(body: dict[str, Any] = Body(...)) -> Any:
+        result = holder.session.post_message(body.get("text", ""))
+        success_status = 202 if result.get("status") == "agent_started" else 200
+        return _to_response(result, success_status=success_status)
+
+    # ------------------------------------------------------------------
+    # GET /api/agent/status (V3a)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/agent/status")
+    def get_agent_status() -> dict[str, Any]:
+        return holder.session.agent_status()
+
+    # ------------------------------------------------------------------
+    # POST /api/agent/policy (エージェント権限モード, 2026-07-26 権限境界改訂)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/agent/policy")
+    def post_agent_policy(body: dict[str, Any] = Body(...)) -> Any:
+        policy = body.get("policy")
+        if policy not in ("approve", "auto", "bypass"):
+            return _invalid("policy", policy)
+        try:
+            holder.session.set_agent_policy(policy)
+        except ConflictError as exc:
+            return JSONResponse(
+                status_code=409, content={"error": str(exc), "error_type": "ConflictError"}
+            )
+        return holder.session.state()
 
     # ------------------------------------------------------------------
     # 静的配信 (ビルド済み frontend があれば / で配信、無ければ案内 JSON)

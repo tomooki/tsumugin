@@ -12,6 +12,7 @@ import dataclasses
 import json
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -77,6 +78,34 @@ def test_set_mode_round_trip_appends_two_entries():
 
     assert len(session.ledger.entries) == before + 2
     assert session.mode == "manual"
+
+
+# ---------------------------------------------------------------------------
+# V3a レビュー指摘 #2: 実行中エージェントと mode 切替の衝突
+# ---------------------------------------------------------------------------
+
+
+def test_set_mode_rejects_switch_while_agent_running():
+    from tsumugin.errors import ConflictError
+
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    before = len(session.ledger.entries)
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    with pytest.raises(ConflictError):
+        session.set_mode("manual")
+
+    # 拒否された切替は ledger にも engine.mode にも副作用を残さない。
+    assert session.mode == "auto"
+    assert len(session.ledger.entries) == before
+
+
+def test_agent_running_reflects_bridge_status():
+    session = WorkbenchSession.create_demo()
+    assert session.agent_running() is False
+    session._agent_bridge = _StubBridge(available=True, running=True)
+    assert session.agent_running() is True
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +258,578 @@ def test_viewmodel_transcript_approval_state_reflects_resolution():
 
 
 # ---------------------------------------------------------------------------
+# ModelAction 起票 (create_proposal / 一般化 resolve_approval, 2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_create_proposal_structure_revision_creates_pending_card_and_ledger():
+    session = WorkbenchSession.create_demo()
+    before_ledger = len(session.ledger.entries)
+
+    result = session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.71}]},
+        rationale="occupancy drift observed",
+    )
+
+    assert result == {"action_id": "sr-1", "state": "pending"}
+    assert len(session.ledger.entries) == before_ledger + 1
+    assert session.ledger.entries[-1].kind == "agent_proposal"
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "sr-1")
+    assert card["kind"] == "approval"
+    assert card["state"] == "pending"
+    assert card["rationale"] == "occupancy drift observed"
+    assert json.loads(card["action_json"]) == {"sites": [{"id": "s1", "label": "O1", "occ": 0.71}]}
+
+
+def test_create_proposal_unknown_kind_returns_422_error_dict():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("bogus_kind", {}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_non_dict_payload_returns_422_error_dict():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("structure_revision", "not-a-dict", rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_structure_revision_empty_sites_returns_422():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("structure_revision", {"sites": []}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_review_resolution_unknown_item_id_returns_404_at_propose_time():
+    session = WorkbenchSession.create_demo()
+    before_ledger = len(session.ledger.entries)
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": "no-such-item", "action": "accept"}, rationale="x"
+    )
+
+    assert result["error_type"] == "NotFoundError"
+    # 起票時に弾かれる = ledger に agent_proposal は残らない (承認時まで持ち越さない)
+    assert len(session.ledger.entries) == before_ledger
+
+
+def test_create_proposal_review_resolution_invalid_action_returns_422():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "bogus"}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_phase_change_without_project_returns_422():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal(
+        "phase_change", {"op": "add", "phase_name": "p1", "structure_path": "p1.cif"}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_phase_change_add_requires_structure_path(project_session: WorkbenchSession):
+    result = project_session.create_proposal(
+        "phase_change", {"op": "add", "phase_name": "p1"}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_phase_change_remove_unknown_phase_returns_404(
+    project_session: WorkbenchSession,
+):
+    result = project_session.create_proposal(
+        "phase_change", {"op": "remove", "phase_name": "no-such-phase"}, rationale="x"
+    )
+    assert result["error_type"] == "NotFoundError"
+
+
+def test_create_proposal_settings_change_without_project_returns_422():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("settings_change", {"max_cyc": 10}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_settings_change_requires_at_least_one_field(
+    project_session: WorkbenchSession,
+):
+    result = project_session.create_proposal("settings_change", {}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_settings_change_invalid_two_theta_limits_returns_422(
+    project_session: WorkbenchSession,
+):
+    result = project_session.create_proposal(
+        "settings_change", {"two_theta_limits": ["not", "numbers"]}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# エージェント権限モード (agent_policy, 2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_policy_defaults_to_approve():
+    session = WorkbenchSession.create_demo()
+    assert session.agent_policy == "approve"
+    assert session.state()["agent"]["policy"] == "approve"
+
+
+def test_set_agent_policy_switches_and_appends_single_ledger_entry():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    changed = session.set_agent_policy("auto")
+
+    assert changed is True
+    assert session.agent_policy == "auto"
+    assert session.state()["agent"]["policy"] == "auto"
+    assert len(session.ledger.entries) == before + 1
+    assert session.ledger.entries[-1].kind == "agent_policy_change"
+    assert session.ledger.entries[-1].payload["policy"] == "auto"
+
+
+def test_set_agent_policy_same_value_is_noop_and_does_not_append_ledger():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    changed = session.set_agent_policy("approve")
+
+    assert changed is False
+    assert session.agent_policy == "approve"
+    assert len(session.ledger.entries) == before
+
+
+def test_set_agent_policy_rejects_unknown_value():
+    session = WorkbenchSession.create_demo()
+    with pytest.raises(ValueError):
+        session.set_agent_policy("bogus")
+
+
+def test_set_agent_policy_round_trip_appends_three_entries():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    session.set_agent_policy("auto")
+    session.set_agent_policy("bypass")
+    session.set_agent_policy("approve")
+
+    assert len(session.ledger.entries) == before + 3
+    assert session.agent_policy == "approve"
+
+
+def test_set_agent_policy_rejects_switch_while_agent_running():
+    from tsumugin.errors import ConflictError
+
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+    session._agent_bridge = _StubBridge(available=True, running=True)
+
+    with pytest.raises(ConflictError):
+        session.set_agent_policy("auto")
+
+    assert session.agent_policy == "approve"
+    assert len(session.ledger.entries) == before
+
+
+# ---------------------------------------------------------------------------
+# create_proposal の agent_policy 分岐 (auto/bypass 即時自動適用)
+# ---------------------------------------------------------------------------
+
+
+def test_create_proposal_auto_policy_immediately_executes_review_resolution():
+    session = WorkbenchSession.create_demo()
+    session.set_agent_policy("auto")
+    item_id = session.review_queue.items[0].item_id
+    before_ledger = len(session.ledger.entries)
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    assert result["action_id"] == "rv-1"
+    assert result["state"] == "auto_applied"
+    assert "result" in result
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is True
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "rv-1")
+    assert card["state"] == "auto_applied"
+    # agent_proposal + review_resolve (実操作) + approval_decision(auto) の 3 件が追記される。
+    kinds = [e.kind for e in session.ledger.entries[before_ledger:]]
+    assert kinds == ["agent_proposal", "review_resolve", "approval_decision"]
+    assert session.ledger.entries[-1].payload["decision"] == "auto"
+
+
+def test_create_proposal_bypass_policy_immediately_executes_structure_revision():
+    session = WorkbenchSession.create_demo()
+    session.set_agent_policy("bypass")
+    before_snaps = len(session.snapshots.snapshots)
+
+    result = session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.9}]}, rationale="x"
+    )
+
+    assert result["state"] == "auto_applied"
+    assert len(session.snapshots.snapshots) == before_snaps + 1
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "sr-1")
+    assert card["state"] == "auto_applied"
+
+
+def test_create_proposal_auto_policy_execution_failure_leaves_card_pending():
+    """auto 適用の実操作が失敗すれば error dict + カードは pending 相当に残る (再試行可能)。"""
+    session = WorkbenchSession.create_demo()
+    session.set_agent_policy("auto")
+    item_id = session.review_queue.items[0].item_id
+    # 【失敗を決定論的に再現】: _execute_proposal 呼び出しの直前に、別経路 (人間の GUI 操作を
+    #   模擬) で同じ項目を先に解決してしまう競合を注入する (resolve_review_item は「既に
+    #   解決済み」を ConflictError error dict で返す — session.py L705 付近)。
+    original_execute = session._execute_proposal
+
+    def _fail_once(kind, payload):
+        session.resolve_review_item(item_id, action="send_back")
+        return original_execute(kind, payload)
+
+    session._execute_proposal = _fail_once
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    assert "error" in result
+    assert result["action_id"] == "rv-1"
+    assert result["state"] == "pending"
+    assert "rv-1" not in session._approvals
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "rv-1")
+    assert card["state"] == "pending"
+    # approve 経路で人間が承認/却下できるよう、起票 (create_proposal 側の validation) は
+    # 通っていたことを確認する — pending_approvals にも引き続き現れる。
+    assert any(row["action_id"] == "rv-1" for row in session.pending_approvals())
+
+
+def test_create_proposal_approve_policy_default_still_creates_pending_only():
+    """既定 (approve) の回帰: create_proposal は実操作を起こさずカードのみを作る。"""
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    assert result == {"action_id": "rv-1", "state": "pending"}
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is False
+    kinds = [e.kind for e in session.ledger.entries]
+    assert "approval_decision" not in kinds
+
+
+# ---------------------------------------------------------------------------
+# 並行 create_proposal(auto) の lost update (レビュー指摘 #2: self._lock を RLock 化)
+# ---------------------------------------------------------------------------
+
+
+def test_create_proposal_auto_concurrent_phase_change_add_no_lost_update(
+    project_session: WorkbenchSession, monkeypatch
+):
+    """指摘2: auto ポリシーで 2 件の propose_phase_change(op=add) が同一ターンで並走しても、
+    ``self._project`` の read-modify-write (``add_phase``) が ``self._lock`` (RLock) 下で直列化
+    され、どちらの変更も消えないことを実証する。
+
+    ``dataclasses.replace(project, phases=...)`` 呼び出し (``add_phase``/``remove_phase`` の
+    書込み直前) へ ``threading.Barrier(2)`` を仕込み、2 スレッドが「``self._project.phases`` の
+    読取直後・``self._project`` への書込み直前」に同時到達できてしまう場合を deterministic に
+    再現する。
+
+    - **ロックが効いていれば**: 片方のスレッドは ``add_phase`` 冒頭の ``with self._lock:`` の
+      外で足止めされ、barrier の相手が来ないため待機は timeout する (``BrokenBarrierError`` を
+      握りつぶしてそのまま処理を続ける — 直列実行なので待つ意味がない)。ロックを保持したまま
+      読取→書込みが完結するため、後続スレッドは前者が反映した相を含む最新の ``self._project``
+      から読み直し、**両方の相が最終的に残る**。
+    - **ロックを外す変異では**: 両スレッドが無防備に「読取直後」へほぼ同時到達でき、barrier が
+      高確率で解消する。両者とも同一の (まだ相手の追加を含まない) 古い ``self._project`` から
+      新タプルを計算し、後勝ちの代入がもう片方の相追加を丸ごと消す — このテストは phaseA/phaseB
+      のどちらかが最終的に欠落することで検知する (手動で ``add_phase``/``create_proposal`` の
+      ``with self._lock:`` を外して本テストを実行し fail することを確認済み)。
+    """
+    session = project_session
+    session.set_agent_policy("auto")
+
+    barrier = threading.Barrier(2)
+    original_replace = dataclasses.replace
+
+    def hooked_replace(obj, **changes):
+        if "phases" in changes:
+            try:
+                barrier.wait(timeout=0.3)
+            except threading.BrokenBarrierError:
+                pass
+        return original_replace(obj, **changes)
+
+    import tsumugin.workbench.session as session_module
+
+    monkeypatch.setattr(session_module.dataclasses, "replace", hooked_replace)
+
+    results: dict[str, Any] = {}
+    errors: list[BaseException] = []
+    out_lock = threading.Lock()
+
+    def _propose(name: str, path: str) -> None:
+        try:
+            r = session.create_proposal(
+                "phase_change",
+                {"op": "add", "phase_name": name, "structure_path": path},
+                rationale="x",
+            )
+            with out_lock:
+                results[name] = r
+        except BaseException as exc:  # noqa: BLE001 — 収集して assert で可視化する
+            with out_lock:
+                errors.append(exc)
+
+    t1 = threading.Thread(target=_propose, args=("phaseA", "a.cif"))
+    t2 = threading.Thread(target=_propose, args=("phaseB", "b.cif"))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not errors, f"unexpected exceptions: {errors}"
+    assert results["phaseA"]["state"] == "auto_applied", results["phaseA"]
+    assert results["phaseB"]["state"] == "auto_applied", results["phaseB"]
+
+    names = {p.phase_name for p in session._project.phases}
+    assert "phaseA" in names, "phaseA lost — read-modify-write race (指摘2, lost update)"
+    assert "phaseB" in names, "phaseB lost — read-modify-write race (指摘2, lost update)"
+
+    project_edits = [e for e in session.ledger.entries if e.kind == "project_edit"]
+    assert len(project_edits) == 2
+    assert session.ledger.verify() is True
+
+
+def test_resolve_generic_proposal_structure_revision_approve_creates_snapshot():
+    session = WorkbenchSession.create_demo()
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.9}]}, rationale="x"
+    )
+    before_snaps = len(session.snapshots.snapshots)
+
+    result = session.resolve_approval("sr-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert result["snapshot_id"] is not None
+    assert len(session.snapshots.snapshots) == before_snaps + 1
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "sr-1")
+    assert card["state"] == "approved"
+
+
+def test_resolve_generic_proposal_review_resolution_approve_resolves_item():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    result = session.resolve_approval("rv-1", decision="approve")
+
+    assert result["state"] == "approved"
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is True
+    row = next(r for r in session.review_view() if r["id"] == item_id)
+    assert row["state"] == "accepted"
+
+
+def test_resolve_generic_proposal_phase_change_add_approve_adds_phase(
+    project_session: WorkbenchSession,
+):
+    project_session.create_proposal(
+        "phase_change",
+        {"op": "add", "phase_name": "phaseX", "structure_path": "data/phaseX.cif"},
+        rationale="x",
+    )
+    before = len(project_session._project.phases)
+
+    result = project_session.resolve_approval("pc-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert len(project_session._project.phases) == before + 1
+    assert any(p.phase_name == "phaseX" for p in project_session._project.phases)
+
+
+def test_resolve_generic_proposal_phase_change_remove_approve_removes_phase(
+    project_session: WorkbenchSession,
+):
+    project_session.add_phase(structure_path="p.cif", phase_name="phaseY")
+    project_session.create_proposal(
+        "phase_change", {"op": "remove", "phase_name": "phaseY"}, rationale="x"
+    )
+
+    result = project_session.resolve_approval("pc-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert not any(p.phase_name == "phaseY" for p in project_session._project.phases)
+
+
+def test_resolve_generic_proposal_settings_change_approve_applies_settings(
+    project_session: WorkbenchSession,
+):
+    project_session.create_proposal("settings_change", {"max_cyc": 42}, rationale="x")
+
+    result = project_session.resolve_approval("st-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert project_session._project.max_cyc == 42
+
+
+def test_resolve_generic_proposal_reject_appends_ledger_only():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    result = session.resolve_approval("rv-1", decision="reject")
+
+    assert result["state"] == "rejected"
+    assert result["snapshot_id"] is None
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is False  # reject では実操作は起きない
+
+
+def test_resolve_generic_proposal_double_approve_returns_409():
+    session = WorkbenchSession.create_demo()
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="x"
+    )
+    session.resolve_approval("sr-1", decision="approve")
+
+    result = session.resolve_approval("sr-1", decision="approve")
+
+    assert result["error_type"] == "ConflictError"
+
+
+def test_resolve_generic_proposal_unknown_action_id_returns_404():
+    session = WorkbenchSession.create_demo()
+    result = session.resolve_approval("sr-999", decision="approve")
+    assert result["error_type"] == "NotFoundError"
+
+
+def test_resolve_generic_proposal_execution_failure_reverts_card_to_pending():
+    """approve 時の実操作 (resolve_review_item) が失敗すれば error dict + カードは pending 復帰。"""
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    # 承認カード起票後、人間が GUI から直接同じ項目を解決してしまう競合を模擬する。
+    session.resolve_review_item(item_id, action="send_back")
+
+    result = session.resolve_approval("rv-1", decision="approve")
+
+    assert "error" in result
+    assert result["error_type"] == "ConflictError"
+    assert "rv-1" not in session._approvals  # pending のまま (再試行可能)
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "rv-1")
+    assert card["state"] == "pending"
+
+
+def test_pending_approvals_lists_only_pending_cards_across_kinds():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    sr_result = session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="x"
+    )
+    rv_result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="y"
+    )
+    session.resolve_approval(sr_result["action_id"], decision="approve")  # これはもう pending でない
+
+    pending = session.pending_approvals()
+
+    pending_ids = {row["action_id"] for row in pending}
+    assert sr_result["action_id"] not in pending_ids
+    assert rv_result["action_id"] in pending_ids
+    # demo シードの一般承認カード "a1" も pending として一覧に含まれる (機構問わず)。
+    assert "a1" in pending_ids
+
+
+# ---------------------------------------------------------------------------
+# abandon_pending_approvals (レビュー指摘 #1: セッション差し替え時の pending カード記録)
+# ---------------------------------------------------------------------------
+
+
+def test_abandon_pending_approvals_records_one_entry_per_pending_card():
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="reject")  # demo 既定の pending カードを解消
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="y"
+    )
+    before = len(session.ledger.entries)
+
+    count = session.abandon_pending_approvals()
+
+    # action_id の連番 (``_proposal_seq``) は kind を跨いで共有される (`create_proposal` 参照) —
+    # review_resolution が先なので "rv-1"、structure_revision は "sr-2"。
+    assert count == 2
+    new_entries = session.ledger.entries[before:]
+    assert [e.kind for e in new_entries] == ["approval_abandoned", "approval_abandoned"]
+    action_ids = {e.payload["action_id"] for e in new_entries}
+    assert action_ids == {"rv-1", "sr-2"}
+    kinds = {e.payload["action_id"]: e.payload["kind"] for e in new_entries}
+    assert kinds == {"rv-1": "review_resolution", "sr-2": "structure_revision"}
+    assert all(e.payload["reason"] == "session swap" for e in new_entries)
+    assert session.ledger.verify() is True
+    assert session._approvals["rv-1"]["state"] == "abandoned"
+    assert session._approvals["sr-2"]["state"] == "abandoned"
+    # 以後 pending 一覧・resolve_approval の対象から外れる。
+    assert session.pending_approvals() == []
+    result = session.resolve_approval("rv-1", decision="approve")
+    assert result["error_type"] == "ConflictError"
+
+
+def test_abandon_pending_approvals_custom_reason():
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="reject")
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    session.abandon_pending_approvals(reason="custom reason")
+
+    assert session.ledger.entries[-1].payload["reason"] == "custom reason"
+
+
+def test_abandon_pending_approvals_noop_when_none_pending():
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="reject")
+    before = len(session.ledger.entries)
+
+    count = session.abandon_pending_approvals()
+
+    assert count == 0
+    assert len(session.ledger.entries) == before
+
+
+def test_abandon_pending_approvals_skips_already_resolved_card():
+    """既に approve/reject 済みのカード ("a1", demo 既定) は対象外 — 二重記録しない。"""
+    session = WorkbenchSession.create_demo()
+    session.resolve_approval("a1", decision="approve")
+    before = len(session.ledger.entries)
+
+    count = session.abandon_pending_approvals()
+
+    assert count == 0
+    assert len(session.ledger.entries) == before
+    assert session._approvals["a1"]["state"] == "approved"
+
+
+# ---------------------------------------------------------------------------
 # refine
 # ---------------------------------------------------------------------------
 
@@ -262,6 +863,177 @@ def test_post_message_appends_transcript_and_ledger():
     assert any(
         m.get("text") == "what about fr092?" for m in session.viewmodel()["transcript"]
     )
+
+
+# ---------------------------------------------------------------------------
+# V3a AUTO 実 LLM ブリッジ: post_message の分岐配線
+# ---------------------------------------------------------------------------
+
+
+class _StubBridge:
+    """``AgentBridge`` の代わりに差し込む最小スタブ (session.py が使う面のみ実装)。"""
+
+    def __init__(self, *, available: bool, accept: bool = True, running: bool = False) -> None:
+        self._available = available
+        self._accept = accept
+        self._running = running
+        self.sent: list[str] = []
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def send(self, text: str) -> bool:
+        if not self._accept:
+            return False
+        self.sent.append(text)
+        return True
+
+    def status(self) -> dict:
+        is_running = self._running or bool(self.sent)
+        return {"status": "running" if is_running else "idle", "available": self._available,
+                "tokens": 0, "wall_time_s": 0.0, "error": None}
+
+
+def test_post_message_auto_mode_with_available_bridge_starts_agent():
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello agent")
+
+    assert result == {"status": "agent_started"}
+    assert stub.sent == ["hello agent"]
+    # ユーザーメッセージ自体は従来どおり transcript/ledger に記録される。
+    assert any(m.get("text") == "hello agent" for m in session.viewmodel()["transcript"])
+
+
+def test_post_message_auto_mode_with_unavailable_bridge_falls_back():
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    stub = _StubBridge(available=False)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello agent")
+
+    assert result["message"]["text"] == "hello agent"
+    assert stub.sent == []  # bridge には送られていない (フォールバック)
+
+
+def test_post_message_manual_mode_never_invokes_bridge_even_if_available():
+    session = WorkbenchSession.create_demo()  # 既定 manual
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello")
+
+    assert result["message"]["text"] == "hello"
+    assert stub.sent == []
+
+
+def test_post_message_source_none_never_invokes_bridge():
+    session = WorkbenchSession.create_empty()
+    session.set_mode("auto")
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello")
+
+    assert result["message"]["text"] == "hello"
+    assert stub.sent == []
+
+
+def test_post_message_agent_already_running_returns_conflict():
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+    stub = _StubBridge(available=True, accept=False)
+    session._agent_bridge = stub
+
+    result = session.post_message("hello")
+
+    assert result["error_type"] == "ConflictError"
+
+
+def test_post_message_transcript_append_is_serialized_by_lock():
+    """V3a レビュー指摘 #3: ``post_message`` の ``msg = {"id": f"t{len(self._transcript)+1}", ...}``
+    採番 + append が ``self._lock`` 下で直列化されることを、複数スレッドが
+    ``len(self._transcript)`` の呼び出し (フック付き ``list`` サブクラス) に**同時に**到達できない
+    ことで確認する。
+
+    ``threading.Barrier(n_threads)`` を ``list.__len__`` にフックする: ロックが効いていれば
+    高々 1 スレッドずつしか ``len()`` 呼び出しに到達できないため、``n_threads`` 全員が揃うことは
+    なく barrier は必ずタイムアウトし ``post_message`` は例外で終わる (transcript には 1 行も
+    追加されない)。ロックを外す変異 (このテストが検出対象とする欠陥) を入れると、複数スレッドが
+    無防備に ``len()`` へ同時到達でき barrier が解消し、**同一の "before" 件数を読んだまま**
+    全員が append する — id が重複した行が transcript に残る。
+    """
+    session = WorkbenchSession.create_demo()
+    before = len(session._transcript)
+    n_threads = 5
+
+    class _BarrierHookedList(list):
+        """``__len__`` 呼び出しごとに barrier で待ち合わせるテスト専用の list サブクラス。"""
+
+        def __init__(self, *args: Any, on_len: Any) -> None:
+            super().__init__(*args)
+            self._on_len = on_len
+
+        def __len__(self) -> int:
+            n = super().__len__()
+            self._on_len()
+            return n
+
+    barrier = threading.Barrier(n_threads, timeout=1.0)
+    session._transcript = _BarrierHookedList(session._transcript, on_len=barrier.wait)
+
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def _post(i: int) -> None:
+        try:
+            session.post_message(f"msg-{i}")
+        except BaseException as exc:  # noqa: BLE001 — barrier タイムアウト/破損を収集する
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_post, args=(i,)) for i in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    new_rows = session._transcript[before:]
+    ids = [row["id"] for row in new_rows]
+
+    # ロックで直列化されていれば barrier (n_threads 人待ち) は誰も揃わずタイムアウトし、
+    # 全スレッドが例外で終わって transcript には何も追加されない。
+    assert len(errors) == n_threads, f"expected all {n_threads} calls to fail via barrier timeout"
+    assert new_rows == []
+    assert len(set(ids)) == len(ids)  # (mutation 時の対照: 重複が出れば直ちに分かる)
+
+
+def test_agent_status_delegates_to_bridge():
+    session = WorkbenchSession.create_demo()
+    stub = _StubBridge(available=True)
+    session._agent_bridge = stub
+    assert session.agent_status() == stub.status()
+
+
+def test_state_agent_reflects_bridge_tokens_and_available():
+    session = WorkbenchSession.create_demo()
+
+    class _Bridge:
+        available = True
+
+        def status(self):
+            return {"status": "idle", "available": True, "tokens": 42, "wall_time_s": 3.5, "error": None}
+
+    session._agent_bridge = _Bridge()
+    agent = session.state()["agent"]
+    assert agent["available"] is True
+    assert agent["tokens"] == 42
+    assert agent["wall_time_s"] == 3.5
 
 
 # ---------------------------------------------------------------------------
@@ -348,11 +1120,13 @@ def test_state_ledger_verified_is_true():
     assert state["ledger"]["count"] == len(session.ledger.entries)
 
 
-def test_state_agent_idle_reflects_mode():
+def test_state_agent_idle_reflects_turn_not_mode():
+    # V3a: idle は「エージェントのターンが走っていないこと」。旧仕様の「mode==manual」は
+    # AUTO でターン完了後も idle=false に固着する欠陥だった (TestAgentIdleReflectsTurnStatus)。
     session = WorkbenchSession.create_demo()
-    assert session.state()["agent"]["idle"] is True  # manual
+    assert session.state()["agent"]["idle"] is True  # manual, ターンなし
     session.set_mode("auto")
-    assert session.state()["agent"]["idle"] is False  # auto
+    assert session.state()["agent"]["idle"] is True  # auto でもターンが無ければ idle
 
 
 def test_viewmodel_top_level_keys_present_and_json_serializable():
@@ -2188,3 +2962,29 @@ def test_resolve_new_phase_approval_double_approve_returns_409_while_in_progress
     assert call_count["n"] == 1  # 二重実行していない (変異させると 2 になる)
     # エラー経路なのでマーカーは pop され、pending に戻って再試行できる。
     assert "np-0" not in session._approvals
+
+
+class TestAgentIdleReflectsTurnStatus:
+    """state.agent.idle は「ターンが走っていないこと」(実走スモークで発見の回帰)。
+
+    旧実装は ``mode == "manual"`` を idle としていたため、AUTO でターンが完了しても
+    idle=false のまま固着し、UI からはエージェントが動き続けているように見えた。
+    """
+
+    def test_idle_true_in_auto_when_no_turn_running(self) -> None:
+        session = WorkbenchSession.create_demo()
+        session.set_mode("auto")
+        assert session.state()["agent"]["idle"] is True
+
+    def test_idle_false_while_turn_running(self, monkeypatch) -> None:
+        session = WorkbenchSession.create_demo()
+        session.set_mode("auto")
+        monkeypatch.setattr(
+            session._agent_bridge,
+            "status",
+            lambda: {
+                "status": "running", "available": True, "tokens": 5, "wall_time_s": 1.0,
+                "error": None,
+            },
+        )
+        assert session.state()["agent"]["idle"] is False

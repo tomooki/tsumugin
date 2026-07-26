@@ -5,8 +5,16 @@ import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
 import { Btn, Chip } from "../common";
 import "./AgentSession.css";
-import { formatBic } from "./gates";
-import { rt } from "./right.strings";
+import { approvalKind, formatBic, structureRevisionSiteCount, type ApprovalKind } from "./gates";
+import { rt, type RightStringKey } from "./right.strings";
+
+const KIND_BADGE_KEY: Record<ApprovalKind, RightStringKey> = {
+  np: "modelAction.badge.np",
+  sr: "modelAction.badge.sr",
+  rv: "modelAction.badge.rv",
+  pc: "modelAction.badge.pc",
+  st: "modelAction.badge.st",
+};
 
 interface TranscriptItemProps {
   message: TranscriptMessage;
@@ -109,18 +117,63 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
       // pending card that happens to render at the same time.
       const localDecision = message.action_id ? state.approval[message.action_id] : undefined;
       const decided = localDecision ?? message.state ?? "pending";
+      const kindForBadge = approvalKind(message.action_id);
+
+      // auto_applied (api-contract.md §エージェント権限モード): the server
+      // already applied this ModelAction under agent_policy=auto/bypass — it
+      // was never held for a human decision, so there is no APPROVE/REJECT
+      // to offer. Rendering this before the disabled/label plumbing below
+      // (which assumes a pending|approved|rejected card) keeps that logic
+      // from having to reason about a fourth state it can never act on.
+      if (decided === "auto_applied") {
+        return (
+          <div className="ts-approval ts-approval--auto">
+            <div className="ts-approval__bar">
+              <span className="ts-approval__kicker">{t("modelAction")}</span>
+              {kindForBadge && (
+                <Chip variant="inverted" className="ts-approval__kind">
+                  {rt(lang, KIND_BADGE_KEY[kindForBadge])}
+                </Chip>
+              )}
+              <Chip variant="inverted" className="ts-approval__auto-chip">
+                {rt(lang, "agentPolicy.autoApplied.chip")}
+              </Chip>
+            </div>
+            <div className="ts-approval__body">
+              <div className="ts-approval__title">{message.title}</div>
+              <div className="ts-approval__rationale">{message.rationale}</div>
+              {message.action_json && <pre className="ts-approval__pre">{message.action_json}</pre>}
+              <div className="ts-approval__state">{rt(lang, "agentPolicy.autoApplied.note")}</div>
+            </div>
+          </div>
+        );
+      }
+
       const disabled = decided !== "pending" || busy;
       const approveLabel = decided === "approved" ? t("chat.approval.applied") : t("chat.approval.approveApply");
       const rejectLabel = decided === "rejected" ? t("chat.approval.rejected") : t("chat.approval.reject");
+      // Which propose_* kind this card is (gates.ts approvalKind) — null for
+      // ids with no recognised np-/sr-/rv-/pc-/st- prefix, which is also the
+      // pre-V3a "a1"-style fixture shape, so this must never throw on it.
+      const kind = kindForBadge;
       const stateLine = busy
         ? rt(lang, "chat.approval.resolving")
         : conflict
           ? rt(lang, "chat.approval.conflict")
           : decided === "approved"
-            ? t("chat.approval.stateApplied")
+            ? kind
+              ? rt(lang, `modelAction.state.applied.${kind}` as RightStringKey)
+              : t("chat.approval.stateApplied")
             : decided === "rejected"
-              ? t("chat.approval.stateRejected")
+              ? kind
+                ? rt(lang, `modelAction.state.rejected.${kind}` as RightStringKey)
+                : t("chat.approval.stateRejected")
               : t("chat.approval.stateHeld");
+      // sr- (propose_structure_revision) 1-line summary above the raw JSON —
+      // task brief: "過剰にしない", so this is the only kind with a bespoke
+      // summary line (its payload shape — a `sites` array — is the one case
+      // where a plain count adds real signal over the pre).
+      const siteCount = kind === "sr" ? structureRevisionSiteCount(message.action_json) : null;
 
       const decide = async (decision: "approve" | "reject") => {
         // `inFlightRef` is checked+set synchronously (unlike `busy`, a useState
@@ -166,11 +219,21 @@ export function TranscriptItem({ message }: TranscriptItemProps) {
         <div className="ts-approval">
           <div className="ts-approval__bar">
             <span className="ts-approval__kicker">{t("modelAction")}</span>
+            {kind && (
+              <Chip variant="inverted" className="ts-approval__kind">
+                {rt(lang, KIND_BADGE_KEY[kind])}
+              </Chip>
+            )}
             <span className="ts-approval__not-apply">{t("proposalNotApply")}</span>
           </div>
           <div className="ts-approval__body">
             <div className="ts-approval__title">{message.title}</div>
             <div className="ts-approval__rationale">{message.rationale}</div>
+            {siteCount !== null && (
+              <div className="ts-approval__summary">
+                {rt(lang, "modelAction.summary.sr", { n: siteCount })}
+              </div>
+            )}
             {message.action_json && <pre className="ts-approval__pre">{message.action_json}</pre>}
             <div className="ts-approval__actions">
               <Btn

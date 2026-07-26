@@ -6,6 +6,9 @@ import type {
   AcceptResponse,
   AddHistogramRequest,
   AddPhaseRequest,
+  AgentJobStatus,
+  AgentPolicy,
+  AgentPolicyRequest,
   ApiErrorBody,
   ApprovalDecision,
   ApprovalResponse,
@@ -36,7 +39,8 @@ import type {
   StageActionResponse,
   StructureApplyRequest,
   StructureApplyResponse,
-  TranscriptMessageResponse,
+  TranscriptMessageAgentStartedResponse,
+  TranscriptMessagePostResponse,
   UploadKind,
   UploadResponse,
   ViewModel,
@@ -190,8 +194,38 @@ export function getMultistartStatus(): Promise<RefineStatus> {
 // wrapper function.
 export const EXPORT_GPX_PATH = "/api/export/gpx";
 
-export function postTranscriptMessage(text: string): Promise<TranscriptMessageResponse> {
-  return post<TranscriptMessageResponse>("/api/transcript/message", { text });
+// api-contract.md §AUTO 実 LLM ブリッジ (V3a): 200 {"message"} (demo/manual/
+// agent-unavailable fallback, recorded to the transcript only) OR 202
+// {"status": "agent_started"} (mode=auto + agent available: the message is
+// handed to the local Claude Code agent session and runs asynchronously).
+// 409 (a turn is already running) surfaces as an ApiError. Callers narrow the
+// union with isAgentStartedResponse below.
+export function postTranscriptMessage(text: string): Promise<TranscriptMessagePostResponse> {
+  return post<TranscriptMessagePostResponse>("/api/transcript/message", { text });
+}
+
+/** Narrows postTranscriptMessage's response union to the agent-started
+ * branch (202). */
+export function isAgentStartedResponse(
+  res: TranscriptMessagePostResponse,
+): res is TranscriptMessageAgentStartedResponse {
+  return "status" in res && res.status === "agent_started";
+}
+
+// GET /api/agent/status (api-contract.md §AUTO 実 LLM ブリッジ, V3a) — the
+// dedicated poll endpoint for an in-flight agent turn (see api/types.ts
+// AgentJobStatus for why this is not RefineStatus/usePollJob).
+export function getAgentStatus(): Promise<AgentJobStatus> {
+  return get<AgentJobStatus>("/api/agent/status");
+}
+
+// POST /api/agent/policy (api-contract.md §エージェント権限モード, V3a) —
+// human-only switch (the shim has no matching tool: self-escalation is the
+// one absolute boundary alongside self-approval). 200 returns the updated
+// ShellState, mirroring postMode's shape/caller pattern (AgentPolicySegment
+// dispatches SET_SHELL with the result).
+export function postAgentPolicy(policy: AgentPolicy): Promise<ShellState> {
+  return post<ShellState>("/api/agent/policy", { policy } satisfies AgentPolicyRequest);
 }
 
 // — PROJECT lifecycle (V2a P3/P4, api-contract.md §プロジェクトライフサイクル) —

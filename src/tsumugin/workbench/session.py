@@ -22,7 +22,7 @@ import math
 import os
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -30,6 +30,7 @@ from .._json import finite_or_none
 from ..autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
 from ..autorietveld.recipe import build_recipe
 from ..backends.gsasii import gsasii_available
+from ..errors import ConflictError
 from ..insitu.model import FrameSpec
 from ..model import LatticeParams, PhaseInstance
 from ..selection.engine import FinalSelectionEngine
@@ -38,6 +39,7 @@ from ..store.ledger import Ledger
 from ..store.snapshot import SnapshotStore
 from . import lifecycle
 from . import seed as _seed
+from .agent_bridge import AgentBridge
 from .jobs import RefinementJobManager, build_default_runner
 from .project import (
     WorkbenchProject,
@@ -68,6 +70,12 @@ _EMPTY_PROJECT_META: dict[str, Any] = {"name": None, "dataset": None, "frame": N
 _GUI_TO_ENGINE: dict[str, EngineMode] = {"manual": "human", "auto": "agent"}
 _ENGINE_TO_GUI: dict[str, GuiMode] = {"human": "manual", "agent": "auto"}
 
+#: エージェント権限モード (`agent_policy`, api-contract.md §エージェント権限モード, FR-402 拡張)。
+#: 人間が `POST /api/agent/policy` で切り替える — エージェント自身がこれを変更するツールは
+#: shim (`agent_mcp`) に存在しない (自己昇格の禁止)。
+AgentPolicy = Literal["approve", "auto", "bypass"]
+_VALID_AGENT_POLICIES: "tuple[AgentPolicy, ...]" = ("approve", "auto", "bypass")
+
 #: GSAS-II 必須ジョブ (refine/multistart/sequential) が不在環境で起動された場合の error dict
 #: (Tier1 sidecar, api-contract.md GET /api/state `status.gsas_available`)。呼び出し側 (app.py)
 #: が 422 へ縮退する。
@@ -92,6 +100,7 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "m7_stage": "CORE ①",
     "m7_stage_error": "GUARD",
     "transcript_message": "HUMAN",
+    "agent_proposal": "AGENT ③",
     "approval_decision": "HUMAN",
     "accept_reason": "HUMAN",
     "project_edit": "HUMAN",
@@ -106,6 +115,37 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "sequential_failed": "GUARD",
     "echem_finished": "CORE ①",
     "echem_failed": "GUARD",
+    "agent_policy_change": "HUMAN",
+    "approval_abandoned": "GUARD",
+}
+
+#: 承認カード action_id 接頭辞 → kind (``abandon_pending_approvals`` が ledger payload に積む
+#: 表示用ラベル)。np- (B5 新相提案) は ``create_proposal`` を経由しない固定 kind なので
+#: `_PROPOSAL_KIND_PREFIX` の逆引きだけでは賄えない — 別途明示する。
+_PREFIX_TO_PROPOSAL_KIND: dict[str, str] = {
+    "np": "new_phase",
+    "sr": "structure_revision",
+    "rv": "review_resolution",
+    "pc": "phase_change",
+    "st": "settings_change",
+}
+
+
+#: 【ModelAction 起票, 2026-07-26 権限境界改訂】: `create_proposal` の kind → 承認カード
+#: action_id 接頭辞 (api-contract.md §propose_* ツールと承認カード の表と同一)。
+_PROPOSAL_KIND_PREFIX: dict[str, str] = {
+    "structure_revision": "sr",
+    "review_resolution": "rv",
+    "phase_change": "pc",
+    "settings_change": "st",
+}
+
+#: 承認カード (transcript kind=approval) の title (kind ごと)。
+_PROPOSAL_TITLES: dict[str, str] = {
+    "structure_revision": "エージェント提案: 構造改訂 (ReviseStructure)",
+    "review_resolution": "エージェント提案: レビュー項目の解決",
+    "phase_change": "エージェント提案: 相の追加/除去",
+    "settings_change": "エージェント提案: 精密化設定の変更",
 }
 
 
@@ -145,6 +185,8 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"stage {payload.get('stage')} error"
     if kind == "transcript_message":
         return "transcript message posted"
+    if kind == "agent_proposal":
+        return f"agent proposal {payload.get('action_id')} ({payload.get('kind')})"
     if kind == "approval_decision":
         return f"approval {payload.get('action_id')} {payload.get('decision')}"
     if kind == "accept_reason":
@@ -173,6 +215,10 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"echem aligned (n_frames={payload.get('n_frames')})"
     if kind == "echem_failed":
         return f"echem failed: {payload.get('error')}"
+    if kind == "agent_policy_change":
+        return f"agent policy → {payload.get('policy')}"
+    if kind == "approval_abandoned":
+        return f"approval {payload.get('action_id')} ({payload.get('kind')}) abandoned: {payload.get('reason')}"
     return kind
 
 
@@ -217,6 +263,13 @@ class WorkbenchSession:
         self._stages: list[dict[str, Any]] = _seed.seed_stages()
         self._transcript: list[dict[str, Any]] = []
         self._approvals: dict[str, dict[str, Any]] = {}
+        # 【ModelAction 起票, 2026-07-26 権限境界改訂】: `create_proposal` (POST /api/proposals) が
+        #   起票した sr-/rv-/pc-/st- カードの kind/payload/rationale。resolve_approval の approve
+        #   分岐 (`_resolve_generic_proposal`) が approve 時にここを引いて実操作を呼ぶ
+        #   (`_np_approval_info` と同じ役割の一般化)。state (pending/approved/rejected) は
+        #   従来どおり `self._approvals` が単一情報源 (`_transcript_view` 参照)。
+        self._proposals: dict[str, dict[str, Any]] = {}
+        self._proposal_seq: int = 0
         self._review_meta: dict[str, dict[str, str]] = {}
         self._review_state: dict[str, str] = {}
         self._structure_sites: list[dict[str, Any]] = []
@@ -261,7 +314,27 @@ class WorkbenchSession:
         self._job = RefinementJobManager(last_event=self._last_ledger_text)
         # 【viewmodel 更新系の直列化】: FastAPI sync ハンドラは threadpool 実行 + refine ジョブ
         #   スレッドが並走するため、project モードの完了コールバックはこのロック下で状態を更新する。
-        self._lock = threading.Lock()
+        # 【レビュー指摘 #2: RLock 化 (再入可能)】: ``create_proposal``/``_resolve_generic_proposal``
+        #   の auto/bypass 即時適用経路は、このロックを保持したまま ``_execute_proposal`` →
+        #   ``apply_structure``/``add_phase``/``remove_phase``/``update_settings`` (各々が自前で
+        #   ``self._lock`` を取る read-modify-write) を呼ぶ。通常の ``threading.Lock`` だと同一
+        #   スレッドの再取得でデッドロックするため ``RLock`` にする — 別スレッドからの取得は
+        #   従来どおり排他される (再入可能なのは「取得したスレッド自身」のみ)。
+        self._lock = threading.RLock()
+        # 【2026-07-26 権限境界改訂: agent_policy】: 既定 "approve"。人間が `set_agent_policy` で
+        #   切り替える (エージェント自身が変更するツールは shim に存在しない — 自己昇格の禁止)。
+        #   `AgentBridge` に `get_policy` として束ねることで、ターン開始時点の policy に応じて
+        #   shim のツール表 (bypass のみ project ライフサイクル 4 本を追加) とシステムプロンプトの
+        #   説明文を切り替える (`agent_mcp.build_server(policy)`/`allowed_tool_ids(policy)`)。
+        self._agent_policy: AgentPolicy = "approve"
+        # 【V3a AUTO 実 LLM ブリッジ】: `_agent_append` はこの `self._lock` 下で transcript へ
+        #   append する (bridge のバックグラウンドスレッドと GET /api/viewmodel の並走に対して安全)。
+        #   `get_state_summary=self.state` はシステムプロンプトに埋め込む現況要約。
+        self._agent_bridge = AgentBridge(
+            on_event=self._agent_append,
+            get_state_summary=self.state,
+            get_policy=lambda: self._agent_policy,
+        )
 
     # ------------------------------------------------------------------
     # デモシード構築
@@ -372,17 +445,64 @@ class WorkbenchSession:
         """接続元 ("demo"|"project", REQ-GUI-012)。``from_project`` で "project" になる。"""
         return self._source
 
+    def agent_running(self) -> bool:
+        """AUTO 実 LLM ブリッジ (`AgentBridge`) が現在ターンを実行中か (V3a レビュー指摘 #2)。
+
+        実行中に mode 切替/project swap が起きると、バックグラウンドスレッドが古いセッション
+        (transcript/ledger) へ書き込み続けたり、切替直後の新セッションへ誤って書き込んだりする
+        (``on_event``/``get_state_summary`` は construction 時に束縛したクロージャのため)。
+        呼び出し側 (`set_mode`/`app.py _guarded_swap`) がこれを見て 409 へ縮退させる。
+        """
+        return self._agent_bridge.status()["status"] == "running"
+
     def set_mode(self, gui_mode: str) -> bool:
         """GUI モードを切替える。同一モードへの切替は no-op (ledger 追記なし) で ``False`` を返す。
 
         変更時は ``FinalSelectionEngine.set_mode`` を呼ぶ (エンジン側が ``selection_set_mode`` を
         ledger に追記する契約なので session 側では二重追記しない)。不正値は ``ValueError``。
+        エージェントが実行中 (`agent_running()`) の切替要求は ``ConflictError`` (呼び出し側
+        [`app.py`] が 409 へ縮退, V3a レビュー指摘 #2) — 実行中のターンは "auto" モードの
+        ``AgentBridge`` を握ったままなので、その最中に "manual" へ落とす/別モードへ動かすと
+        実行中スレッドの transcript 書き込み前提が壊れる。
         """
         if gui_mode not in _GUI_TO_ENGINE:
             raise ValueError(f"unknown mode: {gui_mode!r}")
         if gui_mode == self.mode:
             return False
+        if self.agent_running():
+            raise ConflictError("agent is running — cannot switch mode while a turn is in progress")
         self.engine.set_mode(_GUI_TO_ENGINE[gui_mode])
+        return True
+
+    # ------------------------------------------------------------------
+    # エージェント権限モード (`agent_policy`, POST /api/agent/policy, 2026-07-26 権限境界改訂)
+    # ------------------------------------------------------------------
+
+    @property
+    def agent_policy(self) -> AgentPolicy:
+        """現在のエージェント権限モード (``"approve"|"auto"|"bypass"``, 既定 ``"approve"``)。"""
+        return self._agent_policy
+
+    def set_agent_policy(self, policy: str) -> bool:
+        """エージェント権限モードを切替える (人間専用 — shim にこれを呼ぶツールは存在しない)。
+
+        ``set_mode`` (FR-402) と同じ規律: 不正値は ``ValueError``、同一値への切替は no-op
+        (ledger 追記なし) で ``False``、エージェントのターン実行中の切替は ``ConflictError``
+        (呼び出し側 [`app.py`] が 409 へ縮退) — 実行中のターンが束縛している shim のツール表
+        (`agent_mcp.allowed_tool_ids(policy)`) を実行中に差し替えると、そのターン内のツール呼び出し
+        前提が壊れる。変更時のみ ``ledger.append("agent_policy_change", ...)`` する
+        (api-contract.md 「切替 + ledger 追記」)。
+        """
+        if policy not in _VALID_AGENT_POLICIES:
+            raise ValueError(f"unknown agent_policy: {policy!r}")
+        if policy == self._agent_policy:
+            return False
+        if self.agent_running():
+            raise ConflictError(
+                "agent is running — cannot switch agent_policy while a turn is in progress"
+            )
+        self._agent_policy = policy  # type: ignore[assignment]
+        self.ledger.append("agent_policy_change", {"policy": policy})
         return True
 
     # ------------------------------------------------------------------
@@ -391,7 +511,22 @@ class WorkbenchSession:
 
     def state(self) -> dict[str, Any]:
         agent = dict(self._agent_base)
-        agent["idle"] = self.mode == "manual"
+        # 【V3a: 実測値へ差し替え】: tokens/wall_time_s/available は AgentBridge の実測値
+        #   (api-contract.md 「state.agent | tokens/wall_time_s が実測値に。available 追加」)。
+        #   `get_state_summary=self.state` (bridge 構築時に注入) と本メソッドが相互参照する形に
+        #   なるため、ここで `self._agent_bridge.status()` を呼んでも無限再帰しない
+        #   (bridge は `state()` を「システムプロンプト構築時」にのみ呼び、`status()` はこの
+        #   フィールドを読むだけで `state()` を呼び返さない)。
+        bridge_status = self._agent_bridge.status()
+        agent["available"] = bridge_status["available"]
+        agent["tokens"] = bridge_status["tokens"]
+        agent["wall_time_s"] = bridge_status["wall_time_s"]
+        # 【idle = ターンが走っていないこと】: 旧実装は `mode == "manual"` を idle として
+        #   いたため、AUTO でターン完了後も idle=false のまま固着し「エージェントが動き続けて
+        #   いる」ように見えた (実走スモークで発見)。実測ステータスを単一情報源にする。
+        agent["idle"] = bridge_status["status"] != "running"
+        # 【エージェント権限モード】: 人間が切り替える単一情報源 (`self._agent_policy`)。
+        agent["policy"] = self._agent_policy
         # 【gsas_available は毎回動的判定】: Tier1 sidecar は GSAS-II 抜きで同梱され得るため、
         #   status は起動時固定シードでなく現在の import 可否 (`gsasii_available`, lru_cache 済み
         #   なので実質定数コスト) を都度反映する (api-contract.md GET /api/state)。
@@ -723,26 +858,41 @@ class WorkbenchSession:
                 phase_name = self._site_phase_map.get(str(site_id)) if site_id is not None else None
                 if phase_name is not None:
                     revisions.setdefault(phase_name, {})[str(label)] = occ_val
-        base = self._structure_phases[0] if self._structure_phases else _seed.seed_structure_base_phase()
-        new_phase = base.with_updates(occupancies=occupancies)
-        self._structure_phases = (new_phase,) + tuple(self._structure_phases[1:])
-        self._structure_sites = [dict(s) for s in sites]
-        if self._source == "project":
-            # 【セルフレビュー指摘 #2: ロック外競合】: この書込みと ``request_refine`` の
-            #   snapshot+clear (下記) を同一 ``self._lock`` に揃える。``request_refine`` は
-            #   「snapshot 読取 → job 起動 → 起動確定後のみ clear」を単一クリティカルセクションで
-            #   行うため、この書込みはその間には割り込めず、必ず「snapshot に含まれてから
-            #   clear される」か「clear の後に残る (次回 refine 用)」のどちらかになる — snapshot
-            #   済みの古い値を読んだ直後に本メソッドが新しい revision で上書きし、それを
-            #   ``request_refine`` が無条件 clear で消してしまう (revision 消失) 隙間を無くす。
-            with self._lock:
+        # 【レビュー指摘 #2: read-modify-write を丸ごとロック下に】: ``self._structure_phases``
+        #   の読取 (``base = ...``) から書込み (``self._structure_phases = ...``) までを 1 つの
+        #   クリティカルセクションにする — 複数の ``apply_structure`` (例: auto/bypass の
+        #   ``propose_structure_revision`` が同一ターンで 2 件並走) が同時に走ると、片方の
+        #   ``base``/``occupancies`` 計算がもう片方の書込み前の古い値を読み、後勝ちの代入で
+        #   一方の編集が消える (lost update)。``self._lock`` は ``RLock`` なので、この呼び出しが
+        #   ``create_proposal``/``_resolve_generic_proposal`` の ``_execute_proposal`` (既にロック
+        #   保持) 経由でも再入で安全に動く。
+        with self._lock:
+            base = (
+                self._structure_phases[0] if self._structure_phases else _seed.seed_structure_base_phase()
+            )
+            new_phase = base.with_updates(occupancies=occupancies)
+            self._structure_phases = (new_phase,) + tuple(self._structure_phases[1:])
+            self._structure_sites = [dict(s) for s in sites]
+            if self._source == "project":
+                # 【セルフレビュー指摘 #2 (元 M-earlier): ロック外競合】: この書込みと
+                #   ``request_refine`` の snapshot+clear (下記) を同一 ``self._lock`` に揃える。
+                #   ``request_refine`` は「snapshot 読取 → job 起動 → 起動確定後のみ clear」を
+                #   単一クリティカルセクションで行うため、この書込みはその間には割り込めず、必ず
+                #   「snapshot に含まれてから clear される」か「clear の後に残る (次回 refine
+                #   用)」のどちらかになる — snapshot 済みの古い値を読んだ直後に本メソッドが
+                #   新しい revision で上書きし、それを ``request_refine`` が無条件 clear で
+                #   消してしまう (revision 消失) 隙間を無くす。
                 self._pending_occupancies = revisions
-        snap = self.snapshots.save(self._structure_phases, label=note or "ReviseStructure apply")
-        return {"snapshot_id": snap.id, "ledger_index": self.ledger.entries[-1].index}
+            snap = self.snapshots.save(self._structure_phases, label=note or "ReviseStructure apply")
+            return {"snapshot_id": snap.id, "ledger_index": self.ledger.entries[-1].index}
 
     # ------------------------------------------------------------------
     # POST /api/approval/{action_id}
     # ------------------------------------------------------------------
+
+    #: sr-/rv-/pc-/st- (`create_proposal` 起票) の action_id 接頭辞。np- (B5 新相承認) と同じく
+    #: `_resolve_with_in_progress_guard` 経由で二重承認を防ぐ (2026-07-26 一般化)。
+    _GENERIC_PROPOSAL_PREFIXES: "tuple[str, ...]" = ("sr-", "rv-", "pc-", "st-")
 
     def resolve_approval(self, action_id: str, *, decision: Literal["approve", "reject"]) -> dict[str, Any]:
         """AUTO transcript の ModelAction 承認カードを解決する (両経路 ledger、approve のみ snapshot)。"""
@@ -757,31 +907,17 @@ class WorkbenchSession:
 
         if action_id.startswith("np-"):
             # 【B5: 新相承認カード】: structure ReviseStructure 承認とは別経路 (add_phase まで進む)。
-            # 【二重 approve 対策】: ``_resolve_new_phase_approval`` は ``identify_and_add_phase``
-            #   (MP 問い合わせ) で長時間ブロックしうるが、その間 ``self._approvals`` には何も
-            #   書かれない (完了時に初めて確定状態を書く) ため、上の事前チェックだけでは
-            #   「実行中の 2 回目呼び出し」を検出できない (両方とも「未解決」を見て通過する)。
-            #   ここで呼び出し前に ``self._lock`` 下で check-and-set マーカー
-            #   (state="in_progress") を置き、以降の呼び出しは事前チェックでこのマーカーに
-            #   ヒットして 409 になるようにする。エラー経路 (例外/error dict/承認カード不明) は
-            #   マーカーを pop して pending に戻す (再試行可能, 既存の error 経路契約を維持)。
-            with self._lock:
-                if action_id in self._approvals:
-                    return {
-                        "error": f"approval already resolved: {action_id}",
-                        "error_type": "ConflictError",
-                    }
-                self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
-            try:
-                result = self._resolve_new_phase_approval(action_id, decision=decision)
-            except Exception:
-                with self._lock:
-                    self._approvals.pop(action_id, None)
-                raise
-            if "error" in result:
-                with self._lock:
-                    self._approvals.pop(action_id, None)
-            return result
+            return self._resolve_with_in_progress_guard(
+                action_id, lambda: self._resolve_new_phase_approval(action_id, decision=decision)
+            )
+
+        if action_id.startswith(self._GENERIC_PROPOSAL_PREFIXES):
+            # 【ModelAction 起票の一般化, 2026-07-26】: `create_proposal` (POST /api/proposals) が
+            #   作った sr-/rv-/pc-/st- カードの approve/reject。実操作は `_execute_proposal` へ
+            #   委譲する (§propose_* ツールと承認カード の「approve 時に実行される操作」列)。
+            return self._resolve_with_in_progress_guard(
+                action_id, lambda: self._resolve_generic_proposal(action_id, decision=decision)
+            )
 
         if decision == "approve":
             # 【単一 ledger 効果】: SnapshotStore.save 自体が ledger.append("snapshot_save", ...) するため、
@@ -797,6 +933,286 @@ class WorkbenchSession:
         self.ledger.append("approval_decision", {"action_id": action_id, "decision": "reject"})
         self._approvals[action_id] = {"state": "rejected", "snapshot_id": None}
         return {"state": "rejected", "snapshot_id": None, "ledger_index": self.ledger.entries[-1].index}
+
+    def _resolve_with_in_progress_guard(
+        self, action_id: str, work: "Callable[[], dict[str, Any]]"
+    ) -> dict[str, Any]:
+        """二重承認防止の check-and-set マーカー (np-/sr-/rv-/pc-/st- 共通, 2026-07-26 一般化)。
+
+        ``work`` (例: MP 問い合わせを含む ``_resolve_new_phase_approval``) が長時間ブロックしうる
+        間、``self._approvals`` には何も書かれない (完了時に初めて確定状態を書く旧実装の弱点) ため、
+        呼び出し前に ``self._lock`` 下で ``state="in_progress"`` マーカーを置き、以降の重複呼び出しを
+        このマーカーで 409 (呼び出し元の事前チェック) にする。エラー経路 (例外/error dict) は
+        マーカーを pop して pending に戻す (再試行可能, 既存の error 経路契約を維持)。
+        """
+        with self._lock:
+            if action_id in self._approvals:
+                return {
+                    "error": f"approval already resolved: {action_id}",
+                    "error_type": "ConflictError",
+                }
+            self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
+        try:
+            result = work()
+        except Exception:
+            with self._lock:
+                self._approvals.pop(action_id, None)
+            raise
+        if "error" in result:
+            with self._lock:
+                self._approvals.pop(action_id, None)
+        return result
+
+    # ------------------------------------------------------------------
+    # POST /api/proposals, GET /api/proposals (ModelAction 起票, §propose_* ツールと承認カード)
+    # ------------------------------------------------------------------
+
+    def create_proposal(self, kind: Any, payload: Any, *, rationale: str = "") -> dict[str, Any]:
+        """POST /api/proposals: ModelAction を起票する。
+
+        kind ごとに payload を検証し (不正な kind/必須キー欠落/不明 item_id・phase_name は
+        起票時に error dict へ縮退させる — 承認時まで持ち越さない, api-contract.md
+        「payload の各引数は他ツールの出力から作れること」)。妥当なら transcript へ
+        approval カード (state=pending) を追加し、ledger ``agent_proposal`` を追記する。
+
+        **エージェント権限モード分岐 (§エージェント権限モード, 2026-07-26 改訂)**: ``approve``
+        (既定) はカードを作って終わり — 実行 (add_phase/resolve_review_item 等) は
+        ``resolve_approval`` の人間 approve でのみ起きる (提案 ≠ 適用)。``auto``/``bypass`` は
+        カード作成に続けて ``_execute_proposal`` を**即時**呼び、成功すればカード state を
+        ``"auto_applied"`` にする。実行が失敗すれば (error dict) カードは pending へ戻し
+        (人間が後で承認/却下できる)、返り値にも同じ error を載せる。
+        """
+        if not isinstance(kind, str) or kind not in _PROPOSAL_KIND_PREFIX:
+            return {"error": f"unknown proposal kind: {kind!r}", "error_type": "ValueError"}
+        if not isinstance(payload, dict):
+            return {"error": "payload must be an object", "error_type": "ValueError"}
+        guard = self._validate_proposal_payload(kind, payload)
+        if guard is not None:
+            return guard
+        with self._lock:
+            self._proposal_seq += 1
+            action_id = f"{_PROPOSAL_KIND_PREFIX[kind]}-{self._proposal_seq}"
+            self._proposals[action_id] = {
+                "kind": kind, "payload": dict(payload), "rationale": rationale,
+            }
+            self.ledger.append(
+                "agent_proposal",
+                {"action_id": action_id, "kind": kind, "payload": payload, "rationale": rationale},
+            )
+            msg = {
+                "id": f"t{len(self._transcript) + 1}",
+                "kind": "approval",
+                "action_id": action_id,
+                "title": _PROPOSAL_TITLES[kind],
+                "rationale": rationale,
+                "action_json": json.dumps(payload, ensure_ascii=False, default=str),
+                "state": "pending",
+            }
+            self._transcript.append(msg)
+            policy = self._agent_policy
+            if policy != "approve":
+                # 【即時自動適用の in_progress マーカー】: ``_resolve_with_in_progress_guard`` と
+                #   同じ check-and-set を、ここでは「起票直後」に同一ロック内で置く。この
+                #   action_id は今このロック内で採番されたばかりなので既存エントリとの競合は
+                #   起きない (二重解決防止と同じ考え方を先取りして塞ぐ)。
+                self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
+        if policy == "approve":
+            return {"action_id": action_id, "state": "pending"}
+        # 【auto/bypass: 即時自動適用 (レビュー指摘 #2 で ``with self._lock:`` に変更)】:
+        #   ``_execute_proposal`` は ``apply_structure``/``add_phase``/``remove_phase``/
+        #   ``update_settings`` 等 ``self._lock`` を自前で取るメソッドを呼ぶ。``self._lock`` は
+        #   ``RLock`` (再入可能) にしたため、ここでロックを保持したまま呼んでもデッドロックしない
+        #   — むしろ保持したまま呼ぶことで、``_execute_proposal`` 全体 (read-modify-write) が
+        #   他スレッドの並行 ``create_proposal``/``_resolve_generic_proposal`` に割り込まれず、
+        #   1 ターンに複数の propose_* が発行されても互いの変更を消し合わない (lost update 修正)。
+        with self._lock:
+            exec_result = self._execute_proposal(kind, payload)
+        if "error" in exec_result:
+            with self._lock:
+                self._approvals.pop(action_id, None)  # pending へ復帰 (再試行可能)
+            return {**exec_result, "action_id": action_id, "state": "pending"}
+        self.ledger.append(
+            "approval_decision", {"action_id": action_id, "decision": "auto", "kind": kind}
+        )
+        with self._lock:
+            self._approvals[action_id] = {
+                "state": "auto_applied", "snapshot_id": exec_result.get("snapshot_id"),
+            }
+        return {"action_id": action_id, "state": "auto_applied", "result": exec_result}
+
+    def _validate_proposal_payload(self, kind: str, payload: dict[str, Any]) -> "dict[str, Any] | None":
+        """``create_proposal`` の起票時 payload 検証 (kind ごと)。問題なければ ``None``。"""
+        if kind == "structure_revision":
+            sites = payload.get("sites")
+            if not isinstance(sites, list) or not sites or not all(isinstance(s, dict) for s in sites):
+                return {"error": "sites must be a non-empty list of objects", "error_type": "ValueError"}
+            return None
+        if kind == "review_resolution":
+            item_id = payload.get("item_id")
+            action = payload.get("action")
+            if not isinstance(item_id, str) or not item_id:
+                return {"error": "item_id is required", "error_type": "ValueError"}
+            if action not in ("accept", "send_back"):
+                return {"error": f"invalid action: {action!r}", "error_type": "ValueError"}
+            if not any(it.item_id == item_id for it in self.review_queue.items):
+                return {"error": f"unknown review item: {item_id}", "error_type": "NotFoundError"}
+            return None
+        if kind == "phase_change":
+            op = payload.get("op")
+            phase_name = payload.get("phase_name")
+            if op not in ("add", "remove"):
+                return {"error": f"invalid op: {op!r}", "error_type": "ValueError"}
+            if not isinstance(phase_name, str) or not phase_name:
+                return {"error": "phase_name is required", "error_type": "ValueError"}
+            if self._source != "project" or self._project is None:
+                return {"error": "no project loaded", "error_type": "ValueError"}
+            exists = any(p.phase_name == phase_name for p in self._project.phases)
+            if op == "add":
+                if not payload.get("structure_path"):
+                    return {
+                        "error": "structure_path is required for op=add", "error_type": "ValueError",
+                    }
+                if exists:
+                    return {"error": f"phase already exists: {phase_name}", "error_type": "ValueError"}
+            else:
+                if not exists:
+                    return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
+            return None
+        if kind == "settings_change":
+            if self._source != "project" or self._project is None:
+                return {"error": "no project loaded", "error_type": "ValueError"}
+            keys = ("two_theta_limits", "background_coeffs", "max_cyc")
+            if not any(payload.get(k) is not None for k in keys):
+                return {
+                    "error": "at least one of two_theta_limits/background_coeffs/max_cyc is required",
+                    "error_type": "ValueError",
+                }
+            ttl = payload.get("two_theta_limits")
+            if ttl is not None:
+                try:
+                    float(ttl[0])
+                    float(ttl[1])
+                except (TypeError, ValueError, IndexError, KeyError):
+                    return {
+                        "error": f"invalid two_theta_limits: {ttl!r}", "error_type": "ValueError",
+                    }
+            bg = payload.get("background_coeffs")
+            if bg is not None:
+                try:
+                    int(bg)
+                except (TypeError, ValueError):
+                    return {
+                        "error": f"invalid background_coeffs: {bg!r}", "error_type": "ValueError",
+                    }
+            mc = payload.get("max_cyc")
+            if mc is not None:
+                try:
+                    int(mc)
+                except (TypeError, ValueError):
+                    return {"error": f"invalid max_cyc: {mc!r}", "error_type": "ValueError"}
+            return None
+        return {"error": f"unknown proposal kind: {kind!r}", "error_type": "ValueError"}
+
+    def _execute_proposal(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """approve 時に kind ごとの実操作を呼ぶ (§propose_* ツールと承認カード の対応表)。"""
+        if kind == "structure_revision":
+            return self.apply_structure(payload.get("sites") or [], note="agent proposal: ReviseStructure")
+        if kind == "review_resolution":
+            return self.resolve_review_item(
+                str(payload.get("item_id")), action=payload.get("action"), note="agent proposal"
+            )
+        if kind == "phase_change":
+            op = payload.get("op")
+            if op == "add":
+                return self.add_phase(
+                    structure_path=payload.get("structure_path"), phase_name=payload.get("phase_name")
+                )
+            if op == "remove":
+                return self.remove_phase(str(payload.get("phase_name")))
+            return {"error": f"unknown phase_change op: {op!r}", "error_type": "ValueError"}
+        if kind == "settings_change":
+            return self.update_settings(
+                two_theta_limits=payload.get("two_theta_limits"),
+                background_coeffs=payload.get("background_coeffs"),
+                max_cyc=payload.get("max_cyc"),
+            )
+        return {"error": f"unknown proposal kind: {kind!r}", "error_type": "ValueError"}
+
+    def _resolve_generic_proposal(
+        self, action_id: str, *, decision: Literal["approve", "reject"]
+    ) -> dict[str, Any]:
+        """sr-/rv-/pc-/st- 承認カードの解決 (``create_proposal`` が起票した ModelAction)。"""
+        if decision == "reject":
+            self.ledger.append("approval_decision", {"action_id": action_id, "decision": "reject"})
+            self._approvals[action_id] = {"state": "rejected", "snapshot_id": None}
+            return {
+                "state": "rejected", "snapshot_id": None,
+                "ledger_index": self.ledger.entries[-1].index,
+            }
+        info = self._proposals.get(action_id)
+        if info is None:
+            return {"error": f"unknown approval action: {action_id}", "error_type": "NotFoundError"}
+        # 【レビュー指摘 #2: RLock 下で実行】: create_proposal の auto/bypass 即時適用と同じ理由
+        #   (上記コメント参照) — このロックの下で ``_execute_proposal`` を丸ごと実行することで、
+        #   人間の approve と別スレッドの auto/bypass 即時適用が同一ターンで重なっても
+        #   read-modify-write が直列化される。
+        with self._lock:
+            exec_result = self._execute_proposal(info["kind"], info["payload"])
+        if "error" in exec_result:
+            # 【実行失敗はカード pending 復帰】: `_resolve_with_in_progress_guard` が "error" キーを
+            #   見て in_progress マーカーを pop する (再試行可能, api-contract.md 「approve 時の
+            #   実行失敗は error dict + カードは pending 復帰」)。
+            return exec_result
+        self.ledger.append(
+            "approval_decision", {"action_id": action_id, "decision": "approve", "kind": info["kind"]}
+        )
+        snapshot_id = exec_result.get("snapshot_id")
+        self._approvals[action_id] = {"state": "approved", "snapshot_id": snapshot_id}
+        return {
+            "state": "approved", "snapshot_id": snapshot_id,
+            "ledger_index": self.ledger.entries[-1].index,
+        }
+
+    def pending_approvals(self) -> list[dict[str, Any]]:
+        """GET /api/proposals: transcript 上の pending 承認カード一覧 (起票機構問わず np-/sr-/rv-/pc-/st- 含む)。"""
+        return [
+            row for row in self._transcript_view()
+            if row.get("kind") == "approval" and row.get("state") == "pending"
+        ]
+
+    def abandon_pending_approvals(self, *, reason: str = "session swap") -> int:
+        """未決の承認カードすべてを ``approval_abandoned`` として ledger に記録する (レビュー指摘 #1)。
+
+        project ライフサイクル (create/open/close/demo) がセッションを差し替える直前に、旧
+        セッション (呼び出し先の ``self``) に対して呼ぶ想定 (``app.py`` ``_guarded_swap``)。np-/
+        sr-/rv-/pc-/st- の pending カードは、swap 後は二度と approve/reject されない (旧セッション
+        ごと参照を失う) — 何も記録しないまま消えると、対応する ``agent_proposal`` だけが ledger に
+        残り「未決のまま永久に消えた」事実が追えなくなる (P2 違反。bypass ではエージェント自身が
+        自分の起票をこの経路で無記録に消せてしまう)。1 件ごとに
+        ``ledger.append("approval_abandoned", {"action_id", "kind", "reason"})`` を追記し、カード
+        state を ``"abandoned"`` にする (以後 pending 一覧・``resolve_approval`` の対象から外れる)。
+
+        **人間の操作はブロックしない** — このメソッド自体は失敗しない (呼び出し元は常に swap を
+        進めてよい)。0 件なら ledger への追記は一切行わない (空振りで無駄な監査ノイズを生まない)。
+
+        Returns:
+            記録した件数。
+        """
+        pending = self.pending_approvals()
+        count = 0
+        with self._lock:
+            for row in pending:
+                action_id = row.get("action_id")
+                if action_id is None or action_id in self._approvals:
+                    continue  # 二重解決防止 (別スレッドが先に approve/reject/abandon 済み)
+                prefix = str(action_id).split("-", 1)[0]
+                kind = _PREFIX_TO_PROPOSAL_KIND.get(prefix, prefix)
+                self.ledger.append(
+                    "approval_abandoned", {"action_id": action_id, "kind": kind, "reason": reason}
+                )
+                self._approvals[action_id] = {"state": "abandoned", "snapshot_id": None}
+                count += 1
+        return count
 
     # ------------------------------------------------------------------
     # POST /api/stages/{nn}
@@ -1154,27 +1570,39 @@ class WorkbenchSession:
             return guard
         if not structure_path or not phase_name:
             return {"error": "structure_path/phase_name is required", "error_type": "ValueError"}
-        assert self._project is not None
-        name = str(phase_name)
-        if any(p.phase_name == name for p in self._project.phases):
-            return {"error": f"phase already exists: {name}", "error_type": "ValueError"}
-        phase = PhaseSpec(structure_path=str(structure_path), phase_name=name)
-        self._project = dataclasses.replace(self._project, phases=self._project.phases + (phase,))
-        self._save_and_refresh("add_phase", {"phase_name": name})
-        return self.state()
+        # 【レビュー指摘 #2: self._project の read-modify-write をロック下に】: 既存重複チェック
+        #   (``self._project.phases`` 読取) から代入 (``self._project = ...``) までを 1 つの
+        #   クリティカルセクションにする。無ロックだと、``propose_phase_change`` が同一ターンで
+        #   2 件 (auto/bypass 即時適用、または直接 HTTP 経由) 並走したとき、両方が同じ古い
+        #   ``self._project.phases`` を読んでからそれぞれ ``dataclasses.replace`` で新タプルを
+        #   作り、後勝ちの代入がもう片方の追加相を丸ごと消す (lost update)。
+        with self._lock:
+            assert self._project is not None
+            name = str(phase_name)
+            if any(p.phase_name == name for p in self._project.phases):
+                return {"error": f"phase already exists: {name}", "error_type": "ValueError"}
+            phase = PhaseSpec(structure_path=str(structure_path), phase_name=name)
+            self._project = dataclasses.replace(
+                self._project, phases=self._project.phases + (phase,)
+            )
+            self._save_and_refresh("add_phase", {"phase_name": name})
+            return self.state()
 
     def remove_phase(self, phase_name: str) -> dict[str, Any]:
         """POST /api/project/phases/{phase_name}/remove: spec から相を除去する。"""
         guard = self._guard_project_editable()
         if guard is not None:
             return guard
-        assert self._project is not None
-        phases = tuple(p for p in self._project.phases if p.phase_name != phase_name)
-        if len(phases) == len(self._project.phases):
-            return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
-        self._project = dataclasses.replace(self._project, phases=phases)
-        self._save_and_refresh("remove_phase", {"phase_name": phase_name})
-        return self.state()
+        # 【レビュー指摘 #2: 同上】: add_phase と同じ read-modify-write レース (2 件の
+        #   propose_phase_change(op=remove) 並走で片方の除去が復活する) をロックで塞ぐ。
+        with self._lock:
+            assert self._project is not None
+            phases = tuple(p for p in self._project.phases if p.phase_name != phase_name)
+            if len(phases) == len(self._project.phases):
+                return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
+            self._project = dataclasses.replace(self._project, phases=phases)
+            self._save_and_refresh("remove_phase", {"phase_name": phase_name})
+            return self.state()
 
     def update_settings(
         self,
@@ -1187,38 +1615,44 @@ class WorkbenchSession:
         guard = self._guard_project_editable()
         if guard is not None:
             return guard
-        assert self._project is not None
-        project = self._project
-        if two_theta_limits is not None:
-            try:
-                lo, hi = float(two_theta_limits[0]), float(two_theta_limits[1])
-            except (TypeError, ValueError, IndexError, KeyError):
-                return {
-                    "error": f"invalid two_theta_limits: {two_theta_limits!r}",
-                    "error_type": "ValueError",
-                }
-            project = dataclasses.replace(
-                project,
-                histograms=tuple(
-                    dataclasses.replace(h, two_theta_limits=(lo, hi)) for h in project.histograms
-                ),
-            )
-        if background_coeffs is not None:
-            try:
-                project = dataclasses.replace(project, background_coeffs=int(background_coeffs))
-            except (TypeError, ValueError):
-                return {
-                    "error": f"invalid background_coeffs: {background_coeffs!r}",
-                    "error_type": "ValueError",
-                }
-        if max_cyc is not None:
-            try:
-                project = dataclasses.replace(project, max_cyc=int(max_cyc))
-            except (TypeError, ValueError):
-                return {"error": f"invalid max_cyc: {max_cyc!r}", "error_type": "ValueError"}
-        self._project = project
-        self._save_and_refresh("settings", {})
-        return self.state()
+        # 【レビュー指摘 #2: self._project の read-modify-write をロック下に】: この関数は
+        #   ``self._project`` を一度だけ読み (``project = self._project``)、ローカル変数へ複数回
+        #   ``dataclasses.replace`` を重ねてから最後に ``self._project = project`` で一括代入する
+        #   — 読取から代入までの全区間が「他スレッドの並行書込みを巻き込むと消える」レース窓
+        #   になる。add_phase/remove_phase と同じ理由でロックする。
+        with self._lock:
+            assert self._project is not None
+            project = self._project
+            if two_theta_limits is not None:
+                try:
+                    lo, hi = float(two_theta_limits[0]), float(two_theta_limits[1])
+                except (TypeError, ValueError, IndexError, KeyError):
+                    return {
+                        "error": f"invalid two_theta_limits: {two_theta_limits!r}",
+                        "error_type": "ValueError",
+                    }
+                project = dataclasses.replace(
+                    project,
+                    histograms=tuple(
+                        dataclasses.replace(h, two_theta_limits=(lo, hi)) for h in project.histograms
+                    ),
+                )
+            if background_coeffs is not None:
+                try:
+                    project = dataclasses.replace(project, background_coeffs=int(background_coeffs))
+                except (TypeError, ValueError):
+                    return {
+                        "error": f"invalid background_coeffs: {background_coeffs!r}",
+                        "error_type": "ValueError",
+                    }
+            if max_cyc is not None:
+                try:
+                    project = dataclasses.replace(project, max_cyc=int(max_cyc))
+                except (TypeError, ValueError):
+                    return {"error": f"invalid max_cyc: {max_cyc!r}", "error_type": "ValueError"}
+            self._project = project
+            self._save_and_refresh("settings", {})
+            return self.state()
 
     # ------------------------------------------------------------------
     # POST /api/project/frames (V2b B1)
@@ -1292,10 +1726,49 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def post_message(self, text: str) -> dict[str, Any]:
-        msg = {"id": f"t{len(self._transcript) + 1}", "kind": "user", "text": text}
-        self._transcript.append(msg)
+        """POST /api/transcript/message (V3a)。
+
+        ``source != "none"`` かつ ``mode == "auto"`` かつ ``AgentBridge.available`` のときのみ
+        エージェントへ非同期送信する (``bridge.send``)。実行中は ``ConflictError`` (呼び出し側が
+        409 へ縮退)。それ以外は従来どおり記録のみ (demo/manual/エージェント不可用時のフォールバック,
+        後方互換)。ユーザーメッセージ自体はどちらの経路でも transcript/ledger へ記録する。
+
+        transcript への append は ``self._lock`` 下で行う (V3a レビュー指摘 #3, ``_agent_append`` と
+        同じ流儀) — エージェントのバックグラウンドスレッド (``_agent_append``) や
+        ``GET /api/viewmodel`` の transcript 読み取りと並走しても、``len(self._transcript)`` に基づく
+        id 採番がレースして重複/欠番を起こさない。
+        """
+        with self._lock:
+            msg = {"id": f"t{len(self._transcript) + 1}", "kind": "user", "text": text}
+            self._transcript.append(msg)
         self.ledger.append("transcript_message", {"text": text})
+        if self._source != "none" and self.mode == "auto" and self._agent_bridge.available:
+            started = self._agent_bridge.send(text)
+            if not started:
+                return {"error": "agent is already running", "error_type": "ConflictError"}
+            return {"status": "agent_started"}
         return {"message": dict(msg)}
+
+    def _agent_append(self, kind: str, **fields: Any) -> dict[str, Any]:
+        """``AgentBridge.on_event``: transcript へ 1 行 append し、append 済み行 (可変 dict) を返す。
+
+        エージェントのバックグラウンドスレッドから呼ばれるため ``self._lock`` 下で行う
+        (`GET /api/viewmodel` の transcript 読み取りとの並走に対して安全)。返す dict は
+        ``self._transcript`` に格納された同一オブジェクトなので、呼び出し側 (`AgentBridge`) が
+        後から ``row["ret"] = ...`` のように直接書き込めば transcript にも反映される
+        (ToolUseBlock → 対応する ToolResultBlock の遅延反映に使う)。
+        """
+        with self._lock:
+            row: dict[str, Any] = {"id": f"t{len(self._transcript) + 1}", "kind": kind, **fields}
+            self._transcript.append(row)
+            return row
+
+    # ------------------------------------------------------------------
+    # GET /api/agent/status (V3a)
+    # ------------------------------------------------------------------
+
+    def agent_status(self) -> dict[str, Any]:
+        return self._agent_bridge.status()
 
     # ------------------------------------------------------------------
     # POST /api/phaseid, GET /api/phaseid/status, POST /api/phaseid/add (A4)
