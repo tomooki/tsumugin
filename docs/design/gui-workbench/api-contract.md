@@ -196,7 +196,7 @@ histograms[0] (instrument_path/radiation/geometry/data_format/two_theta_limits) 
 |---|---|
 | POST `/api/mem` `{"phase"?: str, "hist"?: str, "map_type"?: "Fobs"\|"delt-F", "dmin"?: float, "grid_step"?: float}` | 202 / 409。② `mem_density` をジョブ実行。未精密化 (gpx 無し) は 422 |
 | GET `/api/mem/status` | refine/status と同形 (kind="mem") |
-| (viewmodel) `structure.mem` | 完了後: `{"map": {"axis": "c", "index": 0, "nx": int, "ny": int, "values": [[...]], "vmin": float, "vmax": float, "unit": str}, "peaks": [...], "note": str}`。**values は ≤128×128 に間引き** (大配列を境界で無制限に跨がせない)。null = 未実行 (empty-state) |
+| (viewmodel) `structure.mem` | 完了後: `{"map": {"axis": "c", "index": 0, "nx": int, "ny": int, "values": [[...]], "vmin": float, "vmax": float, "unit": str}, "peaks": [...], "note": str}`。**values は ≤128×128 に縮約** (大配列を境界で無制限に跨がせない)。縮約は点サンプリングではなく**ブロック内の絶対値最大** — 隙間に落ちたピークが図から消えて「未モデル密度なし」と誤読されるのを防ぐ (Fobs の正ピーク・delt-F の負ローブとも保存、代わりに幅は 1 セル広く見える)。ピーク一覧 `peaks` は生グリッドから算出され本縮約の影響を受けない。null = 未実行 (empty-state) |
 | (viewmodel) `structure.mem_peaks` | 既存キー。実 MEM のピーク (position/density/assign) に差し替わる |
 
 断面は既定で c 軸に垂直な中央スライス。フロントは SVG heatmap (トークンの neutral↔accent

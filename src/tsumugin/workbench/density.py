@@ -28,11 +28,26 @@ MAX_MAP_DIM = 128
 UNIT_BY_DENSITY_KIND: dict[str, str] = {"electron": "e·Å⁻³", "nuclear": "fm·Å⁻³"}
 
 
-def _decimate_indices(n: int, max_dim: int) -> np.ndarray:
-    """``0..n-1`` を ``max_dim`` 点以下へ均等間引きする単調増加の添字列 (決定論)。"""
+def _block_bounds(n: int, max_dim: int) -> list[tuple[int, int]]:
+    """``0..n-1`` を ``max_dim`` 個以下のほぼ等幅ブロックへ分割する [start, stop) の列 (決定論)。"""
     if n <= max_dim:
-        return np.arange(n)
-    return np.unique(np.round(np.linspace(0, n - 1, max_dim)).astype(int))
+        return [(i, i + 1) for i in range(n)]
+    edges = np.round(np.linspace(0, n, max_dim + 1)).astype(int)
+    return [(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+
+
+def _reduce_block(block: np.ndarray) -> float:
+    """ブロックを **絶対値最大の要素**へ縮約する (符号は保つ)。
+
+    【なぜ点サンプリングでないか】: 密度マップを見る目的は「未モデル密度が有るか / どこか」の
+    判断であり、単純間引きだとサンプル点の隙間に落ちたピークが**図から消える** (「ピークが無い」
+    という誤った読みを生む — 成功に見える誤りは最悪の失敗形)。平均だと鋭いピークが希釈される。
+    絶対値最大なら Fobs の正のピークも delt-F の負のローブも保存され、表示上ピークを取りこぼさない
+    (代わりにピーク幅は 1 セル分広がって見える — 位置の指標としては保守側)。
+    ピーク一覧 (``peaks``) は生グリッドから別途算出されるため本縮約の影響を受けない。
+    """
+    flat = block.reshape(-1)
+    return float(flat[int(np.argmax(np.abs(flat)))])
 
 
 def extract_mem_map(
@@ -61,9 +76,14 @@ def extract_mem_map(
     _nx, _ny, nz = grid.shape
     index = nz // 2
     plane = grid[:, :, index]
-    xi = _decimate_indices(plane.shape[0], max_dim)
-    yi = _decimate_indices(plane.shape[1], max_dim)
-    sub = plane[np.ix_(xi, yi)]
+    # 【ブロック縮約】: 点サンプリングではなく「ブロック内の絶対値最大」へ縮約する
+    #   (_reduce_block の docstring 参照 — 隙間に落ちたピークを図から消さないため)。
+    xb = _block_bounds(plane.shape[0], max_dim)
+    yb = _block_bounds(plane.shape[1], max_dim)
+    sub = np.array(
+        [[_reduce_block(plane[x0:x1, y0:y1]) for (y0, y1) in yb] for (x0, x1) in xb],
+        dtype=float,
+    )
     # 【非有限値の防御】: 実 MEM 出力は常に有限だが、契約「非有限は null」は 2D 数値配列との相性が
     #   悪い (None が混ざると frontend の number[][] 契約が崩れる) ため 0.0 へ丸める。
     sub = np.where(np.isfinite(sub), sub, 0.0)
