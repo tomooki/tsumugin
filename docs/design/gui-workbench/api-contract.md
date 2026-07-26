@@ -192,11 +192,38 @@ histograms[0] (instrument_path/radiation/geometry/data_format/two_theta_limits) 
 **専用 MCP shim** (`tsumugin.workbench.agent_mcp`, stdio) 越しに workbench HTTP API を叩く —
 人間と同じ custody ガード (ledger/409/422) が全て適用される。
 
-**権限境界 (FR-402, 変更禁止)**: shim が公開するのは読み取り (state/viewmodel/ledger/status 系)
-と SafeAction 級のジョブ起動 (refine/sequential/phaseid/multistart/echem) のみ。
-**approval 解決・review 解決・structure apply・project 変更系 (作成/開く/フレーム/相/設定) は
-公開しない** — これらは人間専用 (提案≠適用)。shim のツール表がこの境界の単一情報源であり、
-逸脱はテストで fail させる。
+**権限境界 (FR-402)**: 2 段構え。
+1. **SafeAction — エージェントが直接実行してよい**: 読み取り (state/viewmodel/ledger/status) と
+   ジョブ起動 (refine/sequential/phaseid/multistart/echem)。再実行可能な計算であり
+   ledger 追記 + revert 可能なため、自律走行のために許可する。
+2. **ModelAction — エージェントが「起票」でき、人間の承認で実行される**: structure apply
+   (ReviseStructure)・review 解決・相の追加/除去・精密化設定変更。shim の `propose_*` ツールが
+   **承認カード (transcript kind=approval, state=pending) を作るだけ**で、実行は人間が
+   `POST /api/approval/{id}` を approve した時のみ。エージェントが散文で頼むのではなく
+   ワンクリック承認できる構造化アクションとして起票することで、自律ループを切らさない。
+3. **人間専用 (エージェントに口を作らない — 唯一の絶対境界)**: `POST /api/approval/{id}` 自体
+   (= 自己承認の禁止) と project ライフサイクル (create/open/close/demo — セッションと ledger の
+   すり替えに相当)。
+
+shim のツール表がこの境界の単一情報源であり、逸脱 (特に承認解決ツールの追加) はテストで fail
+させる。**「厳密な安全証明」ではなく「人間が最終決定を握る」ことが目的** — 解析は全て
+revert 可能なので、過剰な制限より自律性を優先する (2026-07-26 方針)。
+
+### `propose_*` ツールと承認カード
+
+| shim ツール | 承認カード action_id | approve 時に実行される操作 |
+|---|---|---|
+| `propose_structure_revision(sites, rationale)` | `sr-<n>` | `POST /api/structure/apply` 相当 (子スナップショット + ledger) |
+| `propose_review_resolution(item_id, action, rationale)` | `rv-<n>` | `ReviewQueue.resolve` (FR-423) |
+| `propose_phase_change(op, phase_name, structure_path?, rationale)` | `pc-<n>` | `add_phase` / `remove_phase` |
+| `propose_settings_change(two_theta_limits?, background_coeffs?, max_cyc?, rationale)` | `st-<n>` | `update_settings` |
+| `list_pending_approvals()` (読み取り) | — | 自分の起票の状態確認 (approve はできない) |
+
+既存の新相カード (`np-<frame>`) と同じ機構。共通規約: 起票時は ledger に `agent_proposal`
+(payload に kind/rationale/action)、approve/reject 時に `approval_decision` + 実操作の ledger。
+reject でも提案は ledger に残る。approve 時の実行失敗は error dict + カードは pending 復帰
+(再試行可)。payload の各引数は他ツールの出力から作れること (§4.5 到達可能性) — sites は
+`get_viewmodel().structure.sites`、item_id は `.review[].id`、phase_name は `.project.phases[]`。
 
 | 呼び出し | 内容 |
 |---|---|
