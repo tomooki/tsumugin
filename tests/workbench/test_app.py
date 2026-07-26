@@ -656,6 +656,86 @@ def test_post_agent_policy_returns_409_while_agent_running(
     assert client.get("/api/state").json()["agent"]["policy"] == "approve"
 
 
+# ---------------------------------------------------------------------------
+# GET/POST /api/settings, POST /api/settings/clear (アプリ設定, api-contract.md §アプリ設定)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_mp_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MP API キー環境変数をテストごとに未設定へ揃える (実行環境の実キーに左右されないため)。"""
+    monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+
+
+def test_get_settings_default_shape_is_unset(client: TestClient):
+    resp = client.get("/api/settings")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "mp_api_key_set": False, "mp_api_key_hint": None, "mp_api_key_source": None,
+    }
+
+
+def test_post_settings_saves_and_masks_value(client: TestClient, session: WorkbenchSession):
+    resp = client.post("/api/settings", json={"mp_api_key": "sk-abcdef1234"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mp_api_key_set"] is True
+    assert body["mp_api_key_source"] == "settings"
+    assert body["mp_api_key_hint"] == "…1234"
+    # 【キー本体が応答に含まれない】: レスポンス全体を str 化しても原文キーが出ない。
+    assert "sk-abcdef1234" not in json.dumps(body)
+    assert session.ledger.entries[-1].kind == "settings_change"
+    assert session.ledger.entries[-1].payload == {"key": "mp_api_key", "action": "set"}
+
+
+def test_post_settings_empty_string_returns_422(client: TestClient):
+    resp = client.post("/api/settings", json={"mp_api_key": ""})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_post_settings_non_string_returns_422(client: TestClient):
+    resp = client.post("/api/settings", json={"mp_api_key": 123})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_post_settings_missing_field_returns_422(client: TestClient):
+    resp = client.post("/api/settings", json={})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_post_settings_clear_removes_value(client: TestClient, session: WorkbenchSession):
+    client.post("/api/settings", json={"mp_api_key": "sk-to-clear-9999"})
+
+    resp = client.post("/api/settings/clear", json={"key": "mp_api_key"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "mp_api_key_set": False, "mp_api_key_hint": None, "mp_api_key_source": None,
+    }
+    assert session.ledger.entries[-1].payload == {"key": "mp_api_key", "action": "clear"}
+
+
+def test_post_settings_clear_unknown_key_returns_422(client: TestClient):
+    resp = client.post("/api/settings/clear", json={"key": "bogus_key"})
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_state_status_mp_available_reflects_settings(client: TestClient):
+    assert client.get("/api/state").json()["status"]["mp_available"] is False
+
+    client.post("/api/settings", json={"mp_api_key": "sk-reflects-in-state"})
+
+    assert client.get("/api/state").json()["status"]["mp_available"] is True
+
+    client.post("/api/settings/clear", json={"key": "mp_api_key"})
+
+    assert client.get("/api/state").json()["status"]["mp_available"] is False
+
+
 def test_post_transcript_message_returns_202_when_agent_started(
     client: TestClient, session: WorkbenchSession
 ):

@@ -100,3 +100,30 @@ def test_main_with_demo_flag_serves_demo_session(monkeypatch: pytest.MonkeyPatch
     assert len(fake_serve) == 1
     session = fake_serve[0]["session"]
     assert session.source == "demo"
+
+
+# ---------------------------------------------------------------------------
+# アプリ設定 (資格情報): 起動時に保存済み MP キーをプロセス env へ反映する
+# (api-contract.md §アプリ設定「保存時にプロセスの環境変数へも反映」— 起動時も同じ扱い)
+# ---------------------------------------------------------------------------
+
+
+def test_main_applies_saved_mp_api_key_to_env_at_startup(
+    monkeypatch: pytest.MonkeyPatch, fake_serve, _isolated_home
+):
+    # 【home 隔離】: `tests/workbench/conftest.py` の autouse fixture (`_isolated_home`) が
+    #   ``Path.home()`` を既に隔離済み — ここでは同じ隔離先を明示依存として受け取るだけでよい。
+    monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+
+    from tsumugin.workbench import settings as settings_module
+
+    settings_module.save_setting("mp_api_key", "sk-startup-applied")
+
+    monkeypatch.setattr("sys.argv", ["tsumugin-workbench"])
+    monkeypatch.setattr(entry, "_DEFAULT_DIST", Path("no-such-dist-dir"))
+
+    entry.main()
+
+    import os
+
+    assert os.environ.get("MATERIALS_PROJECT_API") == "sk-startup-applied"
