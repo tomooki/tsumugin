@@ -209,6 +209,34 @@ shim のツール表がこの境界の単一情報源であり、逸脱 (特に�
 させる。**「厳密な安全証明」ではなく「人間が最終決定を握る」ことが目的** — 解析は全て
 revert 可能なので、過剰な制限より自律性を優先する (2026-07-26 方針)。
 
+### エージェント権限モード (`agent_policy`) — 人間が切り替える
+
+上の 2 段構えは既定 (`approve`) の挙動。**人間はいつでもモードを切り替えられる**。
+
+| モード | ModelAction (structure/review/phase/settings) | project ライフサイクル (create/open/close/demo) |
+|---|---|---|
+| `approve` (既定) | `propose_*` で起票 → **人間の承認で実行** | 人間専用 |
+| `auto` (自動) | `propose_*` が**即時自動適用** (カードは `auto_applied` として記録) | 人間専用 |
+| `bypass` (許可をバイパス) | 即時自動適用 | **エージェントにも開放** |
+
+**全モード共通で変わらないもの (安全弁ではなく監査可能性の担保)**:
+- ledger 追記 + snapshot は常に記録され **revert 可能** (P2)。auto/bypass でも「何が起きたか」は
+  完全に追跡でき、いつでも巻き戻せる。
+- **`agent_policy` の変更はエージェントから不可** (shim にツールを作らない) — 自己昇格の禁止。
+  自己承認 (`POST /api/approval/{id}`) の禁止と同じ理由で、これがモード分けを意味あるものにする
+  唯一の絶対境界。
+- **CLI ビルトインツール (Bash/Read/Write/WebFetch 等) は全モードで無効** (`tools=[]`)。
+  bypass は「workbench の操作権限」を渡すモードであり、ローカルマシンへのシェルアクセスとは
+  別軸 (そちらは revert 不能なので開けない)。
+
+| 呼び出し | 内容 |
+|---|---|
+| GET `/api/state` | `agent.policy: "approve"\|"auto"\|"bypass"` を含む |
+| POST `/api/agent/policy` `{"policy": ...}` | 切替 + **ledger 追記** (`agent_policy_change`)。エージェントのターン実行中は 409。不正値 422 |
+
+UI: AGENT SESSION ヘッダに 3 択セグメント (承認 / 自動 / バイパス)。auto/bypass 選択時は
+ヘッダに反転チップで現モードを明示 (「今エージェントが何をできるか」を常に見えるように)。
+
 ### `propose_*` ツールと承認カード
 
 | shim ツール | 承認カード action_id | approve 時に実行される操作 |
