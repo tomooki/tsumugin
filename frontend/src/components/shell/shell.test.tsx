@@ -217,3 +217,96 @@ describe("StatusBar — GSAS-II availability chip", () => {
     await waitFor(() => expect(screen.getByText("GSAS-II 未検出")).toBeInTheDocument());
   });
 });
+
+// — SETTINGS モーダル (api-contract.md §アプリ設定): Materials Project トークン —
+// mp_available follows the exact same "dynamic per GET /api/state, optional
+// field, inverted chip" precedent as gsas_available above.
+describe("StatusBar — Materials Project token availability chip", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function installFetchMockWithMp(mpAvailable: boolean) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/state") && method === "GET") {
+        return jsonResponse(
+          makeShell({
+            status: {
+              backend_build: "tsumugin 0.3.0",
+              seed: 0,
+              mcp_tools: 36,
+              gsas_available: true,
+              mp_available: mpAvailable,
+            },
+          }),
+        );
+      }
+      if (url.endsWith("/api/viewmodel") && method === "GET") {
+        return jsonResponse(makeViewModel());
+      }
+      throw new Error(`unhandled fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("shows the inverted MP TOKEN NOT SET chip once /api/state reports mp_available: false", async () => {
+    installFetchMockWithMp(false);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("MP TOKEN NOT SET")).toBeInTheDocument());
+    expect(screen.getByText("MP TOKEN NOT SET").className).toContain("chip--inverted");
+  });
+
+  it("does not show the chip when mp_available is true", async () => {
+    installFetchMockWithMp(true);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("OPERATOR CONSOLE")).toBeInTheDocument());
+    expect(screen.queryByText("MP TOKEN NOT SET")).not.toBeInTheDocument();
+  });
+});
+
+describe("TitleBar — SETTINGS gear button", () => {
+  function installFetchMockWithSettings() {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/state") && method === "GET") {
+        return jsonResponse(makeShell());
+      }
+      if (url.endsWith("/api/viewmodel") && method === "GET") {
+        return jsonResponse(makeViewModel());
+      }
+      if (url.endsWith("/api/settings") && method === "GET") {
+        return jsonResponse({ mp_api_key_set: false, mp_api_key_hint: null, mp_api_key_source: null });
+      }
+      throw new Error(`unhandled fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("opens the SETTINGS modal from the title bar and closes it again", async () => {
+    const user = userEvent.setup();
+    installFetchMockWithSettings();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("OPERATOR CONSOLE")).toBeInTheDocument());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "settings" }));
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(screen.getByText("SETTINGS")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "CLOSE" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});

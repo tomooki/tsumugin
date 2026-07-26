@@ -41,6 +41,15 @@ export interface BackendStatus {
   // prerequisite (desktop/README.md). When false, refine/multistart/sequential
   // job requests fail with 422 {"error_type": "GSASUnavailableError"}.
   gsas_available: boolean;
+  // api-contract.md §アプリ設定 (資格情報): whether a Materials Project API
+  // key is available (settings file or MATERIALS_PROJECT_API env var) —
+  // used to pre-disable phase-identification controls (mirrors
+  // gsas_available's precedent above) before a POST that needs it 422s.
+  // Optional so pre-existing fixtures (which predate this field) keep
+  // compiling; a missing value is treated as available (see
+  // PhaseIdTab/StatusBar) so those controls are not spuriously disabled
+  // against an older server.
+  mp_available?: boolean;
 }
 
 export interface AgentStatus {
@@ -866,6 +875,27 @@ export interface MemRequest {
   map_type?: MemMapType;
   dmin?: number;
   grid_step?: number;
+}
+
+// — アプリ設定 (資格情報) — Materials Project トークン (api-contract.md §アプリ設定) —
+
+// GET /api/settings — masked credential state. 絶対規則: the key itself is
+// never returned; mp_api_key_hint is a short masked tail (server-formatted,
+// e.g. "ab12") or null when unset.
+export interface SettingsState {
+  mp_api_key_set: boolean;
+  mp_api_key_hint: string | null;
+  mp_api_key_source: "settings" | "env" | null;
+}
+
+export interface SettingsSetRequest {
+  mp_api_key: string;
+}
+
+export type SettingsKey = "mp_api_key";
+
+export interface SettingsClearRequest {
+  key: SettingsKey;
 }
 
 // — errors —

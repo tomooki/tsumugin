@@ -55,6 +55,14 @@ export function PhaseIdTab() {
   // buttons (api-contract.md: one job slot, mutually 409).
   const jobRunning = state.refine?.status === "running";
   const identifyRunning = jobRunning && state.activeJob === "phaseid";
+  // api-contract.md §アプリ設定: pre-disable IDENTIFY/ADD AS PHASE when no
+  // Materials Project token is available (mirrors OperatorConsole's
+  // gsasAvailable convention — "gsas_available と同じ流儀"). Default true
+  // (available) when shell/status hasn't loaded yet so the buttons aren't
+  // spuriously disabled during the initial fetch or against an older server
+  // that omits this optional field.
+  const mpAvailable = state.shell?.status?.mp_available ?? true;
+  const mpUnavailableTitle = !mpAvailable ? tl("pid.local.mpUnavailable") : undefined;
 
   const setRefineStatus = useCallback(
     (refine: RefineStatus) => dispatch({ type: "SET_REFINE_STATUS", refine }),
@@ -169,7 +177,13 @@ export function PhaseIdTab() {
             <option value="residual">{tl("pid.local.modeResidual")}</option>
           </select>
         </label>
-        <Btn type="button" variant="accent" onClick={handleIdentifyClick} disabled={jobRunning}>
+        <Btn
+          type="button"
+          variant="accent"
+          onClick={handleIdentifyClick}
+          disabled={jobRunning || !mpAvailable}
+          title={mpUnavailableTitle}
+        >
           {identifyRunning ? tl("pid.local.identifying") : tl("pid.local.identify")}
         </Btn>
         {identifyError && <span className="pid-tab__message pid-tab__message--error">{identifyError}</span>}
@@ -208,7 +222,8 @@ export function PhaseIdTab() {
                 <Btn
                   type="button"
                   variant="outline"
-                  disabled={addingFormula === row.formula}
+                  disabled={addingFormula === row.formula || !mpAvailable}
+                  title={mpUnavailableTitle}
                   onClick={() => handleAddAsPhase(row)}
                 >
                   {addingFormula === row.formula ? tl("pid.local.addAdding") : t("pid.action.addAsPhase")}

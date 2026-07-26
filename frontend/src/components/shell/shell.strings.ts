@@ -23,6 +23,11 @@ export const SHELL_STRINGS = {
   // /api/state (api/types.ts BackendStatus doc comment), so this must render/unrender live, not
   // just once at load. Inverted chip variant matches Chip.tsx's "the only attention treatment".
   "status.gsasUnavailable": { en: "GSAS-II NOT FOUND", ja: "GSAS-II 未検出" },
+  // Materials Project token unavailability chip (api-contract.md §アプリ設定
+  // "GET /api/state の status.mp_available" — "…事前 disabled に使う。
+  // gsas_available と同じ流儀"). Same dynamic-per-GET-/api/state /
+  // inverted-chip treatment as status.gsasUnavailable above.
+  "status.mpUnavailable": { en: "MP TOKEN NOT SET", ja: "MP トークン未設定" },
 } as const satisfies Record<string, StringPair>;
 
 export type ShellStringKey = keyof typeof SHELL_STRINGS;

@@ -35,6 +35,10 @@ import type {
   RevertRequest,
   RevertResponse,
   SequentialRequest,
+  SettingsClearRequest,
+  SettingsKey,
+  SettingsSetRequest,
+  SettingsState,
   ShellState,
   StageAction,
   StageActionResponse,
@@ -316,4 +320,24 @@ export function postMem(payload: MemRequest = {}): Promise<JobStartResponse> {
 
 export function getMemStatus(): Promise<RefineStatus> {
   return get<RefineStatus>("/api/mem/status");
+}
+
+// — アプリ設定 (資格情報) — Materials Project トークン (api-contract.md §アプリ設定) —
+
+export function getSettings(): Promise<SettingsState> {
+  return get<SettingsState>("/api/settings");
+}
+
+// api-contract.md documents only the side effects of this call ("保存 +
+// プロセス env 反映 + ledger (値なし)"), not a response body shape — callers
+// must not rely on any field of the resolved value. The documented UI flow
+// is an explicit getSettings() + getState() refetch right after this
+// resolves (see SettingsModal.refetch), which is what actually updates the
+// masked status / mp_available badge.
+export function postSettings(mpApiKey: string): Promise<unknown> {
+  return post<unknown>("/api/settings", { mp_api_key: mpApiKey } satisfies SettingsSetRequest);
+}
+
+export function postSettingsClear(key: SettingsKey = "mp_api_key"): Promise<unknown> {
+  return post<unknown>("/api/settings/clear", { key } satisfies SettingsClearRequest);
 }

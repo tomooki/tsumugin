@@ -42,6 +42,14 @@ export const PID_LOCAL_STRINGS = {
     en: "failed to add {formula} as a phase: {message}",
     ja: "{formula} の相追加に失敗: {message}",
   },
+  // api-contract.md §アプリ設定: pre-disable tooltip for IDENTIFY/ADD AS
+  // PHASE when status.mp_available is false — same "gsas_available と同じ
+  // 流儀" precedent as OperatorConsole's recipe.gsasUnavailable tooltip
+  // (right.strings.ts).
+  "pid.local.mpUnavailable": {
+    en: "Materials Project token not set — enter it from Settings",
+    ja: "Materials Project トークン未設定 — 設定から入力してください",
+  },
 } as const satisfies Record<string, StringPair>;
 
 export type PidLocalKey = keyof typeof PID_LOCAL_STRINGS;
