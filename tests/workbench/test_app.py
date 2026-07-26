@@ -286,6 +286,119 @@ def test_approval_keeps_transcript_proposal_both_paths(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
+# proposals (ModelAction 起票, V3a 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_post_proposal_structure_revision_returns_pending_action_id(client: TestClient):
+    resp = client.post(
+        "/api/proposals",
+        json={
+            "kind": "structure_revision",
+            "payload": {"sites": [{"id": "s1", "label": "O1", "occ": 0.71}]},
+            "rationale": "occupancy drift",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["action_id"] == "sr-1"
+    assert data["state"] == "pending"
+
+
+def test_post_proposal_missing_kind_returns_422(client: TestClient):
+    resp = client.post("/api/proposals", json={"payload": {}, "rationale": "x"})
+    assert resp.status_code == 422
+
+
+def test_post_proposal_non_object_payload_returns_422(client: TestClient):
+    resp = client.post(
+        "/api/proposals", json={"kind": "structure_revision", "payload": "nope", "rationale": "x"}
+    )
+    assert resp.status_code == 422
+
+
+def test_post_proposal_unknown_kind_returns_422(client: TestClient):
+    resp = client.post(
+        "/api/proposals", json={"kind": "bogus_kind", "payload": {}, "rationale": "x"}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
+def test_post_proposal_review_resolution_unknown_item_id_returns_404(client: TestClient):
+    resp = client.post(
+        "/api/proposals",
+        json={
+            "kind": "review_resolution",
+            "payload": {"item_id": "nope", "action": "accept"},
+            "rationale": "x",
+        },
+    )
+    assert resp.status_code == 404
+
+
+def test_get_proposals_lists_pending_and_excludes_resolved(client: TestClient):
+    items = client.get("/api/review-queue").json()["items"]
+    item_id = items[1]["id"]
+    created = client.post(
+        "/api/proposals",
+        json={
+            "kind": "review_resolution",
+            "payload": {"item_id": item_id, "action": "accept"},
+            "rationale": "x",
+        },
+    ).json()
+
+    pending_before = client.get("/api/proposals").json()["pending"]
+    assert any(row["action_id"] == created["action_id"] for row in pending_before)
+
+    approve = client.post(f"/api/approval/{created['action_id']}", json={"decision": "approve"})
+    assert approve.status_code == 200
+
+    pending_after = client.get("/api/proposals").json()["pending"]
+    assert not any(row["action_id"] == created["action_id"] for row in pending_after)
+
+
+def test_proposal_approve_reaches_underlying_operation(client: TestClient, session: WorkbenchSession):
+    """sr 起票 → 承認で apply_structure 相当が実行され snapshot が増えることを HTTP 経由で確認する。"""
+    before_snaps = len(session.snapshots.snapshots)
+    created = client.post(
+        "/api/proposals",
+        json={
+            "kind": "structure_revision",
+            "payload": {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]},
+            "rationale": "x",
+        },
+    ).json()
+
+    resp = client.post(f"/api/approval/{created['action_id']}", json={"decision": "approve"})
+
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "approved"
+    assert len(session.snapshots.snapshots) == before_snaps + 1
+
+
+def test_proposal_reject_does_not_execute_underlying_operation(client: TestClient):
+    items = client.get("/api/review-queue").json()["items"]
+    item_id = items[2]["id"]
+    created = client.post(
+        "/api/proposals",
+        json={
+            "kind": "review_resolution",
+            "payload": {"item_id": item_id, "action": "accept"},
+            "rationale": "x",
+        },
+    ).json()
+
+    resp = client.post(f"/api/approval/{created['action_id']}", json={"decision": "reject"})
+
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "rejected"
+    row = next(r for r in client.get("/api/review-queue").json()["items"] if r["id"] == item_id)
+    assert row["state"] == "pending"  # reject では実操作は起きない
+
+
+# ---------------------------------------------------------------------------
 # stages
 # ---------------------------------------------------------------------------
 

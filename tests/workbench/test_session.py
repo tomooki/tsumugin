@@ -258,6 +258,262 @@ def test_viewmodel_transcript_approval_state_reflects_resolution():
 
 
 # ---------------------------------------------------------------------------
+# ModelAction 起票 (create_proposal / 一般化 resolve_approval, 2026-07-26 権限境界改訂)
+# ---------------------------------------------------------------------------
+
+
+def test_create_proposal_structure_revision_creates_pending_card_and_ledger():
+    session = WorkbenchSession.create_demo()
+    before_ledger = len(session.ledger.entries)
+
+    result = session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.71}]},
+        rationale="occupancy drift observed",
+    )
+
+    assert result == {"action_id": "sr-1", "state": "pending"}
+    assert len(session.ledger.entries) == before_ledger + 1
+    assert session.ledger.entries[-1].kind == "agent_proposal"
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "sr-1")
+    assert card["kind"] == "approval"
+    assert card["state"] == "pending"
+    assert card["rationale"] == "occupancy drift observed"
+    assert json.loads(card["action_json"]) == {"sites": [{"id": "s1", "label": "O1", "occ": 0.71}]}
+
+
+def test_create_proposal_unknown_kind_returns_422_error_dict():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("bogus_kind", {}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_non_dict_payload_returns_422_error_dict():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("structure_revision", "not-a-dict", rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_structure_revision_empty_sites_returns_422():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("structure_revision", {"sites": []}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_review_resolution_unknown_item_id_returns_404_at_propose_time():
+    session = WorkbenchSession.create_demo()
+    before_ledger = len(session.ledger.entries)
+
+    result = session.create_proposal(
+        "review_resolution", {"item_id": "no-such-item", "action": "accept"}, rationale="x"
+    )
+
+    assert result["error_type"] == "NotFoundError"
+    # 起票時に弾かれる = ledger に agent_proposal は残らない (承認時まで持ち越さない)
+    assert len(session.ledger.entries) == before_ledger
+
+
+def test_create_proposal_review_resolution_invalid_action_returns_422():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "bogus"}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_phase_change_without_project_returns_422():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal(
+        "phase_change", {"op": "add", "phase_name": "p1", "structure_path": "p1.cif"}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_phase_change_add_requires_structure_path(project_session: WorkbenchSession):
+    result = project_session.create_proposal(
+        "phase_change", {"op": "add", "phase_name": "p1"}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_phase_change_remove_unknown_phase_returns_404(
+    project_session: WorkbenchSession,
+):
+    result = project_session.create_proposal(
+        "phase_change", {"op": "remove", "phase_name": "no-such-phase"}, rationale="x"
+    )
+    assert result["error_type"] == "NotFoundError"
+
+
+def test_create_proposal_settings_change_without_project_returns_422():
+    session = WorkbenchSession.create_demo()
+    result = session.create_proposal("settings_change", {"max_cyc": 10}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_settings_change_requires_at_least_one_field(
+    project_session: WorkbenchSession,
+):
+    result = project_session.create_proposal("settings_change", {}, rationale="x")
+    assert result["error_type"] == "ValueError"
+
+
+def test_create_proposal_settings_change_invalid_two_theta_limits_returns_422(
+    project_session: WorkbenchSession,
+):
+    result = project_session.create_proposal(
+        "settings_change", {"two_theta_limits": ["not", "numbers"]}, rationale="x"
+    )
+    assert result["error_type"] == "ValueError"
+
+
+def test_resolve_generic_proposal_structure_revision_approve_creates_snapshot():
+    session = WorkbenchSession.create_demo()
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.9}]}, rationale="x"
+    )
+    before_snaps = len(session.snapshots.snapshots)
+
+    result = session.resolve_approval("sr-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert result["snapshot_id"] is not None
+    assert len(session.snapshots.snapshots) == before_snaps + 1
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "sr-1")
+    assert card["state"] == "approved"
+
+
+def test_resolve_generic_proposal_review_resolution_approve_resolves_item():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    result = session.resolve_approval("rv-1", decision="approve")
+
+    assert result["state"] == "approved"
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is True
+    row = next(r for r in session.review_view() if r["id"] == item_id)
+    assert row["state"] == "accepted"
+
+
+def test_resolve_generic_proposal_phase_change_add_approve_adds_phase(
+    project_session: WorkbenchSession,
+):
+    project_session.create_proposal(
+        "phase_change",
+        {"op": "add", "phase_name": "phaseX", "structure_path": "data/phaseX.cif"},
+        rationale="x",
+    )
+    before = len(project_session._project.phases)
+
+    result = project_session.resolve_approval("pc-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert len(project_session._project.phases) == before + 1
+    assert any(p.phase_name == "phaseX" for p in project_session._project.phases)
+
+
+def test_resolve_generic_proposal_phase_change_remove_approve_removes_phase(
+    project_session: WorkbenchSession,
+):
+    project_session.add_phase(structure_path="p.cif", phase_name="phaseY")
+    project_session.create_proposal(
+        "phase_change", {"op": "remove", "phase_name": "phaseY"}, rationale="x"
+    )
+
+    result = project_session.resolve_approval("pc-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert not any(p.phase_name == "phaseY" for p in project_session._project.phases)
+
+
+def test_resolve_generic_proposal_settings_change_approve_applies_settings(
+    project_session: WorkbenchSession,
+):
+    project_session.create_proposal("settings_change", {"max_cyc": 42}, rationale="x")
+
+    result = project_session.resolve_approval("st-1", decision="approve")
+
+    assert result["state"] == "approved"
+    assert project_session._project.max_cyc == 42
+
+
+def test_resolve_generic_proposal_reject_appends_ledger_only():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+
+    result = session.resolve_approval("rv-1", decision="reject")
+
+    assert result["state"] == "rejected"
+    assert result["snapshot_id"] is None
+    resolved_item = next(it for it in session.review_queue.items if it.item_id == item_id)
+    assert resolved_item.resolved is False  # reject では実操作は起きない
+
+
+def test_resolve_generic_proposal_double_approve_returns_409():
+    session = WorkbenchSession.create_demo()
+    session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="x"
+    )
+    session.resolve_approval("sr-1", decision="approve")
+
+    result = session.resolve_approval("sr-1", decision="approve")
+
+    assert result["error_type"] == "ConflictError"
+
+
+def test_resolve_generic_proposal_unknown_action_id_returns_404():
+    session = WorkbenchSession.create_demo()
+    result = session.resolve_approval("sr-999", decision="approve")
+    assert result["error_type"] == "NotFoundError"
+
+
+def test_resolve_generic_proposal_execution_failure_reverts_card_to_pending():
+    """approve 時の実操作 (resolve_review_item) が失敗すれば error dict + カードは pending 復帰。"""
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="x"
+    )
+    # 承認カード起票後、人間が GUI から直接同じ項目を解決してしまう競合を模擬する。
+    session.resolve_review_item(item_id, action="send_back")
+
+    result = session.resolve_approval("rv-1", decision="approve")
+
+    assert "error" in result
+    assert result["error_type"] == "ConflictError"
+    assert "rv-1" not in session._approvals  # pending のまま (再試行可能)
+    card = next(m for m in session.viewmodel()["transcript"] if m.get("action_id") == "rv-1")
+    assert card["state"] == "pending"
+
+
+def test_pending_approvals_lists_only_pending_cards_across_kinds():
+    session = WorkbenchSession.create_demo()
+    item_id = session.review_queue.items[0].item_id
+    sr_result = session.create_proposal(
+        "structure_revision", {"sites": [{"id": "s1", "label": "O1", "occ": 0.5}]}, rationale="x"
+    )
+    rv_result = session.create_proposal(
+        "review_resolution", {"item_id": item_id, "action": "accept"}, rationale="y"
+    )
+    session.resolve_approval(sr_result["action_id"], decision="approve")  # これはもう pending でない
+
+    pending = session.pending_approvals()
+
+    pending_ids = {row["action_id"] for row in pending}
+    assert sr_result["action_id"] not in pending_ids
+    assert rv_result["action_id"] in pending_ids
+    # demo シードの一般承認カード "a1" も pending として一覧に含まれる (機構問わず)。
+    assert "a1" in pending_ids
+
+
+# ---------------------------------------------------------------------------
 # refine
 # ---------------------------------------------------------------------------
 

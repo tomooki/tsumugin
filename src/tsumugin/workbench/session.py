@@ -22,7 +22,7 @@ import math
 import os
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -94,6 +94,7 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "m7_stage": "CORE ①",
     "m7_stage_error": "GUARD",
     "transcript_message": "HUMAN",
+    "agent_proposal": "AGENT ③",
     "approval_decision": "HUMAN",
     "accept_reason": "HUMAN",
     "project_edit": "HUMAN",
@@ -108,6 +109,24 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "sequential_failed": "GUARD",
     "echem_finished": "CORE ①",
     "echem_failed": "GUARD",
+}
+
+
+#: 【ModelAction 起票, 2026-07-26 権限境界改訂】: `create_proposal` の kind → 承認カード
+#: action_id 接頭辞 (api-contract.md §propose_* ツールと承認カード の表と同一)。
+_PROPOSAL_KIND_PREFIX: dict[str, str] = {
+    "structure_revision": "sr",
+    "review_resolution": "rv",
+    "phase_change": "pc",
+    "settings_change": "st",
+}
+
+#: 承認カード (transcript kind=approval) の title (kind ごと)。
+_PROPOSAL_TITLES: dict[str, str] = {
+    "structure_revision": "エージェント提案: 構造改訂 (ReviseStructure)",
+    "review_resolution": "エージェント提案: レビュー項目の解決",
+    "phase_change": "エージェント提案: 相の追加/除去",
+    "settings_change": "エージェント提案: 精密化設定の変更",
 }
 
 
@@ -147,6 +166,8 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"stage {payload.get('stage')} error"
     if kind == "transcript_message":
         return "transcript message posted"
+    if kind == "agent_proposal":
+        return f"agent proposal {payload.get('action_id')} ({payload.get('kind')})"
     if kind == "approval_decision":
         return f"approval {payload.get('action_id')} {payload.get('decision')}"
     if kind == "accept_reason":
@@ -219,6 +240,13 @@ class WorkbenchSession:
         self._stages: list[dict[str, Any]] = _seed.seed_stages()
         self._transcript: list[dict[str, Any]] = []
         self._approvals: dict[str, dict[str, Any]] = {}
+        # 【ModelAction 起票, 2026-07-26 権限境界改訂】: `create_proposal` (POST /api/proposals) が
+        #   起票した sr-/rv-/pc-/st- カードの kind/payload/rationale。resolve_approval の approve
+        #   分岐 (`_resolve_generic_proposal`) が approve 時にここを引いて実操作を呼ぶ
+        #   (`_np_approval_info` と同じ役割の一般化)。state (pending/approved/rejected) は
+        #   従来どおり `self._approvals` が単一情報源 (`_transcript_view` 参照)。
+        self._proposals: dict[str, dict[str, Any]] = {}
+        self._proposal_seq: int = 0
         self._review_meta: dict[str, dict[str, str]] = {}
         self._review_state: dict[str, str] = {}
         self._structure_sites: list[dict[str, Any]] = []
@@ -779,6 +807,10 @@ class WorkbenchSession:
     # POST /api/approval/{action_id}
     # ------------------------------------------------------------------
 
+    #: sr-/rv-/pc-/st- (`create_proposal` 起票) の action_id 接頭辞。np- (B5 新相承認) と同じく
+    #: `_resolve_with_in_progress_guard` 経由で二重承認を防ぐ (2026-07-26 一般化)。
+    _GENERIC_PROPOSAL_PREFIXES: "tuple[str, ...]" = ("sr-", "rv-", "pc-", "st-")
+
     def resolve_approval(self, action_id: str, *, decision: Literal["approve", "reject"]) -> dict[str, Any]:
         """AUTO transcript の ModelAction 承認カードを解決する (両経路 ledger、approve のみ snapshot)。"""
         if action_id in self._approvals:
@@ -792,31 +824,17 @@ class WorkbenchSession:
 
         if action_id.startswith("np-"):
             # 【B5: 新相承認カード】: structure ReviseStructure 承認とは別経路 (add_phase まで進む)。
-            # 【二重 approve 対策】: ``_resolve_new_phase_approval`` は ``identify_and_add_phase``
-            #   (MP 問い合わせ) で長時間ブロックしうるが、その間 ``self._approvals`` には何も
-            #   書かれない (完了時に初めて確定状態を書く) ため、上の事前チェックだけでは
-            #   「実行中の 2 回目呼び出し」を検出できない (両方とも「未解決」を見て通過する)。
-            #   ここで呼び出し前に ``self._lock`` 下で check-and-set マーカー
-            #   (state="in_progress") を置き、以降の呼び出しは事前チェックでこのマーカーに
-            #   ヒットして 409 になるようにする。エラー経路 (例外/error dict/承認カード不明) は
-            #   マーカーを pop して pending に戻す (再試行可能, 既存の error 経路契約を維持)。
-            with self._lock:
-                if action_id in self._approvals:
-                    return {
-                        "error": f"approval already resolved: {action_id}",
-                        "error_type": "ConflictError",
-                    }
-                self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
-            try:
-                result = self._resolve_new_phase_approval(action_id, decision=decision)
-            except Exception:
-                with self._lock:
-                    self._approvals.pop(action_id, None)
-                raise
-            if "error" in result:
-                with self._lock:
-                    self._approvals.pop(action_id, None)
-            return result
+            return self._resolve_with_in_progress_guard(
+                action_id, lambda: self._resolve_new_phase_approval(action_id, decision=decision)
+            )
+
+        if action_id.startswith(self._GENERIC_PROPOSAL_PREFIXES):
+            # 【ModelAction 起票の一般化, 2026-07-26】: `create_proposal` (POST /api/proposals) が
+            #   作った sr-/rv-/pc-/st- カードの approve/reject。実操作は `_execute_proposal` へ
+            #   委譲する (§propose_* ツールと承認カード の「approve 時に実行される操作」列)。
+            return self._resolve_with_in_progress_guard(
+                action_id, lambda: self._resolve_generic_proposal(action_id, decision=decision)
+            )
 
         if decision == "approve":
             # 【単一 ledger 効果】: SnapshotStore.save 自体が ledger.append("snapshot_save", ...) するため、
@@ -832,6 +850,213 @@ class WorkbenchSession:
         self.ledger.append("approval_decision", {"action_id": action_id, "decision": "reject"})
         self._approvals[action_id] = {"state": "rejected", "snapshot_id": None}
         return {"state": "rejected", "snapshot_id": None, "ledger_index": self.ledger.entries[-1].index}
+
+    def _resolve_with_in_progress_guard(
+        self, action_id: str, work: "Callable[[], dict[str, Any]]"
+    ) -> dict[str, Any]:
+        """二重承認防止の check-and-set マーカー (np-/sr-/rv-/pc-/st- 共通, 2026-07-26 一般化)。
+
+        ``work`` (例: MP 問い合わせを含む ``_resolve_new_phase_approval``) が長時間ブロックしうる
+        間、``self._approvals`` には何も書かれない (完了時に初めて確定状態を書く旧実装の弱点) ため、
+        呼び出し前に ``self._lock`` 下で ``state="in_progress"`` マーカーを置き、以降の重複呼び出しを
+        このマーカーで 409 (呼び出し元の事前チェック) にする。エラー経路 (例外/error dict) は
+        マーカーを pop して pending に戻す (再試行可能, 既存の error 経路契約を維持)。
+        """
+        with self._lock:
+            if action_id in self._approvals:
+                return {
+                    "error": f"approval already resolved: {action_id}",
+                    "error_type": "ConflictError",
+                }
+            self._approvals[action_id] = {"state": "in_progress", "snapshot_id": None}
+        try:
+            result = work()
+        except Exception:
+            with self._lock:
+                self._approvals.pop(action_id, None)
+            raise
+        if "error" in result:
+            with self._lock:
+                self._approvals.pop(action_id, None)
+        return result
+
+    # ------------------------------------------------------------------
+    # POST /api/proposals, GET /api/proposals (ModelAction 起票, §propose_* ツールと承認カード)
+    # ------------------------------------------------------------------
+
+    def create_proposal(self, kind: Any, payload: Any, *, rationale: str = "") -> dict[str, Any]:
+        """POST /api/proposals: ModelAction を起票する。
+
+        kind ごとに payload を検証し (不正な kind/必須キー欠落/不明 item_id・phase_name は
+        起票時に error dict へ縮退させる — 承認時まで持ち越さない, api-contract.md
+        「payload の各引数は他ツールの出力から作れること」)。妥当なら transcript へ
+        approval カード (state=pending) を追加し、ledger ``agent_proposal`` を追記する。
+        実行 (add_phase/resolve_review_item 等) は ``resolve_approval`` の approve でのみ起きる
+        (提案 ≠ 適用)。
+        """
+        if not isinstance(kind, str) or kind not in _PROPOSAL_KIND_PREFIX:
+            return {"error": f"unknown proposal kind: {kind!r}", "error_type": "ValueError"}
+        if not isinstance(payload, dict):
+            return {"error": "payload must be an object", "error_type": "ValueError"}
+        guard = self._validate_proposal_payload(kind, payload)
+        if guard is not None:
+            return guard
+        with self._lock:
+            self._proposal_seq += 1
+            action_id = f"{_PROPOSAL_KIND_PREFIX[kind]}-{self._proposal_seq}"
+            self._proposals[action_id] = {
+                "kind": kind, "payload": dict(payload), "rationale": rationale,
+            }
+            self.ledger.append(
+                "agent_proposal",
+                {"action_id": action_id, "kind": kind, "payload": payload, "rationale": rationale},
+            )
+            msg = {
+                "id": f"t{len(self._transcript) + 1}",
+                "kind": "approval",
+                "action_id": action_id,
+                "title": _PROPOSAL_TITLES[kind],
+                "rationale": rationale,
+                "action_json": json.dumps(payload, ensure_ascii=False, default=str),
+                "state": "pending",
+            }
+            self._transcript.append(msg)
+        return {"action_id": action_id, "state": "pending"}
+
+    def _validate_proposal_payload(self, kind: str, payload: dict[str, Any]) -> "dict[str, Any] | None":
+        """``create_proposal`` の起票時 payload 検証 (kind ごと)。問題なければ ``None``。"""
+        if kind == "structure_revision":
+            sites = payload.get("sites")
+            if not isinstance(sites, list) or not sites or not all(isinstance(s, dict) for s in sites):
+                return {"error": "sites must be a non-empty list of objects", "error_type": "ValueError"}
+            return None
+        if kind == "review_resolution":
+            item_id = payload.get("item_id")
+            action = payload.get("action")
+            if not isinstance(item_id, str) or not item_id:
+                return {"error": "item_id is required", "error_type": "ValueError"}
+            if action not in ("accept", "send_back"):
+                return {"error": f"invalid action: {action!r}", "error_type": "ValueError"}
+            if not any(it.item_id == item_id for it in self.review_queue.items):
+                return {"error": f"unknown review item: {item_id}", "error_type": "NotFoundError"}
+            return None
+        if kind == "phase_change":
+            op = payload.get("op")
+            phase_name = payload.get("phase_name")
+            if op not in ("add", "remove"):
+                return {"error": f"invalid op: {op!r}", "error_type": "ValueError"}
+            if not isinstance(phase_name, str) or not phase_name:
+                return {"error": "phase_name is required", "error_type": "ValueError"}
+            if self._source != "project" or self._project is None:
+                return {"error": "no project loaded", "error_type": "ValueError"}
+            exists = any(p.phase_name == phase_name for p in self._project.phases)
+            if op == "add":
+                if not payload.get("structure_path"):
+                    return {
+                        "error": "structure_path is required for op=add", "error_type": "ValueError",
+                    }
+                if exists:
+                    return {"error": f"phase already exists: {phase_name}", "error_type": "ValueError"}
+            else:
+                if not exists:
+                    return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
+            return None
+        if kind == "settings_change":
+            if self._source != "project" or self._project is None:
+                return {"error": "no project loaded", "error_type": "ValueError"}
+            keys = ("two_theta_limits", "background_coeffs", "max_cyc")
+            if not any(payload.get(k) is not None for k in keys):
+                return {
+                    "error": "at least one of two_theta_limits/background_coeffs/max_cyc is required",
+                    "error_type": "ValueError",
+                }
+            ttl = payload.get("two_theta_limits")
+            if ttl is not None:
+                try:
+                    float(ttl[0])
+                    float(ttl[1])
+                except (TypeError, ValueError, IndexError, KeyError):
+                    return {
+                        "error": f"invalid two_theta_limits: {ttl!r}", "error_type": "ValueError",
+                    }
+            bg = payload.get("background_coeffs")
+            if bg is not None:
+                try:
+                    int(bg)
+                except (TypeError, ValueError):
+                    return {
+                        "error": f"invalid background_coeffs: {bg!r}", "error_type": "ValueError",
+                    }
+            mc = payload.get("max_cyc")
+            if mc is not None:
+                try:
+                    int(mc)
+                except (TypeError, ValueError):
+                    return {"error": f"invalid max_cyc: {mc!r}", "error_type": "ValueError"}
+            return None
+        return {"error": f"unknown proposal kind: {kind!r}", "error_type": "ValueError"}
+
+    def _execute_proposal(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """approve 時に kind ごとの実操作を呼ぶ (§propose_* ツールと承認カード の対応表)。"""
+        if kind == "structure_revision":
+            return self.apply_structure(payload.get("sites") or [], note="agent proposal: ReviseStructure")
+        if kind == "review_resolution":
+            return self.resolve_review_item(
+                str(payload.get("item_id")), action=payload.get("action"), note="agent proposal"
+            )
+        if kind == "phase_change":
+            op = payload.get("op")
+            if op == "add":
+                return self.add_phase(
+                    structure_path=payload.get("structure_path"), phase_name=payload.get("phase_name")
+                )
+            if op == "remove":
+                return self.remove_phase(str(payload.get("phase_name")))
+            return {"error": f"unknown phase_change op: {op!r}", "error_type": "ValueError"}
+        if kind == "settings_change":
+            return self.update_settings(
+                two_theta_limits=payload.get("two_theta_limits"),
+                background_coeffs=payload.get("background_coeffs"),
+                max_cyc=payload.get("max_cyc"),
+            )
+        return {"error": f"unknown proposal kind: {kind!r}", "error_type": "ValueError"}
+
+    def _resolve_generic_proposal(
+        self, action_id: str, *, decision: Literal["approve", "reject"]
+    ) -> dict[str, Any]:
+        """sr-/rv-/pc-/st- 承認カードの解決 (``create_proposal`` が起票した ModelAction)。"""
+        if decision == "reject":
+            self.ledger.append("approval_decision", {"action_id": action_id, "decision": "reject"})
+            self._approvals[action_id] = {"state": "rejected", "snapshot_id": None}
+            return {
+                "state": "rejected", "snapshot_id": None,
+                "ledger_index": self.ledger.entries[-1].index,
+            }
+        info = self._proposals.get(action_id)
+        if info is None:
+            return {"error": f"unknown approval action: {action_id}", "error_type": "NotFoundError"}
+        exec_result = self._execute_proposal(info["kind"], info["payload"])
+        if "error" in exec_result:
+            # 【実行失敗はカード pending 復帰】: `_resolve_with_in_progress_guard` が "error" キーを
+            #   見て in_progress マーカーを pop する (再試行可能, api-contract.md 「approve 時の
+            #   実行失敗は error dict + カードは pending 復帰」)。
+            return exec_result
+        self.ledger.append(
+            "approval_decision", {"action_id": action_id, "decision": "approve", "kind": info["kind"]}
+        )
+        snapshot_id = exec_result.get("snapshot_id")
+        self._approvals[action_id] = {"state": "approved", "snapshot_id": snapshot_id}
+        return {
+            "state": "approved", "snapshot_id": snapshot_id,
+            "ledger_index": self.ledger.entries[-1].index,
+        }
+
+    def pending_approvals(self) -> list[dict[str, Any]]:
+        """GET /api/proposals: transcript 上の pending 承認カード一覧 (起票機構問わず np-/sr-/rv-/pc-/st- 含む)。"""
+        return [
+            row for row in self._transcript_view()
+            if row.get("kind") == "approval" and row.get("state") == "pending"
+        ]
 
     # ------------------------------------------------------------------
     # POST /api/stages/{nn}

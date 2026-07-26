@@ -3,8 +3,10 @@
 
 エージェント (ローカル `claude` CLI, claude-agent-sdk 経由) が唯一到達できる MCP サーバ。
 公開するのは読み取り (state/viewmodel/ledger/status 系) と SafeAction 級のジョブ起動
-(refine/sequential/phaseid/multistart/echem) のみ — **これが権限境界の単一情報源**であり、
-approval/review/structure/project 変更系は一切公開しない (人間専用, 提案≠適用)。
+(refine/sequential/phaseid/multistart/echem) に加え、ModelAction を「起票」するだけの
+`propose_*` ツール (構造改訂/レビュー解決/相変更/設定変更 — 承認カードを作るのみで実行しない) —
+**これが権限境界の単一情報源**である (2026-07-26 権限境界改訂)。承認の解決 (自己承認) と
+project ライフサイクル (create/open/close/demo) だけは絶対に公開しない (人間専用, 提案≠適用)。
 
 実装は workbench 自身の HTTP API (``http://127.0.0.1:{TSUMUGIN_WORKBENCH_PORT}``) を叩くだけの
 薄いアダプタ: エージェントは人間の GUI と全く同じ custody ガード (ledger/409/422) を通る。
@@ -26,9 +28,11 @@ from typing import Any, Awaitable, Callable
 #: サーバ名 (ClaudeAgentOptions.mcp_servers のキー / allowed_tools の `mcp__<name>__<tool>` 接頭辞)。
 SERVER_NAME = "tsumugin"
 
-#: 【権限境界の単一情報源, FR-402, 変更禁止】: shim が公開するツール名の全体集合。
-#: approval/review/structure/project 変更系をここに追加しない — 追加すると
-#: `tests/workbench/test_agent_mcp.py` のガードが fail する (変異実証済み)。
+#: 【権限境界の単一情報源, FR-402, 変更禁止 (2026-07-26 権限境界改訂)】: shim が公開するツール名の
+#: 全体集合。SafeAction (読み取り + ジョブ起動) に加え、ModelAction を「起票」するだけの
+#: `propose_*` ツール (承認カードを作るのみ・実行しない) を公開する。承認解決 (自己承認) と
+#: project ライフサイクルはここに追加しない — 追加すると `tests/workbench/test_agent_mcp.py` の
+#: ガードが fail する (変異実証済み)。
 ALLOWED_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "get_state",
@@ -40,19 +44,37 @@ ALLOWED_TOOL_NAMES: frozenset[str] = frozenset(
         "run_phaseid",
         "run_multistart",
         "run_echem",
+        "propose_structure_revision",
+        "propose_review_resolution",
+        "propose_phase_change",
+        "propose_settings_change",
+        "list_pending_approvals",
     }
 )
 
-#: 到達不能な (=人間専用の) カテゴリを表す語幹。ツール名にこれらが部分文字列として現れないことを
-#: `test_agent_mcp.py::test_no_forbidden_tool_categories` がガードする。
+#: 到達不能な (=人間専用の) 直接実行操作を表す語幹。ツール名にこれらが部分文字列として現れないことを
+#: `test_agent_mcp.py::test_no_forbidden_tool_categories` がガードする。**broad な名詞
+#: ("structure"/"review"/"approval" 等) ではなく直接実行を指す具体的な動詞トークンを列挙する**
+#: (2026-07-26 改訂): `propose_structure_revision`/`propose_review_resolution`/
+#: `list_pending_approvals` は「起票/読み取り」であり実行そのものではないため、意図的にこの
+#: 集合の対象外 — 一方で `apply_structure`/`resolve_review`/`resolve_approval`/`add_phase`/
+#: `remove_phase`/`update_settings` (直接実行) や `open_project`/`close_project`/`create_project`/
+#: `demo_project` (セッション/ledger のすり替え) が紛れ込めば検知する。
 _FORBIDDEN_MARKERS: tuple[str, ...] = (
-    "approval",
-    "review",
-    "structure",
-    "project",
+    "approve",
+    "reject",
+    "resolve_approval",
+    "resolve_review",
+    "apply_structure",
+    "add_phase",
+    "remove_phase",
+    "update_settings",
+    "open_project",
+    "close_project",
+    "create_project",
+    "demo_project",
     "revert",
     "accept",
-    "resolve",
 )
 
 _HTTP_TIMEOUT_S = 60.0
@@ -168,6 +190,52 @@ async def _h_run_echem(args: dict[str, Any]) -> dict[str, Any]:
     return _tool_result(await asyncio.to_thread(_request, "POST", "/api/echem", payload))
 
 
+async def _h_propose_structure_revision(args: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "kind": "structure_revision",
+        "payload": {"sites": args.get("sites")},
+        "rationale": args.get("rationale", ""),
+    }
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/proposals", payload))
+
+
+async def _h_propose_review_resolution(args: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "kind": "review_resolution",
+        "payload": {"item_id": args.get("item_id"), "action": args.get("action")},
+        "rationale": args.get("rationale", ""),
+    }
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/proposals", payload))
+
+
+async def _h_propose_phase_change(args: dict[str, Any]) -> dict[str, Any]:
+    inner = _strip_none(
+        {
+            "op": args.get("op"),
+            "phase_name": args.get("phase_name"),
+            "structure_path": args.get("structure_path"),
+        }
+    )
+    payload = {"kind": "phase_change", "payload": inner, "rationale": args.get("rationale", "")}
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/proposals", payload))
+
+
+async def _h_propose_settings_change(args: dict[str, Any]) -> dict[str, Any]:
+    inner = _strip_none(
+        {
+            "two_theta_limits": args.get("two_theta_limits"),
+            "background_coeffs": args.get("background_coeffs"),
+            "max_cyc": args.get("max_cyc"),
+        }
+    )
+    payload = {"kind": "settings_change", "payload": inner, "rationale": args.get("rationale", "")}
+    return _tool_result(await asyncio.to_thread(_request, "POST", "/api/proposals", payload))
+
+
+async def _h_list_pending_approvals(_args: dict[str, Any]) -> dict[str, Any]:
+    return _tool_result(await asyncio.to_thread(_request, "GET", "/api/proposals"))
+
+
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
 
 #: (name, description, JSON Schema, handler) — §4.5 到達可能性: 各引数はすべて JSON リテラル
@@ -274,6 +342,84 @@ _TOOL_SPECS: "tuple[tuple[str, str, dict[str, Any], Callable[[dict[str, Any]], A
             "required": ["mpr_path"],
         },
         _h_run_echem,
+    ),
+    (
+        "propose_structure_revision",
+        "構造改訂 (ReviseStructure) を起票する — 承認カードを作るだけで、適用は人間の承認後に "
+        "実行される (POST /api/proposals, kind=structure_revision)。sites は "
+        "get_viewmodel().structure.sites から作ること。",
+        {
+            "type": "object",
+            "properties": {
+                "sites": {
+                    "type": "array",
+                    "description": "get_viewmodel().structure.sites 形の改訂後サイト列。",
+                    "items": {"type": "object"},
+                },
+                "rationale": {"type": "string", "description": "起票理由 (承認カードに表示)。"},
+            },
+            "required": ["sites", "rationale"],
+        },
+        _h_propose_structure_revision,
+    ),
+    (
+        "propose_review_resolution",
+        "レビューキュー項目の解決を起票する (POST /api/proposals, kind=review_resolution)。"
+        "item_id は get_viewmodel().review[].id から作ること。",
+        {
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["accept", "send_back"]},
+                "rationale": {"type": "string"},
+            },
+            "required": ["item_id", "action", "rationale"],
+        },
+        _h_propose_review_resolution,
+    ),
+    (
+        "propose_phase_change",
+        "相の追加/除去を起票する (POST /api/proposals, kind=phase_change)。phase_name は "
+        "op=remove のとき get_viewmodel().project.phases[].name から作ること。",
+        {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["add", "remove"]},
+                "phase_name": {"type": "string"},
+                "structure_path": {
+                    "type": "string",
+                    "description": "op=add で必須 (CIF/EXP パス)。",
+                },
+                "rationale": {"type": "string"},
+            },
+            "required": ["op", "phase_name", "rationale"],
+        },
+        _h_propose_phase_change,
+    ),
+    (
+        "propose_settings_change",
+        "精密化設定 (2θ範囲/背景項数/max_cyc) の変更を起票する "
+        "(POST /api/proposals, kind=settings_change)。",
+        {
+            "type": "object",
+            "properties": {
+                "two_theta_limits": {
+                    "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2,
+                },
+                "background_coeffs": {"type": "integer"},
+                "max_cyc": {"type": "integer"},
+                "rationale": {"type": "string"},
+            },
+            "required": ["rationale"],
+        },
+        _h_propose_settings_change,
+    ),
+    (
+        "list_pending_approvals",
+        "自分 (または他の起票元) が作った承認待ちカードの一覧を取得する (read-only, "
+        "GET /api/proposals)。承認自体はこのツールではできない。",
+        _EMPTY_SCHEMA,
+        _h_list_pending_approvals,
     ),
 )
 

@@ -44,9 +44,13 @@ _SYSTEM_PROMPT_HEADER = (
     "利用できる手段は MCP サーバ \"tsumugin\" が公開するツールのみで、読み取り系 "
     "(get_state/get_viewmodel/get_ledger/job_status) とジョブ起動系 "
     "(run_refine/run_sequential/run_phaseid/run_multistart/run_echem) に限られます。"
-    "承認 (approval) の解決・レビュー (review) の解決・構造 (structure) の適用・"
-    "プロジェクト設定の変更を行うツールは存在しません — それらは人間専用です。"
-    "必要と考える場合は、実行するのではなく提案としてテキストで述べてください (提案 ≠ 適用)。"
+    "モデルを変える操作 (構造改訂・レビュー解決・相の追加/除去・精密化設定の変更) が必要だと"
+    "判断した場合は、直接実行するのではなく propose_structure_revision/"
+    "propose_review_resolution/propose_phase_change/propose_settings_change で「起票」してください"
+    "— 承認カードが作られるだけで、実行は人間が承認したときにのみ起きます (提案 ≠ 適用)。"
+    "承認 (approval) の解決自体を行うツールは存在しません (自己承認の禁止) — それは人間専用です。"
+    "起票後は承認を待つ間、他の作業 (別のジョブ起動や調査) を続けてよく、必要なら "
+    "list_pending_approvals で自分の起票の状態 (pending/approved/rejected) を確認してください。"
 )
 
 #: tokens 集計に使う usage キー ($ は保持しない、FR-404)。

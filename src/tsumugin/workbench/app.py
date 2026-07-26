@@ -500,6 +500,25 @@ def create_workbench_app(
         return _to_response(result)
 
     # ------------------------------------------------------------------
+    # POST /api/proposals, GET /api/proposals (ModelAction 起票, V3a 権限境界改訂)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/proposals")
+    def post_proposal(body: dict[str, Any] = Body(...)) -> Any:
+        kind = body.get("kind")
+        payload = body.get("payload")
+        if not isinstance(kind, str):
+            return _invalid("kind", kind)
+        if not isinstance(payload, dict):
+            return _invalid("payload", payload)
+        result = holder.session.create_proposal(kind, payload, rationale=body.get("rationale", ""))
+        return _to_response(result)
+
+    @app.get("/api/proposals")
+    def get_proposals() -> dict[str, Any]:
+        return {"pending": holder.session.pending_approvals()}
+
+    # ------------------------------------------------------------------
     # POST /api/stages/{nn}
     # ------------------------------------------------------------------
 

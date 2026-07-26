@@ -25,6 +25,11 @@ _EXPECTED_TOOL_NAMES = frozenset(
         "run_phaseid",
         "run_multistart",
         "run_echem",
+        "propose_structure_revision",
+        "propose_review_resolution",
+        "propose_phase_change",
+        "propose_settings_change",
+        "list_pending_approvals",
     }
 )
 
@@ -45,18 +50,63 @@ def test_tool_specs_names_match_allowed_tool_names():
 
 
 def test_no_forbidden_tool_categories():
-    """approval/review/structure/project/revert/accept/resolve を含む名前が無いこと。"""
+    """直接実行/自己承認/project ライフサイクルを指す語幹を含む名前が無いこと。
+
+    ``propose_structure_revision``/``propose_review_resolution``/``list_pending_approvals`` は
+    意図的に "structure"/"review"/"approval" を名前に含むが、これらは「起票/読み取り」であり
+    直接実行ではないため、`_FORBIDDEN_MARKERS` は broad な名詞でなく具体的な動詞トークン
+    (``apply_structure``/``resolve_review``/``approve`` 等) を使う (2026-07-26 改訂)。
+    """
     for name in agent_mcp.ALLOWED_TOOL_NAMES:
         assert not any(marker in name for marker in agent_mcp._FORBIDDEN_MARKERS), name
 
 
+def test_propose_and_list_tools_are_allowed_despite_topic_words():
+    """`propose_*`/`list_pending_approvals` は起票/読み取りであり、直接実行の弊害が無いことを明示する。"""
+    for name in (
+        "propose_structure_revision",
+        "propose_review_resolution",
+        "propose_phase_change",
+        "propose_settings_change",
+        "list_pending_approvals",
+    ):
+        assert name in agent_mcp.ALLOWED_TOOL_NAMES
+        assert not any(marker in name for marker in agent_mcp._FORBIDDEN_MARKERS), name
+
+
 def test_forbidden_marker_check_flags_a_mutated_tool_name():
-    """変異実証: 禁止カテゴリのツール名が紛れ込んだ場合、境界チェックが検知することを確認する。"""
+    """変異実証: 直接実行系のツール名が紛れ込んだ場合、境界チェックが検知することを確認する。"""
     mutated = frozenset(agent_mcp.ALLOWED_TOOL_NAMES | {"resolve_approval", "apply_structure"})
     violations = sorted(
         name for name in mutated if any(marker in name for marker in agent_mcp._FORBIDDEN_MARKERS)
     )
     assert violations == ["apply_structure", "resolve_approval"]
+
+
+def test_forbidden_marker_check_flags_self_approval_and_project_lifecycle_mutations():
+    """変異実証: 自己承認 (approve/reject) と project ライフサイクル系ツールが紛れ込んだ場合を検知する。"""
+    mutated = frozenset(
+        agent_mcp.ALLOWED_TOOL_NAMES
+        | {
+            "approve_action",
+            "reject_action",
+            "open_project",
+            "close_project",
+            "create_project",
+            "demo_project",
+        }
+    )
+    violations = sorted(
+        name for name in mutated if any(marker in name for marker in agent_mcp._FORBIDDEN_MARKERS)
+    )
+    assert violations == [
+        "approve_action",
+        "close_project",
+        "create_project",
+        "demo_project",
+        "open_project",
+        "reject_action",
+    ]
 
 
 def test_allowed_tool_ids_use_mcp_prefix_and_cover_all_names():
@@ -124,6 +174,129 @@ def test_run_echem_handler_requires_mpr_path_pass_through(monkeypatch: pytest.Mo
     monkeypatch.setattr(agent_mcp, "_request", fake_request)
     asyncio.run(agent_mcp._h_run_echem({"mpr_path": "x.mpr", "sign": -1}))
     assert captured["payload"] == {"mpr_path": "x.mpr", "sign": -1}
+
+
+def test_propose_structure_revision_handler_posts_proposals_with_kind(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured.update(method=method, path=path, payload=payload)
+        return {"status": 200, "body": {"action_id": "sr-1", "state": "pending"}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(
+        agent_mcp._h_propose_structure_revision(
+            {"sites": [{"id": "s1", "occ": 0.5}], "rationale": "occupancy drift"}
+        )
+    )
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/proposals"
+    assert captured["payload"] == {
+        "kind": "structure_revision",
+        "payload": {"sites": [{"id": "s1", "occ": 0.5}]},
+        "rationale": "occupancy drift",
+    }
+
+
+def test_propose_review_resolution_handler_builds_payload(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured["payload"] = payload
+        return {"status": 200, "body": {}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(
+        agent_mcp._h_propose_review_resolution(
+            {"item_id": "rv1", "action": "accept", "rationale": "close competitor resolved"}
+        )
+    )
+    assert captured["payload"] == {
+        "kind": "review_resolution",
+        "payload": {"item_id": "rv1", "action": "accept"},
+        "rationale": "close competitor resolved",
+    }
+
+
+def test_propose_phase_change_handler_omits_absent_structure_path(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured["payload"] = payload
+        return {"status": 200, "body": {}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(
+        agent_mcp._h_propose_phase_change(
+            {"op": "remove", "phase_name": "phaseA", "rationale": "no longer supported"}
+        )
+    )
+    assert captured["payload"] == {
+        "kind": "phase_change",
+        "payload": {"op": "remove", "phase_name": "phaseA"},
+        "rationale": "no longer supported",
+    }
+
+
+def test_propose_phase_change_handler_includes_structure_path_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured["payload"] = payload
+        return {"status": 200, "body": {}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(
+        agent_mcp._h_propose_phase_change(
+            {
+                "op": "add",
+                "phase_name": "phaseB",
+                "structure_path": "data/phaseB.cif",
+                "rationale": "changepoint fr090",
+            }
+        )
+    )
+    assert captured["payload"] == {
+        "kind": "phase_change",
+        "payload": {"op": "add", "phase_name": "phaseB", "structure_path": "data/phaseB.cif"},
+        "rationale": "changepoint fr090",
+    }
+
+
+def test_propose_settings_change_handler_strips_absent_fields(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured["payload"] = payload
+        return {"status": 200, "body": {}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(
+        agent_mcp._h_propose_settings_change(
+            {"background_coeffs": 24, "rationale": "residual not flat past 60deg"}
+        )
+    )
+    assert captured["payload"] == {
+        "kind": "settings_change",
+        "payload": {"background_coeffs": 24},
+        "rationale": "residual not flat past 60deg",
+    }
+
+
+def test_list_pending_approvals_handler_calls_get_proposals(monkeypatch: pytest.MonkeyPatch):
+    calls = []
+
+    def fake_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"status": 200, "body": {"pending": []}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    result = asyncio.run(agent_mcp._h_list_pending_approvals({}))
+    assert calls == [("GET", "/api/proposals", None)]
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {"status": 200, "body": {"pending": []}}
 
 
 def test_base_url_uses_env_port(monkeypatch: pytest.MonkeyPatch):
