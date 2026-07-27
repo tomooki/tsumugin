@@ -287,6 +287,18 @@ export function postRemovePhase(phaseName: string): Promise<ShellState> {
   return post<ShellState>(`/api/project/phases/${encodeURIComponent(phaseName)}/remove`, {});
 }
 
+/** Phase-scoped refinement settings (api-contract.md §PHASES タブ). Today the
+ * only per-phase switch the engine actually reads is `refine_cell`. */
+export function postPhaseSettings(
+  phaseName: string,
+  payload: { refine_cell: boolean },
+): Promise<ShellState> {
+  return post<ShellState>(
+    `/api/project/phases/${encodeURIComponent(phaseName)}/settings`,
+    payload,
+  );
+}
+
 export function postProjectSettings(payload: ProjectSettingsRequest): Promise<ShellState> {
   return post<ShellState>("/api/project/settings", payload);
 }

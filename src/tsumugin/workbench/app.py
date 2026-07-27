@@ -381,6 +381,17 @@ def create_workbench_app(
         result = holder.session.remove_phase(phase_name)
         return _to_response(result)
 
+    @app.post("/api/project/phases/{phase_name}/settings")
+    def post_project_phase_settings(phase_name: str, body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        # 型検証は `set_phase_settings` に一元化する (ここで先回りしない)。
+        result = holder.session.set_phase_settings(
+            phase_name, refine_cell=body.get("refine_cell")
+        )
+        return _to_response(result)
+
     @app.post("/api/project/settings")
     def post_project_settings(body: dict[str, Any] = Body(...)) -> Any:
         guard = _guard_not_refining()

@@ -261,6 +261,7 @@ async def _h_propose_phase_change(args: dict[str, Any]) -> dict[str, Any]:
             "op": args.get("op"),
             "phase_name": args.get("phase_name"),
             "structure_path": args.get("structure_path"),
+            "refine_cell": args.get("refine_cell"),
         }
     )
     payload = {"kind": "phase_change", "payload": inner, "rationale": args.get("rationale", "")}
@@ -476,16 +477,24 @@ _TOOL_SPECS: "tuple[tuple[str, str, dict[str, Any], Callable[[dict[str, Any]], A
     ),
     (
         "propose_phase_change",
-        "相の追加/除去を起票する (POST /api/proposals, kind=phase_change)。phase_name は "
-        "op=remove のとき get_viewmodel().project.phases[].name から作ること。",
+        "相の追加/除去/相単位設定を起票する (POST /api/proposals, kind=phase_change)。phase_name は "
+        "op=remove/settings のとき get_viewmodel().project.phases[].name から作ること。",
         {
             "type": "object",
             "properties": {
-                "op": {"type": "string", "enum": ["add", "remove"]},
+                "op": {"type": "string", "enum": ["add", "remove", "settings"]},
                 "phase_name": {"type": "string"},
                 "structure_path": {
                     "type": "string",
                     "description": "op=add で必須 (CIF/EXP パス)。",
+                },
+                "refine_cell": {
+                    "type": "boolean",
+                    "description": (
+                        "op=settings で必須。false でその相の格子を初期値に固定する "
+                        "(副相/不純物の分率が 0 近傍に落ちて格子が発散し、段全体が revert されて "
+                        "主相まで巻き添えになるのを防ぐ)。現在値は get_viewmodel().phases[].refine_cell"
+                    ),
                 },
                 "rationale": {"type": "string"},
             },

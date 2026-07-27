@@ -145,6 +145,18 @@ export interface DatasetRow {
   active: boolean;
 }
 
+/** Refined lattice, already formatted server-side (esd in parentheses when
+ * available). `null` on the row until a refinement has produced one — the UI
+ * shows a dash rather than inventing numbers. */
+export interface PhaseCell {
+  a: string;
+  b: string;
+  c: string;
+  alpha: string;
+  beta: string;
+  gamma: string;
+}
+
 export interface PhaseRow {
   id: string;
   name: string;
@@ -152,6 +164,15 @@ export interface PhaseRow {
   space_group: string;
   mp_id: string;
   wt_frac: string;
+  // PHASES tab fields (api-contract.md §PHASES タブ). Optional: demo/seed rows
+  // and pre-existing fixtures omit them, in which case the tab renders the
+  // row without phase-scoped controls rather than crashing.
+  structure_path?: string;
+  refine_cell?: boolean;
+  temperature?: number | null;
+  cell?: PhaseCell | null;
+  /** Recipe stages that touch this phase — read-only (see the tab's note). */
+  stages?: string[];
 }
 
 export interface ChannelRow {

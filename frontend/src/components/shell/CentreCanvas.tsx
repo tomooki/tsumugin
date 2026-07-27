@@ -9,10 +9,12 @@ import {
   LedgerTab,
   ParametersTab,
   PhaseIdTab,
+  PhasesTab,
   ProjectTab,
   SequenceTab,
   StructureTab,
 } from "../tabs";
+import { ph } from "../tabs/PhasesTab.strings";
 import { pt } from "../tabs/ProjectTab.strings";
 import "./shell.css";
 
@@ -21,6 +23,7 @@ import "./shell.css";
 // mirroring shell.strings.ts's `st()` pattern. See tabLabel() below.
 const TAB_ORDER: { id: TabId; key: StringKey | null }[] = [
   { id: "project", key: null },
+  { id: "phases", key: null },
   { id: "fit", key: "tab.fit" },
   { id: "param", key: "tab.param" },
   { id: "hyp", key: "tab.hyp" },
@@ -32,6 +35,7 @@ const TAB_ORDER: { id: TabId; key: StringKey | null }[] = [
 
 const TAB_COMPONENTS: Record<TabId, () => ReactElement> = {
   project: ProjectTab,
+  phases: PhasesTab,
   fit: FitTab,
   param: ParametersTab,
   hyp: HypothesesTab,
@@ -58,7 +62,7 @@ export function CentreCanvas() {
             className={`tab-strip__btn${state.tab === tab.id ? " tab-strip__btn--active" : ""}`}
             onClick={() => dispatch({ type: "SET_TAB", tab: tab.id })}
           >
-            {tab.key ? t(tab.key) : pt(lang, "tab.project")}
+            {tab.key ? t(tab.key) : tab.id === "phases" ? ph(lang, "tab.phases") : pt(lang, "tab.project")}
           </button>
         ))}
       </div>

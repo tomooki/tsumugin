@@ -3715,3 +3715,145 @@ def test_phaseid_add_uses_the_elements_of_the_last_identification(tmp_path, monk
 
     assert "error" not in result, result
     assert seen["elements"] == ["Cl", "Na"]
+
+
+# ---------------------------------------------------------------------------
+# PHASES タブ — 相スコープの精密化制御
+# ---------------------------------------------------------------------------
+
+
+def test_phases_view_exposes_phase_scoped_fields(tmp_path):
+    # 【目的】: PHASES タブが必要とする相スコープの実データが viewmodel.phases に出る。
+    project = lifecycle.create_project("proj", str(tmp_path))
+    cif = Path(project.spec_dir) / "data" / "a.cif"
+    cif.parent.mkdir(parents=True, exist_ok=True)
+    cif.write_text("data_a\n", encoding="utf-8")
+    session = WorkbenchSession.from_project(project)
+    session.add_phase(structure_path=str(cif), phase_name="alpha")
+
+    row = session.viewmodel()["phases"][0]
+
+    assert row["name"] == "alpha"
+    assert row["structure_path"].endswith("a.cif")
+    assert row["refine_cell"] is True
+    assert row["temperature"] is None
+    assert row["cell"] is None  # 未精密化は捏造しない (empty-state)
+
+
+def test_set_phase_settings_toggles_refine_cell_and_appends_ledger(tmp_path):
+    # 【目的】: REFINE CELL のチェックは実 PhaseSpec.refine_cell (engine が読む値) を変える。
+    project = lifecycle.create_project("proj", str(tmp_path))
+    cif = Path(project.spec_dir) / "data" / "a.cif"
+    cif.parent.mkdir(parents=True, exist_ok=True)
+    cif.write_text("data_a\n", encoding="utf-8")
+    session = WorkbenchSession.from_project(project)
+    session.add_phase(structure_path=str(cif), phase_name="alpha")
+    before = len(session.ledger.entries)
+
+    result = session.set_phase_settings("alpha", refine_cell=False)
+
+    assert "error" not in result, result
+    assert session._project.phases[0].refine_cell is False
+    assert session.viewmodel()["phases"][0]["refine_cell"] is False
+    assert len(session.ledger.entries) == before + 1
+
+
+def test_set_phase_settings_persists_to_project_spec(tmp_path):
+    # 【目的】: 再起動を跨いで効く (spec 自動保存)。GUI の設定が次回 run に届かないと意味がない。
+    project = lifecycle.create_project("proj", str(tmp_path))
+    cif = Path(project.spec_dir) / "data" / "a.cif"
+    cif.parent.mkdir(parents=True, exist_ok=True)
+    cif.write_text("data_a\n", encoding="utf-8")
+    session = WorkbenchSession.from_project(project)
+    session.add_phase(structure_path=str(cif), phase_name="alpha")
+
+    session.set_phase_settings("alpha", refine_cell=False)
+
+    spec_path = Path(session._project.spec_dir) / lifecycle.PROJECT_JSON_NAME
+    saved = json.loads(spec_path.read_text(encoding="utf-8"))
+    assert saved["phases"][0]["refine_cell"] is False
+
+
+def test_set_phase_settings_unknown_phase_returns_not_found(tmp_path):
+    project = lifecycle.create_project("proj", str(tmp_path))
+    session = WorkbenchSession.from_project(project)
+
+    result = session.set_phase_settings("nope", refine_cell=False)
+
+    assert result["error_type"] == "NotFoundError"
+
+
+def test_set_phase_settings_rejects_non_boolean(tmp_path):
+    # 【目的】: 型不正を「正常」と答えない (② 不変条件)。
+    project = lifecycle.create_project("proj", str(tmp_path))
+    cif = Path(project.spec_dir) / "data" / "a.cif"
+    cif.parent.mkdir(parents=True, exist_ok=True)
+    cif.write_text("data_a\n", encoding="utf-8")
+    session = WorkbenchSession.from_project(project)
+    session.add_phase(structure_path=str(cif), phase_name="alpha")
+
+    result = session.set_phase_settings("alpha", refine_cell="yes")
+
+    assert result["error_type"] == "ValueError"
+    assert session._project.phases[0].refine_cell is True
+
+
+def test_phases_view_lists_the_recipe_stages_touching_each_phase(tmp_path):
+    # 【目的】: 「この相に何が起きるか」を読み取り専用で示す。相単位に制御できないフラグ
+    #   (size_strain 等) はここで見えるだけ — 触れると嘘になるので編集させない。
+    project = lifecycle.create_project("proj", str(tmp_path))
+    cif = Path(project.spec_dir) / "data" / "a.cif"
+    cif.parent.mkdir(parents=True, exist_ok=True)
+    cif.write_text("data_a\n", encoding="utf-8")
+    hist_data = Path(project.spec_dir) / "data" / "d.xy"
+    hist_data.write_text("1 1\n", encoding="utf-8")
+    instr = Path(project.spec_dir) / "data" / "d.instprm"
+    instr.write_text("#\n", encoding="utf-8")
+    session = WorkbenchSession.from_project(project)
+    session.add_histogram(
+        data_path=str(hist_data), instrument_path=str(instr),
+        radiation="xray_lab", geometry="bragg_brentano", data_format="XY",
+    )
+    session.add_phase(structure_path=str(cif), phase_name="alpha")
+
+    stages = session.viewmodel()["phases"][0]["stages"]
+
+    # 相スコープのフラグ (cell/size_strain/coords/uiso) を持つ段だけが並ぶ。
+    assert any("cell" in s for s in stages)
+    assert any("size_strain" in s for s in stages)
+    # ヒストグラム専用の段 (背景のみ) は相に触れないので出ない
+    assert not any("scale+background" in s for s in stages)
+
+
+def test_phases_view_shows_refined_cell_after_a_refinement(tmp_path):
+    project = lifecycle.create_project("proj", str(tmp_path))
+    cif = Path(project.spec_dir) / "data" / "a.cif"
+    cif.parent.mkdir(parents=True, exist_ok=True)
+    cif.write_text("data_a\n", encoding="utf-8")
+    session = WorkbenchSession.from_project(project)
+    session.add_phase(structure_path=str(cif), phase_name="alpha")
+    result = AutoRietveldResult(
+        stage_results=(StageResult(label="s", rwp=8.0, gof=1.2, n_params=5, converged=True),),
+        final_rwp=8.0, final_gof=1.2,
+        refined_cells={"alpha": (9.3721, 9.3721, 6.8861, 90.0, 90.0, 120.0)},
+        validity=ValidityReport(passed=True), gpx_path="", n_obs=1000,
+    )
+
+    session._on_refine_success(result)
+
+    cell = session.viewmodel()["phases"][0]["cell"]
+    assert cell["a"].startswith("9.372")
+    assert cell["gamma"].startswith("120")
+
+
+def test_ledger_text_for_stage_error_includes_the_reason():
+    # 【目的】: 「stage S1 error」だけでは LEDGER から原因が追えない (実際に追えず詰まった)。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage_error", {"stage": "S1 cell+displacement", "error": "ValueError('boom')"}
+    )
+
+    text = session.ledger_view()["entries"][-1]["text"]
+
+    assert "S1 cell+displacement" in text
+    assert "boom" in text

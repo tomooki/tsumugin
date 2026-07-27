@@ -1,0 +1,145 @@
+.phases-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.phases-tab__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.phases-tab__title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.phases-tab__note {
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+}
+
+.phases-tab__message {
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-divider);
+  background: var(--color-neutral-200);
+}
+
+.phases-tab__message--error {
+  border-left: 3px solid var(--color-neutral-900);
+}
+
+.phases-tab__empty {
+  font-size: 12px;
+  color: var(--color-neutral-600);
+  border: 1px dashed var(--color-neutral-400);
+  padding: 16px;
+  text-align: center;
+}
+
+/* 【可変幅】: 表単位で横スクロールさせる (中央全体を揺らさない) */
+.phases-tab__scroll {
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.phases-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.phases-table th {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-neutral-700);
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-neutral-500);
+  white-space: nowrap;
+}
+
+.phases-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--color-divider);
+  vertical-align: middle;
+}
+
+.phases-table .num {
+  text-align: right;
+}
+
+.phases-table .center {
+  text-align: center;
+}
+
+.phases-table .right {
+  text-align: right;
+}
+
+.phases-table .mono {
+  font-family: var(--font-mono);
+}
+
+.phases-table__cell {
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+
+.phases-table__muted {
+  color: var(--color-neutral-500);
+}
+
+.phases-table__source {
+  font-size: 10.5px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phases-table__stages {
+  font-size: 10.5px;
+  color: var(--color-neutral-700);
+}
+
+.phases-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border: 1px solid var(--color-neutral-700);
+  vertical-align: baseline;
+}
+
+.phases-swatch--accent {
+  background: var(--color-accent);
+}
+
+.phases-swatch--neutral {
+  background: var(--color-neutral-400);
+}
+
+.phases-checkbox {
+  accent-color: var(--color-accent-700);
+}
+
+/* 相単位に効かないフラグを触らせない理由の説明 (api-contract.md §PHASES タブ) */
+.phases-tab__scope-note {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-neutral-700);
+  border-left: 3px solid var(--color-neutral-400);
+  padding: 6px 10px;
+  background: var(--color-neutral-100);
+}

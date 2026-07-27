@@ -241,7 +241,10 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
     if kind == "m7_stage":
         return f"stage {payload.get('stage')} rwp={_fmt_rwp(payload.get('rwp'))}"
     if kind == "m7_stage_error":
-        return f"stage {payload.get('stage')} error"
+        # 理由まで出す: 「stage S1 error」だけでは LEDGER から原因を追えず、実際に
+        # 追えなくて詰まった (段が黙って revert された理由が GUI から見えない)。
+        reason = payload.get("error")
+        return f"stage {payload.get('stage')} error" + (f": {reason}" if reason else "")
     if kind == "transcript_message":
         return "transcript message posted"
     if kind == "agent_proposal":
@@ -1303,6 +1306,11 @@ class WorkbenchSession:
                 )
             if op == "remove":
                 return self.remove_phase(str(payload.get("phase_name")))
+            if op == "settings":
+                # PHASES タブと同じ相単位設定 (refine_cell)。② からは propose_phase_change で到達する。
+                return self.set_phase_settings(
+                    str(payload.get("phase_name")), refine_cell=payload.get("refine_cell")
+                )
             return {"error": f"unknown phase_change op: {op!r}", "error_type": "ValueError"}
         if kind == "settings_change":
             return self.update_settings(
@@ -1785,6 +1793,40 @@ class WorkbenchSession:
                 return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
             self._project = dataclasses.replace(self._project, phases=phases)
             self._save_and_refresh("remove_phase", {"phase_name": phase_name})
+            return self.state()
+
+    def set_phase_settings(self, phase_name: str, *, refine_cell: Any) -> dict[str, Any]:
+        """POST /api/project/phases/{phase_name}/settings: 相単位の精密化設定 (PHASES タブ)。
+
+        現在扱えるのは ``PhaseSpec.refine_cell`` のみ — engine が**相単位で読む唯一の解放
+        スイッチ**だからである (Issue #47: 副相/不純物の格子を固定して発散の巻き添えを防ぐ)。
+        ``size_strain``/``preferred_orientation``/``hydrostatic_strain`` も物理的には相スコープ
+        だが `engine._apply_stage` は全相へ一律適用しており相単位のスイッチが無い — GUI に
+        チェックボックスだけ置くと「触れるのに効かない」になるため出さない
+        (api-contract.md §PHASES タブ の明示宣言)。
+        """
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        if not isinstance(refine_cell, bool):
+            return {
+                "error": f"refine_cell must be a boolean, got {refine_cell!r}",
+                "error_type": "ValueError",
+            }
+        # add_phase/remove_phase と同じ read-modify-write レース対策 (レビュー指摘 #2)。
+        with self._lock:
+            assert self._project is not None
+            phases = list(self._project.phases)
+            index = next(
+                (i for i, p in enumerate(phases) if p.phase_name == phase_name), None
+            )
+            if index is None:
+                return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
+            phases[index] = dataclasses.replace(phases[index], refine_cell=refine_cell)
+            self._project = dataclasses.replace(self._project, phases=tuple(phases))
+            self._save_and_refresh(
+                "phase_settings", {"phase_name": phase_name, "refine_cell": refine_cell}
+            )
             return self.state()
 
     def update_settings(
@@ -2866,9 +2908,56 @@ def _unique_phase_name(project: WorkbenchProject, base: str) -> str:
     return f"{base}_{i}"
 
 
+#: 相スコープの段階解放フラグ (`engine._apply_stage` が相 [`g2phases`] に対して適用するもの)。
+#: PHASES タブの「触れる段」列を組むのに使う — 背景/装置プロファイルのようなヒストグラム
+#: スコープの段は相に触れないので出さない。
+#: ⚠ このうち **相単位のスイッチを持つのは `cell` (`PhaseSpec.refine_cell`) だけ**で、他は
+#: 全相へ一律に適用される (api-contract.md §PHASES タブ の明示宣言)。だから読み取り専用。
+_PHASE_SCOPED_FLAGS = frozenset(
+    {"cell", "coords", "uiso", "occupancy", "size_strain", "preferred_orientation",
+     "hydrostatic_strain", "phase_fraction_sum"}
+)
+
+
+def _phase_stage_labels(project: WorkbenchProject) -> list[str]:
+    """この相集合のレシピのうち、**相に触れる**段のラベル列 (PHASES タブの読み取り専用列)。"""
+    try:
+        recipe = build_recipe(
+            project.histograms, project.phases, background_coeffs=project.background_coeffs
+        )
+    except ValueError:
+        return []
+    return [
+        f"{i:02d} {s.label}"
+        for i, s in enumerate(recipe, start=1)
+        if _PHASE_SCOPED_FLAGS & set(s.flags)
+    ]
+
+
+def _fmt_cell(
+    cell: "Sequence[float] | None", esd: "Sequence[float | None] | None"
+) -> "dict[str, str] | None":
+    """精密化格子 (a,b,c,α,β,γ) を表示文字列へ。未精密化は None (捏造しない)。"""
+    if not cell or len(cell) < 6:
+        return None
+    keys = ("a", "b", "c", "alpha", "beta", "gamma")
+    out: dict[str, str] = {}
+    for i, key in enumerate(keys):
+        value = finite_or_none(cell[i])
+        if value is None:
+            out[key] = "―"
+            continue
+        sigma = finite_or_none(esd[i]) if esd is not None and i < len(esd) else None
+        # 角度は 3 桁、長さは 4 桁 (Å) — 出版値の慣行に合わせる。
+        digits = 3 if i >= 3 else 4
+        out[key] = f"{value:.{digits}f}" + (f"({sigma:.{digits}f})" if sigma else "")
+    return out
+
+
 def _initial_phases_view(project: WorkbenchProject) -> list[dict[str, Any]]:
-    """左レール PHASES の初期状態 (精密化前, wt_frac は未定なので "―")。"""
+    """左レール PHASES + PHASES タブの初期状態 (精密化前, wt_frac/cell は未定)。"""
     rows: list[dict[str, Any]] = []
+    stages = _phase_stage_labels(project)
     for i, p in enumerate(project.phases):
         display = project.phase_display.get(p.phase_name, {})
         rows.append(
@@ -2879,6 +2968,12 @@ def _initial_phases_view(project: WorkbenchProject) -> list[dict[str, Any]]:
                 "space_group": str(display.get("space_group", "")),
                 "mp_id": str(display.get("mp_id", "")),
                 "wt_frac": "―",
+                # — PHASES タブ (相スコープの制御) —
+                "structure_path": p.structure_path,
+                "refine_cell": bool(p.refine_cell),
+                "temperature": finite_or_none(p.temperature),
+                "cell": None,
+                "stages": list(stages),
             }
         )
     return rows
@@ -2905,6 +3000,7 @@ def _build_phases_view(
         wt = result.phase_weight_fractions.get(name)
         esd = result.phase_weight_fraction_esd.get(name)
         row["wt_frac"] = _fmt_wt_frac(wt, esd)
+        row["cell"] = _fmt_cell(result.refined_cells.get(name), result.cell_esd.get(name))
     return rows
 
 

@@ -86,8 +86,8 @@ manual/auto ↔ エンジン語彙 human/agent の写像はバックエンドで
 ```
 components/shell/   TitleBar (モードトグル・言語・チップ) / ContextBar / StatusBar / LeftRail
 components/common/  BlueprintCard / Chip / MetricCard / PlaceholderPlot / MonoTable ...
-components/tabs/    FitTab / ParametersTab / HypothesesTab / PhaseIdTab /
-                    SequenceTab / StructureTab / LedgerTab
+components/tabs/    ProjectTab / PhasesTab / FitTab / ParametersTab / HypothesesTab /
+                    PhaseIdTab / SequenceTab / StructureTab / LedgerTab
 components/right/   OperatorConsole (recipe+gating+review) / AgentSession (transcript+composer)
 ```
 
@@ -113,13 +113,20 @@ components/right/   OperatorConsole (recipe+gating+review) / AgentSession (trans
      (λ はプロジェクト毎に異なり、LinePlot は線形軸)
    恒久ガードは各タブのテスト (`*.test.tsx` の "never hard-codes …") に置く。**変異させて fail
    することを実証済**。
-8. **相同定は元素選択から始められる** (2026-07-27)。PHASE ID タブに元素セレクタを置き、
+8. **PHASES タブは相スコープの解放だけを扱う** (2026-07-27)。左レールの PHASES IN MODEL が
+   「どの相が居るか」を示すのに対し、こちらは「相ごとに何を解放するか」。編集できるのは
+   `PhaseSpec.refine_cell` **のみ** — engine (`_apply_stage`) が相単位で読む唯一の解放スイッチ
+   だからである。`size_strain`/`preferred_orientation`/`hydrostatic_strain` は物理的には相
+   スコープだが engine が全相へ一律適用しており、**チェックボックスを置くと「触れるのに効かない」
+   コントロールになる**ため読み取り専用 (「触れる段」列) に留める。相単位化はレシピのルール化と
+   同じ作業単位。
+9. **相同定は元素選択から始められる** (2026-07-27)。PHASE ID タブに元素セレクタを置き、
    `POST /api/phaseid` の `elements` へ渡す。「CIF を読み込んでから相同定」は未知試料の単一解析で
    成り立たない動線 (相の CIF は同定の**結果**) — 相 0 件のプロジェクトでも同定でき、ADD AS PHASE
    の物質化も同じ元素系を使う。`elements` 省略時のみ CIF 由来導出 (operando 経路の互換)。
    D は元素表にあるが MP の chemsys に無い同位体なのでセレクタに出さず、② 経由で来ても
    「H を指定せよ」と個別に案内する。
-9. LEDGER 行は精密化由来のエントリにのみ Rwp / BIC を出す (`GET /api/ledger` の `rwp`/`bic`)。
+10. LEDGER 行は精密化由来のエントリにのみ Rwp / BIC を出す (`GET /api/ledger` の `rwp`/`bic`)。
    値のないエントリは**空欄** — `―` は「あるはずの値が欠けている」に予約する。BIC は
    `insitu.anchor.select.frame_bic` と同一式 (相数の比較は Rwp でなく BIC、CLAUDE.md の規律)。
 

@@ -41,8 +41,17 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
 ```jsonc
 {
   "datasets":  [{ "id": "sxrd", "name": "SR-XRD", "meta": "λ 0.79958 · 247 fr", "probe": "X", "active": true }],
+  // 左レール PHASES IN MODEL + PHASES タブ (§PHASES タブ) が共有する 1 相 1 行。
+  // structure_path 以降は project モードのみ (demo/シードは省略可 = PHASES タブは空表示)。
   "phases":    [{ "id": "p1", "name": "cubic K2Mn[Fe(CN)6]", "swatch": "accent",
-                  "space_group": "Fm-3m", "mp_id": "mp-583814", "wt_frac": "62.1(4) %" }],
+                  "space_group": "Fm-3m", "mp_id": "mp-583814", "wt_frac": "62.1(4) %",
+                  "structure_path": "data/alpha.cif", "refine_cell": true,
+                  "temperature": null,
+                  // 精密化後の実格子 (未精密化は null)。esd は揃っていれば併記。
+                  "cell": { "a": "9.3721(3)", "b": "9.3721(3)", "c": "6.8861(4)",
+                            "alpha": "90", "beta": "90", "gamma": "120" },
+                  // この相に触れるレシピ段のラベル (読み取り専用・build_recipe 由来)
+                  "stages": ["S1 cell+displacement", "S2 profile+size_strain"] }],
   "channels":  [{ "id": "echem", "label": "echem", "value": "V 3.94 · I −0.20 mA · Q 41.2" }],
   "snapshots": [{ "id": "S-0310", "note": "before stage 07" }],
   "fit": {
@@ -179,7 +188,29 @@ refine 実行中のプロジェクト変更系は 409。
 | POST `/api/project/histograms/{hist_id}/remove` `{}` | 同上 | spec から除去 + ledger (**DELETE ルートは使わない** — P2 構造ガード維持。解析履歴 ledger/snapshot は不可侵、除去できるのは入力設定のみ) |
 | POST `/api/project/phases` `{structure_path, phase_name}` | 同上 | spec 追記 + ledger |
 | POST `/api/project/phases/{phase_name}/remove` `{}` | 同上 | spec から除去 + ledger |
+| POST `/api/project/phases/{phase_name}/settings` `{refine_cell: bool}` | 同上 | 相単位の精密化設定 (§PHASES タブ)。`PhaseSpec.refine_cell` を更新 + 自動保存 + ledger |
 | POST `/api/project/settings` `{two_theta_limits?, background_coeffs?, max_cyc?}` | 同上 | spec 更新 + ledger |
+
+### PHASES タブ (2026-07-27)
+
+相スコープの精密化制御に居場所を与えるタブ。左レールの PHASES IN MODEL が「今どの相が居るか」
+だけを示すのに対し、こちらは**相ごとに何を解放するか**を扱う。
+
+| 列 | 出所 | 編集 |
+|---|---|---|
+| 相名 / 空間群 / mp_id | `viewmodel.phases[]` | ― |
+| wt% (esd) | 精密化後 `phase_weight_fractions` | ― |
+| 格子 a/b/c/α/β/γ | 精密化後 `refined_cells` + `cell_esd` | ― |
+| 構造ファイル | `structure_path` | ― |
+| **REFINE CELL** | `PhaseSpec.refine_cell` | ✔ (相単位, Issue #47: 副相のセル固定) |
+| 触れる段 | `build_recipe` 由来 (読み取り専用) | ― |
+| REMOVE | ― | ✔ |
+
+**⚠ 相単位で制御できるのは今のところ `refine_cell` だけ**である (黙って未露出にしない宣言):
+`size_strain` / `preferred_orientation` / `hydrostatic_strain` も物理的には相スコープだが、
+engine (`_apply_stage`) は**全相へ一律に**適用しており相単位のスイッチを持たない。したがって
+これらは段 (レシピ) 単位の ON/OFF でしか制御できず、本タブでは読み取り専用の「触れる段」列で
+示すに留める。相単位化はレシピのルール化 (段階解放順序の GUI 制御) と同じ作業単位で扱う。
 
 ## 解析ループ (V2a' — A2〜A6)
 

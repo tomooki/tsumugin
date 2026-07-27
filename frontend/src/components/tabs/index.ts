@@ -4,6 +4,7 @@ export { FitTab } from "./FitTab";
 export { ParametersTab } from "./ParametersTab";
 export { HypothesesTab } from "./HypothesesTab";
 export { PhaseIdTab } from "./PhaseIdTab";
+export { PhasesTab } from "./PhasesTab";
 export { ProjectTab } from "./ProjectTab";
 export { SequenceTab } from "./SequenceTab";
 export { StructureTab } from "./StructureTab";
