@@ -532,3 +532,27 @@ def test_structure_to_cif_symmetry_lowering_cell_still_writes(tmp_path):
     lat = written.lattice
     assert abs(lat.a - 4.11) < 1e-3 and abs(lat.b - 5.20) < 1e-3 and abs(lat.c - 6.30) < 1e-3
     assert len(written) == 2  # 原子は失われない
+
+
+def test_cell_refiner_honours_subtract_bg_on_residual_path(tmp_path):
+    """subtract_bg=False は残差計算側へ伝わる (背景減算済データの二重減算を避ける)。"""
+    tt, inten = _pattern([20.0, 30.0], heights=[10.0, 1.0])
+    inten = inten + 500.0  # 平坦な背景
+    known = _ref("alpha", "A", [(20.0, 1.0)], ["Ca", "O"])
+    calls, fake = _recorder()
+
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], prealign=fake, subtract_bg=False,
+    )
+    assert refiner is not None
+    refiner("dummy.cif")
+    # 背景を引いていないので残差の下限は背景レベル付近に残る。
+    assert float(np.median(calls[0]["intensity"])) > 100.0
+    assert calls[0]["subtract_bg"] is False  # プリアライン側は常に減算しない
+
+    calls2, fake2 = _recorder()
+    refiner2 = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], prealign=fake2, subtract_bg=True,
+    )
+    refiner2("dummy.cif")
+    assert float(np.median(calls2[0]["intensity"])) < 100.0  # SNIP で背景が落ちている

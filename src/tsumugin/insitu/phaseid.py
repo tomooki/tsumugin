@@ -206,7 +206,8 @@ def make_residual_cell_refiner(
     :param known_phases: 現行相 (精密化格子で生成したピーク列付。`phasespec_to_reference` 由来)
     :param wavelength: プリアラインの線源波長 (Å)
     :param two_theta_range: プリアラインの評価 2θ 範囲
-    :param subtract_bg: **既知相ゼロで整合する場合の** SNIP 背景減算 (残差経路は減算済のため常に False)
+    :param subtract_bg: SNIP 背景減算を行うか。残差経路では**残差計算側**に適用し (プリアラインには
+        減算済を渡す)、既知相ゼロの経路ではプリアラインへそのまま渡す。``cfg`` 明示時は cfg が優先
     :param require_subtraction: True で「既知相を引けないならプリアラインしない」(``None`` を返す)。
         既存相があるのに生パターンへ整合するのは上表の通り有害なので、等方 strain のまま渡す方が
         安全側 (提案≠適用)。単相/静的同定など**候補が支配的と分かっている**呼び出しでのみ False にする
@@ -223,10 +224,11 @@ def make_residual_cell_refiner(
     refs = list(known_phases)
 
     if refs:
-        # 既知相を引いた残差では候補が支配的 → 同じ FoM が正しく効く。残差は背景減算済。
+        # 既知相を引いた残差では候補が支配的 → 同じ FoM が正しく効く。
+        # `subtract_bg` は残差計算側へ渡し、プリアラインには常に False (二重減算しない)。
+        resid_cfg = cfg if cfg is not None else IdentifyConfig(subtract_bg=subtract_bg)
         pattern = subtract_known_phases(
-            tt, np.asarray(intensity, dtype=float), refs,
-            **({"cfg": cfg} if cfg is not None else {}),
+            tt, np.asarray(intensity, dtype=float), refs, cfg=resid_cfg
         )
         bg = False
     elif require_subtraction:
