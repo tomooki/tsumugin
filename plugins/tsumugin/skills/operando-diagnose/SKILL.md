@@ -37,7 +37,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | `anchored_sequential` | 系統ブロックの解き直し (M10) | アンカー起点の双方向精密化 + `crossovers[].total_bic` で相集合を **bic 選定** (相数を抑制)。前方単一パス由来の系統汚染 (偽相全域・esd 発散・全相 flagged) を根治する → J6 |
 | `align_echem` | 電気化学突合 (J8) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス or 明示 epoch) → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合 |
 | `alkali_budget` | クーロメトリー整合 (J9, FR-318) | `.mpr` + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標。`charge_constraint` 経由で `alkali_x_xrd` vs `alkali_x_echem` の乖離 = 不可逆容量/相集合誤りの独立検出器 |
-| `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 + `prealign_basis`。**`known_phases`** (現行相の spec + `refined_cell`) と実 `wavelength` を渡すこと — 渡さないと支配相の陰の少数相を拾えず、返る CIF も DFT 格子のまま (`"skipped"`) になる |
+| `identify_and_add_phase` | 相同定 | 物質化した PhaseSpec 候補 (CIF パス) + 根拠 + `prealign_basis`。**`known_phases`** (現行相の spec + `refined_cell`) と実 `wavelength` を渡すこと — 渡さないと支配相の陰の少数相を拾えず、返る CIF も DFT 格子のまま (`"skipped"`) になる。**波長が判らない/TOF なら `wavelength=None` を明示的に渡す** (省略すると既定 Cu Kα1 で異方 re-score が誤走する; `None` は波長依存の段を両方止める) |
 | `auto_rietveld` | 単一フレーム再フィット | `residual_report` + 出版値 (重量分率 ± esd・`cell_esd`) 同梱 |
 | `discriminate` | 固溶体 vs 二相判別 (FR-313, J10) | 1 区間を単相・格子連続 (A) と端成分 2 相・分率変化 (B) の 2 仮説で精密化し `verdict` (`solid_solution`/`two_phase`/`undecided`) + `delta_evidence` + `adjudicated_by` + `nested_delta_evidence`。僅差は nested 物理尤度で再裁定 (#76) |
 

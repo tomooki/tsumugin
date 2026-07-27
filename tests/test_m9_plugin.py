@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from tsumugin.mcp.tools import MCP_TOOLS
 
 _PLUGIN = Path("plugins/tsumugin")
@@ -374,3 +376,35 @@ def test_identify_and_add_phase_does_not_prealign_against_raw_pattern():
     assert "require_subtraction=True" in src, (
         "手動投入経路が生パターン整合を許している (実測で有害)"
     )
+
+
+def test_insitu_skill_teaches_none_wavelength_for_unknown_or_tof():
+    """★③ に「波長不明/TOF は `wavelength=None` を明示的に渡す」と教えていること。
+
+    **なぜ恒久ガードが要るか (code-review PR #155)**: ② の既定は `None` ではなく Cu Kα1
+    (1.5406) なので、**引数を省略すると推測値で計算が走る**。波長は hkl→2θ に直接効き、
+    λ=0.7996 の放射光を 1.5406 と扱うと 2θ が数度ずれて照合許容 0.15° を大きく超え、
+    異方 re-score の順位付けが壊れる (`rerank_top_k` は既定 5 = ON)。
+
+    手順書が「実波長を渡せ」しか言っていないと、③ は TOF 中性子 (単一波長なし) や instprm が
+    読めない場合に (a) 引数を省略する = 既定 Cu Kα1 が漏れる、(b) 代表波長をでっち上げる、の
+    どちらかをやる。どちらもこの修正が防いだはずの病理を手順書側から再導入する
+    (**誤った指示は実装バグと同等に有害**)。
+    """
+    import inspect  # noqa: PLC0415
+
+    from tsumugin.mcp.insitu_tools import identify_and_add_phase  # noqa: PLC0415
+
+    # ① 実装が None を受け付ける (Optional) こと。既定は Cu Kα1 のまま (非回帰)。
+    sig = inspect.signature(identify_and_add_phase).parameters["wavelength"]
+    assert "None" in str(sig.annotation), f"wavelength が Optional でない: {sig.annotation}"
+    assert sig.default == pytest.approx(1.5406), "既定 Cu Kα1 が変わっている"
+
+    # ③ 手順書が None の渡し方と理由を教えていること。
+    text = _SKILL.read_text(encoding="utf-8")
+    step6 = text.split("### 6. ", 1)[1].split("### 7. ", 1)[0]
+    assert "wavelength=None" in step6, (
+        "手順6 が「波長不明なら wavelength=None」を教えていない — ③ は省略して既定 Cu Kα1 を漏らす"
+    )
+    assert "TOF" in step6, "TOF (単一波長なし) が None の対象だと書かれていない"
+    assert "省略" in step6, "「省略してはならない」旨が書かれていない"

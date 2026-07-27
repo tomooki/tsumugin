@@ -85,8 +85,6 @@ _SEQ_CSV_REASONS_DELIMITER = "|"
 #: ``None`` を渡すと「**不明**」の意味になり、波長依存の段 (既知相の残差減算・異方 re-score) が
 #: 止まる — 推測して計算するより「補正しない」方が安全側 (code-review PR #155)。
 _CU_KA1 = 1.5406
-#: 異方 re-score の既定候補数 (`reference.engine.identify_phases` の既定と一致させる)。
-_DEFAULT_RERANK_TOP_K = 5
 
 
 def _seq_csv_num_cell(value: object) -> str:
@@ -914,6 +912,10 @@ def identify_and_add_phase(
         two_theta_range=tt_range, subtract_bg=subtract_bg, require_subtraction=True,
     )
 
+    # 波長不明なら異方 re-score を止める (0 = 無効)。誤波長の hkl→2θ で順位を付けない。
+    # **既知のときは引数を渡さない** — ここで既定値 (5) を複製すると、下位 (`identify_new_phases` /
+    # `reference.engine.identify_phases`) で既定が変わったとき、この経路だけ黙って旧値に固定される。
+    rerank_kwargs: dict[str, object] = {} if wavelength_known else {"rerank_top_k": 0}
     found = identify_new_phases(
         tt,
         inten,
@@ -922,13 +924,12 @@ def identify_and_add_phase(
         materializer=materializer,  # type: ignore[arg-type]
         workdir=workdir,
         exclude_formulas=list(exclude_formulas),
+        **rerank_kwargs,  # type: ignore[arg-type]
         top_k=top_k,
         hull_cutoff_ev=hull_cutoff_ev,
         subtract_bg=subtract_bg,
         cell_refiner=cell_refiner,
         rerank_wavelength=lam,
-        # 波長不明なら異方 re-score を止める (0 = 無効)。誤波長の hkl→2θ で順位を付けない。
-        rerank_top_k=_DEFAULT_RERANK_TOP_K if wavelength_known else 0,
         known_phases=known_refs,  # 既知相を先に残差から減算してから新相を探す (自動経路と同一)
     )
     return {
