@@ -27,6 +27,7 @@ from .absorption import apply_absorption_correction
 from .model import (
     AutoRietveldResult,
     CellEsd,
+    Geometry,
     HistogramSpec,
     PhaseSpec,
     Radiation,
@@ -1285,6 +1286,11 @@ def run_auto_rietveld(
             hist = gpx.add_powder_histogram(
                 h.data_path, h.instrument_path, fmthint=_data_fmthint(h)
             )
+            # 【宣言ジオメトリを正とする】: GSAS は Sample Parameters の Type を instprm から
+            #   推定するため、Kα1 単色 instprm の反射光学系が Debye-Scherrer 扱いになり
+            #   `Shift` 解放が例外 → cell 段ごと revert → 格子が一切精密化されない、という
+            #   無言の失敗が起きる。他の Sample Parameters 書き込み (absorption 等) より先に置く。
+            _apply_sample_geometry(hist, h.geometry)
             if h.two_theta_limits is not None:
                 lo, hi = h.two_theta_limits
                 hist.set_refinements({"Limits": [lo, hi]})
@@ -1605,6 +1611,49 @@ def _extract_residual(
         fw = float(wi)
         out_s.append((1.0 / math.sqrt(fw)) if fw > 0 else float("inf"))
     return tuple(out_x), tuple(out_r), tuple(out_s)
+
+
+#: ジオメトリ別の GSAS Sample Parameters ``Type`` と、その分岐で使われるパラメータ既定値。
+#: 値は GSAS-II 自身の初期化 (`GSASIIfiles.py` の ``Sample.update({...})``) と同一にする。
+_SAMPLE_GEOMETRY: dict[Geometry, tuple[str, tuple[str, ...]]] = {
+    Geometry.BRAGG_BRENTANO: (
+        "Bragg-Brentano",
+        ("Shift", "Transparency", "SurfRoughA", "SurfRoughB"),
+    ),
+    Geometry.DEBYE_SCHERRER: ("Debye-Scherrer", ("Absorption", "DisplaceX", "DisplaceY")),
+}
+
+
+def _apply_sample_geometry(hist, geometry: Geometry) -> None:
+    """``HistogramSpec.geometry`` を GSAS の Sample Parameters ``Type`` に反映する。
+
+    **宣言したジオメトリを正とする**。GSAS-II は ``Type`` を装置パラメータファイルから推定し
+    (`GSASIIfiles.py`: ``Lam1`` があれば Bragg-Brentano、無ければ Debye-Scherrer)、Kα1 単色の
+    instprm を使う実験室 X 線は反射光学系でも ``Debye-Scherrer`` になる。その状態で
+    ``recipe._GEOMETRY_DISPLACEMENT`` の ``Shift`` を解放しようとすると
+    ``ValueError('Unknown refinement parameter, Shift')`` で ``cell+displacement`` 段ごと
+    revert され、**格子が一度も精密化されない**まま完走する (CaTeO3 M9 実データで発生)。
+
+    ``Type`` はキー集合の問題ではない — `GSASIIstrIO` は ``Type`` で**変数にできる試料
+    パラメータ**を選び、`GSASIIstrMath` は ``Type`` で**ピーク位置の補正式**を選ぶ
+    (Bragg: ``Shift``/``Transparency`` · Debye: ``DisplaceX``/``DisplaceY``)。よって不足キーを
+    足すだけでは変数にすらならず、無言で何も精密化しない状態が残る。
+
+    既存の値は上書きしない (欠けているキーを補うだけ — GSAS 自身の ``Sample.update`` と同じ
+    加算的な流儀)。他方のジオメトリのキーも消さない: どちらを使うかは ``Type`` だけが決める。
+    """
+    spec = _SAMPLE_GEOMETRY.get(geometry)
+    if spec is None:
+        return
+    sample_type, keys = spec
+    try:
+        sample = hist.data["Sample Parameters"]
+    except (KeyError, TypeError, AttributeError):
+        return  # 想定外の形は fail open (精密化全体を落とさない)
+    sample["Type"] = sample_type
+    for key in keys:
+        if key not in sample:
+            sample[key] = [0.0, False]
 
 
 def _data_fmthint(h: HistogramSpec) -> str:
