@@ -101,8 +101,12 @@ export function PathPicker({ mode, title, initialPath, onSelect, onClose }: Path
   }
 
   const currentPath = selectedFile ?? listing?.path ?? "";
+  // The server reports whether the current directory itself is a project;
+  // `currentIsProject` (set when descending through an entry row) is only a
+  // fallback for older servers that predate that field.
+  const browsingProject = listing?.is_project ?? currentIsProject;
   const canSelect =
-    mode === "directory" ? listing !== null : selectedFile !== null || currentIsProject;
+    mode === "directory" ? listing !== null : selectedFile !== null || browsingProject;
 
   function handleSelect() {
     if (!canSelect) return;

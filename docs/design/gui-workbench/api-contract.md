@@ -143,7 +143,7 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
 | 呼び出し | 内容 |
 |---|---|
 | GET `/api/fs/roots` | `{"roots": [{"path": str, "label": str}]}` — ホーム + ドライブ (Windows) / `/` (POSIX) |
-| GET `/api/fs/list?path=<abs>` | `{"path", "parent": str\|null, "entries": [{"name", "path", "is_dir", "is_project"}]}`。**ディレクトリと `.json` のみ**返す (中身は返さない)。`is_project` = そのディレクトリ直下に `project.json` があるか (開く先の目印)。存在しない/権限なし/ファイルパス指定は 404・422 error dict |
+| GET `/api/fs/list?path=<abs>` | `{"path", "parent": str\|null, "is_project": bool, "entries": [{"name", "path", "is_dir", "is_project"}]}`。トップレベル `is_project` は**現在地**がプロジェクトか — 「上へ」やルート経由で入ると entry を経由しないため、これが無いと*開けるのに SELECT が押せない*。**ディレクトリと `.json` のみ**返す (中身は返さない)。`is_project` = そのディレクトリ直下に `project.json` があるか (開く先の目印)。存在しない/権限なし/ファイルパス指定は 404・422 error dict |
 
 UI: Welcome の NEW PROJECT は「保存先を選ぶ」ボタン → ピッカー (ディレクトリ選択モード) +
 名前入力。OPEN は「プロジェクトを選ぶ」ボタン → ピッカー (`is_project` のディレクトリ、または

@@ -251,3 +251,18 @@ def test_mutation_proof_non_json_filter_would_leak_without_suffix_check(populate
     real = fsbrowse.list_dir(str(root))
     real_names = {e["name"] for e in real["entries"]}
     assert "notes.txt" not in real_names  # 実装は漏れない
+
+
+class TestCurrentDirIsProject:
+    """現在地の is_project — 「上へ」/ルート経由で入ったときも判定できること (UI 実装レビュー)。
+
+    entry 側の is_project だけだと、entry を経由せず辿り着いたディレクトリで
+    「プロジェクトを開けるのに SELECT が押せない」状態になる。
+    """
+
+    def test_true_when_current_dir_has_project_json(self, tmp_path) -> None:
+        (tmp_path / "project.json").write_text("{}", encoding="utf-8")
+        assert fsbrowse.list_dir(str(tmp_path))["is_project"] is True
+
+    def test_false_for_plain_directory(self, tmp_path) -> None:
+        assert fsbrowse.list_dir(str(tmp_path))["is_project"] is False

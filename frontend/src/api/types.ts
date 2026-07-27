@@ -928,6 +928,11 @@ export interface FsEntry {
 export interface FsListing {
   path: string;
   parent: string | null;
+  // Whether the *currently browsed* directory itself is a project (contains
+  // project.json). Without this, arriving via "up" or a root — which don't go
+  // through an entry row — leaves the picker unable to tell, so a directory
+  // you can legitimately open has its SELECT button disabled.
+  is_project?: boolean;
   entries: FsEntry[];
 }
 

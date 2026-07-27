@@ -99,4 +99,18 @@ def list_dir(path: str) -> dict[str, Any]:
 
     entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
 
-    return {"path": str(resolved), "parent": parent_str, "entries": entries}
+    # 【現在地の is_project】: 「上へ」やルート経由で入ったディレクトリは entry を経由しないため、
+    #   entry 側の is_project だけでは UI が「今いる場所がプロジェクトか」を判定できず、
+    #   **プロジェクトを開けるのに SELECT が押せない**状態になる (実装レビューで判明)。
+    #   現在地についても同じ判定を返す。
+    try:
+        current_is_project = (resolved / "project.json").is_file()
+    except OSError:
+        current_is_project = False
+
+    return {
+        "path": str(resolved),
+        "parent": parent_str,
+        "is_project": current_is_project,
+        "entries": entries,
+    }

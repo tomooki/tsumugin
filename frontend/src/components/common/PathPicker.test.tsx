@@ -317,3 +317,27 @@ describe("PathPicker — initialPath", () => {
     await waitFor(() => expect(screen.getByText("CaTeO3")).toBeInTheDocument());
   });
 });
+
+describe("PathPicker — current directory reported as a project by the server", () => {
+  // Arriving via "up" or a root does not go through an entry row, so without
+  // the listing-level is_project a legitimately openable project directory
+  // would have SELECT disabled (実装レビューで判明した実使用の穴)。
+  it("enables SELECT in project mode when the listing itself is a project", async () => {
+    renderPicker(
+      { mode: "project", title: "OPEN", initialPath: "/proj" },
+      { listings: { "/proj": listing({ path: "/proj", parent: "/", is_project: true }) } },
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /SELECT/i })).not.toBeDisabled(),
+    );
+  });
+
+  it("keeps SELECT disabled when the listing is a plain directory", async () => {
+    renderPicker(
+      { mode: "project", title: "OPEN", initialPath: "/plain" },
+      { listings: { "/plain": listing({ path: "/plain", parent: "/", is_project: false }) } },
+    );
+    await waitFor(() => expect(screen.getAllByText("/plain").length).toBeGreaterThan(0));
+    expect(screen.getByRole("button", { name: /SELECT/i })).toBeDisabled();
+  });
+});
