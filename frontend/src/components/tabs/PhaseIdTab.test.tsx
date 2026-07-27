@@ -444,3 +444,98 @@ describe("PhaseIdTab — element system (real, not a fixed label)", () => {
     expect(document.querySelector(".pid-tab__note")!.textContent).toContain("Dara");
   });
 });
+
+describe("PhaseIdTab — element selection (CIF 先読み不要の動線)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("seeds the selector from the server's element system", () => {
+    renderTab({ elements: ["Ca", "O", "Te"] });
+    for (const el of ["Ca", "O", "Te"]) {
+      expect(screen.getByRole("button", { name: `remove ${el}` })).toBeInTheDocument();
+    }
+  });
+
+  it("adding an element updates the note and is sent with IDENTIFY", async () => {
+    const fetchMock = installFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ elements: ["Ca"] });
+
+    await user.selectOptions(screen.getByLabelText("add element"), "Te");
+    expect(document.querySelector(".pid-tab__note")!.textContent).toContain("Ca, Te");
+
+    await user.click(screen.getByRole("button", { name: "IDENTIFY" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) =>
+          String(u).endsWith("/api/phaseid") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        mode: "pattern",
+        elements: ["Ca", "Te"],
+      });
+    });
+  });
+
+  it("removing an element drops it from the request", async () => {
+    const fetchMock = installFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ elements: ["Ca", "Te"] });
+
+    await user.click(screen.getByRole("button", { name: "remove Te" }));
+    await user.click(screen.getByRole("button", { name: "IDENTIFY" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) =>
+          String(u).endsWith("/api/phaseid") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        mode: "pattern",
+        elements: ["Ca"],
+      });
+    });
+  });
+
+  it("omits `elements` entirely when nothing is selected (server derives from CIFs)", async () => {
+    const fetchMock = installFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ elements: [] });
+
+    await user.click(screen.getByRole("button", { name: "IDENTIFY" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) =>
+          String(u).endsWith("/api/phaseid") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ mode: "pattern" });
+    });
+  });
+
+  it("never offers D — an isotope of H that Materials Project's chemsys has no entry for", async () => {
+    renderTab({ elements: [] });
+    const options = Array.from(
+      (screen.getByLabelText("add element") as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    expect(options).toContain("H");
+    expect(options).not.toContain("D");
+  });
+
+  it("does not offer an already-selected element twice", () => {
+    renderTab({ elements: ["Ca"] });
+    const options = Array.from(
+      (screen.getByLabelText("add element") as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    expect(options).not.toContain("Ca");
+  });
+});

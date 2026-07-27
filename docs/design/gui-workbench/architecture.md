@@ -113,7 +113,13 @@ components/right/   OperatorConsole (recipe+gating+review) / AgentSession (trans
      (λ はプロジェクト毎に異なり、LinePlot は線形軸)
    恒久ガードは各タブのテスト (`*.test.tsx` の "never hard-codes …") に置く。**変異させて fail
    することを実証済**。
-8. LEDGER 行は精密化由来のエントリにのみ Rwp / BIC を出す (`GET /api/ledger` の `rwp`/`bic`)。
+8. **相同定は元素選択から始められる** (2026-07-27)。PHASE ID タブに元素セレクタを置き、
+   `POST /api/phaseid` の `elements` へ渡す。「CIF を読み込んでから相同定」は未知試料の単一解析で
+   成り立たない動線 (相の CIF は同定の**結果**) — 相 0 件のプロジェクトでも同定でき、ADD AS PHASE
+   の物質化も同じ元素系を使う。`elements` 省略時のみ CIF 由来導出 (operando 経路の互換)。
+   D は元素表にあるが MP の chemsys に無い同位体なのでセレクタに出さず、② 経由で来ても
+   「H を指定せよ」と個別に案内する。
+9. LEDGER 行は精密化由来のエントリにのみ Rwp / BIC を出す (`GET /api/ledger` の `rwp`/`bic`)。
    値のないエントリは**空欄** — `―` は「あるはずの値が欠けている」に予約する。BIC は
    `insitu.anchor.select.frame_bic` と同一式 (相数の比較は Rwp でなく BIC、CLAUDE.md の規律)。
 

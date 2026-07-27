@@ -465,3 +465,47 @@ def test_build_tools_and_server_smoke():
     server = agent_mcp.build_server()
     assert server["name"] == agent_mcp.SERVER_NAME
     assert server["type"] == "sdk"
+
+
+# ---------------------------------------------------------------------------
+# 相同定の元素系 (② 到達可能性: ① の elements 引数が JSON で届くこと)
+# ---------------------------------------------------------------------------
+
+
+def test_run_phaseid_handler_forwards_elements(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured.update(method=method, path=path, payload=payload)
+        return {"status": 202, "body": {"status": "started"}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(agent_mcp._h_run_phaseid({"mode": "pattern", "elements": ["Ca", "Te", "O"]}))
+
+    assert captured == {
+        "method": "POST",
+        "path": "/api/phaseid",
+        "payload": {"mode": "pattern", "elements": ["Ca", "Te", "O"]},
+    }
+
+
+def test_run_phaseid_handler_omits_absent_elements(monkeypatch: pytest.MonkeyPatch):
+    """省略時は payload に載せない = サーバ側の CIF 由来導出 (契約) に落ちる。"""
+    captured = {}
+
+    def fake_request(method, path, payload=None):
+        captured.update(payload=payload)
+        return {"status": 202, "body": {"status": "started"}}
+
+    monkeypatch.setattr(agent_mcp, "_request", fake_request)
+    asyncio.run(agent_mcp._h_run_phaseid({"mode": "pattern"}))
+
+    assert captured["payload"] == {"mode": "pattern"}
+
+
+def test_run_phaseid_tool_schema_exposes_elements():
+    """③ (LLM) は JSON schema しか見ない — schema に無い引数は存在しないのと同じ (§4.5)。"""
+    spec = next(s for s in agent_mcp._TOOL_SPECS if s[0] == "run_phaseid")
+    schema = spec[2]
+    assert schema["properties"]["elements"]["type"] == "array"
+    assert schema["properties"]["elements"]["items"]["type"] == "string"

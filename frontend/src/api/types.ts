@@ -776,6 +776,10 @@ export type PhaseIdMode = "pattern" | "residual";
 export interface PhaseIdRequest {
   mode: PhaseIdMode;
   top_k?: number;
+  // Element system to identify with (api-contract.md §相同定の元素系). Omit to
+  // let the server derive it from the current phases' CIFs — for an unknown
+  // sample there are no phases yet, so this is the primary path.
+  elements?: string[];
 }
 
 export interface PhaseIdAddRequest {

@@ -8,6 +8,7 @@ import {
 } from "../../api/client";
 import { formatNumber } from "../../api/format";
 import type { PhaseIdCandidate, PhaseIdMode, RefineStatus } from "../../api/types";
+import { ELEMENTS, elementLabel } from "../../data/elements";
 import { resolveJobConflict } from "../../hooks/useJobConflict";
 import { usePollJob } from "../../hooks/usePollJob";
 import { useI18n } from "../../i18n";
@@ -64,14 +65,27 @@ export function PhaseIdTab() {
   const mpAvailable = state.shell?.status?.mp_available ?? true;
   const mpUnavailableTitle = !mpAvailable ? tl("pid.local.mpUnavailable") : undefined;
 
-  // 元素系は **サーバが実際に identify_pattern へ渡すもの** (現相集合の CIF 由来) だけを出す。
+  // 【元素系】: **未知試料ではここで直接選ぶのが主経路** — どの相かが判らないから同定するので
+  // あって、相の CIF は同定の *結果* である ("CIF を読み込んでから相同定" は成り立たない)。
+  // 初期値はサーバの `viewmodel.phase_id.elements` (直近の同定が使った元素系、未実行なら現相集合の
+  // CIF 由来)。空のまま IDENTIFY すれば `elements` を送らず従来どおりサーバ側で導出される。
   // 元プロトタイプはここに固定文字列 "elements K, Mn, Fe, C, N, O" を持っていたが、実際の入力と
-  // 無関係なので表示と挙動が食い違っていた。空 (相なし/CIF 読めず/pymatgen 未導入) なら元素の
-  // 記述自体を落とし、手法の記述 (実際に固定されている IdentifyConfig 既定) だけを残す。
-  const elements = vm.elements ?? [];
-  const note = elements.length
-    ? `${tl("pid.local.elements", { elements: elements.join(", ") })} · ${t("pid.note")}`
+  // 無関係なので表示と挙動が食い違っていた。
+  const serverElements = vm.elements;
+  const [elements, setElements] = useState<string[] | null>(null);
+  // サーバ値が来る (または相同定完了で変わる) たびに、ユーザーが触っていなければ追従する。
+  const serverKey = (serverElements ?? []).join(",");
+  const [seededKey, setSeededKey] = useState<string | null>(null);
+  if (serverElements && serverKey !== seededKey) {
+    setSeededKey(serverKey);
+    setElements([...serverElements]);
+  }
+  const selected = elements ?? serverElements ?? [];
+  const note = selected.length
+    ? `${tl("pid.local.elements", { elements: selected.join(", ") })} · ${t("pid.note")}`
     : t("pid.note");
+  // D は元素表 (GSAS-II 由来 99 択) にあるが MP の chemsys には無い同位体なので出さない。
+  const addable = ELEMENTS.filter((el) => el.symbol !== "D" && !selected.includes(el.symbol));
 
   const setRefineStatus = useCallback(
     (refine: RefineStatus) => dispatch({ type: "SET_REFINE_STATUS", refine }),
@@ -119,7 +133,8 @@ export function PhaseIdTab() {
   function handleIdentifyClick() {
     if (jobRunning) return;
     setIdentifyError(null);
-    postPhaseId({ mode })
+    // 未選択なら `elements` 自体を送らない = サーバが現相集合の CIF から導出する (契約)。
+    postPhaseId(selected.length ? { mode, elements: selected } : { mode })
       .then((res) => {
         if (res.status === "started") {
           dispatch({ type: "SET_ACTIVE_JOB", job: "phaseid" });
@@ -171,6 +186,47 @@ export function PhaseIdTab() {
       <div className="pid-tab__head">
         <span className="pid-tab__title">{t("pid.title")}</span>
         <span className="pid-tab__note">{note}</span>
+      </div>
+
+      <div className="pid-elements">
+        <span className="pid-elements__label">{tl("pid.local.elementsLabel")}</span>
+        <div className="pid-elements__chips">
+          {selected.map((el) => (
+            <span key={el} className="pid-elements__chip">
+              {el}
+              <button
+                type="button"
+                className="pid-elements__remove"
+                aria-label={tl("pid.local.elementsRemove", { element: el })}
+                disabled={jobRunning}
+                onClick={() => setElements(selected.filter((s) => s !== el))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          {selected.length === 0 && (
+            <span className="pid-elements__empty">{tl("pid.local.elementsEmpty")}</span>
+          )}
+        </div>
+        <select
+          className="pid-elements__add"
+          aria-label={tl("pid.local.elementsAdd")}
+          value=""
+          disabled={jobRunning}
+          onChange={(e) => {
+            if (!e.target.value) return;
+            setElements([...selected, e.target.value].sort());
+          }}
+        >
+          <option value="">{tl("pid.local.elementsAddHint")}</option>
+          {addable.map((el) => (
+            <option key={`${el.z}-${el.symbol}`} value={el.symbol}>
+              {elementLabel(el)}
+            </option>
+          ))}
+        </select>
+        <span className="pid-elements__hint">{tl("pid.local.elementsHint")}</span>
       </div>
 
       <div className="pid-tab__controls">

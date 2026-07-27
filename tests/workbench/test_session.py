@@ -3546,3 +3546,172 @@ def test_ledger_text_keeps_dash_when_rwp_is_missing():
     session.ledger.append("refine_finished", {"rwp": None, "gof": None})
 
     assert session.ledger_view()["entries"][-1]["text"] == "refine finished (rwp=―)"
+
+
+# ---------------------------------------------------------------------------
+# 相同定の元素系を GUI から直接指定する (CIF 先読み不要の動線)
+# ---------------------------------------------------------------------------
+
+
+def _pattern_only_project(tmp_path: Path) -> WorkbenchProject:
+    """**相 0 件**の project (未知試料の単一パターン解析: 相は同定の結果であって前提でない)。"""
+    return WorkbenchProject(
+        name="pattern only",
+        histograms=(
+            HistogramSpec(
+                data_path=str(tmp_path / "d.xy"),
+                instrument_path=str(tmp_path / "d.instprm"),
+                radiation=Radiation.XRAY_LAB,
+                geometry=Geometry.BRAGG_BRENTANO,
+                data_format="XY",
+            ),
+        ),
+        phases=(),
+        gpx_path=str(tmp_path / "refined.gpx"),
+        spec_dir=str(tmp_path),
+    )
+
+
+class _RecordingProvider:
+    """`fetch` に渡された元素系を記録するテスト供給元 (§4.5: 注入はテスト専用)。"""
+
+    def __init__(self):
+        self.seen: "list[list[str]]" = []
+
+    def fetch(self, elements):
+        self.seen.append(list(elements))
+        return []
+
+
+def _seed_pattern(session: WorkbenchSession) -> None:
+    tt, obs = _synthetic_pattern([20.0, 35.0, 52.0])
+    session._fit["plot"] = {"h0": {"x": tt.tolist(), "yobs": obs.tolist(), "residual": None}}
+
+
+def test_request_phaseid_uses_explicitly_given_elements(tmp_path):
+    # 【目的】: elements を渡すと**その元素系がそのまま** identify_pattern へ渡る。
+    session = WorkbenchSession.from_project(_pattern_only_project(tmp_path))
+    _seed_pattern(session)
+    provider = _RecordingProvider()
+
+    result = session.request_phaseid(
+        mode="pattern", elements=["Te", "Ca", "O"], _provider=provider
+    )
+
+    assert result == {"status": "started"}
+    session._job.join(timeout=5)
+    # 重複排除 + 昇順ソートで正規化 (NFR-102 決定性)
+    assert provider.seen == [["Ca", "O", "Te"]]
+
+
+def test_request_phaseid_works_without_any_phase_in_the_model(tmp_path):
+    # 【目的 (この改良の要点)】: 相 0 件 = CIF 未読込でも相同定できる。
+    #   「CIF を読み込んでから相同定」は未知試料では成り立たない動線。
+    session = WorkbenchSession.from_project(_pattern_only_project(tmp_path))
+    _seed_pattern(session)
+
+    assert session.request_phaseid(
+        mode="pattern", elements=["Na", "Cl"], _provider=_RecordingProvider()
+    ) == {"status": "started"}
+    session._job.join(timeout=5)
+
+
+def test_request_phaseid_normalises_duplicates_and_case_of_given_elements(tmp_path):
+    session = WorkbenchSession.from_project(_pattern_only_project(tmp_path))
+    _seed_pattern(session)
+    provider = _RecordingProvider()
+
+    session.request_phaseid(mode="pattern", elements=["na", "CL", "Na"], _provider=provider)
+    session._job.join(timeout=5)
+
+    assert provider.seen == [["Cl", "Na"]]
+
+
+@pytest.mark.parametrize("bad", [["Ca", "Xx"], ["Ca", ""], ["Ca", 7], "CaO"])
+def test_request_phaseid_rejects_invalid_elements_without_starting_a_job(tmp_path, bad):
+    # 【目的】: 不正な元素指定は 422 へ縮退し、**ジョブは起動しない** (MP 側の失敗に化けさせない)。
+    session = WorkbenchSession.from_project(_pattern_only_project(tmp_path))
+    _seed_pattern(session)
+
+    result = session.request_phaseid(mode="pattern", elements=bad, _provider=_RecordingProvider())
+
+    assert result["error_type"] == "ValueError"
+    assert session._job.status()["status"] == "idle"
+
+
+def test_request_phaseid_rejects_empty_element_list(tmp_path):
+    # 【目的】: 明示的な空配列は「省略」と区別して 422 (黙って CIF 由来へ落とさない)。
+    session = WorkbenchSession.from_project(_pattern_only_project(tmp_path))
+    _seed_pattern(session)
+
+    result = session.request_phaseid(mode="pattern", elements=[], _provider=_RecordingProvider())
+
+    assert result["error_type"] == "ValueError"
+
+
+def test_request_phaseid_names_deuterium_explicitly(tmp_path):
+    # 【目的】: D は元素表 (GSAS 由来 99 択) にあるが MP の chemsys には無い。
+    #   "unknown element symbol" で放り出さず H を案内する。
+    session = WorkbenchSession.from_project(_pattern_only_project(tmp_path))
+    _seed_pattern(session)
+
+    result = session.request_phaseid(mode="pattern", elements=["D", "O"], _provider=_RecordingProvider())
+
+    assert result["error_type"] == "ValueError"
+    assert "H" in result["error"]
+
+
+def test_request_phaseid_without_elements_still_derives_from_cifs(tmp_path):
+    # 【非回帰】: 省略時は従来どおり現相集合の CIF から導出する (operando 経路の互換)。
+    pytest.importorskip("pymatgen")
+    session = WorkbenchSession.from_project(_phaseid_project(tmp_path))
+    _seed_pattern(session)
+    provider = _RecordingProvider()
+
+    session.request_phaseid(mode="pattern", _provider=provider)
+    session._job.join(timeout=5)
+
+    assert provider.seen == [["Cl", "Na"]]
+
+
+def test_viewmodel_phase_id_elements_reflect_the_last_identification(tmp_path):
+    # 【目的】: 表示は「直近の同定が実際に使った元素系」。CIF 由来の導出値で上書きしない。
+    pytest.importorskip("pymatgen")
+    session = WorkbenchSession.from_project(_phaseid_project(tmp_path))
+    _seed_pattern(session)
+    assert session.viewmodel()["phase_id"]["elements"] == ["Cl", "Na"]
+
+    session.request_phaseid(mode="pattern", elements=["Ca", "Te", "O"], _provider=_RecordingProvider())
+    session._job.join(timeout=5)
+
+    assert session.viewmodel()["phase_id"]["elements"] == ["Ca", "O", "Te"]
+
+
+def test_phaseid_add_uses_the_elements_of_the_last_identification(tmp_path, monkeypatch):
+    # 【目的】: 相 0 件のプロジェクトでも同定 → ADD AS PHASE まで通る
+    #   (従来は物質化のために CIF 由来の元素系を要求し、相が無いと必ず失敗した)。
+    session = WorkbenchSession.from_project(_pattern_only_project(tmp_path))
+    _seed_pattern(session)
+    session.request_phaseid(mode="pattern", elements=["Na", "Cl"], _provider=_RecordingProvider())
+    session._job.join(timeout=5)
+
+    seen: dict[str, Any] = {}
+
+    class _FakeMaterializer:
+        def __init__(self, *a, **kw):
+            pass
+
+        def materialize(self, mp_id, elements, cif_path, strain=0.0):
+            seen["elements"] = list(elements)
+            Path(cif_path).write_text("data_x\n", encoding="utf-8")
+
+    import tsumugin.insitu.phaseid as phaseid_mod
+    import tsumugin.mp.client as mp_client_mod
+
+    monkeypatch.setattr(phaseid_mod, "MPMaterializer", _FakeMaterializer)
+    monkeypatch.setattr(mp_client_mod, "MPRestClient", lambda *a, **kw: object())
+
+    result = session.phaseid_add(formula="NaCl", mp_id="mp-22862")
+
+    assert "error" not in result, result
+    assert seen["elements"] == ["Cl", "Na"]

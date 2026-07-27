@@ -361,6 +361,8 @@ class WorkbenchSession:
         #   (ADD AS PHASE 時の再物質化用、strain を引き継ぐ)。
         self._phaseid_candidates: list[dict[str, Any]] = []
         self._phaseid_accepted_by_id: dict[str, Any] = {}
+        # 直近の相同定が実際に使った元素系 (GUI 指定 or CIF 由来)。None = 未実行。
+        self._phaseid_elements_used: "list[str] | None" = None
         # 相同定の元素系キャッシュ (structure_path の並び → 元素記号列)。CIF 読込 + pymatgen import
         # は viewmodel を引くたびに払うには重い。相集合が変われば (相追加/削除) キーが変わり再計算。
         self._elements_cache: "tuple[tuple[str, ...], list[str]] | None" = None
@@ -780,11 +782,11 @@ class WorkbenchSession:
         }
 
     def _phaseid_elements(self) -> list[str]:
-        """相同定に実際に使われる元素系 (現相集合の CIF 由来) を返す — 固定リストではない。
+        """相同定の元素系を返す — 固定リストではない。
 
-        ``request_phaseid`` が ``identify_pattern(elements=…)`` へ渡すものと**同一の導出**
-        (`_elements_from_project`)。UI がここを表示することで「表記と実際の入力が食い違う」
-        状態が構造的に起きない。
+        直近の同定が実際に使った元素系 (GUI で選んだもの / CIF 由来のどちらでも) を優先し、
+        未実行なら現相集合の CIF から導出した値 = **UI の初期選択**を返す。UI がここを
+        表示・初期値にすることで「表記と実際の入力が食い違う」状態が構造的に起きない。
 
         CIF の読込は viewmodel を引くたびには行わず、相集合 (structure_path の並び) をキーに
         キャッシュする。pymatgen 未導入・全 CIF 読込失敗は空リスト (相同定タブが使えないだけで
@@ -793,6 +795,10 @@ class WorkbenchSession:
         project = self._project
         if project is None:
             return []
+        with self._lock:
+            used = self._phaseid_elements_used
+        if used is not None:
+            return list(used)
         key = tuple(p.structure_path for p in project.phases)
         with self._lock:
             cached = self._elements_cache
@@ -1952,17 +1958,25 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def request_phaseid(
-        self, *, mode: Literal["pattern", "residual"], top_k: int = 5, _provider: object = None
+        self,
+        *,
+        mode: Literal["pattern", "residual"],
+        top_k: int = 5,
+        elements: Any = None,
+        _provider: object = None,
     ) -> dict[str, Any]:
         """相同定ジョブを起動する (A4, api-contract.md POST /api/phaseid)。
 
         refine/phaseid/multistart は同一ジョブ枠 (``self._job``) を共有する — いずれかの実行中は
         ``ConflictError`` (呼び出し側が 409 へ縮退)。``mode="residual"`` は直近 refine の残差
-        (``self._fit.plot.h0.residual``) が無ければ ``ConflictError`` (409) を返す。元素系は
-        現相集合の CIF から導出する (``_elements_from_project``, pymatgen 遅延 import)。
+        (``self._fit.plot.h0.residual``) が無ければ ``ConflictError`` (409) を返す。
         Materials Project API キー (環境変数 ``MATERIALS_PROJECT_API``) 未設定は ``ValueError``
         (422)。
 
+        :param elements: 元素記号の列。**未知試料の単一パターン解析ではこちらが主経路** —
+            どの相かが判らないから同定するのであって、相の CIF は同定の *結果* である
+            (「CIF を読み込んでから相同定」という順序は成り立たない)。省略時のみ現相集合の
+            CIF から導出する (``_elements_from_project``, pymatgen 遅延 import; operando 経路の互換)。
         :param _provider: **テスト専用**の供給元注入シーム (§4.5)。実運用は常に ``None`` で
             ``MPReferenceProvider(MPRestClient())`` を使う — callable/オブジェクト注入を実運用経路
             にしない (`docs/design/operando-diagnosis/architecture.md` §4.5)。
@@ -1977,6 +1991,14 @@ class WorkbenchSession:
         if self._job.status()["status"] == "running":
             return {"error": "a job is already running", "error_type": "ConflictError"}
         project = self._project
+        # 【引数の検証を状態の検証より先に】: 明示指定された elements が不正なのは呼び出し側の
+        #   誤りで、パターン有無 (状態) より先に伝えるほうが直せる。省略時の CIF 由来導出は
+        #   パターン検証の後 (pymatgen import + CIF 読込を無駄に走らせない)。
+        if elements is not None:
+            try:
+                elements = _normalise_elements(elements)
+            except ValueError as exc:
+                return {"error": str(exc), "error_type": "ValueError"}
         plot = (self._fit.get("plot") or {}).get("h0") or {}
         if mode == "residual":
             residual = plot.get("residual")
@@ -1990,15 +2012,20 @@ class WorkbenchSession:
             x, y = plot.get("x"), plot.get("yobs")
             if not x or not y:
                 return {"error": "no pattern available", "error_type": "ValueError"}
-        try:
-            elements = _elements_from_project(project)
-        except ImportError as exc:
-            return {"error": str(exc), "error_type": "ValueError"}
-        if not elements:
-            return {
-                "error": "no elements derivable from current phase CIFs",
-                "error_type": "ValueError",
-            }
+        if elements is None:
+            try:
+                elements = _elements_from_project(project)
+            except ImportError as exc:
+                return {"error": str(exc), "error_type": "ValueError"}
+            if not elements:
+                return {
+                    # 元素は PHASE ID タブで直接選べる (相 CIF は同定の結果であって前提でない)。
+                    "error": (
+                        "no elements derivable from current phase CIFs — "
+                        "select the element system explicitly instead"
+                    ),
+                    "error_type": "ValueError",
+                }
         if _provider is None:
             try:
                 from ..mp.client import MPRestClient
@@ -2027,9 +2054,16 @@ class WorkbenchSession:
             runner,
             on_success=self._on_phaseid_success,
             on_failure=self._on_phaseid_failure,
-            on_started=lambda: self.ledger.append("phaseid_request", {"mode": mode, "top_k": top_k}),
+            on_started=lambda: self.ledger.append(
+                "phaseid_request", {"mode": mode, "top_k": top_k, "elements": list(elements)}
+            ),
             kind="phaseid",
         )
+        if started:
+            # 実際に使った元素系を憶える: 表示 (`_phaseid_elements`) と ADD AS PHASE の物質化が
+            # 同じ元素系を使う = 相 0 件のプロジェクトでも同定→追加まで通る。
+            with self._lock:
+                self._phaseid_elements_used = list(elements)
         if not started:
             return {"error": "a job is already running", "error_type": "ConflictError"}
         return {"status": "started"}
@@ -2078,13 +2112,21 @@ class WorkbenchSession:
         if self._job.status()["status"] == "running":
             return {"error": "a job is already running", "error_type": "ConflictError"}
         project = self._project
-        try:
-            elements = _elements_from_project(project)
-        except ImportError as exc:
-            return {"error": str(exc), "error_type": "ValueError"}
+        # 【元素系】: 直近の同定が使ったものを優先する — GUI で元素を選んで同定した場合、
+        #   相 0 件のプロジェクトでも物質化できる必要がある (従来は CIF 由来しか無く必ず失敗した)。
+        with self._lock:
+            elements = list(self._phaseid_elements_used or ())
+        if not elements:
+            try:
+                elements = _elements_from_project(project)
+            except ImportError as exc:
+                return {"error": str(exc), "error_type": "ValueError"}
         if not elements:
             return {
-                "error": "no elements derivable from current phase CIFs",
+                "error": (
+                    "no element system available — run phase identification first "
+                    "(or add a phase whose CIF defines the elements)"
+                ),
                 "error_type": "ValueError",
             }
         accepted = self._phaseid_accepted_by_id.get(str(mp_id))
@@ -2750,6 +2792,46 @@ def _hist_index(hist_id: str, n_histograms: int) -> "int | None":
 def _row(field: str, value: str, esd: str = "", *, released: bool = False, locked: bool = False) -> dict[str, Any]:
     """PARAMETERS カードの 1 行 (`seed._row` と同一形; project モードは実値を渡す)。"""
     return {"field": field, "value": value, "esd": esd, "released": released, "locked": locked}
+
+
+#: 元素記号 (原子番号順 1 H … 98 Cf)。相同定の元素系指定を**ジョブ起動前に**検証するために持つ
+#: — pymatgen は遅延 import の重い依存で、GUI の入力検証のためだけに読むものではない。
+#: フロントの `frontend/src/data/elements.ts` (GSAS-II 由来 99 択) と同じ並び。D は同位体なので
+#: ここには入らない (MP の chemsys に無い; `_normalise_elements` が個別に案内する)。
+_ELEMENT_SYMBOLS: tuple[str, ...] = (
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P",
+    "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga",
+    "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag",
+    "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu",
+    "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au",
+    "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am",
+    "Cm", "Bk", "Cf",
+)
+_ELEMENT_BY_LOWER: dict[str, str] = {s.lower(): s for s in _ELEMENT_SYMBOLS}
+
+
+def _normalise_elements(value: Any) -> list[str]:
+    """GUI/② から渡された元素系を検証して正規化する (重複排除 + 昇順ソート = NFR-102 決定性)。
+
+    不正な入力は ``ValueError`` を送出する — 呼び出し側が 422 error dict へ縮退させ、
+    **ジョブは起動しない** (MP 側の不可解な失敗に化けさせない)。
+    """
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise ValueError(f"elements must be a list of element symbols, got {value!r}")
+    out: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"invalid element symbol: {item!r}")
+        symbol = item.strip()
+        if symbol.lower() == "d":
+            raise ValueError("D is an isotope of H — specify H for phase identification")
+        canonical = _ELEMENT_BY_LOWER.get(symbol.lower())
+        if canonical is None:
+            raise ValueError(f"unknown element symbol: {symbol!r}")
+        out.add(canonical)
+    if not out:
+        raise ValueError("elements must not be empty")
+    return sorted(out)
 
 
 def _elements_from_project(project: WorkbenchProject) -> list[str]:

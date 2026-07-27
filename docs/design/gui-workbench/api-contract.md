@@ -187,7 +187,7 @@ refine 実行中のプロジェクト変更系は 409。
 |---|---|---|
 | (viewmodel) `structure.sites` | 精密化完了後、**gpx から実サイト** (label/el/x/y/z/occ/uiso + esd 併記 note + 特殊位置 lock) が入る (A2)。未精密化 project は空 (empty-state)。demo は従来シード | — |
 | POST `/api/structure/apply` | 従来どおり + **適用済み revisions は次回 refine に実反映** (occ → `initial_occupancies`、site 削除等の構造編集は v2a' では occ/uiso のみ対象と明記) (A3) | snapshot + ledger (従来) |
-| POST `/api/phaseid` `{"mode": "pattern"\|"residual", "top_k"?: int}` | 202 `{"status": "started"}` / 409 | 相同定ジョブ (A4): `identify_pattern` を MP 供給元 (env `MATERIALS_PROJECT_API`) で実行。元素系は現相集合の CIF から導出。完了で viewmodel.phase_id.candidates が実候補に。key 未設定は 422 error dict |
+| POST `/api/phaseid` `{"mode": "pattern"\|"residual", "top_k"?: int, "elements"?: [str]}` | 202 `{"status": "started"}` / 409 | 相同定ジョブ (A4): `identify_pattern` を MP 供給元 (env `MATERIALS_PROJECT_API`) で実行。**元素系は `elements` で明示指定でき**、省略時のみ現相集合の CIF から導出する (下記)。完了で viewmodel.phase_id.candidates が実候補に。key 未設定は 422 error dict |
 | GET `/api/phaseid/status` | refine/status と同形 | ポーリング (refine と同一ジョブ枠 = 同時実行 409) |
 | POST `/api/phaseid/add` `{"formula": str, "mp_id": str}` | state | ADD AS PHASE (A4): 候補 CIF を物質化して `data/` へ保存 → `add_phase` (ledger)。再精密化はユーザーが RUN で明示 |
 | POST `/api/multistart` `{"n_starts"?: int (既定3), "scale"?: float (既定0.007)}` | 202 / 409 | `run_multistart_rietveld` ジョブ (A5)。完了で viewmodel.hypotheses.basin (points: x=主格子軸 a, y=Rwp, label=start) + `corroborated` 行が evidence に |
@@ -195,6 +195,24 @@ refine 実行中のプロジェクト変更系は 409。
 | GET `/api/export/gpx` | gpx ファイル (application/octet-stream) / 404 (未精密化) | keep_gpx 生成物のダウンロード (A6, FR-424: ファイル名に project 名) |
 
 ジョブ枠は 1 つ (refine/phaseid/multistart は相互に 409) — GSAS 直列実行の前提を単純に保つ。
+
+### 相同定の元素系 (2026-07-27 改訂)
+
+**未知試料の単一パターン解析では「CIF を読み込んでから相同定」という順序は成り立たない** —
+どの相か判らないから同定するのであって、相の CIF は同定の**結果**である。よって元素系は
+`POST /api/phaseid` の `elements` で**直接指定できる**ことを第一の経路とする。
+
+| `elements` | 挙動 |
+|---|---|
+| 指定あり (非空) | その元素系をそのまま使う。**相 0 件のプロジェクトでも同定できる** (これが主経路) |
+| 省略 / `null` | 現相集合の CIF から導出 (`_elements_from_project`)。既存の operando 経路の互換 |
+| `[]` (空配列) | 422 — 明示的に空を渡すのは意味を成さない (省略とは区別する) |
+| 未知の元素記号を含む | 422 `{"error": "unknown element symbol: …"}`。ジョブは起動しない。`"D"` は H の同位体で MP の chemsys には無いため個別に案内する |
+
+指定値は重複排除 + 昇順ソートで正規化する (NFR-102 決定性)。`viewmodel.phase_id.elements` は
+**直近の同定で実際に使われた元素系**を返し、まだ一度も走っていなければ CIF 由来の導出値
+(= UI の初期選択) を返す。`POST /api/phaseid/add` (ADD AS PHASE) も同じ元素系を使う —
+相 0 件のプロジェクトでも同定 → 追加まで通る。
 
 ## 逐次 / operando (V2b — B1〜B5)
 

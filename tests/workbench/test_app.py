@@ -2019,3 +2019,15 @@ def test_project_upload_allows_echem_kind(
     stored_path = resp.json()["stored_path"]
     assert Path(stored_path).exists()
     assert Path(stored_path).name == "run.mpr"
+
+
+def test_phaseid_route_rejects_unknown_element_symbol_with_422(project_client: TestClient):
+    # 【目的】: 不正な元素は 422 error dict へ縮退する (MP 側の不可解な失敗に化けさせない)。
+    resp = project_client.post("/api/phaseid", json={"mode": "pattern", "elements": ["Ca", "Xx"]})
+    assert resp.status_code == 422
+    assert "Xx" in resp.json()["error"]
+
+
+def test_phaseid_route_rejects_empty_element_list_with_422(project_client: TestClient):
+    resp = project_client.post("/api/phaseid", json={"mode": "pattern", "elements": []})
+    assert resp.status_code == 422

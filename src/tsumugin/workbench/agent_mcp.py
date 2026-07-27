@@ -189,7 +189,13 @@ async def _h_run_sequential(args: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _h_run_phaseid(args: dict[str, Any]) -> dict[str, Any]:
-    payload = _strip_none({"mode": args.get("mode", "pattern"), "top_k": args.get("top_k")})
+    payload = _strip_none(
+        {
+            "mode": args.get("mode", "pattern"),
+            "top_k": args.get("top_k"),
+            "elements": args.get("elements"),
+        }
+    )
     return _tool_result(await asyncio.to_thread(_request, "POST", "/api/phaseid", payload))
 
 
@@ -360,12 +366,22 @@ _TOOL_SPECS: "tuple[tuple[str, str, dict[str, Any], Callable[[dict[str, Any]], A
     ),
     (
         "run_phaseid",
-        "相同定ジョブを起動する (POST /api/phaseid)。MATERIALS_PROJECT_API 未設定は 422。",
+        "相同定ジョブを起動する (POST /api/phaseid)。MATERIALS_PROJECT_API 未設定は 422。"
+        "未知試料は elements で元素系を明示する (相 0 件でも同定できる — 相の CIF は同定の"
+        "結果であって前提ではない)。省略時のみ現相集合の CIF から導出する。",
         {
             "type": "object",
             "properties": {
                 "mode": {"type": "string", "enum": ["pattern", "residual"]},
                 "top_k": {"type": "integer"},
+                "elements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "元素記号 (例 [\"Ca\", \"Te\", \"O\"])。省略で現相集合の CIF 由来。"
+                        "現在値は get_viewmodel().phase_id.elements"
+                    ),
+                },
             },
             "required": [],
         },

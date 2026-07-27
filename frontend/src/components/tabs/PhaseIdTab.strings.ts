@@ -49,6 +49,19 @@ export const PID_LOCAL_STRINGS = {
   // 相同定に実際に使われる元素系 (viewmodel.phase_id.elements)。空なら**表示自体を出さない** —
   // プロトタイプの固定表記 (K, Mn, Fe, C, N, O) の置き換え。
   "pid.local.elements": { en: "elements {elements}", ja: "元素 {elements}" },
+  // 元素セレクタ (未知試料の動線): CIF を読み込まずに元素系を直接指定する。
+  "pid.local.elementsLabel": { en: "element system", ja: "元素系" },
+  "pid.local.elementsAdd": { en: "add element", ja: "元素を追加" },
+  "pid.local.elementsAddHint": { en: "+ element", ja: "+ 元素" },
+  "pid.local.elementsRemove": { en: "remove {element}", ja: "{element} を外す" },
+  "pid.local.elementsEmpty": {
+    en: "none selected — the server will derive it from the current phases' CIFs",
+    ja: "未選択 — 現相集合の CIF から導出されます",
+  },
+  "pid.local.elementsHint": {
+    en: "for an unknown sample, pick the elements here — no CIF needed",
+    ja: "未知試料はここで元素を選ぶ (CIF の読み込みは不要)",
+  },
   "pid.local.mpUnavailable": {
     en: "Materials Project token not set — enter it from Settings",
     ja: "Materials Project トークン未設定 — 設定から入力してください",

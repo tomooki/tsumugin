@@ -604,7 +604,11 @@ def create_workbench_app(
             top_k = int(top_k)
         except (TypeError, ValueError):
             return _invalid("top_k", top_k)
-        result = holder.session.request_phaseid(mode=mode, top_k=top_k)
+        # elements 省略 (None) = 現相集合の CIF から導出 (従来動作)。値の検証は
+        # `request_phaseid` (`_normalise_elements`) に一元化する — ここで先回りしない。
+        result = holder.session.request_phaseid(
+            mode=mode, top_k=top_k, elements=body.get("elements")
+        )
         return _to_response(result, success_status=202)
 
     @app.get("/api/phaseid/status")
