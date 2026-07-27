@@ -8,11 +8,17 @@ import {
 } from "../../api/client";
 import type { RecentProject } from "../../api/types";
 import { useI18n } from "../../i18n";
-import { BlueprintCard, Btn } from "../common";
+import { BlueprintCard, Btn, PathPicker } from "../common";
 import "./WelcomeScreen.css";
 import { wt } from "./WelcomeScreen.strings";
 
 type Busy = "create" | "open" | "sample" | null;
+
+// Which BROWSE… button opened the picker — drives PathPicker's mode and
+// which input field the selected path is written back into
+// (api-contract.md §ファイル選択: NEW PROJECT gets a directory picker, OPEN
+// gets a project picker). null = picker closed.
+type PickerTarget = "directory" | "openPath" | null;
 
 interface WelcomeScreenProps {
   /** Called after project create/open/demo succeeds. The caller (App.tsx)
@@ -37,6 +43,7 @@ export function WelcomeScreen({ onReady }: WelcomeScreenProps) {
   const [recent, setRecent] = useState<RecentProject[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +93,12 @@ export function WelcomeScreen({ onReady }: WelcomeScreenProps) {
     }
   }
 
+  function handlePickerSelect(path: string) {
+    if (pickerTarget === "directory") setDirectory(path);
+    else if (pickerTarget === "openPath") setOpenPath(path);
+    setPickerTarget(null);
+  }
+
   async function handleSample() {
     if (busy) return;
     setError(null);
@@ -123,12 +136,17 @@ export function WelcomeScreen({ onReady }: WelcomeScreenProps) {
             </label>
             <label className="welcome-form__field">
               <span>{t("welcome.new.directoryLabel")}</span>
-              <input
-                value={directory}
-                onChange={(e) => setDirectory(e.target.value)}
-                placeholder={t("welcome.new.directoryPlaceholder")}
-                aria-label={t("welcome.new.directoryLabel")}
-              />
+              <div className="welcome-form__field-row">
+                <input
+                  value={directory}
+                  onChange={(e) => setDirectory(e.target.value)}
+                  placeholder={t("welcome.new.directoryPlaceholder")}
+                  aria-label={t("welcome.new.directoryLabel")}
+                />
+                <Btn type="button" variant="outline" onClick={() => setPickerTarget("directory")}>
+                  {t("welcome.browse")}
+                </Btn>
+              </div>
             </label>
             <Btn
               type="submit"
@@ -144,12 +162,17 @@ export function WelcomeScreen({ onReady }: WelcomeScreenProps) {
           <div className="welcome-form">
             <label className="welcome-form__field">
               <span>{t("welcome.open.pathLabel")}</span>
-              <input
-                value={openPath}
-                onChange={(e) => setOpenPath(e.target.value)}
-                placeholder={t("welcome.open.pathPlaceholder")}
-                aria-label={t("welcome.open.pathLabel")}
-              />
+              <div className="welcome-form__field-row">
+                <input
+                  value={openPath}
+                  onChange={(e) => setOpenPath(e.target.value)}
+                  placeholder={t("welcome.open.pathPlaceholder")}
+                  aria-label={t("welcome.open.pathLabel")}
+                />
+                <Btn type="button" variant="outline" onClick={() => setPickerTarget("openPath")}>
+                  {t("welcome.browse")}
+                </Btn>
+              </div>
             </label>
             <Btn
               type="button"
@@ -190,6 +213,16 @@ export function WelcomeScreen({ onReady }: WelcomeScreenProps) {
           </div>
         </BlueprintCard>
       </div>
+
+      {pickerTarget && (
+        <PathPicker
+          mode={pickerTarget === "directory" ? "directory" : "project"}
+          title={pickerTarget === "directory" ? t("welcome.new.directoryLabel") : t("welcome.open.pathLabel")}
+          initialPath={pickerTarget === "directory" ? directory : openPath}
+          onSelect={handlePickerSelect}
+          onClose={() => setPickerTarget(null)}
+        />
+      )}
     </div>
   );
 }

@@ -265,3 +265,20 @@ describe("FitTab — null delta_rwp (real-run first stage, regression)", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 });
+
+describe("FitTab — null two_theta on a brand-new project (regression)", () => {
+  // 新規プロジェクト (ヒストグラム 0 件) の viewmodel は two_theta {min: null, max: null}
+  // を返す。生の toFixed を呼んでいたため**アプリ全体が真っ白**になった (実機で発生)。
+  it("renders without crashing and omits the 2θ scale row", () => {
+    renderFitTab(
+      makeViewModel({
+        two_theta: { min: null, max: null } as unknown as { min: number; max: number },
+        metrics: [],
+        histograms: [],
+      }),
+    );
+    // タブ自体が描画され続ける (真っ白にならない)
+    expect(document.querySelector(".fit-tab")).not.toBeNull();
+    expect(document.querySelectorAll(".fit-tab__scale span").length).toBe(0);
+  });
+});

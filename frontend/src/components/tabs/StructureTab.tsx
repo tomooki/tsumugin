@@ -298,11 +298,19 @@ export function StructureTab() {
     editStateText = t("edit.none");
   }
 
+  // 見出しの相名は **モデルの実相** (viewmodel.phases) から作る。元プロトタイプはここに
+  // "cubic K₂Mn[Fe(CN)₆] · Fm-3m" を固定で書いており、どのプロジェクトを開いても同じ相名が
+  // 出ていた (下の SITES 表が別の相を出していても)。相 0 件なら相名を出さず不変条件だけ残す。
+  const phaseLabel = (state.viewModel?.phases ?? [])
+    .map((p) => (p.space_group ? `${p.name} · ${p.space_group}` : p.name))
+    .join(" + ");
+  const headingNote = phaseLabel ? `${phaseLabel} · ${t("struct.note")}` : t("struct.note");
+
   return (
     <div className="struct-tab">
       <div className="struct-tab__head">
         <span className="struct-tab__title">{t("struct.title")}</span>
-        <span className="struct-tab__note">{t("struct.note")}</span>
+        <span className="struct-tab__note">{headingNote}</span>
       </div>
       <div className="struct-tab__grid">
         <BlueprintCard

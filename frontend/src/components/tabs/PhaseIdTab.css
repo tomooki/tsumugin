@@ -115,7 +115,7 @@
 
 .pid-bottom {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));  /* 【可変幅】 */
   gap: 12px;
   flex: 1;
   min-height: 0;
@@ -168,4 +168,91 @@
   font-size: 11px;
   color: var(--color-neutral-700);
   line-height: 1.5;
+}
+
+/* 【可変幅】: 狭いウィンドウで表が切れないよう、テーブル単位で横スクロールさせる
+   (中央本文を overflow-x: auto にすると全体が横に揺れて読みづらいため、表だけに閉じる)。 */
+.pid-table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* — 元素系セレクタ (未知試料の動線: CIF 先読み不要) — */
+.pid-elements {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-divider);
+  background: var(--color-neutral-100);
+}
+
+.pid-elements__label {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-neutral-700);
+  white-space: nowrap;
+}
+
+.pid-elements__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pid-elements__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 3px 1px 6px;
+  border: 1px solid var(--color-neutral-500);
+  background: var(--color-neutral-200);
+  white-space: nowrap;
+}
+
+.pid-elements__remove {
+  border: 0;
+  background: transparent;
+  color: var(--color-neutral-700);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.pid-elements__remove:hover:not(:disabled) {
+  color: var(--color-neutral-900);
+}
+
+.pid-elements__remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pid-elements__empty,
+.pid-elements__hint {
+  font-size: 11px;
+  color: var(--color-neutral-600);
+}
+
+.pid-elements__hint {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.pid-elements__add {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  border: 1px solid var(--color-divider);
+  background: var(--color-neutral-100);
+  color: var(--color-text);
 }

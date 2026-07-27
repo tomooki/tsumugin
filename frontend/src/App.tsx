@@ -8,6 +8,7 @@ import "./components/shell/shell.css";
 import { StatusBar } from "./components/shell/StatusBar";
 import { TitleBar } from "./components/shell/TitleBar";
 import { RightPane } from "./components/right/RightPane";
+import { ErrorBoundary } from "./components/common";
 import { WelcomeScreen } from "./components/welcome/WelcomeScreen";
 import { I18nProvider } from "./i18n";
 import { StoreProvider, useStore } from "./state/store";
@@ -63,13 +64,24 @@ function AppShell() {
         <TitleBar onModeChange={handleModeChange} disabled={isWelcome} />
         <ContextBar />
         <div className="shell__body">
+          {/* 各ペインをエラー境界で包む: 1 か所の描画エラーで**全画面が真っ白になる**
+             のを防ぐ (実機で null.toFixed により発生)。壊れたペインだけがメッセージに
+             縮退し、ledger/CLOSE PROJECT 等の操作は生き残る。 */}
           {isWelcome ? (
-            <WelcomeScreen onReady={refetchWorkbench} />
+            <ErrorBoundary label="WELCOME">
+              <WelcomeScreen onReady={refetchWorkbench} />
+            </ErrorBoundary>
           ) : (
             <>
-              <LeftRail />
-              <CentreCanvas />
-              <RightPane />
+              <ErrorBoundary label="LEFT RAIL">
+                <LeftRail />
+              </ErrorBoundary>
+              <ErrorBoundary label="CENTRE">
+                <CentreCanvas />
+              </ErrorBoundary>
+              <ErrorBoundary label="RIGHT PANE">
+                <RightPane />
+              </ErrorBoundary>
             </>
           )}
         </div>

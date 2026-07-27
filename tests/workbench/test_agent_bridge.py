@@ -531,3 +531,24 @@ def test_real_cli_single_turn_reports_state(monkeypatch: pytest.MonkeyPatch):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def test_system_prompt_tells_the_agent_to_pass_elements_for_unknown_samples():
+    """③ への恒久ガード: 手順が消えると「CIF が無いから同定できない」に逆戻りする。
+
+    ツールに引数があっても手順書に無ければ ③ は使わない (CLAUDE.md ★の規律)。
+    """
+    captured: list[dict[str, Any]] = []
+    bridge = AgentBridge(
+        on_event=lambda *a, **k: {},
+        get_policy=lambda: "approve",
+        query_fn=_make_query_fn([], captured),
+    )
+    bridge.send("hi")
+    _wait_terminal(bridge)
+    prompt = captured[0]["options"]["system_prompt"]
+
+    assert "run_phaseid" in prompt
+    assert "elements" in prompt
+    # 「相 0 件でも同定できる」= この改良の要点が手順として書かれていること
+    assert "0 件" in prompt

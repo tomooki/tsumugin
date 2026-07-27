@@ -73,13 +73,21 @@ manual/auto ↔ エンジン語彙 human/agent の写像はバックエンドで
 - API: `src/api/client.ts` — 型付き fetch ラッパ。ベース URL は同一オリジン
   (Tauri でも localhost sidecar と同一オリジン)。
 
+- **可変幅レイアウト** (2026-07-27 改訂): 元の UI 設計は固定 1920x1080 だったが、実機の狭い
+  ウィンドウで右側が見切れて操作できなかったため、ビューポート追従へ変更した。`.shell` は
+  `grid-template-columns: minmax(0, 1fr)` を明示する (暗黙列が auto = 中身の max-content に
+  なり、nowrap テキストがグリッド全体をビューポートより広げていた)。段階的に畳む:
+  1500px 以下で右ペインを絞る → 1180px 以下で左レールを畳む (同じ情報は PROJECT タブにある)
+  → 820px 以下で右ペインも畳み中央 1 カラム。**中央の解析キャンバスを最後まで残す**のが原則。
+  タブ列と 3 本のバーは畳まず横スクロール、広い表は表単位で横スクロールさせる。
+
 ### コンポーネント分割
 
 ```
 components/shell/   TitleBar (モードトグル・言語・チップ) / ContextBar / StatusBar / LeftRail
 components/common/  BlueprintCard / Chip / MetricCard / PlaceholderPlot / MonoTable ...
-components/tabs/    FitTab / ParametersTab / HypothesesTab / PhaseIdTab /
-                    SequenceTab / StructureTab / LedgerTab
+components/tabs/    ProjectTab / PhasesTab / FitTab / ParametersTab / HypothesesTab /
+                    PhaseIdTab / SequenceTab / StructureTab / LedgerTab
 components/right/   OperatorConsole (recipe+gating+review) / AgentSession (transcript+composer)
 ```
 
@@ -93,6 +101,34 @@ components/right/   OperatorConsole (recipe+gating+review) / AgentSession (trans
 4. EN/JA 辞書はキー集合一致 (型 + テスト)。数値・ツール名・JSON は辞書外。
 5. 破壊的コントロール不在 (LEDGER に削除 UI が無い、承認 REJECT も ledger 追記表示)。
 6. 元素ドロップダウンは 99 要素・D は H 直後。
+7. **プロトタイプ由来の固定表記を製品に残さない** (2026-07-27)。ハンドオフの `L(en, ja)` 辞書は
+   デモ系列 (K₂Mn[Fe(CN)₆] operando) の具体値を文字列に焼き込んでおり、そのまま出すと**どの
+   プロジェクトを開いても同じ数値・相名・元素系が表示される**。実データと食い違う表示は
+   empty-state 規律 (シード値で実データを偽装しない) の裏返しの違反である。既知の対処:
+   - PHASE ID の元素系 → `viewmodel.phase_id.elements` (実 CIF 由来。空なら元素の記述自体を出さない)
+   - STRUCTURE の相名/空間群 → `viewmodel.phases`
+   - タイトルバー `ledger.verify()` → `state.ledger.verified` (**常時 TRUE 表示は改竄検知を無効にする**)
+   - タイトルバーのトークン/経過時間 → `state.agent.tokens`/`wall_time_s` (FR-404)
+   - FIT プロット注記の λ と "log y"、HYPOTHESES の "14 nodes"、SEQUENCE の "63 frames" → 削除
+     (λ はプロジェクト毎に異なり、LinePlot は線形軸)
+   恒久ガードは各タブのテスト (`*.test.tsx` の "never hard-codes …") に置く。**変異させて fail
+   することを実証済**。
+8. **PHASES タブは相スコープの解放だけを扱う** (2026-07-27)。左レールの PHASES IN MODEL が
+   「どの相が居るか」を示すのに対し、こちらは「相ごとに何を解放するか」。編集できるのは
+   `PhaseSpec.refine_cell` **のみ** — engine (`_apply_stage`) が相単位で読む唯一の解放スイッチ
+   だからである。`size_strain`/`preferred_orientation`/`hydrostatic_strain` は物理的には相
+   スコープだが engine が全相へ一律適用しており、**チェックボックスを置くと「触れるのに効かない」
+   コントロールになる**ため読み取り専用 (「触れる段」列) に留める。相単位化はレシピのルール化と
+   同じ作業単位。
+9. **相同定は元素選択から始められる** (2026-07-27)。PHASE ID タブに元素セレクタを置き、
+   `POST /api/phaseid` の `elements` へ渡す。「CIF を読み込んでから相同定」は未知試料の単一解析で
+   成り立たない動線 (相の CIF は同定の**結果**) — 相 0 件のプロジェクトでも同定でき、ADD AS PHASE
+   の物質化も同じ元素系を使う。`elements` 省略時のみ CIF 由来導出 (operando 経路の互換)。
+   D は元素表にあるが MP の chemsys に無い同位体なのでセレクタに出さず、② 経由で来ても
+   「H を指定せよ」と個別に案内する。
+10. LEDGER 行は精密化由来のエントリにのみ Rwp / BIC を出す (`GET /api/ledger` の `rwp`/`bic`)。
+   値のないエントリは**空欄** — `―` は「あるはずの値が欠けている」に予約する。BIC は
+   `insitu.anchor.select.frame_bic` と同一式 (相数の比較は Rwp でなく BIC、CLAUDE.md の規律)。
 
 ## Tauri `desktop/`
 

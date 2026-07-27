@@ -415,3 +415,127 @@ describe("PhaseIdTab — ADD AS PHASE (A4)", () => {
     expect(within(topRow).getByRole("button", { name: "ADD AS PHASE" })).not.toBeDisabled();
   });
 });
+
+describe("PhaseIdTab — element system (real, not a fixed label)", () => {
+  it("shows the element system the server actually derived from the phase CIFs", () => {
+    renderTab({ elements: ["Ca", "O", "Te"] });
+    const note = document.querySelector(".pid-tab__note")!;
+    expect(note.textContent).toContain("Ca, O, Te");
+  });
+
+  it("never hard-codes the mockup's element list", () => {
+    // 恒久ガード: プロトタイプ由来の固定表記 (K, Mn, Fe, C, N, O) が復活したら落ちる。
+    // 表示は viewmodel.phase_id.elements のみを情報源にする。
+    renderTab({ elements: ["Ca", "O", "Te"] });
+    const note = document.querySelector(".pid-tab__note")!;
+    expect(note.textContent).not.toContain("K, Mn, Fe");
+  });
+
+  it("says nothing about elements when the server reports none", () => {
+    renderTab({ elements: [] });
+    const note = document.querySelector(".pid-tab__note")!;
+    expect(note.textContent?.toLowerCase()).not.toContain("element");
+    // 手法の記述 (実際に固定されている設定) は残す
+    expect(note.textContent).toContain("Dara");
+  });
+
+  it("does not crash when an older server omits `elements`", () => {
+    renderTab();
+    expect(document.querySelector(".pid-tab__note")!.textContent).toContain("Dara");
+  });
+});
+
+describe("PhaseIdTab — element selection (CIF 先読み不要の動線)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("seeds the selector from the server's element system", () => {
+    renderTab({ elements: ["Ca", "O", "Te"] });
+    for (const el of ["Ca", "O", "Te"]) {
+      expect(screen.getByRole("button", { name: `remove ${el}` })).toBeInTheDocument();
+    }
+  });
+
+  it("adding an element updates the note and is sent with IDENTIFY", async () => {
+    const fetchMock = installFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ elements: ["Ca"] });
+
+    await user.selectOptions(screen.getByLabelText("add element"), "Te");
+    expect(document.querySelector(".pid-tab__note")!.textContent).toContain("Ca, Te");
+
+    await user.click(screen.getByRole("button", { name: "IDENTIFY" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) =>
+          String(u).endsWith("/api/phaseid") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        mode: "pattern",
+        elements: ["Ca", "Te"],
+      });
+    });
+  });
+
+  it("removing an element drops it from the request", async () => {
+    const fetchMock = installFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ elements: ["Ca", "Te"] });
+
+    await user.click(screen.getByRole("button", { name: "remove Te" }));
+    await user.click(screen.getByRole("button", { name: "IDENTIFY" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) =>
+          String(u).endsWith("/api/phaseid") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        mode: "pattern",
+        elements: ["Ca"],
+      });
+    });
+  });
+
+  it("omits `elements` entirely when nothing is selected (server derives from CIFs)", async () => {
+    const fetchMock = installFetchMock({
+      statuses: [{ status: "idle", elapsed_s: null, last_event: null, error: null }],
+    });
+    const user = userEvent.setup();
+    renderTab({ elements: [] });
+
+    await user.click(screen.getByRole("button", { name: "IDENTIFY" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([u, init]) =>
+          String(u).endsWith("/api/phaseid") && (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ mode: "pattern" });
+    });
+  });
+
+  it("never offers D — an isotope of H that Materials Project's chemsys has no entry for", async () => {
+    renderTab({ elements: [] });
+    const options = Array.from(
+      (screen.getByLabelText("add element") as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    expect(options).toContain("H");
+    expect(options).not.toContain("D");
+  });
+
+  it("does not offer an already-selected element twice", () => {
+    renderTab({ elements: ["Ca"] });
+    const options = Array.from(
+      (screen.getByLabelText("add element") as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    expect(options).not.toContain("Ca");
+  });
+});

@@ -1,10 +1,14 @@
+import { useState } from "react";
+import { ApiError, getState, getViewModel, postProjectClose } from "../../api/client";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
+import { Btn } from "../common";
 import "./shell.css";
 import { st } from "./shell.strings";
 
 /** 38px context bar: project/dataset/frame/echem readout on the left,
- * final_selection_mode chip on the right (FR-402). */
+ * CLOSE PROJECT + final_selection_mode chip on the right (FR-402,
+ * api-contract.md §プロジェクトを閉じる導線). */
 export function ContextBar() {
   const { state, dispatch } = useStore();
   const { t, lang } = useI18n();
@@ -12,6 +16,36 @@ export function ContextBar() {
   const fsm = state.shell?.final_selection_mode ?? "human";
   const isHuman = fsm === "human";
   const echem = project?.echem;
+
+  // CLOSE PROJECT: shown whenever a session is attached (project or demo —
+  // "demo セッションでも表示する" so SAMPLE can be exited back to Welcome
+  // too). `state.shell` itself being unset (still loading) hides it; an
+  // absent `source` field (fixtures that predate it) is treated as attached,
+  // mirroring App.tsx's `isWelcome = source === "none"` precedent.
+  const source = state.shell?.source;
+  const showClose = state.shell != null && source !== "none";
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
+
+  async function handleClose() {
+    if (closing) return;
+    setCloseError(null);
+    setClosing(true);
+    try {
+      await postProjectClose();
+      const [shell, viewModel] = await Promise.all([getState(), getViewModel()]);
+      dispatch({ type: "SET_SHELL", shell });
+      dispatch({ type: "SET_VIEW_MODEL", viewModel });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setCloseError(st(lang, "close.busy"));
+      } else {
+        setCloseError(err instanceof ApiError ? err.message : st(lang, "close.error"));
+      }
+    } finally {
+      setClosing(false);
+    }
+  }
 
   // V2b B2/B3: once frames are configured (viewModel.project.frames), swap
   // the static single frame chip for a "fr k / N" prev/next navigator over a
@@ -74,6 +108,20 @@ export function ContextBar() {
         )}
       </div>
       <div className="context-bar__right">
+        {showClose && (
+          <>
+            <Btn
+              type="button"
+              variant="outline"
+              className="context-bar__close-btn"
+              disabled={closing}
+              onClick={handleClose}
+            >
+              {closing ? st(lang, "close.closing") : st(lang, "close.button")}
+            </Btn>
+            {closeError && <span className="context-bar__close-error">{closeError}</span>}
+          </>
+        )}
         <span className="context-bar__fsm-label">final_selection_mode</span>
         <span
           className={`context-bar__fsm-chip context-bar__fsm-chip--${isHuman ? "human" : "agent"}`}

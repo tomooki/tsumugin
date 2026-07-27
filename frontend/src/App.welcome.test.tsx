@@ -104,8 +104,11 @@ describe("App — source=none shows the Welcome screen, not the 3-pane workbench
 
     await waitFor(() => expect(screen.getByText("DATASETS")).toBeInTheDocument());
     expect(screen.queryByText("NEW PROJECT")).not.toBeInTheDocument();
-    // PROJECT is the first tab (V2a P4).
-    const tabButtons = screen.getAllByRole("button", { name: /PROJECT|FIT|LEDGER/ });
+    // PROJECT is the first tab (V2a P4). Exact-match the tab strip's own
+    // "PROJECT" label — a loose /PROJECT/ substring also matches
+    // ContextBar's "CLOSE PROJECT" button (api-contract.md §プロジェクトを
+    // 閉じる導線), which sits earlier in the DOM.
+    const tabButtons = screen.getAllByRole("button", { name: /^(PROJECT|FIT|LEDGER)$/ });
     expect(tabButtons[0].textContent).toBe("PROJECT");
   });
 });

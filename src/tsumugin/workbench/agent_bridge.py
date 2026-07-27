@@ -54,6 +54,11 @@ _SYSTEM_PROMPT_HEADER = (
     "起票後は承認/自動適用を待つ間、他の作業 (別のジョブ起動や調査) を続けてよく、必要なら "
     "list_pending_approvals で自分の起票の状態 (pending/auto_applied/approved/rejected) を"
     "確認してください。"
+    "\n\n相同定 (run_phaseid) について: **未知試料は elements で元素系を明示してください**。"
+    "どの相かが判らないから同定するのであって、相の CIF は同定の結果です — 相が 0 件の"
+    "プロジェクトでも elements を渡せば同定できます (元素が判らない場合は人間に尋ねてください)。"
+    "elements を省略したときだけ現相集合の CIF から導出します (operando のように既知相がある"
+    "場合の経路)。現在値は get_viewmodel().phase_id.elements で読めます。"
 )
 
 #: 【エージェント権限モード, 2026-07-26 権限境界改訂】: 現在の policy をシステムプロンプトへ

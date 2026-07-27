@@ -165,6 +165,53 @@ def _actor_for_kind(kind: str) -> str:
     return _ACTOR_BY_KIND.get(kind, "CORE ①")
 
 
+#: 適合度 (rwp/bic) を持ちうる ledger kind (api-contract.md GET /api/ledger)。ここに無い kind は
+#: 両方 null — モード切替や承認に Rwp は存在せず、直前段の値を引き継いで「見かけ上の適合度」を
+#: 作ることは台帳の誤読を招く。
+_FIT_QUALITY_KINDS = frozenset({"m7_stage", "refine_finished"})
+
+
+def _bic_from_payload(payload: dict[str, Any]) -> "float | None":
+    """ledger payload の生の事実から BIC を導出する (導出不能は None)。
+
+    BIC = χ² + n_params·ln(n_obs)、χ² = GOF²·(n_obs − n_params) —
+    ``insitu.anchor.select.frame_bic`` および FIT メトリクスの χ² と同一定義
+    (相数の比較を Rwp でなく bic で行う規律と同じ物差しを GUI にも出す)。
+
+    n_obs 欠落 / 非有限 GOF / dof ≤ 0 では**捏造せず** None を返す。
+    """
+    gof = finite_or_none(payload.get("gof"))
+    if gof is None:
+        return None
+    try:
+        n_params = int(payload.get("n_params") or 0)
+        n_obs = int(payload.get("n_obs") or 0)
+    except (TypeError, ValueError):
+        return None
+    if n_obs <= n_params or n_obs <= 0:
+        return None
+    return finite_or_none(gof * gof * (n_obs - n_params) + n_params * math.log(n_obs))
+
+
+def _fit_quality_for_entry(
+    kind: str, payload: dict[str, Any]
+) -> "tuple[float | None, float | None]":
+    """LEDGER 行に添える (rwp, bic)。適合度を伴わない kind は (None, None)。"""
+    if kind not in _FIT_QUALITY_KINDS:
+        return None, None
+    return finite_or_none(payload.get("rwp")), _bic_from_payload(payload)
+
+
+def _fmt_rwp(value: Any) -> str:
+    """ledger テキスト用の Rwp 表記。生の 15 桁 float を出さない (LEDGER は Rwp 列と併記する)。
+
+    値なし/非有限は ``―`` — このテキストは ``last_event`` (ステータスバー) にも使われるため、
+    0.00 に化けさせない。
+    """
+    rwp = finite_or_none(value)
+    return "―" if rwp is None else f"{rwp:.2f}"
+
+
 def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -> str:
     """ledger エントリ 1 件の人間可読テキストを kind ごとに組み立てる (LEDGER タブ表示用)。"""
     if kind == "selection_set_mode":
@@ -188,13 +235,16 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
     if kind == "refine_request":
         return "refine requested"
     if kind == "refine_finished":
-        return f"refine finished (rwp={payload.get('rwp')})"
+        return f"refine finished (rwp={_fmt_rwp(payload.get('rwp'))})"
     if kind == "refine_failed":
         return f"refine failed: {payload.get('error')}"
     if kind == "m7_stage":
-        return f"stage {payload.get('stage')} rwp={payload.get('rwp')}"
+        return f"stage {payload.get('stage')} rwp={_fmt_rwp(payload.get('rwp'))}"
     if kind == "m7_stage_error":
-        return f"stage {payload.get('stage')} error"
+        # 理由まで出す: 「stage S1 error」だけでは LEDGER から原因を追えず、実際に
+        # 追えなくて詰まった (段が黙って revert された理由が GUI から見えない)。
+        reason = payload.get("error")
+        return f"stage {payload.get('stage')} error" + (f": {reason}" if reason else "")
     if kind == "transcript_message":
         return "transcript message posted"
     if kind == "agent_proposal":
@@ -314,6 +364,11 @@ class WorkbenchSession:
         #   (ADD AS PHASE 時の再物質化用、strain を引き継ぐ)。
         self._phaseid_candidates: list[dict[str, Any]] = []
         self._phaseid_accepted_by_id: dict[str, Any] = {}
+        # 直近の相同定が実際に使った元素系 (GUI 指定 or CIF 由来)。None = 未実行。
+        self._phaseid_elements_used: "list[str] | None" = None
+        # 相同定の元素系キャッシュ (structure_path の並び → 元素記号列)。CIF 読込 + pymatgen import
+        # は viewmodel を引くたびに払うには重い。相集合が変われば (相追加/削除) キーが変わり再計算。
+        self._elements_cache: "tuple[tuple[str, ...], list[str]] | None" = None
         # 【A5: basin 散布 + corroborated evidence】: run_multistart_rietveld 完了で供給。
         #   None は「データなし (empty-state)」(api-contract.md)。
         self._basin: "dict[str, Any] | None" = None
@@ -718,15 +773,47 @@ class WorkbenchSession:
         """viewmodel.phase_id (A4): demo はシード、project は実 ``identify_pattern`` 候補。"""
         if use_seed:
             return _seed.seed_phase_id()
-        if self._source != "project":
+        if self._source != "project" or self._project is None:
             return dict(_EMPTY_PHASE_ID)
         with self._lock:
             candidates = [dict(c) for c in self._phaseid_candidates]
         return {
+            "elements": self._phaseid_elements(),
             "candidates": candidates,
             "unexplained": [],
             "completeness": {"is_complete": None, "notes": [], "flagged_frames": ""},
         }
+
+    def _phaseid_elements(self) -> list[str]:
+        """相同定の元素系を返す — 固定リストではない。
+
+        直近の同定が実際に使った元素系 (GUI で選んだもの / CIF 由来のどちらでも) を優先し、
+        未実行なら現相集合の CIF から導出した値 = **UI の初期選択**を返す。UI がここを
+        表示・初期値にすることで「表記と実際の入力が食い違う」状態が構造的に起きない。
+
+        CIF の読込は viewmodel を引くたびには行わず、相集合 (structure_path の並び) をキーに
+        キャッシュする。pymatgen 未導入・全 CIF 読込失敗は空リスト (相同定タブが使えないだけで
+        GUI 全体は動く)。
+        """
+        project = self._project
+        if project is None:
+            return []
+        with self._lock:
+            used = self._phaseid_elements_used
+        if used is not None:
+            return list(used)
+        key = tuple(p.structure_path for p in project.phases)
+        with self._lock:
+            cached = self._elements_cache
+        if cached is not None and cached[0] == key:
+            return list(cached[1])
+        try:
+            elements = _elements_from_project(project)
+        except ImportError:
+            elements = []
+        with self._lock:
+            self._elements_cache = (key, list(elements))
+        return elements
 
     def _datasets_view(self) -> list[dict[str, Any]]:
         if self._source == "demo":
@@ -893,6 +980,7 @@ class WorkbenchSession:
             revert_to = None
             if entry.kind == "snapshot_revert":
                 revert_to = entry.payload.get("snapshot_id")
+            rwp, bic = _fit_quality_for_entry(entry.kind, entry.payload)
             entries.append(
                 {
                     "index": entry.index,
@@ -901,6 +989,8 @@ class WorkbenchSession:
                     "text": text,
                     "hash": entry.hash,
                     "revert_to": revert_to,
+                    "rwp": rwp,
+                    "bic": bic,
                 }
             )
         return {"entries": entries, "verified": self.ledger.verify()}
@@ -1216,6 +1306,11 @@ class WorkbenchSession:
                 )
             if op == "remove":
                 return self.remove_phase(str(payload.get("phase_name")))
+            if op == "settings":
+                # PHASES タブと同じ相単位設定 (refine_cell)。② からは propose_phase_change で到達する。
+                return self.set_phase_settings(
+                    str(payload.get("phase_name")), refine_cell=payload.get("refine_cell")
+                )
             return {"error": f"unknown phase_change op: {op!r}", "error_type": "ValueError"}
         if kind == "settings_change":
             return self.update_settings(
@@ -1468,7 +1563,16 @@ class WorkbenchSession:
             self.snapshots.save(snapshot_phases, label="refine finished")
             self.ledger.append(
                 "refine_finished",
-                {"rwp": finite_or_none(result.final_rwp), "gof": finite_or_none(result.final_gof)},
+                # gof/n_params/n_obs は LEDGER の bic 列を**このエントリだけから**導出するための
+                # 生の事実 (api-contract.md GET /api/ledger)。表示側で他エントリを参照しない。
+                {
+                    "rwp": finite_or_none(result.final_rwp),
+                    "gof": finite_or_none(result.final_gof),
+                    "n_params": (
+                        result.stage_results[-1].n_params if result.stage_results else 0
+                    ),
+                    "n_obs": int(result.n_obs),
+                },
             )
 
     def _on_refine_failure(self, exc: BaseException) -> None:
@@ -1691,6 +1795,40 @@ class WorkbenchSession:
             self._save_and_refresh("remove_phase", {"phase_name": phase_name})
             return self.state()
 
+    def set_phase_settings(self, phase_name: str, *, refine_cell: Any) -> dict[str, Any]:
+        """POST /api/project/phases/{phase_name}/settings: 相単位の精密化設定 (PHASES タブ)。
+
+        現在扱えるのは ``PhaseSpec.refine_cell`` のみ — engine が**相単位で読む唯一の解放
+        スイッチ**だからである (Issue #47: 副相/不純物の格子を固定して発散の巻き添えを防ぐ)。
+        ``size_strain``/``preferred_orientation``/``hydrostatic_strain`` も物理的には相スコープ
+        だが `engine._apply_stage` は全相へ一律適用しており相単位のスイッチが無い — GUI に
+        チェックボックスだけ置くと「触れるのに効かない」になるため出さない
+        (api-contract.md §PHASES タブ の明示宣言)。
+        """
+        guard = self._guard_project_editable()
+        if guard is not None:
+            return guard
+        if not isinstance(refine_cell, bool):
+            return {
+                "error": f"refine_cell must be a boolean, got {refine_cell!r}",
+                "error_type": "ValueError",
+            }
+        # add_phase/remove_phase と同じ read-modify-write レース対策 (レビュー指摘 #2)。
+        with self._lock:
+            assert self._project is not None
+            phases = list(self._project.phases)
+            index = next(
+                (i for i, p in enumerate(phases) if p.phase_name == phase_name), None
+            )
+            if index is None:
+                return {"error": f"unknown phase: {phase_name}", "error_type": "NotFoundError"}
+            phases[index] = dataclasses.replace(phases[index], refine_cell=refine_cell)
+            self._project = dataclasses.replace(self._project, phases=tuple(phases))
+            self._save_and_refresh(
+                "phase_settings", {"phase_name": phase_name, "refine_cell": refine_cell}
+            )
+            return self.state()
+
     def update_settings(
         self,
         *,
@@ -1862,17 +2000,25 @@ class WorkbenchSession:
     # ------------------------------------------------------------------
 
     def request_phaseid(
-        self, *, mode: Literal["pattern", "residual"], top_k: int = 5, _provider: object = None
+        self,
+        *,
+        mode: Literal["pattern", "residual"],
+        top_k: int = 5,
+        elements: Any = None,
+        _provider: object = None,
     ) -> dict[str, Any]:
         """相同定ジョブを起動する (A4, api-contract.md POST /api/phaseid)。
 
         refine/phaseid/multistart は同一ジョブ枠 (``self._job``) を共有する — いずれかの実行中は
         ``ConflictError`` (呼び出し側が 409 へ縮退)。``mode="residual"`` は直近 refine の残差
-        (``self._fit.plot.h0.residual``) が無ければ ``ConflictError`` (409) を返す。元素系は
-        現相集合の CIF から導出する (``_elements_from_project``, pymatgen 遅延 import)。
+        (``self._fit.plot.h0.residual``) が無ければ ``ConflictError`` (409) を返す。
         Materials Project API キー (環境変数 ``MATERIALS_PROJECT_API``) 未設定は ``ValueError``
         (422)。
 
+        :param elements: 元素記号の列。**未知試料の単一パターン解析ではこちらが主経路** —
+            どの相かが判らないから同定するのであって、相の CIF は同定の *結果* である
+            (「CIF を読み込んでから相同定」という順序は成り立たない)。省略時のみ現相集合の
+            CIF から導出する (``_elements_from_project``, pymatgen 遅延 import; operando 経路の互換)。
         :param _provider: **テスト専用**の供給元注入シーム (§4.5)。実運用は常に ``None`` で
             ``MPReferenceProvider(MPRestClient())`` を使う — callable/オブジェクト注入を実運用経路
             にしない (`docs/design/operando-diagnosis/architecture.md` §4.5)。
@@ -1887,6 +2033,14 @@ class WorkbenchSession:
         if self._job.status()["status"] == "running":
             return {"error": "a job is already running", "error_type": "ConflictError"}
         project = self._project
+        # 【引数の検証を状態の検証より先に】: 明示指定された elements が不正なのは呼び出し側の
+        #   誤りで、パターン有無 (状態) より先に伝えるほうが直せる。省略時の CIF 由来導出は
+        #   パターン検証の後 (pymatgen import + CIF 読込を無駄に走らせない)。
+        if elements is not None:
+            try:
+                elements = _normalise_elements(elements)
+            except ValueError as exc:
+                return {"error": str(exc), "error_type": "ValueError"}
         plot = (self._fit.get("plot") or {}).get("h0") or {}
         if mode == "residual":
             residual = plot.get("residual")
@@ -1900,15 +2054,20 @@ class WorkbenchSession:
             x, y = plot.get("x"), plot.get("yobs")
             if not x or not y:
                 return {"error": "no pattern available", "error_type": "ValueError"}
-        try:
-            elements = _elements_from_project(project)
-        except ImportError as exc:
-            return {"error": str(exc), "error_type": "ValueError"}
-        if not elements:
-            return {
-                "error": "no elements derivable from current phase CIFs",
-                "error_type": "ValueError",
-            }
+        if elements is None:
+            try:
+                elements = _elements_from_project(project)
+            except ImportError as exc:
+                return {"error": str(exc), "error_type": "ValueError"}
+            if not elements:
+                return {
+                    # 元素は PHASE ID タブで直接選べる (相 CIF は同定の結果であって前提でない)。
+                    "error": (
+                        "no elements derivable from current phase CIFs — "
+                        "select the element system explicitly instead"
+                    ),
+                    "error_type": "ValueError",
+                }
         if _provider is None:
             try:
                 from ..mp.client import MPRestClient
@@ -1937,9 +2096,16 @@ class WorkbenchSession:
             runner,
             on_success=self._on_phaseid_success,
             on_failure=self._on_phaseid_failure,
-            on_started=lambda: self.ledger.append("phaseid_request", {"mode": mode, "top_k": top_k}),
+            on_started=lambda: self.ledger.append(
+                "phaseid_request", {"mode": mode, "top_k": top_k, "elements": list(elements)}
+            ),
             kind="phaseid",
         )
+        if started:
+            # 実際に使った元素系を憶える: 表示 (`_phaseid_elements`) と ADD AS PHASE の物質化が
+            # 同じ元素系を使う = 相 0 件のプロジェクトでも同定→追加まで通る。
+            with self._lock:
+                self._phaseid_elements_used = list(elements)
         if not started:
             return {"error": "a job is already running", "error_type": "ConflictError"}
         return {"status": "started"}
@@ -1988,13 +2154,21 @@ class WorkbenchSession:
         if self._job.status()["status"] == "running":
             return {"error": "a job is already running", "error_type": "ConflictError"}
         project = self._project
-        try:
-            elements = _elements_from_project(project)
-        except ImportError as exc:
-            return {"error": str(exc), "error_type": "ValueError"}
+        # 【元素系】: 直近の同定が使ったものを優先する — GUI で元素を選んで同定した場合、
+        #   相 0 件のプロジェクトでも物質化できる必要がある (従来は CIF 由来しか無く必ず失敗した)。
+        with self._lock:
+            elements = list(self._phaseid_elements_used or ())
+        if not elements:
+            try:
+                elements = _elements_from_project(project)
+            except ImportError as exc:
+                return {"error": str(exc), "error_type": "ValueError"}
         if not elements:
             return {
-                "error": "no elements derivable from current phase CIFs",
+                "error": (
+                    "no element system available — run phase identification first "
+                    "(or add a phase whose CIF defines the elements)"
+                ),
                 "error_type": "ValueError",
             }
         accepted = self._phaseid_accepted_by_id.get(str(mp_id))
@@ -2625,6 +2799,7 @@ class WorkbenchSession:
 
 #: project モードは実相同定/逐次解析が未接続 (v1 残存制約) — シード値で偽装せず空を返す。
 _EMPTY_PHASE_ID: dict[str, Any] = {
+    "elements": [],
     "candidates": [],
     "unexplained": [],
     "completeness": {"is_complete": None, "notes": [], "flagged_frames": ""},
@@ -2661,6 +2836,46 @@ def _row(field: str, value: str, esd: str = "", *, released: bool = False, locke
     return {"field": field, "value": value, "esd": esd, "released": released, "locked": locked}
 
 
+#: 元素記号 (原子番号順 1 H … 98 Cf)。相同定の元素系指定を**ジョブ起動前に**検証するために持つ
+#: — pymatgen は遅延 import の重い依存で、GUI の入力検証のためだけに読むものではない。
+#: フロントの `frontend/src/data/elements.ts` (GSAS-II 由来 99 択) と同じ並び。D は同位体なので
+#: ここには入らない (MP の chemsys に無い; `_normalise_elements` が個別に案内する)。
+_ELEMENT_SYMBOLS: tuple[str, ...] = (
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P",
+    "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga",
+    "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag",
+    "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu",
+    "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au",
+    "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am",
+    "Cm", "Bk", "Cf",
+)
+_ELEMENT_BY_LOWER: dict[str, str] = {s.lower(): s for s in _ELEMENT_SYMBOLS}
+
+
+def _normalise_elements(value: Any) -> list[str]:
+    """GUI/② から渡された元素系を検証して正規化する (重複排除 + 昇順ソート = NFR-102 決定性)。
+
+    不正な入力は ``ValueError`` を送出する — 呼び出し側が 422 error dict へ縮退させ、
+    **ジョブは起動しない** (MP 側の不可解な失敗に化けさせない)。
+    """
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise ValueError(f"elements must be a list of element symbols, got {value!r}")
+    out: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"invalid element symbol: {item!r}")
+        symbol = item.strip()
+        if symbol.lower() == "d":
+            raise ValueError("D is an isotope of H — specify H for phase identification")
+        canonical = _ELEMENT_BY_LOWER.get(symbol.lower())
+        if canonical is None:
+            raise ValueError(f"unknown element symbol: {symbol!r}")
+        out.add(canonical)
+    if not out:
+        raise ValueError("elements must not be empty")
+    return sorted(out)
+
+
 def _elements_from_project(project: WorkbenchProject) -> list[str]:
     """現相集合の CIF から構成元素を導出する (A4, `insitu.phaseid` の先例に倣い pymatgen 遅延 import)。
 
@@ -2693,9 +2908,56 @@ def _unique_phase_name(project: WorkbenchProject, base: str) -> str:
     return f"{base}_{i}"
 
 
+#: 相スコープの段階解放フラグ (`engine._apply_stage` が相 [`g2phases`] に対して適用するもの)。
+#: PHASES タブの「触れる段」列を組むのに使う — 背景/装置プロファイルのようなヒストグラム
+#: スコープの段は相に触れないので出さない。
+#: ⚠ このうち **相単位のスイッチを持つのは `cell` (`PhaseSpec.refine_cell`) だけ**で、他は
+#: 全相へ一律に適用される (api-contract.md §PHASES タブ の明示宣言)。だから読み取り専用。
+_PHASE_SCOPED_FLAGS = frozenset(
+    {"cell", "coords", "uiso", "occupancy", "size_strain", "preferred_orientation",
+     "hydrostatic_strain", "phase_fraction_sum"}
+)
+
+
+def _phase_stage_labels(project: WorkbenchProject) -> list[str]:
+    """この相集合のレシピのうち、**相に触れる**段のラベル列 (PHASES タブの読み取り専用列)。"""
+    try:
+        recipe = build_recipe(
+            project.histograms, project.phases, background_coeffs=project.background_coeffs
+        )
+    except ValueError:
+        return []
+    return [
+        f"{i:02d} {s.label}"
+        for i, s in enumerate(recipe, start=1)
+        if _PHASE_SCOPED_FLAGS & set(s.flags)
+    ]
+
+
+def _fmt_cell(
+    cell: "Sequence[float] | None", esd: "Sequence[float | None] | None"
+) -> "dict[str, str] | None":
+    """精密化格子 (a,b,c,α,β,γ) を表示文字列へ。未精密化は None (捏造しない)。"""
+    if not cell or len(cell) < 6:
+        return None
+    keys = ("a", "b", "c", "alpha", "beta", "gamma")
+    out: dict[str, str] = {}
+    for i, key in enumerate(keys):
+        value = finite_or_none(cell[i])
+        if value is None:
+            out[key] = "―"
+            continue
+        sigma = finite_or_none(esd[i]) if esd is not None and i < len(esd) else None
+        # 角度は 3 桁、長さは 4 桁 (Å) — 出版値の慣行に合わせる。
+        digits = 3 if i >= 3 else 4
+        out[key] = f"{value:.{digits}f}" + (f"({sigma:.{digits}f})" if sigma else "")
+    return out
+
+
 def _initial_phases_view(project: WorkbenchProject) -> list[dict[str, Any]]:
-    """左レール PHASES の初期状態 (精密化前, wt_frac は未定なので "―")。"""
+    """左レール PHASES + PHASES タブの初期状態 (精密化前, wt_frac/cell は未定)。"""
     rows: list[dict[str, Any]] = []
+    stages = _phase_stage_labels(project)
     for i, p in enumerate(project.phases):
         display = project.phase_display.get(p.phase_name, {})
         rows.append(
@@ -2706,6 +2968,12 @@ def _initial_phases_view(project: WorkbenchProject) -> list[dict[str, Any]]:
                 "space_group": str(display.get("space_group", "")),
                 "mp_id": str(display.get("mp_id", "")),
                 "wt_frac": "―",
+                # — PHASES タブ (相スコープの制御) —
+                "structure_path": p.structure_path,
+                "refine_cell": bool(p.refine_cell),
+                "temperature": finite_or_none(p.temperature),
+                "cell": None,
+                "stages": list(stages),
             }
         )
     return rows
@@ -2732,6 +3000,7 @@ def _build_phases_view(
         wt = result.phase_weight_fractions.get(name)
         esd = result.phase_weight_fraction_esd.get(name)
         row["wt_frac"] = _fmt_wt_frac(wt, esd)
+        row["cell"] = _fmt_cell(result.refined_cells.get(name), result.cell_esd.get(name))
     return rows
 
 

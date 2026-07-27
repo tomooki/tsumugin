@@ -156,3 +156,68 @@ describe("LedgerTab — P2 non-destructive guard", () => {
     expect(screen.getAllByRole("button", { name: /REVERT TO/i }).length).toBe(buttons.length);
   });
 });
+
+describe("LedgerTab — fit quality (Rwp / BIC)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function ledgerWithQuality(): LedgerResponse {
+    return {
+      verified: true,
+      entries: [
+        {
+          index: 42,
+          time: "14:30:02",
+          actor: "CORE ①",
+          text: "stage 03 profile rwp=13.42",
+          hash: "aaaa…0001",
+          revert_to: null,
+          rwp: 13.42,
+          bic: 39402.4,
+        },
+        {
+          index: 41,
+          time: "14:29:11",
+          actor: "HUMAN",
+          text: "mode switch manual -> auto",
+          hash: "bbbb…0002",
+          revert_to: null,
+          rwp: null,
+          bic: null,
+        },
+      ],
+    };
+  }
+
+  it("renders Rwp and BIC for refinement entries", async () => {
+    installLedgerFetchMock(ledgerWithQuality());
+    renderLedger();
+    await waitFor(() => expect(screen.getByText("14:30:02")).toBeInTheDocument());
+
+    const row = screen.getByText("14:30:02").closest(".ledger-row")!;
+    expect(row.querySelector(".ledger-row__rwp")!.textContent).toBe("13.42");
+    expect(row.querySelector(".ledger-row__bic")!.textContent).toBe("39402");
+  });
+
+  it("leaves the cells BLANK (not '—') for entries with no fit quality", async () => {
+    // api-contract.md: `―` は「あるはずの値が欠けている」に予約。モード切替に Rwp は
+    // 存在しないので空欄にする — ダッシュだと欠測に読める。
+    installLedgerFetchMock(ledgerWithQuality());
+    renderLedger();
+    await waitFor(() => expect(screen.getByText("14:29:11")).toBeInTheDocument());
+
+    const row = screen.getByText("14:29:11").closest(".ledger-row")!;
+    expect(row.querySelector(".ledger-row__rwp")!.textContent).toBe("");
+    expect(row.querySelector(".ledger-row__bic")!.textContent).toBe("");
+  });
+
+  it("does not crash when an older server omits rwp/bic entirely", async () => {
+    installLedgerFetchMock(makeLedger());
+    renderLedger();
+    await waitFor(() => expect(screen.getByText("14:22:07")).toBeInTheDocument());
+
+    const row = screen.getByText("14:22:07").closest(".ledger-row")!;
+    expect(row.querySelector(".ledger-row__rwp")!.textContent).toBe("");
+  });
+});

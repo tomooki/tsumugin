@@ -562,3 +562,53 @@ describe("StructureTab colocated strings — EN/JA key set", () => {
     expect(keys.length).toBeGreaterThan(0);
   });
 });
+
+describe("StructureTab — heading note reflects the real phases", () => {
+  function withPhases(names: { name: string; space_group: string }[]): ViewModel {
+    const vm = makeViewModel([makeSite()]);
+    return {
+      ...vm,
+      phases: names.map((p, i) => ({
+        id: `p${i + 1}`,
+        name: p.name,
+        swatch: "accent",
+        space_group: p.space_group,
+        mp_id: "",
+        wt_frac: "―",
+      })),
+    };
+  }
+
+  it("names the phases actually in the model", () => {
+    renderTab({ viewModel: withPhases([{ name: "alpha CaTeO3·H2O", space_group: "P21/c" }]) });
+    const note = document.querySelector(".struct-tab__note")!;
+    expect(note.textContent).toContain("alpha CaTeO3·H2O");
+    expect(note.textContent).toContain("P21/c");
+  });
+
+  it("never hard-codes the mockup's phase", () => {
+    // 恒久ガード: プロトタイプ由来の固定表記 (cubic K₂Mn[Fe(CN)₆] · Fm-3m) が復活したら落ちる。
+    renderTab({ viewModel: withPhases([{ name: "alpha", space_group: "P21/c" }]) });
+    const note = document.querySelector(".struct-tab__note")!;
+    expect(note.textContent).not.toContain("K₂Mn");
+    expect(note.textContent).not.toContain("Fm-3m");
+  });
+
+  it("lists every phase of a multi-phase model", () => {
+    renderTab({
+      viewModel: withPhases([
+        { name: "alpha", space_group: "P21/c" },
+        { name: "delta", space_group: "Pbca" },
+      ]),
+    });
+    const note = document.querySelector(".struct-tab__note")!;
+    expect(note.textContent).toContain("alpha");
+    expect(note.textContent).toContain("delta");
+  });
+
+  it("keeps the invariant copy but names no phase when there are none", () => {
+    renderTab({ viewModel: makeViewModel([makeSite()]) });
+    const note = document.querySelector(".struct-tab__note")!;
+    expect(note.textContent).toContain("proposals");
+  });
+});

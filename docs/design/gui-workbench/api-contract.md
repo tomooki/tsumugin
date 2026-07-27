@@ -41,8 +41,17 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
 ```jsonc
 {
   "datasets":  [{ "id": "sxrd", "name": "SR-XRD", "meta": "λ 0.79958 · 247 fr", "probe": "X", "active": true }],
+  // 左レール PHASES IN MODEL + PHASES タブ (§PHASES タブ) が共有する 1 相 1 行。
+  // structure_path 以降は project モードのみ (demo/シードは省略可 = PHASES タブは空表示)。
   "phases":    [{ "id": "p1", "name": "cubic K2Mn[Fe(CN)6]", "swatch": "accent",
-                  "space_group": "Fm-3m", "mp_id": "mp-583814", "wt_frac": "62.1(4) %" }],
+                  "space_group": "Fm-3m", "mp_id": "mp-583814", "wt_frac": "62.1(4) %",
+                  "structure_path": "data/alpha.cif", "refine_cell": true,
+                  "temperature": null,
+                  // 精密化後の実格子 (未精密化は null)。esd は揃っていれば併記。
+                  "cell": { "a": "9.3721(3)", "b": "9.3721(3)", "c": "6.8861(4)",
+                            "alpha": "90", "beta": "90", "gamma": "120" },
+                  // この相に触れるレシピ段のラベル (読み取り専用・build_recipe 由来)
+                  "stages": ["S1 cell+displacement", "S2 profile+size_strain"] }],
   "channels":  [{ "id": "echem", "label": "echem", "value": "V 3.94 · I −0.20 mA · Q 41.2" }],
   "snapshots": [{ "id": "S-0310", "note": "before stage 07" }],
   "fit": {
@@ -80,6 +89,11 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
     "basin": { "points": [{ "x": 9.372, "y": 6.71, "label": "start 1" }] }
   },
   "phase_id": {
+    // 相同定の元素系 = **現相集合の CIF から導出**した実際の値 (固定リストではない)。
+    // POST /api/phaseid が `identify_pattern(elements=…)` に渡すものと同一の導出
+    // (`_elements_from_project`)。相 0 件 / pymatgen 未導入 / 全 CIF 読込失敗は `[]` で、
+    // UI は元素の記述自体を出さない (存在しない元素系をでっち上げない)。
+    "elements": ["C", "Fe", "K", "Mn", "N", "O"],
     "candidates": [{ "rank": 1, "formula": "KMnFe(CN)6", "source": "MP", "sg": "P21/n",
                      "dara": 0.86, "mwmsx": "41/2/1/3", "strain": "0.4%",
                      "chem_guard": "ok", "guard_fail": false, "mp_id": "mp-19017" }],
@@ -133,6 +147,28 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
 }
 ```
 
+## ファイル選択 (Welcome のファイル選択ウィンドウ)
+
+**Web ページからは OS のファイルダイアログを開いてもパスを取得できない** (`<input type=file>` は
+内容だけでパスを返さない)。そのため**バックエンドがディレクトリを列挙し、アプリ内にファイル選択
+ウィンドウを描く**方式にする (ブラウザでも Tauri でも同一動作)。読み取り専用・localhost 前提で、
+プロジェクトの作成/開くが既に任意パスを受ける以上、能力の種類は増えない。
+
+| 呼び出し | 内容 |
+|---|---|
+| GET `/api/fs/roots` | `{"roots": [{"path": str, "label": str}]}` — ホーム + ドライブ (Windows) / `/` (POSIX) |
+| GET `/api/fs/list?path=<abs>` | `{"path", "parent": str\|null, "is_project": bool, "entries": [{"name", "path", "is_dir", "is_project"}]}`。トップレベル `is_project` は**現在地**がプロジェクトか — 「上へ」やルート経由で入ると entry を経由しないため、これが無いと*開けるのに SELECT が押せない*。**ディレクトリと `.json` のみ**返す (中身は返さない)。`is_project` = そのディレクトリ直下に `project.json` があるか (開く先の目印)。存在しない/権限なし/ファイルパス指定は 404・422 error dict |
+
+UI: Welcome の NEW PROJECT は「保存先を選ぶ」ボタン → ピッカー (ディレクトリ選択モード) +
+名前入力。OPEN は「プロジェクトを選ぶ」ボタン → ピッカー (`is_project` のディレクトリ、または
+`project.json` を選択)。手入力欄も残す (パスをコピペしたい場合)。
+
+## プロジェクトを閉じる導線
+
+`POST /api/project/close` は V2a から実装済みだが **UI に導線が無かった** (開いたら Welcome に
+戻れない)。コンテキストバー右端に CLOSE PROJECT ボタンを常設し、`source != "none"` のとき表示する。
+ジョブ実行中は 409 → 非致命メッセージ (「実行中は閉じられません」)。
+
 ## プロジェクトライフサイクル (V2a — アプリ基盤)
 
 プロジェクト = ディレクトリ + `project.json` (spec スキーマは ② `auto_rietveld` と同一) +
@@ -152,7 +188,29 @@ refine 実行中のプロジェクト変更系は 409。
 | POST `/api/project/histograms/{hist_id}/remove` `{}` | 同上 | spec から除去 + ledger (**DELETE ルートは使わない** — P2 構造ガード維持。解析履歴 ledger/snapshot は不可侵、除去できるのは入力設定のみ) |
 | POST `/api/project/phases` `{structure_path, phase_name}` | 同上 | spec 追記 + ledger |
 | POST `/api/project/phases/{phase_name}/remove` `{}` | 同上 | spec から除去 + ledger |
+| POST `/api/project/phases/{phase_name}/settings` `{refine_cell: bool}` | 同上 | 相単位の精密化設定 (§PHASES タブ)。`PhaseSpec.refine_cell` を更新 + 自動保存 + ledger |
 | POST `/api/project/settings` `{two_theta_limits?, background_coeffs?, max_cyc?}` | 同上 | spec 更新 + ledger |
+
+### PHASES タブ (2026-07-27)
+
+相スコープの精密化制御に居場所を与えるタブ。左レールの PHASES IN MODEL が「今どの相が居るか」
+だけを示すのに対し、こちらは**相ごとに何を解放するか**を扱う。
+
+| 列 | 出所 | 編集 |
+|---|---|---|
+| 相名 / 空間群 / mp_id | `viewmodel.phases[]` | ― |
+| wt% (esd) | 精密化後 `phase_weight_fractions` | ― |
+| 格子 a/b/c/α/β/γ | 精密化後 `refined_cells` + `cell_esd` | ― |
+| 構造ファイル | `structure_path` | ― |
+| **REFINE CELL** | `PhaseSpec.refine_cell` | ✔ (相単位, Issue #47: 副相のセル固定) |
+| 触れる段 | `build_recipe` 由来 (読み取り専用) | ― |
+| REMOVE | ― | ✔ |
+
+**⚠ 相単位で制御できるのは今のところ `refine_cell` だけ**である (黙って未露出にしない宣言):
+`size_strain` / `preferred_orientation` / `hydrostatic_strain` も物理的には相スコープだが、
+engine (`_apply_stage`) は**全相へ一律に**適用しており相単位のスイッチを持たない。したがって
+これらは段 (レシピ) 単位の ON/OFF でしか制御できず、本タブでは読み取り専用の「触れる段」列で
+示すに留める。相単位化はレシピのルール化 (段階解放順序の GUI 制御) と同じ作業単位で扱う。
 
 ## 解析ループ (V2a' — A2〜A6)
 
@@ -160,7 +218,7 @@ refine 実行中のプロジェクト変更系は 409。
 |---|---|---|
 | (viewmodel) `structure.sites` | 精密化完了後、**gpx から実サイト** (label/el/x/y/z/occ/uiso + esd 併記 note + 特殊位置 lock) が入る (A2)。未精密化 project は空 (empty-state)。demo は従来シード | — |
 | POST `/api/structure/apply` | 従来どおり + **適用済み revisions は次回 refine に実反映** (occ → `initial_occupancies`、site 削除等の構造編集は v2a' では occ/uiso のみ対象と明記) (A3) | snapshot + ledger (従来) |
-| POST `/api/phaseid` `{"mode": "pattern"\|"residual", "top_k"?: int}` | 202 `{"status": "started"}` / 409 | 相同定ジョブ (A4): `identify_pattern` を MP 供給元 (env `MATERIALS_PROJECT_API`) で実行。元素系は現相集合の CIF から導出。完了で viewmodel.phase_id.candidates が実候補に。key 未設定は 422 error dict |
+| POST `/api/phaseid` `{"mode": "pattern"\|"residual", "top_k"?: int, "elements"?: [str]}` | 202 `{"status": "started"}` / 409 | 相同定ジョブ (A4): `identify_pattern` を MP 供給元 (env `MATERIALS_PROJECT_API`) で実行。**元素系は `elements` で明示指定でき**、省略時のみ現相集合の CIF から導出する (下記)。完了で viewmodel.phase_id.candidates が実候補に。key 未設定は 422 error dict |
 | GET `/api/phaseid/status` | refine/status と同形 | ポーリング (refine と同一ジョブ枠 = 同時実行 409) |
 | POST `/api/phaseid/add` `{"formula": str, "mp_id": str}` | state | ADD AS PHASE (A4): 候補 CIF を物質化して `data/` へ保存 → `add_phase` (ledger)。再精密化はユーザーが RUN で明示 |
 | POST `/api/multistart` `{"n_starts"?: int (既定3), "scale"?: float (既定0.007)}` | 202 / 409 | `run_multistart_rietveld` ジョブ (A5)。完了で viewmodel.hypotheses.basin (points: x=主格子軸 a, y=Rwp, label=start) + `corroborated` 行が evidence に |
@@ -168,6 +226,24 @@ refine 実行中のプロジェクト変更系は 409。
 | GET `/api/export/gpx` | gpx ファイル (application/octet-stream) / 404 (未精密化) | keep_gpx 生成物のダウンロード (A6, FR-424: ファイル名に project 名) |
 
 ジョブ枠は 1 つ (refine/phaseid/multistart は相互に 409) — GSAS 直列実行の前提を単純に保つ。
+
+### 相同定の元素系 (2026-07-27 改訂)
+
+**未知試料の単一パターン解析では「CIF を読み込んでから相同定」という順序は成り立たない** —
+どの相か判らないから同定するのであって、相の CIF は同定の**結果**である。よって元素系は
+`POST /api/phaseid` の `elements` で**直接指定できる**ことを第一の経路とする。
+
+| `elements` | 挙動 |
+|---|---|
+| 指定あり (非空) | その元素系をそのまま使う。**相 0 件のプロジェクトでも同定できる** (これが主経路) |
+| 省略 / `null` | 現相集合の CIF から導出 (`_elements_from_project`)。既存の operando 経路の互換 |
+| `[]` (空配列) | 422 — 明示的に空を渡すのは意味を成さない (省略とは区別する) |
+| 未知の元素記号を含む | 422 `{"error": "unknown element symbol: …"}`。ジョブは起動しない。`"D"` は H の同位体で MP の chemsys には無いため個別に案内する |
+
+指定値は重複排除 + 昇順ソートで正規化する (NFR-102 決定性)。`viewmodel.phase_id.elements` は
+**直近の同定で実際に使われた元素系**を返し、まだ一度も走っていなければ CIF 由来の導出値
+(= UI の初期選択) を返す。`POST /api/phaseid/add` (ADD AS PHASE) も同じ元素系を使う —
+相 0 件のプロジェクトでも同定 → 追加まで通る。
 
 ## 逐次 / operando (V2b — B1〜B5)
 
@@ -319,11 +395,20 @@ reject でも提案は ledger に残る。approve 時の実行失敗は error di
 | POST `/api/refine` `{"stages_on"?: {"01": bool, ...}}` | 202 `{"status": "started"}` / 409 (実行中) | 実 `run_auto_rietveld` をバックグラウンドスレッドで起動 + ledger (`refine_request`)。`stages_on` (任意) は staged release recipe の ON/OFF — false の段は recipe から**実際にスキップ**され stage 履歴に現れない (A1: UI のゲートを実 run に反映する唯一の経路)。省略 = 全段既定。不明キーは 422。demo モード (project 未接続) は従来どおり 202 `{"status": "recorded"}` + ledger のみ |
 | GET `/api/refine/status` | `{"status": "idle"\|"running"\|"done"\|"failed", "elapsed_s": float\|null, "last_event": str\|null, "error": str\|null, "kind": "refine"\|"phaseid"\|"multistart"\|null}` | — (ポーリング用。完了時はフロントが state/viewmodel を再フェッチ)。`kind` はセルフレビュー指摘 #1: 共有ジョブ枠 (refine/phaseid/multistart) のうち今 (または最後に) 動いているのがどれかを示す — `/api/phaseid/status`・`/api/multistart/status` も同形で `kind` を返す (共通実装)。一度も起動していない `idle` のときのみ `null` |
 | POST `/api/transcript/message` `{"text": str}` | `{"message": {...}}` | transcript 追記 |
-| GET `/api/ledger` | `{"entries": [{"index", "time", "actor", "text", "hash", "revert_to"}], "verified": true}` | — |
+| GET `/api/ledger` | `{"entries": [{"index", "time", "actor", "text", "hash", "revert_to", "rwp", "bic"}], "verified": true}` | — |
 | GET `/api/review-queue` | `{"items": [...]}` | — |
 | GET `/api/hypotheses` | viewmodel.hypotheses と同形 | — |
 
 actor は `"AGENT ③" | "MCP ②" | "CORE ①" | "HUMAN" | "GUARD"` (LEDGER タブの色分けキー)。
+
+`rwp` / `bic` (`float | null`) は**そのエントリが精密化結果を伴うときだけ**入る適合度である
+(`m7_stage` = 段階ごと、`refine_finished` = 最終)。台帳を時系列に読むだけで「その操作で適合が
+どう動いたか」が判るようにするための表示専用フィールドで、payload の**生の事実から導出**する
+(`rwp`, `gof`, `n_params`, `n_obs`)。BIC = χ² + n_params·ln(n_obs)、χ² = GOF²·(n_obs − n_params)
+— `insitu.anchor.select.frame_bic` および FIT メトリクスの χ² と同一定義 (相数の比較に Rwp を
+使わない CLAUDE.md の規律と同じ式を GUI 側でも使う)。適合度を持たないエントリ (モード切替・
+承認・設定変更など) は両方 `null` で、UI は**空欄**にする (`―` は「あるはずの値が欠けている」
+の意味に予約する)。導出不能 (非有限 GOF、n_obs ≤ n_params、n_obs 欠落) も `null`。
 
 ## 語彙 (enum) — 両側で固定
 

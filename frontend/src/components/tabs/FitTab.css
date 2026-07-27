@@ -7,7 +7,7 @@
 
 .fit-tab__metrics {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));  /* 【可変幅】狭いと折り返す */
   gap: 8px;
 }
 
@@ -84,7 +84,7 @@
 
 .fit-tab__bottom {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));  /* 【可変幅】 */
   gap: 12px;
 }
 

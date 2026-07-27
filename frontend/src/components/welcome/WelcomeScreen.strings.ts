@@ -18,6 +18,10 @@ export const WELCOME_STRINGS = {
     ja: "プロジェクト未読込 — 新規作成、既存プロジェクトを開く、またはサンプルを開く",
   },
 
+  // Shared BROWSE… button next to the NEW PROJECT directory field and the
+  // OPEN path field — opens PathPicker (api-contract.md §ファイル選択).
+  "welcome.browse": { en: "BROWSE …", ja: "参照 …" },
+
   "welcome.new.heading": { en: "NEW PROJECT", ja: "新規プロジェクト" },
   "welcome.new.nameLabel": { en: "name", ja: "名前" },
   "welcome.new.namePlaceholder": { en: "e.g. CaTeO3 cyclic", ja: "例: CaTeO3 cyclic" },

@@ -1,3 +1,4 @@
+import { formatNumber } from "../../api/format";
 import { useEffect, useState, type ChangeEvent } from "react";
 import {
   ApiError,
@@ -21,8 +22,9 @@ import "./ProjectTab.css";
 import { pt, type ProjectStringKey } from "./ProjectTab.strings";
 
 function formatTwoTheta(range: [number, number] | null): string {
+  // 要素が null/非有限のこともある (finite_or_none 規約) — 生の toFixed は画面を落とす。
   if (!range) return "—";
-  return `${range[0].toFixed(1)}–${range[1].toFixed(1)}`;
+  return `${formatNumber(range[0], 1)}–${formatNumber(range[1], 1)}`;
 }
 
 function parseOptionalNumber(raw: string): number | null {

@@ -43,7 +43,9 @@ export const STRINGS = {
   "status.text.manual": { en: "MANUAL · agent proposals queue up, nothing applies without you", ja: "MANUAL · エージェントの提案はキューに溜まり、人間なしでは適用されない" },
   "status.text.auto": { en: "AUTO · safe actions applied and logged · model actions held for approval", ja: "AUTO · SafeAction は適用して記録 · ModelAction は承認待ちで保留" },
   "status.cost.idle": { en: "agent idle", ja: "エージェント待機" },
-  "status.cost.active": { en: "1.24 M tok · 18 m", ja: "1.24 M tok · 18 分" },
+  // 実測値 (state.agent.tokens / wall_time_s) を差し込む。プロトタイプは "1.24 M tok · 18 m" を
+  // 固定で書いており、エージェントが何も使っていなくてもその表示が出ていた (FR-404)。
+  "status.cost.active": { en: "{tokens} tok · {minutes} m", ja: "{tokens} tok · {minutes} 分" },
 
   // — left rail —
   "rail.datasets": { en: "DATASETS", ja: "データセット" },
@@ -91,7 +93,9 @@ export const STRINGS = {
   // — FIT tab —
   "fit.limits": { en: "two_theta_limits = [4.0, 38.0] · background 24 terms · Kα1 instprm", ja: "two_theta_limits = [4.0, 38.0] · 背景 24 項 · Kα1 instprm" },
   "fit.plotTitle": { en: "FIT · Yobs / Ycalc / Δ", ja: "フィット · Yobs / Ycalc / Δ" },
-  "fit.plotNote": { en: "λ = 0.79958 Å · I(2θ) arb. · log y", ja: "λ = 0.79958 Å · I(2θ) 任意単位 · log y" },
+  // プロトタイプは λ = 0.79958 Å (デモ系列の値) と "log y" を固定で書いていたが、λ はプロジェクト
+  // ごとに違い、LinePlot は線形軸である — どちらも実描画と食い違うので落とした。
+  "fit.plotNote": { en: "I(2θ) arb. · linear y", ja: "I(2θ) 任意単位 · 線形軸" },
   "fit.intensity": { en: "Intensity", ja: "強度" },
   "fit.plotPlaceholder": { en: "PLOT PLACEHOLDER — observed vs calculated overlay + peak cursor + 2θ zoom/pan", ja: "プロット枠 — 実測と計算の重ね描き + ピークカーソル + 2θ ズーム/パン" },
   "fit.residualPlaceholder": { en: "RESIDUAL PLACEHOLDER — (Yobs − Ycalc)/σ", ja: "残差プロット枠 — (Yobs − Ycalc)/σ" },
@@ -189,7 +193,8 @@ export const STRINGS = {
 
   // — HYPOTHESES tab —
   "hyp.title": { en: "HYPOTHESIS RANKING", ja: "仮説ランキング" },
-  "hyp.note": { en: "14 nodes · deterministic order · softmax over BIC · FR-120 / FR-422", ja: "14 ノード · 決定論的順序 · BIC の softmax · FR-120 / FR-422" },
+  // "14 nodes" はプロトタイプの作り物 (実際のノード数は表の行数)。手法の記述だけ残す。
+  "hyp.note": { en: "deterministic order · softmax over BIC · FR-120 / FR-422", ja: "決定論的順序 · BIC の softmax · FR-120 / FR-422" },
   "field": { en: "FIELD", ja: "項目" },
   "evidence.title": { en: "EVIDENCE & BASIN", ja: "Evidence とベイスン" },
   "evidence.basinPlaceholder": { en: "PLOT PLACEHOLDER — multistart basins · lattice a vs χ²", ja: "プロット枠 — マルチスタートのベイスン · 格子 a vs χ²" },
@@ -224,9 +229,12 @@ export const STRINGS = {
 
   // — PHASE ID tab —
   "pid.title": { en: "PHASE IDENTIFICATION", ja: "相同定" },
+  // 手法の記述のみ (実装で実際に固定されている `IdentifyConfig` の既定)。元素系は固定ではなく
+  // 現相集合の CIF 由来なので、ここには書かず viewmodel.phase_id.elements から前置する
+  // (PhaseIdTab.tsx / PhaseIdTab.strings.ts "pid.local.elements")。
   "pid.note": {
-    en: "elements K, Mn, Fe, C, N, O · Materials Project · Dara score · background subtracted · refine_lattice on",
-    ja: "元素 K, Mn, Fe, C, N, O · Materials Project · Dara スコア · 背景減算あり · refine_lattice 有効",
+    en: "Materials Project · Dara score · background subtracted · refine_lattice on",
+    ja: "Materials Project · Dara スコア · 背景減算あり · refine_lattice 有効",
   },
   "pid.residualTitle": { en: "UNEXPLAINED FEATURES · residual_report", ja: "未説明の特徴 · residual_report" },
   "pid.residualDecompPlaceholder": { en: "PLOT PLACEHOLDER — baseline / peak decomposition of the residual", ja: "プロット枠 — 残差の baseline / peak 分解" },
@@ -256,9 +264,10 @@ export const STRINGS = {
 
   // — SEQUENCE tab —
   "seq.title": { en: "FRAME SERIES", ja: "フレーム系列" },
+  // "63 frames analysed" はプロトタイプの作り物 (実フレーム数は viewmodel.sequence 由来)。
   "seq.note": {
-    en: "anchored bidirectional · 63 frames analysed · phase count bounded by BIC, not Rwp",
-    ja: "アンカー基準の双方向解析 · 63 フレーム解析済 · 相数は Rwp でなく BIC で抑制",
+    en: "anchored bidirectional · phase count bounded by BIC, not Rwp",
+    ja: "アンカー基準の双方向解析 · 相数は Rwp でなく BIC で抑制",
   },
   "seq.anchors": { en: "ANCHORS", ja: "アンカー" },
   "seq.crossoverNote": {
@@ -294,9 +303,11 @@ export const STRINGS = {
 
   // — STRUCTURE tab —
   "struct.title": { en: "STRUCTURE MODEL", ja: "構造モデル" },
+  // 相名/空間群は固定ではなくモデルの実相 (viewmodel.phases) から前置する (StructureTab.tsx)。
+  // ここに残すのは相に依らない不変条件だけ。
   "struct.note": {
-    en: "cubic K₂Mn[Fe(CN)₆] · Fm-3m · CIF normalised for GSAS-II · edits are proposals until applied",
-    ja: "cubic K₂Mn[Fe(CN)₆] · Fm-3m · GSAS-II 向けに CIF 正規化済 · 編集は適用まで提案のまま",
+    en: "edits are proposals until applied",
+    ja: "編集は適用まで提案のまま",
   },
   "struct.sites": { en: "SITES", ja: "サイト" },
   "struct.sitesHint": { en: "editable · element list in atomic-number order", ja: "編集可 · 元素は原子番号順" },

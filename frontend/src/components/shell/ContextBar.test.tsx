@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProjectFrameRow, ShellState, ViewModel } from "../../api/types";
 import { I18nProvider, type Lang } from "../../i18n";
 import { StoreProvider } from "../../state/store";
@@ -111,5 +111,96 @@ describe("ContextBar — frame k / N nav (V2b B2/B3)", () => {
     renderBar(withFrames(2), { lang: "ja" });
     expect(screen.getByLabelText("前のフレーム")).toBeInTheDocument();
     expect(screen.getByLabelText("次のフレーム")).toBeInTheDocument();
+  });
+});
+
+// api-contract.md §プロジェクトを閉じる導線
+describe("ContextBar — CLOSE PROJECT visibility", () => {
+  it("is hidden when source is none (Welcome screen)", () => {
+    renderBar({ shell: makeShell({ source: "none" }) });
+    expect(screen.queryByRole("button", { name: "CLOSE PROJECT" })).not.toBeInTheDocument();
+  });
+
+  it("is shown when source is project", () => {
+    renderBar({ shell: makeShell({ source: "project" }) });
+    expect(screen.getByRole("button", { name: "CLOSE PROJECT" })).toBeInTheDocument();
+  });
+
+  // Requirement: "demo セッションでも表示する" — SAMPLE must be exitable
+  // back to Welcome too, not just real project sessions.
+  it("is shown when source is demo", () => {
+    renderBar({ shell: makeShell({ source: "demo" }) });
+    expect(screen.getByRole("button", { name: "CLOSE PROJECT" })).toBeInTheDocument();
+  });
+
+  // Mutation-proof pair for the visibility condition above: fixtures that
+  // predate the `source` field (undefined) must still show the button — see
+  // ContextBar.tsx's doc comment mirroring App.tsx's isWelcome precedent. If
+  // the condition were flipped to `source === "project"` (excluding
+  // undefined/demo) both this test and the "is shown when source is demo"
+  // test above would fail.
+  it("is shown when source is undefined (pre-source fixture)", () => {
+    renderBar({ shell: makeShell() });
+    expect(screen.getByRole("button", { name: "CLOSE PROJECT" })).toBeInTheDocument();
+  });
+});
+
+describe("ContextBar — CLOSE PROJECT click flow", () => {
+  function jsonResponse(body: unknown, ok = true, status = 200): Response {
+    return { ok, status, statusText: ok ? "OK" : "error", json: async () => body } as Response;
+  }
+
+  it("POSTs /api/project/close then refetches state+viewmodel and dispatches the new (source=none) shell", async () => {
+    const user = userEvent.setup();
+    const closedShell = makeShell({ source: "none" });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/project/close") && method === "POST") return jsonResponse(closedShell);
+      if (url.endsWith("/api/state") && method === "GET") return jsonResponse(closedShell);
+      if (url.endsWith("/api/viewmodel") && method === "GET") return jsonResponse(emptyViewModel());
+      throw new Error(`unhandled fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderBar({ shell: makeShell({ source: "project" }) });
+    await user.click(screen.getByRole("button", { name: "CLOSE PROJECT" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/project/close"))).toBe(true),
+    );
+    // The store's shell is now source=none, so ContextBar re-renders without
+    // the button (it hides itself — see the visibility describe block).
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "CLOSE PROJECT" })).not.toBeInTheDocument(),
+    );
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/state"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/viewmodel"))).toBe(true);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("a 409 (job running) shows a non-fatal inline message and keeps the button (project stays open)", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/project/close") && method === "POST") {
+        return jsonResponse({ error: "refine running", error_type: "conflict" }, false, 409);
+      }
+      throw new Error(`unhandled fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderBar({ shell: makeShell({ source: "project" }) });
+    await user.click(screen.getByRole("button", { name: "CLOSE PROJECT" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("a job is running — cannot close now")).toBeInTheDocument(),
+    );
+    // The button remains — the project session was NOT torn down.
+    expect(screen.getByRole("button", { name: "CLOSE PROJECT" })).toBeInTheDocument();
+
+    vi.unstubAllGlobals();
   });
 });

@@ -443,6 +443,9 @@ def build_seed_search_result() -> SearchResult:
 
 def seed_phase_id() -> dict[str, Any]:
     return {
+        # demo プロジェクト (K2Mn[Fe(CN)6] operando) の相集合から導かれる元素系。project モードでは
+        # 実 CIF 由来の値に置き換わる (`WorkbenchSession._phaseid_elements`)。
+        "elements": ["C", "Fe", "K", "Mn", "N"],
         "candidates": [
             {
                 "rank": 1, "formula": "KMnFe(CN)6", "source": "MP", "sg": "P21/n",

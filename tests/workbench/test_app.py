@@ -1185,6 +1185,62 @@ def test_project_recent_lists_after_create(client: TestClient, tmp_path: Path, f
     assert "last_opened" in projects[0]
 
 
+# ---------------------------------------------------------------------------
+# GET /api/fs/roots, GET /api/fs/list (Welcome のアプリ内ファイル選択ウィンドウ)
+# ---------------------------------------------------------------------------
+
+
+def test_fs_roots_route_returns_nonempty_roots(client: TestClient):
+    resp = client.get("/api/fs/roots")
+
+    assert resp.status_code == 200
+    roots = resp.json()["roots"]
+    assert len(roots) >= 1
+    assert all({"path", "label"} <= set(r.keys()) for r in roots)
+
+
+def test_fs_list_route_returns_shape(client: TestClient, tmp_path: Path):
+    root = tmp_path / "browse_root"
+    root.mkdir()
+    (root / "child").mkdir()
+    (root / "note.json").write_text("{}", encoding="utf-8")
+
+    resp = client.get("/api/fs/list", params={"path": str(root)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # is_project は「現在地がプロジェクトか」(entry 経由でない到達でも判定できるように追加)。
+    assert set(body.keys()) == {"path", "parent", "is_project", "entries"}
+    assert body["is_project"] is False  # project.json を置いていないディレクトリ
+    names = {e["name"] for e in body["entries"]}
+    assert names == {"child", "note.json"}
+
+
+def test_fs_list_route_missing_path_param_returns_422(client: TestClient):
+    resp = client.get("/api/fs/list")
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_type"] == "ValueError"
+
+
+def test_fs_list_route_nonexistent_path_returns_404(client: TestClient, tmp_path: Path):
+    resp = client.get("/api/fs/list", params={"path": str(tmp_path / "nope")})
+
+    assert resp.status_code == 404
+    assert resp.json()["error_type"] == "NotFoundError"
+
+
+def test_fs_list_route_file_path_returns_422(client: TestClient, tmp_path: Path):
+    file_path = tmp_path / "a.json"
+    file_path.write_text("{}", encoding="utf-8")
+
+    resp = client.get("/api/fs/list", params={"path": str(file_path)})
+
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
 def test_project_upload_stores_file_and_returns_stored_path(
     client: TestClient, tmp_path: Path, fake_home: Path
 ):
@@ -1963,3 +2019,15 @@ def test_project_upload_allows_echem_kind(
     stored_path = resp.json()["stored_path"]
     assert Path(stored_path).exists()
     assert Path(stored_path).name == "run.mpr"
+
+
+def test_phaseid_route_rejects_unknown_element_symbol_with_422(project_client: TestClient):
+    # 【目的】: 不正な元素は 422 error dict へ縮退する (MP 側の不可解な失敗に化けさせない)。
+    resp = project_client.post("/api/phaseid", json={"mode": "pattern", "elements": ["Ca", "Xx"]})
+    assert resp.status_code == 422
+    assert "Xx" in resp.json()["error"]
+
+
+def test_phaseid_route_rejects_empty_element_list_with_422(project_client: TestClient):
+    resp = project_client.post("/api/phaseid", json={"mode": "pattern", "elements": []})
+    assert resp.status_code == 422

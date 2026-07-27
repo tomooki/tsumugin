@@ -83,6 +83,18 @@
   border-color: var(--color-accent);
 }
 
+/* BROWSE… sits beside the directory/path input (api-contract.md §ファイル選択) —
+   the manual text field stays for copy/paste, BROWSE opens PathPicker. */
+.welcome-form__field-row {
+  display: flex;
+  gap: 6px;
+}
+
+.welcome-form__field-row input {
+  flex: 1;
+  min-width: 0;
+}
+
 .welcome-sample__note {
   margin: 0;
   font-size: 11.5px;

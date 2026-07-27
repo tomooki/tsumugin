@@ -156,3 +156,11 @@
   font-size: 10px;
   color: var(--color-neutral-600);
 }
+
+/* 【可変幅】: 狭いウィンドウで表が切れないよう、テーブル単位で横スクロールさせる
+   (中央本文を overflow-x: auto にすると全体が横に揺れて読みづらいため、表だけに閉じる)。 */
+.proj-table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}

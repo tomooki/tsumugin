@@ -1,3 +1,4 @@
+import { formatNumber } from "../../api/format";
 import type { MemMap } from "../../api/types";
 import { PlaceholderPlot } from "../common";
 import "./HeatMap.css";
@@ -73,7 +74,7 @@ export function HeatMap({ map, height, emptyLabel }: HeatMapProps) {
           ))}
         </span>
         <span className="heat-map__legend-text">
-          {vmin.toFixed(2)} – {vmax.toFixed(2)} {unit}
+          {formatNumber(vmin, 2)} – {formatNumber(vmax, 2)} {unit}
         </span>
       </div>
     </div>

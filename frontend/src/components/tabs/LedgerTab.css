@@ -42,7 +42,10 @@
 /* — one append-only entry — */
 .ledger-row {
   display: grid;
-  grid-template-columns: 92px 108px 1fr auto auto;
+  /* 【可変幅】 time | actor | text | Rwp | BIC | hash | REVERT TO。
+     適合度 2 列は値が入らない行が多いので固定幅を与え、列位置が行ごとに動かないようにする。 */
+  grid-template-columns:
+    minmax(60px, 92px) minmax(70px, 108px) minmax(0, 1fr) 52px 64px auto auto;
   gap: 10px;
   align-items: center;
   border: 1px solid var(--color-divider);
@@ -98,6 +101,20 @@
 .ledger-row__text {
   font-size: 12px;
   min-width: 0;
+}
+
+/* — 適合度 (Rwp / BIC) — 右揃えの数値列。値なしは空欄 (api-contract.md) — */
+.ledger-row__rwp,
+.ledger-row__bic {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--color-neutral-800);
+}
+
+.ledger-row__bic {
+  color: var(--color-neutral-600);
 }
 
 .ledger-row__hash {

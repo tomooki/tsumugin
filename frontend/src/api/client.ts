@@ -14,6 +14,8 @@ import type {
   ApprovalResponse,
   EchemRequest,
   EchemSyncResponse,
+  FsListing,
+  FsRootsResponse,
   JobStartResponse,
   LedgerResponse,
   MemRequest,
@@ -285,6 +287,18 @@ export function postRemovePhase(phaseName: string): Promise<ShellState> {
   return post<ShellState>(`/api/project/phases/${encodeURIComponent(phaseName)}/remove`, {});
 }
 
+/** Phase-scoped refinement settings (api-contract.md §PHASES タブ). Today the
+ * only per-phase switch the engine actually reads is `refine_cell`. */
+export function postPhaseSettings(
+  phaseName: string,
+  payload: { refine_cell: boolean },
+): Promise<ShellState> {
+  return post<ShellState>(
+    `/api/project/phases/${encodeURIComponent(phaseName)}/settings`,
+    payload,
+  );
+}
+
 export function postProjectSettings(payload: ProjectSettingsRequest): Promise<ShellState> {
   return post<ShellState>("/api/project/settings", payload);
 }
@@ -340,4 +354,14 @@ export function postSettings(mpApiKey: string): Promise<unknown> {
 
 export function postSettingsClear(key: SettingsKey = "mp_api_key"): Promise<unknown> {
   return post<unknown>("/api/settings/clear", { key } satisfies SettingsClearRequest);
+}
+
+// — ファイル選択 (Welcome のファイル選択ウィンドウ, api-contract.md §ファイル選択) —
+
+export function getFsRoots(): Promise<FsRootsResponse> {
+  return get<FsRootsResponse>("/api/fs/roots");
+}
+
+export function getFsList(path: string): Promise<FsListing> {
+  return get<FsListing>(`/api/fs/list?path=${encodeURIComponent(path)}`);
 }

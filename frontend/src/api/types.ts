@@ -145,6 +145,18 @@ export interface DatasetRow {
   active: boolean;
 }
 
+/** Refined lattice, already formatted server-side (esd in parentheses when
+ * available). `null` on the row until a refinement has produced one — the UI
+ * shows a dash rather than inventing numbers. */
+export interface PhaseCell {
+  a: string;
+  b: string;
+  c: string;
+  alpha: string;
+  beta: string;
+  gamma: string;
+}
+
 export interface PhaseRow {
   id: string;
   name: string;
@@ -152,6 +164,15 @@ export interface PhaseRow {
   space_group: string;
   mp_id: string;
   wt_frac: string;
+  // PHASES tab fields (api-contract.md §PHASES タブ). Optional: demo/seed rows
+  // and pre-existing fixtures omit them, in which case the tab renders the
+  // row without phase-scoped controls rather than crashing.
+  structure_path?: string;
+  refine_cell?: boolean;
+  temperature?: number | null;
+  cell?: PhaseCell | null;
+  /** Recipe stages that touch this phase — read-only (see the tab's note). */
+  stages?: string[];
 }
 
 export interface ChannelRow {
@@ -334,6 +355,12 @@ export interface PhaseSetCompleteness {
 }
 
 export interface PhaseIdViewModel {
+  // The element system phase identification actually runs with, derived from
+  // the current phases' CIFs server-side (api-contract.md phase_id.elements) —
+  // NOT a fixed list. `[]` = no phases / CIFs unreadable / pymatgen missing, in
+  // which case the UI says nothing about elements rather than inventing them.
+  // Optional for the same reason as `project` below: an older server omits it.
+  elements?: string[];
   candidates: PhaseIdCandidate[];
   unexplained: UnexplainedFeature[];
   completeness: PhaseSetCompleteness;
@@ -620,6 +647,12 @@ export interface LedgerEntry {
   text: string;
   hash: string;
   revert_to: string | null;
+  // Fit quality carried by entries that came from a refinement (m7_stage /
+  // refine_finished); null on every other kind — a mode switch has no Rwp.
+  // Rendered as a BLANK cell, not "—": see api-contract.md GET /api/ledger.
+  // Optional so an older server (or a fixture) that omits them still type-checks.
+  rwp?: number | null;
+  bic?: number | null;
 }
 
 export interface LedgerResponse {
@@ -764,6 +797,10 @@ export type PhaseIdMode = "pattern" | "residual";
 export interface PhaseIdRequest {
   mode: PhaseIdMode;
   top_k?: number;
+  // Element system to identify with (api-contract.md §相同定の元素系). Omit to
+  // let the server derive it from the current phases' CIFs — for an unknown
+  // sample there are no phases yet, so this is the primary path.
+  elements?: string[];
 }
 
 export interface PhaseIdAddRequest {
@@ -896,6 +933,44 @@ export type SettingsKey = "mp_api_key";
 
 export interface SettingsClearRequest {
   key: SettingsKey;
+}
+
+// — ファイル選択 (Welcome のファイル選択ウィンドウ, api-contract.md §ファイル選択) —
+// Web pages cannot read a real filesystem path out of <input type=file>, so
+// the backend enumerates directories server-side and the frontend draws its
+// own in-app picker window (PathPicker.tsx) against these two read-only
+// endpoints instead of an OS file dialog.
+
+export interface FsRoot {
+  path: string;
+  label: string;
+}
+
+export interface FsRootsResponse {
+  roots: FsRoot[];
+}
+
+/** GET /api/fs/list only ever returns directories and `.json` files — never
+ * other file kinds (the contract: "ディレクトリと `.json` のみ返す"). */
+export interface FsEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  // Whether this directory has a project.json directly inside it (the
+  // "open a project" target marker) — see PathPicker's mode="project" SELECT
+  // gating.
+  is_project: boolean;
+}
+
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  // Whether the *currently browsed* directory itself is a project (contains
+  // project.json). Without this, arriving via "up" or a root — which don't go
+  // through an entry row — leaves the picker unable to tell, so a directory
+  // you can legitimately open has its SELECT button disabled.
+  is_project?: boolean;
+  entries: FsEntry[];
 }
 
 // — errors —

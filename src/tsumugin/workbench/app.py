@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..errors import ConflictError, LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
-from . import lifecycle
+from . import fsbrowse, lifecycle
 from .session import WorkbenchSession
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import を避けコア依存を汚染しない 🔵
@@ -302,6 +302,30 @@ def create_workbench_app(
     def get_project_recent() -> dict[str, Any]:
         return {"projects": lifecycle.load_recent()}
 
+    # ------------------------------------------------------------------
+    # GET /api/fs/roots, GET /api/fs/list (Welcome のアプリ内ファイル選択ウィンドウ,
+    # api-contract.md §ファイル選択)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/fs/roots")
+    def get_fs_roots() -> dict[str, Any]:
+        return {"roots": fsbrowse.list_roots()}
+
+    @app.get("/api/fs/list")
+    def get_fs_list(path: "str | None" = None) -> Any:
+        if not isinstance(path, str) or not path.strip():
+            return _invalid("path", path)
+        try:
+            return fsbrowse.list_dir(path)
+        except FileNotFoundError as exc:
+            return JSONResponse(
+                status_code=404, content={"error": str(exc), "error_type": "NotFoundError"}
+            )
+        except (NotADirectoryError, PermissionError, ValueError) as exc:
+            return JSONResponse(
+                status_code=422, content={"error": str(exc), "error_type": "ValueError"}
+            )
+
     @app.post("/api/project/upload")
     async def post_project_upload(
         file: UploadFile = File(...), kind: str = Form(...)
@@ -355,6 +379,17 @@ def create_workbench_app(
         if guard is not None:
             return guard
         result = holder.session.remove_phase(phase_name)
+        return _to_response(result)
+
+    @app.post("/api/project/phases/{phase_name}/settings")
+    def post_project_phase_settings(phase_name: str, body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        # 型検証は `set_phase_settings` に一元化する (ここで先回りしない)。
+        result = holder.session.set_phase_settings(
+            phase_name, refine_cell=body.get("refine_cell")
+        )
         return _to_response(result)
 
     @app.post("/api/project/settings")
@@ -580,7 +615,11 @@ def create_workbench_app(
             top_k = int(top_k)
         except (TypeError, ValueError):
             return _invalid("top_k", top_k)
-        result = holder.session.request_phaseid(mode=mode, top_k=top_k)
+        # elements 省略 (None) = 現相集合の CIF から導出 (従来動作)。値の検証は
+        # `request_phaseid` (`_normalise_elements`) に一元化する — ここで先回りしない。
+        result = holder.session.request_phaseid(
+            mode=mode, top_k=top_k, elements=body.get("elements")
+        )
         return _to_response(result, success_status=202)
 
     @app.get("/api/phaseid/status")

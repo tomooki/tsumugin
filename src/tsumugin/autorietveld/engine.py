@@ -1493,6 +1493,9 @@ def run_auto_rietveld(
                     "rwp": rwp,
                     "gof": gof,
                     "n_params": nvar,
+                    # 【n_obs】: 段ごとの BIC (= χ² + n_params·ln(n_obs)) を**このエントリだけから**
+                    #   導出できるようにする (GUI の LEDGER 表示)。レンジ制限適用後の実点数。
+                    "n_obs": _nobs(gpx),
                     "reverted": reverted,
                     "auto_frozen_cells": list(auto_frozen),
                 },

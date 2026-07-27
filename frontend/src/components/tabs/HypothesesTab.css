@@ -88,7 +88,7 @@
 
 .hyp-bottom {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));  /* 【可変幅】 */
   gap: 12px;
   flex: 1;
   min-height: 0;
@@ -188,4 +188,12 @@
   font-family: var(--font-mono);
   color: var(--color-neutral-800);
   text-align: right;
+}
+
+/* 【可変幅】: 狭いウィンドウで表が切れないよう、テーブル単位で横スクロールさせる
+   (中央本文を overflow-x: auto にすると全体が横に揺れて読みづらいため、表だけに閉じる)。 */
+.hyp-table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
 }
