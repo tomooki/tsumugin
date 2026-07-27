@@ -196,7 +196,7 @@ def make_residual_cell_refiner(
 
         整合先          delta セルの最大軸誤差
         生パターン       2.84 – 4.37 %   ← **出発セル (1.64–3.42%) より必ず悪化**
-        残差 (alpha 減算) 0.35 – 0.61 %   ← 実測セルをほぼ回復
+        残差 (alpha 減算) 0.42 – 0.64 %   ← 実測セルをほぼ回復
 
     誤セルの方が FoM が良い (0.268 < 0.290 for 真セル) ため `require_improvement` ガードでも
     止まらない — 目的関数側の問題であり、整合先を変えるのが正しい対処。
@@ -223,23 +223,29 @@ def make_residual_cell_refiner(
     tt = np.asarray(two_theta, dtype=float)
     refs = list(known_phases)
 
-    if refs:
-        # 既知相を引いた残差では候補が支配的 → 同じ FoM が正しく効く。
-        # `subtract_bg` は残差計算側へ渡し、プリアラインには常に False (二重減算しない)。
-        resid_cfg = cfg if cfg is not None else IdentifyConfig(subtract_bg=subtract_bg)
-        pattern = subtract_known_phases(
-            tt, np.asarray(intensity, dtype=float), refs, cfg=resid_cfg
-        )
-        bg = False
-    elif require_subtraction:
+    if not refs and require_subtraction:
         return None  # 既存相を引けない → 生パターン整合は有害 (上表) なのでプリアラインしない
-    else:
-        pattern = np.asarray(intensity, dtype=float)
-        bg = subtract_bg
+
+    raw = np.asarray(intensity, dtype=float)
+    bg = False if refs else subtract_bg  # 残差は減算済 → プリアライン側で二重に引かない
+    # `subtract_bg` は残差計算側へ渡す (背景減算済データの二重減算を避ける)。cfg 明示時は cfg 優先。
+    resid_cfg = cfg if cfg is not None else IdentifyConfig(subtract_bg=subtract_bg)
+    cache: list[np.ndarray] = []
+
+    def _pattern() -> np.ndarray:
+        """整合先パターン (残差 or 生) を**初回呼び出し時に**作る。
+
+        遅延にするのは (1) 候補が 1 つも物質化されなければ減算が要らない、(2) 減算が失敗しても
+        `identify_new_phases` の `cell_refiner` 例外ハンドラに落ち**等方 strain へ縮退できる**
+        ため (即時計算だと finder 全体が落ち、そのフレームの相同定ごと失われる)。
+        """
+        if not cache:
+            cache.append(subtract_known_phases(tt, raw, refs, cfg=resid_cfg) if refs else raw)
+        return cache[0]
 
     def refiner(cif_path: str) -> Cell6 | None:
         sol = align_fn(
-            cif_path, tt, pattern,
+            cif_path, tt, _pattern(),
             wavelength=wavelength, two_theta_range=two_theta_range, subtract_bg=bg,
         )
         return sol.cell if sol is not None else None  # type: ignore[union-attr]

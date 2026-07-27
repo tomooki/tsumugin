@@ -556,3 +556,29 @@ def test_cell_refiner_honours_subtract_bg_on_residual_path(tmp_path):
     )
     refiner2("dummy.cif")
     assert float(np.median(calls2[0]["intensity"])) < 100.0  # SNIP で背景が落ちている
+
+
+def test_cell_refiner_defers_subtraction_until_used(monkeypatch, tmp_path):
+    """減算は**初回呼び出し時**に行う (候補ゼロなら無駄に計算せず、失敗しても finder を落とさない)。
+
+    即時計算だと `subtract_known_phases` の失敗が finder 全体を落とし、そのフレームの相同定ごと
+    失われる。遅延なら `identify_new_phases` の cell_refiner 例外ハンドラに落ちて等方 strain へ縮退する。
+    """
+    tt, inten = _pattern([20.0, 30.0])
+    known = _ref("alpha", "A", [(20.0, 1.0)], ["Ca", "O"])
+    calls: list[int] = []
+
+    def counting_subtract(*a, **k):
+        calls.append(1)
+        return np.asarray(a[1], dtype=float)
+
+    monkeypatch.setattr(
+        "tsumugin.reference.iterative.subtract_known_phases", counting_subtract
+    )
+    _rec, fake = _recorder()
+    refiner = make_residual_cell_refiner(tt, inten, known_phases=[known], prealign=fake)
+    assert calls == []  # 生成しただけでは減算しない
+
+    refiner("a.cif")
+    refiner("b.cif")
+    assert calls == [1]  # 初回のみ (2 相目以降は再利用)
