@@ -28,6 +28,17 @@ export const SHELL_STRINGS = {
   // gsas_available と同じ流儀"). Same dynamic-per-GET-/api/state /
   // inverted-chip treatment as status.gsasUnavailable above.
   "status.mpUnavailable": { en: "MP TOKEN NOT SET", ja: "MP トークン未設定" },
+  // CLOSE PROJECT (api-contract.md §プロジェクトを閉じる導線): ContextBar's
+  // right-end button, shown whenever state.shell.source !== "none" (project
+  // or demo). A job running while it's clicked is a non-fatal 409, not a
+  // fatal error — shown inline next to the button rather than via SET_ERROR.
+  "close.button": { en: "CLOSE PROJECT", ja: "プロジェクトを閉じる" },
+  "close.closing": { en: "CLOSING …", ja: "閉じています …" },
+  "close.busy": {
+    en: "a job is running — cannot close now",
+    ja: "実行中は閉じられません",
+  },
+  "close.error": { en: "failed to close project", ja: "プロジェクトを閉じられませんでした" },
 } as const satisfies Record<string, StringPair>;
 
 export type ShellStringKey = keyof typeof SHELL_STRINGS;

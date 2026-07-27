@@ -16,6 +16,13 @@ interface MockOptions {
   recent?: { name: string; path: string; last_opened: string }[];
   createFails?: boolean;
   openFails?: boolean;
+  // api-contract.md §ファイル選択: fs/roots + fs/list, used by the BROWSE…
+  // picker. Keyed by exact `path` query value, mirroring PathPicker.test.tsx.
+  fsRoots?: { path: string; label: string }[];
+  fsListings?: Record<
+    string,
+    { path: string; parent: string | null; entries: { name: string; path: string; is_dir: boolean; is_project: boolean }[] }
+  >;
 }
 
 function installFetchMock(opts: MockOptions = {}) {
@@ -36,6 +43,15 @@ function installFetchMock(opts: MockOptions = {}) {
     }
     if (url.endsWith("/api/project/demo") && method === "POST") {
       return jsonResponse({ ok: true });
+    }
+    if (url.endsWith("/api/fs/roots") && method === "GET") {
+      return jsonResponse({ roots: opts.fsRoots ?? [{ path: "C:\\", label: "C:\\" }] });
+    }
+    if (url.includes("/api/fs/list") && method === "GET") {
+      const path = decodeURIComponent(url.split("path=")[1] ?? "");
+      const found = opts.fsListings?.[path];
+      if (!found) throw new Error(`no fs listing mocked for ${path}`);
+      return jsonResponse(found);
     }
     throw new Error(`unhandled fetch: ${method} ${url}`);
   });
@@ -171,5 +187,81 @@ describe("WelcomeScreen — SAMPLE", () => {
 
     await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/project/demo"))).toBe(true);
+  });
+});
+
+describe("WelcomeScreen — BROWSE (api-contract.md §ファイル選択)", () => {
+  it("NEW PROJECT's BROWSE opens a directory-mode picker and writes the picked path into the directory field", async () => {
+    const user = userEvent.setup();
+    renderWelcome(() => {}, {
+      fsRoots: [{ path: "C:\\", label: "C:\\" }],
+      fsListings: {
+        "C:\\": {
+          path: "C:\\",
+          parent: null,
+          entries: [{ name: "projects", path: "C:\\projects", is_dir: true, is_project: false }],
+        },
+        "C:\\projects": { path: "C:\\projects", parent: "C:\\", entries: [] },
+      },
+    });
+
+    // There are two BROWSE buttons (directory + open path) — the NEW
+    // PROJECT one is the first in document order.
+    const browseBtns = screen.getAllByRole("button", { name: "BROWSE …" });
+    await user.click(browseBtns[0]);
+
+    await waitFor(() => expect(screen.getByText("projects")).toBeInTheDocument());
+    await user.click(screen.getByText("projects"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "SELECT" })).not.toBeDisabled());
+    await user.click(screen.getByRole("button", { name: "SELECT" }));
+
+    // Picker closes and the directory input reflects the picked path.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect((screen.getByLabelText("directory") as HTMLInputElement).value).toBe("C:\\projects");
+  });
+
+  it("OPEN's BROWSE opens a project-mode picker and writes the picked path into the path field", async () => {
+    const user = userEvent.setup();
+    renderWelcome(() => {}, {
+      fsRoots: [{ path: "C:\\", label: "C:\\" }],
+      fsListings: {
+        "C:\\": {
+          path: "C:\\",
+          parent: null,
+          entries: [{ name: "CaTeO3", path: "C:\\CaTeO3", is_dir: true, is_project: true }],
+        },
+        "C:\\CaTeO3": { path: "C:\\CaTeO3", parent: "C:\\", entries: [] },
+      },
+    });
+
+    const browseBtns = screen.getAllByRole("button", { name: "BROWSE …" });
+    await user.click(browseBtns[1]);
+
+    await waitFor(() => expect(screen.getByText("CaTeO3")).toBeInTheDocument());
+    // Descending into the PROJECT-flagged directory should enable SELECT
+    // immediately (mode="project" gating — see PathPicker.test.tsx for the
+    // exhaustive/mutation-proof coverage of this gate itself).
+    await user.click(screen.getByText("CaTeO3"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "SELECT" })).not.toBeDisabled());
+    await user.click(screen.getByRole("button", { name: "SELECT" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect((screen.getByLabelText("project path") as HTMLInputElement).value).toBe("C:\\CaTeO3");
+  });
+
+  it("CANCEL / Escape closes the picker without touching either input", async () => {
+    const user = userEvent.setup();
+    renderWelcome(() => {}, {
+      fsRoots: [{ path: "C:\\", label: "C:\\" }],
+      fsListings: { "C:\\": { path: "C:\\", parent: null, entries: [] } },
+    });
+
+    const browseBtns = screen.getAllByRole("button", { name: "BROWSE …" });
+    await user.click(browseBtns[0]);
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect((screen.getByLabelText("directory") as HTMLInputElement).value).toBe("");
   });
 });

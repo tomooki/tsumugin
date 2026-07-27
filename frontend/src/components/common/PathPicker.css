@@ -1,0 +1,226 @@
+.path-picker__backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-neutral-900) 55%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.path-picker__dialog {
+  width: 640px;
+  max-width: calc(100vw - 40px);
+}
+
+.path-picker__card {
+  background: var(--color-bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.path-picker__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.path-picker__panes {
+  display: flex;
+  gap: 10px;
+  height: 320px;
+}
+
+.path-picker__roots {
+  width: 140px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  border: 1px solid var(--color-divider);
+  background: var(--color-neutral-100);
+  padding: 6px;
+}
+
+.path-picker__roots-heading {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-700);
+  margin-bottom: 4px;
+}
+
+.path-picker__root-row {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.path-picker__root-row:hover:not(:disabled) {
+  background: var(--color-accent-200);
+}
+
+.path-picker__root-row:disabled {
+  color: var(--color-neutral-500);
+  cursor: default;
+}
+
+.path-picker__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-divider);
+  background: var(--color-neutral-100);
+}
+
+.path-picker__breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.path-picker__up-btn {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1;
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.path-picker__up-btn:disabled {
+  color: var(--color-neutral-500);
+  cursor: default;
+}
+
+.path-picker__breadcrumb-path {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.path-picker__entries {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.path-picker__entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-divider) 60%, transparent);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.path-picker__entry:hover:not(:disabled) {
+  background: var(--color-accent-200);
+}
+
+.path-picker__entry:disabled {
+  color: var(--color-neutral-500);
+  cursor: default;
+}
+
+.path-picker__entry--dir {
+  font-weight: 600;
+}
+
+.path-picker__entry--selected {
+  background: var(--color-accent-300);
+}
+
+.path-picker__entry-icon {
+  width: 12px;
+  flex: none;
+  color: var(--color-neutral-600);
+}
+
+.path-picker__entry-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-picker__entry-chip {
+  flex: none;
+}
+
+.path-picker__note {
+  padding: 8px;
+  font-size: 11.5px;
+  color: var(--color-neutral-600);
+}
+
+.path-picker__message {
+  font-size: 11.5px;
+}
+
+.path-picker__message--error {
+  color: var(--color-neutral-900);
+  background: var(--color-neutral-200);
+  padding: 4px 6px;
+  border: 1px solid var(--color-divider);
+}
+
+.path-picker__footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.path-picker__current {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11px;
+}
+
+.path-picker__current-label {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--color-neutral-700);
+}
+
+.path-picker__current-path {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.path-picker__reason {
+  font-size: 11px;
+  color: var(--color-neutral-600);
+  border-left: 2px solid var(--color-accent-300);
+  padding-left: 8px;
+}
+
+.path-picker__actions {
+  display: flex;
+  gap: 8px;
+}

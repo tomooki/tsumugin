@@ -898,6 +898,39 @@ export interface SettingsClearRequest {
   key: SettingsKey;
 }
 
+// — ファイル選択 (Welcome のファイル選択ウィンドウ, api-contract.md §ファイル選択) —
+// Web pages cannot read a real filesystem path out of <input type=file>, so
+// the backend enumerates directories server-side and the frontend draws its
+// own in-app picker window (PathPicker.tsx) against these two read-only
+// endpoints instead of an OS file dialog.
+
+export interface FsRoot {
+  path: string;
+  label: string;
+}
+
+export interface FsRootsResponse {
+  roots: FsRoot[];
+}
+
+/** GET /api/fs/list only ever returns directories and `.json` files — never
+ * other file kinds (the contract: "ディレクトリと `.json` のみ返す"). */
+export interface FsEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  // Whether this directory has a project.json directly inside it (the
+  // "open a project" target marker) — see PathPicker's mode="project" SELECT
+  // gating.
+  is_project: boolean;
+}
+
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+}
+
 // — errors —
 
 export interface ApiErrorBody {
