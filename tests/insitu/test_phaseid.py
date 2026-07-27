@@ -16,6 +16,7 @@ from tsumugin.autorietveld.model import PhaseSpec
 from tsumugin.insitu.phaseid import (
     IdentifiedPhase,
     identify_new_phases,
+    make_residual_cell_refiner,
     phasespec_to_reference,
     structure_to_cif,
 )
@@ -296,6 +297,93 @@ def test_empty_when_no_candidates(tmp_path):
         workdir=str(tmp_path / "n.cif"), subtract_bg=False, refine_lattice=False,
     )
     assert out == ()
+
+
+# ---------------------------------------------------------------------------
+# 異方セルプリアラインの整合先 (Issue #20 続き): 生パターンでなく既知相減算残差へ
+# ---------------------------------------------------------------------------
+
+
+def _recorder():
+    """prealign 呼び出しを記録するスタブ (実 pymatgen プリアラインの代役)。"""
+    calls: list[dict] = []
+
+    def fake_prealign(structure_path, two_theta, intensity, **kwargs):
+        calls.append({"path": structure_path, "tt": np.asarray(two_theta),
+                      "intensity": np.asarray(intensity), **kwargs})
+        return _Sol((9.0, 9.0, 9.0, 90.0, 90.0, 90.0))
+
+    return calls, fake_prealign
+
+
+class _Sol:
+    def __init__(self, cell):
+        self.cell = cell
+        self.n_used = 12
+
+
+def test_cell_refiner_aligns_against_known_phase_residual(tmp_path):
+    """既知相を渡すと、プリアラインは**残差**を見る (生パターンではない)。
+
+    生パターンでは FoM が支配相のピークに占められ、少数相のセルを支配相の位置へ引っ張る
+    (実測 CaTeO3 frame180: delta の最大軸誤差 3.42%→4.21% と**悪化**)。
+    """
+    tt, inten = _pattern([20.0, 30.0, 40.0], heights=[10.0, 1.0, 10.0])
+    known = _ref("alpha", "CaTeO3H2O", [(20.0, 1.0), (40.0, 1.0)], ["Ca", "Te", "O"])
+    calls, fake = _recorder()
+
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], two_theta_range=(15.0, 60.0), prealign=fake,
+    )
+    assert refiner is not None
+    assert refiner("dummy.cif") == (9.0, 9.0, 9.0, 90.0, 90.0, 90.0)
+
+    assert len(calls) == 1
+    seen = calls[0]["intensity"]
+    # 残差は既知相のピーク (20°/40°) を失い、未知相のピーク (30°) を保つ。
+    def _h(vec, pos):
+        return float(vec[np.abs(tt - pos) <= 0.5].max())
+
+    assert _h(seen, 20.0) < 0.1 * _h(inten, 20.0)
+    assert _h(seen, 40.0) < 0.1 * _h(inten, 40.0)
+    assert _h(seen, 30.0) > 0.5 * _h(inten, 30.0)
+    # 残差は既に背景減算済 → 二重に引かせない。
+    assert calls[0]["subtract_bg"] is False
+
+
+def test_cell_refiner_skipped_when_known_phases_cannot_be_subtracted(tmp_path):
+    """既存相があるのに減算できない (warm-start 不能) 場合はプリアラインを**行わない**。
+
+    生パターンへの整合は少数相のセルを測定で悪化させる (上記) ため、等方 strain のまま渡す方が
+    安全側 (提案≠適用)。`require_subtraction=False` で従来動作 (生パターン整合) に戻せる。
+    """
+    tt, inten = _pattern([20.0, 30.0])
+    calls, fake = _recorder()
+
+    assert make_residual_cell_refiner(
+        tt, inten, known_phases=[], prealign=fake, require_subtraction=True
+    ) is None
+    assert calls == []
+
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[], prealign=fake, require_subtraction=False,
+    )
+    assert refiner is not None
+    refiner("dummy.cif")
+    assert len(calls) == 1
+    assert np.allclose(calls[0]["intensity"], inten)  # 生パターンをそのまま見る
+    assert calls[0]["subtract_bg"] is True
+
+
+def test_cell_refiner_returns_none_when_prealign_declines(tmp_path):
+    """プリアラインが None (未改善/情報不足) を返せば補正しない (等方 strain 維持)。"""
+    tt, inten = _pattern([20.0, 30.0])
+    known = _ref("alpha", "CaTeO3H2O", [(20.0, 1.0)], ["Ca", "Te", "O"])
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], prealign=lambda *a, **k: None,
+    )
+    assert refiner is not None
+    assert refiner("dummy.cif") is None
 
 
 def test_phasespec_to_reference_none_on_unreadable_cif(tmp_path):

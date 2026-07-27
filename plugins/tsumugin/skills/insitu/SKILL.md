@@ -276,6 +276,11 @@ repair_frames(result, frames, phases,
 `identify_and_add_phase` に渡し、返る PhaseSpec 候補を `initial_phases` に足して
 `sequential_rietveld` を再実行する (相追加は**あなたの判断 + ユーザー承認**を挟む)。
 DFT (MP) 由来の構造は格子が軸別にずれることがあり、異方セル補正が自動で入る (#20)。
+**補正の整合先は「既知相を引いた残差」**であり、既知相を引けないフレームでは補正を**行わない**
+(生パターンへ整合させると少数相のセルが逆に悪化するため。実測 CaTeO3 delta: 最大軸誤差 3.4%→4.2%)。
+新相追加後も Rwp が高止まりするときは `appearances[].evidence.prealign_basis` を見る —
+`"residual"` なら補正済、`"skipped"` なら DFT 格子のままなので、相のセル誤差を疑って
+`identify_and_add_phase` からの手動投入か、実測 CIF の供給を検討する。
 
 ### 7. パラメトリック解析 — **転移温度は重量分率基準で取る**
 
