@@ -76,13 +76,34 @@ def _sanitize(name: str) -> str:
 
 
 def structure_to_cif(
-    structure: object, path: str | Path, strain: float = 0.0, cell: Cell6 | None = None
+    structure: object,
+    path: str | Path,
+    strain: float = 0.0,
+    cell: Cell6 | None = None,
+    symprec: float = 0.01,
 ) -> str:
     """pymatgen ``Structure`` を CIF に書き出す (遅延 import)。書き出し先パスを返す。
 
     cell を与えると格子を**その絶対値に置換**して書き出す (分率座標は保持; 異方的 DFT 格子誤差を
     異方セルプリアラインで補正した格子を反映)。cell=None かつ strain!=0 なら格子を等方 (1+strain) 倍
     する。cell は strain に優先する。元構造は不変 (copy/新 Structure に適用)。
+
+    **``symprec`` で対称性を検出して書く (P1 展開で書いてはならない)**: ``CifWriter(structure)``
+    は symprec 未指定だと空間群を ``P 1`` として全等価原子を書き出す。加えて ``cell`` 置換は
+    ``Structure(Lattice…, species, frac_coords)`` で素の Structure を組み直すため、MP 構造が
+    持っていた対称性情報がその時点で失われる。**実害 (CaTeO3 delta 実測)**: P1 CIF を読んだ
+    GSAS-II は相を三斜晶と解釈しセル 6 変数 (**角度 3 つを含む**) を解放するが、90/90/90 の
+    擬直方構造では角度方向の微分がほぼ 0 = 特異ヘッシアンになり ``Refine`` が
+    'divide by zero encountered in scalar divide' で失敗する。しかもその失敗は
+    ``G2Project.refine`` が ``GSASIIstrMain.Refine`` の戻り値を捨てるため**例外にならず**、
+    engine は陳腐化した Covariance を読んで「悪化していない」と判断する → revert もされず
+    **以降の全段が無言で何も精密化しないまま完走する** (Rwp には一切現れない)。実測では
+    frame180 の二相試行が S2 以降 7 段すべて no-op になり、単相 base (35.32%) に負けて
+    delta が棄却されていた。対称化すると同じ段が通り 36.34→33.98% (base 比 +3.78%)。
+    座標/Uiso の母数も非対称単位に縮む (delta: 40 原子 → 10 原子)。
+
+    対称性検出に失敗する構造 (結晶系を壊すセル置換等) は P1 で書き出して**物質化自体は
+    落とさない** (提案≠適用の安全側; 下がった対称性でも精密化は成立する)。
     """
     from pymatgen.io.cif import CifWriter
 
@@ -97,7 +118,10 @@ def structure_to_cif(
     elif strain:
         structure = structure.copy()  # type: ignore[attr-defined]
         structure.apply_strain(float(strain))  # type: ignore[attr-defined]
-    CifWriter(structure).write_file(str(path))
+    try:
+        CifWriter(structure, symprec=float(symprec)).write_file(str(path))
+    except Exception:  # noqa: BLE001 — 対称性検出不能は P1 へフォールバック (物質化を落とさない)
+        CifWriter(structure).write_file(str(path))
     return str(path)
 
 

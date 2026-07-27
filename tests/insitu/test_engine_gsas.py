@@ -98,33 +98,54 @@ def test_cateo3_two_frame_sequential_converges():
     ),
     reason="CaTeO3 データ + MATERIALS_PROJECT_API (env or .env) が必要 (delta 自動同定, README)",
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "2026-07-27 再検証: Sample Type 修正 (Kα1 単色 Bragg-Brentano で cell+displacement 段が "
-        "ValueError で死んでいた) を入れると frame180 で delta が受理されなくなる。**本テストが以前 "
-        "green だったのはそのバグのおかげ**だった — 格子が試料変位を吸収した自己整合な誤ったセルが、"
-        "たまたま delta 追加で Rwp を下げる状況を作っていた。修正後の実測: delta CaTeO3 (mp-1195263) は"
-        "正しく提案され (Dara +0.082 で唯一の正スコア候補・相分率 0.281・セル健全) 試行精密化まで到達"
-        "するが、二相精密化の Rwp が 35.32→36.34 と**悪化**するため受理されない。frame180 は転移共存 "
-        "+ 選択配向 + 未モデルの水素で単相でも ~35% であり (本ファイル docstring の honest status)、"
-        "delta 受理には二相側の精密化改善が要る = 閾値の緩和で通してはならない (負スコア偽相を再び"
-        "招き入れる)。提案までの経路は下の "
-        "test_cateo3_mp_gsas_proposes_delta_and_gates_false_positives が守る。"
-    ),
+@pytest.mark.parametrize(
+    "warm_start",
+    [
+        pytest.param(True, id="warm_start"),
+        pytest.param(
+            False,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "static (A: identify-all-then-exclude) 経路は現行相 alpha を残差から減算せずに "
+                    "探索するため、delta の同定も異方プリアラインも質が落ちる。実測 (2026-07-27): "
+                    "Dara スコア +0.0026 (warm は +0.0779 / 足切りは 0.0) で辛うじて試行に載るが、"
+                    "プリアラインが**別の軸**を伸ばし (a +4.63% / warm は c +4.56%) delta のピークが "
+                    "合わないため、二相精密化で**相分率が 8.4e-13 に潰れる** → `frac_min` (0.02) が "
+                    "正しく棄却する (Rwp は 35.32→33.70 と下がるが、それは存在しない相の母数増による "
+                    "見かけの改善なので採ってはならない)。**受理判定は正しく動いている** — 直すべきは "
+                    "少数相での異方プリアラインの頑健性 (raw DFT セルより悪化させる件と同根)。"
+                    "warm_start (B, 既定) は base 32.98→30.19 (相対 +8.4%) で green。"
+                ),
+            ),
+            id="static",
+        ),
+    ],
 )
-@pytest.mark.parametrize("warm_start", [True, False], ids=["warm_start", "static"])
 def test_cateo3_mp_gsas_auto_identifies_delta(warm_start):
     """2 フレーム逐次 (frame030 alpha 単相 → frame180 共存) で **MP から delta を自動同定・採用** する。
 
     Issue #28 T6-B の operando warm-start を実 MP+GSAS で end-to-end 検証する。frame180 の共存域で
     Materials Project から無水 CaTeO3 (delta, mp-1195263) が自動同定・物質化・追加され、相集合が
     ``(alpha, new_CaTeO3)`` に成長する。``warm_start`` は現行相 alpha を精密化格子付きで先に残差減算する
-    か (B) 否か (A, identify-all-then-exclude) のスイッチ。両者とも delta を同定する (B は残差がクリーンで
-    delta 定量・妥当性が良い; README の A/B 表参照)。ネットワーク + GSAS で数分要する gated テスト。
+    か (B) 否か (A, identify-all-then-exclude) のスイッチ。**B (既定) のみ受理まで到達する** — A は
+    残差が汚れたまま探索するためプリアラインが誤整合し相分率が潰れる (下の xfail 理由に実測値)。
+    ネットワーク + GSAS で数分要する gated テスト。
 
-    注意: frame180 は転移共存フレームで絶対 Rwp は高い (~33%, preferred orientation + 水素 + 混合相;
-    README honest status)。本テストは**自動同定の end-to-end 成立**を固定する (Rwp 収束帯は別テスト)。
+    注意: frame180 は転移共存フレームで絶対 Rwp は高い (単相 ~33%, preferred orientation + 水素 +
+    混合相; README honest status)。本テストは**自動同定の end-to-end 成立**を固定する
+    (Rwp 収束帯は別テスト)。
+
+    ⚠ **2026-07-27 の履歴 (閾値を緩めて通したのではない)**: Sample Type 修正で「格子が試料変位を
+    吸収した自己整合な誤ったセル」が消えた直後、本テストは一度 xfail に落ちた (二相の Rwp が
+    35.32→36.34 と悪化して受理されなかった)。原因は**閾値ではなく 2 つの無言失敗**だった:
+    (1) 物質化 CIF が ``P 1`` で書かれ (`insitu.phaseid.structure_to_cif` の symprec 未指定 +
+    cell 置換時の Structure 組み直し)、GSAS が delta を三斜晶と見てセル 6 変数を解放 → 特異
+    ヘッシアンで ``Refine`` が失敗、(2) その失敗が ``G2Project.refine`` に捨てられ engine が
+    陳腐化した Covariance を読むため revert すらされず、**S2 以降の全段が no-op のまま完走**して
+    いた (`autorietveld.engine._capture_refine_status`)。両者を直した実測は
+    base 32.98 → 二相 30.19 (**相対 +8.4%**、受理閾値 +1%) で、**フィットが実際に良くなって**
+    受理されている。負スコア偽相の足切り (`min_identify_score`) は据え置き。
     """
     from tsumugin.autorietveld.model import Geometry, PhaseSpec, Radiation
     from tsumugin.insitu import (
