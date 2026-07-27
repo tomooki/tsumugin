@@ -1209,7 +1209,9 @@ def test_fs_list_route_returns_shape(client: TestClient, tmp_path: Path):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body.keys()) == {"path", "parent", "entries"}
+    # is_project は「現在地がプロジェクトか」(entry 経由でない到達でも判定できるように追加)。
+    assert set(body.keys()) == {"path", "parent", "is_project", "entries"}
+    assert body["is_project"] is False  # project.json を置いていないディレクトリ
     names = {e["name"] for e in body["entries"]}
     assert names == {"child", "note.json"}
 
