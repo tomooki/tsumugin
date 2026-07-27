@@ -612,18 +612,24 @@ def _try_add_phase(
     # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
     base_cells = {name: _cell6(c) for name, c in base_result.refined_cells.items()}
 
-    # 【operando warm-start (一本化 B)】: 現行相を精密化格子付き ReferencePhase に変換し finder へ渡す。
-    #   identify_pattern が known_phases として先に残差から減算 → 少数新相を clean な残差で探せる。
+    # 【現行相の参照ピーク列】: 現行相を精密化格子付き ReferencePhase に変換し finder へ渡す。
+    #   用途は 2 つあり、**片方は `warm_start_known_phases` の対象外**:
+    #   (a) 同定 (一本化 B): identify_pattern が known_phases として先に残差から減算 → 少数新相を
+    #       clean な残差で探せる。A/B スイッチ `warm_start_known_phases` が制御するのは**これだけ**
+    #       (A = identify-all-then-exclude)。既定 finder が `identify_new_phases` へ渡す段で分岐する。
+    #   (b) 異方セルプリアラインの整合先 (Issue #20 続き): 少数相のセルは**既知相を引いた残差**へ
+    #       整合させないと支配相のピークに引っ張られて壊れる。これは同定戦略 A/B と無関係な
+    #       **モデルの格子の話**なので、A でも同じ参照列が要る (実測: 参照列を渡さず整合を諦めると
+    #       delta が受理されなくなる = A で自動同定が壊れる)。
     #   変換不能 (pymatgen 不在 / CIF 読込不可 / スタブ finder の擬似パス) は None を除き空集合へ縮退
-    #   する (静的同定=identify-all-then-exclude に安全フォールバック; 提案≠適用・非回帰)。
+    #   する (静的同定へ安全フォールバック; 提案≠適用・非回帰)。
     known_refs: list[ReferencePhase] = []
-    if pid.warm_start_known_phases:
-        for p in phases:
-            ref = phasespec_to_reference(
-                p, refined_cell=base_cells.get(p.phase_name), wavelength=pid.wavelength
-            )
-            if ref is not None:
-                known_refs.append(ref)
+    for p in phases:
+        ref = phasespec_to_reference(
+            p, refined_cell=base_cells.get(p.phase_name), wavelength=pid.wavelength
+        )
+        if ref is not None:
+            known_refs.append(ref)
 
     try:
         candidates = phase_finder(frame, list(pid.elements), exclude, workdir, known_refs)
@@ -663,6 +669,13 @@ def _try_add_phase(
                 "phase_id": str(meta.get("phase_id", "")),
                 "rwp_before": base_rwp, "rwp_after": trial_rwp,
                 "fraction": new_frac, "accepted": bool(accepted),
+                # 【棄却の切り分け (Issue #20 続き)】: 相分率 ~0 で棄却された候補が「残差を説明
+                #   できない相」なのか「セルがずれていて説明**できなかった**相」なのかは、
+                #   rwp/fraction だけでは区別できない。物質化時の等方 strain と異方セル補正の
+                #   整合先を同じ行に残し、ledger だけで原因を切れるようにする。
+                "strain": finite_or_none(meta.get("strain")),
+                "prealign_basis": str(meta.get("prealign_basis", "")),
+                "refined_cell": meta.get("refined_cell"),
             },
         )
         # 受理基準を満たす中で最小 Rwp の候補を保持する (Dara 順でなく Rietveld フィットで選ぶ)。
@@ -909,7 +922,9 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
             name_prefix="new", cell_refiner=cell_refiner,
             rerank_top_k=pid.rerank_top_k, rerank_wavelength=pid.wavelength,
             require_full_element_system=pid.require_full_element_system,
-            known_phases=known_phases,  # operando warm-start (一本化 B): 現行相を先に残差減算
+            # operando warm-start (一本化 B): 現行相を先に残差減算。**A/B スイッチが効くのはここだけ** —
+            # 上の cell_refiner (異方セル補正の整合先) は同定戦略と無関係なので A でも残差を使う。
+            known_phases=known_phases if pid.warm_start_known_phases else (),
         )
         # ③ が「セルがどう決まったか」を追えるよう整合先を証拠に残す (ledger/appearance evidence)。
         if not pid.refine_new_phase_cell:

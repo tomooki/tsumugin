@@ -582,3 +582,51 @@ def test_cell_refiner_defers_subtraction_until_used(monkeypatch, tmp_path):
     refiner("a.cif")
     refiner("b.cif")
     assert calls == [1]  # 初回のみ (2 相目以降は再利用)
+
+
+def test_cell_refiner_sees_unstrained_cell(tmp_path):
+    """cell_refiner には**等方 strain を掛けない** DB 素の構造を渡す (Issue #20 続き)。
+
+    同定段の等方 strain は「支配相に汚染されうるパターン」に対して**ランキング用**に求めた量で、
+    符号を誤ると DFT 誤差を打ち消すどころか**増幅**する。実測 (CaTeO3 [static]): 既に c が +3.4%
+    過大な DFT セルに strain **+3.4%** が乗って出発点が c +6.94% = プリアラインの ±5% グリッド外に
+    出てしまい、残差整合でも 1.43% までしか戻せなかった (DB 素のセルから始めれば 0.51%)。
+    異方プリアラインの方が良い推定量なので、strain を掛けない状態から始める。
+    """
+    true_pos = [18.0, 21.0, 24.0, 28.0, 32.0, 36.0, 41.0, 46.0, 52.0]
+    heights = [1.0, 0.9, 0.8, 1.0, 0.7, 0.9, 0.6, 0.8, 0.7]
+    tt, inten = _pattern(true_pos, heights=heights)
+    shifted = [(p * 1.010, h) for p, h in zip(true_pos, heights)]
+    prov = FakeProvider([_ref("mp-x", "CaTeO3", shifted, ["Ca", "Te", "O"])])
+    mat = FakeMaterializer()
+    aniso = (6.53, 8.17, 13.32, 90.0, 90.0, 90.0)
+
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=True, max_strain=0.05,
+        cell_refiner=lambda _p: aniso,
+    )
+    assert len(out) == 1
+    assert abs(out[0].strain) > 1e-4          # 同定は非零 strain を求めている
+    assert mat.strains[0] == 0.0              # が、整合先の CIF には掛けない
+    assert mat.cells[-1] == aniso             # 最終的に異方セルで再物質化
+    assert out[0].refined_cell == aniso
+
+
+def test_isotropic_strain_kept_when_refiner_declines(tmp_path):
+    """cell_refiner が None を返したら等方 strain 版へ戻す (従来の補正を失わない)。"""
+    true_pos = [18.0, 21.0, 24.0, 28.0, 32.0, 36.0, 41.0, 46.0, 52.0]
+    heights = [1.0, 0.9, 0.8, 1.0, 0.7, 0.9, 0.6, 0.8, 0.7]
+    tt, inten = _pattern(true_pos, heights=heights)
+    shifted = [(p * 1.010, h) for p, h in zip(true_pos, heights)]
+    prov = FakeProvider([_ref("mp-x", "CaTeO3", shifted, ["Ca", "Te", "O"])])
+    mat = FakeMaterializer()
+
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=True, max_strain=0.05,
+        cell_refiner=lambda _p: None,
+    )
+    assert out[0].refined_cell is None
+    assert mat.strains[-1] == pytest.approx(out[0].strain)  # 最後は等方 strain 版
+    assert abs(mat.strains[-1]) > 1e-4

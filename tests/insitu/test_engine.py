@@ -406,15 +406,30 @@ def test_warm_start_passes_converted_known_phases_to_finder(monkeypatch):
     assert seen_cells["cell"] == (14.8, 6.8, 8.0, 90.0, 90.0, 90.0)
 
 
-def test_warm_start_disabled_passes_empty_known_phases(monkeypatch):
-    """warm_start_known_phases=False なら変換せず known_phases=() を渡す (静的同定へ縮退)。"""
+def test_warm_start_disabled_still_supplies_known_phases_to_finder(monkeypatch):
+    """warm_start_known_phases=False でも現行相の参照列は finder へ渡す (整合先に必要)。
+
+    このフラグが制御するのは**同定戦略 A/B** (identify-all-then-exclude か 減算してから同定か)
+    だけで、異方セルプリアラインの**整合先**は同定戦略と無関係な「モデルの格子」の話。A でも
+    既知相を引いた残差が要る (引けないと少数相のセルが支配相へ引っ張られて壊れる)。
+    A/B の切り替えは既定 finder が `identify_new_phases(known_phases=)` へ渡す段で行う。
+
+    ⚠ 旧契約 (フラグ off なら変換せず () を渡す) からの意図的な変更。旧契約のままだと A では
+    `make_residual_cell_refiner` が整合先を作れず**セル補正を丸ごと諦める** (`prealign_basis`
+    = "skipped") ため、A が B より構造的に不利になる。実測でも生パターン整合 27.58 / 補正なし
+    32.24 と、補正なしが最悪 (`docs` の frame180 比較表)。
+    """
+    from tsumugin.reference.model import ReferencePhase
+    from tsumugin.search.peaks import Peak
+
     alpha, delta, runner, pid = _snr_trigger_setup()
     pid = replace_pid(pid, warm_start_known_phases=False)
-
-    def boom(*a, **k):  # 呼ばれてはいけない
-        raise AssertionError("phasespec_to_reference は warm_start 無効時に呼ばれない")
-
-    monkeypatch.setattr("tsumugin.insitu.engine.phasespec_to_reference", boom)
+    fake_ref = ReferencePhase(phase_id="alpha", formula="CaH2O4Te",
+                              element_system=("Ca", "H", "O", "Te"),
+                              peaks=(Peak(position=20.0, height=100.0),), energy_above_hull=None)
+    monkeypatch.setattr(
+        "tsumugin.insitu.engine.phasespec_to_reference", lambda *a, **k: fake_ref
+    )
     received: dict[str, object] = {}
 
     def finder(frame, elements, exclude, workdir, known_phases=()):
@@ -423,7 +438,35 @@ def test_warm_start_disabled_passes_empty_known_phases(monkeypatch):
 
     run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
                             config=SequentialConfig(phase_id=pid, changepoint_window=99))
-    assert received["known"] == []
+    assert received["known"] == [fake_ref]
+
+
+def test_default_finder_gates_identification_warm_start_only(monkeypatch, tmp_path):
+    """A/B スイッチは `identify_new_phases(known_phases=)` にだけ効き、整合先には効かない。"""
+    from tsumugin.insitu.engine import _default_phase_finder
+
+    _tt, _inten, captured, seen, known = _prealign_wiring_setup(monkeypatch, tmp_path)
+
+    def fake_identify(*a, **kw):
+        captured["cell_refiner"] = kw.get("cell_refiner")
+        captured["known_phases"] = list(kw.get("known_phases") or ())
+        return ()
+
+    monkeypatch.setattr("tsumugin.insitu.phaseid.identify_new_phases", fake_identify)
+    frame = FrameSpec(data_path="f0.xrdml", axis_value=180.0)
+
+    off = _default_phase_finder(
+        PhaseIdConfig(elements=("Ca", "Te", "O"), warm_start_known_phases=False)
+    )
+    off(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [known])
+    assert captured["known_phases"] == []          # 同定は静的 (A)
+    assert captured["cell_refiner"] is not None    # 整合先は残差のまま
+    captured["cell_refiner"]("dummy.cif")
+    assert seen and seen[0]["subtract_bg"] is False  # 残差経路を通っている
+
+    on = _default_phase_finder(PhaseIdConfig(elements=("Ca", "Te", "O")))
+    on(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [known])
+    assert captured["known_phases"] == [known]
 
 
 def test_warm_start_unconvertible_phase_falls_back_to_empty(monkeypatch):
@@ -1194,3 +1237,42 @@ def test_default_finder_reports_prealign_basis_in_evidence(monkeypatch, tmp_path
     )
     (_spec3, meta3), = off(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [known])
     assert meta3["prealign_basis"] == "off"
+
+
+def test_phaseid_trial_ledger_records_cell_provenance():
+    """試行 ledger にセルの出所 (strain / prealign_basis / refined_cell) を残す。
+
+    相分率 ~0 で棄却された候補が「残差を説明できない相」なのか「セルがずれていて説明**できなかった**
+    相」なのかは rwp/fraction だけでは切れない (実測: CaTeO3 [static] で delta が分率 1e-12 で棄却され、
+    ledger からは原因が分からなかった)。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(30.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                  "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 1.0, "new_CaTeO3": 1e-12})  # 分率 ~0 で棄却される
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 20.0,
+                       {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir, known_phases=()):
+        return [(delta, {"source": "mp", "formula": "CaTeO3", "strain": -0.031,
+                         "prealign_basis": "residual",
+                         "refined_cell": [8.1, 6.5, 13.3, 90.0, 90.0, 90.0]})]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), trigger_rwp_ratio=1.25)
+    res = run_sequential_rietveld(_frames(3), [alpha], runner=runner, phase_finder=finder,
+                                  config=SequentialConfig(phase_id=pid))
+    assert res.appearances == ()  # 分率 ~0 なので棄却
+    trials = [e for e in res.ledger.entries if e.kind == "m9_phaseid_trial"]
+    assert trials, "試行が ledger に残っていない"
+    payload = dict(trials[0].payload)
+    assert payload["accepted"] is False
+    assert payload["strain"] == pytest.approx(-0.031)
+    assert payload["prealign_basis"] == "residual"
+    assert payload["refined_cell"] == [8.1, 6.5, 13.3, 90.0, 90.0, 90.0]

@@ -362,28 +362,39 @@ def identify_new_phases(
             continue
         cif_name = f"{_sanitize(name_prefix)}_{_sanitize(ref.phase_id)}.cif"
         cif_path = str(workpath / cif_name)
+        strain = float(accepted.strain)
+        # 【整合先の出発セル】: cell_refiner があるときは**等方 strain を掛けずに**物質化する。
+        #   同定段の strain は「支配相に汚染されうるパターン」に対しランキング用に求めた量で、
+        #   符号を誤ると DFT 誤差を打ち消すどころか**増幅**し、プリアラインの探索域 (±5%/軸) の
+        #   外へ出発点を押し出す。実測 (CaTeO3, 支配相を引かない静的同定): 既に c が +3.4% 過大な
+        #   DFT セルに strain +3.4% が乗り、出発点 c +6.94% → 残差整合でも 1.43% までしか戻せない
+        #   (DB 素のセルから始めれば 0.51%)。異方プリアラインの方が良い推定量なので素から始める。
+        seed_strain = 0.0 if cell_refiner is not None else strain
         try:
-            # 提案時 refine_lattice が求めた等方歪みを物質化構造に適用し DFT 格子過大評価を実測へ補正する。
             materializer.materialize(
-                ref.phase_id, list(elements), cif_path, strain=float(accepted.strain)
+                ref.phase_id, list(elements), cif_path, strain=seed_strain
             )
         except Exception:
             continue  # 物質化失敗は飛ばして次の受理相へ (提案≠適用の安全側)
-        # 異方セル補正 (Issue #20): 等方 strain で潰しきれない DFT の軸別誤差を 異方セルプリアラインで
-        # 求め、非 None なら CIF をその絶対格子で再物質化する。失敗/None は等方版のまま (安全側)。
+        # 異方セル補正 (Issue #20): DFT の軸別誤差を異方セルプリアラインで求め、非 None ならその
+        # 絶対格子で再物質化する。失敗/None は**等方 strain 版へ戻す** (従来の補正を失わない)。
         refined_cell: Cell6 | None = None
         if cell_refiner is not None:
             try:
                 refined_cell = cell_refiner(cif_path)
             except Exception:
                 refined_cell = None
-            if refined_cell is not None:
-                try:
+            try:
+                if refined_cell is not None:
                     materializer.materialize(
                         ref.phase_id, list(elements), cif_path, cell=refined_cell
                     )
-                except Exception:
-                    refined_cell = None  # 再物質化失敗は等方版を維持
+                elif strain:
+                    materializer.materialize(
+                        ref.phase_id, list(elements), cif_path, strain=strain
+                    )
+            except Exception:
+                refined_cell = None  # 再物質化失敗は素の DB セルのまま (物質化自体は落とさない)
         phase_name = f"{_sanitize(name_prefix)}_{_sanitize(ref.formula)}"
         out.append(
             IdentifiedPhase(
