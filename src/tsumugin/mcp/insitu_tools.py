@@ -81,6 +81,13 @@ _SEQ_CSV_PHASE_SUFFIXES = [
 ]
 _SEQ_CSV_REASONS_DELIMITER = "|"
 
+#: Cu Kα1 (Å)。``identify_and_add_phase`` の ``wavelength`` 既定 = 「実験室 X 線を主張する」。
+#: ``None`` を渡すと「**不明**」の意味になり、波長依存の段 (既知相の残差減算・異方 re-score) が
+#: 止まる — 推測して計算するより「補正しない」方が安全側 (code-review PR #155)。
+_CU_KA1 = 1.5406
+#: 異方 re-score の既定候補数 (`reference.engine.identify_phases` の既定と一致させる)。
+_DEFAULT_RERANK_TOP_K = 5
+
 
 def _seq_csv_num_cell(value: object) -> str:
     """CSV セル用の数値純化 (有限は str、None/非有限 (inf/-inf/NaN) は空欄)。
@@ -808,7 +815,7 @@ def identify_and_add_phase(
     hull_cutoff_ev: float | None = 0.1,
     subtract_bg: bool = True,
     known_phases: Sequence[Mapping[str, object]] = (),
-    wavelength: float = 1.5406,
+    wavelength: float | None = _CU_KA1,
     provider: object | None = None,
     materializer: object | None = None,
     reason: str = "",
@@ -824,8 +831,14 @@ def identify_and_add_phase(
         ``[dict(p, refined_cell=res["frames"][i]["refined_cells"][p["phase_name"]])
         for p in initial_phases]``。渡すと (1) 既知相を先に残差から減算した上で新相を同定し、
         (2) **異方セル補正 (Issue #20) の整合先をその残差にする**
-    :param wavelength: 既知相のピーク生成と異方セルプリアラインに使う線源波長 (Å)。既定 Cu Kα1。
-        **放射光/中性子では実波長を必ず渡す** (誤った波長の既知相ピークを引くと残差が壊れる)
+    :param wavelength: 既知相のピーク生成・異方セルプリアライン・異方 re-score に使う線源波長 (Å)。
+        既定 Cu Kα1 (= 実験室 X 線であるという**主張**)。**放射光/中性子では実波長を必ず渡す**
+        (誤った波長の既知相ピークを引くと残差が壊れる)。
+        **波長が判らないときは ``None`` を渡す** — 推測せず、波長依存の段 (既知相の残差減算 +
+        異方 re-score) を**両方**止める (``prealign_basis="skipped"``)。省略して既定 Cu Kα1 に
+        任せてはならない: 波長は hkl→2θ に直接効くため、λ=0.7996 の放射光を 1.5406 として扱うと
+        2θ が数度ずれ `match_tol_deg` (0.15°) を大きく超え、**候補の順位付けが壊れる**
+        (TOF 中性子は単一波長を持たないので常に ``None``)
     :returns: 候補列 + ``prealign_basis`` (``"residual"``=残差へ整合済 / ``"skipped"``=補正せず)
         + ``n_known_phases_used``。各候補の ``refined_cell`` は補正後の絶対格子 (未補正なら None)
 
@@ -871,15 +884,25 @@ def identify_and_add_phase(
     inten = np.asarray(intensity, dtype=float)
     tt_range = (float(tt.min()), float(tt.max())) if tt.size else (10.0, 90.0)
 
+    # 【波長不明 (None) は波長依存の段を**すべて**止める】(code-review PR #155): 波長は
+    #   hkl→2θ 変換に直接効くため、知らないまま既定 Cu Kα1 で計算すると λ=0.7996 の放射光では
+    #   2θ が数度ずれ、`match_tol_deg` (既定 0.15°) を大きく超えて**候補の順位付けが壊れる**。
+    #   止めるべきは 2 つあり、既知相の残差減算 (下の known_refs/cell_refiner) だけでは不足だった —
+    #   `rerank_top_k` は全階層で既定 5 (ON) なので、異方 re-score が誤波長で走ってしまう。
+    #   不変条件「**波長を知らないなら波長に依存する計算をしない**」を呼び手ごとに覚えさせず
+    #   ここ (② 境界) に置く。`wavelength` 省略時は従来どおり Cu Kα1 (= 実験室 X 線の主張)。
+    wavelength_known = wavelength is not None
+    lam = float(wavelength) if wavelength_known else _CU_KA1
     # 既知相 (CIF) → ピーク列付 ReferencePhase。変換不能 (pymatgen 不在 / CIF 読込失敗) は None が
     # 返り、静的同定へ縮退する (安全側)。精密化格子を与えると DFT 素の格子より残差がクリーンになる。
     known_refs = []
-    for spec, cell in known_specs:
-        ref = phasespec_to_reference(
-            spec, refined_cell=cell, wavelength=wavelength, two_theta_range=tt_range
-        )
-        if ref is not None:
-            known_refs.append(ref)
+    if wavelength_known:
+        for spec, cell in known_specs:
+            ref = phasespec_to_reference(
+                spec, refined_cell=cell, wavelength=lam, two_theta_range=tt_range
+            )
+            if ref is not None:
+                known_refs.append(ref)
 
     # 【整合先は残差のみ】: `require_subtraction=True` 固定。既知相が 1 つも使えなければ
     #   `make_residual_cell_refiner` は None を返し、補正なし (等方 strain のまま) になる。
@@ -887,7 +910,7 @@ def identify_and_add_phase(
     #   支配的」として生パターン整合を許すが、② の手動投入では呼び手が相集合の全体を渡したのか
     #   一部なのかを ② から判別できないため、生パターン整合 (実測で有害) を選べる余地を持たせない。
     cell_refiner = make_residual_cell_refiner(
-        tt, inten, known_phases=known_refs, wavelength=wavelength,
+        tt, inten, known_phases=known_refs, wavelength=lam,
         two_theta_range=tt_range, subtract_bg=subtract_bg, require_subtraction=True,
     )
 
@@ -903,7 +926,9 @@ def identify_and_add_phase(
         hull_cutoff_ev=hull_cutoff_ev,
         subtract_bg=subtract_bg,
         cell_refiner=cell_refiner,
-        rerank_wavelength=wavelength,
+        rerank_wavelength=lam,
+        # 波長不明なら異方 re-score を止める (0 = 無効)。誤波長の hkl→2θ で順位を付けない。
+        rerank_top_k=_DEFAULT_RERANK_TOP_K if wavelength_known else 0,
         known_phases=known_refs,  # 既知相を先に残差から減算してから新相を探す (自動経路と同一)
     )
     return {

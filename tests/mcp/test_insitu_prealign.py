@@ -320,3 +320,71 @@ def test_known_phases_reachable_from_sequential_rietveld_output(tmp_path, monkey
     assert out["prealign_basis"] == "residual"
     assert conv[0]["refined_cell"] == (14.8, 6.8, 8.0, 90.0, 90.0, 90.0)
     json.dumps(out, allow_nan=False)
+
+
+# --- 波長不明 (None) の扱い: 波長依存段を止める (code-review PR #155) --------------------
+
+
+def test_unknown_wavelength_disables_anisotropic_rerank(tmp_path, monkeypatch):
+    """★``wavelength=None`` は「不明」— **波長依存の段をすべて止める** (推測しない)。
+
+    **なぜ必要か (code-review PR #155)**: 呼び手が波長を知らないとき、`wavelength` を省略すると
+    ② の既定 Cu Kα1 (1.5406) が使われ、それが `rerank_wavelength` に流れて**異方 re-score が
+    誤波長で走る** (`rerank_top_k` は全階層で既定 5 = ON)。波長は hkl→2θ 変換に直接効くので、
+    λ=0.7996 の放射光を 1.5406 と扱うと 2θ が数度ずれ `match_tol_deg` 既定 0.15° を大きく
+    超える → **候補の順位付けそのものが壊れる** (「順位が少し変わる」ではない)。
+
+    既知相の残差減算だけを止めても不十分だった、というのが指摘の要点。不変条件は
+    「**波長を知らないなら波長に依存する計算を一切しない**」であり、それを呼び手ごとに
+    覚えさせるのではなく ② 境界に置く。
+    """
+    tt, inten = _pattern([20.0, 30.0], heights=[10.0, 1.0])
+    delta = _ref("mp-delta", "CaTeO3", [(30.0, 1.0)], ["Ca", "Te", "O"])
+    seen: dict = {}
+
+    def spy(two_theta, intensity, **kw):
+        seen.update(kw)
+        return ()
+
+    monkeypatch.setattr("tsumugin.insitu.phaseid.identify_new_phases", spy)
+
+    out = identify_and_add_phase(
+        tt.tolist(), inten.tolist(), ["Ca", "Te", "O"], str(tmp_path),
+        wavelength=None,
+        known_phases=[{"structure_path": str(tmp_path / "a.cif"), "phase_name": "alpha"}],
+        provider=_StubProvider([delta]), materializer=_StubMaterializer(),
+    )
+
+    assert "error" not in out, out
+    # 異方 re-score を止める (誤波長で hkl→2θ を引かない)
+    assert seen.get("rerank_top_k") == 0, (
+        f"波長不明でも異方 re-score が走る (rerank_top_k={seen.get('rerank_top_k')!r})"
+    )
+    # 既知相の残差減算も行わない (既存契約)
+    assert not seen.get("known_phases"), "波長不明で既知相を残差減算に使っている"
+    assert seen.get("cell_refiner") is None, "波長不明でセル補正器を作っている"
+    assert out["prealign_basis"] == "skipped"
+    assert out["n_known_phases_used"] == 0
+    json.dumps(out, allow_nan=False)
+
+
+def test_known_wavelength_still_reranks(tmp_path, monkeypatch):
+    """非回帰: 波長が判っていれば異方 re-score は既定どおり有効 (上の修正で殺していない)。"""
+    tt, inten = _pattern([20.0, 30.0], heights=[10.0, 1.0])
+    delta = _ref("mp-delta", "CaTeO3", [(30.0, 1.0)], ["Ca", "Te", "O"])
+    seen: dict = {}
+
+    def spy(two_theta, intensity, **kw):
+        seen.update(kw)
+        return ()
+
+    monkeypatch.setattr("tsumugin.insitu.phaseid.identify_new_phases", spy)
+
+    identify_and_add_phase(
+        tt.tolist(), inten.tolist(), ["Ca", "Te", "O"], str(tmp_path),
+        wavelength=0.7996,
+        provider=_StubProvider([delta]), materializer=_StubMaterializer(),
+    )
+
+    assert seen.get("rerank_top_k") != 0, "波長が判っているのに re-score を止めている"
+    assert seen.get("rerank_wavelength") == pytest.approx(0.7996)

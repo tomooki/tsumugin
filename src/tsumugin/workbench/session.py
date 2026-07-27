@@ -2691,23 +2691,27 @@ class WorkbenchSession:
         #   波長は instprm から読む。**読めなければ既知相を渡さない** — 誤った波長で既知相ピークを
         #   立てて引くと残差そのものが壊れ、プリアラインは壊れた残差へ整合する (補正なしより悪い)。
         #   TOF 中性子 (単一波長なし) もここで自然に "skipped" へ落ちる。
+        #
+        #   ⚠ **不明は `None` として明示的に渡す** (引数を省略しない, code-review PR #155):
+        #   省略すると ② の既定 Cu Kα1 (1.5406) が使われ、それが異方 re-score
+        #   (`rerank_top_k` 既定 5 = ON) へ流れて**誤波長で候補の順位付けが行われる**。
+        #   既知相の残差減算を止めるだけでは不足だった — ② は `None` を「不明」と解釈して
+        #   波長依存の段を両方止める。
         wavelength = (
             _instprm_wavelength(self._project.histograms[0].instrument_path)
             if self._project.histograms
             else None
         )
-        prealign_kwargs: dict[str, Any] = {}
+        known_payload: list[dict[str, Any]] = []
         if wavelength is not None:
-            prealign_kwargs = {
-                "known_phases": _known_phases_payload(
-                    self._project, self._sequential_result, int(info["frame_index"])
-                ),
-                "wavelength": wavelength,
-            }
+            known_payload = _known_phases_payload(
+                self._project, self._sequential_result, int(info["frame_index"])
+            )
         try:
             found = identify_and_add_phase(
                 two_theta.tolist(), intensity.tolist(), elements, workdir, top_k=1,
-                **prealign_kwargs,
+                known_phases=known_payload,
+                wavelength=wavelength,
             )
         except Exception as exc:  # noqa: BLE001 — 境界縮退 (MP キー欠落/ネットワーク等)
             return {"error": f"phase identification failed: {exc}", "error_type": "ValueError"}

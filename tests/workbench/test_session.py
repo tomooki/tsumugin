@@ -2960,6 +2960,17 @@ class TestNewPhaseApprovalPrealign:
 
         assert captured.get("_called"), f"{label}: ② が呼ばれていない"
         assert not captured.get("known_phases"), f"{label}: 誤波長で既知相を渡している"
+        # ★ 波長そのものも**推測させない** (code-review #155): 引数を省略すると ② の既定
+        #   Cu Kα1 (1.5406) が使われ、それが `rerank_wavelength` に流れて異方 re-score が
+        #   誤波長で走る (rerank_top_k 既定 5 = ON)。波長は hkl→2θ に直接効くので、λ=0.7996 の
+        #   放射光を 1.5406 と扱うと 2θ が数度ずれ match_tol_deg 0.15° を大きく超え、
+        #   **候補の順位付けが壊れる**。「不明」は None として明示的に渡すこと。
+        assert "wavelength" in captured, (
+            f"{label}: wavelength を省略している — ② の既定 Cu Kα1 が re-score に漏れる"
+        )
+        assert captured["wavelength"] is None, (
+            f"{label}: 波長不明を {captured['wavelength']!r} と推測している"
+        )
         assert "error" not in result  # 同定自体は続行する (補正なしに縮退するだけ)
 
     def test_nonfinite_refined_cell_degrades_to_dft_cell_not_error(self, tmp_path, monkeypatch):
