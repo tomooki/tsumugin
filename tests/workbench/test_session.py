@@ -2797,6 +2797,350 @@ def test_resolve_new_phase_approval_approve_reaches_add_phase(tmp_path, monkeypa
     assert any(p.phase_name == called["phase_name"] for p in session._project.phases)
 
 
+# ---------------------------------------------------------------------------
+# B5 / Issue #20: GUI 承認経路にも異方セル補正を通す
+# ---------------------------------------------------------------------------
+
+
+def _instprm_text(*lines: str) -> str:
+    head = ["#GSAS-II instrument parameter file; do not add/delete items!", "Type:PXC", "Bank:1.0"]
+    tail = ["Zero:0.0", "Polariz.:0.95", "Azimuth:0.0", "U:3.0", "V:-3.0", "W:30.0",
+            "X:0.0", "Y:3.0", "Z:0.0", "SH/L:0.002"]
+    return "\n".join(head + list(lines) + tail) + "\n"
+
+
+#: 放射光 (SPring-8 BL02B2 相当) の単一波長 instprm。既定 Cu Kα1 (1.5406) と遠いので、
+#: 「実波長を渡しているか」が既知相ピーク位置で明確に判別できる。
+_SYNCHROTRON_INSTPRM = _instprm_text("Lam:0.799580")
+#: Kα1/Kα2 の実験室 X 線 instprm (``Lam1``/``Lam2``)。ピーク位置の指標は Kα1 (``Lam1``)。
+_KA12_INSTPRM = _instprm_text("Lam1:1.540500", "Lam2:1.544300")
+#: TOF 中性子 instprm — 単一波長が無い (``difC`` 系)。2θ/λ 前提の補正は成立しない。
+_TOF_INSTPRM = "\n".join(
+    ["#GSAS-II instrument parameter file; do not add/delete items!",
+     "Type:PNT", "Bank:1.0", "difC:5000.0", "difA:0.0", "difB:0.0", "Zero:0.0",
+     "alpha:1.0", "beta-0:0.03", "beta-1:0.008", "beta-q:0.0", "sig-0:0.0", "sig-1:20.0"]
+) + "\n"
+
+
+def _np_prealign_session(
+    tmp_path, monkeypatch, *, instprm_text: "str | None" = _SYNCHROTRON_INSTPRM,
+    cells=None, phase_names=("alpha",),
+):
+    """np-0 が pending の実プロジェクトセッションを作る (Issue #20 承認経路テストの共通土台)。
+
+    ``instprm_text`` が None なら instprm ファイルを**書かない** (波長が読めない系)。
+    """
+    prm = tmp_path / "d.instprm"
+    if instprm_text is not None:
+        prm.write_text(instprm_text, encoding="utf-8")
+    cif = tmp_path / "alpha.cif"
+    cif.write_text(_NACL_CIF, encoding="utf-8")
+    hist = HistogramSpec(
+        data_path=str(tmp_path / "d.xy"), instrument_path=str(prm),
+        radiation=Radiation.XRAY_SYNCHROTRON, geometry=Geometry.DEBYE_SCHERRER, data_format="XY",
+    )
+    phases = tuple(PhaseSpec(structure_path=str(cif), phase_name=n) for n in phase_names)
+    frame_path = tmp_path / "frame0.xy"
+    tt, obs = _synthetic_pattern([20.0, 35.0, 52.0])
+    frame_path.write_text(
+        "\n".join(f"{x:.4f} {y:.4f}" for x, y in zip(tt.tolist(), obs.tolist())), encoding="utf-8"
+    )
+    project = WorkbenchProject(
+        name="prealign fixture", histograms=(hist,), phases=phases,
+        frames=(FrameSpec(data_path=str(frame_path), axis_value=0.0, data_format="XY"),),
+        gpx_path=str(tmp_path / "refined.gpx"), spec_dir=str(tmp_path),
+    )
+    session = WorkbenchSession.from_project(project)
+
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    monkeypatch.setattr(
+        insitu_tools_module, "sequential_rietveld",
+        lambda frames, phases_payload, **kw: _fake_seq_result(
+            [_fake_frame(0, changepoint=True, cells=cells)], phase_names=list(phase_names)
+        ),
+    )
+    session.request_sequential(mode="forward")
+    session._job.join(timeout=5)
+    return session
+
+
+def _spy_identify(monkeypatch, captured: dict, *, found: "dict | None" = None):
+    """② ``identify_and_add_phase`` を、渡された kwargs を記録するスパイに差し替える。"""
+    import tsumugin.mcp.insitu_tools as insitu_tools_module
+
+    def spy(two_theta, intensity, elements, workdir, **kw):
+        captured.update(kw)
+        captured["_called"] = True
+        return found if found is not None else {
+            "candidates": [], "n_candidates": 0,
+            "prealign_basis": "residual" if kw.get("known_phases") else "skipped",
+            "n_known_phases_used": len(kw.get("known_phases") or ()),
+        }
+
+    monkeypatch.setattr(insitu_tools_module, "identify_and_add_phase", spy)
+
+
+class TestNewPhaseApprovalPrealign:
+    """Issue #20: GUI から承認した相にも異方セル補正 (残差整合プリアライン) を通す。
+
+    ② ``identify_and_add_phase`` は ``known_phases`` を渡されて初めて補正を行う
+    (``prealign_basis="residual"``)。渡さないと MP(DFT) 素の格子のまま CIF が返り
+    (実測 CaTeO3 delta: c 軸 +3.42%)、Rietveld の収束半径 ~2% を超えて Rwp が高止まりする。
+    ③ (MCP) 経路だけ補正が入り GUI 承認だけ入らない**非対称**を塞ぐ。
+    """
+
+    def test_known_phases_carry_project_spec_and_refined_cell(self, tmp_path, monkeypatch):
+        """承認経路は「そのフレームに既に居る相」を spec + 精密化格子として ② に渡す。
+
+        変異実証: ``known_phases=`` を渡さない実装に戻すと ``known_phases`` が空になり fail。
+        ``refined_cell`` の添付を落とすと DFT 格子のまま = 補正の意味が消えるので、こちらも fail。
+        """
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(
+            tmp_path, monkeypatch, cells={"alpha": [4.9, 5.1, 17.3, 90.0, 90.0, 90.0]}
+        )
+        captured: dict = {}
+        _spy_identify(monkeypatch, captured)
+
+        result = session.resolve_approval("np-0", decision="approve")
+
+        assert "error" not in result
+        known = captured.get("known_phases")
+        assert known, "known_phases が ② に渡っていない (補正が skipped に落ちる)"
+        assert [k["phase_name"] for k in known] == ["alpha"]
+        assert known[0]["structure_path"] == str(tmp_path / "alpha.cif")
+        assert known[0]["refined_cell"] == [4.9, 5.1, 17.3, 90.0, 90.0, 90.0]
+
+    def test_wavelength_comes_from_instprm_not_cu_default(self, tmp_path, monkeypatch):
+        """放射光プロジェクトでは instprm の実波長を渡す (既定 Cu Kα1 では既知相ピークが狂う)。
+
+        変異実証: ``wavelength=`` を渡さない / 1.5406 を固定で渡す実装では fail。
+        """
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(tmp_path, monkeypatch)
+        captured: dict = {}
+        _spy_identify(monkeypatch, captured)
+
+        session.resolve_approval("np-0", decision="approve")
+
+        assert captured.get("wavelength") == pytest.approx(0.799580)
+
+    def test_wavelength_uses_lam1_for_ka12_instprm(self, tmp_path, monkeypatch):
+        """Kα1/Kα2 instprm (``Lam1``/``Lam2``) では Kα1 を採る (ピーク位置の指標)。"""
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(tmp_path, monkeypatch, instprm_text=_KA12_INSTPRM)
+        captured: dict = {}
+        _spy_identify(monkeypatch, captured)
+
+        session.resolve_approval("np-0", decision="approve")
+
+        assert captured.get("wavelength") == pytest.approx(1.540500)
+
+    @pytest.mark.parametrize(
+        "instprm_text,label",
+        [(None, "instprm 不在"), (_TOF_INSTPRM, "TOF (単一波長なし)")],
+    )
+    def test_unknown_wavelength_skips_correction_rather_than_guessing(
+        self, tmp_path, monkeypatch, instprm_text, label
+    ):
+        """波長が決まらないなら ``known_phases`` を**渡さない** (誤波長で残差を壊さない)。
+
+        既知相ピークを誤った波長で立てて引くと残差そのものが壊れ、プリアラインは壊れた残差へ
+        整合してしまう — 補正なし (DFT 格子のまま) より悪い。補正を諦める方が安全側。
+
+        変異実証: 波長不明でも Cu Kα1 既定のまま ``known_phases`` を渡す実装では fail。
+        """
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(tmp_path, monkeypatch, instprm_text=instprm_text)
+        captured: dict = {}
+        _spy_identify(monkeypatch, captured)
+
+        result = session.resolve_approval("np-0", decision="approve")
+
+        assert captured.get("_called"), f"{label}: ② が呼ばれていない"
+        assert not captured.get("known_phases"), f"{label}: 誤波長で既知相を渡している"
+        assert "error" not in result  # 同定自体は続行する (補正なしに縮退するだけ)
+
+    def test_nonfinite_refined_cell_degrades_to_dft_cell_not_error(self, tmp_path, monkeypatch):
+        """発散フレームの非有限セルは ``refined_cell`` を落として渡す (② の形検証で全体を失敗させない)。
+
+        ② ``_parse_known_phases`` は非有限 ``refined_cell`` を ValueError にする (呼び手の意図を
+        ②からは判別できないため正しい)。③ 側では「その相の精密化が発散した」と判っているので、
+        主張しない (None) へ縮退させ、他の相の補正は生かす。
+
+        変異実証: 非有限セルをそのまま渡す実装だと ② が error dict を返し承認が失敗する。
+        """
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(
+            tmp_path, monkeypatch,
+            cells={"alpha": [float("nan"), 5.1, 17.3, 90.0, 90.0, 90.0],
+                   "beta": [3.0, 3.0, 3.0, 90.0, 90.0, 90.0]},
+            phase_names=("alpha", "beta"),
+        )
+        captured: dict = {}
+        _spy_identify(monkeypatch, captured)
+
+        result = session.resolve_approval("np-0", decision="approve")
+
+        assert "error" not in result
+        known = {k["phase_name"]: k for k in captured.get("known_phases") or ()}
+        assert known["alpha"]["refined_cell"] is None  # 発散した相は格子を主張しない
+        assert known["beta"]["refined_cell"] == [3.0, 3.0, 3.0, 90.0, 90.0, 90.0]
+
+    def test_ledger_records_prealign_basis_so_gui_can_see_it(self, tmp_path, monkeypatch):
+        """LEDGER タブに「補正が入ったのか」を残す (Rwp が下がらない時の第一容疑を可視化)。
+
+        変異実証: ledger payload から ``prealign_basis`` を落とすと fail。
+        """
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(tmp_path, monkeypatch)
+        captured: dict = {}
+        _spy_identify(monkeypatch, captured)
+
+        session.resolve_approval("np-0", decision="approve")
+
+        decisions = [e for e in session.ledger.entries if e.kind == "approval_decision"]
+        assert decisions
+        payload = decisions[-1].payload
+        assert payload["prealign_basis"] == "residual"
+        assert payload["n_known_phases_used"] == 1
+        assert payload["wavelength"] == pytest.approx(0.799580)
+
+    def test_ledger_records_skipped_basis_when_wavelength_unknown(self, tmp_path, monkeypatch):
+        """補正を諦めたときも黙らない — ``prealign_basis="skipped"`` を ledger に残す。"""
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(tmp_path, monkeypatch, instprm_text=None)
+        captured: dict = {}
+        _spy_identify(monkeypatch, captured)
+
+        session.resolve_approval("np-0", decision="approve")
+
+        payload = [e for e in session.ledger.entries if e.kind == "approval_decision"][-1].payload
+        assert payload["prealign_basis"] == "skipped"
+        assert payload["wavelength"] is None
+
+    def test_ledger_view_text_exposes_prealign_to_the_gui(self, tmp_path, monkeypatch):
+        """③ 露出: LEDGER タブ (``ledger_view``) の文面にも補正の有無を出す。
+
+        ``ledger_view`` は payload を返さず ``text`` だけを返すので、payload に足しただけでは
+        GUI に届かない (足したのに見えない = 実質未露出)。
+
+        変異実証: ``_text_for_kind`` の approval_decision を元の 1 行に戻すと fail。
+        """
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(tmp_path, monkeypatch)
+        _spy_identify(monkeypatch, {})
+
+        session.resolve_approval("np-0", decision="approve")
+
+        texts = [e["text"] for e in session.ledger_view()["entries"] if "approval np-0" in e["text"]]
+        assert texts, "approval エントリが LEDGER タブに出ていない"
+        assert "cell prealign: residual" in texts[-1]
+        assert "0.79958" in texts[-1]  # 実波長も見える (Cu Kα1 で走っていないことが判る)
+
+    def test_ledger_view_text_says_dft_cell_kept_when_skipped(self, tmp_path, monkeypatch):
+        """補正なしのときは「DFT 格子のまま」と明示する (沈黙は偽の正常応答になる)。"""
+        pytest.importorskip("pymatgen")
+        session = _np_prealign_session(tmp_path, monkeypatch, instprm_text=None)
+        _spy_identify(monkeypatch, {})
+
+        session.resolve_approval("np-0", decision="approve")
+
+        text = [e["text"] for e in session.ledger_view()["entries"] if "approval np-0" in e["text"]][-1]
+        assert "cell prealign: skipped" in text
+        assert "DFT cell kept" in text
+
+    def test_payload_round_trips_through_the_real_second_layer_parser(self, tmp_path, monkeypatch):
+        """③→② 到達可能性: 組んだ ``known_phases`` を ② の**実**パーサが受理する。
+
+        他のテストは ② をスパイに差し替えるので、形が ② の契約とずれていても気づけない
+        (`_parse_known_phases` は形の誤りを error dict にするだけで、承認は「候補 0 で成功」に
+        見えてしまう)。ここだけは実物を通して spec/格子が復元されることを確かめる。
+
+        変異実証: ``refined_cell`` を ``[a,b,c]`` 3 要素や dict で渡す実装にすると ② が
+        ValueError を投げて fail。
+        """
+        from tsumugin.mcp.insitu_tools import _parse_known_phases
+        from tsumugin.workbench.session import _known_phases_payload
+
+        project = _sequential_project(tmp_path)
+        seq = _fake_seq_result(
+            [_fake_frame(0, cells={"alpha": [4.9, 5.1, 17.3, 90.0, 90.0, 90.0]}),
+             _fake_frame(1, cells={"alpha": [4.8, 5.0, 17.0, 90.0, 90.0, 90.0]})]
+        )
+
+        parsed = _parse_known_phases(_known_phases_payload(project, seq, 1))
+
+        assert len(parsed) == 1
+        spec, cell = parsed[0]
+        assert spec.phase_name == "alpha"
+        assert spec.structure_path == str(tmp_path / "phase.cif")
+        # 位置ではなく frame_index で引く — frame 1 の格子が復元されること
+        assert cell == (4.8, 5.0, 17.0, 90.0, 90.0, 90.0)
+
+    def test_payload_frame_lookup_is_by_index_not_position(self, tmp_path):
+        """``frames`` が全フレームを含まない (max_frames 等) 系列でも取り違えない。"""
+        from tsumugin.workbench.session import _known_phases_payload
+
+        project = _sequential_project(tmp_path)
+        seq = _fake_seq_result([_fake_frame(7, cells={"alpha": [7.0, 7.0, 7.0, 90.0, 90.0, 90.0]})])
+
+        assert _known_phases_payload(project, seq, 7)[0]["refined_cell"] == [7.0, 7.0, 7.0, 90.0, 90.0, 90.0]
+        assert _known_phases_payload(project, seq, 0)[0]["refined_cell"] is None
+
+    def test_payload_without_sequential_result_still_lists_known_phases(self, tmp_path):
+        """逐次結果が無くても既知相そのものは渡す (DFT 格子でも残差減算の相手にはなる)。"""
+        from tsumugin.workbench.session import _known_phases_payload
+
+        project = _sequential_project(tmp_path)
+        payload = _known_phases_payload(project, None, 0)
+
+        assert [p["phase_name"] for p in payload] == ["alpha"]
+        assert payload[0]["refined_cell"] is None
+
+    def test_ledger_view_text_unchanged_for_non_prealign_approvals(self, tmp_path, monkeypatch):
+        """prealign 情報を持たない承認 (reject / 他機構の sr-/pc- 等) の文面は変えない。"""
+        session = _np_prealign_session(tmp_path, monkeypatch)
+
+        session.resolve_approval("np-0", decision="reject")
+
+        text = [e["text"] for e in session.ledger_view()["entries"] if "approval np-0" in e["text"]][-1]
+        assert text == "approval np-0 reject"
+
+
+class TestInstprmWavelength:
+    """``_instprm_wavelength``: GSAS ``.instprm`` から単一波長 (Å) を読む (Issue #20)。"""
+
+    def test_reads_lam(self, tmp_path):
+        from tsumugin.workbench.session import _instprm_wavelength
+
+        p = tmp_path / "a.instprm"
+        p.write_text(_SYNCHROTRON_INSTPRM, encoding="utf-8")
+        assert _instprm_wavelength(str(p)) == pytest.approx(0.799580)
+
+    def test_prefers_lam1_over_lam2(self, tmp_path):
+        from tsumugin.workbench.session import _instprm_wavelength
+
+        p = tmp_path / "a.instprm"
+        p.write_text(_KA12_INSTPRM, encoding="utf-8")
+        assert _instprm_wavelength(str(p)) == pytest.approx(1.540500)
+
+    @pytest.mark.parametrize("text", [_TOF_INSTPRM, "Type:PXC\nLam:not-a-number\n", "", "Lam:0.0\n"])
+    def test_returns_none_when_no_usable_wavelength(self, tmp_path, text):
+        """TOF/壊れた値/空/非正値は None (呼び手はこれを見て補正を諦める)。"""
+        from tsumugin.workbench.session import _instprm_wavelength
+
+        p = tmp_path / "a.instprm"
+        p.write_text(text, encoding="utf-8")
+        assert _instprm_wavelength(str(p)) is None
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        from tsumugin.workbench.session import _instprm_wavelength
+
+        assert _instprm_wavelength(str(tmp_path / "nope.instprm")) is None
+
+
 class TestNewPhaseApprovalErrorPaths:
     """B5 実走で発見の 2 欠陥の回帰ガード。
 
