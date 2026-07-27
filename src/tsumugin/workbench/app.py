@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..errors import ConflictError, LedgerIntegrityError, SnapshotIntegrityError, WebUIUnavailableError
-from . import lifecycle
+from . import fsbrowse, lifecycle
 from .session import WorkbenchSession
 
 if TYPE_CHECKING:  # 【型のみ参照】: 実行時 import を避けコア依存を汚染しない 🔵
@@ -301,6 +301,30 @@ def create_workbench_app(
     @app.get("/api/project/recent")
     def get_project_recent() -> dict[str, Any]:
         return {"projects": lifecycle.load_recent()}
+
+    # ------------------------------------------------------------------
+    # GET /api/fs/roots, GET /api/fs/list (Welcome のアプリ内ファイル選択ウィンドウ,
+    # api-contract.md §ファイル選択)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/fs/roots")
+    def get_fs_roots() -> dict[str, Any]:
+        return {"roots": fsbrowse.list_roots()}
+
+    @app.get("/api/fs/list")
+    def get_fs_list(path: "str | None" = None) -> Any:
+        if not isinstance(path, str) or not path.strip():
+            return _invalid("path", path)
+        try:
+            return fsbrowse.list_dir(path)
+        except FileNotFoundError as exc:
+            return JSONResponse(
+                status_code=404, content={"error": str(exc), "error_type": "NotFoundError"}
+            )
+        except (NotADirectoryError, PermissionError, ValueError) as exc:
+            return JSONResponse(
+                status_code=422, content={"error": str(exc), "error_type": "ValueError"}
+            )
 
     @app.post("/api/project/upload")
     async def post_project_upload(

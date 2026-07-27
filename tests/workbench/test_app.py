@@ -1185,6 +1185,60 @@ def test_project_recent_lists_after_create(client: TestClient, tmp_path: Path, f
     assert "last_opened" in projects[0]
 
 
+# ---------------------------------------------------------------------------
+# GET /api/fs/roots, GET /api/fs/list (Welcome のアプリ内ファイル選択ウィンドウ)
+# ---------------------------------------------------------------------------
+
+
+def test_fs_roots_route_returns_nonempty_roots(client: TestClient):
+    resp = client.get("/api/fs/roots")
+
+    assert resp.status_code == 200
+    roots = resp.json()["roots"]
+    assert len(roots) >= 1
+    assert all({"path", "label"} <= set(r.keys()) for r in roots)
+
+
+def test_fs_list_route_returns_shape(client: TestClient, tmp_path: Path):
+    root = tmp_path / "browse_root"
+    root.mkdir()
+    (root / "child").mkdir()
+    (root / "note.json").write_text("{}", encoding="utf-8")
+
+    resp = client.get("/api/fs/list", params={"path": str(root)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body.keys()) == {"path", "parent", "entries"}
+    names = {e["name"] for e in body["entries"]}
+    assert names == {"child", "note.json"}
+
+
+def test_fs_list_route_missing_path_param_returns_422(client: TestClient):
+    resp = client.get("/api/fs/list")
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_type"] == "ValueError"
+
+
+def test_fs_list_route_nonexistent_path_returns_404(client: TestClient, tmp_path: Path):
+    resp = client.get("/api/fs/list", params={"path": str(tmp_path / "nope")})
+
+    assert resp.status_code == 404
+    assert resp.json()["error_type"] == "NotFoundError"
+
+
+def test_fs_list_route_file_path_returns_422(client: TestClient, tmp_path: Path):
+    file_path = tmp_path / "a.json"
+    file_path.write_text("{}", encoding="utf-8")
+
+    resp = client.get("/api/fs/list", params={"path": str(file_path)})
+
+    assert resp.status_code == 422
+    assert resp.json()["error_type"] == "ValueError"
+
+
 def test_project_upload_stores_file_and_returns_stored_path(
     client: TestClient, tmp_path: Path, fake_home: Path
 ):
