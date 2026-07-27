@@ -479,6 +479,14 @@ def _apply_stage(
             hist.set_refinements({"Background": spec})
     # scale: GSAS-II はヒストグラムスケールを既定で精密化するため単相では no-op。
     if "cell" in flags:
+        # 【凍結 (cell: False)】: 段のフラグは既定で**累積 (enable のみ)** なので、一度解放した
+        #   格子は以降の段でも自由なまま = 「段を分けた」だけでは相関は切れない。試料変位のように
+        #   格子と強く相関するパラメータを**交互に**精密化する (cell → shift(cell 凍結) → cell)
+        #   には明示的な凍結が要る。値 False の cell 段は全相の Cell 解放を落とす。
+        if flags["cell"] is False:
+            for ph in phases:
+                ph.set_refinements({"Cell": False})
+            return auto_frozen
         # refine_cell=False の相 (副相/不純物の格子固定, Issue #47) は Cell 解放をスキップする。
         # auto_freeze_minor_cells 有効時は加えて、この段階適用時点の live な相分率
         # (_phase_fraction_map, Issue #80) が閾値未満の相も自動でスキップする (手動 > 自動)。

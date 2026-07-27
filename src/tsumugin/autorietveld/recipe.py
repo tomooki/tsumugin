@@ -109,10 +109,21 @@ def build_recipe(
     #   実測 (Kα1 単色 CaTeO3): Shift −274 µm 相当 (2θ −0.15°) を格子が肩代わりしていた。
     #   相関するパラメータを段で分ける、という段階解放の規律そのもの。
     #   Zero (`profile_lorentzian` 段) も 2θ オフセットなので、変位段はその**前**に置く。
-    displacement_stage = RefinementStage(
-        label="displacement",
-        flags={"displacement": disp},
-        note="ジオメトリ別 試料変位 (格子と別段: 2θ シフトが格子と相関するため)",
+    #   【交互精密化 cell → shift → cell】: 段のフラグは**累積 (enable のみ)** なので、変位段を
+    #   分けただけでは格子は解放されたままで相関は切れない。変位段では格子を**明示的に凍結**し
+    #   (``{"cell": False}``)、直後に格子を再解放する。これで「格子 → 変位 → 格子」の交互
+    #   精密化になり、どちらか一方が他方を吸収したまま固まるのを防ぐ。
+    displacement_stages = (
+        RefinementStage(
+            label="displacement",
+            flags={"cell": False, "displacement": disp},
+            note="ジオメトリ別 試料変位 (格子は凍結 — 2θ シフトが格子と相関するため)",
+        ),
+        RefinementStage(
+            label="cell (repolish)",
+            flags={"cell": True},
+            note="変位を入れた上で格子を再解放 (交互精密化の戻り)",
+        ),
     )
 
     stages: list[RefinementStage] = []
@@ -144,6 +155,7 @@ def build_recipe(
             cell_flags["hydrostatic_strain"] = True
             cell_note += " + 温度差 Dij"
         stages.append(RefinementStage(label="cell+profile", flags=cell_flags, note=cell_note))
+        stages.extend(displacement_stages)
         stages.append(coords_stage)
         stages.append(uiso_stage)
         stages.append(
@@ -153,7 +165,6 @@ def build_recipe(
                 note="結晶子サイズ/微小歪み (最後に解放)",
             )
         )
-        stages.append(displacement_stage)
     else:
         # 単相 (T1/T2/T3): 格子 (温度差なら Dij も; どちらも格子側パラメータ) を単独で先に張る
         s1_flags: dict[str, object] = {"cell": True}
@@ -162,6 +173,7 @@ def build_recipe(
             s1_flags["hydrostatic_strain"] = True
             note_bits.append("温度差の静水圧歪み Dij")
         stages.append(RefinementStage(label="cell", flags=s1_flags, note="; ".join(note_bits)))
+        stages.extend(displacement_stages)
         # 混合占有の有無で解放順序を切り替える:
         # - 混合占有あり (中性子 garnet 型): 占有率 → Uiso(等価) → プロファイル → 一般位置座標。
         # - 混合占有なし (ラボ X 線 fluoroapatite 型): プロファイル → 座標 → Uiso。
@@ -180,7 +192,6 @@ def build_recipe(
             stages.append(profile_stage)
             stages.append(coords_stage)
             stages.append(uiso_stage)
-        stages.append(displacement_stage)
 
     # X 線は Lorentzian (X,Y) + Zero → 非対称 (SH/L) を最終段で追加解放 (各 revert ガード;
     # 中性子/TOF のみなら不要)
