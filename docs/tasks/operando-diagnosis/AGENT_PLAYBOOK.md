@@ -227,8 +227,10 @@ anchored_sequential(frames, phases, anchor_table={...},
 (I4/mmm) の投入が決定打だった。MP かユーザー提供 CIF を優先する。DFT (MP) 由来は格子が軸別に
 ずれるため異方セル補正が自動で入る (#20)。ただし補正が効くのは**既知相を引いた残差へ整合できる
 場合のみ** — 引けなければ補正はスキップされ DFT 格子のまま入る。新相の Rwp が高止まりしたら
-`appearances[].evidence.prealign_basis` (`"residual"`/`"skipped"`/`"off"`) を確認し、
+`appearances[].evidence.prealign_basis` (`"residual"`/`"skipped"`/`"pattern"`/`"off"`) を確認し、
 `"skipped"` ならセル誤差を第一容疑にする (残差 fit ではなくモデルの格子が原因)。
+`"pattern"` はそのフレームに既存相が 1 つも無く候補が支配的だったケース (生パターン整合が
+妥当な唯一の場面)、`"off"` は `refine_new_phase_cell` を切っている設定。
 
 #### J8 電気化学との突合
 
