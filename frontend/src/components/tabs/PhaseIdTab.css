@@ -115,7 +115,7 @@
 
 .pid-bottom {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));  /* 【可変幅】 */
   gap: 12px;
   flex: 1;
   min-height: 0;
@@ -168,4 +168,12 @@
   font-size: 11px;
   color: var(--color-neutral-700);
   line-height: 1.5;
+}
+
+/* 【可変幅】: 狭いウィンドウで表が切れないよう、テーブル単位で横スクロールさせる
+   (中央本文を overflow-x: auto にすると全体が横に揺れて読みづらいため、表だけに閉じる)。 */
+.pid-table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
 }

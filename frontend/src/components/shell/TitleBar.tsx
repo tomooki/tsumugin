@@ -90,12 +90,16 @@ export function TitleBar({ onModeChange, disabled = false }: TitleBarProps) {
             日本語
           </button>
         </div>
+        {/* 【可変幅】: 状態チップ群は狭いウィンドウで畳む (歯車と言語切替を優先。
+           同じ情報はステータスバーにも出る)。 */}
+        <div className="title-bar__chips">
         <Chip>
           <span className="title-bar__dot" />
           {t("shell.nonDestructive")}
         </Chip>
         <Chip>ledger.verify() = TRUE</Chip>
         <Chip>{idle ? t("status.cost.idle") : t("status.cost.active")}</Chip>
+        </div>
       </div>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>

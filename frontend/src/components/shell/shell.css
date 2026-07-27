@@ -1,9 +1,17 @@
+/* 【可変幅】: 元の UI 設計は固定 1920x1080 だったが、実機の狭いウィンドウで右側が
+   見切れて操作できなかったため、ビューポート追従へ変更した。設計上の各寸法
+   (左 258px / 右 428px / 行 56/38/26px) は「広いときの見え方」として維持しつつ、
+   狭いときは右→左の順に脇ペインを畳む (中央の解析キャンバスを最後まで残す)。 */
 .shell {
-  width: 1920px;
-  min-width: 1920px;
-  height: 1080px;
+  width: 100%;
+  height: 100vh;
+  min-width: 0;
   display: grid;
-  grid-template-rows: 56px 38px 1fr 26px;
+  /* 列を明示しないと暗黙列が auto (= 中身の max-content) になり、タイトルバー等の
+     nowrap テキストがグリッド全体をビューポートより広げてしまう (実機で 499px の窓に
+     534px のシェルができた)。minmax(0, 1fr) で「子は器を広げられない」を強制する。 */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 56px 38px minmax(0, 1fr) 26px;
   background: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-body);
@@ -12,18 +20,49 @@
 
 .shell__body {
   display: grid;
-  grid-template-columns: 258px 1fr 428px;
+  grid-template-columns: minmax(200px, 258px) minmax(0, 1fr) minmax(320px, 428px);
   min-height: 0;
+  min-width: 0;
+}
+
+/* 中間幅: 右ペインを絞る (解析キャンバスの幅を優先) */
+@media (max-width: 1500px) {
+  .shell__body {
+    grid-template-columns: minmax(180px, 232px) minmax(0, 1fr) minmax(300px, 360px);
+  }
+}
+
+/* 狭い: 左レールを畳む (データセット/相の一覧は PROJECT タブでも見られる) */
+@media (max-width: 1180px) {
+  .shell__body {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  }
+  .shell__body > .left-rail {
+    display: none;
+  }
+}
+
+/* 最狭: 右ペイン (オペレータ/エージェント) も畳み、中央 1 カラムにする */
+@media (max-width: 820px) {
+  .shell__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .shell__body > .right-pane {
+    display: none;
+  }
 }
 
 /* — title bar — */
 .title-bar {
   display: grid;
-  grid-template-columns: 300px 1fr auto;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
   align-items: center;
   border-bottom: 1px solid var(--color-divider);
   background: var(--color-neutral-100);
   padding: 0 16px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .title-bar__brand {
@@ -188,12 +227,15 @@
 /* — context bar — */
 .context-bar {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
   border-bottom: 1px solid var(--color-divider);
   background: var(--color-neutral-200);
   padding: 0 16px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .context-bar__left {
@@ -343,6 +385,9 @@
   font-size: 10px;
   padding: 0 16px;
   overflow: hidden;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .status-bar__items {
@@ -542,6 +587,16 @@
   border-bottom: 1px solid var(--color-divider);
   background: var(--color-neutral-100);
   padding: 0 10px;
+  /* 【可変幅】: 8 タブは狭いウィンドウに収まらない。折り返すと 34px 行が崩れるので
+     タブ列だけを横スクロールさせる (中央キャンバス全体をはみ出させない)。 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  scrollbar-width: thin;
+}
+
+.tab-strip__btn {
+  flex: none;
 }
 
 .tab-strip__btn {
@@ -566,7 +621,10 @@
 
 .centre-canvas__body {
   overflow-y: auto;
+  /* 【可変幅】: 横は hidden にしない — 狭いときに広い表が切り落とされて読めなくなる。
+     はみ出しは各表 (.*-table のラッパ) 側で横スクロールさせる。 */
   overflow-x: hidden;
+  min-width: 0;
   padding: 14px 16px 20px;
   min-height: 0;
 }
@@ -609,4 +667,20 @@
   grid-template-rows: 30px 1fr;
   border-left: 1px solid var(--color-divider);
   min-height: 0;
+}
+
+/* 【可変幅】: タイトルバーの状態チップ群 (P2 / ledger.verify / トークン) は
+   狭いウィンドウで畳む — 歯車 (設定) と言語切替を最後まで押せるようにするため。
+   同じ情報はステータスバーにも出ている。 */
+.title-bar__chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .title-bar__chips {
+    display: none;
+  }
 }

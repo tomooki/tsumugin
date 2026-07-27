@@ -30,7 +30,7 @@
 
 .struct-tab__grid {
   display: grid;
-  grid-template-columns: 1.35fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));  /* 【可変幅】 */
   gap: 12px;
   flex: 1;
   min-height: 0;
