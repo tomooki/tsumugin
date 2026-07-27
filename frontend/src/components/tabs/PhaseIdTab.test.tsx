@@ -333,6 +333,48 @@ describe("PhaseIdTab — IDENTIFY job (A4)", () => {
   });
 });
 
+// — api-contract.md §アプリ設定: mp_available pre-disables IDENTIFY/ADD AS PHASE —
+
+function makeShellWithMp(mpAvailable: boolean): WorkbenchState["shell"] {
+  return {
+    project: { name: "p", dataset: "d", frame: "f", echem: null },
+    mode: "manual",
+    final_selection_mode: "human",
+    ledger: { count: 1, verified: true },
+    status: { backend_build: "b", seed: 0, mcp_tools: 36, gsas_available: true, mp_available: mpAvailable },
+    agent: { tokens: 0, wall_time_s: 0, idle: true },
+  };
+}
+
+describe("PhaseIdTab — Materials Project token unavailable (api-contract.md §アプリ設定)", () => {
+  it("disables IDENTIFY and shows the settings tooltip when mp_available is false", () => {
+    renderTab({}, { shell: makeShellWithMp(false) });
+    const identifyBtn = screen.getByRole("button", { name: "IDENTIFY" });
+    expect(identifyBtn).toBeDisabled();
+    expect(identifyBtn.title).toMatch(/Materials Project token not set/);
+  });
+
+  it("disables ADD AS PHASE for every candidate row when mp_available is false", () => {
+    renderTab({}, { shell: makeShellWithMp(false) });
+    for (const btn of screen.getAllByRole("button", { name: "ADD AS PHASE" })) {
+      expect(btn).toBeDisabled();
+    }
+  });
+
+  it("leaves IDENTIFY and ADD AS PHASE enabled when mp_available is true", () => {
+    renderTab({}, { shell: makeShellWithMp(true) });
+    expect(screen.getByRole("button", { name: "IDENTIFY" })).not.toBeDisabled();
+    for (const btn of screen.getAllByRole("button", { name: "ADD AS PHASE" })) {
+      expect(btn).not.toBeDisabled();
+    }
+  });
+
+  it("does not disable the buttons when shell/status has not loaded yet (mp_available unknown)", () => {
+    renderTab({});
+    expect(screen.getByRole("button", { name: "IDENTIFY" })).not.toBeDisabled();
+  });
+});
+
 describe("PhaseIdTab — ADD AS PHASE (A4)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

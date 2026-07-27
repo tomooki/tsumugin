@@ -20,3 +20,17 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     return fake_home
+
+
+@pytest.fixture(autouse=True)
+def _isolated_dotenv_mp_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`.env` の MP キーをテストから隔離する (既定は「未設定」)。
+
+    【背景】: `settings.mp_api_key_status` は ``MPRestClient`` と同じ順序で env → `.env` を
+    見る。隔離しないと**開発者のリポジトリに .env があるかどうかでテスト結果が変わる**
+    (実際に「未設定」を期待するテストが実 .env を拾って落ちた)。`.env` 由来の挙動を検証したい
+    テストは自分で ``monkeypatch.setattr(settings, "_read_dotenv_mp_key", ...)`` を上書きする。
+    """
+    from tsumugin.workbench import settings as _settings
+
+    monkeypatch.setattr(_settings, "_read_dotenv_mp_key", lambda: None)

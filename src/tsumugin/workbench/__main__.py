@@ -17,6 +17,7 @@ from pathlib import Path
 from .app import serve
 from .project import load_project_spec
 from .session import WorkbenchSession
+from .settings import apply_mp_api_key_to_env
 
 # 【既定 dist 位置】: src layout のリポジトリ直下 frontend/dist (editable install 開発時のみ有効) 🟡
 _DEFAULT_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
@@ -45,6 +46,9 @@ def main() -> None:
         help="デモセッション (シード, ハンドオフのプロトタイプ相当) を配信する。--project と併用不可。",
     )
     args = parser.parse_args()
+    # 【設定 > env の優先順位】: 保存済み MP キーがあればプロセス env へ反映してから
+    #   セッションを構築する (api-contract.md §アプリ設定「保存時にプロセスの環境変数へも反映」)。
+    apply_mp_api_key_to_env()
     static_dir: Path | None
     if args.static_dir is not None:
         static_dir = Path(args.static_dir)

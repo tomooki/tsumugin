@@ -1,6 +1,9 @@
+import { useState } from "react";
 import type { GuiMode } from "../../api/types";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
+import { SettingsModal } from "../settings/SettingsModal";
+import { sm } from "../settings/SettingsModal.strings";
 import { Chip } from "../common";
 import "./shell.css";
 
@@ -16,8 +19,14 @@ interface TitleBarProps {
  * toggle, EN/日本語 segment + status chips. Handoff README §1. */
 export function TitleBar({ onModeChange, disabled = false }: TitleBarProps) {
   const { state, dispatch } = useStore();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const idle = state.shell?.agent.idle ?? state.mode === "manual";
+  // Gear → SETTINGS modal (api-contract.md §アプリ設定): local UI state, not
+  // global store — nothing outside this button cares whether the modal is
+  // open. Shown on both the Welcome screen and the workbench (TitleBar
+  // renders unconditionally in App.tsx before the isWelcome branch), per the
+  // contract's "Welcome 画面からも開ける".
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const modes: { key: GuiMode; labelKey: "mode.manual.label" | "mode.auto.label"; subKey: "mode.manual.sub" | "mode.auto.sub" }[] = [
     { key: "manual", labelKey: "mode.manual.label", subKey: "mode.manual.sub" },
@@ -56,6 +65,15 @@ export function TitleBar({ onModeChange, disabled = false }: TitleBarProps) {
       </div>
 
       <div className="title-bar__right">
+        <button
+          type="button"
+          className="title-bar__settings-btn"
+          aria-label={sm(lang, "settings.gear.label")}
+          title={sm(lang, "settings.gear.label")}
+          onClick={() => setSettingsOpen(true)}
+        >
+          ⚙
+        </button>
         <div className="lang-seg">
           <button
             type="button"
@@ -79,6 +97,7 @@ export function TitleBar({ onModeChange, disabled = false }: TitleBarProps) {
         <Chip>ledger.verify() = TRUE</Chip>
         <Chip>{idle ? t("status.cost.idle") : t("status.cost.active")}</Chip>
       </div>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

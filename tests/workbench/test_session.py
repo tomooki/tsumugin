@@ -3198,3 +3198,194 @@ class TestRequestMem:
         session.request_mem()
         session._job.join(timeout=5)
         assert session.refine_status()["kind"] == "mem"
+
+
+# ---------------------------------------------------------------------------
+# アプリ設定 (資格情報) — Materials Project トークン (api-contract.md §アプリ設定)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_mp_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MP API キー環境変数をテストごとに未設定へ揃える (実行環境の実キーに左右されないため)。"""
+    monkeypatch.delenv("MATERIALS_PROJECT_API", raising=False)
+
+
+def test_get_settings_reports_unset_by_default():
+    session = WorkbenchSession.create_demo()
+
+    result = session.get_settings()
+
+    assert result == {
+        "mp_api_key_set": False, "mp_api_key_hint": None, "mp_api_key_source": None,
+    }
+
+
+def test_save_settings_persists_masks_and_appends_ledger_without_value():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    result = session.save_settings(mp_api_key="sk-super-secret-abcd")
+
+    assert result["mp_api_key_set"] is True
+    assert result["mp_api_key_source"] == "settings"
+    assert result["mp_api_key_hint"] == "…abcd"
+    assert len(session.ledger.entries) == before + 1
+    entry = session.ledger.entries[-1]
+    assert entry.kind == "settings_change"
+    assert entry.payload == {"key": "mp_api_key", "action": "set"}
+
+
+def test_save_settings_rejects_empty_string():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    result = session.save_settings(mp_api_key="")
+
+    assert result["error_type"] == "ValueError"
+    assert len(session.ledger.entries) == before  # ガードで弾いた分は ledger を汚さない
+
+
+def test_save_settings_rejects_non_string():
+    session = WorkbenchSession.create_demo()
+
+    result = session.save_settings(mp_api_key=12345)
+
+    assert result["error_type"] == "ValueError"
+
+
+def test_save_settings_applies_to_process_env_for_mp_client():
+    # 【① 非変更の確認】: 保存したキーが既存の MPRestClient() 遅延構築経路 (env → .env) から
+    #   そのまま拾えることを確認する (設定 > env の優先順位を実プロセス env で実証)。
+    import os
+
+    session = WorkbenchSession.create_demo()
+
+    session.save_settings(mp_api_key="sk-process-env-check")
+
+    assert os.environ.get("MATERIALS_PROJECT_API") == "sk-process-env-check"
+
+
+def test_clear_settings_removes_value_and_appends_ledger_without_value():
+    session = WorkbenchSession.create_demo()
+    session.save_settings(mp_api_key="sk-to-be-cleared")
+    before = len(session.ledger.entries)
+
+    result = session.clear_settings("mp_api_key")
+
+    assert result == {
+        "mp_api_key_set": False, "mp_api_key_hint": None, "mp_api_key_source": None,
+    }
+    assert len(session.ledger.entries) == before + 1
+    entry = session.ledger.entries[-1]
+    assert entry.kind == "settings_change"
+    assert entry.payload == {"key": "mp_api_key", "action": "clear"}
+
+
+def test_clear_settings_unknown_key_returns_422_error_dict():
+    session = WorkbenchSession.create_demo()
+    before = len(session.ledger.entries)
+
+    result = session.clear_settings("not_a_real_key")
+
+    assert result["error_type"] == "ValueError"
+    assert len(session.ledger.entries) == before
+
+
+def test_state_status_reflects_mp_available_from_settings():
+    session = WorkbenchSession.create_demo()
+    assert session.state()["status"]["mp_available"] is False
+
+    session.save_settings(mp_api_key="sk-abcd1234")
+
+    assert session.state()["status"]["mp_available"] is True
+
+    session.clear_settings("mp_api_key")
+
+    assert session.state()["status"]["mp_available"] is False
+
+
+def test_state_status_mp_available_true_from_env_without_settings(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MATERIALS_PROJECT_API", "env-only-key")
+    session = WorkbenchSession.create_demo()
+
+    assert session.state()["status"]["mp_available"] is True
+
+
+def test_ledger_never_contains_saved_mp_api_key_value():
+    # 【契約の絶対規則: ledger にキーを書かない】: 保存/削除を経ても ledger の payload/text
+    #   いずれにも原文キーが現れないことを、全エントリを走査して確認する。
+    secret = "sk-must-never-appear-in-ledger-zzz9"
+    session = WorkbenchSession.create_demo()
+
+    session.save_settings(mp_api_key=secret)
+    session.clear_settings("mp_api_key")
+
+    for entry in session.ledger.entries:
+        assert secret not in json.dumps(entry.payload, default=str)
+    for row in session.ledger_view()["entries"]:
+        assert secret not in row["text"]
+
+
+def test_ledger_leak_guard_fails_if_payload_carried_the_value_mutation_proof():
+    # 【変異実証】: 上のガードテストが「ledger に値を書いてしまう」実装バグを本当に検出できることを
+    #   独立に示す — payload に値を積む版を模擬し、上と同じ走査アサーションが fail することを確認する
+    #   (「落ちないガードは無いより悪い」CLAUDE.md の教訓に従う)。
+    secret = "sk-mutation-proof-leak-value"
+    session = WorkbenchSession.create_demo()
+    # 実装のガードをすり抜けて「値入りペイロード」を直接 ledger に積む変異を模擬する。
+    session.ledger.append("settings_change", {"key": "mp_api_key", "action": "set", "value": secret})
+
+    leaked = any(
+        secret in json.dumps(entry.payload, default=str) for entry in session.ledger.entries
+    )
+    assert leaked, "mutation-proof: 値入り payload を積んだのにガードのロジックが検出できていない"
+
+
+# ---------------------------------------------------------------------------
+# エージェント境界: settings は agent_mcp shim に露出しない
+# ---------------------------------------------------------------------------
+
+
+def test_agent_mcp_does_not_expose_any_credential_tools():
+    # 【契約: エージェントに読ませない】: shim (agent_mcp) の許可ツール名に MP キー資格情報
+    # (get/save/clear settings, api_key, credential) 関連が一切含まれないことを確認する。
+    # `propose_settings_change` (精密化設定の ModelAction 起票) は別物なので意図的に除外しない —
+    # 資格情報固有の語幹だけを見る (名前に "setting" を含む既存ツールとの衝突を避けるため)。
+    from tsumugin.workbench import agent_mcp
+
+    all_names = agent_mcp.ALLOWED_TOOL_NAMES | agent_mcp.BYPASS_ONLY_TOOL_NAMES
+    forbidden_stems = ("api_key", "credential", "get_settings", "save_settings", "clear_settings")
+    for name in all_names:
+        lowered = name.lower()
+        for stem in forbidden_stems:
+            assert stem not in lowered, f"{name!r} exposes credential-shaped tool ({stem!r})"
+
+
+# ---------------------------------------------------------------------------
+# phaseid の MP キー不在ガード非回帰 (実 settings/env 経路)
+# ---------------------------------------------------------------------------
+
+
+def test_request_phaseid_returns_422_when_no_mp_key_anywhere(
+    project_session: WorkbenchSession, monkeypatch
+):
+    # 【非回帰】: settings/env のどちらにもキーが無いとき、request_phaseid は既存の
+    #   MPRestClient() 事前検証 (① 非変更) 経由で 422 ValueError へ縮退する。リポジトリ実 .env の
+    #   混入を避けるため cwd を tmp へ退避する (mp.client._find_dotenv は cwd から親方向探索)。
+    monkeypatch.chdir(project_session._project.spec_dir)  # type: ignore[union-attr]
+    project_session._fit["plot"] = {"h0": {"x": [1.0], "yobs": [2.0], "residual": None}}
+
+    result = project_session.request_phaseid(mode="pattern")
+
+    assert result["error_type"] == "ValueError"
+
+
+def test_phaseid_add_returns_error_dict_when_no_mp_key_anywhere(
+    project_session: WorkbenchSession, monkeypatch
+):
+    monkeypatch.chdir(project_session._project.spec_dir)  # type: ignore[union-attr]
+
+    result = project_session.phaseid_add(formula="NaCl", mp_id="mp-1")
+
+    assert result["error_type"] == "ValueError"

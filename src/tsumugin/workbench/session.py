@@ -41,6 +41,7 @@ from ..store.snapshot import SnapshotStore
 from . import density as _density
 from . import lifecycle
 from . import seed as _seed
+from . import settings as _settings
 from .agent_bridge import AgentBridge
 from .jobs import RefinementJobManager, build_default_runner
 from .project import (
@@ -127,6 +128,7 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "mem_request": "HUMAN",
     "mem_finished": "CORE ①",
     "mem_failed": "GUARD",
+    "settings_change": "HUMAN",
 }
 
 #: 承認カード action_id 接頭辞 → kind (``abandon_pending_approvals`` が ledger payload に積む
@@ -240,6 +242,9 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"mem finished (n_peaks={payload.get('n_peaks')})"
     if kind == "mem_failed":
         return f"mem failed: {payload.get('error')}"
+    if kind == "settings_change":
+        # 【値を出さない】: payload は {"key","action"} のみ (契約の絶対規則) — テキストにも値は出ない。
+        return f"settings {payload.get('key')} {payload.get('action')}"
     return kind
 
 
@@ -533,6 +538,51 @@ class WorkbenchSession:
         return True
 
     # ------------------------------------------------------------------
+    # アプリ設定 (資格情報) — Materials Project トークン
+    # (GET/POST /api/settings, POST /api/settings/clear, api-contract.md §アプリ設定)
+    # ------------------------------------------------------------------
+
+    #: 現状扱う設定キーは MP トークンのみ (未知 key は 422, `clear_settings`)。
+    _VALID_SETTINGS_KEYS: "tuple[str, ...]" = ("mp_api_key",)
+
+    def get_settings(self) -> dict[str, Any]:
+        """GET /api/settings: マスク済み状態 (キー本体は絶対に返さない)。"""
+        status = _settings.mp_api_key_status()
+        return {
+            "mp_api_key_set": status["set"],
+            "mp_api_key_hint": status["hint"],
+            "mp_api_key_source": status["source"],
+        }
+
+    def save_settings(self, *, mp_api_key: Any) -> dict[str, Any]:
+        """POST /api/settings ``{"mp_api_key": str}``: 保存 + プロセス env 反映 + ledger。
+
+        空文字/非文字列は ``ValueError`` (呼び出し側 [`app.py`] が 422 へ縮退)。**ledger に値は
+        書かない** — 記録するのは ``settings_change`` (``{"key": "mp_api_key", "action": "set"}``)
+        のみ (契約の絶対規則)。保存直後に ``apply_mp_api_key_to_env`` でプロセス env へ反映し、
+        既存の ``MPRestClient()`` 遅延構築経路 (env → .env の順) がそのまま新しいキーを拾えるよう
+        にする (設定 > env の優先順位)。
+        """
+        if not isinstance(mp_api_key, str) or not mp_api_key:
+            return {"error": "mp_api_key must be a non-empty string", "error_type": "ValueError"}
+        _settings.save_setting("mp_api_key", mp_api_key)
+        _settings.apply_mp_api_key_to_env()
+        self.ledger.append("settings_change", {"key": "mp_api_key", "action": "set"})
+        return self.get_settings()
+
+    def clear_settings(self, key: Any) -> dict[str, Any]:
+        """POST /api/settings/clear ``{"key": "mp_api_key"}``: 削除 + env から除去 + ledger。
+
+        未知 key は ``ValueError`` (422)。値を含まない ``settings_change`` (action="clear") のみを
+        ledger に記す。
+        """
+        if key not in self._VALID_SETTINGS_KEYS:
+            return {"error": f"unknown settings key: {key!r}", "error_type": "ValueError"}
+        _settings.clear_setting(str(key))
+        self.ledger.append("settings_change", {"key": key, "action": "clear"})
+        return self.get_settings()
+
+    # ------------------------------------------------------------------
     # GET /api/state
     # ------------------------------------------------------------------
 
@@ -559,6 +609,9 @@ class WorkbenchSession:
         #   なので実質定数コスト) を都度反映する (api-contract.md GET /api/state)。
         status = dict(self._status)
         status["gsas_available"] = gsasii_available()
+        # 【mp_available は毎回動的判定】: gsas_available と同じ流儀 — 設定ファイル/env の現況を
+        #   都度反映する (相同定ボタンの事前 disabled に使う, api-contract.md §アプリ設定)。
+        status["mp_available"] = _settings.mp_available()
         return {
             "project": dict(self.project),
             "mode": self.mode,

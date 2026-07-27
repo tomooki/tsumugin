@@ -186,6 +186,28 @@ histograms[0] (instrument_path/radiation/geometry/data_format/two_theta_limits) 
 | (B5 新相提案) | — | sequential 完了時、changepoint/未説明残差のフレームがあれば **ModelAction 承認カード** (transcript approval) を生成: 「frame N で新相を同定して追加するか」。APPROVE → phaseid ジョブ (残差, elements は現相集合由来) → top 候補を物質化して相追加 (ledger)。再実行はユーザーの明示 RUN。REJECT → 提案は ledger に残る。**エンジン内自動受理は GUI 経路では使わない** (提案≠適用) |
 | (B4 FR-403) | — | alkali feasibility infeasible フレームは ReviewQueue へ自動追加 (severity=echem) |
 
+## アプリ設定 (資格情報) — Materials Project トークン
+
+MP API キーを**環境変数/.env でなく GUI から**入力できるようにする。プロジェクトではなく
+**ユーザ単位の設定** (`~/.tsumugin/settings.json`, POSIX では 0600) に保存する — project.json は
+共有・zip される想定であり、資格情報を置いてはならない。
+
+**取り扱いの絶対規則**:
+- **API はキー本体を返さない**。`GET /api/settings` は `{"mp_api_key_set": bool, "mp_api_key_hint": str|null, "mp_api_key_source": "settings"|"env"|null}` のみ (hint は末尾 4 文字程度のマスク表示)。
+- **ledger にキーを書かない**。記録するのは `settings_change` (payload は `{"key": "mp_api_key", "action": "set"|"clear"}` のみで値を含まない)。
+- **エージェントに読ませない**: shim にキーを返すツールを作らない。`get_state` に載るのは `mp_available: bool` だけ。
+- 優先順位: 設定ファイル > 環境変数 `MATERIALS_PROJECT_API` > `.env`。**判定は実際にキーを解決する `MPRestClient` と同じ順序にする** — `.env` を見ないと「実際は動くのに `mp_available=false` で IDENTIFY が disabled」という*使えるのに使わせない*誤判定になる (実機で踏んだ)。`.env` 由来は利用者視点で `source: "env"` に含める。保存時にプロセスの環境変数へも反映し、既存の `MPRestClient()` 遅延構築経路がそのまま使えるようにする (① の変更なし)。
+
+| 呼び出し | 内容 |
+|---|---|
+| GET `/api/settings` | 上記のマスク済み状態 |
+| POST `/api/settings` `{"mp_api_key": str}` | 保存 + プロセス env 反映 + ledger (値なし)。空文字は 422 |
+| POST `/api/settings/clear` `{"key": "mp_api_key"}` | 削除 + env から除去 + ledger |
+| GET `/api/state` の `status.mp_available` | 設定 or env にキーがあるか (相同定ボタンの事前 disabled に使う。`gsas_available` と同じ流儀) |
+
+UI: タイトルバー右の歯車 → SETTINGS モーダル (Welcome 画面からも開ける)。入力は `type="password"`、
+保存後は本体を表示せずマスク + 「設定済み (env / settings)」表示と CLEAR ボタン。
+
 ## MEM 密度マップ (V3b — FR-601)
 
 精密化済み gpx から実 Dysnomia MEM を回し、断面を STRUCTURE タブに描く。ジョブ枠は共有

@@ -666,6 +666,24 @@ def create_workbench_app(
         return _to_response(result, success_status=success_status)
 
     # ------------------------------------------------------------------
+    # アプリ設定 (資格情報) — Materials Project トークン (api-contract.md §アプリ設定)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        return holder.session.get_settings()
+
+    @app.post("/api/settings")
+    def post_settings(body: dict[str, Any] = Body(...)) -> Any:
+        result = holder.session.save_settings(mp_api_key=body.get("mp_api_key"))
+        return _to_response(result)
+
+    @app.post("/api/settings/clear")
+    def post_settings_clear(body: dict[str, Any] = Body(...)) -> Any:
+        result = holder.session.clear_settings(body.get("key"))
+        return _to_response(result)
+
+    # ------------------------------------------------------------------
     # GET /api/agent/status (V3a)
     # ------------------------------------------------------------------
 

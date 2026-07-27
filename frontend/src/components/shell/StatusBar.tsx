@@ -33,6 +33,9 @@ export function StatusBar() {
         {status?.gsas_available === false && (
           <Chip variant="inverted">{st(lang, "status.gsasUnavailable")}</Chip>
         )}
+        {status?.mp_available === false && (
+          <Chip variant="inverted">{st(lang, "status.mpUnavailable")}</Chip>
+        )}
         {refining && <Chip variant="accent">{st(lang, "refine.running")}</Chip>}
       </div>
       <span className={`status-bar__sentence${manual ? "" : " status-bar__sentence--auto"}`}>
