@@ -46,6 +46,9 @@ export const PID_LOCAL_STRINGS = {
   // PHASE when status.mp_available is false — same "gsas_available と同じ
   // 流儀" precedent as OperatorConsole's recipe.gsasUnavailable tooltip
   // (right.strings.ts).
+  // 相同定に実際に使われる元素系 (viewmodel.phase_id.elements)。空なら**表示自体を出さない** —
+  // プロトタイプの固定表記 (K, Mn, Fe, C, N, O) の置き換え。
+  "pid.local.elements": { en: "elements {elements}", ja: "元素 {elements}" },
   "pid.local.mpUnavailable": {
     en: "Materials Project token not set — enter it from Settings",
     ja: "Materials Project トークン未設定 — 設定から入力してください",

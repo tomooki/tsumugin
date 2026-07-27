@@ -64,6 +64,15 @@ export function PhaseIdTab() {
   const mpAvailable = state.shell?.status?.mp_available ?? true;
   const mpUnavailableTitle = !mpAvailable ? tl("pid.local.mpUnavailable") : undefined;
 
+  // 元素系は **サーバが実際に identify_pattern へ渡すもの** (現相集合の CIF 由来) だけを出す。
+  // 元プロトタイプはここに固定文字列 "elements K, Mn, Fe, C, N, O" を持っていたが、実際の入力と
+  // 無関係なので表示と挙動が食い違っていた。空 (相なし/CIF 読めず/pymatgen 未導入) なら元素の
+  // 記述自体を落とし、手法の記述 (実際に固定されている IdentifyConfig 既定) だけを残す。
+  const elements = vm.elements ?? [];
+  const note = elements.length
+    ? `${tl("pid.local.elements", { elements: elements.join(", ") })} · ${t("pid.note")}`
+    : t("pid.note");
+
   const setRefineStatus = useCallback(
     (refine: RefineStatus) => dispatch({ type: "SET_REFINE_STATUS", refine }),
     [dispatch],
@@ -161,7 +170,7 @@ export function PhaseIdTab() {
     <div className="pid-tab">
       <div className="pid-tab__head">
         <span className="pid-tab__title">{t("pid.title")}</span>
-        <span className="pid-tab__note">{t("pid.note")}</span>
+        <span className="pid-tab__note">{note}</span>
       </div>
 
       <div className="pid-tab__controls">

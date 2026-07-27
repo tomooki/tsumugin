@@ -80,6 +80,11 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
     "basin": { "points": [{ "x": 9.372, "y": 6.71, "label": "start 1" }] }
   },
   "phase_id": {
+    // 相同定の元素系 = **現相集合の CIF から導出**した実際の値 (固定リストではない)。
+    // POST /api/phaseid が `identify_pattern(elements=…)` に渡すものと同一の導出
+    // (`_elements_from_project`)。相 0 件 / pymatgen 未導入 / 全 CIF 読込失敗は `[]` で、
+    // UI は元素の記述自体を出さない (存在しない元素系をでっち上げない)。
+    "elements": ["C", "Fe", "K", "Mn", "N", "O"],
     "candidates": [{ "rank": 1, "formula": "KMnFe(CN)6", "source": "MP", "sg": "P21/n",
                      "dara": 0.86, "mwmsx": "41/2/1/3", "strain": "0.4%",
                      "chem_guard": "ok", "guard_fail": false, "mp_id": "mp-19017" }],
@@ -341,11 +346,20 @@ reject でも提案は ledger に残る。approve 時の実行失敗は error di
 | POST `/api/refine` `{"stages_on"?: {"01": bool, ...}}` | 202 `{"status": "started"}` / 409 (実行中) | 実 `run_auto_rietveld` をバックグラウンドスレッドで起動 + ledger (`refine_request`)。`stages_on` (任意) は staged release recipe の ON/OFF — false の段は recipe から**実際にスキップ**され stage 履歴に現れない (A1: UI のゲートを実 run に反映する唯一の経路)。省略 = 全段既定。不明キーは 422。demo モード (project 未接続) は従来どおり 202 `{"status": "recorded"}` + ledger のみ |
 | GET `/api/refine/status` | `{"status": "idle"\|"running"\|"done"\|"failed", "elapsed_s": float\|null, "last_event": str\|null, "error": str\|null, "kind": "refine"\|"phaseid"\|"multistart"\|null}` | — (ポーリング用。完了時はフロントが state/viewmodel を再フェッチ)。`kind` はセルフレビュー指摘 #1: 共有ジョブ枠 (refine/phaseid/multistart) のうち今 (または最後に) 動いているのがどれかを示す — `/api/phaseid/status`・`/api/multistart/status` も同形で `kind` を返す (共通実装)。一度も起動していない `idle` のときのみ `null` |
 | POST `/api/transcript/message` `{"text": str}` | `{"message": {...}}` | transcript 追記 |
-| GET `/api/ledger` | `{"entries": [{"index", "time", "actor", "text", "hash", "revert_to"}], "verified": true}` | — |
+| GET `/api/ledger` | `{"entries": [{"index", "time", "actor", "text", "hash", "revert_to", "rwp", "bic"}], "verified": true}` | — |
 | GET `/api/review-queue` | `{"items": [...]}` | — |
 | GET `/api/hypotheses` | viewmodel.hypotheses と同形 | — |
 
 actor は `"AGENT ③" | "MCP ②" | "CORE ①" | "HUMAN" | "GUARD"` (LEDGER タブの色分けキー)。
+
+`rwp` / `bic` (`float | null`) は**そのエントリが精密化結果を伴うときだけ**入る適合度である
+(`m7_stage` = 段階ごと、`refine_finished` = 最終)。台帳を時系列に読むだけで「その操作で適合が
+どう動いたか」が判るようにするための表示専用フィールドで、payload の**生の事実から導出**する
+(`rwp`, `gof`, `n_params`, `n_obs`)。BIC = χ² + n_params·ln(n_obs)、χ² = GOF²·(n_obs − n_params)
+— `insitu.anchor.select.frame_bic` および FIT メトリクスの χ² と同一定義 (相数の比較に Rwp を
+使わない CLAUDE.md の規律と同じ式を GUI 側でも使う)。適合度を持たないエントリ (モード切替・
+承認・設定変更など) は両方 `null` で、UI は**空欄**にする (`―` は「あるはずの値が欠けている」
+の意味に予約する)。導出不能 (非有限 GOF、n_obs ≤ n_params、n_obs 欠落) も `null`。
 
 ## 語彙 (enum) — 両側で固定
 

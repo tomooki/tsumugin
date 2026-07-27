@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getLedger } from "../../api/client";
+import { formatNumber } from "../../api/format";
 import type { Actor, LedgerEntry } from "../../api/types";
 import { useI18n } from "../../i18n";
 import { Btn } from "../common";
@@ -77,11 +78,23 @@ export function LedgerTab() {
         {(entries ?? []).map((entry) => {
           // out-of-vocabulary actor → neutral "core" rule colour, never a crash (§語彙)
           const modifier = ACTOR_META[entry.actor]?.modifier ?? "core";
+          // finite_or_none 規約 + 旧サーバ (フィールドごと欠落) の両方を同じ「値なし」に潰す。
+          const rwp = Number.isFinite(entry.rwp as number) ? (entry.rwp as number) : null;
+          const bic = Number.isFinite(entry.bic as number) ? (entry.bic as number) : null;
           return (
             <div key={entry.index} className={`ledger-row ledger-row--${modifier}`}>
               <span className="ledger-row__time">{entry.time}</span>
               <span className="ledger-row__actor">{actorLabel(entry.actor)}</span>
               <span className="ledger-row__text">{entry.text}</span>
+              {/* 適合度 (api-contract.md GET /api/ledger): 精密化由来のエントリだけが値を持つ。
+                  null は **空欄** — `―` は「あるはずの値が欠けている」に予約しており、
+                  モード切替に Rwp が無いのは欠測ではない。 */}
+              <span className="ledger-row__rwp" title={rwp === null ? undefined : "Rwp / %"}>
+                {rwp === null ? "" : formatNumber(rwp, 2)}
+              </span>
+              <span className="ledger-row__bic" title={bic === null ? undefined : "BIC"}>
+                {bic === null ? "" : formatNumber(bic, 0)}
+              </span>
               <span className="ledger-row__hash">{entry.hash}</span>
               <Btn variant="outline" className="ledger-row__revert">
                 {t("ledger.revertTo")}

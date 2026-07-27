@@ -165,6 +165,53 @@ def _actor_for_kind(kind: str) -> str:
     return _ACTOR_BY_KIND.get(kind, "CORE ①")
 
 
+#: 適合度 (rwp/bic) を持ちうる ledger kind (api-contract.md GET /api/ledger)。ここに無い kind は
+#: 両方 null — モード切替や承認に Rwp は存在せず、直前段の値を引き継いで「見かけ上の適合度」を
+#: 作ることは台帳の誤読を招く。
+_FIT_QUALITY_KINDS = frozenset({"m7_stage", "refine_finished"})
+
+
+def _bic_from_payload(payload: dict[str, Any]) -> "float | None":
+    """ledger payload の生の事実から BIC を導出する (導出不能は None)。
+
+    BIC = χ² + n_params·ln(n_obs)、χ² = GOF²·(n_obs − n_params) —
+    ``insitu.anchor.select.frame_bic`` および FIT メトリクスの χ² と同一定義
+    (相数の比較を Rwp でなく bic で行う規律と同じ物差しを GUI にも出す)。
+
+    n_obs 欠落 / 非有限 GOF / dof ≤ 0 では**捏造せず** None を返す。
+    """
+    gof = finite_or_none(payload.get("gof"))
+    if gof is None:
+        return None
+    try:
+        n_params = int(payload.get("n_params") or 0)
+        n_obs = int(payload.get("n_obs") or 0)
+    except (TypeError, ValueError):
+        return None
+    if n_obs <= n_params or n_obs <= 0:
+        return None
+    return finite_or_none(gof * gof * (n_obs - n_params) + n_params * math.log(n_obs))
+
+
+def _fit_quality_for_entry(
+    kind: str, payload: dict[str, Any]
+) -> "tuple[float | None, float | None]":
+    """LEDGER 行に添える (rwp, bic)。適合度を伴わない kind は (None, None)。"""
+    if kind not in _FIT_QUALITY_KINDS:
+        return None, None
+    return finite_or_none(payload.get("rwp")), _bic_from_payload(payload)
+
+
+def _fmt_rwp(value: Any) -> str:
+    """ledger テキスト用の Rwp 表記。生の 15 桁 float を出さない (LEDGER は Rwp 列と併記する)。
+
+    値なし/非有限は ``―`` — このテキストは ``last_event`` (ステータスバー) にも使われるため、
+    0.00 に化けさせない。
+    """
+    rwp = finite_or_none(value)
+    return "―" if rwp is None else f"{rwp:.2f}"
+
+
 def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -> str:
     """ledger エントリ 1 件の人間可読テキストを kind ごとに組み立てる (LEDGER タブ表示用)。"""
     if kind == "selection_set_mode":
@@ -188,11 +235,11 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
     if kind == "refine_request":
         return "refine requested"
     if kind == "refine_finished":
-        return f"refine finished (rwp={payload.get('rwp')})"
+        return f"refine finished (rwp={_fmt_rwp(payload.get('rwp'))})"
     if kind == "refine_failed":
         return f"refine failed: {payload.get('error')}"
     if kind == "m7_stage":
-        return f"stage {payload.get('stage')} rwp={payload.get('rwp')}"
+        return f"stage {payload.get('stage')} rwp={_fmt_rwp(payload.get('rwp'))}"
     if kind == "m7_stage_error":
         return f"stage {payload.get('stage')} error"
     if kind == "transcript_message":
@@ -314,6 +361,9 @@ class WorkbenchSession:
         #   (ADD AS PHASE 時の再物質化用、strain を引き継ぐ)。
         self._phaseid_candidates: list[dict[str, Any]] = []
         self._phaseid_accepted_by_id: dict[str, Any] = {}
+        # 相同定の元素系キャッシュ (structure_path の並び → 元素記号列)。CIF 読込 + pymatgen import
+        # は viewmodel を引くたびに払うには重い。相集合が変われば (相追加/削除) キーが変わり再計算。
+        self._elements_cache: "tuple[tuple[str, ...], list[str]] | None" = None
         # 【A5: basin 散布 + corroborated evidence】: run_multistart_rietveld 完了で供給。
         #   None は「データなし (empty-state)」(api-contract.md)。
         self._basin: "dict[str, Any] | None" = None
@@ -718,15 +768,43 @@ class WorkbenchSession:
         """viewmodel.phase_id (A4): demo はシード、project は実 ``identify_pattern`` 候補。"""
         if use_seed:
             return _seed.seed_phase_id()
-        if self._source != "project":
+        if self._source != "project" or self._project is None:
             return dict(_EMPTY_PHASE_ID)
         with self._lock:
             candidates = [dict(c) for c in self._phaseid_candidates]
         return {
+            "elements": self._phaseid_elements(),
             "candidates": candidates,
             "unexplained": [],
             "completeness": {"is_complete": None, "notes": [], "flagged_frames": ""},
         }
+
+    def _phaseid_elements(self) -> list[str]:
+        """相同定に実際に使われる元素系 (現相集合の CIF 由来) を返す — 固定リストではない。
+
+        ``request_phaseid`` が ``identify_pattern(elements=…)`` へ渡すものと**同一の導出**
+        (`_elements_from_project`)。UI がここを表示することで「表記と実際の入力が食い違う」
+        状態が構造的に起きない。
+
+        CIF の読込は viewmodel を引くたびには行わず、相集合 (structure_path の並び) をキーに
+        キャッシュする。pymatgen 未導入・全 CIF 読込失敗は空リスト (相同定タブが使えないだけで
+        GUI 全体は動く)。
+        """
+        project = self._project
+        if project is None:
+            return []
+        key = tuple(p.structure_path for p in project.phases)
+        with self._lock:
+            cached = self._elements_cache
+        if cached is not None and cached[0] == key:
+            return list(cached[1])
+        try:
+            elements = _elements_from_project(project)
+        except ImportError:
+            elements = []
+        with self._lock:
+            self._elements_cache = (key, list(elements))
+        return elements
 
     def _datasets_view(self) -> list[dict[str, Any]]:
         if self._source == "demo":
@@ -893,6 +971,7 @@ class WorkbenchSession:
             revert_to = None
             if entry.kind == "snapshot_revert":
                 revert_to = entry.payload.get("snapshot_id")
+            rwp, bic = _fit_quality_for_entry(entry.kind, entry.payload)
             entries.append(
                 {
                     "index": entry.index,
@@ -901,6 +980,8 @@ class WorkbenchSession:
                     "text": text,
                     "hash": entry.hash,
                     "revert_to": revert_to,
+                    "rwp": rwp,
+                    "bic": bic,
                 }
             )
         return {"entries": entries, "verified": self.ledger.verify()}
@@ -1468,7 +1549,16 @@ class WorkbenchSession:
             self.snapshots.save(snapshot_phases, label="refine finished")
             self.ledger.append(
                 "refine_finished",
-                {"rwp": finite_or_none(result.final_rwp), "gof": finite_or_none(result.final_gof)},
+                # gof/n_params/n_obs は LEDGER の bic 列を**このエントリだけから**導出するための
+                # 生の事実 (api-contract.md GET /api/ledger)。表示側で他エントリを参照しない。
+                {
+                    "rwp": finite_or_none(result.final_rwp),
+                    "gof": finite_or_none(result.final_gof),
+                    "n_params": (
+                        result.stage_results[-1].n_params if result.stage_results else 0
+                    ),
+                    "n_obs": int(result.n_obs),
+                },
             )
 
     def _on_refine_failure(self, exc: BaseException) -> None:
@@ -2625,6 +2715,7 @@ class WorkbenchSession:
 
 #: project モードは実相同定/逐次解析が未接続 (v1 残存制約) — シード値で偽装せず空を返す。
 _EMPTY_PHASE_ID: dict[str, Any] = {
+    "elements": [],
     "candidates": [],
     "unexplained": [],
     "completeness": {"is_complete": None, "notes": [], "flagged_frames": ""},

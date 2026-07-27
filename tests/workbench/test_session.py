@@ -3389,3 +3389,160 @@ def test_phaseid_add_returns_error_dict_when_no_mp_key_anywhere(
     result = project_session.phaseid_add(formula="NaCl", mp_id="mp-1")
 
     assert result["error_type"] == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# LEDGER の適合度 (Rwp / BIC) 表示 — api-contract.md GET /api/ledger
+# ---------------------------------------------------------------------------
+
+
+def test_ledger_view_exposes_rwp_and_bic_for_stage_entries():
+    # 【目的】: 精密化段階の ledger エントリは rwp と bic を持つ。bic は payload の生の事実
+    #   (gof/n_params/n_obs) から χ² + n_params·ln(n_obs) として導出される。
+    import math
+
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage",
+        {"stage": "01 background", "rwp": 24.5, "gof": 2.4, "n_params": 12, "n_obs": 4200},
+    )
+
+    entry = session.ledger_view()["entries"][-1]
+
+    assert entry["rwp"] == pytest.approx(24.5)
+    expected = 2.4 * 2.4 * (4200 - 12) + 12 * math.log(4200)
+    assert entry["bic"] == pytest.approx(expected)
+
+
+def test_ledger_view_bic_matches_anchor_frame_bic_definition():
+    # 【目的】: GUI の bic は ① `insitu.anchor.select.frame_bic` と**同一式**である
+    #   (相数を Rwp でなく bic で抑制する CLAUDE.md の規律と同じ物差しを GUI にも出す)。
+    #   片方だけ式が変わったらこのテストが落ちる。
+    from tsumugin.insitu.anchor.model import AnchorConfig
+    from tsumugin.insitu.anchor.select import frame_bic
+    from tsumugin.insitu.model import FrameRietveldResult
+
+    gof, n_params, n_obs = 1.44, 25, 3800
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "refine_finished", {"rwp": 13.4, "gof": gof, "n_params": n_params, "n_obs": n_obs}
+    )
+
+    fr = FrameRietveldResult(
+        frame_index=0, axis_value=0.0, data_path="d.xy", rwp=13.4, gof=gof, n_obs=n_obs,
+        refined_cells={}, phase_names=("a",), phase_fractions={"a": 1.0},
+    )
+    cfg = AnchorConfig(base_params=n_params - 1, per_phase_params=1)
+
+    assert session.ledger_view()["entries"][-1]["bic"] == pytest.approx(frame_bic(fr, cfg))
+
+
+def test_ledger_view_rwp_and_bic_are_null_for_non_refinement_entries():
+    # 【目的】: 適合度を持たない操作 (モード切替など) は rwp/bic とも null。
+    #   「値が無い」を 0 や前段の値で埋めない (empty-state 規律)。
+    session = WorkbenchSession.create_demo()
+    session.set_mode("auto")
+
+    entry = session.ledger_view()["entries"][-1]
+
+    assert entry["rwp"] is None
+    assert entry["bic"] is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"rwp": 9.0, "gof": 1.2, "n_params": 10},                      # n_obs 欠落
+        {"rwp": 9.0, "gof": float("inf"), "n_params": 10, "n_obs": 40},  # gof 非有限
+        {"rwp": 9.0, "gof": 1.2, "n_params": 40, "n_obs": 40},          # dof ≤ 0
+        {"rwp": 9.0, "gof": None, "n_params": 10, "n_obs": 4000},       # gof なし
+    ],
+)
+def test_ledger_view_bic_is_null_when_not_derivable(payload):
+    # 【目的】: 導出できない入力で bic を捏造しない (0 や inf を返さない)。rwp は残る。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append("m7_stage", {"stage": "s", **payload})
+
+    entry = session.ledger_view()["entries"][-1]
+
+    assert entry["bic"] is None
+    assert entry["rwp"] == pytest.approx(9.0)
+
+
+def test_refine_finished_ledger_payload_carries_gof_n_params_n_obs(tmp_path):
+    # 【目的】: refine 完了エントリが bic 導出に必要な生の事実を payload に持つ
+    #   (LEDGER の bic 列がここから作れる = ② 到達可能性と同じ「出力から作れるか」の規律)。
+    project = lifecycle.create_project("proj", str(tmp_path))
+    session = WorkbenchSession.from_project(project)
+    result = AutoRietveldResult(
+        stage_results=(StageResult(label="s", rwp=8.1, gof=1.3, n_params=17, converged=True),),
+        final_rwp=8.1, final_gof=1.3, refined_cells={}, validity=ValidityReport(passed=True),
+        gpx_path="", n_obs=3300,
+    )
+
+    session._on_refine_success(result)
+
+    payload = [e for e in session.ledger.entries if e.kind == "refine_finished"][-1].payload
+    assert payload["gof"] == pytest.approx(1.3)
+    assert payload["n_params"] == 17
+    assert payload["n_obs"] == 3300
+
+
+# ---------------------------------------------------------------------------
+# PHASE ID の元素系 — 固定表記ではなく現相集合の CIF から導出する
+# ---------------------------------------------------------------------------
+
+
+def test_viewmodel_phase_id_elements_derived_from_project_cifs(tmp_path):
+    # 【目的】: 相同定タブの元素表記は固定文字列ではなく、実際に `identify_pattern` へ渡る
+    #   元素系 (`_elements_from_project` と同一導出) である。
+    pytest.importorskip("pymatgen")
+    session = WorkbenchSession.from_project(_phaseid_project(tmp_path))
+
+    elements = session.viewmodel()["phase_id"]["elements"]
+
+    assert elements == ["Cl", "Na"]
+
+
+def test_viewmodel_phase_id_elements_empty_when_no_phases(tmp_path):
+    # 【目的】: 相 0 件の新規プロジェクトは空リスト (存在しない元素系をでっち上げない)。
+    project = lifecycle.create_project("proj", str(tmp_path))
+    session = WorkbenchSession.from_project(project)
+
+    assert session.viewmodel()["phase_id"]["elements"] == []
+
+
+def test_viewmodel_phase_id_elements_empty_when_pymatgen_missing(tmp_path, monkeypatch):
+    # 【目的】: pymatgen 未導入環境でも viewmodel は落ちず空リストへ縮退する
+    #   (相同定タブが使えないだけで GUI 全体は動く)。
+    from tsumugin.workbench import session as session_mod
+
+    def _boom(_project):
+        raise ImportError("pymatgen is not installed")
+
+    monkeypatch.setattr(session_mod, "_elements_from_project", _boom)
+    session = WorkbenchSession.from_project(_phaseid_project(tmp_path))
+
+    assert session.viewmodel()["phase_id"]["elements"] == []
+
+
+def test_ledger_text_formats_rwp_to_two_decimals():
+    # 【目的】: ledger のテキストに 15 桁の生 float を出さない (Rwp 列と併記されるため
+    #   `rwp=12.568386255970948` は読みづらいだけ)。`last_event` (ステータスバー/コンソール
+    #   表示) も同じテキストを使うので、値自体は残す。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append("m7_stage", {"stage": "S6", "rwp": 12.568386255970948, "gof": 1.4})
+    session.ledger.append("refine_finished", {"rwp": 12.568386255970948, "gof": 1.4})
+
+    texts = [e["text"] for e in session.ledger_view()["entries"][-2:]]
+
+    assert texts[0] == "stage S6 rwp=12.57"
+    assert texts[1] == "refine finished (rwp=12.57)"
+
+
+def test_ledger_text_keeps_dash_when_rwp_is_missing():
+    # 【目的】: 値なしを 0.00 に化けさせない。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append("refine_finished", {"rwp": None, "gof": None})
+
+    assert session.ledger_view()["entries"][-1]["text"] == "refine finished (rwp=―)"

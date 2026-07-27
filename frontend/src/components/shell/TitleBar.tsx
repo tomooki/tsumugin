@@ -28,6 +28,14 @@ export function TitleBar({ onModeChange, disabled = false }: TitleBarProps) {
   // contract's "Welcome 画面からも開ける".
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // null = /api/state 未取得 ("…" 表示)。false は反転チップで目立たせる。
+  const chainVerified = state.shell?.ledger?.verified ?? null;
+  // FR-404: 実測のトークンと経過時間のみ (金額は出さない)。
+  const cost = {
+    tokens: (state.shell?.agent?.tokens ?? 0).toLocaleString("en-US"),
+    minutes: Math.round((state.shell?.agent?.wall_time_s ?? 0) / 60),
+  };
+
   const modes: { key: GuiMode; labelKey: "mode.manual.label" | "mode.auto.label"; subKey: "mode.manual.sub" | "mode.auto.sub" }[] = [
     { key: "manual", labelKey: "mode.manual.label", subKey: "mode.manual.sub" },
     { key: "auto", labelKey: "mode.auto.label", subKey: "mode.auto.sub" },
@@ -97,8 +105,12 @@ export function TitleBar({ onModeChange, disabled = false }: TitleBarProps) {
           <span className="title-bar__dot" />
           {t("shell.nonDestructive")}
         </Chip>
-        <Chip>ledger.verify() = TRUE</Chip>
-        <Chip>{idle ? t("status.cost.idle") : t("status.cost.active")}</Chip>
+        {/* 実状態を出す。プロトタイプはどちらも固定文字列だった — 追記専用台帳の
+            verify() を常に TRUE と表示するのは、改竄検知そのものを無効にする嘘。 */}
+        <Chip variant={chainVerified === false ? "inverted" : undefined}>
+          {`ledger.verify() = ${chainVerified === null ? "…" : chainVerified ? "TRUE" : "FALSE"}`}
+        </Chip>
+        <Chip>{idle ? t("status.cost.idle") : t("status.cost.active", cost)}</Chip>
         </div>
       </div>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}

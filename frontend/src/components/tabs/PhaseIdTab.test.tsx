@@ -415,3 +415,32 @@ describe("PhaseIdTab — ADD AS PHASE (A4)", () => {
     expect(within(topRow).getByRole("button", { name: "ADD AS PHASE" })).not.toBeDisabled();
   });
 });
+
+describe("PhaseIdTab — element system (real, not a fixed label)", () => {
+  it("shows the element system the server actually derived from the phase CIFs", () => {
+    renderTab({ elements: ["Ca", "O", "Te"] });
+    const note = document.querySelector(".pid-tab__note")!;
+    expect(note.textContent).toContain("Ca, O, Te");
+  });
+
+  it("never hard-codes the mockup's element list", () => {
+    // 恒久ガード: プロトタイプ由来の固定表記 (K, Mn, Fe, C, N, O) が復活したら落ちる。
+    // 表示は viewmodel.phase_id.elements のみを情報源にする。
+    renderTab({ elements: ["Ca", "O", "Te"] });
+    const note = document.querySelector(".pid-tab__note")!;
+    expect(note.textContent).not.toContain("K, Mn, Fe");
+  });
+
+  it("says nothing about elements when the server reports none", () => {
+    renderTab({ elements: [] });
+    const note = document.querySelector(".pid-tab__note")!;
+    expect(note.textContent?.toLowerCase()).not.toContain("element");
+    // 手法の記述 (実際に固定されている設定) は残す
+    expect(note.textContent).toContain("Dara");
+  });
+
+  it("does not crash when an older server omits `elements`", () => {
+    renderTab();
+    expect(document.querySelector(".pid-tab__note")!.textContent).toContain("Dara");
+  });
+});

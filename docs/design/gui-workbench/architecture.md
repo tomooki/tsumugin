@@ -101,6 +101,21 @@ components/right/   OperatorConsole (recipe+gating+review) / AgentSession (trans
 4. EN/JA 辞書はキー集合一致 (型 + テスト)。数値・ツール名・JSON は辞書外。
 5. 破壊的コントロール不在 (LEDGER に削除 UI が無い、承認 REJECT も ledger 追記表示)。
 6. 元素ドロップダウンは 99 要素・D は H 直後。
+7. **プロトタイプ由来の固定表記を製品に残さない** (2026-07-27)。ハンドオフの `L(en, ja)` 辞書は
+   デモ系列 (K₂Mn[Fe(CN)₆] operando) の具体値を文字列に焼き込んでおり、そのまま出すと**どの
+   プロジェクトを開いても同じ数値・相名・元素系が表示される**。実データと食い違う表示は
+   empty-state 規律 (シード値で実データを偽装しない) の裏返しの違反である。既知の対処:
+   - PHASE ID の元素系 → `viewmodel.phase_id.elements` (実 CIF 由来。空なら元素の記述自体を出さない)
+   - STRUCTURE の相名/空間群 → `viewmodel.phases`
+   - タイトルバー `ledger.verify()` → `state.ledger.verified` (**常時 TRUE 表示は改竄検知を無効にする**)
+   - タイトルバーのトークン/経過時間 → `state.agent.tokens`/`wall_time_s` (FR-404)
+   - FIT プロット注記の λ と "log y"、HYPOTHESES の "14 nodes"、SEQUENCE の "63 frames" → 削除
+     (λ はプロジェクト毎に異なり、LinePlot は線形軸)
+   恒久ガードは各タブのテスト (`*.test.tsx` の "never hard-codes …") に置く。**変異させて fail
+   することを実証済**。
+8. LEDGER 行は精密化由来のエントリにのみ Rwp / BIC を出す (`GET /api/ledger` の `rwp`/`bic`)。
+   値のないエントリは**空欄** — `―` は「あるはずの値が欠けている」に予約する。BIC は
+   `insitu.anchor.select.frame_bic` と同一式 (相数の比較は Rwp でなく BIC、CLAUDE.md の規律)。
 
 ## Tauri `desktop/`
 

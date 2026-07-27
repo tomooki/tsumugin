@@ -334,6 +334,12 @@ export interface PhaseSetCompleteness {
 }
 
 export interface PhaseIdViewModel {
+  // The element system phase identification actually runs with, derived from
+  // the current phases' CIFs server-side (api-contract.md phase_id.elements) —
+  // NOT a fixed list. `[]` = no phases / CIFs unreadable / pymatgen missing, in
+  // which case the UI says nothing about elements rather than inventing them.
+  // Optional for the same reason as `project` below: an older server omits it.
+  elements?: string[];
   candidates: PhaseIdCandidate[];
   unexplained: UnexplainedFeature[];
   completeness: PhaseSetCompleteness;
@@ -620,6 +626,12 @@ export interface LedgerEntry {
   text: string;
   hash: string;
   revert_to: string | null;
+  // Fit quality carried by entries that came from a refinement (m7_stage /
+  // refine_finished); null on every other kind — a mode switch has no Rwp.
+  // Rendered as a BLANK cell, not "—": see api-contract.md GET /api/ledger.
+  // Optional so an older server (or a fixture) that omits them still type-checks.
+  rwp?: number | null;
+  bic?: number | null;
 }
 
 export interface LedgerResponse {
