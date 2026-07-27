@@ -1266,6 +1266,16 @@ SPEC_INPUT_BASIS: dict[str, tuple[str, str]] = {
         BASIS_FREE, "MP 安定性フィルタ (energy above hull, eV/atom)。相分率と比較しない"
     ),
     "phase_id.subtract_bg": (BASIS_FREE, "同定前の背景減算フラグ (bool)。相分率と比較しない"),
+    "phase_id.min_identify_score": (
+        BASIS_FREE,
+        "候補を試行精密化に回すために要する **Dara スコア**の下限 (`reference.scoring."
+        "dara_peak_score`; peaks を matched/wrong/missing/extra に分類し実測強度で正規化した "
+        "無次元量)。相分率とは比較しない — 問いは「この候補は残差を説明しているか」であって "
+        "「どれだけ入っているか」ではない。**分率と混同すると危険**: 偽相はまさに『大きな分率を"
+        "取って残差を舐める』ことで Rwp を下げるので、分率で足切りしても偽相は通ってしまう "
+        "(実測 Ca3TeO6/CaTe3O8 が delta CaTeO3 に勝った)。足切りは説明力 (スコア) で行い、"
+        "量 (Scale) は受理段階の `frac_min` が別途見る",
+    ),
     "phase_id.trigger_rwp_ratio": (
         BASIS_FREE, "同定を起動する Rwp 比。Rwp 基準であり相分率と比較しない"
     ),

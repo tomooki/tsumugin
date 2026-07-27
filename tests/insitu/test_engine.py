@@ -938,3 +938,105 @@ def test_frame_publication_values_default_empty_for_stub_runner():
         assert fr.phase_weight_fractions == {}
         assert fr.phase_weight_fraction_esd == {}
         assert fr.cell_esd == {}
+
+
+# ---------------------------------------------------------------------------
+# 同定スコアゲート: 残差を説明していない候補 (score ≤ 0) を試行にすら回さない
+# ---------------------------------------------------------------------------
+
+
+def _two_candidate_setup():
+    """delta (正スコア) と偽相 (負スコア) の 2 候補を返す finder + runner。
+
+    偽相の方が Rwp を下げる — 「受理基準を満たす中で最小 Rwp」の選択規則だけでは偽相が勝つ。
+    これは実測の病理そのもの (Ca-Te-O 系で Dara スコア負の Ca3TeO6/CaTe3O8 が delta に勝った)。
+    """
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+    fake = PhaseSpec(structure_path="fake.cif", phase_name="new_Ca3TeO6")
+
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        names = [p.phase_name for p in phases]
+        if "new_Ca3TeO6" in names:  # 偽相の方が Rwp は下がる (母数が増えるので当然)
+            return _result(7.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_Ca3TeO6": (11.0, 11.0, 11.0, 90, 90, 90)},
+                           {"alpha": 0.6, "new_Ca3TeO6": 0.4})
+        if "new_CaTeO3" in names:
+            return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.7, "new_CaTeO3": 0.3})
+        i = call["n"]
+        call["n"] += 1
+        rwp = 9.0 if i < 2 else 20.0
+        return _result(rwp, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir, known_phases=()):
+        return [
+            (delta, {"source": "materials_project", "formula": "CaTeO3", "dara_score": 0.082}),
+            (fake, {"source": "materials_project", "formula": "Ca3TeO6", "dara_score": -0.024}),
+        ]
+
+    return alpha, runner, finder
+
+
+def test_negative_score_candidate_wins_on_rwp_without_the_gate():
+    """ゲート無効 (負スコアも許す) なら偽相が Rwp で勝ってしまう — 病理の再現。"""
+    alpha, runner, finder = _two_candidate_setup()
+    pid = PhaseIdConfig(
+        elements=("Ca", "Te", "O"), frac_min=0.02, trigger_rwp_ratio=1.25,
+        min_identify_score=None,
+    )
+    res = run_sequential_rietveld(
+        _frames(3), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid),
+    )
+    assert res.appearances[0].phase_name == "new_Ca3TeO6"
+
+
+def test_identify_score_gate_keeps_only_candidates_that_explain_residual():
+    """既定 (score > 0 を要求) なら偽相は試行にすら回らず delta が採用される。
+
+    Dara スコアが負 = 「その候補を入れると未説明強度がむしろ増える」= 残差を説明していない。
+    Rwp は母数増で必ず下がるので、Rwp で選ぶ前にスコアで足切りする (CLAUDE.md の
+    「相数は Rwp でなく」の規律を候補選択にも適用する)。
+    """
+    alpha, runner, finder = _two_candidate_setup()
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.02, trigger_rwp_ratio=1.25)
+    res = run_sequential_rietveld(
+        _frames(3), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid),
+    )
+    assert res.appearances[0].phase_name == "new_CaTeO3"
+    # 足切りは ledger に残す (提案≠適用・監査可能)
+    skipped = [e for e in res.ledger.entries if e.kind == "m9_phaseid_skipped"]
+    assert skipped and skipped[0].payload["candidate"] == "new_Ca3TeO6"
+
+
+def test_candidates_without_a_score_are_not_filtered():
+    """スコアを持たない供給元 (スタブ/別供給元) は足切りしない (fail open, 非回帰)。"""
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    delta = PhaseSpec(structure_path="delta.cif", phase_name="new_CaTeO3")
+
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        if "new_CaTeO3" in [p.phase_name for p in phases]:
+            return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "new_CaTeO3": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.7, "new_CaTeO3": 0.3})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 20.0,
+                       {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)}, {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir, known_phases=()):
+        return [(delta, {"source": "materials_project"})]  # dara_score なし
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.02, trigger_rwp_ratio=1.25)
+    res = run_sequential_rietveld(
+        _frames(3), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid),
+    )
+    assert res.appearances[0].phase_name == "new_CaTeO3"

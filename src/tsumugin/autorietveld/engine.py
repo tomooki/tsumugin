@@ -13,6 +13,7 @@ GSAS-II は本モジュール内で遅延 import するため、tsumugin コア 
 
 from __future__ import annotations
 
+import contextlib
 import math
 import shutil
 import tempfile
@@ -27,6 +28,7 @@ from .absorption import apply_absorption_correction
 from .model import (
     AutoRietveldResult,
     CellEsd,
+    Geometry,
     HistogramSpec,
     PhaseSpec,
     Radiation,
@@ -52,6 +54,79 @@ def _g2sc():
     except Exception:
         pass
     return G2sc
+
+
+class RefinementFailedError(RuntimeError):
+    """GSAS-II の精密化が失敗したことを示す (段階ごとの inf 化 → revert 経路に載せるため)。"""
+
+
+def _refine_failure_message(ok: object, rvals: object) -> str | None:
+    """``GSASIIstrMain.Refine`` の戻り値 ``(OK, Rvals)`` を失敗文 (or None) に写す。
+
+    ``OK`` が偽なら失敗。GSAS の ``Rvals['msg']`` があれば理由として添える (ledger に残す)。
+    msg が無くても**失敗は失敗**として扱う (沈黙させない)。
+    """
+    if ok:
+        return None
+    msg = ""
+    if isinstance(rvals, Mapping):
+        msg = str(rvals.get("msg", "") or "").strip()
+    return f"GSAS-II 精密化が失敗を返しました: {msg}" if msg else "GSAS-II 精密化が失敗を返しました"
+
+
+@contextlib.contextmanager
+def _capture_refine_status(_module: object | None = None):
+    """``GSASIIstrMain.Refine`` の戻り値を捕まえる scoped パッチ (``{"ok","msg","calls"}`` を yield)。
+
+    **なぜ必要か (CaTeO3 frame180 実測)**: GSAS-II の ``G2Project.refine`` は
+    ``G2strMain.Refine(self.filename, makeBack=makeBack)`` を**戻り値を受け取らずに**呼ぶ。
+    ``Refine`` は失敗を例外でなく ``(False, {'msg': …})`` で返すため (実測:
+    ``'divide by zero encountered in scalar divide'`` / ``'**** ERROR: Refinement failed ****'``)、
+    **失敗しても例外が飛ばない**。その場合 ``Refine`` は covData を書かずに戻るので gpx の
+    ``Covariance`` は前段のまま残り、`_rvals` は**前段とビット同一**の rwp/gof/n_params を返す。
+    段階ループは「悪化していない」と判断して revert しないため、**その段で立てた精密化フラグが
+    残ったまま次段へ進み、以降の全段が同じ理由で失敗し続ける** (実測: 二相試行が S2 以降 7 段
+    すべて no-op = 相分率と背景しか精密化されていない fit が「完走」した)。Rwp にも
+    ``reverted`` フラグにも一切現れない。
+
+    ここで戻り値を捕まえて `RefinementFailedError` に変換すると、既存の
+    ``except Exception → chi2=inf → 直前スナップショットへ revert + ledger`` 経路にそのまま
+    載る (CLAUDE.md 不変条件「精密化バックエンドの失敗は例外でなく chi2=inf の結果に変換し、
+    ガードレールに処理させる」)。revert はフラグごと巻き戻すので**後続段の連鎖失敗も止まる**。
+
+    :param _module: パッチ対象モジュール (テスト注入用)。None なら ``GSASII.GSASIIstrMain``
+    :returns: ``{"ok": bool, "msg": str, "calls": int}``。1 回でも失敗があれば ``ok=False``。
+        GSAS 不在・``Refine`` 属性なし・一度も呼ばれなかった場合は **fail open** (``ok=True``)
+    """
+    status: dict[str, object] = {"ok": True, "msg": "", "calls": 0}
+    mod = _module
+    if mod is None:
+        try:
+            from GSASII import GSASIIstrMain as mod  # type: ignore[no-redef]
+        except Exception:  # noqa: BLE001 — GSAS 不在は fail open (numpy-only 経路を壊さない)
+            mod = None
+    if mod is None or not hasattr(mod, "Refine"):
+        yield status
+        return
+
+    original = mod.Refine
+
+    def _wrapped(*args, **kwargs):
+        out = original(*args, **kwargs)
+        status["calls"] = int(status["calls"]) + 1  # type: ignore[arg-type]
+        ok = out[0] if isinstance(out, tuple) and out else True
+        rvals = out[1] if isinstance(out, tuple) and len(out) > 1 else None
+        failure = _refine_failure_message(ok, rvals)
+        if failure is not None and status["ok"]:
+            status["ok"] = False
+            status["msg"] = failure
+        return out
+
+    mod.Refine = _wrapped
+    try:
+        yield status
+    finally:
+        mod.Refine = original
 
 
 def _rvals(gpx) -> tuple[float, float, int]:
@@ -1285,6 +1360,11 @@ def run_auto_rietveld(
             hist = gpx.add_powder_histogram(
                 h.data_path, h.instrument_path, fmthint=_data_fmthint(h)
             )
+            # 【宣言ジオメトリを正とする】: GSAS は Sample Parameters の Type を instprm から
+            #   推定するため、Kα1 単色 instprm の反射光学系が Debye-Scherrer 扱いになり
+            #   `Shift` 解放が例外 → cell 段ごと revert → 格子が一切精密化されない、という
+            #   無言の失敗が起きる。他の Sample Parameters 書き込み (absorption 等) より先に置く。
+            _apply_sample_geometry(hist, h.geometry)
             if h.two_theta_limits is not None:
                 lo, hi = h.two_theta_limits
                 hist.set_refinements({"Limits": [lo, hi]})
@@ -1431,7 +1511,16 @@ def run_auto_rietveld(
                     gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage,
                     fixed_profile, auto_freeze_minor_cells,
                 )
-                gpx.do_refinements([{}])
+                # 【無言失敗の検出】: `G2Project.refine` は `GSASIIstrMain.Refine` の
+                #   (OK, Rvals) を捨てるため、精密化が失敗しても例外にならない。その場合
+                #   Covariance が前段のまま残り `_rvals` が**前段とビット同一**の値を返すので、
+                #   「悪化していない」と判断され revert されず、立てたフラグが残って
+                #   **以降の全段が失敗し続ける** (実測 CaTeO3 frame180 二相: S2 以降 7 段 no-op)。
+                #   戻り値を捕まえて例外化し、既存の inf→revert→ledger 経路に載せる。
+                with _capture_refine_status() as refine_status:
+                    gpx.do_refinements([{}])
+                if not refine_status["ok"]:
+                    raise RefinementFailedError(str(refine_status["msg"]))
                 rwp, gof, nvar = _rvals(gpx)
                 converged = _converged(gpx)
                 # 格子崩壊 (0 近傍/非有限) またはプロファイル非物理化 (幅関数がレンジ内で負・散乱/立上り
@@ -1605,6 +1694,49 @@ def _extract_residual(
         fw = float(wi)
         out_s.append((1.0 / math.sqrt(fw)) if fw > 0 else float("inf"))
     return tuple(out_x), tuple(out_r), tuple(out_s)
+
+
+#: ジオメトリ別の GSAS Sample Parameters ``Type`` と、その分岐で使われるパラメータ既定値。
+#: 値は GSAS-II 自身の初期化 (`GSASIIfiles.py` の ``Sample.update({...})``) と同一にする。
+_SAMPLE_GEOMETRY: dict[Geometry, tuple[str, tuple[str, ...]]] = {
+    Geometry.BRAGG_BRENTANO: (
+        "Bragg-Brentano",
+        ("Shift", "Transparency", "SurfRoughA", "SurfRoughB"),
+    ),
+    Geometry.DEBYE_SCHERRER: ("Debye-Scherrer", ("Absorption", "DisplaceX", "DisplaceY")),
+}
+
+
+def _apply_sample_geometry(hist, geometry: Geometry) -> None:
+    """``HistogramSpec.geometry`` を GSAS の Sample Parameters ``Type`` に反映する。
+
+    **宣言したジオメトリを正とする**。GSAS-II は ``Type`` を装置パラメータファイルから推定し
+    (`GSASIIfiles.py`: ``Lam1`` があれば Bragg-Brentano、無ければ Debye-Scherrer)、Kα1 単色の
+    instprm を使う実験室 X 線は反射光学系でも ``Debye-Scherrer`` になる。その状態で
+    ``recipe._GEOMETRY_DISPLACEMENT`` の ``Shift`` を解放しようとすると
+    ``ValueError('Unknown refinement parameter, Shift')`` で ``cell+displacement`` 段ごと
+    revert され、**格子が一度も精密化されない**まま完走する (CaTeO3 M9 実データで発生)。
+
+    ``Type`` はキー集合の問題ではない — `GSASIIstrIO` は ``Type`` で**変数にできる試料
+    パラメータ**を選び、`GSASIIstrMath` は ``Type`` で**ピーク位置の補正式**を選ぶ
+    (Bragg: ``Shift``/``Transparency`` · Debye: ``DisplaceX``/``DisplaceY``)。よって不足キーを
+    足すだけでは変数にすらならず、無言で何も精密化しない状態が残る。
+
+    既存の値は上書きしない (欠けているキーを補うだけ — GSAS 自身の ``Sample.update`` と同じ
+    加算的な流儀)。他方のジオメトリのキーも消さない: どちらを使うかは ``Type`` だけが決める。
+    """
+    spec = _SAMPLE_GEOMETRY.get(geometry)
+    if spec is None:
+        return
+    sample_type, keys = spec
+    try:
+        sample = hist.data["Sample Parameters"]
+    except (KeyError, TypeError, AttributeError):
+        return  # 想定外の形は fail open (精密化全体を落とさない)
+    sample["Type"] = sample_type
+    for key in keys:
+        if key not in sample:
+            sample[key] = [0.0, False]
 
 
 def _data_fmthint(h: HistogramSpec) -> str:

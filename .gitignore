@@ -49,3 +49,8 @@ desktop/src-tauri/binaries/
 # GUI workbench 実プロジェクト接続 (project.py): XRDML→XYE 自己変換 + 精密化 gpx の出力先。
 # spec ディレクトリ内に生成される (再実行で再生成できる派生データ)。
 workbench_out/
+
+# workbench が spec 編集のたびに自動保存する実プロジェクト spec (lifecycle.PROJECT_JSON_NAME)。
+# examples/ で demo プロジェクトを開くと生成される派生物 — 手書きの examples/*_project.json
+# (git 管理) とは別物なので混ぜない。
+examples/project.json

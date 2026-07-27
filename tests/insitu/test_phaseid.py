@@ -353,3 +353,94 @@ def test_structure_to_cif_cell_override_replaces_lattice(tmp_path):
     assert np.allclose(sorted(written.frac_coords[:, 0]), [0.0, 0.5], atol=1e-6)
     # 元構造は不変
     assert abs(orig.lattice.a - 5.0) < 1e-9
+
+
+def _cif_spacegroup(path: str) -> tuple[str, int, int]:
+    """CIF から (H-M 記号, 国際表番号, atom_site 行数) を読む (pymatgen 非依存の素読み)。"""
+    import re
+
+    txt = Path(path).read_text(encoding="utf-8")
+    hm = re.search(r"_symmetry_space_group_name_H-M\s+'?([^'\n]+?)'?\s*$", txt, re.M)
+    num = re.search(r"_symmetry_Int_Tables_number\s+(\d+)", txt)
+    rows = 0
+    in_atoms = False
+    for line in txt.splitlines():
+        if "_atom_site_occupancy" in line:
+            in_atoms = True
+            continue
+        if in_atoms:
+            s = line.strip()
+            if not s or s.startswith("loop_"):
+                break
+            if s.startswith("_"):
+                continue
+            rows += 1
+    return (hm.group(1).strip() if hm else ""), (int(num.group(1)) if num else 0), rows
+
+
+@pytest.mark.mp
+def test_structure_to_cif_preserves_symmetry(tmp_path):
+    """物質化 CIF は **P1 展開でなく検出した空間群**で書く (GSAS のセル解放が壊れないため)。
+
+    ⚠ 実害 (CaTeO3 delta 実測): `CifWriter(structure)` は symprec 未指定だと空間群を
+    ``P 1`` として全等価原子を書き出す。GSAS-II はそれを三斜晶と解釈しセル 6 変数
+    (**角度 3 つを含む**) を解放するが、90/90/90 の擬直方構造では角度方向の微分がほぼ 0 =
+    特異ヘッシアンとなり ``Refine`` が 'divide by zero' で失敗する。その失敗は
+    `G2Project.refine` が戻り値を捨てるため**例外にならず**、以降の全段が無言で
+    何も精密化しないまま完走する (Rwp には現れない)。
+    """
+    from pymatgen.core import Lattice, Structure
+
+    # CsCl 型 (Pm-3m #221): 対称性を持つので P1 で書かれたら退化が分かる。
+    sym = Structure(
+        Lattice.cubic(4.11), ["Cs", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]
+    )
+    out = structure_to_cif(sym, str(tmp_path / "sym.cif"))
+    hm, num, _rows = _cif_spacegroup(out)
+    assert num == 221, f"空間群が退化している: {hm!r} (#{num})"
+    assert "P 1" != hm
+
+
+@pytest.mark.mp
+def test_structure_to_cif_cell_override_preserves_symmetry(tmp_path):
+    """`cell=` で格子を置換しても対称性を落とさない (異方プリアライン経路の実害箇所)。
+
+    `Structure(Lattice…, species, frac_coords)` で素の Structure を組み直すと空間群情報が
+    失われるため、**置換後も対称性検出して書く**ことを固定する。結晶系を保つセル置換
+    (立方→立方) では空間群が保たれること。
+    """
+    from pymatgen.core import Lattice, Structure
+
+    sym = Structure(
+        Lattice.cubic(4.11), ["Cs", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]
+    )
+    out = structure_to_cif(
+        sym, str(tmp_path / "c.cif"), cell=(4.30, 4.30, 4.30, 90.0, 90.0, 90.0)
+    )
+    hm, num, _rows = _cif_spacegroup(out)
+    assert num == 221, f"cell 置換で空間群が退化している: {hm!r} (#{num})"
+    from pymatgen.core import Structure as S2
+
+    assert abs(S2.from_file(out).lattice.a - 4.30) < 1e-3
+
+
+@pytest.mark.mp
+def test_structure_to_cif_symmetry_lowering_cell_still_writes(tmp_path):
+    """結晶系を**壊す**セル置換 (立方→直方) でも例外にせず書き出す (安全側フォールバック)。
+
+    異方セルプリアラインは結晶系拘束下で解くが、供給元構造と設定が食い違う等で対称性が
+    下がることはあり得る。その場合は下がった対称性 (最悪 P1) で書ければよく、
+    **物質化そのものを失敗させない**。
+    """
+    from pymatgen.core import Lattice, Structure
+
+    sym = Structure(
+        Lattice.cubic(4.11), ["Cs", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]
+    )
+    out = structure_to_cif(
+        sym, str(tmp_path / "low.cif"), cell=(4.11, 5.20, 6.30, 90.0, 90.0, 90.0)
+    )
+    written = Structure.from_file(out)
+    lat = written.lattice
+    assert abs(lat.a - 4.11) < 1e-3 and abs(lat.b - 5.20) < 1e-3 and abs(lat.c - 6.30) < 1e-3
+    assert len(written) == 2  # 原子は失われない

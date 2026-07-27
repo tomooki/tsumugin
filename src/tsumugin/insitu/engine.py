@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Callable, Sequence
 
+from .._json import finite_or_none
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
 
 if TYPE_CHECKING:
@@ -596,8 +597,11 @@ def _try_add_phase(
     min_rwp_gain 超改善 ∧ (3) 新相セルが健全 (非崩壊) ∧ (4) require_validity 時のみ全相妥当性。
     **旧相ドリフトの妥当性 fail で新相を巻き添え棄却しない** (転移域では旧相 alpha のセルが急変し
     valid=False になるが、それは delta 追加の是非とは無関係; 実データで frame 150 の delta 受理を確認)。
-    junk 候補は Rwp が下がらず (frame 90 の O₂: Rwp 悪化) 弾かれる。**複数候補 (top_k) を全て試し、
-    受理基準を満たす中で最小 Rwp のものを採る** (Dara 順でなく Rietveld フィットで選ぶ)。
+    junk 候補は Rwp が下がらず (frame 90 の O₂: Rwp 悪化) 弾かれる。**同定スコアゲート
+    (`min_identify_score`) を通った候補を全て試し、受理基準を満たす中で最小 Rwp のものを採る**
+    (Dara 順でなく Rietveld フィットで選ぶ)。⚠ ゲートで落ちた候補は**試行精密化に回らない** —
+    Rwp は母数増で必ず下がるため、残差を説明していない候補 (スコア ≤ 閾値) を Rietveld で
+    競わせると偽相が勝つ。落とした候補は ledger `m9_phaseid_skipped` に残る。
 
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
     """
@@ -625,6 +629,24 @@ def _try_add_phase(
         return base_result, None, f"frame {frame_idx}: 相同定に失敗 ({type(exc).__name__})"
     best: "tuple[AutoRietveldResult, PhaseSpec, dict] | None" = None
     for cand_spec, meta in candidates:
+        # 【同定スコアゲート】: 残差を説明していない候補 (score ≤ 閾値) は試行に回さない。
+        #   後段の選択は「受理基準を満たす中で最小 Rwp」だが Rwp は母数増で必ず下がるため、
+        #   大分率で残差を舐める偽相が正解相に勝つ (実測: Dara スコア負の Ca3TeO6/CaTe3O8 が
+        #   delta CaTeO3 に勝った)。相数を Rwp で決めない規律を候補選択にも適用する。
+        #   スコアを持たない供給元は fail open (足切りしない)。
+        score = meta.get("dara_score")
+        if pid.min_identify_score is not None and isinstance(score, (int, float)):
+            if not math.isfinite(float(score)) or float(score) <= pid.min_identify_score:
+                ledger.append(
+                    "m9_phaseid_skipped",
+                    {
+                        "frame": frame_idx, "candidate": cand_spec.phase_name,
+                        "phase_id": str(meta.get("phase_id", "")),
+                        "score": finite_or_none(score),
+                        "min_identify_score": pid.min_identify_score,
+                    },
+                )
+                continue
         trial_phases = tuple(list(phases) + [cand_spec])
         trial = runner(frame, trial_phases, base_cells)
         trial_rwp = float(trial.final_rwp)
