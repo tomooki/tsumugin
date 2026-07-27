@@ -102,24 +102,7 @@ def test_cateo3_two_frame_sequential_converges():
     "warm_start",
     [
         pytest.param(True, id="warm_start"),
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "static (A: identify-all-then-exclude) 経路は現行相 alpha を残差から減算せずに "
-                    "探索するため、delta の同定も異方プリアラインも質が落ちる。実測 (2026-07-27): "
-                    "Dara スコア +0.0026 (warm は +0.0779 / 足切りは 0.0) で辛うじて試行に載るが、"
-                    "プリアラインが**別の軸**を伸ばし (a +4.63% / warm は c +4.56%) delta のピークが "
-                    "合わないため、二相精密化で**相分率が 8.4e-13 に潰れる** → `frac_min` (0.02) が "
-                    "正しく棄却する (Rwp は 35.32→33.70 と下がるが、それは存在しない相の母数増による "
-                    "見かけの改善なので採ってはならない)。**受理判定は正しく動いている** — 直すべきは "
-                    "少数相での異方プリアラインの頑健性 (raw DFT セルより悪化させる件と同根)。"
-                    "warm_start (B, 既定) は base 32.98→30.19 (相対 +8.4%) で green。"
-                ),
-            ),
-            id="static",
-        ),
+        pytest.param(False, id="static"),
     ],
 )
 def test_cateo3_mp_gsas_auto_identifies_delta(warm_start):
@@ -128,9 +111,17 @@ def test_cateo3_mp_gsas_auto_identifies_delta(warm_start):
     Issue #28 T6-B の operando warm-start を実 MP+GSAS で end-to-end 検証する。frame180 の共存域で
     Materials Project から無水 CaTeO3 (delta, mp-1195263) が自動同定・物質化・追加され、相集合が
     ``(alpha, new_CaTeO3)`` に成長する。``warm_start`` は現行相 alpha を精密化格子付きで先に残差減算する
-    か (B) 否か (A, identify-all-then-exclude) のスイッチ。**B (既定) のみ受理まで到達する** — A は
-    残差が汚れたまま探索するためプリアラインが誤整合し相分率が潰れる (下の xfail 理由に実測値)。
+    か (B) 否か (A, identify-all-then-exclude) のスイッチ。**両者とも受理まで到達する**。
     ネットワーク + GSAS で数分要する gated テスト。
+
+    ⚠ **A (static) は一時期 xfail(strict) だった** — 「現行相 alpha を残差から減算せずに探索するため
+    プリアラインが**別の軸**を伸ばし (a +4.63% / warm は c +4.56%)、二相精密化で相分率が 8.4e-13 に
+    潰れて `frac_min` が正しく棄却する」と記録されていた。その診断は正しく、**原因は 2 段の目的関数
+    汚染**だった: (1) プリアラインの FoM が観測ピーク基準で支配相のピークに占められる →
+    整合先を既知相減算残差へ (`phaseid.make_residual_cell_refiner`)、(2) 同定段の等方 strain も
+    生パターン整合で符号ごと誤り、既に c が +3.4% 過大な DFT セルに **+3.4% を上乗せ**して出発点を
+    プリアラインの探索域 (±5%/軸) 外へ押し出す → `cell_refiner` 使用時は strain を掛けない DB 素の
+    セルを渡す。両方を直して A も green になったためマーカーを外した (受理閾値は据え置き)。
 
     注意: frame180 は転移共存フレームで絶対 Rwp は高い (単相 ~33%, preferred orientation + 水素 +
     混合相; README honest status)。本テストは**自動同定の end-to-end 成立**を固定する
