@@ -22,6 +22,7 @@ M8 の `rietveld_tools` と同じ設計 (二重反転回避): 閉ループ丸ご
 from __future__ import annotations
 
 import csv
+import math
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
@@ -413,6 +414,59 @@ def _parse_two_theta_limits(
     return (lo, hi)
 
 
+def _parse_known_phases(
+    known_phases: Sequence[Mapping[str, object]],
+) -> list[tuple[PhaseSpec, tuple[float, float, float, float, float, float] | None]]:
+    """``known_phases`` (JSON) を ``(PhaseSpec, refined_cell|None)`` の列へ正規化する。
+
+    各要素は `PhaseSpec.to_dict()` の形 (`structure_path`/`phase_name` 必須) に、任意の
+    `refined_cell` ``[a,b,c,α,β,γ]`` を加えたもの。``sequential_rietveld`` の
+    ``frames[].refined_cells`` をそのまま貼れる形にしてある (§4.5 到達可能性)。
+
+    **形の誤りは黙って捨てず ValueError にする**: 壊れた `refined_cell` を無視して DFT 素の格子で
+    ピークを立てると、③ には「精密化格子を渡したのに残差が汚い」としか見えない (原因が消える)。
+
+    :raises ValueError: 列でない / 要素が dict でない / 必須キー欠落 / refined_cell が
+        6 要素の有限数値でない
+    """
+    if isinstance(known_phases, (str, bytes, Mapping)):
+        raise ValueError(
+            f"known_phases は相 spec dict の配列です: {known_phases!r}"
+        )
+    try:
+        items = list(known_phases)
+    except TypeError as exc:
+        raise ValueError(f"known_phases は相 spec dict の配列です: {known_phases!r}") from exc
+
+    out: list[tuple[PhaseSpec, tuple[float, float, float, float, float, float] | None]] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"known_phases[{i}] は dict である必要があります: {item!r}")
+        try:
+            spec = PhaseSpec.from_dict(item)
+        except KeyError as exc:
+            raise ValueError(
+                f"known_phases[{i}] に必須キーがありません: {exc.args[0]!r} "
+                f"(structure_path/phase_name は sequential_rietveld に渡した initial_phases と同じ)"
+            ) from exc
+        raw = item.get("refined_cell")
+        cell: tuple[float, float, float, float, float, float] | None = None
+        if raw is not None:
+            try:
+                values = [float(x) for x in raw]  # type: ignore[union-attr]
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"known_phases[{i}].refined_cell の要素が数値ではありません: {raw!r}"
+                ) from exc
+            if len(values) != 6 or not all(math.isfinite(v) for v in values):
+                raise ValueError(
+                    f"known_phases[{i}].refined_cell は 6 要素の有限数値 [a,b,c,α,β,γ] です: {raw!r}"
+                )
+            cell = (values[0], values[1], values[2], values[3], values[4], values[5])
+        out.append((spec, cell))
+    return out
+
+
 def _instrument_path_resolver(
     spec: Mapping[str, object], frame_specs: Sequence[FrameSpec]
 ) -> str | Callable[[FrameSpec], str]:
@@ -753,6 +807,8 @@ def identify_and_add_phase(
     top_k: int = 1,
     hull_cutoff_ev: float | None = 0.1,
     subtract_bg: bool = True,
+    known_phases: Sequence[Mapping[str, object]] = (),
+    wavelength: float = 1.5406,
     provider: object | None = None,
     materializer: object | None = None,
     reason: str = "",
@@ -761,10 +817,41 @@ def identify_and_add_phase(
 
     採否・再精密化は行わない (提案≠適用): ③ が返された PhaseSpec を initial_phases に足して
     sequential_rietveld/refine を再実行する。provider/materializer 未指定なら MP を遅延生成。
+
+    :param known_phases: **そのフレームに既に居る相** (JSON)。各要素は `PhaseSpec` の dict
+        (`structure_path`/`phase_name`) + 任意の `refined_cell` ``[a,b,c,α,β,γ]``。
+        ③ は `sequential_rietveld` の戻り値から組める (§4.5 到達可能性):
+        ``[dict(p, refined_cell=res["frames"][i]["refined_cells"][p["phase_name"]])
+        for p in initial_phases]``。渡すと (1) 既知相を先に残差から減算した上で新相を同定し、
+        (2) **異方セル補正 (Issue #20) の整合先をその残差にする**
+    :param wavelength: 既知相のピーク生成と異方セルプリアラインに使う線源波長 (Å)。既定 Cu Kα1。
+        **放射光/中性子では実波長を必ず渡す** (誤った波長の既知相ピークを引くと残差が壊れる)
+    :returns: 候補列 + ``prealign_basis`` (``"residual"``=残差へ整合済 / ``"skipped"``=補正せず)
+        + ``n_known_phases_used``。各候補の ``refined_cell`` は補正後の絶対格子 (未補正なら None)
+
+    ⚠ **`known_phases` を渡さないと異方セル補正は行われない** (`"skipped"`)。MP(DFT) 格子は軸別に
+    数 % ずれ (実測 CaTeO3 delta: c +3.42%)、Rietveld の収束半径 ~2% を超えると追えない。
+    それでも既知相なしで**生パターン**へ整合させるのは**やらない**: プリアラインの FoM は観測ピーク
+    基準なので、少数相のセルを生パターンに合わせると支配相のピークに引っ張られ、出発点の DFT 格子
+    より**悪化**する (実測 CaTeO3 frame180: 最大軸誤差 3.42% → 4.21%、二相 Rwp 32.24→27.58)。
+    既知相を引いた残差なら同じ FoM が正しく効く (0.51%、Rwp **10.65** = 実測 CIF の 10.70 と同等)。
     """
     import numpy as np
 
-    from ..insitu.phaseid import MPMaterializer, identify_new_phases
+    from ..insitu.phaseid import (
+        MPMaterializer,
+        identify_new_phases,
+        make_residual_cell_refiner,
+        phasespec_to_reference,
+    )
+
+    # 【縮退契約】: known_phases の形不正は例外でなく error dict (③ は LLM で例外は回復不能)。
+    #   **壊れた refined_cell を握り潰して "skipped" を返さない** — ③ は「既知相を引けなかった」と
+    #   読み違え、自分が渡した精密化格子が捨てられたことに気づけない (偽の正常応答の禁止)。
+    try:
+        known_specs = _parse_known_phases(known_phases)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
 
     if provider is None or materializer is None:
         # 【DOA バグ修正】: 旧実装は MPReferenceProvider()/MPMaterializer() を client 無しで
@@ -780,9 +867,33 @@ def identify_and_add_phase(
         if materializer is None:
             materializer = MPMaterializer(client)
 
+    tt = np.asarray(two_theta, dtype=float)
+    inten = np.asarray(intensity, dtype=float)
+    tt_range = (float(tt.min()), float(tt.max())) if tt.size else (10.0, 90.0)
+
+    # 既知相 (CIF) → ピーク列付 ReferencePhase。変換不能 (pymatgen 不在 / CIF 読込失敗) は None が
+    # 返り、静的同定へ縮退する (安全側)。精密化格子を与えると DFT 素の格子より残差がクリーンになる。
+    known_refs = []
+    for spec, cell in known_specs:
+        ref = phasespec_to_reference(
+            spec, refined_cell=cell, wavelength=wavelength, two_theta_range=tt_range
+        )
+        if ref is not None:
+            known_refs.append(ref)
+
+    # 【整合先は残差のみ】: `require_subtraction=True` 固定。既知相が 1 つも使えなければ
+    #   `make_residual_cell_refiner` は None を返し、補正なし (等方 strain のまま) になる。
+    #   自動追加経路 (`insitu.engine._default_phase_finder`) は「既存相ゼロのフレームなら候補が
+    #   支配的」として生パターン整合を許すが、② の手動投入では呼び手が相集合の全体を渡したのか
+    #   一部なのかを ② から判別できないため、生パターン整合 (実測で有害) を選べる余地を持たせない。
+    cell_refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=known_refs, wavelength=wavelength,
+        two_theta_range=tt_range, subtract_bg=subtract_bg, require_subtraction=True,
+    )
+
     found = identify_new_phases(
-        np.asarray(two_theta, dtype=float),
-        np.asarray(intensity, dtype=float),
+        tt,
+        inten,
         elements=list(elements),
         provider=provider,  # type: ignore[arg-type]
         materializer=materializer,  # type: ignore[arg-type]
@@ -791,6 +902,9 @@ def identify_and_add_phase(
         top_k=top_k,
         hull_cutoff_ev=hull_cutoff_ev,
         subtract_bg=subtract_bg,
+        cell_refiner=cell_refiner,
+        rerank_wavelength=wavelength,
+        known_phases=known_refs,  # 既知相を先に残差から減算してから新相を探す (自動経路と同一)
     )
     return {
         "candidates": [
@@ -801,10 +915,18 @@ def identify_and_add_phase(
                 "score": finite_or_none(ip.score),
                 "strain": finite_or_none(ip.strain),
                 "source": ip.source,
+                # 異方セル補正後の絶対格子 (未補正なら None)。③ が「DFT 格子のままか」を判別する。
+                "refined_cell": [float(x) for x in ip.refined_cell] if ip.refined_cell else None,
             }
             for ip in found
         ],
         "n_candidates": len(found),
+        # 【③ への信号】: 補正の整合先。"skipped" なら返る CIF は DFT 格子のままなので、
+        #   Rwp が下がらない原因の第一容疑は残差の説明力ではなく**相のセル誤差**である。
+        #   (自動追加経路の `appearances[].evidence.prealign_basis` と同じ語彙。"pattern" は
+        #    手動経路では返らない — 生パターン整合は実測で有害なので選ばせない。)
+        "prealign_basis": "residual" if cell_refiner is not None else "skipped",
+        "n_known_phases_used": len(known_refs),
         "reason": reason,
     }
 

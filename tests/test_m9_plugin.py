@@ -322,3 +322,55 @@ def test_insitu_skill_documents_min_identify_score_and_forbids_lowering_it():
         "足切りされた候補の確認先 (ledger m9_phaseid_skipped) が skill に無い "
         "— ③ が「相が追加されない」原因を辿れない"
     )
+
+
+def test_insitu_skill_teaches_known_phases_for_manual_phase_identification():
+    """★手順6 の恒久ガード (Issue #20 続き): 手動投入で `known_phases` を教えていること。
+
+    `identify_and_add_phase` は `known_phases` を渡して初めて (1) 既知相を引いた残差から少数相を
+    探し、(2) 返る CIF に異方セル補正を入れる。渡さない呼び方だけを教えると、③ は「支配相の陰の
+    少数相を探す」というこの手順の目的そのものを果たせず、拾えた相も DFT 格子 (実測 CaTeO3 delta:
+    c +3.42%) のまま Rietveld の収束半径 (~2%) 外から始めてしまう。
+
+    **旧記述 (「このツールが返す CIF には異方セル補正が入らない」) の復活も禁じる** — ② を直した
+    後もこの警告が残ると、③ は使える補正を使わずに実測 CIF 探しへ迂回する。
+    """
+    import inspect
+
+    from tsumugin.mcp.insitu_tools import identify_and_add_phase
+
+    params = inspect.signature(identify_and_add_phase).parameters
+    for key in ("known_phases", "wavelength"):
+        assert key in params, f"skill が教える {key} が identify_and_add_phase に実在しない"
+
+    text = _SKILL.read_text(encoding="utf-8")
+    step6 = text.split("### 6. ", 1)[1].split("### 7. ", 1)[0]
+    assert "known_phases" in step6, "手順6 が known_phases を教えていない"
+    assert "refined_cell" in step6, "手順6 が refined_cell の作り方 (到達可能性) を教えていない"
+    assert "prealign_basis" in step6 and "skipped" in step6, (
+        "手順6 が prealign_basis の読み方 (補正が入ったか) を教えていない"
+    )
+    assert "wavelength" in step6, "手順6 が実波長を渡す注意を書いていない"
+    # 旧記述の主語は「このツールが返す CIF には (常に) 補正が入らない」。新記述は
+    # 「known_phases を渡さなければ入らない」という条件形なので、無条件形だけを禁じる。
+    assert "このツールが返す CIF には異方セル補正" not in step6, (
+        "② 改修前の無条件警告 (補正が入らない) が残っている — ③ に使える補正を使わせない指示になる"
+    )
+
+
+def test_identify_and_add_phase_does_not_prealign_against_raw_pattern():
+    """★実測ガード: 既知相を渡さない呼び出しで**生パターン整合**へ落ちないこと。
+
+    生パターンへの整合は少数相のセルを出発点の DFT 格子より悪化させる (実測 CaTeO3 frame180:
+    最大軸誤差 3.42%→4.21%、二相 Rwp 32.24→27.58 に対し残差整合は 0.51%/10.65)。手順書はこの
+    表を根拠に「known_phases を渡せ」と指示しているので、② 側が黙って生パターン整合を始めると
+    手順書の根拠ごと崩れる。`require_subtraction=True` 固定であることをソースで確認する。
+    """
+    import inspect
+
+    from tsumugin.mcp import insitu_tools
+
+    src = inspect.getsource(insitu_tools.identify_and_add_phase)
+    assert "require_subtraction=True" in src, (
+        "手動投入経路が生パターン整合を許している (実測で有害)"
+    )

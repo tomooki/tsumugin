@@ -29,7 +29,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `anchored_sequential` | 計器+アクチュエータ (M10 双方向) | frames + phases catalog + `anchor_table` {frame_index: [phase]} + instrument → アンカー起点の双方向精密化。`crossovers[].total_bic` で相集合を **Rwp でなく bic** で選定 (相数を抑制し偽相を全域に広げない)。**転移を含む operando の既定**。出力は sequential_rietveld と同型 + `anchors`/`crossovers` |
 | `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ + seed 張り付き + 分率凍結 |
 | `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復。`repairs[]` に**修復後の出版値** (重量分率 ± esd・`cell_esd`) を同梱 |
-| `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 |
+| `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir (+ **`known_phases`** = そのフレームの現行相 [`initial_phases` の dict + `refined_cell`] + `wavelength`) → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 + `prealign_basis`。**`known_phases` を渡して初めて**既知相を引いた残差から少数相を探し、返る CIF に異方セル補正 (#20) が入る |
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
 | `align_echem` | 計器 (電気化学突合) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス `offset_s`/`interval_s`/`n_frames` or 明示 `frame_epoch_s`) → per-frame の電位/状態 (rest/charge/discharge)。`alkali_budget` の `offset_s`/`interval_s` はここで XRD フレーム時刻と echem を同期して得る |
 | `alkali_budget` | 計器 (クーロメトリー, FR-318) | MPR + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標 x_total(t) の表 (`targets[]`)。出力を `sequential_rietveld`/`anchored_sequential` の `charge_constraint.targets` へそのまま渡す |
@@ -293,11 +293,39 @@ repair_frames(result, frames, phases,
 自動追加が起きなかったが未指数ピークが残る変化点で、そのフレームのパターンを
 `identify_and_add_phase` に渡し、返る PhaseSpec 候補を `initial_phases` に足して
 `sequential_rietveld` を再実行する (相追加は**あなたの判断 + ユーザー承認**を挟む)。
-**⚠ このツールが返す CIF には異方セル補正 (#20) が入らない** — 補正は
-`sequential_rietveld` の**自動**新相追加の経路にしかない。DFT (MP) 由来の格子は軸別にずれる
-(実測 CaTeO3 delta: c 軸 +3.4%) ので、手動投入した相は**セル誤差を抱えたまま**精密化に入り、
-Rietveld の収束半径 (~2%) を超えていると Rwp が高止まりする。手動投入で Rwp が下がらない相は、
-まずセル誤差を疑う (残差 fit ではなくモデルの格子が原因)。実測 CIF が手に入るならそちらを使う。
+
+**⚠ `known_phases` を必ず渡す** — そのフレームに既に居る相を渡さないと、(1) 支配相の陰にいる
+少数相は生パターンから拾えず候補ゼロになり、(2) 返る CIF が **DFT 格子のまま**になる
+(異方セル補正 #20 は既知相を引いた残差に対してしか行えないため)。
+`sequential_rietveld` の出力からそのまま組める (`initial_phases` に精密化格子を足すだけ):
+
+```python
+cells = result["frames"][i]["refined_cells"]          # 対象フレームの精密化格子
+known = [dict(p, refined_cell=cells[p["phase_name"]])
+         for p in initial_phases if p["phase_name"] in cells]
+identify_and_add_phase(two_theta, intensity, elements, workdir,
+                       known_phases=known, wavelength=<実波長>)
+```
+
+- **`wavelength` は実波長を渡す** (既定 Cu Kα1 = 1.5406 Å)。放射光/中性子で既定のままだと
+  既知相のピーク位置が全て狂い、減算残差もセル補正も壊れる。
+- 返り値の **`prealign_basis`** を読む。`"residual"` = 既知相減算残差へ整合済 (正常)。
+  **`"skipped"`** = 補正せず = **DFT 格子のまま**返した (既知相を渡していない / その CIF が
+  読めなかった)。`n_known_phases_used` が 0 ならこちら。
+- **`"skipped"` の候補で Rwp が下がらないときは、残差の説明力ではなく相の*セル誤差*を第一容疑に
+  する**。MP(DFT) 格子は軸別に数 % ずれ (実測 CaTeO3 delta: c 軸 +3.42%)、Rietveld の収束半径
+  (~2%) を超えると追えない。`known_phases` を付けて呼び直すか、実測 CIF を使う。
+- 各候補の `refined_cell` が補正後の絶対格子 (未補正なら `null`)。
+
+**既知相を渡せないからといって「補正なし」を生パターン整合で埋めることはしない** (ツール側も
+そう作ってある): プリアラインの FoM は観測ピーク基準なので、少数相のセルを生パターンへ合わせると
+支配相のピークに引っ張られ、出発点の DFT 格子より**悪化**する。実測 (CaTeO3 frame180, delta 2 相目):
+
+| 整合先 | delta 最大軸誤差 | 二相 Rwp |
+|---|---|---|
+| 補正なし (DFT のまま) | 3.42 % | 32.24 |
+| 生パターン | 4.21 % | 27.58 |
+| **既知相減算残差** | **0.51 %** | **10.65** (実測 CIF は 10.70) |
 
 ### 7. パラメトリック解析 — **転移温度は重量分率基準で取る**
 

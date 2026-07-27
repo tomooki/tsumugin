@@ -162,6 +162,10 @@ result["frames"][i]["residual_report"]
 - **`top_features` の + 残差** (obs > calc) = **未説明ピーク** = 欠落相の候補。2θ → d 値 →
   **d 比**で格子型を推定 (実データ: 5.7°/10.9° の +残差 → d=5.258/3.729/2.640 の比から
   **cubic Fm-3m を独立同定**)。→ `identify_and_add_phase` かユーザー CIF。
+  `identify_and_add_phase` には**現行相を `known_phases`** (`initial_phases` の dict +
+  `refined_cell` = そのフレームの `refined_cells`) と実 `wavelength` を渡す。渡さないと
+  支配相の陰の少数相を拾えず、返る CIF も DFT 格子のまま (`prealign_basis="skipped"`) になり、
+  足しても Rwp が下がらない (MP(DFT) の軸別誤差は数 %、収束半径は ~2%)。
 - **強度比のズレ・ピーク分裂** → **対称性低下** (実データ: 深充電の (220)/(400) 比ズレ →
   **Mn³⁺ Jahn-Teller 正方晶**, 実 CIF で c/a_pc=1.054 = 5.4% 伸長)。部分群候補を提示し**承認を得る**。
 - **`baseline_numerator_fraction` が大きい** → 「モデルでは下げられない」= **データ側の問題** →
@@ -223,8 +227,10 @@ anchored_sequential(frames, phases, anchor_table={...},
 (I4/mmm) の投入が決定打だった。MP かユーザー提供 CIF を優先する。DFT (MP) 由来は格子が軸別に
 ずれるため異方セル補正が自動で入る (#20)。ただし補正が効くのは**既知相を引いた残差へ整合できる
 場合のみ** — 引けなければ補正はスキップされ DFT 格子のまま入る。新相の Rwp が高止まりしたら
-`appearances[].evidence.prealign_basis` (`"residual"`/`"skipped"`/`"off"`) を確認し、
+`appearances[].evidence.prealign_basis` (`"residual"`/`"skipped"`/`"pattern"`/`"off"`) を確認し、
 `"skipped"` ならセル誤差を第一容疑にする (残差 fit ではなくモデルの格子が原因)。
+`"pattern"` はそのフレームに既存相が 1 つも無く候補が支配的だったケース (生パターン整合が
+妥当な唯一の場面)、`"off"` は `refine_new_phase_cell` を切っている設定。
 
 #### J8 電気化学との突合
 
