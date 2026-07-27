@@ -176,6 +176,75 @@ def phasespec_to_reference(
         return None  # pymatgen 不在 / 読込失敗 / 生成失敗 → warm-start せず静的同定へ縮退 (安全側)
 
 
+def make_residual_cell_refiner(
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    *,
+    known_phases: Sequence[ReferencePhase] = (),
+    wavelength: float = 1.5406,
+    two_theta_range: tuple[float, float] = (10.0, 90.0),
+    subtract_bg: bool = True,
+    require_subtraction: bool = True,
+    cfg: IdentifyConfig | None = None,
+    prealign: Callable[..., object] | None = None,
+) -> CellRefiner | None:
+    """異方セルプリアラインを**既知相を引いた残差**へ向ける `cell_refiner` を作る (Issue #20 続き)。
+
+    プリアラインの目的関数 (`autorietveld.lattice._peak_match_fom`) は観測ピーク基準のため、
+    少数相のセルを**生パターン**へ整合させると FoM が支配相のピークに占められ、少数相の反射を
+    支配相の位置へばら撒くセルを選ぶ。実測 (CaTeO3 frame180, delta ~28%, 出発セルを 4 通りに振る):
+
+        整合先          delta セルの最大軸誤差
+        生パターン       2.84 – 4.37 %   ← **出発セル (1.64–3.42%) より必ず悪化**
+        残差 (alpha 減算) 0.35 – 0.61 %   ← 実測セルをほぼ回復
+
+    誤セルの方が FoM が良い (0.268 < 0.290 for 真セル) ため `require_improvement` ガードでも
+    止まらない — 目的関数側の問題であり、整合先を変えるのが正しい対処。
+
+    :param two_theta: 観測 2θ (度, 昇順)
+    :param intensity: 観測強度 (生)
+    :param known_phases: 現行相 (精密化格子で生成したピーク列付。`phasespec_to_reference` 由来)
+    :param wavelength: プリアラインの線源波長 (Å)
+    :param two_theta_range: プリアラインの評価 2θ 範囲
+    :param subtract_bg: **既知相ゼロで整合する場合の** SNIP 背景減算 (残差経路は減算済のため常に False)
+    :param require_subtraction: True で「既知相を引けないならプリアラインしない」(``None`` を返す)。
+        既存相があるのに生パターンへ整合するのは上表の通り有害なので、等方 strain のまま渡す方が
+        安全側 (提案≠適用)。単相/静的同定など**候補が支配的と分かっている**呼び出しでのみ False にする
+    :param cfg: 残差計算の設定 (`reference.iterative.subtract_known_phases` へ委譲)
+    :param prealign: プリアライン関数 (**テスト注入専用**。既定 `prealign_cell_from_structure`)
+    :returns: CIF パス→絶対格子 (or None) の `CellRefiner`。プリアラインすべきでないときは ``None``
+        (呼び出し側は `identify_new_phases(cell_refiner=None)` = 等方 strain のまま)
+    """
+    from ..autorietveld.cell_refine import prealign_cell_from_structure
+    from ..reference.iterative import subtract_known_phases
+
+    align_fn = prealign if prealign is not None else prealign_cell_from_structure
+    tt = np.asarray(two_theta, dtype=float)
+    refs = list(known_phases)
+
+    if refs:
+        # 既知相を引いた残差では候補が支配的 → 同じ FoM が正しく効く。残差は背景減算済。
+        pattern = subtract_known_phases(
+            tt, np.asarray(intensity, dtype=float), refs,
+            **({"cfg": cfg} if cfg is not None else {}),
+        )
+        bg = False
+    elif require_subtraction:
+        return None  # 既存相を引けない → 生パターン整合は有害 (上表) なのでプリアラインしない
+    else:
+        pattern = np.asarray(intensity, dtype=float)
+        bg = subtract_bg
+
+    def refiner(cif_path: str) -> Cell6 | None:
+        sol = align_fn(
+            cif_path, tt, pattern,
+            wavelength=wavelength, two_theta_range=two_theta_range, subtract_bg=bg,
+        )
+        return sol.cell if sol is not None else None  # type: ignore[union-attr]
+
+    return refiner
+
+
 def identify_new_phases(
     two_theta: np.ndarray,
     intensity: np.ndarray,

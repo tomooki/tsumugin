@@ -1040,3 +1040,157 @@ def test_candidates_without_a_score_are_not_filtered():
         config=SequentialConfig(phase_id=pid),
     )
     assert res.appearances[0].phase_name == "new_CaTeO3"
+
+
+# ---------------------------------------------------------------------------
+# 既定 finder のプリアライン整合先 (Issue #20 続き): 生パターンでなく既知相減算残差
+# ---------------------------------------------------------------------------
+
+
+def _prealign_wiring_setup(monkeypatch, tmp_path):
+    """`_default_phase_finder` を MP/pymatgen なしで走らせる足場 (境界を全てスタブ)。"""
+    import numpy as np
+
+    from tsumugin.reference.model import ReferencePhase
+    from tsumugin.search.peaks import Peak
+
+    class _Client:
+        def search(self, elements):
+            return []
+
+    monkeypatch.setattr("tsumugin.mp.client.MPRestClient", _Client)
+    monkeypatch.setattr("tsumugin.mp.provider.MPReferenceProvider", lambda c: object())
+    monkeypatch.setattr("tsumugin.insitu.phaseid.MPMaterializer", lambda c: object())
+
+    # 2 相パターン: 既知相 alpha (20°/40° 強) + 未知相 (30° 弱)
+    tt = np.arange(15.0, 60.0, 0.02)
+    inten = np.zeros_like(tt)
+    for c, h in ((20.0, 1000.0), (30.0, 100.0), (40.0, 1000.0)):
+        inten += h * np.exp(-0.5 * ((tt - c) / (0.15 / 2.3548)) ** 2)
+    monkeypatch.setattr("tsumugin.reference.io.load_pattern", lambda *a, **k: (tt, inten))
+
+    captured: dict[str, object] = {}
+
+    def fake_identify(*a, **kw):
+        captured["cell_refiner"] = kw.get("cell_refiner")
+        return ()
+
+    monkeypatch.setattr("tsumugin.insitu.phaseid.identify_new_phases", fake_identify)
+
+    seen: list[dict] = []
+
+    class _Sol:
+        cell = (9.0, 9.0, 9.0, 90.0, 90.0, 90.0)
+        n_used = 12
+
+    def fake_prealign(path, two_theta, intensity, **kw):
+        seen.append({"intensity": np.asarray(intensity), **kw})
+        return _Sol()
+
+    monkeypatch.setattr(
+        "tsumugin.autorietveld.cell_refine.prealign_cell_from_structure", fake_prealign
+    )
+    known = ReferencePhase(
+        phase_id="alpha", formula="Alpha", element_system=("Ca", "O", "Te"),
+        peaks=(Peak(position=20.0, height=1000.0), Peak(position=40.0, height=1000.0)),
+        energy_above_hull=None,
+    )
+    return tt, inten, captured, seen, known
+
+
+def test_default_finder_prealigns_against_known_phase_residual(monkeypatch, tmp_path):
+    """既知相があるフレームでは、プリアラインは残差 (既知相を引いた後) を見る。
+
+    生パターンへ整合すると FoM が支配相のピークに占められ少数相のセルを**悪化**させる
+    (実測 CaTeO3 frame180: delta 最大軸誤差 3.42%→4.21%)。
+    """
+    import numpy as np
+
+    from tsumugin.insitu.engine import _default_phase_finder
+
+    tt, inten, captured, seen, known = _prealign_wiring_setup(monkeypatch, tmp_path)
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"))
+    finder = _default_phase_finder(pid)
+    frame = FrameSpec(data_path="f0.xrdml", axis_value=180.0, two_theta_limits=(15.0, 59.0))
+
+    finder(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [known])
+
+    refiner = captured["cell_refiner"]
+    assert refiner is not None, "既知相を引ける場合はプリアラインを行う"
+    assert refiner("dummy.cif") == (9.0, 9.0, 9.0, 90.0, 90.0, 90.0)
+
+    def _h(vec, pos):
+        return float(vec[np.abs(tt - pos) <= 0.5].max())
+
+    residual = seen[0]["intensity"]
+    assert _h(residual, 20.0) < 0.1 * _h(inten, 20.0), "既知相のピークが残差に残っている"
+    assert _h(residual, 40.0) < 0.1 * _h(inten, 40.0)
+    assert _h(residual, 30.0) > 0.5 * _h(inten, 30.0), "未知相のピークまで削られている"
+    assert seen[0]["subtract_bg"] is False  # 残差は背景減算済 (二重減算しない)
+    assert seen[0]["two_theta_range"] == (15.0, 59.0)
+
+
+def test_default_finder_skips_prealign_when_known_phases_unavailable(monkeypatch, tmp_path):
+    """既存相があるのに減算できない (warm-start 不能) なら、プリアラインを行わない (等方 strain 維持)。"""
+    from tsumugin.insitu.engine import _default_phase_finder
+
+    _tt, _inten, captured, seen, _known = _prealign_wiring_setup(monkeypatch, tmp_path)
+    finder = _default_phase_finder(PhaseIdConfig(elements=("Ca", "Te", "O")))
+    frame = FrameSpec(data_path="f0.xrdml", axis_value=180.0)
+
+    finder(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [])
+
+    assert captured["cell_refiner"] is None
+    assert seen == []
+
+
+def test_default_finder_prealign_off_by_config(monkeypatch, tmp_path):
+    """refine_new_phase_cell=False は従来どおり補正器を渡さない (非回帰)。"""
+    from tsumugin.insitu.engine import _default_phase_finder
+
+    _tt, _inten, captured, seen, known = _prealign_wiring_setup(monkeypatch, tmp_path)
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), refine_new_phase_cell=False)
+    finder = _default_phase_finder(pid)
+
+    finder(FrameSpec(data_path="f0.xrdml", axis_value=180.0),
+           ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [known])
+
+    assert captured["cell_refiner"] is None
+    assert seen == []
+
+
+def test_default_finder_reports_prealign_basis_in_evidence(monkeypatch, tmp_path):
+    """整合先を meta に残す — ③ は `appearances[].evidence.prealign_basis` でセルの出所を追える。
+
+    skills/insitu と operando-diagnosis PLAYBOOK がこのキーを見ろと指示しているため、
+    キー自体が消えると **③ への指示が嘘になる** (誤った手順書は実装バグと同等に有害)。
+    """
+    from tsumugin.autorietveld.model import PhaseSpec as _PS
+    from tsumugin.insitu.engine import _default_phase_finder
+    from tsumugin.insitu.phaseid import IdentifiedPhase
+
+    _tt, _inten, captured, _seen, known = _prealign_wiring_setup(monkeypatch, tmp_path)
+
+    def fake_identify(*a, **kw):
+        captured["cell_refiner"] = kw.get("cell_refiner")
+        return (IdentifiedPhase(
+            phase_spec=_PS("new.cif", "new_CaTeO3", format_hint="CIF"),
+            phase_id="mp-1", formula="CaTeO3", score=1.0, strain=0.0,
+            source="materials_project", refined_cell=(8.1, 6.5, 13.3, 90.0, 90.0, 90.0),
+        ),)
+
+    monkeypatch.setattr("tsumugin.insitu.phaseid.identify_new_phases", fake_identify)
+    finder = _default_phase_finder(PhaseIdConfig(elements=("Ca", "Te", "O")))
+    frame = FrameSpec(data_path="f0.xrdml", axis_value=180.0)
+
+    (_spec, meta), = finder(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [known])
+    assert meta["prealign_basis"] == "residual"
+
+    (_spec2, meta2), = finder(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [])
+    assert meta2["prealign_basis"] == "skipped"
+
+    off = _default_phase_finder(
+        PhaseIdConfig(elements=("Ca", "Te", "O"), refine_new_phase_cell=False)
+    )
+    (_spec3, meta3), = off(frame, ["Ca", "Te", "O"], ["alpha"], str(tmp_path), [known])
+    assert meta3["prealign_basis"] == "off"

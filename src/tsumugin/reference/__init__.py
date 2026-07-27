@@ -18,6 +18,7 @@ from .iterative import (
     RietveldRefiner,
     identify_pattern,
     refine_polymorphs,
+    subtract_known_phases,
 )
 from .io import (
     load_fxye,
@@ -76,4 +77,5 @@ __all__: list[str] = [
     "reference_phase_to_dict",
     "refine_polymorphs",
     "subtract_background",
+    "subtract_known_phases",
 ]
