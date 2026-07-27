@@ -176,6 +176,83 @@ def phasespec_to_reference(
         return None  # pymatgen 不在 / 読込失敗 / 生成失敗 → warm-start せず静的同定へ縮退 (安全側)
 
 
+def make_residual_cell_refiner(
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    *,
+    known_phases: Sequence[ReferencePhase] = (),
+    wavelength: float = 1.5406,
+    two_theta_range: tuple[float, float] = (10.0, 90.0),
+    subtract_bg: bool = True,
+    require_subtraction: bool = True,
+    cfg: IdentifyConfig | None = None,
+    prealign: Callable[..., object] | None = None,
+) -> CellRefiner | None:
+    """異方セルプリアラインを**既知相を引いた残差**へ向ける `cell_refiner` を作る (Issue #20 続き)。
+
+    プリアラインの目的関数 (`autorietveld.lattice._peak_match_fom`) は観測ピーク基準のため、
+    少数相のセルを**生パターン**へ整合させると FoM が支配相のピークに占められ、少数相の反射を
+    支配相の位置へばら撒くセルを選ぶ。実測 (CaTeO3 frame180, delta ~28%, 出発セルを 4 通りに振る):
+
+        整合先          delta セルの最大軸誤差
+        生パターン       2.84 – 4.37 %   ← **出発セル (1.64–3.42%) より必ず悪化**
+        残差 (alpha 減算) 0.42 – 0.64 %   ← 実測セルをほぼ回復
+
+    誤セルの方が FoM が良い (0.268 < 0.290 for 真セル) ため `require_improvement` ガードでも
+    止まらない — 目的関数側の問題であり、整合先を変えるのが正しい対処。
+
+    :param two_theta: 観測 2θ (度, 昇順)
+    :param intensity: 観測強度 (生)
+    :param known_phases: 現行相 (精密化格子で生成したピーク列付。`phasespec_to_reference` 由来)
+    :param wavelength: プリアラインの線源波長 (Å)
+    :param two_theta_range: プリアラインの評価 2θ 範囲
+    :param subtract_bg: SNIP 背景減算を行うか。残差経路では**残差計算側**に適用し (プリアラインには
+        減算済を渡す)、既知相ゼロの経路ではプリアラインへそのまま渡す。``cfg`` 明示時は cfg が優先
+    :param require_subtraction: True で「既知相を引けないならプリアラインしない」(``None`` を返す)。
+        既存相があるのに生パターンへ整合するのは上表の通り有害なので、等方 strain のまま渡す方が
+        安全側 (提案≠適用)。単相/静的同定など**候補が支配的と分かっている**呼び出しでのみ False にする
+    :param cfg: 残差計算の設定 (`reference.iterative.subtract_known_phases` へ委譲)
+    :param prealign: プリアライン関数 (**テスト注入専用**。既定 `prealign_cell_from_structure`)
+    :returns: CIF パス→絶対格子 (or None) の `CellRefiner`。プリアラインすべきでないときは ``None``
+        (呼び出し側は `identify_new_phases(cell_refiner=None)` = 等方 strain のまま)
+    """
+    from ..autorietveld.cell_refine import prealign_cell_from_structure
+    from ..reference.iterative import subtract_known_phases
+
+    align_fn = prealign if prealign is not None else prealign_cell_from_structure
+    tt = np.asarray(two_theta, dtype=float)
+    refs = list(known_phases)
+
+    if not refs and require_subtraction:
+        return None  # 既存相を引けない → 生パターン整合は有害 (上表) なのでプリアラインしない
+
+    raw = np.asarray(intensity, dtype=float)
+    bg = False if refs else subtract_bg  # 残差は減算済 → プリアライン側で二重に引かない
+    # `subtract_bg` は残差計算側へ渡す (背景減算済データの二重減算を避ける)。cfg 明示時は cfg 優先。
+    resid_cfg = cfg if cfg is not None else IdentifyConfig(subtract_bg=subtract_bg)
+    cache: list[np.ndarray] = []
+
+    def _pattern() -> np.ndarray:
+        """整合先パターン (残差 or 生) を**初回呼び出し時に**作る。
+
+        遅延にするのは (1) 候補が 1 つも物質化されなければ減算が要らない、(2) 減算が失敗しても
+        `identify_new_phases` の `cell_refiner` 例外ハンドラに落ち**等方 strain へ縮退できる**
+        ため (即時計算だと finder 全体が落ち、そのフレームの相同定ごと失われる)。
+        """
+        if not cache:
+            cache.append(subtract_known_phases(tt, raw, refs, cfg=resid_cfg) if refs else raw)
+        return cache[0]
+
+    def refiner(cif_path: str) -> Cell6 | None:
+        sol = align_fn(
+            cif_path, tt, _pattern(),
+            wavelength=wavelength, two_theta_range=two_theta_range, subtract_bg=bg,
+        )
+        return sol.cell if sol is not None else None  # type: ignore[union-attr]
+
+    return refiner
+
+
 def identify_new_phases(
     two_theta: np.ndarray,
     intensity: np.ndarray,
@@ -285,28 +362,39 @@ def identify_new_phases(
             continue
         cif_name = f"{_sanitize(name_prefix)}_{_sanitize(ref.phase_id)}.cif"
         cif_path = str(workpath / cif_name)
+        strain = float(accepted.strain)
+        # 【整合先の出発セル】: cell_refiner があるときは**等方 strain を掛けずに**物質化する。
+        #   同定段の strain は「支配相に汚染されうるパターン」に対しランキング用に求めた量で、
+        #   符号を誤ると DFT 誤差を打ち消すどころか**増幅**し、プリアラインの探索域 (±5%/軸) の
+        #   外へ出発点を押し出す。実測 (CaTeO3, 支配相を引かない静的同定): 既に c が +3.4% 過大な
+        #   DFT セルに strain +3.4% が乗り、出発点 c +6.94% → 残差整合でも 1.43% までしか戻せない
+        #   (DB 素のセルから始めれば 0.51%)。異方プリアラインの方が良い推定量なので素から始める。
+        seed_strain = 0.0 if cell_refiner is not None else strain
         try:
-            # 提案時 refine_lattice が求めた等方歪みを物質化構造に適用し DFT 格子過大評価を実測へ補正する。
             materializer.materialize(
-                ref.phase_id, list(elements), cif_path, strain=float(accepted.strain)
+                ref.phase_id, list(elements), cif_path, strain=seed_strain
             )
         except Exception:
             continue  # 物質化失敗は飛ばして次の受理相へ (提案≠適用の安全側)
-        # 異方セル補正 (Issue #20): 等方 strain で潰しきれない DFT の軸別誤差を 異方セルプリアラインで
-        # 求め、非 None なら CIF をその絶対格子で再物質化する。失敗/None は等方版のまま (安全側)。
+        # 異方セル補正 (Issue #20): DFT の軸別誤差を異方セルプリアラインで求め、非 None ならその
+        # 絶対格子で再物質化する。失敗/None は**等方 strain 版へ戻す** (従来の補正を失わない)。
         refined_cell: Cell6 | None = None
         if cell_refiner is not None:
             try:
                 refined_cell = cell_refiner(cif_path)
             except Exception:
                 refined_cell = None
-            if refined_cell is not None:
-                try:
+            try:
+                if refined_cell is not None:
                     materializer.materialize(
                         ref.phase_id, list(elements), cif_path, cell=refined_cell
                     )
-                except Exception:
-                    refined_cell = None  # 再物質化失敗は等方版を維持
+                elif strain:
+                    materializer.materialize(
+                        ref.phase_id, list(elements), cif_path, strain=strain
+                    )
+            except Exception:
+                refined_cell = None  # 再物質化失敗は素の DB セルのまま (物質化自体は落とさない)
         phase_name = f"{_sanitize(name_prefix)}_{_sanitize(ref.formula)}"
         out.append(
             IdentifiedPhase(

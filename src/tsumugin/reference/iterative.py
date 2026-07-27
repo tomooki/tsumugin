@@ -64,6 +64,7 @@ __all__ = [
     "RietveldRefiner",
     "identify_pattern",
     "refine_polymorphs",
+    "subtract_known_phases",
 ]
 
 # 注入 Rietveld backend: 相集合 (ReferencePhase 列) → 真 Rwp。深段の多形裁定 (FR-118-5, GSAS は内側)。
@@ -416,6 +417,57 @@ def identify_pattern(
         refined=refined, iterations=tuple(iterations), final_max_snr=float(final_sig.max_snr),
         ledger=ledger,
     )
+
+
+def subtract_known_phases(
+    two_theta: np.ndarray,
+    intensity: np.ndarray,
+    known_phases: Sequence[ReferencePhase],
+    *,
+    cfg: IdentifyConfig = IdentifyConfig(),
+) -> np.ndarray:
+    """既知相の joint 非負モデルを差し引いた**残差パターン**を返す (Issue #20 続き)。
+
+    `identify_pattern` が known_phases 起点で内部的に行っている減算 (観測ピークへ整合した peaklist を
+    非負スケールで joint フィット → 差し引き) を、同定を回さずに**残差だけ**取り出せる形で公開する。
+
+    【なぜ要るか】 異方セルプリアラインの目的関数 `lattice._peak_match_fom` は**観測ピーク基準**
+
+        FoM = Σ_obs h_obs · min(|2θ_obs − 2θ_calc|, 1°) / Σ h_obs
+
+    で「全ての観測ピークが計算ピークで覆われるか」を測る。少数相ではこの和が**支配相のピーク**に
+    占められるため、FoM は「少数相の反射を支配相のピーク位置へばら撒くセル」を積極的に選ぶ =
+    最適化の失敗ではなく**目的関数が誤っている**。実測 (CaTeO3 frame180, delta ~28%): 真セルより
+    誤セルの方が FoM が良い (0.268 < 0.290) ため `require_improvement` ガードも素通りし、
+    delta の最大軸誤差が出発点の 3.42% から **4.21% へ悪化**した。既知相を引いた残差では候補が
+    支配的になるので同じ目的関数が正しく効く (同条件で最大軸誤差 **0.51%**)。
+
+    :param two_theta: 観測 2θ (度, 昇順)
+    :param intensity: 観測強度 (生)
+    :param known_phases: 差し引く既知相 (精密化格子で生成したピーク列を持つもの)。空なら減算しない
+    :param cfg: 減算に使う設定 (`subtract_bg`/`auto_fwhm`/`fwhm`/`align_subtraction` を参照)
+    :returns: 残差強度 (`two_theta` と同長)。**cfg.subtract_bg なら背景も落ちている**ため、
+        後段 (プリアライン/ピーク検出) には ``subtract_bg=False`` で渡すこと。**非負にクリップ**する
+        (過剰減算を負のピークとして下流へ持ち込まない)。決定論 (乱数なし)。
+    """
+    tt = np.asarray(two_theta, dtype=float)
+    obs = preprocess_intensity(
+        np.asarray(intensity, dtype=float),
+        subtract_bg=cfg.subtract_bg,
+        bg_max_window=cfg.bg_max_window,
+    )
+    refs = list(known_phases)
+    if not refs:
+        return np.clip(obs, 0.0, None)
+
+    observed = find_peaks(tt, obs)
+    fwhm = cfg.fwhm
+    if cfg.auto_fwhm:
+        estimated = _estimate_fwhm_deg(tt, obs, observed, fallback=cfg.fwhm)
+        if estimated is not None and estimated > 0:
+            fwhm = estimated
+    _peaklists, _s, model, _ss = _build_best_peaklists(refs, observed, cfg, tt, obs, fwhm)
+    return np.clip(obs - model, 0.0, None)
 
 
 def _fit(tt, obs, peaklists, fwhm):
