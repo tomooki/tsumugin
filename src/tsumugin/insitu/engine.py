@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Callable, Sequence
 
+from .._json import finite_or_none
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
 
 if TYPE_CHECKING:
@@ -625,6 +626,24 @@ def _try_add_phase(
         return base_result, None, f"frame {frame_idx}: 相同定に失敗 ({type(exc).__name__})"
     best: "tuple[AutoRietveldResult, PhaseSpec, dict] | None" = None
     for cand_spec, meta in candidates:
+        # 【同定スコアゲート】: 残差を説明していない候補 (score ≤ 閾値) は試行に回さない。
+        #   後段の選択は「受理基準を満たす中で最小 Rwp」だが Rwp は母数増で必ず下がるため、
+        #   大分率で残差を舐める偽相が正解相に勝つ (実測: Dara スコア負の Ca3TeO6/CaTe3O8 が
+        #   delta CaTeO3 に勝った)。相数を Rwp で決めない規律を候補選択にも適用する。
+        #   スコアを持たない供給元は fail open (足切りしない)。
+        score = meta.get("dara_score")
+        if pid.min_identify_score is not None and isinstance(score, (int, float)):
+            if not math.isfinite(float(score)) or float(score) <= pid.min_identify_score:
+                ledger.append(
+                    "m9_phaseid_skipped",
+                    {
+                        "frame": frame_idx, "candidate": cand_spec.phase_name,
+                        "phase_id": str(meta.get("phase_id", "")),
+                        "score": finite_or_none(score),
+                        "min_identify_score": pid.min_identify_score,
+                    },
+                )
+                continue
         trial_phases = tuple(list(phases) + [cand_spec])
         trial = runner(frame, trial_phases, base_cells)
         trial_rwp = float(trial.final_rwp)

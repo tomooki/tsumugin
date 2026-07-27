@@ -219,6 +219,14 @@ class PhaseIdConfig:
         (M10 anchor crossover, パラメータ罰がフレーム跨ぎで累積) にあり、そこでは既定 on。小 n_obs や
         原理的判定が要る時のみ本フラグを True。frac/セル/妥当性ガードは両方式で共通。
     :param bic_base_params: bic の非相パラメータ数 (背景/プロファイル/ゼロ等)。
+    :param min_identify_score: 候補を**試行精密化に回すために要する同定スコアの下限**
+        (Dara スコア; 既定 0.0 = 正のスコアを要求)。負のスコアは「その候補を入れると未説明強度が
+        むしろ増える」= 残差を説明していない、という意味なので、Rietveld を回すまでもなく落とす。
+        **必要な理由**: 受理後の選択は「受理基準を満たす中で最小 Rwp」だが、Rwp は母数増で必ず
+        下がるため、大分率を取って残差を舐める偽相が正解相に勝ちうる (実測: Ca-Te-O 系で Dara
+        スコア負の Ca3TeO6/CaTe3O8 が delta CaTeO3 に勝った)。相数を Rwp で決めない CLAUDE.md の
+        規律を**候補選択にも**適用する。``None`` で無効 (従来動作)。スコアを持たない候補
+        (メタに ``dara_score`` が無い供給元/スタブ) は fail open で通す。
     :param bic_per_phase_params: bic の 1 相あたりパラメータ数 (scale+格子+プロファイル概算)。
     :param warm_start_known_phases: 新相探索で現行相集合を `identify_pattern(known_phases=)` に渡し
         **先に残差から減算**してから新相を探すか (operando 一本化 B)。現行相を精密化格子付き
@@ -248,6 +256,7 @@ class PhaseIdConfig:
     bic_base_params: int = 30
     bic_per_phase_params: int = 12
     warm_start_known_phases: bool = True
+    min_identify_score: "float | None" = 0.0
 
     @property
     def enabled(self) -> bool:
