@@ -29,6 +29,7 @@
 bool ガード撤去 (``"false"`` → True の反転が復活)      rejects_non_bool_for_bool_field / anchor_config 側
 int 整数性ガード撤去 (``int(3.9)==3`` の切り捨て)      rejects_non_integral_float_for_int_field
 タプル裸文字列ガード撤去 (``"CaTeO"`` の分解)          rejects_bare_string_for_element_list
+タプル要素型ガード撤去 (``[19,25,26]`` → ``("19",…)``) rejects_non_string_elements
 null ガード撤去 (非 Optional が既定へ黙って戻る)       rejects_null_for_non_optional_field
 未知キーガード撤去 (typo を黙って無視)                 rejects_unknown_keys / unknown_key_degrades_to_error_dict
 ``PhaseIdConfig`` の組み立てを try の外へ戻す          bad_phase_id_degrades_to_error_dict
@@ -173,6 +174,38 @@ def test_phase_id_config_from_dict_rejects_bare_string_for_element_list():
     """
     with pytest.raises(ValueError, match="elements"):
         PhaseIdConfig.from_dict({"elements": "CaTeO"})
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        pytest.param([19, 25, 26], id="atomic_numbers"),
+        pytest.param(["K", 25], id="mixed"),
+        pytest.param([["K"], "Mn"], id="nested_list"),
+        pytest.param([True], id="bool"),
+    ],
+)
+def test_phase_id_config_from_dict_rejects_non_string_elements(elements):
+    """★`elements` の**要素**が文字列でなければ ValueError (``str()`` の黙った文字列化を防ぐ)。
+
+    裸文字列ガード (上のテスト) だけでは足りない: リストの**中身**が元素記号でないとき、
+    ``tuple(str(v) for v in value)`` は同じ事故を静かに起こす — 原子番号 ``[19, 25, 26]`` は
+    ``("19","25","26")``、入れ子 ``[["K"], "Mn"]`` は ``("['K']","Mn")`` になり、**例外を
+    出さないまま候補が全滅する** (③ は「MP に候補が無い」と誤診し、元素系ではなく
+    Materials Project 側を疑い始める)。
+
+    他の型 (bool/int/float/str) は全て不一致で ValueError にしているので、タプルの要素だけ
+    黙って読み替える非対称を残さない。
+    """
+    with pytest.raises(ValueError, match="elements"):
+        PhaseIdConfig.from_dict({"elements": elements})
+
+
+def test_phase_id_config_from_dict_keeps_valid_element_lists():
+    """正しい元素記号のリストは通り、tuple[str, ...] になること (ガードが過剰でないこと)。"""
+    cfg = PhaseIdConfig.from_dict({"elements": ["Ca", "Te", "O"]})
+    assert cfg.elements == ("Ca", "Te", "O")
+    assert all(isinstance(e, str) for e in cfg.elements)
 
 
 def test_phase_id_config_from_dict_rejects_non_mapping():

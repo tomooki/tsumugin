@@ -28,8 +28,10 @@ policy 定数を設定する frozen dataclass」である。本モジュール�
   黙った切り捨てを防ぐ。JSON クライアントが int/float を区別しない事情は ``40.0`` 許容で吸収する。
 - **非 Optional フィールドの ``null`` は ValueError**。既定へ黙って戻すと「null で無効化した
   つもり」が既定値で動く = 別の解析になる。``float | None`` のフィールドだけ ``null`` を通す。
-- **タプル (元素列) に裸の文字列は ValueError**。``"CaTeO"`` を許すと ``("C","a","T","e","O")``
-  = 元素系が丸ごと別物になり候補が全滅する (例外は出ないので「MP に候補が無い」と誤診する)。
+- **タプル (元素列) は裸の文字列も非文字列要素も ValueError**。``"CaTeO"`` を許すと
+  ``("C","a","T","e","O")`` になり、原子番号 ``[19, 25, 26]`` を ``str()`` で通すと
+  ``("19","25","26")`` になる — どちらも元素系が丸ごと別物になり、**例外を出さないまま**
+  候補が全滅する (③ は「MP に候補が無い」と誤診する)。
 
 呼び出し側 (②) はこの ValueError を ``{"error", "error_type"}`` dict へ縮退させる契約
 (CLAUDE.md ② 不変条件: ③ は LLM なので例外は回復不能なハード失敗になる)。
@@ -125,7 +127,19 @@ def _coerce(name: str, value: object, default: object, field: "dataclasses.Field
                 f"({type(value).__name__})。裸の文字列は 1 文字ずつに分解され、"
                 "指定したものと別の集合になります"
             )
-        return tuple(str(v) for v in value)
+        # 【要素型も検証する】: `str(v)` で黙って文字列化すると、リストの**中身**が元素記号で
+        #   ないときに裸文字列と同じ事故になる — 原子番号 ``[19, 25, 26]`` は ``("19","25","26")``
+        #   に、入れ子 ``[["K"], "Mn"]`` は ``("['K']","Mn")`` になり、どちらも例外を出さずに
+        #   候補が全滅する (③ は「MP に候補が無い」と誤診する)。他の型 (bool/int/float/str) は
+        #   全て不一致で ValueError にしているので、タプルの要素だけ黙って読み替えない。
+        bad = [v for v in value if not isinstance(v, str)]
+        if bad:
+            raise ValueError(
+                f"{name} の要素は元素記号の文字列である必要があります: {bad!r}。"
+                "数値や入れ子は str() で黙って文字列化すると元素記号にならず "
+                "(例 19 → \"19\")、例外を出さないまま候補が全滅します"
+            )
+        return tuple(value)
 
     raise ValueError(  # pragma: no cover - 未対応の既定値型 (設定側の追加時に大声で気づく)
         f"{name}: 既定値の型 {type(default).__name__} は本パーサが未対応です"
