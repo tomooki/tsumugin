@@ -133,6 +133,28 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
 }
 ```
 
+## ファイル選択 (Welcome のファイル選択ウィンドウ)
+
+**Web ページからは OS のファイルダイアログを開いてもパスを取得できない** (`<input type=file>` は
+内容だけでパスを返さない)。そのため**バックエンドがディレクトリを列挙し、アプリ内にファイル選択
+ウィンドウを描く**方式にする (ブラウザでも Tauri でも同一動作)。読み取り専用・localhost 前提で、
+プロジェクトの作成/開くが既に任意パスを受ける以上、能力の種類は増えない。
+
+| 呼び出し | 内容 |
+|---|---|
+| GET `/api/fs/roots` | `{"roots": [{"path": str, "label": str}]}` — ホーム + ドライブ (Windows) / `/` (POSIX) |
+| GET `/api/fs/list?path=<abs>` | `{"path", "parent": str\|null, "entries": [{"name", "path", "is_dir", "is_project"}]}`。**ディレクトリと `.json` のみ**返す (中身は返さない)。`is_project` = そのディレクトリ直下に `project.json` があるか (開く先の目印)。存在しない/権限なし/ファイルパス指定は 404・422 error dict |
+
+UI: Welcome の NEW PROJECT は「保存先を選ぶ」ボタン → ピッカー (ディレクトリ選択モード) +
+名前入力。OPEN は「プロジェクトを選ぶ」ボタン → ピッカー (`is_project` のディレクトリ、または
+`project.json` を選択)。手入力欄も残す (パスをコピペしたい場合)。
+
+## プロジェクトを閉じる導線
+
+`POST /api/project/close` は V2a から実装済みだが **UI に導線が無かった** (開いたら Welcome に
+戻れない)。コンテキストバー右端に CLOSE PROJECT ボタンを常設し、`source != "none"` のとき表示する。
+ジョブ実行中は 409 → 非致命メッセージ (「実行中は閉じられません」)。
+
 ## プロジェクトライフサイクル (V2a — アプリ基盤)
 
 プロジェクト = ディレクトリ + `project.json` (spec スキーマは ② `auto_rietveld` と同一) +
