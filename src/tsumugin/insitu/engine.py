@@ -597,8 +597,11 @@ def _try_add_phase(
     min_rwp_gain 超改善 ∧ (3) 新相セルが健全 (非崩壊) ∧ (4) require_validity 時のみ全相妥当性。
     **旧相ドリフトの妥当性 fail で新相を巻き添え棄却しない** (転移域では旧相 alpha のセルが急変し
     valid=False になるが、それは delta 追加の是非とは無関係; 実データで frame 150 の delta 受理を確認)。
-    junk 候補は Rwp が下がらず (frame 90 の O₂: Rwp 悪化) 弾かれる。**複数候補 (top_k) を全て試し、
-    受理基準を満たす中で最小 Rwp のものを採る** (Dara 順でなく Rietveld フィットで選ぶ)。
+    junk 候補は Rwp が下がらず (frame 90 の O₂: Rwp 悪化) 弾かれる。**同定スコアゲート
+    (`min_identify_score`) を通った候補を全て試し、受理基準を満たす中で最小 Rwp のものを採る**
+    (Dara 順でなく Rietveld フィットで選ぶ)。⚠ ゲートで落ちた候補は**試行精密化に回らない** —
+    Rwp は母数増で必ず下がるため、残差を説明していない候補 (スコア ≤ 閾値) を Rietveld で
+    競わせると偽相が勝つ。落とした候補は ledger `m9_phaseid_skipped` に残る。
 
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
     """

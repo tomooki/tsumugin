@@ -284,3 +284,41 @@ def test_bond_gate_spec_keys_exist_in_real_fields():
         "operando-diagnosis PLAYBOOK (非 Claude ハーネス向け) に FR-335 の使い方が無い — "
         "偽相が全域に湧く病理を扱う J6 節が対象"
     )
+
+
+def test_insitu_skill_documents_min_identify_score_and_forbids_lowering_it():
+    """`min_identify_score` が ② から到達可能で、③ に「下げるな」と伝わっていること。
+
+    **なぜ恒久ガードが要るか**: 本ゲートは「候補を Rietveld 試行に回すか」を決める。受理後の
+    選択が「受理基準を満たす中で最小 Rwp」であるため、ゲートが無い/緩いと **Rwp は母数増で
+    必ず下がる**ぶんだけ、残差を説明していない偽相が正解相に勝つ (実測 Ca-Te-O 系で Dara スコア
+    負の Ca3TeO6/CaTe3O8 が正解の delta CaTeO3 に勝った)。③ が「相が見つからないから閾値を
+    下げよう」と judgement してしまうと病理が戻るため、手順書側で明示的に禁じる。
+
+    併せて ② 到達可能性 (Issue #97 の「① にあるが ② に無い機能は ③ にとって存在しない」) を
+    実シグネチャ照合で固定する — 手順書が語るツマミは JSON から届かねばならない。
+    """
+    import inspect  # noqa: PLC0415
+
+    from tsumugin.insitu.model import PhaseIdConfig  # noqa: PLC0415
+    from tsumugin.mcp.insitu_tools import sequential_rietveld  # noqa: PLC0415
+
+    # ① 実装側にフィールドが実在し、既定が「正スコアを要求」であること
+    assert "min_identify_score" in {f for f in PhaseIdConfig.__dataclass_fields__}
+    assert PhaseIdConfig().min_identify_score == 0.0
+
+    # ② JSON 経路で届くこと (phase_id dict のキーとして読まれている = 到達可能)
+    src = inspect.getsource(sequential_rietveld)
+    assert "min_identify_score" in src, (
+        "sequential_rietveld が phase_id.min_identify_score を読んでいない "
+        "— ③ は JSON しか送れないため到達不能 (dead on arrival)"
+    )
+
+    # ③ 手順書が「いつ使うか」と「下げるな」を伝えていること
+    text = _SKILL.read_text(encoding="utf-8")
+    assert "min_identify_score" in text, "skill が min_identify_score に言及していない"
+    assert "下げるな" in text, "「閾値を下げるな」の警告が skill から消えている"
+    assert "m9_phaseid_skipped" in text, (
+        "足切りされた候補の確認先 (ledger m9_phaseid_skipped) が skill に無い "
+        "— ③ が「相が追加されない」原因を辿れない"
+    )

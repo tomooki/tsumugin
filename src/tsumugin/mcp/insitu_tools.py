@@ -641,7 +641,13 @@ def sequential_rietveld(
     :param phase_id: {"elements": [...], "frac_min": .., "top_k": .., ...} (新相自動同定, None で無効)。
         ⚠ ``frac_min`` (既定 0.02) は新相採用に要する**最小 Scale** — `phase_fractions` (HAP Scale の
         Σ=1 正規化値) と比較する。**wt% (`phase_weight_fractions`) ではない** (下の
-        ``auto_freeze_minor_cells`` と同じ basis 注意)
+        ``auto_freeze_minor_cells`` と同じ basis 注意)。
+        ``min_identify_score`` (float|None, 既定 0.0) は候補を**試行精密化に回すために要する
+        Dara スコアの下限** — 負スコア = 「その相を入れると未説明強度がむしろ増える」= 残差を
+        説明していない候補を Rietveld を回すまでもなく落とす。受理後の選択が「最小 Rwp」で
+        あるため、これが無いと大分率で残差を舐める偽相が正解相に勝つ (実測 Ca-Te-O 系で
+        Ca3TeO6/CaTe3O8 が delta CaTeO3 に勝った)。``null`` でゲート無効 (従来動作)。
+        足切りは ledger の ``m9_phaseid_skipped`` に候補名/スコア付きで残る
     :param warm_start_fractions: 直前フレームの精密化相分率も次フレームの初期値に引き継ぐか
         (Issue #82; 分率が seed に張り付くフレームの是正。``warm_start`` 有効時のみ効く)
     :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
@@ -705,6 +711,10 @@ def sequential_rietveld(
         return {"error": str(exc), "error_type": type(exc).__name__}
     pid = None
     if phase_id is not None:
+        # 【None を潰さない】: `min_identify_score` は ① の契約で **``None`` = ゲート無効**
+        #   (従来動作) なので、素朴に `float(...)` すると JSON の ``null`` で TypeError になり
+        #   ③ がゲートを外す唯一の手段が塞がれる (かつ ② の「例外を送出しない」契約にも反する)。
+        _min_score = phase_id.get("min_identify_score", PhaseIdConfig.min_identify_score)
         pid = PhaseIdConfig(
             elements=tuple(str(e) for e in phase_id.get("elements", ())),
             frac_min=float(phase_id.get("frac_min", 0.02)),
@@ -713,6 +723,7 @@ def sequential_rietveld(
             hull_cutoff_ev=phase_id.get("hull_cutoff_ev", 0.1),  # type: ignore[arg-type]
             subtract_bg=bool(phase_id.get("subtract_bg", True)),
             trigger_rwp_ratio=float(phase_id.get("trigger_rwp_ratio", 1.25)),
+            min_identify_score=None if _min_score is None else float(_min_score),
         )
     config = SequentialConfig(
         warm_start=warm_start,

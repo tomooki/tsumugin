@@ -1043,3 +1043,58 @@ def test_write_sequential_csv_registered_in_mcp_tools():
     from tsumugin.mcp.tools import MCP_TOOLS
 
     assert MCP_TOOLS["write_sequential_csv"] is write_sequential_csv
+
+
+# --- ② 到達可能性: min_identify_score (PR #148 セルフレビュー指摘) -------------------------
+
+
+def test_sequential_rietveld_forwards_min_identify_score(monkeypatch):
+    """★``phase_id.min_identify_score`` が JSON から `PhaseIdConfig` へ届く (② 到達可能性)。
+
+    **必要な理由**: 本ゲートは「どの候補が Rietveld 試行に回るか」を決める判断ポリシー閾値で、
+    既に転送済みの `frac_min`/`trigger_rwp_ratio` と同格。転送されないと ③ (JSON しか送れない
+    LLM) からは**存在しない**のと同じになる (CLAUDE.md ★①→②→③ 露出規則)。
+    """
+    seq = _capture_seq(monkeypatch)
+    frames, initial = _frames_and_phases()
+
+    sequential_rietveld(
+        frames, initial,
+        phase_id={"elements": ["Ca", "Te", "O"], "min_identify_score": 0.05},
+    )
+
+    pid = seq["config"].phase_id
+    assert pid is not None
+    assert pid.min_identify_score == pytest.approx(0.05)
+
+
+def test_sequential_rietveld_min_identify_score_default_is_engine_default(monkeypatch):
+    """省略時は ① の既定 (0.0 = 正スコアを要求) を保つ (非回帰)。"""
+    from tsumugin.insitu.model import PhaseIdConfig
+
+    seq = _capture_seq(monkeypatch)
+    frames, initial = _frames_and_phases()
+
+    sequential_rietveld(frames, initial, phase_id={"elements": ["Ca", "Te", "O"]})
+
+    pid = seq["config"].phase_id
+    assert pid.min_identify_score == PhaseIdConfig().min_identify_score == 0.0
+
+
+def test_sequential_rietveld_min_identify_score_null_disables_gate(monkeypatch):
+    """★JSON の ``null`` は「ゲート無効」として None で届く (`float(None)` で落ちない)。
+
+    ① の契約が「``None`` で無効 (従来動作)」なので、③ がゲートを外す唯一の手段がこの経路。
+    素朴に `float(phase_id.get(...))` と書くと ``null`` で TypeError になり、② の
+    「例外を送出せず error dict へ縮退する」契約にも引っかかる。
+    """
+    seq = _capture_seq(monkeypatch)
+    frames, initial = _frames_and_phases()
+
+    out = sequential_rietveld(
+        frames, initial,
+        phase_id={"elements": ["Ca", "Te", "O"], "min_identify_score": None},
+    )
+
+    assert "error" not in out, out
+    assert seq["config"].phase_id.min_identify_score is None
