@@ -37,7 +37,14 @@ from tsumugin.autorietveld.model import (
     Radiation,
     ValidityReport,
 )
-from tsumugin.insitu.model import FrameRietveldResult, FrameSpec, SequentialRietveldResult
+from tsumugin.insitu.anchor.model import AnchorConfig
+from tsumugin.insitu.model import (
+    FrameRietveldResult,
+    FrameSpec,
+    PhaseIdConfig,
+    SequentialRietveldResult,
+)
+from tsumugin.mcp.anchor_tools import anchored_sequential
 from tsumugin.mcp.insitu_tools import (
     _result_from_dict as _series_deserializer,
 )
@@ -1215,6 +1222,19 @@ def test_fraction_deriving_consumers_never_silently_fall_back_to_scale():
 #   加えて**振る舞い側の固定**として `tests/autorietveld/test_auto_freeze.py` に
 #   `test_documented_threshold_compares_scale_not_weight_fraction` を置き、実測の Scale/wt% ペアで
 #   「0.2 が tetra を解放する (= Scale 基準)」を pin してある。宣言と実装が割れたらそちらが落ちる。
+#
+# 【発見モードを 2 つ持つ理由 — 網が ② の綴りに依存していた欠陥の是正】
+#   旧実装は全 spec を「② が ``spec.get("key")`` と書いている箇所」の AST で発見していた。これは
+#   **② が読むキーしか見ない** = ① にあるのに ② が読まないフィールドは網に掛からない、という
+#   致命的な穴を持っていた。実際 `phase_id` は ① に 19 フィールドあるのに ② が 7 キーの手書き
+#   ホワイトリストで組んでいたため、**残り 12 は宣言表にも網にも現れず**「既知の穴」ですらなかった
+#   (`wavelength` は既定 Cu Kα1 のまま放射光系列に適用されていた)。
+#
+#   そこで、frozen dataclass 設定 (`PhaseIdConfig`/`AnchorConfig`) を受ける spec は **① の
+#   `dataclasses.fields` から発見**する。② は共有パーサ (`_config_spec.config_from_dict`) を通す
+#   フィールド駆動なので、**① にフィールドを足せば ② から自動的に届き、同時に本網が fail して
+#   basis 宣言を強制する**。「② が読んでいるか」ではなく「③ が設定しうるツマミの全体」を見る網に
+#   なった (`instrument` は dataclass ではなく手組み spec なので従来どおり AST 発見)。
 # ===========================================================================
 
 #: 分率 basis を持たない入力 (装置設定・探索設定など)。
@@ -1269,12 +1289,105 @@ SPEC_INPUT_BASIS: dict[str, tuple[str, str]] = {
     "phase_id.trigger_rwp_ratio": (
         BASIS_FREE, "同定を起動する Rwp 比。Rwp 基準であり相分率と比較しない"
     ),
+    # --- ホワイトリスト撤廃で ③ に到達可能になったフィールド群 (旧 ② は 7 キーしか読まなかった) ---
+    "phase_id.wavelength": (
+        BASIS_FREE,
+        "異方セルプリアライン/候補再スコアの線源波長 [Å]。相分率ではなく **d↔2θ 変換**に効く。"
+        "既定 Cu Kα1 1.5406 のため放射光/中性子系列で指定を怠ると系統的に誤るが、それは basis の"
+        "問題ではないので BASIS_FREE (誤りの様態は ② docstring と ③ 3 文書で別途警告する)",
+    ),
+    "phase_id.refine_new_phase_cell": (
+        BASIS_FREE,
+        "新相の異方セルプリアラインの on/off (bool, Issue #20)。格子の話であり相分率と比較しない",
+    ),
+    "phase_id.rerank_top_k": (
+        BASIS_FREE, "異方格子整合で再スコアする上位候補数 (int)。スコア順位であり相分率ではない"
+    ),
+    "phase_id.min_rwp_gain": (
+        BASIS_FREE,
+        "新相受理に要する**相対** Rwp 改善 (0.01=1%)。Rwp 基準であり相分率と比較しない "
+        "(分率の下限は frac_min の方であり、そちらは Scale 基準)",
+    ),
+    "phase_id.require_validity": (
+        BASIS_FREE, "受理に全相の物理妥当性を要求するか (bool)。妥当性ゲートであり相分率ではない"
+    ),
+    "phase_id.require_full_element_system": (
+        BASIS_FREE, "候補を全元素系相に限定するか (bool, ③ 化学ガード)。相分率と比較しない"
+    ),
+    "phase_id.snr_trigger": (
+        BASIS_FREE,
+        "残差 S/N の探索発火閾値 (σ 単位)。計数統計ノイズに対する比であり相分率と比較しない",
+    ),
+    "phase_id.max_new_phases": (
+        BASIS_FREE, "系列全体で追加する新相数の上限 (int, 0 で無制限)。個数であり相分率ではない"
+    ),
+    "phase_id.bic_acceptance": (
+        BASIS_FREE, "受理判定を bic モデル選択で行うか (bool)。情報量規準であり相分率ではない"
+    ),
+    "phase_id.bic_base_params": (
+        BASIS_FREE, "bic の非相パラメータ数 (背景/プロファイル/ゼロ等, int)。相分率と比較しない"
+    ),
+    "phase_id.bic_per_phase_params": (
+        BASIS_FREE, "bic の 1 相あたりパラメータ数 (int)。パラメータ数であり相分率ではない"
+    ),
+    "phase_id.warm_start_known_phases": (
+        BASIS_FREE,
+        "新相探索の前に現行相を残差から減算するか (bool)。減算戦略であり相分率と比較しない",
+    ),
+    # --- anchor_config spec (`anchored_sequential`; AnchorConfig のフィールド駆動) ---
+    # M10 の設定は **bic と信頼度**で動き、相分率の閾値を 1 つも持たない (相数の抑制は
+    # `select.frame_bic` のパラメータ罰が行う) ため全て BASIS_FREE。相分率と比較するツマミを
+    # AnchorConfig に足したら本表が fail し、basis の宣言を強制する。
+    "anchor_config.anchor_confidence_min": (
+        BASIS_FREE, "アンカー候補の合成信頼度の下限 (段階 A)。同定スコア由来で相分率ではない"
+    ),
+    "anchor_config.anchor_rwp_max": (
+        BASIS_FREE, "確定アンカーに要する Rwp 上限 (段階 B)。Rwp 基準であり相分率と比較しない"
+    ),
+    "anchor_config.require_anchor_validity": (
+        BASIS_FREE, "確定アンカーに物理妥当性を要求するか (bool)。妥当性ゲートであり相分率ではない"
+    ),
+    "anchor_config.w_score": (BASIS_FREE, "信頼度合成の Dara スコア重み。同定スコア側の量"),
+    "anchor_config.w_margin": (BASIS_FREE, "信頼度合成のスコアマージン重み。同定スコア側の量"),
+    "anchor_config.w_strain": (BASIS_FREE, "信頼度合成の strain ペナルティ重み。格子乖離の量"),
+    "anchor_config.w_unknown": (BASIS_FREE, "信頼度合成の未知相ペナルティ重み。同定側のフラグ"),
+    "anchor_config.margin_cap": (BASIS_FREE, "スコアマージンの飽和上限。同定スコア側の量"),
+    "anchor_config.bic_tie": (
+        BASIS_FREE, "crossover 選定で総 bic を同点とみなす許容差。情報量規準であり相分率ではない"
+    ),
+    "anchor_config.base_params": (
+        BASIS_FREE, "bic の n_params 推定のベース (非相パラメータ数, int)。相分率と比較しない"
+    ),
+    "anchor_config.per_phase_params": (
+        BASIS_FREE, "bic の 1 相あたりパラメータ数 (int)。パラメータ数であり相分率ではない"
+    ),
+    "anchor_config.require_bond_validity": (
+        BASIS_FREE, "crossover に結合距離/配位数の妥当性を課すか (bool, FR-335)。相分率ではない"
+    ),
+    "anchor_config.bond_tol_lo": (
+        BASIS_FREE, "最近接結合距離の許容下限倍率 (共有結合半径和に対する)。距離であり相分率ではない"
+    ),
+    "anchor_config.bond_tol_hi": (
+        BASIS_FREE, "最近接結合距離の許容上限倍率。距離の比であり相分率と比較しない"
+    ),
+    "anchor_config.hysteresis_frames": (
+        BASIS_FREE, "相 death 判定のヒステリシス窓 (連続本数, int)。フレーム数であり相分率ではない"
+    ),
 }
 
-#: spec 名 → (spec dict を受ける変数名, その dict からキーを**読む** ② 関数群)。発見の網。
-_SPEC_READERS: dict[str, tuple[str, tuple[Callable, ...]]] = {
+#: spec 名 → (spec dict を受ける変数名, その dict からキーを**読む** ② 関数群)。手組み spec 用の
+#: AST 発見網 (`instrument` は dataclass ではなく ② が個別に `.get` するキーの集合)。
+_SPEC_AST_READERS: dict[str, tuple[str, tuple[Callable, ...]]] = {
     "instrument": ("spec", (_runner_from_instrument, _instrument_path_resolver)),
-    "phase_id": ("phase_id", (sequential_rietveld,)),
+}
+
+#: spec 名 → その spec が構成する ① の frozen dataclass 設定。② は共有パーサ
+#: (`_config_spec.config_from_dict`) を通すフィールド駆動なので、**① のフィールド集合がそのまま
+#: ③ から設定しうるツマミの集合**である。AST 発見 (② が読むキー) より強い網: ホワイトリスト
+#: 切り詰めで ② が読まなくなったフィールドも、ここには残り続けて宣言を要求する。
+_SPEC_DATACLASS_READERS: dict[str, type] = {
+    "phase_id": PhaseIdConfig,
+    "anchor_config": AnchorConfig,
 }
 
 #: spec 名 → その spec を ③ に**説明する** ② の表面。③ は ② の docstring しか仕様書を持たない
@@ -1282,6 +1395,7 @@ _SPEC_READERS: dict[str, tuple[str, tuple[Callable, ...]]] = {
 _SPEC_DOC_SURFACES: dict[str, tuple[Callable, ...]] = {
     "instrument": (sequential_rietveld, _runner_from_instrument),
     "phase_id": (sequential_rietveld,),
+    "anchor_config": (anchored_sequential,),
 }
 
 #: basis を label しているべき ③ の手順書 (skill 2 種 + 非 Claude ハーネス用 PLAYBOOK)。
@@ -1315,12 +1429,53 @@ def _spec_keys_read(func: Callable, var: str) -> set[str]:
 
 
 def _discovered_spec_inputs() -> set[str]:
-    """② の JSON spec dict が実際に読むキーを ``<spec>.<key>`` 形で発見する。"""
+    """③ が ② の JSON spec で設定しうるキーを ``<spec>.<key>`` 形で発見する (2 モード)。
+
+    - 手組み spec (`instrument`): ② のソースを AST で走査して ``spec.get("...")`` を拾う。
+    - dataclass spec (`phase_id`/`anchor_config`): ① の `dataclasses.fields` を列挙する。
+      ② は共有パーサでフィールド駆動に組むので、フィールド = ③ から届くツマミである。
+    """
     found: set[str] = set()
-    for spec, (var, funcs) in _SPEC_READERS.items():
+    for spec, (var, funcs) in _SPEC_AST_READERS.items():
         for func in funcs:
             found |= {f"{spec}.{key}" for key in _spec_keys_read(func, var)}
+    for spec, cls in _SPEC_DATACLASS_READERS.items():
+        found |= {f"{spec}.{f.name}" for f in dataclasses.fields(cls)}
     return found
+
+
+def test_dataclass_spec_inputs_are_actually_field_driven_at_the_layer2_boundary():
+    """★dataclass spec の**全**フィールドが ② の JSON から実際に届くこと (網の前提の検証)。
+
+    上の `_discovered_spec_inputs` は「① のフィールド = ③ から届くツマミ」を前提にしている。
+    その前提は ② が共有パーサ (`_config_spec.config_from_dict`) を通す限り真だが、**前提のまま
+    にすると網ごと嘘になる** — 実際に旧 ② は 7 キーのホワイトリストで、この前提は偽だった。
+
+    非トートロジー: 各フィールドを既定と異なる値で JSON に載せ、`from_dict` を通して**値が
+    実際に入る**ことを確かめる。② がホワイトリストへ退行したら (= フィールドを読まなくなったら)
+    `tests/mcp/test_phase_id_spec.py::test_sequential_rietveld_forwards_every_phase_id_field`
+    が落ち、パーサ自体が退行したら本テストが落ちる。
+    """
+    for spec, cls in _SPEC_DATACLASS_READERS.items():
+        defaults = cls()
+        for f in dataclasses.fields(cls):
+            current = getattr(defaults, f.name)
+            # 既定と異なる値を型ごとに作る (bool は反転・数値は +1・タプルはダミー元素)
+            if isinstance(current, bool):
+                probe: object = not current
+            elif isinstance(current, tuple):
+                probe = ["Xx"]
+            elif isinstance(current, int):
+                probe = current + 1
+            else:
+                probe = float(current) + 1.0 if current is not None else 1.0
+            got = getattr(cls.from_dict({f.name: probe}), f.name)  # type: ignore[attr-defined]
+            expected = tuple(probe) if isinstance(current, tuple) else probe
+            assert got == expected, (
+                f"{spec}.{f.name}: JSON から渡した値 {probe!r} が ① に届いていない (got {got!r})。"
+                "② がフィールド駆動でなくなると、この網は「宣言はあるが到達できない」ツマミを"
+                "正常と報告する = Issue #97 の defect そのものになる"
+            )
 
 
 def test_every_layer2_spec_input_declares_its_fraction_basis():

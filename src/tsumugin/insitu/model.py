@@ -249,6 +249,29 @@ class PhaseIdConfig:
     bic_per_phase_params: int = 12
     warm_start_known_phases: bool = True
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "PhaseIdConfig":
+        """JSON 由来 dict から `PhaseIdConfig` を構成する (② `sequential_rietveld` の JSON 経路)。
+
+        **共有パーサ** `_config_spec.config_from_dict` に委譲する (`AnchorConfig.from_dict` と
+        同一実装 — 二重実装を作らない)。フィールド駆動なので、本 dataclass に足したフィールドは
+        追加の配線なしに ② から届く。
+
+        **なぜ classmethod にしたか**: 以前 ② は 7 キーの手書きホワイトリストで本 dataclass を
+        組んでおり、残り 12 フィールド (``wavelength``・``refine_new_phase_cell``・
+        ``min_rwp_gain``・``require_validity``・``require_full_element_system``・``snr_trigger``・
+        ``max_new_phases``・``bic_*``・``rerank_top_k``・``warm_start_known_phases``) は
+        **③ にとって存在しなかった** (Issue #97 の「①実装済 + green ≠ ③ が到達できる」型)。
+        とりわけ ``wavelength`` の既定は Cu Kα1 なので、放射光/中性子系列は黙って誤った波長で
+        プリアライン/再スコアしていた。
+
+        :raises ValueError: dict でない・未知キー (typo)・値の型が不正なとき
+            (② はこれを ``{"error", "error_type"}`` dict へ縮退させる)
+        """
+        from .._config_spec import config_from_dict
+
+        return config_from_dict(cls, data, spec_name="phase_id")
+
     @property
     def enabled(self) -> bool:
         return bool(self.elements)
