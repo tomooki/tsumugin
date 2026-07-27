@@ -4,3 +4,4 @@ export { MetricCard } from "./MetricCard";
 export { PathPicker, type PathPickerMode } from "./PathPicker";
 export { PlaceholderPlot } from "./PlaceholderPlot";
 export { Btn } from "./Btn";
+export { ErrorBoundary } from "./ErrorBoundary";

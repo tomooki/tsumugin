@@ -56,11 +56,17 @@ export function FitTab() {
   const xRange =
     plot && plot.x.length > 0 ? { min: Math.min(...plot.x), max: Math.max(...plot.x) } : twoTheta;
 
-  const step = (xRange.max - xRange.min) / 4;
+  // 【null 安全】: 新規プロジェクト (ヒストグラム 0 件) の two_theta は {min: null, max: null}
+  //   (finite_or_none 規約)。生の toFixed を呼ぶと**アプリ全体が真っ白になる** (実機で発生)。
+  const xMin = Number.isFinite(xRange?.min as number) ? (xRange.min as number) : null;
+  const xMax = Number.isFinite(xRange?.max as number) ? (xRange.max as number) : null;
+  const step = xMin !== null && xMax !== null ? (xMax - xMin) / 4 : 0;
   const scaleMarks =
-    step > 0
-      ? [0, 1, 2, 3, 4].map((i) => (xRange.min + i * step).toFixed(1))
-      : [xRange.min.toFixed(1), xRange.max.toFixed(1)];
+    xMin === null || xMax === null
+      ? []
+      : step > 0
+        ? [0, 1, 2, 3, 4].map((i) => formatNumber(xMin + i * step, 1))
+        : [formatNumber(xMin, 1), formatNumber(xMax, 1)];
 
   const mainSeries: LinePlotSeries[] | null = plot
     ? [
