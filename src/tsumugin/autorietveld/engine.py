@@ -340,6 +340,13 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
             has_free = str(row[cs]).strip() == "1"
         if has_free:
             coord_atoms.append(row[ct - 1])
+    # 原子ラベル→元素記号 (GSAS 原子行の type 列)。重原子順の段階解放に使う。
+    element_of: dict[str, str] = {}
+    for row in atoms:
+        try:
+            element_of[str(row[ct - 1])] = str(row[ct]).strip()
+        except Exception:  # noqa: BLE001 — 形が違う行は元素不明として飛ばす (fail open)
+            continue
     # 座標凍結ラベル (剛体固定原子) は coords 段の解放対象から除く。
     frozen = set(spec.frozen_coord_labels)
     if frozen:
@@ -353,8 +360,88 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
         "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ | sum_occ,
         "uiso_labels": list(spec.free_uiso_labels),
         "refine_cell": spec.refine_cell,
+        # 原子ラベル→元素記号 (重原子から順に解放する "本気フィット" 手順で使う)
+        "element_of": element_of,
     }
 
+
+#: 原子番号順の元素記号 (重原子から順に解放する "本気フィット" 手順の並び替えに使う)。
+_Z_ORDER: dict[str, int] = {
+    sym: i + 1
+    for i, sym in enumerate(
+        "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn "
+        "Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce "
+        "Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn "
+        "Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf".split()
+    )
+}
+
+
+def _element_rank_labels(info: dict, labels: "list[str]", rank: object) -> "list[str]":
+    """``labels`` のうち **重い方から rank 番目の元素**に属するものだけを返す。
+
+    ``rank`` が int でなければ ``labels`` をそのまま返す (従来動作)。存在しない rank は空
+    (= その段は何もしない no-op)。元素記号は先頭 2 文字までを見て正規化する
+    (GSAS の type は "Fe+2" のように価数付きのことがある)。
+    """
+    if not isinstance(rank, int) or isinstance(rank, bool):
+        return list(labels)
+    element_of = info.get("element_of") or {}
+
+    def _z(label: str) -> int:
+        raw = str(element_of.get(label, ""))
+        sym = raw[:2].strip().capitalize()
+        return _Z_ORDER.get(sym, _Z_ORDER.get(sym[:1].upper(), 0))
+
+    order = sorted({_z(lab) for lab in labels}, reverse=True)
+    if rank >= len(order):
+        return []
+    target = order[rank]
+    return [lab for lab in labels if _z(lab) == target]
+
+
+
+def _freeze_all(hists, phases, atom_flag_maps, radiations, keep: "set[str]") -> None:
+    """現在解放されている精密化フラグを一旦すべて落とす (``keep`` の名前は残す)。
+
+    GSAS の ``clear_refinements`` / ``clear_HAP_refinements`` を使う。背景とヒストグラム
+    スケールは "本気フィット" 手順で常時解放の前提なので触らない。
+    """
+    if "cell" not in keep:
+        for ph in phases:
+            try:
+                ph.clear_refinements({"Cell": True})
+            except Exception:  # noqa: BLE001
+                pass
+    if "displacement" not in keep:
+        for hist in hists:
+            for keys in (["Shift", "Transparency"], ["DisplaceX", "DisplaceY"]):
+                try:
+                    hist.clear_refinements({"Sample Parameters": keys})
+                except Exception:  # noqa: BLE001 — 当該ジオメトリに無いキーは無視
+                    pass
+    if "profile" not in keep:
+        for hist in hists:
+            for key in ("U", "V", "W", "X", "Y", "Zero", "SH/L", "alpha", "beta-0", "beta-1",
+                        "sig-0", "sig-1", "sig-2"):
+                try:
+                    hist.clear_refinements({"Instrument Parameters": [key]})
+                except Exception:  # noqa: BLE001
+                    pass
+    if "size_strain" not in keep:
+        for ph in phases:
+            for key in ("Size", "Mustrain", "Pref.Ori."):
+                try:
+                    ph.clear_HAP_refinements({key: True}, histograms=list(hists))
+                except Exception:  # noqa: BLE001
+                    pass
+    if "atoms" not in keep:
+        for ph, fmap in zip(phases, atom_flag_maps):
+            try:
+                ph.clear_refinements({"Atoms": list(fmap)})
+            except Exception:  # noqa: BLE001
+                pass
+            fmap.clear()
 
 def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
     """段階フラグに応じて per-atom フラグ (X/U/F) の集合を更新する。変化があれば True。
@@ -373,19 +460,19 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
             changed = True
 
     if "coords" in stage_flags:
-        for lab in info["coord_atoms"]:
+        for lab in _element_rank_labels(info, info["coord_atoms"], stage_flags["coords"]):
             add(lab, "X")
     if "uiso" in stage_flags:
         # free_uiso_labels 指定時はその原子のみ、未指定なら全原子の Uiso を解放。
         uiso_targets = info.get("uiso_labels") or info["labels"]
-        for lab in uiso_targets:
+        for lab in _element_rank_labels(info, list(uiso_targets), stage_flags["uiso"]):
             add(lab, "U")
     if "occupancy" in stage_flags:
-        for lab in info["mixed"]:
-            add(lab, "F")
-        for lab in info.get("free_occ", set()):
-            add(lab, "F")
-        for lab in info.get("equiv_occ", set()):
+        occ_labels = (
+            list(info["mixed"]) + list(info.get("free_occ", set()))
+            + list(info.get("equiv_occ", set()))
+        )
+        for lab in _element_rank_labels(info, occ_labels, stage_flags["occupancy"]):
             add(lab, "F")  # 等値グループ (例 Fe=C=N) も解放 ([0,1] 拘束は張らない)
     return changed
 
@@ -465,6 +552,15 @@ def _apply_stage(
     if fixed_profile is None:
         fixed_profile = [False] * len(hists)
     flags = stage.flags
+    # 【凍結 (freeze_others)】: 段のフラグは既定で**累積 (enable のみ)** なので、一度解放した
+    #   パラメータは以降ずっと自由 = 「段を分けた」だけでは相関は切れない。"本気フィット" の
+    #   順次解放/凍結手順 (1 つ解放 → 精密化 → 凍結 → 次) を表現するために、段の適用前に
+    #   **既存の解放を一旦落とす**。値に名前の列を与えるとそれらは凍結しない (例 cell を
+    #   常時解放へ移行したあと)。背景/スケールは常時解放の前提なので対象外。
+    keep = flags.get("freeze_others")
+    if keep:
+        keep_names = set(keep) if isinstance(keep, (list, tuple, set)) else set()
+        _freeze_all(hists, phases, atom_flag_maps, radiations, keep_names)
     if "background" in flags:
         bg = flags["background"]
         default_n = int(bg.get("coeffs", 6))  # type: ignore[union-attr]

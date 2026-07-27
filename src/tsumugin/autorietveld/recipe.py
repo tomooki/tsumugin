@@ -204,3 +204,166 @@ def build_recipe(
         RefinementStage(label=f"S{i} {s.label}", flags=s.flags, note=s.note)
         for i, s in enumerate(stages)
     )
+
+
+# ---------------------------------------------------------------------------
+# "本気フィット" (超丁寧) レシピ — 順次解放/凍結を 2 周してから全開放
+# ---------------------------------------------------------------------------
+#: 座標/占有率を「重原子から順に」解放するときに用意する元素ランク数の上限。
+#: 実際の元素数を超えたランクの段は対象原子ゼロ = no-op (Rwp 不変で無害) になる。
+_MAX_ELEMENT_RANKS = 6
+
+
+def build_serious_recipe(
+    histograms: Sequence[HistogramSpec],
+    phases: Sequence[PhaseSpec],
+    *,
+    background_coeffs: int = 6,
+    rounds: int = 2,
+) -> tuple[RefinementStage, ...]:
+    """超丁寧な段階解放 (人手の「本気フィット」手順を機械化したもの)。
+
+    手順 (ユーザー規定):
+      1. 背景 + スケール (以降**常時解放**)
+      2-12 を **順次解放 → 凍結** で ``rounds`` 周 (既定 2 周):
+         2. 格子 / 3. 試料変位 / 4. プロファイル W→U→V (各単独) /
+         5. 格子+変位 (収束確認。**以降 格子は常時解放**) / 6. サイズ・微小歪み /
+         7. 座標 (重原子から順) / 8. 占有率 (重原子から順) / 9. Lorentzian /
+         10. 非対称 / 11. 異方性歪み / 12. Uiso
+      13. 全開放 (収束すれば完了)
+      14. 2-12 を**累積**解放
+      15. 全開放
+
+    ``freeze_others`` は段の適用前に既存の解放を落とす (engine `_freeze_all`)。値に名前の列を
+    与えるとそれらは凍結しない — 手順 5 以降は ``["cell"]`` を渡して格子を常時解放にする。
+    座標/占有率の ``element_rank`` は「重い方から n 番目の元素だけ」を意味する。
+    """
+    if not histograms:
+        raise ValueError("histograms が空です")
+    if not phases:
+        raise ValueError("phases が空です")
+    disp = _displacement_map(histograms)
+    has_xray = any(not h.radiation.is_neutron for h in histograms)
+    multiphase = len(phases) > 1
+    stages: list[RefinementStage] = [
+        RefinementStage(
+            label="bkg+scale",
+            flags={"scale": True, "background": {"coeffs": background_coeffs}},
+            note="背景 + スケール (以降 常時解放)",
+        )
+    ]
+    if multiphase:
+        stages.append(
+            RefinementStage(
+                label="phase_fractions",
+                flags={"phase_fraction_sum": True},
+                note="相分率 (和=1)。多相のみ",
+            )
+        )
+
+    def sequential(keep: "list[str]") -> "list[RefinementStage]":
+        """2-12 を 1 周ぶん (順次解放 → 凍結)。``keep`` は凍結しない名前。"""
+        k = list(keep)
+        out = [
+            RefinementStage(label="cell", flags={"freeze_others": k or True, "cell": True},
+                            note="格子のみ"),
+            RefinementStage(label="displacement",
+                            flags={"freeze_others": k or True, "displacement": disp},
+                            note="試料変位のみ"),
+        ]
+        # 【W → U → V は "累積"】: Caglioti の U,V,W は独立の knob ではなく **1 つの物理量**
+        #   (FWHM² = U·tan²θ + V·tanθ + W) の係数なので、1 つずつ「解放 → 凍結」すると
+        #   意味を成さず後続が効かない。実測 (CaTeO3): W 単独のあと U 単独/V 単独は**両方 revert**
+        #   し、以降 Lorentzian も効かず 18% で頭打ち (標準レシピの 12.4% に対し大幅悪化)。
+        #   W から順に**足していく** (W → W,U → W,U,V) のが 古典的 な手順であり実測でも合う。
+        for coeffs in (["W"], ["W", "U"], ["W", "U", "V"]):
+            out.append(
+                RefinementStage(label="profile_" + "".join(coeffs),
+                                flags={"freeze_others": k or True, "profile": list(coeffs)},
+                                note="プロファイル " + ",".join(coeffs) + " (累積)")
+            )
+        out.append(
+            RefinementStage(label="cell+displacement",
+                            flags={"freeze_others": k or True, "cell": True, "displacement": disp},
+                            note="格子 + 変位 (収束確認。以降 格子は常時解放)")
+        )
+        # ここから格子は凍結しない
+        k2 = sorted(set(k) | {"cell"})
+        out.append(
+            RefinementStage(label="size_strain",
+                            flags={"freeze_others": k2, "size_strain": True},
+                            note="サイズ / 微小歪み")
+        )
+        for rank in range(_MAX_ELEMENT_RANKS):
+            out.append(
+                RefinementStage(label=f"coords_z{rank}",
+                                flags={"freeze_others": k2, "coords": rank},
+                                note=f"座標 (重い方から {rank + 1} 番目の元素)")
+            )
+        for rank in range(_MAX_ELEMENT_RANKS):
+            out.append(
+                RefinementStage(label=f"occupancy_z{rank}",
+                                flags={"freeze_others": k2, "occupancy": rank},
+                                note=f"占有率 (重い方から {rank + 1} 番目の元素)")
+            )
+        if has_xray:
+            out.append(
+                RefinementStage(label="profile_lorentzian",
+                                flags={"freeze_others": sorted(set(k2) | {"profile"}),
+                                       "profile": ["U", "V", "W"], "profile_lorentzian": True},
+                                note="Lorentzian X,Y + Zero (U,V,W は保持 — 同じ FWHM の別成分)")
+            )
+            out.append(
+                RefinementStage(label="profile_asymmetry",
+                                flags={"freeze_others": k2, "profile_asymmetry": True},
+                                note="軸発散非対称 SH/L")
+            )
+        out.append(
+            RefinementStage(label="aniso_strain",
+                            flags={"freeze_others": k2, "size_strain": "generalized"},
+                            note="異方性 微小歪み")
+        )
+        out.append(
+            RefinementStage(label="uiso", flags={"freeze_others": k2, "uiso": True},
+                            note="Uiso")
+        )
+        return out
+
+    all_open: dict[str, object] = {
+        "cell": True, "displacement": disp, "profile": ["U", "V", "W"],
+        "size_strain": True, "coords": True, "uiso": True, "occupancy": True,
+    }
+    if multiphase:
+        all_open["phase_fraction_sum"] = True
+    if has_xray:
+        all_open["profile_lorentzian"] = True
+        all_open["profile_asymmetry"] = True
+
+    keep: list[str] = []
+    for _ in range(max(1, rounds)):
+        stages.extend(sequential(keep))
+        keep = ["cell"]  # 2 周目以降は格子を常時解放のまま入る
+    # 13: 全開放
+    stages.append(RefinementStage(label="all_open", flags=dict(all_open), note="全開放 (収束確認)"))
+    # 14: 2-12 を累積解放 (freeze_others なし = 従来の累積セマンティクス)
+    cumulative: list[tuple[str, dict[str, object]]] = [
+        ("cell", {"cell": True}),
+        ("displacement", {"displacement": disp}),
+        ("profile", {"profile": ["W", "U", "V"]}),
+        ("size_strain", {"size_strain": True}),
+        ("coords", {"coords": True}),
+        ("occupancy", {"occupancy": True}),
+    ]
+    if has_xray:
+        cumulative.append(("profile_lorentzian", {"profile_lorentzian": True}))
+        cumulative.append(("profile_asymmetry", {"profile_asymmetry": True}))
+    cumulative.append(("aniso_strain", {"size_strain": "generalized"}))
+    cumulative.append(("uiso", {"uiso": True}))
+    for label, fl in cumulative:
+        stages.append(RefinementStage(label=f"cum_{label}", flags=fl, note="累積解放"))
+    # 15: 全開放
+    stages.append(RefinementStage(label="all_open_final", flags=dict(all_open), note="全開放"))
+    return tuple(
+        RefinementStage(label=f"S{i} {s.label}", flags=s.flags, note=s.note)
+        for i, s in enumerate(stages)
+    )
