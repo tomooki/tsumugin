@@ -112,12 +112,16 @@ Sf  全パラメータ同時 (cell+coords+uiso+occ) ← 収束の締め
 
 ```
 [初期設定] λ(較正確認) / Kα1 単色化 / Geometry→変位種別 / データリミット / 背景型
-[Default]  S0 scale+bg → S1 cell+displacement → S2 profile(U,V,W)
-[Conditional] +Lorentzian(X,Y,Zero) 別段階  → coords → uiso
+[Default]  S0 scale+bg → S1 cell(単独) → S2 profile(U,V,W)
+[Conditional] → coords → uiso → **displacement(Shift) 後段** → +Lorentzian(X,Y,Zero) 別段階
 [Judgment] +asymmetry(SH/L) / +preferred orientation / +absorption(μR物理値)
            / 背景項数調整 / size-strain(結晶子サイズ・歪み)
 [締め]     全パラメータ同時 → 物理妥当性ゲート
 ```
+- **規定 (2026-07-27)**: **格子は単独で先、試料変位 (Shift/DisplaceX,Y) は後段**。どちらも 2θ を
+  動かすため強く相関し、同時に自由にすると片方が他方を吸収して**物理的に誤った格子で自己整合な解**へ
+  落ちる (実測: Kα1 単色 CaTeO3 で Shift −274 µm 相当 = 2θ −0.15° を格子が肩代わりしていた)。
+  Zero も 2θ オフセットなので変位段より後 (Lorentzian 段) に置く。
 - **要点**: X線は Lorentzian が支配的。U,V,W だけで高止まりしたら X,Y を疑う。
   系統的な obs>calc ピーク強度は preferred orientation。低角非対称は SH/L。
 
@@ -126,7 +130,7 @@ Sf  全パラメータ同時 (cell+coords+uiso+occ) ← 収束の締め
 ### 4.1 CW 中性子
 ```
 [初期設定] λ / U,V,W(較正) / 背景 / Geometry
-[Default]  S0 → S1 cell+displacement → occupancy(コントラスト先行) → uiso → profile → coords
+[Default]  S0 → S1 cell(単独) → occupancy(コントラスト先行) → uiso → profile → coords → displacement 後段
 [Judgment] size/strain(単一 CW なら張る) / 吸収 / 背景
 ```
 ### 4.2 TOF 中性子 (J-PARC iMATERIA 等)

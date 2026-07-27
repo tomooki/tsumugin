@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
 from tsumugin.autorietveld.recipe import build_recipe
 
@@ -162,3 +164,97 @@ def test_mixed_xray_neutron_recipe_appends_xray_stages_once():
     stages = build_recipe([_XRAY_BB, _NEUTRON_DS], _SINGLE_PHASE)
     assert len(_find(stages, "profile_lorentzian")) == 1
     assert len(_find(stages, "profile_asymmetry")) == 1
+
+
+# ---------------------------------------------------------------------------
+# 規定: cell 単独 → 試料変位は後段 (2026-07-27)
+# ---------------------------------------------------------------------------
+
+
+def _stage_index(stages, flag: str) -> int:
+    """``flag`` を持つ最初の段の index (無ければ -1)。"""
+    for i, s in enumerate(stages):
+        if flag in s.flags:
+            return i
+    return -1
+
+
+def _all_flag_indices(stages, flag: str) -> list[int]:
+    return [i for i, s in enumerate(stages) if flag in s.flags]
+
+
+@pytest.mark.parametrize("multiphase", [False, True], ids=["single", "multi"])
+@pytest.mark.parametrize("mixed_occ", [False, True], ids=["plain", "mixed_occ"])
+def test_cell_is_never_released_together_with_sample_displacement(multiphase, mixed_occ):
+    """**規定**: 格子と試料変位を同じ段で解放しない。
+
+    どちらも 2θ を動かすため強く相関する (Bragg-Brentano の `Shift` は
+    ``pos -= const·4·Shift·cosθ`` で、格子定数の変化とほぼ同じ形のピークシフトを作る)。
+    同時に自由にすると片方が他方を吸収し、**物理的に誤った格子で自己整合な解**へ落ちる
+    (実測: Kα1 単色 CaTeO3 で Shift −274 µm 相当のずれを格子が肩代わりしていた)。
+    段を分けるのは相関するパラメータを分離する段階解放の規律そのもの。
+    """
+    stages = build_recipe(
+        _histograms(multiphase), _phases(multiphase, mixed_occ)
+    )
+    for s in stages:
+        assert not ("cell" in s.flags and "displacement" in s.flags), (
+            f"格子と試料変位が同じ段で解放されている: {s.label} {sorted(s.flags)}"
+        )
+
+
+@pytest.mark.parametrize("multiphase", [False, True], ids=["single", "multi"])
+@pytest.mark.parametrize("mixed_occ", [False, True], ids=["plain", "mixed_occ"])
+def test_sample_displacement_comes_after_the_cell(multiphase, mixed_occ):
+    """**規定**: 変位は格子より**後**の段で解放する (cell 単独 → Shift 後段)。"""
+    stages = build_recipe(_histograms(multiphase), _phases(multiphase, mixed_occ))
+    i_cell = _stage_index(stages, "cell")
+    i_disp = _stage_index(stages, "displacement")
+    assert i_cell >= 0 and i_disp >= 0, [s.label for s in stages]
+    assert i_disp > i_cell, [s.label for s in stages]
+
+
+@pytest.mark.parametrize("multiphase", [False, True], ids=["single", "multi"])
+def test_sample_displacement_is_released_exactly_once(multiphase):
+    """変位段は 1 つだけ (段を分けた結果の取りこぼし/重複がない)。"""
+    stages = build_recipe(_histograms(multiphase), _phases(multiphase, False))
+    assert len(_all_flag_indices(stages, "displacement")) == 1, [s.label for s in stages]
+
+
+def test_sample_displacement_is_separated_from_zero():
+    """変位と Zero も別段にする (どちらも 2θ の定数/角度依存オフセットで相関する)。
+
+    ``profile_lorentzian`` 段が X,Y と一緒に Zero を解放するため、変位段はその**前**に置く。
+    """
+    stages = build_recipe(_histograms(False), _phases(False, False))  # X 線 → lorentzian 段あり
+    i_disp = _stage_index(stages, "displacement")
+    i_zero = _stage_index(stages, "profile_lorentzian")
+    assert i_zero >= 0, [s.label for s in stages]
+    assert i_disp < i_zero, [s.label for s in stages]
+
+
+def test_hydrostatic_strain_stays_with_the_cell():
+    """温度差 Dij は**格子側**のパラメータなので cell 段に残す (変位と一緒に動かさない)。"""
+    hists = (
+        HistogramSpec(data_path="a", instrument_path="i", radiation=Radiation.NEUTRON_CW,
+                      geometry=Geometry.DEBYE_SCHERRER, data_format="XYE", temperature=300.0),
+        HistogramSpec(data_path="b", instrument_path="i", radiation=Radiation.NEUTRON_CW,
+                      geometry=Geometry.DEBYE_SCHERRER, data_format="XYE", temperature=500.0),
+    )
+    stages = build_recipe(hists, _phases(False, False))
+    cell_stage = next(s for s in stages if "cell" in s.flags)
+    assert "hydrostatic_strain" in cell_stage.flags
+    assert "displacement" not in cell_stage.flags
+
+
+def _histograms(multiphase: bool):
+    """X 線 Bragg-Brentano 1 本 (規定テスト用; 多相でも装置は共通)。"""
+    return [_XRAY_BB]
+
+
+def _phases(multiphase: bool, mixed_occ: bool):
+    groups = (("Fe1", "Al1"),) if mixed_occ else ()
+    out = [PhaseSpec(structure_path="p.cif", phase_name="a", mixed_occupancy_groups=groups)]
+    if multiphase:
+        out.append(PhaseSpec(structure_path="q.cif", phase_name="b"))
+    return out
