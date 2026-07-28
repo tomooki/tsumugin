@@ -697,7 +697,32 @@ def sequential_rietveld(
 
     :param frames: FrameSpec.to_dict の列
     :param initial_phases: PhaseSpec.to_dict の列 (フレーム 0 の既知相)
-    :param phase_id: {"elements": [...], "frac_min": .., "top_k": .., ...} (新相自動同定, None で無効)。
+    :param phase_id: 新相自動同定の設定 (None で無効)。``PhaseIdConfig`` の**全フィールド**を
+        JSON キーとして受ける (未知キーは typo として error dict — 黙って無視しない)。
+        主要キー:
+
+        - ``elements``: 相同定に許す元素系 (**文字列のリスト**。裸の ``"CaTeO"`` は拒否 —
+          1 文字ずつに分解され別の元素系になるため)。**空なら同定を行わない**
+        - ``wavelength``: プリアライン/候補再スコアの線源波長 [Å]。**既定は Cu Kα1 1.5406** —
+          **放射光/中性子系列では必ず実波長を指定すること** (例 0.800113)。誤ると d↔2θ 変換が
+          丸ごとずれ、プリアライン後のセルも候補順位も系統的に誤る (例外は出ず「同定が効かない」
+          ようにしか見えない)
+        - ``refine_new_phase_cell``: 新相の異方セルプリアラインの on/off (既定 True)。
+          少数相フレームでは prealign が支配相のピークにロックして誤セルを返すことがある —
+          そのときの唯一の escape hatch (Issue #20)
+        - ``rerank_top_k``: 上位 K 候補を異方格子整合で再スコア (既定 5, 0 で無効)
+        - ``min_rwp_gain``: 新相受理に要する**相対** Rwp 改善 (既定 0.01 = 1%)
+        - ``require_validity`` / ``require_full_element_system``: 受理の物理・化学ガード
+          (既定 False / True)
+        - ``snr_trigger``: 残差 S/N の探索発火閾値 (既定 20.0, 0 で無効)。**データセット固有**
+        - ``max_new_phases``: 系列全体の追加相数上限 (既定 0 = 無制限)
+        - ``bic_acceptance`` / ``bic_base_params`` / ``bic_per_phase_params``: 受理を bic
+          モデル選択で行うか (既定 False — 粉末では bic は相対 Rwp より寛容で過剰適合ガードに
+          ならない。実効は M10 の区間比較側)
+        - ``warm_start_known_phases``: 現行相を残差から先に減算してから新相を探すか (既定 True)
+        - ``top_k`` / ``hull_cutoff_ev`` / ``rwp_eps`` / ``trigger_rwp_ratio`` / ``subtract_bg``:
+          候補数・MP 安定性フィルタ (null で無効)・最小 Rwp 改善・発火 Rwp 比・背景減算
+
         ⚠ ``frac_min`` (既定 0.02) は新相採用に要する**最小 Scale** — `phase_fractions` (HAP Scale の
         Σ=1 正規化値) と比較する。**wt% (`phase_weight_fractions`) ではない** (下の
         ``auto_freeze_minor_cells`` と同じ basis 注意)。
@@ -707,6 +732,12 @@ def sequential_rietveld(
         あるため、これが無いと大分率で残差を舐める偽相が正解相に勝つ (実測 Ca-Te-O 系で
         Ca3TeO6/CaTe3O8 が delta CaTeO3 に勝った)。``null`` でゲート無効 (従来動作)。
         足切りは ledger の ``m9_phaseid_skipped`` に候補名/スコア付きで残る
+
+        【§4.5 引数の出所】: ``elements`` は既知相の構成元素 + ③ が想定する元素 (③ が化学から
+        書く。CIF/`identify_phases` の出力を参照してもよい)、``wavelength`` は**測定条件**
+        (instprm/ビームライン諸元。``instrument.path`` の instprm と同じ線源のものを書く)。
+        残りは**すべて ③ が skill から設定する policy 定数**であり、他 ② ツールの出力から
+        導くものではない (受理の厳しさ・探索の広さをどう置くかは判断層の権限)
     :param warm_start_fractions: 直前フレームの精密化相分率も次フレームの初期値に引き継ぐか
         (Issue #82; 分率が seed に張り付くフレームの是正。``warm_start`` 有効時のみ効く)
     :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
@@ -755,9 +786,18 @@ def sequential_rietveld(
     #   取り違えで IndexError が MCP 境界を貫いていた (error dict へ縮退する契約に反する)。
     #   FrameSpec/PhaseSpec の解析も try 内 (最終レビュー F4: FrameSpec.from_dict は
     #   TargetComposition の mode 検証で ValueError を出しうる — anchored_sequential と対称に)。
+    # 【phase_id も try の中で組む】: 旧実装は `PhaseIdConfig(...)` を try の**外**で組んでおり、
+    #   `float(phase_id.get("frac_min"))` 等が ③ のゴミ入力で送出する ValueError が MCP 境界を
+    #   貫通していた (② は例外を送出しない契約 — ③ は LLM なので回復不能なハード失敗になる)。
+    #   `anchored_sequential` の `AnchorConfig.from_dict` は最初から try 内にあり非対称だった。
     try:
         frame_specs = [FrameSpec.from_dict(f) for f in frames]
         phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
+        # 【フィールド駆動パーサ】: 手書きホワイトリスト (旧 7 キー) をやめ、`PhaseIdConfig` の
+        #   全フィールドを ③ から到達可能にする (Issue #97 型のカバレッジ欠陥)。とりわけ
+        #   `wavelength` は既定 Cu Kα1 なので、届かないと放射光/中性子系列が黙って誤った波長で
+        #   異方セルプリアライン/候補再スコアを行う。`anchor_config` と**同じ共有パーサ**。
+        pid = PhaseIdConfig.from_dict(phase_id) if phase_id is not None else None
         cc_cfg: ChargeConstraintConfig | None = None
         if charge_constraint is not None:
             cc_cfg, frame_specs = _apply_charge_constraint_spec(charge_constraint, frame_specs)
@@ -768,22 +808,6 @@ def sequential_rietveld(
         # AttributeError も捕捉 (F-final-1 安全網): 深い入れ子のゴミ (例 z_formula: "x") は
         # `.items()`/`.get()` で AttributeError になる — ② は例外を送出しない。
         return {"error": str(exc), "error_type": type(exc).__name__}
-    pid = None
-    if phase_id is not None:
-        # 【None を潰さない】: `min_identify_score` は ① の契約で **``None`` = ゲート無効**
-        #   (従来動作) なので、素朴に `float(...)` すると JSON の ``null`` で TypeError になり
-        #   ③ がゲートを外す唯一の手段が塞がれる (かつ ② の「例外を送出しない」契約にも反する)。
-        _min_score = phase_id.get("min_identify_score", PhaseIdConfig.min_identify_score)
-        pid = PhaseIdConfig(
-            elements=tuple(str(e) for e in phase_id.get("elements", ())),
-            frac_min=float(phase_id.get("frac_min", 0.02)),
-            rwp_eps=float(phase_id.get("rwp_eps", 1e-6)),
-            top_k=int(phase_id.get("top_k", 1)),
-            hull_cutoff_ev=phase_id.get("hull_cutoff_ev", 0.1),  # type: ignore[arg-type]
-            subtract_bg=bool(phase_id.get("subtract_bg", True)),
-            trigger_rwp_ratio=float(phase_id.get("trigger_rwp_ratio", 1.25)),
-            min_identify_score=None if _min_score is None else float(_min_score),
-        )
     config = SequentialConfig(
         warm_start=warm_start,
         warm_start_fractions=warm_start_fractions,
