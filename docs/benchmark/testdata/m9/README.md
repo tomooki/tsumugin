@@ -91,7 +91,36 @@ M9 (`tsumugin.insitu`) の逐次実構造 Rietveld + 新相自動同定の検証
   フレーム精密化格子で先に減算 → 残差がクリーン → 少数相の定量が改善」という設計主張と整合。frame1 の
   絶対 Rwp ~33% は転移共存フレーム固有の難しさ (preferred orientation + 水素 + 混合相; 上記 frame270 と
   同種) で A/B 共通・パイプライン欠陥ではない。**再現**: `scratchpad/cateo3_full_mp_gsas.py [--static]`
-  (MP キーは `.env` から読込, GSAS 実行)。全 14 フレームでの効果測定 (弱 minority 域での検出感度向上)
-  は全フレーム配置後の次段。
+  (MP キーは `.env` から読込, GSAS 実行)。
+
+  > ⚠ **上の A/B 表は 2026-07-27 の 3 件の修正より前に測った値で、現在は再現しない**。当時のパイプラインは
+  > (1) Kα1 単色 instprm で Sample Type が Debye-Scherrer と推定され `Shift` 解放が例外になり**格子が一度も
+  > 精密化されていなかった** (`engine._apply_sample_geometry`)、(2) 物質化 CIF が `P 1` で書かれ GSAS が
+  > delta を三斜晶と見てセル 6 変数 (角度 3 つ含む) を解放 → 特異ヘッシアン (`phaseid.structure_to_cif`
+  > の symprec)、(3) その `Refine` 失敗が `G2Project.refine` に捨てられ **S2 以降の全段が無言 no-op** の
+  > まま完走していた (`engine._capture_refine_status`) — の 3 つを抱えている。とくに (1) は「試料変位を
+  > 格子が吸収した自己整合な誤ったセル」を作り、delta 追加を**偶然有利にしていた**。
+  > **現在の検証済み事実**は `tests/insitu/test_engine_gsas.py` にあり、A (static) / B (warm-start)
+  > **両アームとも delta を自動同定・受理して green** (gated GSAS 85 件 全 pass)。B の実測は
+  > base 32.98% → 二相 30.19% (相対 +8.4%, 受理閾値 +1%)・delta 分率 0.306。
+  > **A/B の定量比較 (分率・validity) は上表の数字では行わないこと** — 比較が必要なら測り直す。
+- **全 14 フレーム (Data.zip 全配置) の検証 (Issue #28 ①)**: 全 14 フレーム (ax 30–420) を配置し実行
+  (`scratchpad/cateo3_full14_mp_gsas.py`, XRDML は `scratchpad/cateo3_frames14/` へ Data.zip 展開・gitignore)。
+  - **alpha 単相軌跡 (phase-id 無効, 完走)**: 含水 alpha CIF を全 14 フレームに単相フィットした Rwp 軌跡が
+    **脱水進行を定量的に捉える**: ax30 **12.57%** → ax90 40.8% → **ax120 57.4%** (含水 alpha が最悪適合) →
+    転移で試料低結晶化 (ax150 で max intensity 4059→909) → delta 域 ax300–420 で ~54% plateau。
+    単相経路は全系列ハングなしで完走 (`--no-phaseid`)。**この軌跡は上記 3 件の修正の影響を受けにくい**
+    (単相 alpha の相対変化を見るもの) が、絶対値は修正後に僅かに動く。
+  - **2 相精密化の破綻 ([Issue #33](https://github.com/tomooki/tsumugin/issues/33)) は根本原因が判明した**:
+    当時の記録は「転移域フレーム (ax≈150 付近) の 2 相 (alpha+delta) GSAS 精密化が単一 LSQ/SVD サイクル内で
+    ハング (near-singular; `masked→nan`・`invalid divide`・shift/esd 発散)」。この症状は上記 (2)
+    **P1 物質化による特異ヘッシアン**と一致する — 90/90/90 の擬直方構造で角度 3 変数を解放すると角度方向の
+    微分が ~0 になり、`Refine` が `'divide by zero encountered in scalar divide'` で落ちる (実測ログに
+    `Maximum shift/esd = 1.79e308` が出る)。2 フレーム版では symprec 付き物質化 + 失敗検出で解消済。
+    **ただし「無限ハング」自体は修正後に再測していない** (実測できたのは「`Refine` が False を返す失敗」)。
+    同じ near-singular 条件の別の現れ方である可能性があるため、**Issue #33 は全 14 フレームで再測するまで
+    open 維持**。再測時は 2 相域フレーム単体から始めること。
+    なお修正前に「GSAS 精密化のウォッチドッグ (タイムアウト→chi2=inf)」を対策案としていたが、
+    根本原因側が直った今は防御の二重化として評価すべきで、第一選択ではない。
 - **numpy コア**: XRDML ローダー・model・parametric・phaseid・逐次エンジン制御・MCP は GSAS/MP 非依存に
   決定論テスト green (`tests/insitu/`, `tests/mcp/test_insitu_tools.py`)。
