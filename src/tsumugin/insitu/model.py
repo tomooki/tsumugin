@@ -229,12 +229,22 @@ class PhaseIdConfig:
         (メタに ``dara_score`` が無い供給元/スタブ) は fail open で通す。
     :param bic_per_phase_params: bic の 1 相あたりパラメータ数 (scale+格子+プロファイル概算)。
     :param warm_start_known_phases: 新相探索で現行相集合を `identify_pattern(known_phases=)` に渡し
-        **先に残差から減算**してから新相を探すか (operando 一本化 B)。現行相を精密化格子付き
-        `ReferencePhase` に変換 (`phasespec_to_reference`) して finder へ渡す。CIF 素の (DFT/物質化時)
-        格子でなく現フレームの精密化格子で減算するため残差がクリーンになり、少数新相の検出感度が上がる
+        **先に残差から減算**してから新相を探すか (operando 一本化 B)。CIF 素の (DFT/物質化時) 格子でなく
+        現フレームの精密化格子で減算するため残差がクリーンになり、少数新相の検出感度が上がる
         (M11 の「減算前ピーク整合」の operando 版)。変換不能 (pymatgen 不在 / CIF 読込失敗 / スタブ
         finder の擬似パス) は空集合へ縮退し、静的同定 (identify-all-then-exclude) に安全フォールバック
         する。既定 True。カスタム finder はこの引数を無視してよい (後方互換の既定 ())。
+
+        ⚠ **本フラグが制御するのは「同定戦略 A/B」だけである** (Issue #20 続きで範囲を分離)。
+        現行相を `ReferencePhase` に変換 (`phasespec_to_reference`) して finder へ渡す処理自体は
+        **フラグと無関係に常に行う** — その参照ピーク列には 2 つの用途があり、
+        (a) 同定時の残差減算 (= 本フラグが制御する A/B) と、
+        (b) **異方セルプリアラインの整合先** (`phaseid.make_residual_cell_refiner`) で、
+        (b) は「モデルの格子をどう決めるか」の話なので同定戦略とは独立に必要。分離しないと
+        A (``False``) は整合先を作れず**セル補正を丸ごと諦める** (実測 CaTeO3 frame180 で二相
+        Rwp 10.65 → 32.24 相当の劣化)。契約は
+        `tests/insitu/test_engine.py::test_warm_start_disabled_still_supplies_known_phases_to_finder`
+        が固定する。
     """
 
     elements: tuple[str, ...] = ()

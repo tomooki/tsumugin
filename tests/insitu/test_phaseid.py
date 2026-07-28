@@ -16,6 +16,7 @@ from tsumugin.autorietveld.model import PhaseSpec
 from tsumugin.insitu.phaseid import (
     IdentifiedPhase,
     identify_new_phases,
+    make_residual_cell_refiner,
     phasespec_to_reference,
     structure_to_cif,
 )
@@ -298,6 +299,93 @@ def test_empty_when_no_candidates(tmp_path):
     assert out == ()
 
 
+# ---------------------------------------------------------------------------
+# 異方セルプリアラインの整合先 (Issue #20 続き): 生パターンでなく既知相減算残差へ
+# ---------------------------------------------------------------------------
+
+
+def _recorder():
+    """prealign 呼び出しを記録するスタブ (実 pymatgen プリアラインの代役)。"""
+    calls: list[dict] = []
+
+    def fake_prealign(structure_path, two_theta, intensity, **kwargs):
+        calls.append({"path": structure_path, "tt": np.asarray(two_theta),
+                      "intensity": np.asarray(intensity), **kwargs})
+        return _Sol((9.0, 9.0, 9.0, 90.0, 90.0, 90.0))
+
+    return calls, fake_prealign
+
+
+class _Sol:
+    def __init__(self, cell):
+        self.cell = cell
+        self.n_used = 12
+
+
+def test_cell_refiner_aligns_against_known_phase_residual(tmp_path):
+    """既知相を渡すと、プリアラインは**残差**を見る (生パターンではない)。
+
+    生パターンでは FoM が支配相のピークに占められ、少数相のセルを支配相の位置へ引っ張る
+    (実測 CaTeO3 frame180: delta の最大軸誤差 3.42%→4.21% と**悪化**)。
+    """
+    tt, inten = _pattern([20.0, 30.0, 40.0], heights=[10.0, 1.0, 10.0])
+    known = _ref("alpha", "CaTeO3H2O", [(20.0, 1.0), (40.0, 1.0)], ["Ca", "Te", "O"])
+    calls, fake = _recorder()
+
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], two_theta_range=(15.0, 60.0), prealign=fake,
+    )
+    assert refiner is not None
+    assert refiner("dummy.cif") == (9.0, 9.0, 9.0, 90.0, 90.0, 90.0)
+
+    assert len(calls) == 1
+    seen = calls[0]["intensity"]
+    # 残差は既知相のピーク (20°/40°) を失い、未知相のピーク (30°) を保つ。
+    def _h(vec, pos):
+        return float(vec[np.abs(tt - pos) <= 0.5].max())
+
+    assert _h(seen, 20.0) < 0.1 * _h(inten, 20.0)
+    assert _h(seen, 40.0) < 0.1 * _h(inten, 40.0)
+    assert _h(seen, 30.0) > 0.5 * _h(inten, 30.0)
+    # 残差は既に背景減算済 → 二重に引かせない。
+    assert calls[0]["subtract_bg"] is False
+
+
+def test_cell_refiner_skipped_when_known_phases_cannot_be_subtracted(tmp_path):
+    """既存相があるのに減算できない (warm-start 不能) 場合はプリアラインを**行わない**。
+
+    生パターンへの整合は少数相のセルを測定で悪化させる (上記) ため、等方 strain のまま渡す方が
+    安全側 (提案≠適用)。`require_subtraction=False` で従来動作 (生パターン整合) に戻せる。
+    """
+    tt, inten = _pattern([20.0, 30.0])
+    calls, fake = _recorder()
+
+    assert make_residual_cell_refiner(
+        tt, inten, known_phases=[], prealign=fake, require_subtraction=True
+    ) is None
+    assert calls == []
+
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[], prealign=fake, require_subtraction=False,
+    )
+    assert refiner is not None
+    refiner("dummy.cif")
+    assert len(calls) == 1
+    assert np.allclose(calls[0]["intensity"], inten)  # 生パターンをそのまま見る
+    assert calls[0]["subtract_bg"] is True
+
+
+def test_cell_refiner_returns_none_when_prealign_declines(tmp_path):
+    """プリアラインが None (未改善/情報不足) を返せば補正しない (等方 strain 維持)。"""
+    tt, inten = _pattern([20.0, 30.0])
+    known = _ref("alpha", "CaTeO3H2O", [(20.0, 1.0)], ["Ca", "Te", "O"])
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], prealign=lambda *a, **k: None,
+    )
+    assert refiner is not None
+    assert refiner("dummy.cif") is None
+
+
 def test_phasespec_to_reference_none_on_unreadable_cif(tmp_path):
     """CIF が読めない (存在しない/不正) 場合は None を返す (warm-start せず静的同定へ縮退, 安全側)。"""
     spec = PhaseSpec(structure_path=str(tmp_path / "missing.cif"), phase_name="alpha",
@@ -444,3 +532,101 @@ def test_structure_to_cif_symmetry_lowering_cell_still_writes(tmp_path):
     lat = written.lattice
     assert abs(lat.a - 4.11) < 1e-3 and abs(lat.b - 5.20) < 1e-3 and abs(lat.c - 6.30) < 1e-3
     assert len(written) == 2  # 原子は失われない
+
+
+def test_cell_refiner_honours_subtract_bg_on_residual_path(tmp_path):
+    """subtract_bg=False は残差計算側へ伝わる (背景減算済データの二重減算を避ける)。"""
+    tt, inten = _pattern([20.0, 30.0], heights=[10.0, 1.0])
+    inten = inten + 500.0  # 平坦な背景
+    known = _ref("alpha", "A", [(20.0, 1.0)], ["Ca", "O"])
+    calls, fake = _recorder()
+
+    refiner = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], prealign=fake, subtract_bg=False,
+    )
+    assert refiner is not None
+    refiner("dummy.cif")
+    # 背景を引いていないので残差の下限は背景レベル付近に残る。
+    assert float(np.median(calls[0]["intensity"])) > 100.0
+    assert calls[0]["subtract_bg"] is False  # プリアライン側は常に減算しない
+
+    calls2, fake2 = _recorder()
+    refiner2 = make_residual_cell_refiner(
+        tt, inten, known_phases=[known], prealign=fake2, subtract_bg=True,
+    )
+    refiner2("dummy.cif")
+    assert float(np.median(calls2[0]["intensity"])) < 100.0  # SNIP で背景が落ちている
+
+
+def test_cell_refiner_defers_subtraction_until_used(monkeypatch, tmp_path):
+    """減算は**初回呼び出し時**に行う (候補ゼロなら無駄に計算せず、失敗しても finder を落とさない)。
+
+    即時計算だと `subtract_known_phases` の失敗が finder 全体を落とし、そのフレームの相同定ごと
+    失われる。遅延なら `identify_new_phases` の cell_refiner 例外ハンドラに落ちて等方 strain へ縮退する。
+    """
+    tt, inten = _pattern([20.0, 30.0])
+    known = _ref("alpha", "A", [(20.0, 1.0)], ["Ca", "O"])
+    calls: list[int] = []
+
+    def counting_subtract(*a, **k):
+        calls.append(1)
+        return np.asarray(a[1], dtype=float)
+
+    monkeypatch.setattr(
+        "tsumugin.reference.iterative.subtract_known_phases", counting_subtract
+    )
+    _rec, fake = _recorder()
+    refiner = make_residual_cell_refiner(tt, inten, known_phases=[known], prealign=fake)
+    assert calls == []  # 生成しただけでは減算しない
+
+    refiner("a.cif")
+    refiner("b.cif")
+    assert calls == [1]  # 初回のみ (2 相目以降は再利用)
+
+
+def test_cell_refiner_sees_unstrained_cell(tmp_path):
+    """cell_refiner には**等方 strain を掛けない** DB 素の構造を渡す (Issue #20 続き)。
+
+    同定段の等方 strain は「支配相に汚染されうるパターン」に対して**ランキング用**に求めた量で、
+    符号を誤ると DFT 誤差を打ち消すどころか**増幅**する。実測 (CaTeO3 [static]): 既に c が +3.4%
+    過大な DFT セルに strain **+3.4%** が乗って出発点が c +6.94% = プリアラインの ±5% グリッド外に
+    出てしまい、残差整合でも 1.43% までしか戻せなかった (DB 素のセルから始めれば 0.51%)。
+    異方プリアラインの方が良い推定量なので、strain を掛けない状態から始める。
+    """
+    true_pos = [18.0, 21.0, 24.0, 28.0, 32.0, 36.0, 41.0, 46.0, 52.0]
+    heights = [1.0, 0.9, 0.8, 1.0, 0.7, 0.9, 0.6, 0.8, 0.7]
+    tt, inten = _pattern(true_pos, heights=heights)
+    shifted = [(p * 1.010, h) for p, h in zip(true_pos, heights)]
+    prov = FakeProvider([_ref("mp-x", "CaTeO3", shifted, ["Ca", "Te", "O"])])
+    mat = FakeMaterializer()
+    aniso = (6.53, 8.17, 13.32, 90.0, 90.0, 90.0)
+
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=True, max_strain=0.05,
+        cell_refiner=lambda _p: aniso,
+    )
+    assert len(out) == 1
+    assert abs(out[0].strain) > 1e-4          # 同定は非零 strain を求めている
+    assert mat.strains[0] == 0.0              # が、整合先の CIF には掛けない
+    assert mat.cells[-1] == aniso             # 最終的に異方セルで再物質化
+    assert out[0].refined_cell == aniso
+
+
+def test_isotropic_strain_kept_when_refiner_declines(tmp_path):
+    """cell_refiner が None を返したら等方 strain 版へ戻す (従来の補正を失わない)。"""
+    true_pos = [18.0, 21.0, 24.0, 28.0, 32.0, 36.0, 41.0, 46.0, 52.0]
+    heights = [1.0, 0.9, 0.8, 1.0, 0.7, 0.9, 0.6, 0.8, 0.7]
+    tt, inten = _pattern(true_pos, heights=heights)
+    shifted = [(p * 1.010, h) for p, h in zip(true_pos, heights)]
+    prov = FakeProvider([_ref("mp-x", "CaTeO3", shifted, ["Ca", "Te", "O"])])
+    mat = FakeMaterializer()
+
+    out = identify_new_phases(
+        tt, inten, elements=["Ca", "Te", "O"], provider=prov, materializer=mat,
+        workdir=str(tmp_path), subtract_bg=False, refine_lattice=True, max_strain=0.05,
+        cell_refiner=lambda _p: None,
+    )
+    assert out[0].refined_cell is None
+    assert mat.strains[-1] == pytest.approx(out[0].strain)  # 最後は等方 strain 版
+    assert abs(mat.strains[-1]) > 1e-4

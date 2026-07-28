@@ -250,7 +250,22 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
     if kind == "agent_proposal":
         return f"agent proposal {payload.get('action_id')} ({payload.get('kind')})"
     if kind == "approval_decision":
-        return f"approval {payload.get('action_id')} {payload.get('decision')}"
+        text = f"approval {payload.get('action_id')} {payload.get('decision')}"
+        # 【Issue #20 の ③ 露出】: 新相承認 (np-) で異方セル補正が入ったかを LEDGER タブに出す。
+        #   payload に足すだけでは GUI に届かない (`ledger_view` は text しか返さない) ため、
+        #   ここで文面に畳む。"skipped" は返った CIF が MP(DFT) 素の格子のままという意味で、
+        #   後段で Rwp が下がらないときの第一容疑が「残差の説明力」でなく「相のセル誤差」に変わる。
+        basis = payload.get("prealign_basis")
+        if basis:
+            text += f" · cell prealign: {basis}"
+            lam = payload.get("wavelength")
+            if basis == "residual":
+                lam_txt = f", λ={lam:.5f}Å" if isinstance(lam, (int, float)) else ""
+                text += f" (known={payload.get('n_known_phases_used')}{lam_txt})"
+            else:
+                reason = "no usable wavelength" if lam is None else "no known phases"
+                text += f" (DFT cell kept: {reason})"
+        return text
     if kind == "accept_reason":
         return f"accept reason: {payload.get('reason')}"
     if kind == "project_edit":
@@ -2667,9 +2682,36 @@ class WorkbenchSession:
         except (OSError, ValueError) as exc:
             return {"error": f"could not read frame pattern: {exc}", "error_type": "ValueError"}
         workdir = str(Path(self._project.spec_dir) / "data")
+        # 【Issue #20: 異方セル補正を GUI 承認経路にも通す】: ② は `known_phases` を渡されて初めて
+        #   既知相を残差から引き、**その残差へ**候補のセルを整合させる (`prealign_basis="residual"`)。
+        #   渡さないと MP(DFT) 素の格子のまま CIF が返り、Rietveld の収束半径 (~2%) を超えて
+        #   (実測 CaTeO3 delta: c +3.42%) Rwp が高止まりする。③ (MCP) 経路だけ補正が入って
+        #   GUI 承認だけ入らない非対称を塞ぐ。
+        #
+        #   波長は instprm から読む。**読めなければ既知相を渡さない** — 誤った波長で既知相ピークを
+        #   立てて引くと残差そのものが壊れ、プリアラインは壊れた残差へ整合する (補正なしより悪い)。
+        #   TOF 中性子 (単一波長なし) もここで自然に "skipped" へ落ちる。
+        #
+        #   ⚠ **不明は `None` として明示的に渡す** (引数を省略しない, code-review PR #155):
+        #   省略すると ② の既定 Cu Kα1 (1.5406) が使われ、それが異方 re-score
+        #   (`rerank_top_k` 既定 5 = ON) へ流れて**誤波長で候補の順位付けが行われる**。
+        #   既知相の残差減算を止めるだけでは不足だった — ② は `None` を「不明」と解釈して
+        #   波長依存の段を両方止める。
+        wavelength = (
+            _instprm_wavelength(self._project.histograms[0].instrument_path)
+            if self._project.histograms
+            else None
+        )
+        known_payload: list[dict[str, Any]] = []
+        if wavelength is not None:
+            known_payload = _known_phases_payload(
+                self._project, self._sequential_result, int(info["frame_index"])
+            )
         try:
             found = identify_and_add_phase(
-                two_theta.tolist(), intensity.tolist(), elements, workdir, top_k=1
+                two_theta.tolist(), intensity.tolist(), elements, workdir, top_k=1,
+                known_phases=known_payload,
+                wavelength=wavelength,
             )
         except Exception as exc:  # noqa: BLE001 — 境界縮退 (MP キー欠落/ネットワーク等)
             return {"error": f"phase identification failed: {exc}", "error_type": "ValueError"}
@@ -2683,7 +2725,15 @@ class WorkbenchSession:
         candidates = found.get("candidates") or []
         self.ledger.append(
             "approval_decision",
-            {"action_id": action_id, "decision": "approve", "n_candidates": len(candidates)},
+            {
+                "action_id": action_id, "decision": "approve", "n_candidates": len(candidates),
+                # 【LEDGER タブへの信号】: 異方セル補正が入ったのか (Issue #20)。"skipped" なら
+                #   追加された相の CIF は DFT 格子のままなので、後段で Rwp が下がらないときの
+                #   第一容疑は残差の説明力ではなく**相のセル誤差**である (② の語彙と同一)。
+                "prealign_basis": str(found.get("prealign_basis", "skipped")),
+                "n_known_phases_used": int(found.get("n_known_phases_used", 0) or 0),
+                "wavelength": wavelength,
+            },
         )
         if not candidates:
             self._approvals[action_id] = {"state": "approved", "snapshot_id": None}
@@ -2874,6 +2924,77 @@ def _normalise_elements(value: Any) -> list[str]:
     if not out:
         raise ValueError("elements must not be empty")
     return sorted(out)
+
+
+def _instprm_wavelength(instrument_path: str) -> "float | None":
+    """GSAS ``.instprm`` から単一波長 (Å) を読む (Issue #20 異方セル補正の線源波長)。
+
+    ``Lam:`` (単色) と ``Lam1:``/``Lam2:`` (Kα1/Kα2) の双方を扱い、後者は **Kα1 (``Lam1``)** を
+    採る — 既知相のピーク位置を指標づけるのは Kα1 だからである。
+
+    :returns: 正の有限波長。TOF 中性子 (``difC`` 系で ``Lam`` を持たない)・ファイル不在・
+        値が壊れている場合は ``None``。**Cu Kα1 で埋めない** — 呼び出し側は ``None`` を見て
+        「補正を諦める」判断をする (誤った波長で既知相を引くと残差そのものが壊れるため)
+    """
+    try:
+        text = Path(instrument_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    found: dict[str, float] = {}
+    for raw in text.splitlines():
+        key, _, value = raw.partition(":")
+        key = key.strip()
+        if key not in ("Lam", "Lam1"):
+            continue
+        try:
+            lam = float(value.strip())
+        except ValueError:
+            continue
+        if math.isfinite(lam) and lam > 0.0:
+            found[key] = lam
+    return found.get("Lam1", found.get("Lam"))
+
+
+def _known_phases_payload(
+    project: WorkbenchProject,
+    sequential_result: "Mapping[str, Any] | None",
+    frame_index: int,
+) -> list[dict[str, Any]]:
+    """② ``identify_and_add_phase`` の ``known_phases`` を組む (Issue #20)。
+
+    「そのフレームに既に居る相」= 現プロジェクトの相集合。各相へ、当該フレームの精密化格子
+    (``frames[].refined_cells``) を ``refined_cell`` として添える。これを渡して初めて ② は
+    既知相を残差から引き、**その残差へ**新相候補のセルを整合させる (``prealign_basis="residual"``)。
+    渡さないと MP(DFT) 素の格子のまま CIF が返り (実測 CaTeO3 delta: c 軸 +3.42%)、Rietveld の
+    収束半径 ~2% を超えて Rwp が高止まりする。
+
+    フレームは**位置ではなく ``frame_index`` で引く** (``max_frames`` 等で列がずれうる)。
+    逐次結果が無い/その相の行が無い相は ``refined_cell`` 無し (DFT 格子) で渡す — 残差減算の
+    相手としては DFT 格子でも有用で、補正自体は成立する。
+
+    非有限セル (発散フレーム) は ``refined_cell`` を**落として**渡す。② は非有限セルを
+    ValueError にする (呼び手の意図を ② からは判別できないので正しい) が、③ 側は「その相の
+    精密化が発散した」と判っているので、格子を主張しない形へ縮退させ他相の補正を生かす。
+    """
+    cells: Mapping[str, Any] = {}
+    for f in (sequential_result or {}).get("frames") or ():
+        if isinstance(f, Mapping) and f.get("frame_index") == frame_index:
+            cells = f.get("refined_cells") or {}
+            break
+    payload: list[dict[str, Any]] = []
+    for p in project.phases:
+        spec = p.to_dict()
+        raw = cells.get(p.phase_name) if isinstance(cells, Mapping) else None
+        cell: list[float] | None = None
+        try:
+            values = [float(v) for v in raw]  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            values = []
+        if len(values) == 6 and all(math.isfinite(v) for v in values):
+            cell = values
+        spec["refined_cell"] = cell
+        payload.append(spec)
+    return payload
 
 
 def _elements_from_project(project: WorkbenchProject) -> list[str]:

@@ -459,6 +459,12 @@ def _consolidate_phase_cells(
     誤セルを warm-start 前進させると Rietveld が異方誤差を飛び越えられず Rwp 高止まり → 偽相を誘発する。
     prealign が正しいセル (誤差 <0.05Å) を返すのは**相が支配的なフレーム**のみ。そこで各新相 P について:
 
+    **注記 (Issue #20 続き)**: 「支配的でないと prealign が誤整合する」根本原因は、prealign の FoM が
+    観測ピーク基準で支配相のピークに占められることであり、`phaseid.make_residual_cell_refiner` が
+    整合先を**既知相減算残差**へ変えて解消済み (delta 最大軸誤差 4.21%→0.51%)。本関数はそれでも残る
+    セル誤差 — 相分率が極小のフレームでは残差自体が乏しくピーク位置の情報が足りない — を、
+    支配フレームで確立したセルを配ることで埋める役割として残す (両者は独立に効く)。
+
     1. **前方再精密化**: P が最も支配的なフレームの確立セルを初期値に、P を含む全フレーム (k..n-1) を
        再 fit し Rwp 改善なら差し替える (onset 域の誤セル poison を除去)。
     2. **逆方向 onset**: その良いセルを初期値に k-1, k-2, ... を P 追加で再 fit、相分率有意 + Rwp 改善なら
@@ -609,18 +615,24 @@ def _try_add_phase(
     # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
     base_cells = {name: _cell6(c) for name, c in base_result.refined_cells.items()}
 
-    # 【operando warm-start (一本化 B)】: 現行相を精密化格子付き ReferencePhase に変換し finder へ渡す。
-    #   identify_pattern が known_phases として先に残差から減算 → 少数新相を clean な残差で探せる。
+    # 【現行相の参照ピーク列】: 現行相を精密化格子付き ReferencePhase に変換し finder へ渡す。
+    #   用途は 2 つあり、**片方は `warm_start_known_phases` の対象外**:
+    #   (a) 同定 (一本化 B): identify_pattern が known_phases として先に残差から減算 → 少数新相を
+    #       clean な残差で探せる。A/B スイッチ `warm_start_known_phases` が制御するのは**これだけ**
+    #       (A = identify-all-then-exclude)。既定 finder が `identify_new_phases` へ渡す段で分岐する。
+    #   (b) 異方セルプリアラインの整合先 (Issue #20 続き): 少数相のセルは**既知相を引いた残差**へ
+    #       整合させないと支配相のピークに引っ張られて壊れる。これは同定戦略 A/B と無関係な
+    #       **モデルの格子の話**なので、A でも同じ参照列が要る (実測: 参照列を渡さず整合を諦めると
+    #       delta が受理されなくなる = A で自動同定が壊れる)。
     #   変換不能 (pymatgen 不在 / CIF 読込不可 / スタブ finder の擬似パス) は None を除き空集合へ縮退
-    #   する (静的同定=identify-all-then-exclude に安全フォールバック; 提案≠適用・非回帰)。
+    #   する (静的同定へ安全フォールバック; 提案≠適用・非回帰)。
     known_refs: list[ReferencePhase] = []
-    if pid.warm_start_known_phases:
-        for p in phases:
-            ref = phasespec_to_reference(
-                p, refined_cell=base_cells.get(p.phase_name), wavelength=pid.wavelength
-            )
-            if ref is not None:
-                known_refs.append(ref)
+    for p in phases:
+        ref = phasespec_to_reference(
+            p, refined_cell=base_cells.get(p.phase_name), wavelength=pid.wavelength
+        )
+        if ref is not None:
+            known_refs.append(ref)
 
     try:
         candidates = phase_finder(frame, list(pid.elements), exclude, workdir, known_refs)
@@ -660,6 +672,13 @@ def _try_add_phase(
                 "phase_id": str(meta.get("phase_id", "")),
                 "rwp_before": base_rwp, "rwp_after": trial_rwp,
                 "fraction": new_frac, "accepted": bool(accepted),
+                # 【棄却の切り分け (Issue #20 続き)】: 相分率 ~0 で棄却された候補が「残差を説明
+                #   できない相」なのか「セルがずれていて説明**できなかった**相」なのかは、
+                #   rwp/fraction だけでは区別できない。物質化時の等方 strain と異方セル補正の
+                #   整合先を同じ行に残し、ledger だけで原因を切れるようにする。
+                "strain": finite_or_none(meta.get("strain")),
+                "prealign_basis": str(meta.get("prealign_basis", "")),
+                "refined_cell": meta.get("refined_cell"),
             },
         )
         # 受理基準を満たす中で最小 Rwp の候補を保持する (Dara 順でなく Rietveld フィットで選ぶ)。
@@ -873,28 +892,31 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
         known_phases: Sequence[ReferencePhase] = (),
     ) -> "Sequence[tuple[PhaseSpec, dict]]":
         from ..reference.io import load_pattern
-        from .phaseid import identify_new_phases
+        from .phaseid import identify_new_phases, make_residual_cell_refiner
 
         provider, materializer = _ensure()
         two_theta, intensity = load_pattern(frame.data_path, frame.data_format)
 
         # 異方セル補正器 (Issue #20): 物質化 CIF を観測へ整合させた**異方セル**に置換する numpy
         # プリアライン。GSAS 非依存 (後段の run_auto_rietveld が Cell 段でさらに研磨する)。
+        # 【整合先は残差】: プリアラインの FoM は観測ピーク基準なので、生パターンへ整合させると
+        #   少数相の反射を**支配相のピーク**へばら撒くセルが選ばれる (実測 CaTeO3 frame180:
+        #   delta の最大軸誤差が出発点 3.42% → 4.21% と悪化)。既知相を引いた残差では候補が支配的
+        #   になり同じ FoM が正しく効く (同条件 0.51%)。既存相を引けないときは**プリアラインしない**
+        #   (等方 strain のまま = 提案≠適用の安全側)。詳細は `make_residual_cell_refiner`。
         cell_refiner = None
         if pid.refine_new_phase_cell:
-            from ..autorietveld.cell_refine import prealign_cell_from_structure
-
             tt_range = frame.two_theta_limits or (
                 float(two_theta.min()), float(two_theta.max())
             )
-
-            def cell_refiner(cif_path: str):  # noqa: F811 (条件付き定義)
-                sol = prealign_cell_from_structure(
-                    cif_path, two_theta, intensity,
-                    wavelength=pid.wavelength, two_theta_range=tt_range,
-                    subtract_bg=pid.subtract_bg,
-                )
-                return sol.cell if sol is not None else None
+            cell_refiner = make_residual_cell_refiner(
+                two_theta, intensity,
+                known_phases=known_phases,
+                wavelength=pid.wavelength, two_theta_range=tt_range,
+                subtract_bg=pid.subtract_bg,
+                # 既存相が 1 つでもあるフレームでは、それを引けない限り整合しない。
+                require_subtraction=bool(exclude_formulas),
+            )
 
         found = identify_new_phases(
             two_theta, intensity, elements=list(elements), provider=provider,
@@ -903,14 +925,26 @@ def _default_phase_finder(pid: PhaseIdConfig) -> PhaseFinder:
             name_prefix="new", cell_refiner=cell_refiner,
             rerank_top_k=pid.rerank_top_k, rerank_wavelength=pid.wavelength,
             require_full_element_system=pid.require_full_element_system,
-            known_phases=known_phases,  # operando warm-start (一本化 B): 現行相を先に残差減算
+            # operando warm-start (一本化 B): 現行相を先に残差減算。**A/B スイッチが効くのはここだけ** —
+            # 上の cell_refiner (異方セル補正の整合先) は同定戦略と無関係なので A でも残差を使う。
+            known_phases=known_phases if pid.warm_start_known_phases else (),
         )
+        # ③ が「セルがどう決まったか」を追えるよう整合先を証拠に残す (ledger/appearance evidence)。
+        if not pid.refine_new_phase_cell:
+            basis = "off"           # 設定で無効
+        elif cell_refiner is None:
+            basis = "skipped"       # 既存相を引けず整合を見送り (等方 strain のまま)
+        elif known_phases:
+            basis = "residual"      # 既知相減算残差へ整合 (既定経路)
+        else:
+            basis = "pattern"       # 既存相なし = 候補が支配的なので生パターンへ整合
         return [
             (
                 ip.phase_spec,
                 {"source": ip.source, "phase_id": ip.phase_id, "formula": ip.formula,
                  "dara_score": ip.score, "strain": ip.strain,
-                 "refined_cell": list(ip.refined_cell) if ip.refined_cell else None},
+                 "refined_cell": list(ip.refined_cell) if ip.refined_cell else None,
+                 "prealign_basis": basis},
             )
             for ip in found
         ]
