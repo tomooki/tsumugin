@@ -124,6 +124,26 @@ def test_deterministic():
     assert r1.phases[0].scale == r2.phases[0].scale
 
 
+def _observed_with_noise(backend, phases, tt, *, seed: int = 0, rel: float = 1e-3):
+    """合成観測に**決定論ノイズ**を載せて返す (σ を浮動小数残差に依存させない)。
+
+    【なぜ必要か (2026-07-28, CI 初回で判明)】: ノイズなしの合成データを近傍から精密化すると
+    **完全フィット**に到達し χ² ≈ 0 になる。この開発機では χ² = 1.12e-25 (正の残差) なので
+    ``cov = pinv(JᵀJ) · χ²/dof`` が 2.0e-17 という「正だが無意味な」σ を返し、
+    ``assert sigma["a"] > 0.0`` が通っていた。**Linux (別 BLAS) では χ² が厳密に 0.0 になり**、
+    ``var > 0`` ガードが発火して σ が丸ごと空へ縮退し 3 件が fail した。
+
+    つまりこれらのテストは σ ではなく**浮動小数の残りかす**を検証していた。ノイズを載せれば
+    χ² が実質的に非ゼロになり、σ は「共分散由来の意味のある正値」になる — 主張どおりのものを
+    検証する形に戻す (実装側の ``var > 0`` ガードは緩めない: 負/非有限は依然として異常)。
+
+    ノイズは ``default_rng(seed)`` 固定でプラットフォーム間もビット同一 (NFR-102)。
+    """
+    y = backend.simulate(tuple(phases), tt)
+    rng = np.random.default_rng(seed)
+    return y + rng.normal(0.0, rel * float(np.max(y)), size=y.shape)
+
+
 def test_refine_lattice_populates_covariance_sigma():
     # 【テスト目的】: 格子 a を解放すると JᵀJ 漸近共分散由来の σ が LatticeParams.sigma["a"] に
     #   populate され、sigma_source="covariance" になることを確認 (Issue #66 / FR-306 / NFR-107)。
@@ -131,7 +151,7 @@ def test_refine_lattice_populates_covariance_sigma():
     backend = SimulatedBackend(peak_fwhm=0.2)
     tt = _grid()
     truth = _phase(a=5.0, scale=1.0)
-    y = backend.simulate((truth,), tt)
+    y = _observed_with_noise(backend, (truth,), tt)
 
     start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.03, 5.0, 5.0), scale=1.0)
     model = RefinementModel(
@@ -173,7 +193,7 @@ def test_refine_lattice_sigma_is_deterministic():
     backend = SimulatedBackend(peak_fwhm=0.2)
     tt = _grid()
     truth = _phase(a=5.0, scale=1.0)
-    y = backend.simulate((truth,), tt)
+    y = _observed_with_noise(backend, (truth,), tt)
     start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.03, 5.0, 5.0), scale=1.0)
     model = RefinementModel(
         phases=(start,),
@@ -243,7 +263,7 @@ def test_refine_resets_sigma_of_phase_without_lattice_release():
     tt = _grid()
     truth0 = _phase(a=5.0, scale=1.0, ref="P0")
     truth1 = PhaseInstance(phase_ref="P1", lattice=LatticeParams(4.0, 4.0, 4.0), scale=1.0)
-    y = backend.simulate((truth0, truth1), tt)
+    y = _observed_with_noise(backend, (truth0, truth1), tt)
 
     start0 = PhaseInstance(phase_ref="P0", lattice=LatticeParams(5.03, 5.0, 5.0), scale=1.0)
     stale1 = LatticeParams(4.0, 4.0, 4.0, sigma={"c": 0.9}, sigma_source="proxy")

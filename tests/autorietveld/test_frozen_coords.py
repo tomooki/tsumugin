@@ -43,9 +43,28 @@ class _MockPhase:
 
 
 def _info(labels, frozen, monkeypatch):
-    # _phase_atom_info は関数内で `from GSASII import GSASIIspc` する → 属性を差し替える。
+    """`_phase_atom_info` を偽の ``GSASII`` パッケージで駆動する (実 GSAS-II 不要)。
+
+    `_phase_atom_info` は関数内で ``from GSASII import GSASIIspc`` する。旧実装は
+    ``monkeypatch.setattr("GSASII.GSASIIspc", ...)`` で属性だけ差し替えていたが、**文字列
+    ターゲットの setattr は親モジュール ``GSASII`` を実 import する**ため GSAS-II 不在環境では
+    ``ModuleNotFoundError`` になった (``raising=False`` は属性不在を許すだけで import 失敗は
+    救わない)。本ファイルの docstring は「GSAS 非依存モックで検証する」と宣言しているのに、
+    実際は GSAS-II が入った機械でしか動いていなかった — 開発機には常に入っているので
+    **ローカルでは不可視**で、CI (GSAS-II 不在) で初めて露見した (2026-07-28)。
+
+    ``sys.modules`` に偽パッケージを差し込めば ``from GSASII import GSASIIspc`` は実物を
+    探さずこれを解決する (monkeypatch.setitem なので実 GSASII があっても後で復元される)。
+    """
+    import sys
+    import types
+
     import tsumugin.autorietveld.engine as eng
-    monkeypatch.setattr("GSASII.GSASIIspc", _MockG2spcModule, raising=False)
+
+    fake_pkg = types.ModuleType("GSASII")
+    fake_pkg.GSASIIspc = _MockG2spcModule  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "GSASII", fake_pkg)
+    monkeypatch.setitem(sys.modules, "GSASII.GSASIIspc", _MockG2spcModule)  # type: ignore[arg-type]
     spec = PhaseSpec("s.cif", "P", frozen_coord_labels=tuple(frozen))
     return eng._phase_atom_info(_MockPhase(labels), spec)
 
