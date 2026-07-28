@@ -268,3 +268,78 @@ def test_refine_with_revisions_exposes_publication_values():
 
     assert out["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
     assert out["cell_esd"]["ph"] == [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]
+
+
+# ---------------------------------------------------------------------------
+# 安定性診断ゲート (WS-1 stable-auto-rietveld) の ② 到達可能性
+# ---------------------------------------------------------------------------
+
+
+def test_stability_spec_reaches_the_real_runner(monkeypatch):
+    """③ が JSON で送った ``stability`` が既定 (実 GSAS) runner まで届く。
+
+    【目的】: ① に実装したゲートが ② から呼べること (CLAUDE.md ★ 不変条件)。runner を注入すると
+    ゲートはその runner の責務になるので、**注入しない経路**で `_default_gsas_runner` に何が
+    渡ったかを見る。ここが繋がっていないと ③ から見て機能は存在しない (dead on arrival)。
+    """
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+
+    def _spy(seed, max_cyc=12, stability=None):
+        seen.update(seed=seed, max_cyc=max_cyc, stability=stability)
+        return _stub_runner
+
+    monkeypatch.setattr(rt, "_default_gsas_runner", _spy)
+
+    out = rt.auto_rietveld(
+        [_H], [_P], stability={"require_convergence": True, "max_shift_esd": 2.0}
+    )
+
+    assert "error" not in out
+    assert seen["stability"] == StabilityOptions(require_convergence=True, max_shift_esd=2.0)
+
+
+def test_stability_spec_defaults_to_the_no_op_options(monkeypatch):
+    # 【目的】: 未指定は「全ゲート無効」の StabilityOptions (= 現行と同一挙動) であること。
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        rt, "_default_gsas_runner",
+        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+    )
+
+    rt.auto_rietveld([_H], [_P])
+
+    assert seen["stability"] == StabilityOptions()
+    assert seen["stability"].needs_diagnostics is False
+
+
+def test_unknown_stability_key_degrades_to_an_error_dict():
+    # 【目的】: ② は例外を送出しない。かつ**黙って無視しない** — キー名を間違えたまま
+    #   「ゲートを有効にしたつもり」で回るのが最悪 (静かな失敗)。
+    out = auto_rietveld([_H], [_P], stability={"require_convergance": True})
+
+    assert out["error_type"] == "ValueError"
+    assert "require_convergance" in out["error"]
+
+
+def test_refine_with_revisions_accepts_the_same_stability_spec(monkeypatch):
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        rt, "_default_gsas_runner",
+        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+    )
+
+    out = rt.refine_with_revisions(
+        [_H], [_P], [], stability={"detect_noop_stages": True}
+    )
+
+    assert "error" not in out
+    assert seen["stability"] == StabilityOptions(detect_noop_stages=True)

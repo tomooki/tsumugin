@@ -44,6 +44,10 @@ KNOWN_STAGE_FLAGS = frozenset(
         "cell",
         "coords",
         "displacement",
+        # 段の適用前に既存の解放を落とす (`engine._apply_stage` の `flags.get("freeze_others")`)。
+        # 既定の累積セマンティクスでは不要だが、"本気フィット" の順次解放/凍結手順を ③ が
+        # JSON で組めるようにするため露出する (値: True または凍結しない名前の列)。
+        "freeze_others",
         "hydrostatic_strain",
         "occupancy",
         "phase_fraction_sum",

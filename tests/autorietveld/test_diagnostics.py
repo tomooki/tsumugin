@@ -215,3 +215,34 @@ def test_to_dict_is_json_ready():
     assert payload["converged"] is True
     assert payload["weak_vars"][0]["name"] == "0::B"
     assert payload["correlated_pairs"][0]["r"] == pytest.approx(0.99)
+
+
+def test_numpy_arrays_from_real_covdata_do_not_raise():
+    """実 GSAS の covData は ``variables``/``sig`` を **numpy 配列**で持つ (REQ-SAR-105)。
+
+    【目的】: `value or []` のような真偽値評価を経由しないこと。ndarray に `or` を掛けると
+    ``ValueError: The truth value of an array with more than one element is ambiguous`` になり、
+    段階ループ側の except が拾って **全段が chi2=inf → revert** される (T1 実測)。
+    診断が精密化本体を殺す形は最悪の失敗形なので、実データ形状をここで固定する。
+    """
+    cov_data = {
+        "varyList": ["0::A0", "0::AUiso:1", ":0:Shift"],
+        "variables": np.array([9.372, 0.01, -274.0]),
+        "sig": np.array([0.0004, 0.03, 12.0]),
+        "covMatrix": np.eye(3) * np.array([0.0004, 0.03, 12.0]) ** 2,
+        "Rvals": {"converged": True, "Max shft/sig": 86.081, "Nobs": 4200, "Nvars": 3},
+    }
+
+    d = diagnostics_from_cov_data(cov_data)
+
+    assert d.max_shift_esd == pytest.approx(86.081)
+    assert d.n_vars == 3
+    # esd > |値| は Uiso のみ (0.03 > 0.01)。
+    assert [w.name for w in d.weak_vars] == ["0::AUiso:1"]
+
+
+def test_non_mapping_rvals_degrades_instead_of_raising():
+    # Rvals が期待外の型 (欠損 gpx 等) でも診断自体は返す (fail open)。
+    d = diagnostics_from_cov_data({"varyList": ["a"], "Rvals": None})
+    assert d.max_shift_esd is None
+    assert d.is_converged() is None

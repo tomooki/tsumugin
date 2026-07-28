@@ -92,6 +92,29 @@ Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発�
 
 `max_cyc` (既定 12) は各段階の最大精密化サイクル数。収束が遅い/振動する系で増やす。
 
+## 段が「黙って壊れている」を疑う (`stability`)
+
+**Rwp が改善したことは、その段が収束したことを意味しない。** GSAS は
+`Maximum shift/esd = 258` を出しながら「改善した」段を通す (実測)。同様に、rwp が動かないのは
+「効かなかった」のか「そもそも何も精密化していない」のかを Rwp からは区別できない。
+`auto_rietveld`/`refine_with_revisions` の `stability` 引数で診断ゲートを有効にする:
+
+```json
+{"stability": {"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 2,
+               "detect_noop_stages": true, "prune_weak_vars": true, "record_correlations": true}}
+```
+
+| いつ使うか | キー | 効果 |
+|---|---|---|
+| 段が進むほど結果が不安定・後段が壊れる | `require_convergence` (+ `max_shift_esd`/`extra_cycles`) | 未収束段は**追加サイクルで回し直し**、駄目なら revert |
+| ある段から Rwp が全く動かない (段列が死んでいる疑い) | `detect_noop_stages` | n_params 不変 + rwp/gof ビット同一の段を警告 (**revert はしない**) |
+| 母数が多すぎて esd が発散している | `prune_weak_vars` | `esd >= 値` の変数を次段以降で凍結。座標シフト (`dAx/dAy/dAz`) は既定で除外 |
+| 段の順序を疑っている / 何と何が縛られているか知りたい | `record_correlations` (+ `corr_threshold`) | \|r\|≥閾値 のペアを記録 (**検出のみ・自動凍結しない**) |
+
+結果は `stages[*].note` (`unconverged` / `noop` / `pruned=N` / `extra_cycles=N`) に出る。
+**既定 (未指定) は現行と完全に同一の挙動**なので、まず既定で回し、疑いが出てから足すこと。
+未知のキーは黙って無視されず error dict になる (綴り間違いで「有効にしたつもり」にならない)。
+
 ## 構造改訂が要るとき → `mem-model-fix` skill
 
 Rwp は収束したが **物理妥当性 fail・占有率発散・構造の誤りが疑われる**とき、残差だけでは「どこを

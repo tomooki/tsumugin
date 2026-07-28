@@ -37,11 +37,35 @@
 
 | # | タスク | 要件 | 状態 |
 |---|---|---|---|
-| 1-1 | `Rvals['Max shft/sig']` による**収束判定**を段の受理条件に追加 | REQ-SAR-101 | ⬜ |
-| 1-2 | 未収束段の**追加サイクル再実行** → それでも駄目なら revert | REQ-SAR-101 | ⬜ |
-| 1-3 | **no-op 段の検出** (n_params 不変 + rwp/gof ビット同一 → 警告) | REQ-SAR-102 | ⬜ |
-| 1-4 | **esd > \|値\| の自動プルーニング** + ledger 記録 | REQ-SAR-103 | ⬜ |
-| 1-5 | **高相関ペア検出** (\|r\|>閾値) → 同時解放の回避 | REQ-SAR-104 | ⬜ |
+| 1-1 | `Rvals['Max shft/sig']` による**収束判定**を段の受理条件に追加 | REQ-SAR-101 | ✅ |
+| 1-2 | 未収束段の**追加サイクル再実行** → それでも駄目なら revert | REQ-SAR-101 | ✅ |
+| 1-3 | **no-op 段の検出** (n_params 不変 + rwp/gof ビット同一 → 警告) | REQ-SAR-102 | ✅ |
+| 1-4 | **esd > \|値\| の自動プルーニング** + ledger 記録 | REQ-SAR-103 | ✅ |
+| 1-5 | **高相関ペア検出** (\|r\|>閾値) → 記録のみ (自動凍結は Phase 2) | REQ-SAR-104 | ✅ |
+| 1-6 | ②`auto_rietveld`/`refine_with_revisions` の `stability` spec + ③ `analyze` skill 節 | ★不変条件 | ✅ |
+
+**実装** (2026-07-29): `run_auto_rietveld(stability=StabilityOptions(...))` で **opt-in**。
+既定 (`None`) は共分散を 1 度も読まず現行と完全に同一 (gated テスト
+`test_default_run_emits_no_stability_entries` が `read_diagnostics` を爆発させて固定)。
+判断ロジックは `engine._run_convergence_cycles` / `_is_noop_stage` / `_prune_candidates` /
+`_freeze_variables` に純関数として切り出し `-m "not gsas"` で回る。凍結は GSAS の
+`parmFrozen`(`set_Frozen`) = 値を動かさず varyList から外すだけ。ledger kind 4 種
+(`m7_stage_unconverged`/`_noop`/`_prune`/`_correlation`) を GUI (`workbench.session`) にも配線。
+
+**WS-1 で判明した事実**:
+
+- **`diagnostics.py` は実 GSAS データで例外を投げていた** — covData の `variables`/`sig` は
+  numpy 配列で、`value or []` が truth-value ambiguous を起こす。段階ループの except が拾って
+  **全段が chi2=inf → revert** されていた (T1 実測)。`_as_sequence` で修正済み。
+  *診断が精密化本体を殺す形*なので、以後 numpy 配列形状のテストを必ず置くこと。
+- **T1 の "成功している" 段は shift/esd 基準では収束していない** (max shft/sig = 86 / 116 / 47,
+  max_cyc=3)。S1/S2 は GSAS 自身の `converged` も False。REQ-SAR-101 の動機は T1 でも成立する。
+- **`Max shft/sig` は `np.max(Lastshft/sig)` で絶対値ではない** (`GSASIIstrMain:402`)。
+  強い**負**シフトは小さい値として通る = 収束判定は片側にしか効かない (上流の仕様)。
+- **座標シフト `dAx/dAy/dAz` は esd プルーニングの確実な偽陽性** — 収束するほど値が 0 に近づき
+  `esd/|値|` が必ず 1 を超える。除外しないと T1 で座標 5 個が凍った (既定で除外)。
+- **T1 のプロファイル段の実測相関は `V×W` r=-0.959 / `U×V` r=-0.955** = WS-3 が静的に禁止して
+  いる Caglioti 群そのもの。動的検出が静的知識を裏付けた (D2 の二段構えが機能している)。
 
 ### WS-2 拘束・境界
 

@@ -23,7 +23,13 @@ from __future__ import annotations
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
-from ..autorietveld import AutoRietveldResult, HistogramSpec, PhaseSpec, ValidityReport
+from ..autorietveld import (
+    AutoRietveldResult,
+    HistogramSpec,
+    PhaseSpec,
+    StabilityOptions,
+    ValidityReport,
+)
 from ._degrade import degrade_oserror
 from ._recipe_spec import stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
@@ -184,6 +190,7 @@ def auto_rietveld(
     background_coeffs: int = 6,
     stages: Sequence[Mapping[str, object]] | None = None,
     max_cyc: int = 12,
+    stability: Mapping[str, object] | None = None,
     seed: int = 0,
     runner: Runner | None = None,
 ) -> dict:
@@ -200,14 +207,23 @@ def auto_rietveld(
         ``{"error","error_type"}`` へ縮退する (黙って無視しない)。既定 None (追加段階なし・非回帰)。
     :param max_cyc: 各段階の最大精密化サイクル (``run_auto_rietveld`` へ転送。既定 12 は非回帰)。
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
+    :param stability: **安定性診断ゲート** (WS-1 stable-auto-rietveld)。
+        ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
+        "detect_noop_stages": true, "prune_weak_vars": true, "record_correlations": true}``。
+        収束判定 (未収束段を追加サイクル → 駄目なら revert) / no-op 段の警告 / esd >= |値| の
+        自動凍結 / 高相関ペアの記録を opt-in で有効化する。判定結果は ledger
+        (``m7_stage_unconverged``/``m7_stage_noop``/``m7_stage_prune``/``m7_stage_correlation``)
+        と ``stages[*].note`` に出る。**未知キーは error dict へ縮退**する (黙って無視しない)。
+        既定 None = 現行と同一挙動 (共分散を読まない)。``runner`` 注入時は無視される。
     :param seed: 既定 GSAS runner 用乱数種
     :param runner: 注入 runner (None なら GSAS 駆動)。テスト用の内部シーム
     """
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)
+        opts = StabilityOptions.from_dict(stability)
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
-    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc)
+    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc, stability=opts)
     return _result_to_dict(run(inp), inp)
 
 
@@ -234,6 +250,7 @@ def refine_with_revisions(
     background_coeffs: int = 6,
     stages: Sequence[Mapping[str, object]] | None = None,
     max_cyc: int = 12,
+    stability: Mapping[str, object] | None = None,
     seed: int = 0,
     runner: Runner | None = None,
 ) -> dict:
@@ -248,14 +265,16 @@ def refine_with_revisions(
         (`_build_input` が stages を extra_stages に置いた後、actions ループが apply で末尾に足す)。
         不正な段階 spec は error dict へ縮退する。
     :param max_cyc: `auto_rietveld` と同じ (既定 GSAS runner への転送)。
+    :param stability: `auto_rietveld` と同じ安定性診断ゲート spec (既定 None = 非回帰)。
     """
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)
         for a in actions:
             inp = action_from_dict(a).apply(inp)
+        opts = StabilityOptions.from_dict(stability)
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
-    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc)
+    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc, stability=opts)
     return _result_to_dict(run(inp), inp)
 
 

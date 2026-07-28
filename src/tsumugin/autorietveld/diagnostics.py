@@ -130,6 +130,23 @@ def _as_float(value: Any) -> "float | None":
     return out if math.isfinite(out) else None
 
 
+def _as_sequence(value: Any) -> list[Any]:
+    """``None`` を空列に落として list 化する。
+
+    **`value or []` と書いてはいけない**: GSAS の covData は ``variables``/``sig`` を
+    **numpy 配列**で持つため、``or`` が配列の真偽値評価を起こし
+    ``ValueError: The truth value of an array with more than one element is ambiguous``
+    で診断が丸ごと落ちる (実測 T1: 段が全部 chi2=inf → revert された)。
+    診断は精密化本体を落としてはならないので、真偽値判定を経由しない形にする。
+    """
+    if value is None:
+        return []
+    try:
+        return list(value)
+    except TypeError:  # 反復不能な値 (スカラ等) は情報なし扱い
+        return []
+
+
 def weak_variables(
     names: Sequence[str], values: Sequence[Any], sig: Sequence[Any]
 ) -> tuple[WeakVariable, ...]:
@@ -194,10 +211,11 @@ def diagnostics_from_cov_data(
 
     空/欠損でも**診断自体は返す** — 呼び出し側に「共分散があるか」の分岐を書かせないため。
     """
-    rvals: Mapping[str, Any] = cov_data.get("Rvals") or {}
-    names = list(cov_data.get("varyList") or [])
-    values = list(cov_data.get("variables") or [])
-    sig = list(cov_data.get("sig") or [])
+    raw_rvals = cov_data.get("Rvals")
+    rvals: Mapping[str, Any] = raw_rvals if isinstance(raw_rvals, Mapping) else {}
+    names = _as_sequence(cov_data.get("varyList"))
+    values = _as_sequence(cov_data.get("variables"))
+    sig = _as_sequence(cov_data.get("sig"))
     cov = cov_data.get("covMatrix")
 
     converged = rvals.get("converged")

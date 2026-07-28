@@ -106,6 +106,12 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "refine_failed": "CORE ①",
     "m7_stage": "CORE ①",
     "m7_stage_error": "GUARD",
+    # 安定自動 Rietveld の診断ゲート (WS-1)。いずれも「段が黙って壊れている/効いていない」を
+    # 可視化するガードレール由来なので GUARD 扱いにする (CORE ① の通常進行と色を分ける)。
+    "m7_stage_unconverged": "GUARD",
+    "m7_stage_noop": "GUARD",
+    "m7_stage_prune": "GUARD",
+    "m7_stage_correlation": "GUARD",
     "transcript_message": "HUMAN",
     "agent_proposal": "AGENT ③",
     "approval_decision": "HUMAN",
@@ -245,6 +251,38 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         # 追えなくて詰まった (段が黙って revert された理由が GUI から見えない)。
         reason = payload.get("error")
         return f"stage {payload.get('stage')} error" + (f": {reason}" if reason else "")
+    if kind == "m7_stage_unconverged":
+        # 未収束は Rwp に現れない (改善していても収束していないことがある) ので、
+        # 判断材料 (max shft/sig と使った追加サイクル数) をそのまま文面に出す。
+        shift = payload.get("max_shift_esd")
+        shift_txt = f"{shift:g}" if isinstance(shift, (int, float)) else "―"
+        return (
+            f"stage {payload.get('stage')} unconverged "
+            f"(max shft/sig={shift_txt} > {payload.get('limit')}, "
+            f"extra cycles={payload.get('extra_cycles')}) → revert"
+        )
+    if kind == "m7_stage_noop":
+        return (
+            f"stage {payload.get('stage')} no-op "
+            f"(n_params {payload.get('prev_n_params')}→{payload.get('n_params')}, rwp/gof 不変)"
+        )
+    if kind == "m7_stage_prune":
+        names = [str(v.get("name")) for v in (payload.get("variables") or [])]
+        head = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
+        return f"stage {payload.get('stage')} froze {len(names)} weak vars [{head}]"
+    if kind == "m7_stage_correlation":
+        pairs = payload.get("pairs") or []
+        top = pairs[0] if pairs else {}
+        top_r = top.get("r")
+        top_txt = (
+            f" top {top.get('a')}×{top.get('b')} r={top_r:.2f}"
+            if isinstance(top_r, (int, float))
+            else ""
+        )
+        return (
+            f"stage {payload.get('stage')} {payload.get('n_pairs')} correlated pairs "
+            f"(|r|≥{payload.get('threshold')}){top_txt}"
+        )
     if kind == "transcript_message":
         return "transcript message posted"
     if kind == "agent_proposal":

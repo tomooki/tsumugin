@@ -4220,3 +4220,60 @@ def test_ledger_text_for_stage_error_includes_the_reason():
 
     assert "S1 cell+displacement" in text
     assert "boom" in text
+
+
+# ---------------------------------------------------------------------------
+# 安定自動 Rietveld の診断ゲート (WS-1) — LEDGER タブ表示
+# ---------------------------------------------------------------------------
+
+
+def test_stability_gate_entries_are_shown_as_guard_with_their_evidence():
+    # 【目的】: 「段が黙って壊れている/効いていない」を示す 4 kind が LEDGER に届くこと。
+    #   `_ACTOR_BY_KIND` / `_text_for_kind` に無い kind は actor が CORE ① に化け、
+    #   text が生の kind 名 (例 "m7_stage_noop") になり、GUI から判断できない。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage_unconverged",
+        {"stage": "S3 profile", "max_shift_esd": 258.8, "limit": 1.0, "extra_cycles": 2},
+    )
+    session.ledger.append(
+        "m7_stage_noop",
+        {"stage": "S5 profile_U", "rwp": 38.9858, "gof": 5.57, "n_params": 27,
+         "prev_n_params": 27},
+    )
+    session.ledger.append(
+        "m7_stage_prune",
+        {"stage": "S6 uiso", "reason": "esd >= |value| (REQ-SAR-103)",
+         "variables": [{"name": "0::AUiso:4", "value": 0.01, "esd": 0.05, "ratio": 5.0}]},
+    )
+    session.ledger.append(
+        "m7_stage_correlation",
+        {"stage": "S2 cell", "threshold": 0.9, "reverted": False, "n_pairs": 3,
+         "pairs": [{"a": "0::A0", "b": ":0:Shift", "r": -0.987}]},
+    )
+
+    entries = session.ledger_view()["entries"][-4:]
+
+    assert [e["actor"] for e in entries] == ["GUARD"] * 4
+    unconverged, noop, prune, corr = (e["text"] for e in entries)
+    # 未収束は Rwp に現れない → 判断材料 (max shft/sig) が文面に出ること。
+    assert "S3 profile" in unconverged and "258" in unconverged
+    assert "no-op" in noop and "S5 profile_U" in noop
+    assert "0::AUiso:4" in prune and "1" in prune
+    assert "0::A0" in corr and "0.9" in corr
+
+
+def test_stability_gate_entries_carry_no_fabricated_fit_quality():
+    # 【目的】: 診断エントリに rwp/bic を持たせない (適合度は m7_stage / refine_finished のみ)。
+    #   no-op の payload は rwp を含むが、それは**直前段と同じ値**であり「この段の適合度」
+    #   ではない — LEDGER の Rwp 列に出すと段が進んだように読める。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage_noop",
+        {"stage": "S5", "rwp": 38.9858, "gof": 5.57, "n_params": 27, "prev_n_params": 27},
+    )
+
+    entry = session.ledger_view()["entries"][-1]
+
+    assert entry["rwp"] is None
+    assert entry["bic"] is None

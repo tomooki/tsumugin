@@ -1,5 +1,10 @@
 """ベンチマーク 1 件を実行して JSON を 1 行 stdout に出す (`bench_recipes.py` の子プロセス)。
 
+⚠ **spec は `tests/autorietveld/test_engine_t*.py` と 1 対 1 で一致させること。** 実測事故:
+T3 の ``temperature=295/10`` を落としたら `temp_diff` が立たず `hydrostatic_strain` (Dij) 段が
+消えて Rwp 6.66% → 12.56% になり、「回帰した」と誤読しかけた。**ハーネスがテストと違う条件を
+測っていると、以降の全判断が狂う。**
+
 **別プロセスで動かす前提**: GSAS-II はグローバル状態を多く持つため、1 件 1 プロセスにして
 並列化と隔離を同時に得る。親は stdout の最終 JSON 行だけを読む。
 """
@@ -34,17 +39,19 @@ def _specs(dataset: str):
                                radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
                                data_format="GSAS")],
                 [PhaseSpec(structure_path=str(d / "garnet_YFeAlO.cif"), phase_name="garnet",
+                           format_hint="CIF",
                            mixed_occupancy_groups=(("Fe1", "Al1"), ("Al2", "Fe2")))],
                 6, 12)
     if dataset == "T3":
         d = _DATA / "m7/cwcombined"
         return ([HistogramSpec(data_path=str(d / "PBSO4.XRA"), instrument_path=str(d / "INST_XRY.PRM"),
                                radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
-                               data_format="GSAS"),
+                               data_format="GSAS", temperature=295.0),
                  HistogramSpec(data_path=str(d / "PBSO4.CWN"), instrument_path=str(d / "inst_d1a.prm"),
                                radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
-                               data_format="GSAS")],
-                [PhaseSpec(structure_path=str(_DATA / "PbSO4-Wyckoff.cif"), phase_name="PbSO4")],
+                               data_format="GSAS", temperature=10.0)],
+                [PhaseSpec(structure_path=str(_DATA / "PbSO4-Wyckoff.cif"), phase_name="PbSO4",
+                           format_hint="CIF")],
                 6, 12)
     if dataset == "T4":
         d = _DATA / "m7/tofcw"

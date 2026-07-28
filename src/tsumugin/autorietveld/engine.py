@@ -25,6 +25,7 @@ import numpy as np
 from .._json import finite_or_none
 from ..store import Ledger
 from .absorption import apply_absorption_correction
+from .diagnostics import RefinementDiagnostics, WeakVariable, read_diagnostics
 from .model import (
     AutoRietveldResult,
     CellEsd,
@@ -33,6 +34,7 @@ from .model import (
     PhaseSpec,
     Radiation,
     RefinementStage,
+    StabilityOptions,
     StageResult,
     ValidityReport,
 )
@@ -154,6 +156,106 @@ def _nobs(gpx) -> int:
         return int(rv.get("Nobs", 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _refine_once(gpx) -> None:
+    """1 回精密化し、GSAS が**戻り値で返す**失敗を例外へ変換する。
+
+    `_capture_refine_status` の唯一の呼び出し口。段の初回精密化と、未収束時の追加サイクル
+    (REQ-SAR-101) の**両方**がここを通ることで、「追加サイクルだけ無言失敗を見逃す」穴を
+    作らない (無言失敗は rwp にも reverted にも現れないため、経路ごとに塞ぐしかない)。
+    """
+    with _capture_refine_status() as status:
+        gpx.do_refinements([{}])
+    if not status["ok"]:
+        raise RefinementFailedError(str(status["msg"]))
+
+
+def _run_convergence_cycles(
+    diagnostics: RefinementDiagnostics,
+    cycle,
+    *,
+    max_shift_esd: float,
+    extra_cycles: int,
+) -> "tuple[RefinementDiagnostics, object | None, int]":
+    """未収束なら**同じ段のまま**追加サイクルで回し直す (REQ-SAR-101)。
+
+    `is_converged` が ``None`` (判定材料なし = 共分散が無い) のときは**回さない** — 情報が
+    無いことを「未収束」と断じると、共分散を持たない精密化で全段が無限に回ってしまう
+    (fail open)。受理/revert の最終判断は呼び出し側が最終診断で行う。
+
+    :param cycle: 1 サイクル精密化して ``(新しい診断, 付随値)`` を返す callable。付随値には
+        engine 側の ``((rwp, gof, nvar), converged)`` を載せる (GSAS 依存をここへ持ち込まない)
+    :param extra_cycles: 追加サイクルの上限 (負値は 0 に丸める)
+    :returns: ``(最終診断, 最後の付随値 or None, 実際に回した追加サイクル数)``
+    """
+    used = 0
+    payload: object | None = None
+    limit = max(0, int(extra_cycles))
+    while (
+        diagnostics.is_converged(max_shift_esd=max_shift_esd) is False and used < limit
+    ):
+        used += 1
+        diagnostics, payload = cycle()
+    return diagnostics, payload, used
+
+
+def _is_noop_stage(
+    prev_rwp: float, prev_gof: float, prev_nvar: int, rwp: float, gof: float, nvar: int
+) -> bool:
+    """その段が「何もしていない」か — no-op 段の検出 (REQ-SAR-102)。
+
+    条件は **``n_params`` が増えず、rwp と gof が直前段とビット同一**であること。GSAS-II の
+    無言失敗 (`_capture_refine_status` 参照) や、実元素数を超えた固定ランクの段 (T1 実測)、
+    プロファイル段が全ヒストグラムで除外される多相 TOF (T4 実測: S5/S6 が rwp ビット同一) が
+    このクラスに落ちる。**Rwp が動かないことを「改善しなかった」と読むと無言失敗と区別が
+    付かない** (P-SAR-2) ので、区別できる事実として検出する。
+
+    非有限は判定しない (inf → revert 経路が既に扱う別クラスの失敗であり、``inf == inf`` を
+    「ビット同一」と読むと初段の失敗を全部 no-op と誤報する)。
+    """
+    if not (math.isfinite(rwp) and math.isfinite(prev_rwp)):
+        return False
+    return nvar <= prev_nvar and rwp == prev_rwp and gof == prev_gof
+
+
+def _prune_candidates(
+    weak_vars: "Sequence[WeakVariable]", already_frozen: "set[str]", exempt: "Sequence[str]"
+) -> "tuple[WeakVariable, ...]":
+    """`esd >= |値|` の変数から**今回新たに凍結すべきもの**を選ぶ (REQ-SAR-103, 純関数)。
+
+    既に凍結済みの変数は除く (ledger に同じ凍結を毎段記録しない)。``exempt`` は変数名の
+    **部分一致**トークン: 既定の ``dAx/dAy/dAz`` は座標シフト変数で、収束するほど値が 0 に
+    近づき ``esd/|値|`` が必ず 1 を超える = 「決まらなかった」の偽陽性になる (無条件に凍結
+    すると収束した瞬間に全座標が凍る)。
+    """
+    return tuple(
+        w
+        for w in weak_vars
+        if w.name not in already_frozen and not any(tok in w.name for tok in exempt)
+    )
+
+
+def _freeze_variables(gpx, names: "Sequence[str]") -> list[str]:
+    """変数を GSAS の Frozen リストへ入れ、**以降の段の varyList から外す** (REQ-SAR-103)。
+
+    `GSASIIstrMain.Refine` は精密化の直前に ``Controls['parmFrozen']['FrozenList']`` に載る
+    変数を varyList から除く。値は動かさず「精密化しない」だけなので、非破壊であり
+    スナップショット復元 (revert) でも一貫して巻き戻る (Controls は gpx ツリーの一部)。
+
+    変数名が GSAS の変数記法として解釈できない等の失敗は**その変数だけ諦めて継続**する
+    (診断由来の付加機能が精密化本体を落とさない, fail open)。
+
+    :returns: 実際に凍結できた変数名
+    """
+    frozen: list[str] = []
+    for name in names:
+        try:
+            if gpx.set_Frozen(name, mode="add"):
+                frozen.append(name)
+        except Exception:  # noqa: BLE001 — 解釈不能な変数名は当該変数のみスキップ
+            continue
+    return frozen
 
 
 def _cells_physical(
@@ -1384,6 +1486,7 @@ def run_auto_rietveld(
     chem_comp_restraints: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     content_constraint: Mapping[str, float] | None = None,
     check_occupancy_uiso: bool = False,
+    stability: StabilityOptions | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -1437,6 +1540,10 @@ def run_auto_rietveld(
         (FR-318 lock_fractions)。総アルカリ量拘束は cᵢ = Zᵢ·(xᵢ − x_total)。⚠ 2 相では相分率が
         完全決定され XRD は分率に寄与しなくなる。実行可能性/縮退ゲートは呼び出し側の責務
         (`operando.coulometry.feasibility`)。既定 None。
+    :param stability: 安定性最優先の**診断ゲート** (WS-1, stable-auto-rietveld)。収束判定
+        (REQ-SAR-101) / no-op 段の検出 (102) / esd プルーニング (103) / 高相関の記録 (104) を
+        opt-in で有効化する。**既定 None は現行と完全に同一の挙動** (共分散を 1 度も読まない)。
+        詳細は `StabilityOptions`。
     :returns: AutoRietveldResult
     """
     # FR-318: 占有率シーダーの範囲検証は GSAS import 前に行う (物理的に不可能な要求は即時失敗)。
@@ -1603,6 +1710,10 @@ def run_auto_rietveld(
         prev_gof = float("inf")
         prev_nvar = 0
         atom_flag_maps: list[dict[str, str]] = [{} for _ in g2phases]
+        # 【WS-1 診断ゲート】: 既定 (stability=None) は全項目 False なので、以降の追加処理は
+        #   1 行も走らない (共分散すら読まない) = 現行と完全に同一の挙動。
+        stab = stability if stability is not None else StabilityOptions()
+        pruned_vars: set[str] = set()
 
         for stage in stages:
             snap = tmp_path / "snap.gpx"
@@ -1610,6 +1721,11 @@ def run_auto_rietveld(
             shutil.copyfile(gpx_path, snap)
             prev_atom_flag_maps = [dict(m) for m in atom_flag_maps]
             auto_frozen: list[str] = []
+            # no-op 判定 (REQ-SAR-102) は「直前の受理状態」と比べるので、prev_* が更新される前に退避。
+            before = (prev_rwp, prev_gof, prev_nvar)
+            diagnostics: RefinementDiagnostics | None = None
+            extra_cycles_used = 0
+            convergence_ok: bool | None = None
             try:
                 auto_frozen = _apply_stage(
                     gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage,
@@ -1621,12 +1737,34 @@ def run_auto_rietveld(
                 #   「悪化していない」と判断され revert されず、立てたフラグが残って
                 #   **以降の全段が失敗し続ける** (実測 CaTeO3 frame180 二相: S2 以降 7 段 no-op)。
                 #   戻り値を捕まえて例外化し、既存の inf→revert→ledger 経路に載せる。
-                with _capture_refine_status() as refine_status:
-                    gpx.do_refinements([{}])
-                if not refine_status["ok"]:
-                    raise RefinementFailedError(str(refine_status["msg"]))
+                _refine_once(gpx)
                 rwp, gof, nvar = _rvals(gpx)
                 converged = _converged(gpx)
+                if stab.needs_diagnostics:
+                    diagnostics = read_diagnostics(gpx, corr_threshold=stab.corr_threshold)
+                if stab.require_convergence and diagnostics is not None:
+                    # 【収束判定 (REQ-SAR-101)】: GSAS の「改善した」は max|shift|/esd が
+                    #   258 でも成立する (実測ログ)。Rwp の改善だけを受理条件にすると
+                    #   **収束していない段**が通過し、以降の段がその上に積み上がる。
+                    #   未収束なら同じ段のまま追加サイクルを回し、駄目なら下の revert 経路へ。
+                    def _cycle():
+                        _refine_once(gpx)
+                        return (
+                            read_diagnostics(gpx, corr_threshold=stab.corr_threshold),
+                            (_rvals(gpx), _converged(gpx)),
+                        )
+
+                    diagnostics, payload, extra_cycles_used = _run_convergence_cycles(
+                        diagnostics,
+                        _cycle,
+                        max_shift_esd=stab.max_shift_esd,
+                        extra_cycles=stab.extra_cycles,
+                    )
+                    if payload is not None:
+                        (rwp, gof, nvar), converged = payload  # type: ignore[misc]
+                    convergence_ok = diagnostics.is_converged(
+                        max_shift_esd=stab.max_shift_esd
+                    )
                 # 格子崩壊 (0 近傍/非有限) またはプロファイル非物理化 (幅関数がレンジ内で負・散乱/立上り
                 # 係数が非物理) は発散とみなし inf 化 → 既存 revert 経路 (物理妥当性ガード)。
                 # プロファイルガードは解放済パラメータのみ hard 判定するため T1〜T4 は非回帰。
@@ -1636,16 +1774,35 @@ def run_auto_rietveld(
                     rwp, gof, converged = float("inf"), float("inf"), False
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
                 rwp, gof, nvar, converged = float("inf"), float("inf"), 0, False
+                diagnostics, convergence_ok = None, None
                 ledger.append(
                     "m7_stage_error",
                     {"stage": stage.label, "error": repr(exc)[:200]},
                 )
 
             reverted = False
+            # 追加サイクルを使い切っても未収束の段は**受理しない** (REQ-SAR-101)。Rwp が
+            # 改善していても、収束していない解の上に次段を積むと段列全体が信用できなくなる。
+            unconverged = convergence_ok is False
+            if unconverged:
+                ledger.append(
+                    "m7_stage_unconverged",
+                    {
+                        "stage": stage.label,
+                        "max_shift_esd": (
+                            finite_or_none(diagnostics.max_shift_esd) if diagnostics else None
+                        ),
+                        "limit": stab.max_shift_esd,
+                        "extra_cycles": extra_cycles_used,
+                        "svd_singularities": (
+                            diagnostics.svd_singularities if diagnostics else 0
+                        ),
+                    },
+                )
             # 悪化 (または inf) なら直前スナップショット (この段階適用前の状態) へ revert して継続
             # (REQ-105/FR-202)。snap は各段階の冒頭で必ず取得済みなので、初段失敗でも
             # 「精密化前の健全なプロジェクト」へ戻せる (H2: prev_rwp==inf でも復帰する)。
-            if not math.isfinite(rwp) or rwp > prev_rwp + worsen_eps:
+            if unconverged or not math.isfinite(rwp) or rwp > prev_rwp + worsen_eps:
                 shutil.copyfile(snap, gpx_path)
                 gpx = g2sc.G2Project(gpxfile=str(gpx_path))
                 g2hists = gpx.histograms()
@@ -1661,12 +1818,86 @@ def run_auto_rietveld(
             else:
                 prev_rwp, prev_gof, prev_nvar = rwp, gof, nvar
 
+            # 【no-op 段の検出 (REQ-SAR-102)】: revert されていないのに n_params が増えず
+            #   rwp/gof がビット同一 = その段は何も精密化していない。**revert はしない**
+            #   (検出のみ) — 段が効かない理由 (実元素数を超えた固定ランク段 / 全ヒストグラムが
+            #   除外されるプロファイル段 / GSAS の無言失敗) は Rwp からは区別できないので、
+            #   区別できる事実として台帳に残す。
+            is_noop = (
+                stab.detect_noop_stages
+                and not reverted
+                and _is_noop_stage(before[0], before[1], before[2], rwp, gof, nvar)
+            )
+            if is_noop:
+                ledger.append(
+                    "m7_stage_noop",
+                    {
+                        "stage": stage.label,
+                        "rwp": rwp,
+                        "gof": gof,
+                        "n_params": nvar,
+                        "prev_n_params": before[2],
+                    },
+                )
+
+            # 【esd プルーニング (REQ-SAR-103)】: 受理された段の完了時に esd >= |値| の変数を
+            #   凍結し、次段以降の varyList から外す。revert された段では読まない — 診断は
+            #   巻き戻した状態のものではなく、その段で捨てた解のものだから (凍結だけが残る)。
+            newly_frozen: list[str] = []
+            if stab.prune_weak_vars and not reverted and diagnostics is not None:
+                candidates = _prune_candidates(
+                    diagnostics.weak_vars, pruned_vars, stab.prune_exempt_tokens
+                )
+                newly_frozen = _freeze_variables(gpx, [w.name for w in candidates])
+                pruned_vars.update(newly_frozen)
+                if newly_frozen:
+                    frozen_set = set(newly_frozen)
+                    ledger.append(
+                        "m7_stage_prune",
+                        {
+                            "stage": stage.label,
+                            "reason": "esd >= |value| (REQ-SAR-103)",
+                            "variables": [
+                                w.to_dict() for w in candidates if w.name in frozen_set
+                            ],
+                        },
+                    )
+
+            # 【高相関の記録 (REQ-SAR-104)】: |r| >= 閾値 のペアを台帳に残す。**この段階では
+            #   検出と記録のみ**で自動凍結はしない (同時解放を避けるのはレシピ側の判断: Phase 2)。
+            #   revert された段でも記録する — 「なぜその段が壊れたか」の最有力の手がかりだから。
+            if stab.record_correlations and diagnostics is not None and diagnostics.correlated_pairs:
+                ledger.append(
+                    "m7_stage_correlation",
+                    {
+                        "stage": stage.label,
+                        "threshold": stab.corr_threshold,
+                        "reverted": reverted,
+                        "n_pairs": len(diagnostics.correlated_pairs),
+                        # ペア数は O(n²) — 台帳には上位のみ載せ、総数は n_pairs で示す。
+                        "pairs": [
+                            p.to_dict()
+                            for p in diagnostics.correlated_pairs[: stab.max_recorded_pairs]
+                        ],
+                    },
+                )
+
             # 自動セル凍結 (Issue #80) が発生した相を note に付記し挙動を可視化する
             # (非破壊: stage.note 自体は変更せず、StageResult 側でのみ拡張する)。
             note = stage.note
+            note_extras: list[str] = []
             if auto_frozen:
-                frozen_note = f"auto_frozen_cells={','.join(auto_frozen)}"
-                note = f"{note}; {frozen_note}" if note else frozen_note
+                note_extras.append(f"auto_frozen_cells={','.join(auto_frozen)}")
+            if extra_cycles_used:
+                note_extras.append(f"extra_cycles={extra_cycles_used}")
+            if unconverged:
+                note_extras.append("unconverged")
+            if is_noop:
+                note_extras.append("noop")
+            if newly_frozen:
+                note_extras.append(f"pruned={len(newly_frozen)}")
+            for extra in note_extras:
+                note = f"{note}; {extra}" if note else extra
 
             stage_results.append(
                 StageResult(

@@ -32,9 +32,17 @@ def _find(stages, key):
 
 def test_universal_sequence_order():
     stages = build_recipe([_XRAY_BB], _SINGLE_PHASE)
-    # S0 背景+scale が先頭、格子→プロファイル→座標→Uiso の順
-    keys_in_order = [k for s in stages for k in ("background", "cell", "profile", "coords", "uiso") if k in s.flags]
-    assert keys_in_order == ["background", "cell", "profile", "coords", "uiso"]
+    # S0 背景+scale が先頭、格子→プロファイル→座標→Uiso の順。
+    # 【解放と凍結を区別する】: 変位段は格子を **凍結** する (`{"cell": False}`) ため
+    # メンバシップ (`k in s.flags`) だけ見ると「格子を解放した段」と数えてしまう。
+    # 初出の順序だけを見る (交互精密化 cell → 変位 → cell の再解放は重複として畳む)。
+    released = [
+        k
+        for s in stages
+        for k in ("background", "cell", "profile", "coords", "uiso")
+        if s.flags.get(k) not in (None, False)
+    ]
+    assert list(dict.fromkeys(released)) == ["background", "cell", "profile", "coords", "uiso"]
     # 先頭は必ず scale+background
     assert "background" in stages[0].flags and stages[0].flags.get("scale") is True
 
@@ -193,12 +201,15 @@ def test_cell_is_never_released_together_with_sample_displacement(multiphase, mi
     同時に自由にすると片方が他方を吸収し、**物理的に誤った格子で自己整合な解**へ落ちる
     (実測: Kα1 単色 CaTeO3 で Shift −274 µm 相当のずれを格子が肩代わりしていた)。
     段を分けるのは相関するパラメータを分離する段階解放の規律そのもの。
+
+    ⚠ 変位段は格子を**凍結**する (``{"cell": False}``) — これは同時解放ではないので
+    「解放したか」(値が True か) で判定する。キーの有無で見ると凍結を誤検出する。
     """
     stages = build_recipe(
         _histograms(multiphase), _phases(multiphase, mixed_occ)
     )
     for s in stages:
-        assert not ("cell" in s.flags and "displacement" in s.flags), (
+        assert not (s.flags.get("cell") is True and "displacement" in s.flags), (
             f"格子と試料変位が同じ段で解放されている: {s.label} {sorted(s.flags)}"
         )
 
@@ -245,6 +256,87 @@ def test_hydrostatic_strain_stays_with_the_cell():
     cell_stage = next(s for s in stages if "cell" in s.flags)
     assert "hydrostatic_strain" in cell_stage.flags
     assert "displacement" not in cell_stage.flags
+
+
+# ---------------------------------------------------------------------------
+# WS-3 3-2: 既定レシピ (M7) の出力を 1 段ずつ固定する — **完全非回帰**
+# ---------------------------------------------------------------------------
+#
+# 安定自動 Rietveld の作業では `build_serious_recipe` 側に凍結・元素展開・Uiso 緩和を足す。
+# それらは opt-in であり、**既定レシピは 1 段も変えてはならない** — T1–T4 と CaTeO3 の
+# gated ベンチマーク (9.83 / 4.33 / 6.66 / ~12.8 / 12.43%) はすべてこの段列の上で測った値で、
+# 既定が動くと比較の土俵そのものが失われる。段の追加・並べ替えは新しいレシピ関数として足すこと。
+
+_DEFAULT_XRAY_SINGLE = (
+    ("S0 scale+background", {"scale": True, "background": {"coeffs": 6}}),
+    ("S1 cell", {"cell": True}),
+    ("S2 displacement", {"cell": False, "displacement": {0: ["Shift"]}}),
+    ("S3 cell (repolish)", {"cell": True}),
+    ("S4 profile+size_strain", {"profile": ["U", "V", "W"], "size_strain": True}),
+    ("S5 coords", {"coords": True}),
+    ("S6 uiso", {"uiso": True}),
+    ("S7 profile_lorentzian", {"profile_lorentzian": True}),
+    ("S8 profile_asymmetry", {"profile_asymmetry": True}),
+)
+
+_DEFAULT_XRAY_MULTIPHASE = (
+    ("S0 scale+background", {"scale": True, "background": {"coeffs": 6}}),
+    ("S1 phase_fractions", {"phase_fraction_sum": True}),
+    ("S2 cell+profile", {"cell": True, "profile": ["U", "V", "W"]}),
+    ("S3 displacement", {"cell": False, "displacement": {0: ["Shift"]}}),
+    ("S4 cell (repolish)", {"cell": True}),
+    ("S5 coords", {"coords": True}),
+    ("S6 uiso", {"uiso": True}),
+    ("S7 size_strain", {"size_strain": True}),
+    ("S8 profile_lorentzian", {"profile_lorentzian": True}),
+    ("S9 profile_asymmetry", {"profile_asymmetry": True}),
+)
+
+_DEFAULT_NEUTRON_MIXED_OCC = (
+    ("S0 scale+background", {"scale": True, "background": {"coeffs": 6}}),
+    ("S1 cell", {"cell": True}),
+    ("S2 displacement", {"cell": False, "displacement": {0: ["DisplaceX", "DisplaceY"]}}),
+    ("S3 cell (repolish)", {"cell": True}),
+    ("S4 occupancy", {"occupancy": True}),
+    ("S5 uiso", {"uiso": True}),
+    ("S6 profile+size_strain", {"profile": ["U", "V", "W"], "size_strain": True}),
+    ("S7 coords", {"coords": True}),
+)
+
+_MIXED_PHASE = (
+    PhaseSpec(structure_path="g.cif", phase_name="g", mixed_occupancy_groups=(("Fe1", "Al1"),)),
+)
+_TWO_PHASES = (
+    PhaseSpec(structure_path="p.cif", phase_name="a"),
+    PhaseSpec(structure_path="q.cif", phase_name="b"),
+)
+
+
+@pytest.mark.parametrize(
+    "histograms,phases,expected",
+    [
+        pytest.param([_XRAY_BB], _SINGLE_PHASE, _DEFAULT_XRAY_SINGLE, id="xray-single"),
+        pytest.param([_XRAY_BB], _TWO_PHASES, _DEFAULT_XRAY_MULTIPHASE, id="xray-multiphase"),
+        pytest.param([_NEUTRON_DS], _MIXED_PHASE, _DEFAULT_NEUTRON_MIXED_OCC, id="neutron-mixed"),
+    ],
+)
+def test_default_recipe_is_pinned_stage_by_stage(histograms, phases, expected):
+    """既定レシピのラベルとフラグを丸ごと固定する (段の追加/削除/並べ替えを検出)。"""
+    stages = build_recipe(histograms, phases)
+    assert [(s.label, dict(s.flags)) for s in stages] == [
+        (label, flags) for label, flags in expected
+    ]
+
+
+def test_default_recipe_keeps_pure_cumulative_semantics():
+    """既定レシピは ``freeze_others`` を使わない = 段のフラグは累積 (enable のみ)。
+
+    凍結は engine で「既存の解放を落とす」破壊的操作なので、既定に紛れ込むと実測基準が
+    静かに別物になる (本気フィット `build_serious_recipe` 側だけの機構に閉じる)。
+    """
+    for phases in (_SINGLE_PHASE, _TWO_PHASES, _MIXED_PHASE):
+        for stage in build_recipe([_XRAY_BB, _NEUTRON_DS], phases):
+            assert "freeze_others" not in stage.flags, stage.label
 
 
 def _histograms(multiphase: bool):

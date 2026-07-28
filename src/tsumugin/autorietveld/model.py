@@ -9,7 +9,7 @@ GSAS-II 非依存の純データ層。実 CIF/相ファイル + 実データ + �
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Mapping
 
@@ -352,6 +352,106 @@ class RefinementStage:
     label: str
     flags: Mapping[str, object] = field(default_factory=dict)
     note: str = ""
+
+
+@dataclass(frozen=True)
+class StabilityOptions:
+    """安定性最優先の自動 Rietveld で使う**診断ゲート**の設定 (WS-1, stable-auto-rietveld)。
+
+    **既定はすべて無効 = 現行と完全に同一の挙動**。`run_auto_rietveld(stability=...)` に明示的に
+    渡したときだけ有効になる (T1〜T4/CaTeO3/NaCuHCF の既存 gated テストを壊さないため)。
+    情報源はすべて `autorietveld.diagnostics.read_diagnostics` の 1 箇所 (REQ-SAR-105)。
+
+    :param require_convergence: 段の受理条件に**収束判定**を加える (REQ-SAR-101)。
+        GSAS の「改善した」は ``Max shft/sig`` が 258 でも成立する (実測) ため、Rwp の改善だけを
+        受理条件にすると**収束していない段**が通過する。未収束なら追加サイクルで回し直し、
+        それでも収束しなければ revert する。判定材料が無い (共分散なし) 場合は
+        `RefinementDiagnostics.is_converged` が ``None`` を返し、**fail open** で受理する
+        (情報が無いことを「未収束」と断じない)。
+    :param max_shift_esd: 収束とみなす ``max |shift| / esd`` の上限 (既定 1.0)。
+    :param extra_cycles: 未収束時に**同じ段のまま**追加で回す精密化の最大回数 (既定 1)。
+        0 なら追加サイクルなしで即 revert 判定。
+    :param detect_noop_stages: 段の適用後に ``n_params`` が増えず rwp/gof が**ビット同一**なら
+        「この段は何もしていない」と ledger に警告を残す (REQ-SAR-102)。**revert はしない** —
+        検出のみ。Rwp が動かないことを「改善しなかった」と解釈すると無言失敗と区別が付かない
+        (P-SAR-2) ので、区別できる形で台帳に残すのが目的。
+    :param prune_weak_vars: 段の完了時に ``esd >= |値|`` の変数を**次段以降で凍結**する
+        (REQ-SAR-103)。凍結は GSAS の ``parmFrozen`` (varyList から外す) で行い、値は動かさない。
+    :param prune_exempt_tokens: プルーニングから除外する変数名トークン (部分一致)。既定の
+        ``dAx/dAy/dAz`` は**座標シフト変数**で、収束するほど値が 0 に近づき esd との比が必ず
+        1 を超える = 「決まらなかった」の偽陽性クラスになる。無条件に凍結すると
+        **収束した瞬間に全座標が凍る**ため既定で除外する (空タプルを渡せば除外なし)。
+    :param record_correlations: 共分散から測った ``|r| >= corr_threshold`` の変数ペアを ledger に
+        記録する (REQ-SAR-104)。**この段階では検出と記録のみ**で自動凍結はしない (同時解放の
+        回避はレシピ側の判断: Phase 2)。
+    :param corr_threshold: 高相関とみなす ``|r|`` の閾値 (既定 0.9)。
+    :param max_recorded_pairs: ledger に載せる相関ペアの上限。ペア数は O(n²) で増えるため、
+        大きい配列を台帳へ流さない (② 境界の「大きい配列は ① 側で報告に畳む」と同じ規律)。
+    """
+
+    require_convergence: bool = False
+    max_shift_esd: float = 1.0
+    extra_cycles: int = 1
+    detect_noop_stages: bool = False
+    prune_weak_vars: bool = False
+    prune_exempt_tokens: tuple[str, ...] = ("dAx", "dAy", "dAz")
+    record_correlations: bool = False
+    corr_threshold: float = 0.9
+    max_recorded_pairs: int = 10
+
+    @property
+    def needs_diagnostics(self) -> bool:
+        """段ごとに共分散を読む必要があるか。
+
+        全部無効なら `read_diagnostics` を **1 度も呼ばない** — 既定経路に新しい失敗点を
+        持ち込まないため (非回帰契約)。
+        """
+        return bool(self.require_convergence or self.prune_weak_vars or self.record_correlations)
+
+    def to_dict(self) -> dict[str, object]:
+        """JSON spec へ (② 境界の往復用)。"""
+        return {
+            "require_convergence": self.require_convergence,
+            "max_shift_esd": self.max_shift_esd,
+            "extra_cycles": self.extra_cycles,
+            "detect_noop_stages": self.detect_noop_stages,
+            "prune_weak_vars": self.prune_weak_vars,
+            "prune_exempt_tokens": list(self.prune_exempt_tokens),
+            "record_correlations": self.record_correlations,
+            "corr_threshold": self.corr_threshold,
+            "max_recorded_pairs": self.max_recorded_pairs,
+        }
+
+    @classmethod
+    def from_dict(cls, d: "Mapping[str, object] | None") -> "StabilityOptions":
+        """JSON spec から組み立てる (② 到達可能性: ③ は JSON しか送れない)。
+
+        **未知キーは ``ValueError``** — 黙って無視すると「有効にしたつもりのゲートが効いて
+        いない」という最悪の静かな失敗になる (② ツールは例外を error dict へ縮退させる)。
+        ``None``/空 dict は「診断ゲートなし」= 既定 (現行と同一挙動)。
+        """
+        if not d:
+            return cls()
+        known = {f.name for f in fields(cls)}
+        unknown = sorted(set(d) - known)
+        if unknown:
+            raise ValueError(
+                f"stability に未知のキーがあります: {unknown} (既知: {sorted(known)})"
+            )
+        tokens = d.get("prune_exempt_tokens")
+        return cls(
+            require_convergence=bool(d.get("require_convergence", False)),
+            max_shift_esd=float(d.get("max_shift_esd", 1.0)),  # type: ignore[arg-type]
+            extra_cycles=int(d.get("extra_cycles", 1)),  # type: ignore[arg-type]
+            detect_noop_stages=bool(d.get("detect_noop_stages", False)),
+            prune_weak_vars=bool(d.get("prune_weak_vars", False)),
+            prune_exempt_tokens=(
+                cls.prune_exempt_tokens if tokens is None else tuple(str(t) for t in tokens)  # type: ignore[union-attr]
+            ),
+            record_correlations=bool(d.get("record_correlations", False)),
+            corr_threshold=float(d.get("corr_threshold", 0.9)),  # type: ignore[arg-type]
+            max_recorded_pairs=int(d.get("max_recorded_pairs", 10)),  # type: ignore[arg-type]
+        )
 
 
 @dataclass(frozen=True)
