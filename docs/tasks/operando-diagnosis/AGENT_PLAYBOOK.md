@@ -100,6 +100,45 @@ sequential_rietveld(
 > `check_phase_set` / `repair_frames` の分率閾値 (`min_amplitude` / `frac_delta`) も同じく Scale 基準
 > (各ツールの出力 `fraction_basis` がそれを明示する)。
 
+#### `phase_id` — 新相自動同定のツマミ (`PhaseIdConfig` の全フィールドを受ける)
+
+> ### ⚠ `wavelength` は**既定 Cu Kα1 (1.5406 Å)** — 放射光/中性子では必ず指定する
+>
+> `phase_id.wavelength` は**異方セルプリアラインと候補再スコアの線源波長**である。
+> `instrument.radiation="xray_synchrotron"` は**精密化側**の設定であって、同定側の λ はこちら。
+> 省くと同定だけが Cu の波長で d↔2θ 変換を行い、**プリアライン後のセルも候補順位も系統的に誤る**。
+>
+> **例外も警告も出ない**。症状は「候補が当たらない」「新相を足しても Rwp が下がらない」だけで、
+> ③ は「この系では新相同定が効かない」と誤って学習する。実測 K₂Mn[Fe(CN)₆] は 0.800113 Å。
+
+```python
+phase_id={"elements": ["K", "Mn", "Fe", "C", "N"],
+          "wavelength": 0.800113,          # ← Cu 以外なら必須
+          "frac_min": 0.02,                # ← Scale 基準 (上の警告)
+          "refine_new_phase_cell": True,   # ← プリアラインの on/off (唯一の escape hatch)
+          "require_full_element_system": True}
+```
+
+| キー | 既定 | いつ動かすか |
+|---|---|---|
+| `wavelength` | **1.5406 (Cu Kα1)** | **Cu 以外なら常に** (上記) |
+| `elements` | `[]` (同定しない) | 既知相の元素 + 想定元素。**文字列のリスト** (裸の `"CaTeO"` は拒否) |
+| `frac_min` | 0.02 | 新相採用の最小 **Scale** (wt% ではない) |
+| `refine_new_phase_cell` | `true` | 少数相フレームでは prealign が**支配相のピークにロック**して誤セルを返す。`appearances` の新相セルが不合理なら `false` |
+| `rerank_top_k` / `top_k` | 5 / 1 | 候補順位が DFT の軸別誤差で崩れる系で増やす |
+| `require_full_element_system` | `true` | 全元素系に限定する化学ガード。副生成物を許すときだけ `false` |
+| `require_validity` | `false` | 転移域では旧相のセル急変で新相を巻き添えに弾くため既定 off |
+| `min_rwp_gain` | 0.01 | 受理に要する**相対** Rwp 改善。junk が通るなら上げる |
+| `snr_trigger` | 20.0 | 探索発火の残差 S/N。**データセット固有** (常時発火するなら上げる・0 で無効) |
+| `max_new_phases` | 0 (無制限) | 想定相数が既知で探索を打ち切りたいときだけ |
+| `warm_start_known_phases` | `true` | 現行相を精密化格子で残差から先に減算 (少数新相の検出感度が上がる) |
+| `bic_acceptance` | `false` | 粉末では bic は相対 Rwp より**寛容**で偽相も採るので通常は触らない |
+| `hull_cutoff_ev` | 0.1 | MP 安定性フィルタ (eV/atom)。`null` で無効 |
+
+**出所**: `elements` は化学 (既知相 CIF / `identify_phases` の結果) から、`wavelength` は**測定条件**
+(instprm/ビームライン諸元) から。**残りはすべて ③ が置く policy 定数**であり、他ツールの出力から
+導くものではない。未知キーは error dict になるので、綴り誤りが黙って無視されることはない。
+
 ### 2.3 疑う (**本書の主眼**)
 
 #### J5 相集合の完全性 ★最重要

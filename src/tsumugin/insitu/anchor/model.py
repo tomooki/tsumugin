@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass, field
 from typing import Mapping
 
@@ -69,31 +68,24 @@ class AnchorConfig:
     def from_dict(cls, data: Mapping[str, object]) -> "AnchorConfig":
         """JSON 由来 dict から `AnchorConfig` を構成する (② `anchored_sequential` の JSON 経路)。
 
-        全フィールドが単純型 (bool/int/float) なので、既定インスタンスの各値の型に強制する。
+        **共有パーサ** `_config_spec.config_from_dict` に委譲する (`PhaseIdConfig.from_dict` と
+        同一実装 — 二重実装を作らない)。空 dict は全既定。
         **未知キーは ValueError** — ③ (JSON しか送れない LLM) の typo を黙って無視すると、
         設定したつもりのツマミが効かず「呼べるが黙って間違う」を再導入するため (§4.5)。
-        空 dict は全既定。② 側は ValueError を error dict へ縮退させる。
+        ② 側は ValueError を error dict へ縮退させる。
 
-        :raises ValueError: `data` に AnchorConfig に無いキーが含まれるとき
+        **共有パーサへ移した際に閉じた穴**: 旧実装は bool フィールドを ``bool(value)`` で
+        強制していたため、JSON 文字列 ``"false"`` が ``True`` になっていた
+        (``require_bond_validity``/``require_anchor_validity`` は**③ の意図と逆**に効く)。
+        ホワイトリスト切り詰め (`PhaseIdConfig` 側の穴) は元から無かったが、
+        **型の黙った読み替え**という同型の縮退は持っていた。
+
+        :raises ValueError: `data` が dict でない・AnchorConfig に無いキーを含む・
+            値の型が不正なとき
         """
-        known = {f.name for f in dataclasses.fields(cls)}
-        unknown = set(data) - known
-        if unknown:
-            raise ValueError(
-                f"unknown AnchorConfig keys: {sorted(unknown)} (known: {sorted(known)})"
-            )
-        defaults = cls()
-        kwargs: dict[str, object] = {}
-        for name, value in data.items():
-            current = getattr(defaults, name)
-            # bool は int のサブクラスなので先に判定する
-            if isinstance(current, bool):
-                kwargs[name] = bool(value)
-            elif isinstance(current, int):
-                kwargs[name] = int(value)  # type: ignore[arg-type]
-            else:
-                kwargs[name] = float(value)  # type: ignore[arg-type]
-        return cls(**kwargs)  # type: ignore[arg-type]
+        from ..._config_spec import config_from_dict
+
+        return config_from_dict(cls, data, spec_name="anchor_config")
 
 
 @dataclass(frozen=True)

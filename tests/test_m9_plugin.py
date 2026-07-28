@@ -408,3 +408,74 @@ def test_insitu_skill_teaches_none_wavelength_for_unknown_or_tof():
     )
     assert "TOF" in step6, "TOF (単一波長なし) が None の対象だと書かれていない"
     assert "省略" in step6, "「省略してはならない」旨が書かれていない"
+
+
+_OPERANDO_PLAYBOOK = Path("docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md")
+
+#: ③ の手順書が**名指しで教えるべき** `phase_id` のツマミ。既定のままでは事故る/手応えが無い
+#: ときに動かす対象であり、書いていなければ ③ は存在を知らない (カバレッジ規則④-2)。
+_PHASE_ID_KNOBS_TAUGHT = (
+    "wavelength",
+    "refine_new_phase_cell",
+    "require_full_element_system",
+    "require_validity",
+    "min_rwp_gain",
+    "snr_trigger",
+    "max_new_phases",
+    "warm_start_known_phases",
+    "bic_acceptance",
+    "rerank_top_k",
+)
+
+
+def test_phase_id_knobs_taught_by_layer3_exist_as_real_fields():
+    """★手順書が教える `phase_id` キーが `PhaseIdConfig` に実在すること (呼べない指示の検出)。
+
+    先例 `test_bond_gate_spec_keys_exist_in_real_fields` と同じ規律: **③ に新しい JSON ツマミを
+    教えたら、同じ PR で実フィールドとの突合ガードを置く**。② は未知キーを ValueError にするので
+    「黙って間違う」形にはならないが、③ が手順書どおり送って実行時に落ちる前に CI で気づく。
+    """
+    import dataclasses  # noqa: PLC0415
+
+    from tsumugin.insitu.model import PhaseIdConfig  # noqa: PLC0415
+
+    fields = {f.name for f in dataclasses.fields(PhaseIdConfig)}
+    missing = [k for k in _PHASE_ID_KNOBS_TAUGHT if k not in fields]
+    assert not missing, f"手順書が教える phase_id キーが PhaseIdConfig に実在しない: {missing}"
+
+
+def test_layer3_docs_teach_the_phase_id_knobs():
+    """★③ の 2 文書が `phase_id` の主要ツマミを名指しすること。
+
+    **これが Issue #97 型の defect の ③ 側の半分**: ② に配線しても手順書が名指ししなければ
+    ③ は使わない。旧状態では ② が 7 キーしか受けず、手順書も `elements`/`frac_min`/`top_k`
+    しか教えていなかった (両側が揃って「無い機能」になっていた)。
+    """
+    for doc in (_SKILL, _OPERANDO_PLAYBOOK):
+        text = doc.read_text(encoding="utf-8")
+        missing = [k for k in _PHASE_ID_KNOBS_TAUGHT if k not in text]
+        assert not missing, f"{doc}: phase_id のツマミを教えていない: {missing}"
+
+
+def test_layer3_docs_warn_that_phase_id_wavelength_defaults_to_cu():
+    """★★`wavelength` の既定が **Cu Kα1** である警告が ③ の 2 文書にあること。
+
+    名指し (上のテスト) だけでは足りない: このツマミの危険は「既定が Cu なので**放射光系列で
+    黙って誤る**」ことにあり、症状は例外ではなく「候補が当たらない」だけである。実装の既定値を
+    直に読んで、その数値が文書に書かれていることを確かめる (実装が変わったら文書も直させる)。
+    """
+    from tsumugin.insitu.model import PhaseIdConfig  # noqa: PLC0415
+
+    default = PhaseIdConfig().wavelength
+    assert default == 1.5406, f"実装の既定波長が変わった: {default} — 文書の警告を更新すること"
+    for doc in (_SKILL, _OPERANDO_PLAYBOOK):
+        text = doc.read_text(encoding="utf-8")
+        hits = [ln for ln in text.splitlines() if "wavelength" in ln and str(default) in ln]
+        assert hits, (
+            f"{doc}: phase_id.wavelength の既定 ({default} = Cu Kα1) を明示した行が無い — "
+            "③ は放射光/中性子系列でも既定のまま回し、プリアライン/再スコアが系統的に誤る"
+        )
+        assert re.search(r"(放射光|中性子).{0,40}(必ず|常に)|Cu 以外", text), (
+            f"{doc}: 非 Cu 線源で波長指定が必須である旨の指示が無い"
+        )
+
