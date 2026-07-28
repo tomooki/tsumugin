@@ -137,7 +137,11 @@ def _observed_with_noise(backend, phases, tt, *, seed: int = 0, rel: float = 1e-
     χ² が実質的に非ゼロになり、σ は「共分散由来の意味のある正値」になる — 主張どおりのものを
     検証する形に戻す (実装側の ``var > 0`` ガードは緩めない: 負/非有限は依然として異常)。
 
-    ノイズは ``default_rng(seed)`` 固定でプラットフォーム間もビット同一 (NFR-102)。
+    ノイズ**配列そのもの**は ``default_rng(seed)`` 固定なので実行間・プラットフォーム間で
+    ビット同一 (numpy が Generator の再現性を保証する)。⚠ **下流まで含めてビット同一とは主張
+    しない** — χ² や σ は BLAS 実装に依存し、それがまさに本ヘルパーを作った理由である
+    (プラットフォーム間の一致を検証しているテストは存在しない; NFR-102 の「乱数種固定で
+    ビット同一」は同一環境内の再現性として確認している)。
     """
     y = backend.simulate(tuple(phases), tt)
     rng = np.random.default_rng(seed)
@@ -236,7 +240,7 @@ def test_refine_replaces_stale_sigma_with_current_release_only():
     backend = SimulatedBackend(peak_fwhm=0.2)
     tt = _grid()
     truth = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.0, 5.0, 5.0), scale=1.0)
-    y = backend.simulate((truth,), tt)
+    y = _observed_with_noise(backend, (truth,), tt)
 
     stale = LatticeParams(
         5.0, 5.03, 5.0, sigma={"a": 0.5}, sigma_source="covariance"
@@ -337,7 +341,7 @@ def test_refine_lattice_sigma_excludes_non_identifiable_angle():
     backend = SimulatedBackend(peak_fwhm=0.2)
     tt = _grid()
     truth = _phase(a=5.0, scale=1.0)  # a=b=c=5.0, alpha=beta=gamma=90 (既定)
-    y = backend.simulate((truth,), tt)
+    y = _observed_with_noise(backend, (truth,), tt)
 
     start = PhaseInstance(phase_ref="P", lattice=LatticeParams(5.03, 4.97, 5.02), scale=1.0)
     model = RefinementModel(
