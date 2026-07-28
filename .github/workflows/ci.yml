@@ -1,0 +1,95 @@
+name: CI
+
+# 【このワークフローが守る範囲】
+#   CI で回すのは **fast tier (`-m "not gsas"`) と lint とフロント**だけである。実 GSAS-II 精密化
+#   (`-m gsas`, 85 件・~50 分) は GSAS-II 本体が PyPI 非公開でソースツリー + 事前ビルド済み
+#   バイナリを要するため runner では再現できない — **gated は引き続きローカル実行**であり、
+#   CLAUDE.md の運用 (PR 前に `uv run pytest -m gsas`) は CI で置き換わらない。
+#
+# 【なぜ `--all-extras` 固定なのか】
+#   CLAUDE.md の実害記録: プレーン `uv sync` では gsas extra が、`--extra gsas` 単独では
+#   nested/mp/mcp が外れる (`uv sync` は指定 extra 以外を削除する)。extras が欠けた環境では
+#   fastapi/pymatgen/dynesty が import できず **workbench/mp 系が大量 fail する** — これを
+#   「本体の回帰」と誤読した事故が実際にあった (2026-07-27, 22 件/46 件の誤報告 2 回)。
+#   CI が常に `--all-extras --frozen` で回ることで、この誤読の余地を構造的に消す。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一 ref の古い実行は打ち切る (private repo なので minutes を無駄にしない)。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff (line-length 100, ピン 0.14.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      # ruff は **dev 依存のピン (0.14.0) を使う**。uvx/最新解決は使わない —
+      # 新バージョンの新既定規則で既存コードが突然大量 flag される (実測 0.16.0 で 586 件)。
+      - run: uv sync --all-extras --frozen
+      - run: uv run ruff check src tests
+
+  test:
+    name: pytest fast tier (not gsas)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      # `--frozen` は uv.lock を正とし、pyproject と乖離していたら**失敗させる**
+      # (lock 更新を忘れた PR を通さない)。
+      - run: uv sync --all-extras --frozen
+      # 除外の理由:
+      #   gsas  … GSAS-II 本体 (ソースツリー + バイナリ) が runner に無い
+      #   agent … ローカル `claude` CLI への実サブスクリプション疎通 (ネットワーク + 認証)
+      # それ以外の optional マーカー (mcp/nested/mem/oed/mp) は `--all-extras` で依存が入るため
+      # 実行する。外部バイナリを要するもの (mem = Dysnomia) は conftest が auto-skip する。
+      - run: uv run pytest -m "not gsas and not agent"
+
+  frontend:
+    name: frontend (oxlint / vitest / build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # `npm ci` ではなく `npm install` を使う (意図的):
+      #   `npm ci` は lock と package.json の**完全一致**を要求するが、本プロジェクトの lock は
+      #   Windows で生成されており、`@emnapi/*` のような**プラットフォーム別 optional 依存**の
+      #   ツリーを Linux 分まで表現できない (実測: `npm ci` が `@emnapi/core@1.11.3` 等を
+      #   "Missing from lock file" と拒否。`npm install --package-lock-only --os=linux --cpu=x64`
+      #   でも解消しない — 2 つの依存が別バージョンの `@emnapi` を要求するため)。
+      #   lock は引き続きコミットされバージョンを固定するが、**厳密一致のゲートは諦める**。
+      #   厳密一致を取り戻したいなら lock を Linux 側で生成し直す必要がある (別途)。
+      - run: npm install --no-audit --no-fund
+      - run: npm run lint
+      - run: npm test
+      # `npm run build` は `tsc -b && vite build` = **型検査も兼ねる** (strict)。
+      # dist は workbench FastAPI が配信するため、ビルドが壊れると GUI が配信できない。
+      - run: npm run build
