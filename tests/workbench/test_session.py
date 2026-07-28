@@ -2784,10 +2784,18 @@ def test_resolve_new_phase_approval_approve_reaches_add_phase(tmp_path, monkeypa
             ]
 
     import tsumugin.insitu.phaseid as phaseid_module
+    import tsumugin.mp.client as mp_client_module
     import tsumugin.mp.provider as mp_provider_module
 
     monkeypatch.setattr(phaseid_module, "MPMaterializer", _FakeMaterializer)
     monkeypatch.setattr(mp_provider_module, "MPReferenceProvider", lambda *a, **kw: _FakeProvider())
+    # 【MP クライアント自体も stub する】: `identify_and_add_phase` は provider/materializer を
+    #   組む前に `MPRestClient()` を構築し、**API キーが無いと ValueError** になる
+    #   (env → `.env` の順に探す)。provider/materializer を差し替えても client の構築は走るため、
+    #   ここを塞がないと**「その機械に MP キーがあるか」でテストの合否が変わる**
+    #   (開発機の `.env` にはキーがあるのでローカルでは不可視。CI で fail して判明, 2026-07-28)。
+    #   stub 済みの provider/materializer は client を使わないので object() で足りる。
+    monkeypatch.setattr(mp_client_module, "MPRestClient", lambda *a, **kw: object())
 
     result = session.resolve_approval("np-0", decision="approve")
 
