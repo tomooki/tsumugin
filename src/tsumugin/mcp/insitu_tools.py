@@ -733,8 +733,6 @@ def sequential_rietveld(
         Ca3TeO6/CaTe3O8 が delta CaTeO3 に勝った)。``null`` でゲート無効 (従来動作)。
         足切りは ledger の ``m9_phaseid_skipped`` に候補名/スコア付きで残る
 
-        ``auto_freeze_minor_cells`` と同じ basis 注意)
-
         【§4.5 引数の出所】: ``elements`` は既知相の構成元素 + ③ が想定する元素 (③ が化学から
         書く。CIF/`identify_phases` の出力を参照してもよい)、``wavelength`` は**測定条件**
         (instprm/ビームライン諸元。``instrument.path`` の instprm と同じ線源のものを書く)。
