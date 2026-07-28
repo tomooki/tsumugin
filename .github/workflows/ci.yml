@@ -79,7 +79,15 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
+      # `npm ci` ではなく `npm install` を使う (意図的):
+      #   `npm ci` は lock と package.json の**完全一致**を要求するが、本プロジェクトの lock は
+      #   Windows で生成されており、`@emnapi/*` のような**プラットフォーム別 optional 依存**の
+      #   ツリーを Linux 分まで表現できない (実測: `npm ci` が `@emnapi/core@1.11.3` 等を
+      #   "Missing from lock file" と拒否。`npm install --package-lock-only --os=linux --cpu=x64`
+      #   でも解消しない — 2 つの依存が別バージョンの `@emnapi` を要求するため)。
+      #   lock は引き続きコミットされバージョンを固定するが、**厳密一致のゲートは諦める**。
+      #   厳密一致を取り戻したいなら lock を Linux 側で生成し直す必要がある (別途)。
+      - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npm test
       # `npm run build` は `tsc -b && vite build` = **型検査も兼ねる** (strict)。
