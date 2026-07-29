@@ -7,8 +7,10 @@
 **返す型は素の Python スカラ**にして GSAS のデータ構造を外へ漏らさない。`to_dict()` は
 そのまま JSON 化でき (非有限は None)、② MCP 境界へ載せられる。
 
-GSAS 依存は `read_diagnostics(gpx)` の 1 関数のみ。それ以外は numpy だけで動く純関数なので
-GSAS 無しでテストできる (`tests/autorietveld/test_diagnostics.py`)。
+GSAS (``G2Project``) に触れるのは `read_diagnostics` と `read_variable_values` の 2 関数だけで、
+どちらも同じ ``gpx.data["Covariance"]["data"]`` を読んで**素の dict/dataclass へ落とす薄い層**である
+(``*_from_cov_data`` が実処理)。それ以外は numpy だけで動く純関数なので GSAS 無しでテストできる
+(`tests/autorietveld/test_diagnostics.py`)。
 
 信頼性: 🔵 `GSASIIstrMain.py:565` の covData スキーマ + `:356-365` の Rvals キー実測。
 """
@@ -377,7 +379,11 @@ def values_from_cov_data(cov_data: Mapping[str, Any]) -> dict[str, float]:
 
 
 def read_variable_values(gpx) -> dict[str, float]:
-    """精密化済み ``G2Project`` から「変数名 → 精密化値」を読む (**GSAS 依存はここだけ**)。"""
+    """精密化済み ``G2Project`` から「変数名 → 精密化値」を読む。
+
+    `read_diagnostics` と並ぶ**もう一方の GSAS 入口** (この 2 つ以外は gpx に触れない)。
+    掘る場所も同じ ``Covariance/data`` なので、スキーマが変わったらこの 2 関数だけを直せばよい。
+    """
     try:
         cov_data = gpx.data["Covariance"]["data"]
     except (KeyError, TypeError, AttributeError):
@@ -388,8 +394,9 @@ def read_variable_values(gpx) -> dict[str, float]:
 
 
 def read_diagnostics(gpx, *, corr_threshold: float = 0.9) -> RefinementDiagnostics:
-    """精密化済み ``G2Project`` から診断を読む (**GSAS 依存はここだけ**)。
+    """精密化済み ``G2Project`` から診断を読む。
 
+    `read_variable_values` と並ぶ**もう一方の GSAS 入口** (この 2 つ以外は gpx に触れない)。
     共分散が無い (未精密化 / 失敗) 場合も空の診断を返す。
     """
     try:

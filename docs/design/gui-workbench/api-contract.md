@@ -51,7 +51,7 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
                   "cell": { "a": "9.3721(3)", "b": "9.3721(3)", "c": "6.8861(4)",
                             "alpha": "90", "beta": "90", "gamma": "120" },
                   // この相に触れるレシピ段のラベル (読み取り専用・build_recipe 由来)
-                  "stages": ["S1 cell", "S2 profile+size_strain"] }],
+                  "stages": ["S1 cell+displacement", "S2 profile+size_strain"] }],
   "channels":  [{ "id": "echem", "label": "echem", "value": "V 3.94 · I −0.20 mA · Q 41.2" }],
   "snapshots": [{ "id": "S-0310", "note": "before stage 07" }],
   "fit": {

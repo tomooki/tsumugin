@@ -2,7 +2,8 @@
 
 収束判定 (REQ-SAR-101) / esd プルーニング (103) / 相関検出 (104) は**どれも同じ情報源**
 (`gpx.data["Covariance"]["data"]`) を要するため、読み出しを 1 箇所に集約する。純関数部分は
-GSAS 非依存でここに固定する (GSAS 依存は `read_diagnostics` の 1 関数のみ)。
+GSAS 非依存でここに固定する (gpx に触れるのは `read_diagnostics` / `read_variable_values` の
+2 関数だけで、どちらも同じ ``Covariance/data`` を素の値へ落とす薄い層)。
 """
 
 from __future__ import annotations
@@ -246,3 +247,24 @@ def test_non_mapping_rvals_degrades_instead_of_raising():
     d = diagnostics_from_cov_data({"varyList": ["a"], "Rvals": None})
     assert d.max_shift_esd is None
     assert d.is_converged() is None
+
+
+def test_only_the_two_declared_functions_touch_the_gsas_project():
+    # 【目的】: モジュール docstring の「gpx に触れるのは 2 関数だけ」は**書いただけでは
+    #   守られない** — 実際、当初は 2 関数がそれぞれ「GSAS 依存はここだけ」と名乗る矛盾した
+    #   状態で出荷されかけた。3 つ目の入口が生えたらここで落として、宣言と実装を同時に
+    #   直させる (集約の目的は「スキーマが変わったら直す場所が有限であること」)。
+    import inspect
+
+    from tsumugin.autorietveld import diagnostics as mod
+
+    touching = {
+        name
+        for name, fn in vars(mod).items()
+        if inspect.isfunction(fn)
+        and fn.__module__ == mod.__name__
+        and "gpx" in inspect.signature(fn).parameters
+    }
+    assert touching == {"read_diagnostics", "read_variable_values"}, (
+        "gpx を受け取る関数が増減した。docstring の宣言 (2 関数) と合わせること"
+    )
