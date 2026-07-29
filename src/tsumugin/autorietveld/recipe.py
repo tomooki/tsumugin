@@ -325,11 +325,12 @@ def build_recipe(
         )
     )
 
-    if multiphase and not mixed_occ:
-        # 多相 (T4 型: 放射光+TOF 二相) の順序 (実測で確立):
-        # 相分率(和=1)を単独で先に → 格子+変位+プロファイル(+温度差 Dij) → 座標 → Uiso →
-        # size/微小歪みを最後に。相分率を格子と同時に解放すると噛まず、size/歪みを座標より
-        # 先に解放すると座標段階が悪化して revert するため、この順序が有効。
+    if multiphase:
+        # 【相分率は多相なら必ず単独で先に出す】: 以前は ``multiphase and not mixed_occ`` の
+        #   分岐内にあったため、**多相 + 混合占有**の入力は相分率段を丸ごと失っていた
+        #   (相分率が一度も解放されないまま完走する = 各相の量が初期値のまま)。混合占有の有無は
+        #   「占有率をいつ解放するか」の話であって相分率の要否とは無関係なので、条件を分ける。
+        #   実測の根拠は相分率を格子と同時に解放すると噛まないこと (T4)。
         stages.append(
             RefinementStage(
                 label="phase_fractions",
@@ -337,6 +338,11 @@ def build_recipe(
                 note="相分率 (各ヒストグラム和=1 制約)",
             )
         )
+
+    if multiphase and not mixed_occ:
+        # 多相 (T4 型: 放射光+TOF 二相) の順序 (実測で確立):
+        # 格子+変位+プロファイル(+温度差 Dij) → 座標 → Uiso → size/微小歪みを最後に。
+        # size/歪みを座標より先に解放すると座標段階が悪化して revert するため、この順序が有効。
         cell_flags: dict[str, object] = {
             "cell": True,
             "displacement": disp,

@@ -184,3 +184,51 @@ def test_t1_multistart_corroborates_global_optimum():
     assert 9.30 < res.best.refined_cells["fap"][0] < 9.45
     # 少なくとも 1 開始点が valid に収束している
     assert res.n_basins >= 1
+
+
+# ---------------------------------------------------------------------------
+# 傍証の空虚な True を塞ぐ (レビュー由来)
+# ---------------------------------------------------------------------------
+
+
+def test_a_single_valid_start_is_never_corroboration():
+    """★開始点 1 つで「大域最適の傍証あり」と名乗ってはならない。
+
+    非トートロジー: 単一の結果は必ず 1 クラスタになるので ``n_basins == 1`` だけを条件に
+    すると**摂動を 1 つも振っていない run が傍証を主張できる**。傍証の意味は「複数の独立な
+    出発点が同じ解へ来た」であって「クラスタが 1 つ」ではない。
+    """
+    starts = [MultistartStart(0, {"ph": (1.0, 1.0, 1.0)}, _result(9.0, 9.372))]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=1))
+
+    assert got.n_basins == 1
+    assert got.is_global_corroborated is False
+    assert any("1 ベイスン" in w for w in got.warnings), "理由を述べずに False にしない"
+
+
+def test_diverged_starts_prevent_corroboration():
+    """★4 点中 3 点が発散して 1 点だけ valid、を傍証にしてはならない。
+
+    非トートロジー: 旧実装は `n_diverged` を記録するだけで判定に使っておらず、
+    「ほとんど失敗したが残った 1 つが 1 ベイスン」を傍証として通していた。
+    """
+    starts = [
+        MultistartStart(0, {"ph": (1.0, 1.0, 1.0)}, _result(9.0, 9.372)),
+        MultistartStart(1, {"ph": (1.01, 1.01, 1.01)}, _result(9.0, 9.372)),
+        MultistartStart(2, {"ph": (0.99, 0.99, 0.99)}, _result(float("inf"), 9.372, valid=False)),
+    ]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=3))
+
+    assert got.n_basins == 1 and got.n_diverged == 1
+    assert got.is_global_corroborated is False
+    assert any("発散" in w for w in got.warnings)
+
+
+def test_two_agreeing_valid_starts_with_no_divergence_do_corroborate():
+    # 【目的】: 上 2 件が「常に False」へ縮退していないことの対照 (過剰に厳しくしていない)。
+    starts = [
+        MultistartStart(0, {"ph": (1.0, 1.0, 1.0)}, _result(9.0, 9.372)),
+        MultistartStart(1, {"ph": (1.01, 1.01, 1.01)}, _result(9.1, 9.372)),
+    ]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=2))
+    assert got.is_global_corroborated is True

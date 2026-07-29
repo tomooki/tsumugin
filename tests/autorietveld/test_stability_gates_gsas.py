@@ -320,3 +320,55 @@ def test_default_run_emits_no_stability_entries(monkeypatch):
     assert all(
         "unconverged" not in s.note and "noop" not in s.note for s in result.stage_results
     )
+
+
+@pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
+def test_stage_entry_keys_are_unchanged_on_the_default_path():
+    """★既定経路の ``m7_stage`` のキー集合を固定する (ledger ハッシュ鎖 / NFR-102)。
+
+    非トートロジー: 観測とゲートを分離するために ``max_shift_esd`` 等を ``m7_stage`` へ足したが、
+    **無条件に足すと既定経路の ledger ハッシュが変わる**。ledger は追記専用のハッシュ鎖であり
+    ビット同一性は非回帰契約なので、キーの増加は「既定は何も変えない」の破れになる。
+    """
+    hists, phases, recipe = _t1_inputs()
+    ledger = Ledger()
+    run_auto_rietveld(hists, phases, recipe=recipe, ledger=ledger, max_cyc=3)
+
+    stage_entries = [e for e in ledger.entries if e.kind == "m7_stage"]
+    assert stage_entries, "段エントリが 1 つも無い (テストが空回り)"
+    for e in stage_entries:
+        assert set(e.payload) == {
+            "stage", "rwp", "gof", "n_params", "n_obs", "reverted", "auto_frozen_cells",
+        }, f"既定経路の m7_stage にキーが増減した: {sorted(e.payload)}"
+
+
+@pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
+def test_observation_only_stability_adds_diagnostics_keys_without_changing_the_fit():
+    """★観測列 (ゲートなし) は ``m7_stage`` に診断値を足すが **Rwp を動かさない**。
+
+    非トートロジー: これまで ``max_shift_esd`` は `m7_stage_unconverged` にしか載らず、
+    そのエントリは ``require_convergence=True`` の時しか出なかった = **収束状態を観測するには
+    精密化を変えるしかない**状態だった。レシピ候補の比較では「どの案が収束していたか」を
+    フィットを変えずに測れないと公平に比較できない。
+    """
+    hists, phases, recipe = _t1_inputs()
+
+    base = run_auto_rietveld(hists, phases, recipe=recipe, max_cyc=3)
+    ledger = Ledger()
+    observed = run_auto_rietveld(
+        hists,
+        phases,
+        recipe=recipe,
+        ledger=ledger,
+        max_cyc=3,
+        stability=StabilityOptions(
+            record_weak_vars=True, record_correlations=True, detect_noop_stages=True
+        ),
+    )
+
+    assert observed.final_rwp == base.final_rwp, "観測列がフィットを変えてはならない"
+    stage_entries = [e for e in ledger.entries if e.kind == "m7_stage"]
+    assert stage_entries
+    assert any("max_shift_esd" in e.payload for e in stage_entries)
+    for e in stage_entries:
+        assert {"svd_singularities", "converged_flag", "n_weak"} <= set(e.payload)

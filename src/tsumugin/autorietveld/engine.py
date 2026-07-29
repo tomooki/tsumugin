@@ -62,7 +62,7 @@ from .model import (
     StageResult,
     ValidityReport,
 )
-from .recipe import build_recipe
+from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
 from .validity import (
     check_initial_uiso,
@@ -2047,8 +2047,21 @@ def run_auto_rietveld(
                         f"初期占有率が物理範囲 [0,1] を外れています: "
                         f"{_ph_name}/{_lab} = {_v}"
                     )
+    if recipe is not None:
+        stages = tuple(recipe)
+        # 【REQ-SAR-301 を engine 入口でも強制する】: `validate_correlation_groups` は
+        #   `recipe._finalize` からしか呼ばれておらず、**builder の不変条件にすぎなかった**。
+        #   ``recipe=`` で手組みの段列を渡す経路 (② の `stages` spec / `insitu` の recipe 注入 /
+        #   探索候補) は検証を丸ごと素通りしていた。相関群を割った段は **revert としてしか
+        #   現れず、原因が群の分割であることは Rwp から読めない** (`CorrelationGroupViolation`
+        #   の docstring) ので、GSAS を叩く前に大声で落とす。
+        validate_correlation_groups(stages, histograms=histograms)
+    else:
+        stages = build_recipe(histograms, phases)
+    # 検証は GSAS の解決より**前**に済ませる — 不正なレシピは GSAS が無い環境でも同じ
+    # ``CorrelationGroupViolation`` で落ちるべきであり (入力の誤りは backend の有無と無関係)、
+    # そうしないと本検証のテストが GSAS 導入環境でしか回らなくなる。
     g2sc = _g2sc()
-    stages = tuple(recipe) if recipe is not None else build_recipe(histograms, phases)
     ledger = ledger if ledger is not None else Ledger()
     radiations = [h.radiation for h in histograms]
 
@@ -2630,20 +2643,31 @@ def run_auto_rietveld(
                         "note": "段の受理/revert は rwp_data で判定した (REQ-SAR-203)",
                     },
                 )
-            ledger.append(
-                "m7_stage",
-                {
-                    "stage": stage.label,
-                    "rwp": rwp,
-                    "gof": gof,
-                    "n_params": nvar,
-                    # 【n_obs】: 段ごとの BIC (= χ² + n_params·ln(n_obs)) を**このエントリだけから**
-                    #   導出できるようにする (GUI の LEDGER 表示)。レンジ制限適用後の実点数。
-                    "n_obs": _nobs(gpx),
-                    "reverted": reverted,
-                    "auto_frozen_cells": list(auto_frozen),
-                },
-            )
+            stage_entry: dict[str, object] = {
+                "stage": stage.label,
+                "rwp": rwp,
+                "gof": gof,
+                "n_params": nvar,
+                # 【n_obs】: 段ごとの BIC (= χ² + n_params·ln(n_obs)) を**このエントリだけから**
+                #   導出できるようにする (GUI の LEDGER 表示)。レンジ制限適用後の実点数。
+                "n_obs": _nobs(gpx),
+                "reverted": reverted,
+                "auto_frozen_cells": list(auto_frozen),
+            }
+            if stab.needs_diagnostics and diagnostics is not None:
+                # 【観測とゲートの分離 (REQ-SAR-101/103)】: これまで ``max_shift_esd`` は
+                #   `m7_stage_unconverged` にしか載らず、そのエントリは
+                #   ``require_convergence=True`` の時しか出なかった = **収束状態を観測するには
+                #   精密化を変えるしかない**状態だった。レシピ候補を比較する計測では、観測列
+                #   (フィットを変えない) とゲート列 (受理条件を変える) を分けられないと
+                #   「どの案が収束していたか」を公平に測れない。
+                #   ⚠ **条件付きで足す**こと — 無条件にキーを増やすと既定経路の ledger
+                #   ハッシュ鎖が変わり、ビット同一性の非回帰契約 (NFR-102) を壊す。
+                stage_entry["max_shift_esd"] = finite_or_none(diagnostics.max_shift_esd)
+                stage_entry["svd_singularities"] = diagnostics.svd_singularities
+                stage_entry["converged_flag"] = diagnostics.converged
+                stage_entry["n_weak"] = len(diagnostics.weak_vars)
+            ledger.append("m7_stage", stage_entry)
 
         # --- 決まらなかったパラメータの報告 (+ opt-in の最終研磨) ---
         # 【なぜ最終なのか】: ここで残っている ``esd >= |値|`` は「まだ決まっていない」ではなく

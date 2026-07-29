@@ -197,3 +197,90 @@ def _phases(multiphase: bool, mixed_occ: bool):
     if multiphase:
         out.append(PhaseSpec(structure_path="q.cif", phase_name="b"))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 既定段列のピン留め (比較の基準を固定する)
+# ---------------------------------------------------------------------------
+#
+# 上の【削除済み】が消したのは「cell 単独 → 変位は後段」という**棄却された規定**であって、
+# 「既定段列を固定すること」自体ではない。ところが削除の際にピン留めごと失われ、既定レシピの
+# 段列は**どのテストでも固定されていない**状態になっていた。10 案を既定と比較して選ぶには
+# 基準が動かないことが前提なので、現行の実測ベースライン
+# (T1 9.80617 / T2 4.3331 / T3 6.6602 / CaTeO3 12.1975) が載っている段列をここで固定する。
+# ⚠ ここを変える差分は T1-T4/CaTeO3 の基準値すべてを無効化する — 意図的な変更なら
+#    ベンチマークの再測定とセットで行うこと。
+
+_XRAY_SINGLE = (
+    "S0 scale+background",
+    "S1 cell+displacement",
+    "S2 profile+size_strain",
+    "S3 coords",
+    "S4 uiso",
+    "S5 profile_lorentzian",
+    "S6 profile_asymmetry",
+)
+_NEUTRON_MIXED_OCC = (
+    "S0 scale+background",
+    "S1 cell+displacement",
+    "S2 occupancy",
+    "S3 uiso",
+    "S4 profile+size_strain",
+    "S5 coords",
+)
+_XRAY_MULTIPHASE = (
+    "S0 scale+background",
+    "S1 phase_fractions",
+    "S2 cell+displacement+profile",
+    "S3 coords",
+    "S4 uiso",
+    "S5 size_strain",
+    "S6 profile_lorentzian",
+    "S7 profile_asymmetry",
+)
+
+
+def test_default_xray_single_phase_sequence_is_pinned():
+    labels = tuple(s.label for s in build_recipe([_XRAY_BB], _SINGLE_PHASE))
+    assert labels == _XRAY_SINGLE
+
+
+def test_default_neutron_mixed_occupancy_sequence_is_pinned():
+    phases = (PhaseSpec(structure_path="p.cif", phase_name="g",
+                        mixed_occupancy_groups=(("Fe1", "Al1"),)),)
+    labels = tuple(s.label for s in build_recipe([_NEUTRON_DS], phases))
+    assert labels == _NEUTRON_MIXED_OCC
+
+
+def test_default_xray_multiphase_sequence_is_pinned():
+    phases = (
+        PhaseSpec(structure_path="a.cif", phase_name="a"),
+        PhaseSpec(structure_path="b.cif", phase_name="b"),
+    )
+    labels = tuple(s.label for s in build_recipe([_XRAY_BB], phases))
+    assert labels == _XRAY_MULTIPHASE
+
+
+def test_multiphase_with_mixed_occupancy_still_releases_phase_fractions():
+    """★多相 + 混合占有が**相分率段を失っていた** (`multiphase and not mixed_occ` の穴)。
+
+    非トートロジー: 混合占有の有無は「占有率をいつ解放するか」の話であって相分率の要否とは
+    無関係なのに、条件が AND で結ばれていたため、この組合せだけ `phase_fraction_sum` が
+    一度も出ず**各相の量が初期値のまま完走**していた。Rwp には「多相なのに量が動かない」
+    としてしか現れず、段列を見ないと気づけない。ベンチマークにこの組合せが無いため
+    (T4 は多相だが混合占有なし・T2 は混合占有だが単相) 実測でも露出していなかった。
+    """
+    phases = (
+        PhaseSpec(structure_path="a.cif", phase_name="a",
+                  mixed_occupancy_groups=(("Fe1", "Al1"),)),
+        PhaseSpec(structure_path="b.cif", phase_name="b"),
+    )
+    stages = build_recipe([_NEUTRON_DS], phases)
+    labels = [s.label for s in stages]
+
+    assert any("phase_fractions" in lab for lab in labels), labels
+    # 混合占有の解放順序 (占有率 → Uiso; 中性子コントラスト) は保たれること。
+    occ_i = next(i for i, lab in enumerate(labels) if "occupancy" in lab)
+    uiso_i = next(i for i, lab in enumerate(labels) if lab.endswith("uiso"))
+    frac_i = next(i for i, lab in enumerate(labels) if "phase_fractions" in lab)
+    assert frac_i < occ_i < uiso_i

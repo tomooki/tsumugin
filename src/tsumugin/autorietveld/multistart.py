@@ -42,7 +42,9 @@ class RietveldMultistartResult:
     :param n_starts: 実行開始点数。
     :param n_diverged: 発散 (final_rwp 非有限) で除外した開始点数。
     :param n_basins: 収束先ベイスン数 (valid 開始点を格子一致でクラスタ)。
-    :param is_global_corroborated: n_basins == 1 (大域最適の傍証あり)。
+    :param is_global_corroborated: 大域最適の傍証あり = **1 ベイスン かつ valid が 2 点以上
+        かつ発散なし**。「1 ベイスン」だけでは開始点 1 つで空虚に成立するため足りない
+        (傍証の意味は「複数の独立な出発点が同じ解へ来た」であって「クラスタが 1 つ」ではない)。
     :param warnings: 縮退・全滅などの警告。
     """
 
@@ -149,6 +151,20 @@ def summarize_multistart(
         warnings.append(f"収束先が {n_basins} ベイスンに分岐 (大域最適は未確定)")
     if executed and not valid_results:
         warnings.append("valid な収束が得られませんでした (全開始点が発散/非物理)")
+    # 【傍証は「1 ベイスン」だけでは足りない】: ``n_basins == 1`` は開始点が 1 つでも成立する
+    #   (単一の結果は必ず 1 クラスタ) ため、**空虚に True** になっていた — 摂動を 1 つも
+    #   振っていない run が「大域最適の傍証あり」と名乗れる状態だった。加えて 5 点中 4 点が
+    #   発散して 1 点だけ valid でも通っていた。傍証の意味は「**複数の独立な出発点が同じ解へ
+    #   来た**」なので、比較対象が 2 つ以上あることと、発散が無いことを要求する。
+    corroborated = n_basins == 1 and len(valid_results) >= 2 and n_diverged == 0
+    if n_basins == 1 and not corroborated:
+        if len(valid_results) < 2:
+            warnings.append(
+                f"valid な開始点が {len(valid_results)} 点しかないため傍証にならない "
+                "(1 点は必ず 1 ベイスンになる)"
+            )
+        if n_diverged:
+            warnings.append(f"{n_diverged} 点が発散したため傍証を主張しない")
     best_index, best = select_best(starts)
     return RietveldMultistartResult(
         best=best,
@@ -157,7 +173,7 @@ def summarize_multistart(
         n_starts=len(executed),
         n_diverged=n_diverged,
         n_basins=n_basins,
-        is_global_corroborated=(n_basins == 1),
+        is_global_corroborated=corroborated,
         warnings=tuple(warnings),
     )
 
