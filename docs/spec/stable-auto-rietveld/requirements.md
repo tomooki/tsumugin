@@ -74,10 +74,29 @@ Histograms['RestraintSum'] = pSum  # ← 報告はゲートの外 (効いてい�
 → headless では **目的関数は拘束を見ないのに勾配/Hessian だけが引っ張られる**不整合な最適化。
 Issue #112 で実測した「小飽和摂動・target-invariant」の正体。
 
-**回避口**: `G2strMain.Refine(GPXfile, dlg=…)` は公開パラメータ。`G2Project.refine()` が
-渡していないだけなので、duck-typed スタブを渡せば有効化できる。
-⚠ ただし `GSASIIstrMain` 430 行 `if dlg: break  # refining interactively` により、
-**特異行列時の自動パラメータ削除+再試行を失う**。
+**回避口 (2026-07-29 実測で確定)**: `G2strMain.Refine(GPXfile, dlg=…)` は公開パラメータ。
+`G2Project.refine()` が渡していないだけなので、duck-typed スタブを渡せば**本当に有効になる**。
+
+対照実験 (PbSO4, S–O ターゲット 1.9 / 2.3 Å, weight 1e5):
+
+| | 1.9 | 2.3 |
+|---|---|---|
+| 既定 (dlg なし) S–O2 | 1.411132 Å | 1.411132 Å ← **ビット同一** |
+| 既定 `RestraintSum` | 4.66e9 | 3.69e9 ← 下がらない |
+| **スタブ経路** S–O2 | 1.411132 Å | **1.542264 Å** ← ターゲットに追従 |
+| **スタブ経路** `RestraintSum` | 4.66e9 | **0.0876** ← 10 桁低下 |
+
+ChemComp でも独立確認: 同一拘束で Rwp 40.34906 → **1022.16**。``Rw=√(ΣM²/SumwYo)`` なので
+penalty が残差ベクトル M に連結された以外に説明がつかない。
+
+**⚠ 当初の懸念 (副作用) は誤りだった**: `GSASIIstrMain:430` の `if dlg: break` が守る
+「1 個消して再試行」は **`'Hessian' not in deriv type` の else 分岐にしかない**。既定の
+analytic Hessian では `result[1] is None` が :326-329 で先に break するため到達しない。
+弱い変数のドロップは `HessianLSQ.dropTerms` にあり dlg を見ない。完全縮退・真の特異行列の
+両方で dlg 有無が**完全同一**であることを実測した。**失うものは無い。**
+
+既定 OFF は維持するが、根拠は「Rwp の意味が penalty 込みに変わり段の受理/revert 判定が
+変質する」+「母数が実質増える」である (自動プルーニング喪失ではない)。
 
 ---
 
