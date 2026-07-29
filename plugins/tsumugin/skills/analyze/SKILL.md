@@ -15,7 +15,7 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 | ツール | 役割 | 入出力 |
 |---|---|---|
-| `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル**。任意で `stages` (追加段階, 下記) / `max_cyc` |
+| `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル**。任意で `stages` (追加段階, 下記) / `max_cyc` / **`search` (レシピ探索, 下記)** |
 | `propose_next_actions` | 計器 (診断) | 直前結果 + 残差シグネチャ → `ActionProposal[]` (rationale/priority/**safe**) |
 | `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行。`stages`/`max_cyc` も同様に渡せる |
 
@@ -91,6 +91,62 @@ Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発�
 `refine_with_revisions` を反復するときは持ち回ること (省略すると追加段階が消える)。
 
 `max_cyc` (既定 12) は各段階の最大精密化サイクル数。収束が遅い/振動する系で増やす。
+
+## どのレシピで回すかを**測って決める** (`search`)
+
+**単一のレシピは全データで勝てない。** 実測 (真の基準表 2026-07-29):
+
+| データ | `default` | `serious` | チュートリアル |
+|---|---|---|---|
+| T1 fluoroapatite | **9.81%** | 10.45% | 10.38% |
+| T2 garnet | 4.33% | 4.32% | 5.18% |
+| T3 PbSO4 joint | 6.66% | **6.10%** | 6.71% |
+| CaTeO3 | 12.20% | 12.19% | 9.40% |
+
+段の順序を*当てる*ことはできない (試料変位段の配置 4 通り × 4 データで、どの配置でも 1 つ以上が
+落ちた)。**候補を独立に実行して測り、規則で選ぶ**:
+
+```json
+{"search": true}
+```
+
+| いつ使うか | 指定 | 効果 |
+|---|---|---|
+| **単一フレームの本気解析** (既定の一手にしてよい) | `"search": true` | `default` / `serious` / `adaptive` を実行して最良を採る |
+| 候補を絞りたい (時間/失敗した候補の除外) | `"search": ["default", "serious"]` | 指定した候補だけ |
+| **探索で勝ったレシピで反復を続けたい** | `"search": ["serious"]` | そのレシピ 1 本で回す (② で既定レシピを置換する唯一の JSON 経路) |
+| 同点や割れ方の判定を変えたい | `"search_config": {"rwp_tie_eps": 0.1, "disagreement_rwp_eps": 0.5}` | 同点近傍は **BIC** で裁定 / 僅差で答えが割れたら警告 |
+
+**⛔ operando (`sequential_rietveld` / `anchored_sequential`) では使わない。** フレーム数 ×
+候補数の積は時間予算に収まらない。時間を安定性と引き換えにできるのは単一フレーム解析だけである。
+
+### 選択規則 (読み方)
+
+1. **収束**していない候補は落とす — Rwp が改善したことは収束を意味しない
+2. **物理妥当性 fail** は降格する (**除外はしない**。所見付きで候補表に残る)
+3. **観測集合 (データレンジ) が違う候補**は Rwp/BIC では上に来られない — 勝てるのは
+   「収束した/妥当だった」という点だけ。χ² は観測点数に比例するので、**データを捨てた候補は
+   BIC で必ず勝ってしまう** (実測 T1: レンジを切った候補が BIC 17875→16785 で既知最良を
+   Rwp 差 0.019 で "上回った")
+4. 残りから Rwp 最良
+5. **Rwp 差 < 0.1 ポイントは BIC で裁定** — 候補は母数が違うので Rwp 比較は不公平
+
+返り値の `search` を必ず読む:
+
+| キー | 読み方 |
+|---|---|
+| `selected` / `selection_reason` | 採用候補と、`rwp` で勝ったのか `bic` で裁定されたのか |
+| `candidates[].tier_label` | `収束∧妥当` / `収束∧妥当性fail` / `未収束∧…` / `実行失敗` |
+| `convergence_fallback` | **true なら全候補が未収束**でフィルタを外して選んだ = 信頼度が低い |
+| `order_dependent` + `warnings` | **true なら Rwp は僅差なのに格子/相分率が割れている** |
+
+`order_dependent` が立ったら、その解は**順序依存**である。Rwp を報告して終わらせず、
+**追加測定 (`propose_discriminating_measurements`) か手動確認をユーザーに提案する**こと。
+`convergence_fallback` が立ったら `max_cyc` を増やす / `stability.require_convergence` +
+`extra_cycles` を足す / データレンジを疑う。
+
+`final_rwp` 以下は**採用候補の結果**であり、`specs` も採用候補の入力 (適応候補が変えたレンジ/
+背景を含む) が返る。そのまま `refine_with_revisions` へ持ち回れば同じ土俵で継続できる。
 
 ## 段が「黙って壊れている」を疑う (`stability`)
 

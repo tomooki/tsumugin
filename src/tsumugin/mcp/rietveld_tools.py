@@ -30,6 +30,12 @@ from ..autorietveld import (
     StabilityOptions,
     ValidityReport,
 )
+from ..autorietveld.search import (
+    CANDIDATE_NAMES,
+    RecipeCandidate,
+    SearchConfig,
+    run_recipe_search,
+)
 from ._degrade import degrade_oserror
 from ._recipe_spec import stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
@@ -43,6 +49,10 @@ from ..refine_loop.serialization import (
 from .operando_diag_tools import residual_report_to_dict
 
 Runner = Callable[[AnalysisInput], AutoRietveldResult]
+#: 探索 (REQ-SAR-500) 用の候補ランナー。``Runner`` (AnalysisInput 版) とは**別の型**である —
+#: 候補はレシピもヒストグラム (適応層のレンジ) も変えるので `AnalysisInput` では表せない。
+#: `runner` と同じくテスト注入専用のシームで、実運用経路は JSON spec (``search``) である。
+SearchRunner = Callable[[RecipeCandidate], AutoRietveldResult]
 
 __all__ = [
     "RIETVELD_TOOLS",
@@ -187,6 +197,78 @@ def _build_input(
     )
 
 
+def _run_search(
+    inp: AnalysisInput,
+    names: Sequence[str],
+    search_config: Mapping[str, object] | None,
+    max_cyc: int,
+    opts: StabilityOptions,
+    search_runner: "SearchRunner | None",
+) -> dict:
+    """レシピ探索を実行し「採用候補の結果 + 候補表」を返す (REQ-SAR-500/501)。
+
+    返り値は**通常の `auto_rietveld` と同じ形**に ``search`` キーを足したものにする。③ が
+    「探索したときだけ別の読み方をする」必要が無いようにするためで、``specs`` は**採用候補の
+    入力** (適応層が変えたレンジ/背景を含む) を返すので、そのまま `refine_with_revisions` へ
+    持ち回れる。
+    """
+    from dataclasses import replace as _replace
+
+    summary = run_recipe_search(
+        inp.histograms,
+        inp.phases,
+        names=names,
+        background_coeffs=inp.background_coeffs,
+        config=SearchConfig.from_dict(search_config),
+        runner=search_runner,
+        # ③ が渡した追加段階は**全候補の末尾**に足す (どの候補で試したかで意味が変わらない)。
+        candidates=None if not inp.extra_stages else _with_extra_stages(inp, names),
+        max_cyc=max_cyc,
+        stability=opts,
+    )
+    selected = summary.selected
+    if selected is None or selected.result is None:
+        return {
+            "error": "探索の全候補が失敗しました: " + " / ".join(summary.warnings),
+            "error_type": "RecipeSearchFailed",
+            "search": summary.to_dict(),
+        }
+    chosen = _replace(
+        inp,
+        histograms=selected.candidate.histograms,
+        background_coeffs=selected.candidate.background_coeffs,
+    )
+    payload = _result_to_dict(selected.result, chosen)
+    payload["search"] = summary.to_dict()
+    return payload
+
+
+def _with_extra_stages(inp: AnalysisInput, names: Sequence[str]) -> tuple[RecipeCandidate, ...]:
+    """全候補のレシピ末尾に ``AnalysisInput.extra_stages`` を足した候補列を組む。"""
+    from dataclasses import replace as _replace
+
+    from ..autorietveld.search import build_candidates
+
+    base = build_candidates(
+        inp.histograms, inp.phases, background_coeffs=inp.background_coeffs, names=names
+    )
+    return tuple(_replace(c, stages=(*c.stages, *inp.extra_stages)) for c in base)
+
+
+def _search_names(search: "bool | Sequence[str]") -> tuple[str, ...]:
+    """``search`` 引数を候補名の列へ正規化する。
+
+    ``True`` は全候補、名前の列は**その部分集合**を意味する。名前を 1 つだけ渡す使い方
+    (``["serious"]``) は「そのレシピ 1 本で回す」に等しく、**探索で勝ったレシピを次の反復でも
+    使い続ける唯一の JSON 経路**である (② には既定レシピを丸ごと差し替える引数が無い)。
+    """
+    if search is True:
+        return CANDIDATE_NAMES
+    if isinstance(search, str):  # "serious" のような単一名を親切に受ける
+        return (search,)
+    return tuple(str(n) for n in search)
+
+
 @degrade_oserror
 def auto_rietveld(
     histograms: Sequence[Mapping[str, object]],
@@ -196,8 +278,11 @@ def auto_rietveld(
     stages: Sequence[Mapping[str, object]] | None = None,
     max_cyc: int = 12,
     stability: Mapping[str, object] | None = None,
+    search: "bool | Sequence[str] | None" = None,
+    search_config: Mapping[str, object] | None = None,
     seed: int = 0,
     runner: Runner | None = None,
+    search_runner: SearchRunner | None = None,
 ) -> dict:
     """spec (JSON) を run_auto_rietveld で実行し段階別/最終メトリクスを構造化して返す (計器)。
 
@@ -233,12 +318,33 @@ def auto_rietveld(
         (``unconverged``/``noop``/``pruned=N``/``bound_hits=N``) に出る。
         **未知キーは error dict へ縮退**する (黙って無視しない)。
         既定 None = 現行と同一挙動 (共分散も Controls も触らない)。``runner`` 注入時は無視される。
+    :param search: **レシピ探索** (REQ-SAR-500)。``true`` で全候補
+        (``["default", "serious", "adaptive"]``)、名前の列でその部分集合を実行し、
+        **「収束したものの中で最良」**を採る。単一レシピは全データで勝てない (実測: T1 は
+        ``default`` 9.81% / T3 は ``serious`` 6.10% が勝つ) ので、本気の単一フレーム解析では
+        探索を既定の一手にする。返り値に ``search`` (候補ごとの Rwp/収束/tier/採否と警告) が
+        付き、``final_rwp`` 以下は**採用候補の結果**になる。``specs`` も採用候補の入力を返すので
+        持ち回れば同じ土俵で継続できる。⚠ **operando (`sequential_rietveld`) では使わない**
+        — フレーム数 × 候補数の積は時間予算に収まらない (REQ-SAR-502)。既定 None (探索なし・
+        現行と同一)。
+    :param search_config: 探索の判定閾値 ``{"rwp_tie_eps": 0.1, "disagreement_rwp_eps": 0.5,
+        "cell_rel_tol": 0.001, "fraction_abs_tol": 0.02, "require_convergence": true}``。
+        ``rwp_tie_eps`` 以内の同点は **BIC** で裁定し (母数の違う候補を Rwp だけで比べない)、
+        ``disagreement_rwp_eps`` 以内で答えが割れたら**順序依存の警告**を出す (REQ-SAR-501)。
+        未知キーは error dict へ縮退する。既定 None (既定値)。
     :param seed: 既定 GSAS runner 用乱数種
     :param runner: 注入 runner (None なら GSAS 駆動)。テスト用の内部シーム
+    :param search_runner: 探索用の候補ランナー注入 (テスト用の内部シーム)。``search`` 指定時に
+        ``runner`` ではなくこちらが使われる — 候補はレシピもレンジも変えるため
+        ``AnalysisInput`` では表現できない
     """
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)
         opts = StabilityOptions.from_dict(stability)
+        if search:
+            return _run_search(
+                inp, _search_names(search), search_config, max_cyc, opts, search_runner
+            )
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
     run = runner or _default_gsas_runner(seed, max_cyc=max_cyc, stability=opts)

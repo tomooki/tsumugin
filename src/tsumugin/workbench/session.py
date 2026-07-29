@@ -117,6 +117,11 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "m7_box_bounds": "CORE ①",
     "m7_restraints_enabled": "CORE ①",
     "m7_stage_bound_hit": "GUARD",
+    # レシピ探索 (Phase 2)。候補を 1 本回したのは通常進行なので CORE ①、**選択**は
+    # 「収束フィルタのフォールバック」「順序依存」という信頼度の所見を運ぶので GUARD
+    # (Rwp だけ見て納得されると探索の価値が消える)。
+    "m7_search_candidate": "CORE ①",
+    "m7_search_select": "GUARD",
     "transcript_message": "HUMAN",
     "agent_proposal": "AGENT ③",
     "approval_decision": "HUMAN",
@@ -179,7 +184,7 @@ def _actor_for_kind(kind: str) -> str:
 #: 適合度 (rwp/bic) を持ちうる ledger kind (api-contract.md GET /api/ledger)。ここに無い kind は
 #: 両方 null — モード切替や承認に Rwp は存在せず、直前段の値を引き継いで「見かけ上の適合度」を
 #: 作ることは台帳の誤読を招く。
-_FIT_QUALITY_KINDS = frozenset({"m7_stage", "refine_finished"})
+_FIT_QUALITY_KINDS = frozenset({"m7_stage", "refine_finished", "m7_search_candidate"})
 
 
 def _bic_from_payload(payload: dict[str, Any]) -> "float | None":
@@ -302,6 +307,31 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         ) + ("…" if len(hits) > 3 else "")
         return (
             f"stage {payload.get('stage')} hit {payload.get('n_hits')} box bound(s) [{head}]"
+        )
+    if kind == "m7_search_candidate":
+        cand = payload.get("candidate") or {}
+        tier = payload.get("tier_label") or "―"
+        err = payload.get("error")
+        if err:
+            return f"search candidate {cand.get('name')} failed: {err}"
+        return (
+            f"search candidate {cand.get('name')} ({cand.get('origin')}, "
+            f"{cand.get('n_stages')} stages) rwp={_fmt_rwp(payload.get('rwp'))} [{tier}]"
+        )
+    if kind == "m7_search_select":
+        # **何を選んだか**だけでなく**なぜ**と**信頼度**まで出す。Rwp 最小を選んだのか
+        # BIC で裁定したのか、収束フィルタが効いたのか外したのかが見えないと、
+        # 「探索したから正しい」という誤読を招く。
+        flags = []
+        if payload.get("convergence_fallback"):
+            flags.append("未収束フォールバック")
+        if payload.get("order_dependent"):
+            flags.append("順序依存")
+        suffix = f" ⚠ {', '.join(flags)}" if flags else ""
+        return (
+            f"search selected {payload.get('selected')} "
+            f"({payload.get('selection_reason')}) of {payload.get('n_candidates')} "
+            f"candidates, rwp={_fmt_rwp(payload.get('rwp'))}{suffix}"
         )
     if kind == "transcript_message":
         return "transcript message posted"
