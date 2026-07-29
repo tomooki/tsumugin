@@ -72,6 +72,16 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
     ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
+    "recipe search (REQ-SAR-500)": (
+        "auto_rietveld",
+        "レシピ探索 (Phase 2, stable-auto-rietveld): 単一レシピは全データで勝てない "
+        "(実測 T1=default 9.81% / T3=serious 6.10%) ため候補を独立実行し「収束したものの中で"
+        "最良」を採る。② は `search` (true or 候補名の列) と `search_config` (閾値) で到達し、"
+        "返り値の `search.candidates[]`/`warnings[]` に候補ごとの Rwp/収束/tier と順序依存警告 "
+        "(REQ-SAR-501) が載る。`search: [\"serious\"]` は**勝ったレシピ 1 本で回す**唯一の "
+        "JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは**意図的に露出しない** "
+        "(REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
+    ),
     "reference (M6)": ("identify_phases", "相同定 (単相/多相)"),
     "refine_loop (M8)": (
         "propose_next_actions",

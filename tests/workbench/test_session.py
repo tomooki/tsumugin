@@ -4311,3 +4311,32 @@ def test_stability_gate_entries_carry_no_fabricated_fit_quality():
 
     assert entry["rwp"] is None
     assert entry["bic"] is None
+
+
+def test_recipe_search_entries_reach_the_ledger_with_why_and_confidence():
+    # 【目的】: レシピ探索 (Phase 2) の 2 kind が LEDGER に届くこと。特に **select は GUARD** で、
+    #   「なぜ選んだか (rwp/bic)」と「信頼度の所見 (未収束フォールバック/順序依存)」まで文面に
+    #   出ること — Rwp だけ見せると「探索したから正しい」という誤読を招く。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_search_candidate",
+        {"index": 0, "candidate": {"name": "serious", "origin": "fixed", "n_stages": 59},
+         "rwp": 6.0997, "gof": 2.0588, "n_params": 60, "n_obs": 4000, "bic": 1.0,
+         "tier": 0, "tier_label": "収束∧妥当", "error": ""},
+    )
+    session.ledger.append(
+        "m7_search_select",
+        {"selected": "serious", "selection_reason": "rwp", "n_candidates": 2, "rwp": 6.0997,
+         "convergence_fallback": True, "order_dependent": True, "warnings": []},
+    )
+
+    candidate, select = session.ledger_view()["entries"][-2:]
+
+    assert [candidate["actor"], select["actor"]] == ["CORE ①", "GUARD"]
+    assert "serious" in candidate["text"] and "収束∧妥当" in candidate["text"]
+    assert "rwp" in select["text"] and "順序依存" in select["text"]
+    # 候補は実際に精密化を回した事実なので Rwp/BIC 列に出す (段と同じ扱い)。
+    assert candidate["rwp"] == pytest.approx(6.0997)
+    assert candidate["bic"] is not None
+    # 選択は適合度を持たない判断エントリ (Rwp 列に出ると段が進んだように読める)。
+    assert select["bic"] is None
