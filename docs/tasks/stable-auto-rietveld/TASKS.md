@@ -362,5 +362,5 @@ BIC で勝った** (17875 → 16785、Rwp 差はわずか 0.019)。原因は χ�
 | **3-3 元素ランク展開** | レシピ側は `element_expansion="heavy_first"` を opt-in で宣言済み。**engine 側の実展開が未実装**のため既定は `"ranks"` のまま。展開が無い宣言値は `_element_rank_labels` が `ValueError` → revert → ledger `m7_stage_error` にする (② の `_recipe_spec` は JSON 経路でより早く弾く)。以前は catch-all で「1 段で全原子解放」に**黙って**化けていた — 実装が入るまで使えないのは同じだが、silent ではなくなった。`uiso_tiers` (3-5) も同じ扱い |
 | **3-4 周回入口の最良復元** | 設計メモのみ (engine 側の作業) |
 | **4-4 Le Bail 基準線** | 設計のみ (`autorange.py` docstring に 6 手順) |
-| **WS-2 拘束・境界** | 未着手。1-4 (esd プルーニング) が入ったので restraint 有効化の前提は満たされた |
+| ~~**WS-2 拘束・境界**~~ | **完了** (本文 §WS-2 のとおり branch `feat/sar-constraints` で REQ-SAR-201/202/203 とも実装済)。着手前に書いた行がそのまま残っていた |
 | ~~**② 露出 (autorange)**~~ | **解決 (セルフレビュー HIGH-1)**: ② `propose_data_preprocessing` (`mcp/rietveld_tools.py`, MCP_TOOLS 36→37) を新設し、③ は `analyze` skill の「精密化する前に」節から呼ぶ。1 呼び出しで `two_theta_range` (→ `HistogramSpec.two_theta_limits`) / `background_terms` (→ `background_coeffs`) / `excluded_region_candidates` (→ `HistogramSpec.excluded_regions`, **承認必須**) を返す。`explained_two_theta` の到達可能性は `phases` (PhaseSpec + `refined_cell`) からサーバ側で反射位置を立てて確保した (② に反射位置を返すツールが無いため)。宣言は `tests/test_layer_coverage.py::LAYER1_FEATURES` の "data preprocessing (REQ-SAR-401/402/403)" |
