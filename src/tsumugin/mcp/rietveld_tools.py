@@ -378,6 +378,11 @@ def auto_rietveld(
         (段の受理/revert もこの値で判定する — 拘束は「引く力」であって適合の悪化ではない)。
         penalty 込みの GSAS 生値は ``final_rwp_penalized`` / ``stages[*].rwp_penalized``、
         penalty の絶対量は ``final_restraint_penalty`` に別キーで出る (拘束なしなら ``null``)。
+        ⚠ **これら 3 つは「採用状態」(段が revert されたなら revert 後) の値**で揃えてある。
+        拘束が**捨てられた試行の中で**どう振る舞ったか (誤ったターゲットなら段は正しく
+        revert されるので、そこにしか痕跡が残らない) は ledger
+        ``m7_stage_restraint_split`` の ``trial_*`` を見ること — ② の戻り値には**載せない**
+        (出版される fit を説明する数字と混ぜないため)。
         判定結果は返り値の ``undetermined_parameters`` / ``undetermined_exempt`` /
         ``frozen_parameters`` / ``final_polish`` と、ledger (``m7_stage_unconverged``/
         ``m7_stage_noop``/``m7_stage_weak_vars``/``m7_stage_rescue``/``m7_stage_prune``/

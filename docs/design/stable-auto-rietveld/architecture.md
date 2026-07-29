@@ -158,8 +158,15 @@ PbSO4 実データ・S–O 距離ターゲット 1.9 / 2.3 Å (weight 1e5)。同
 | 既定 (dlg なし) 最終 S–O2 | 1.411132 Å | 1.411132 Å | **ビット同一** = target-invariant |
 | 既定 (dlg なし) Rwp | 40.34906 | 40.34906 | ビット同一 |
 | 既定 (dlg なし) `RestraintSum` | 4.66e9 | 3.69e9 | 下がらない (最小化されていない) |
-| **スタブ経路** 最終 S–O2 | 1.411132 Å | **1.542264 Å** | ターゲット依存 = 追従している |
-| **スタブ経路** `RestraintSum` | 4.66e9 (段が revert) | **0.0876** | **10 桁の低下** = 最小化されている |
+| **スタブ経路** 試行中の `RestraintSum` | 4.66e9 (最小化されない) | 3.687e9 → **0.0845** | **10 桁の低下** = 最小化されている |
+| **スタブ経路** 試行のデータ項 Rwp | 3558.77 | **41.45** | ターゲット依存 = 追従している |
+
+⚠ **観測は「試行の中」で行う (2026-07-29 改訂)。** D4-c でデータ項判定に直した後は、誤ターゲット
+(真値 ~1.47 Å) の拘束が**データが支持する位置から遠ざける**ため、拘束が効くほどデータ項は悪化し
+**段は正しく revert される** (40.349 → 41.447)。したがって**最終 gpx の S–O2 距離は両ターゲットで
+同じ値に戻る** — 上表の初版が載せていた「スタブ経路 最終 S–O2 1.542264」は分離前の測定であり、
+今の実装では再現しない。「拘束が効くこと」と「その結果が採用されること」は別の話なので、カナリアは
+ledger `m7_stage_restraint_split` の `trial_*` (revert 後も残る観測窓) を見る。
 
 ChemComp でも同じ結論が別の指標で出る: 同一拘束 (Pb 占有 total 3.2, weight 1e4) で
 Rwp が 40.34906 → **1022.16** に変わる。`Rw = √(ΣM²/SumwYo)` なので、penalty が残差ベクトル
@@ -189,6 +196,14 @@ Rwp 3558)。→ **D4-c で解決** (呼び手への注意事項ではなく、en
 | engine | `_data_rwp(gpx, rwp, split=)` | `enable_restraints` が真のときだけ分離。偽なら `Rvals` を**1 度も読まない** |
 | 報告 | `StageResult.rwp` / `AutoRietveldResult.final_rwp` | **常にデータ項** |
 | 報告 (生値) | `*.rwp_penalized` / `final_restraint_penalty` | penalty 込みの値は別キー |
+| 報告 (試行) | ledger `m7_stage_restraint_split` の `trial_*` | 段が revert されても残る**観測専用**の値 |
+
+**報告される 3 つ組は同じ状態を指す**: `final_rwp` (データ項) / `final_rwp_penalized` (生) /
+`final_restraint_penalty` は**採用状態** (revert 後・最終研磨後) で揃える。penalty だけ捨てた
+試行の値だと「`final_rwp_penalized` は penalty 込み 3876 なのに `final_restraint_penalty` は
+最小化後の 0.08」という**存在しない状態**を報告してしまう (誤ターゲットの拘束で段が revert された
+run で実際に起きていた)。`final_restraint_penalty` は最終 gpx の `Rvals` から読み、変数の受け渡し
+ではなく**構造的に**採用状態と一致させる。捨てた試行の情報は上の `trial_*` に層を分けて残す。
 
 **縮退規則が要点**: `RestraintSum >= chisq` なら**引かない**。GSAS は `RestraintSum` を
 `dlg` ゲートの**外**で報告するので、`dlg` を渡していない精密化でも巨大な値が載る

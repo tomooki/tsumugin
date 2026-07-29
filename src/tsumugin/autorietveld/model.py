@@ -848,4 +848,14 @@ class AutoRietveldResult:
     final_polish: "FinalPolish | None" = None
     # 拘束の χ² 寄与 (``Rvals['RestraintSum']`` = pSum) の最終値。拘束が「どれだけ引いているか」を
     #   絶対量で見る唯一の窓 (0.0 = 拘束なし/無効)。
+    #   【どの状態の値か】: `final_rwp` / `final_rwp_penalized` と**同じ「採用状態」**
+    #   (最後の段が revert されたなら revert 後、最終研磨が適用されたならその後) の値であり、
+    #   最終 gpx の ``Rvals`` から読む。
+    #   **なぜ試行値ではなく採用状態なのか**: この 3 つは「出版される fit を説明する数字」の
+    #   組であり、1 つだけ捨てた試行の値だと**存在しない状態**を報告してしまう。実測 (誤った
+    #   S–O ターゲットで座標段が revert された run): ``final_rwp_penalized`` は penalty 込みの
+    #   3876 (= penalty 3.687e9 の状態) なのに ``final_restraint_penalty`` は試行が最小化した
+    #   後の 0.0845 で、この 2 つが両立する状態は存在しない。捨てた試行で拘束がどう振る舞ったかは
+    #   ledger ``m7_stage_restraint_split`` の ``trial_*`` に段ごとに残る — 報告を混ぜるのではなく
+    #   層を分けて両方見えるようにする。
     final_restraint_penalty: float = 0.0

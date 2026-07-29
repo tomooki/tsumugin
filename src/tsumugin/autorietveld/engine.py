@@ -195,6 +195,19 @@ def _data_rwp(gpx, rwp: float, *, split: bool) -> "tuple[float, float | None, fl
     return data, rwp, penalty
 
 
+def _restraint_sum(gpx) -> float:
+    """gpx の現在状態の ``Rvals['RestraintSum']`` (= penalty の二乗和) を返す。
+
+    最終報告 (`AutoRietveldResult.final_restraint_penalty`) を「採用状態」に揃えるための
+    読み出し。共分散が無い/読めない場合は 0.0 へ縮退する (fail open)。
+    """
+    try:
+        rv = gpx.data["Covariance"]["data"].get("Rvals", {})
+        return float(rv.get("RestraintSum", 0.0) or 0.0)
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return 0.0
+
+
 def _converged(gpx) -> bool:
     cov = gpx.data["Covariance"]["data"]
     return bool(cov.get("Rvals", {}).get("converged", True))
@@ -446,7 +459,7 @@ def _run_final_polish(
             raise RefinementFailedError("凍結できた変数が 0 個 (GSAS が変数名を解釈できない)")
         _refine_once(gpx, dlg)
         rwp, gof, nvar = _rvals(gpx)
-        rwp, _penalized, _penalty = _data_rwp(gpx, rwp, split=split_penalty)
+        rwp, penalized, _penalty = _data_rwp(gpx, rwp, split=split_penalty)
         if not math.isfinite(rwp):
             raise RefinementFailedError("研磨後の Rwp が非有限")
         if not _cells_physical(gpx.phases()) or not _profiles_physical(
@@ -484,6 +497,11 @@ def _run_final_polish(
             reverted=False,
             # 出版値がこの段の産物であることを ③ が読める形で残す (② は note を返す)。
             note=f"final polish; frozen_undetermined={len(frozen)}",
+            # 研磨が最終段になると `final_rwp_penalized` はこの段から採られる。ここを None の
+            # ままにすると「研磨を有効にしただけで penalty 込み Rwp が消える」= 出版値の
+            # 一貫性が研磨の有無で切り替わってしまう (`final_restraint_penalty` は最終 gpx
+            # から読むので、揃えないと両者が別の状態を指す)。
+            rwp_penalized=penalized,
         )
     )
     polish = FinalPolish(
@@ -2092,6 +2110,10 @@ def run_auto_rietveld(
         prev_gof = float("inf")
         prev_nvar = 0
         prev_penalized: float | None = None
+        # 【受理状態の RestraintSum】: `prev_penalized` と**同じ状態**を指す penalty 量。
+        #   revert したら penalty も一緒に巻き戻さないと、「rwp/rwp_penalized は採用状態・
+        #   restraint_sum は捨てた試行」という**別々の状態を混ぜた報告**になる (下の revert 分岐)。
+        prev_penalty = 0.0
         # 拘束を χ² に入れたときだけ penalty を分離する (`_data_rwp` の split 引数)。
         split_penalty = bool(stab.enable_restraints)
         last_penalty = 0.0
@@ -2224,12 +2246,23 @@ def run_auto_rietveld(
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
                 rwp, gof, nvar, converged = float("inf"), float("inf"), 0, False
                 rwp_penalized = None
+                # 失敗した精密化の penalty は**測れていない**。前段の値を残すと「この段の試行で
+                # 観測した penalty」に化けるので、採用状態の値へ戻す (rwp=inf が失敗を示す)。
+                last_penalty = prev_penalty
                 diagnostics, convergence_ok = None, None
                 ledger.append(
                     "m7_stage_error",
                     {"stage": stage.label, "error": repr(exc)[:200]},
                 )
 
+            # 【試行の観測 (REQ-SAR-203/205)】: revert は「この段の精密化そのもの」を無かった
+            #   ことにするので、**段が実際に何をしたか**は revert の前に控えておくしかない。
+            #   拘束の検証では特にこれが要る — 誤ったターゲットの拘束は「データが支持する位置
+            #   から遠ざける」ので、拘束が正しく χ² に入っているほど**データ項は悪化し段は
+            #   revert される**。最終状態だけを見ると「拘束が効いていない」と区別が付かない
+            #   (実測: penalty 3.69e9 → 0.08 まで最小化された段が、正しく revert された)。
+            #   **判定には一切使わない — 観測専用** (提案 ≠ 適用と同じ規律)。
+            trial_rwp, trial_penalized, trial_penalty = rwp, rwp_penalized, last_penalty
             reverted = False
             # 追加サイクルを使い切っても未収束の段は**受理しない** (REQ-SAR-101)。Rwp が
             # 改善していても、収束していない解の上に次段を積むと段列全体が信用できなくなる。
@@ -2274,10 +2307,12 @@ def run_auto_rietveld(
                     frozen_vars.difference_update(rescue_frozen)
                 # 復帰後の指標は「直前の受理状態」を反映する (H1: nvar も巻き戻す)。
                 rwp, gof, nvar = prev_rwp, prev_gof, prev_nvar
-                rwp_penalized = prev_penalized
+                # penalty も rwp_penalized と**同じ状態**へ巻き戻す (片方だけ試行値を残すと
+                # 報告が 2 つの状態を混ぜる)。試行の値は trial_* に控えてある。
+                rwp_penalized, last_penalty = prev_penalized, prev_penalty
             else:
                 prev_rwp, prev_gof, prev_nvar = rwp, gof, nvar
-                prev_penalized = rwp_penalized
+                prev_penalized, prev_penalty = rwp_penalized, last_penalty
 
             # 【no-op 段の検出 (REQ-SAR-102)】: revert されていないのに n_params が増えず
             #   rwp/gof がビット同一 = その段は何も精密化していない。**revert はしない**
@@ -2439,9 +2474,12 @@ def run_auto_rietveld(
                 )
             )
             # 【penalty 分離の記録】: 拘束を χ² に入れた段だけ、分離の**材料ごと**残す。
-            #   既定経路では 1 エントリも増えない (ledger のハッシュ鎖は非回帰)。
+            #   既定経路では 1 エントリも増えない (ledger のハッシュ鎖は非回帰) — 判定は
+            #   `split_penalty` が偽なら trial_penalized も rwp_penalized も None だから。
             #   「Rwp が下がったのは拘束を緩めたからでは?」を後から検算できるようにする。
-            if rwp_penalized is not None:
+            #   **無印は同じ状態を指す**: 採用状態 (revert 後)。``trial_*`` はこの段の試行
+            #   そのもの。混ぜると「拘束が効いたのに revert された」段の読み方が壊れる。
+            if rwp_penalized is not None or trial_penalized is not None:
                 ledger.append(
                     "m7_stage_restraint_split",
                     {
@@ -2449,6 +2487,16 @@ def run_auto_rietveld(
                         "rwp_data": rwp,
                         "rwp_penalized": rwp_penalized,
                         "restraint_sum": last_penalty,
+                        # 【試行の観測】: revert されても「この段の精密化が拘束をどう扱ったか」は
+                        #   残す。penalty が試行中に大きく下がっていれば、段が採用されたか否かと
+                        #   **無関係に** penalty が目的関数へ入っている証拠になる (REQ-SAR-203)。
+                        #   ⚠ **② 非露出を明示的に宣言する** (CLAUDE.md の露出規則): これは
+                        #   捨てた試行の値であり「出版される fit を説明する数字」ではないので、
+                        #   ② の戻り値 (採用状態の `rwp_penalized`/`final_restraint_penalty`) と
+                        #   混ぜない。用途は本カナリアと事後監査で、読み手は ledger を直接見る。
+                        "trial_rwp_data": finite_or_none(trial_rwp),
+                        "trial_rwp_penalized": trial_penalized,
+                        "trial_restraint_sum": trial_penalty,
                         "reverted": reverted,
                         "note": "段の受理/revert は rwp_data で判定した (REQ-SAR-203)",
                     },
@@ -2558,7 +2606,12 @@ def run_auto_rietveld(
         final_rwp = stage_results[-1].rwp if stage_results else float("inf")
         final_gof = stage_results[-1].gof if stage_results else float("inf")
         final_rwp_penalized = stage_results[-1].rwp_penalized if stage_results else None
-        final_restraint_penalty = last_penalty if split_penalty else 0.0
+        # 【penalty は最終 gpx から読む】: `final_rwp` / `final_rwp_penalized` は**採用状態**
+        #   (revert 後・研磨後) の値なので、penalty も同じ状態から採らなければ 3 つの数字が
+        #   別々の状態を指す。最終 gpx の ``Rvals`` は定義上その採用状態そのもの (revert は
+        #   スナップショットのファイル復元、研磨は上書き) なので、変数の受け渡しで揃えるより
+        #   **構造的に**一致する。⚠ 拘束無効時は `Rvals` を 1 度も読まない (既定経路の非回帰)。
+        final_restraint_penalty = _restraint_sum(gpx) if split_penalty else 0.0
         final_nobs = _nobs(gpx) if stage_results else 0
         phase_fractions = _phase_fraction_map(g2phases, g2hists)
         # 出版用の不確かさ: 格子 esd と GSAS 自身が算出した重量分率 (±esd)。共分散が無ければ空へ縮退。
