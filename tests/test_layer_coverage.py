@@ -306,8 +306,19 @@ def test_unexposed_features_state_a_reason():
 #: `AutoRietveldResult` の各フィールド → ② `auto_rietveld` 出力キー or UNEXPOSED(理由)。
 AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "stage_results": ("stages", "段階別 Rwp/GOF/母数/revert"),
-    "final_rwp": ("final_rwp", "最終 Rwp"),
+    "final_rwp": ("final_rwp", "最終 Rwp (**常にデータ項のみ** — restraint の有無で意味が変わらない)"),
     "final_gof": ("final_gof", "最終 GOF"),
+    # --- restraint penalty の分離 (REQ-SAR-203) ---
+    "final_rwp_penalized": (
+        "final_rwp_penalized",
+        "penalty 込みの GSAS 生 Rwp。`enable_restraints` 有効時のみ非 null。**出版値ではない** "
+        "(拘束の重みに依存する目的関数の値) が、③ が「拘束がどれだけ引いているか」を "
+        "final_rwp との差で読む唯一の窓",
+    ),
+    "final_restraint_penalty": (
+        "final_restraint_penalty",
+        "拘束の χ² 寄与 (RestraintSum = pSum) の絶対量。重みが過大かを ③ が判断する材料",
+    ),
     "refined_cells": ("refined_cells", "精密化格子"),
     "validity": ("validity", "物理妥当性ゲート"),
     "gpx_path": ("gpx_path", "成果物パス"),

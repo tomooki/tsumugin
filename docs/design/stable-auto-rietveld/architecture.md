@@ -141,7 +141,38 @@ M に連結された以外に Rwp が桁で動く説明が無い。
 
 **⚠ 副産物: 有効化すると Rwp が penalty 込みの値になる。** tsumugin の段の受理/revert は Rwp
 比較なので、拘束の重みが過大だと全段が「悪化」判定で revert される (実測: bond weight 1e5 で
-Rwp 3558)。**重みはデータ項と同程度に抑える**必要がある — ここは呼び手 (③) への注意事項。
+Rwp 3558)。→ **D4-c で解決** (呼び手への注意事項ではなく、engine の判定を直した)。
+
+#### D4-c. データ項 Rwp と penalty の分離 (REQ-SAR-205)
+
+**判定を penalty 込みの Rwp で行うのは誤りである。** 拘束は「モデルを引く力」であって
+「データへの合わなさ」ではないので、penalty の増減で段を revert してはならない。
+
+分離は**復元可能**である。`Rwp = 100·√(chisq/sumwYo)` の分母 `sumwYo` は観測強度だけから
+積まれ (`GSASIIstrMath`:5003-5004/5183)、`chisq` にだけ penalty が入る
+(`GSASIIstrMain`:359 の `Σfvec²`、`RestraintSum` は :364) ので、分母を知らなくても
+
+    Rwp_data = Rwp · √(1 − RestraintSum / chisq)
+
+で割れる。実装:
+
+| 層 | 場所 | 役割 |
+|---|---|---|
+| 純関数 | `diagnostics.data_term_rwp` | 上式 + 縮退規則。GSAS 非依存 |
+| 読み出し | `RefinementDiagnostics.rwp/.chisq/.data_rwp` | REQ-SAR-105 の 1 箇所から材料を出す |
+| engine | `_data_rwp(gpx, rwp, split=)` | `enable_restraints` が真のときだけ分離。偽なら `Rvals` を**1 度も読まない** |
+| 報告 | `StageResult.rwp` / `AutoRietveldResult.final_rwp` | **常にデータ項** |
+| 報告 (生値) | `*.rwp_penalized` / `final_restraint_penalty` | penalty 込みの値は別キー |
+
+**縮退規則が要点**: `RestraintSum >= chisq` なら**引かない**。GSAS は `RestraintSum` を
+`dlg` ゲートの**外**で報告するので、`dlg` を渡していない精密化でも巨大な値が載る
+(実測 4.66e9)。フラグを見ずに引くと負の chisq を作る上、拘束を登録しただけの既定経路で
+値が変わってしまう。**`split` フラグと縮退規則の二重の歯止め**を置いている。
+
+**GOF は意図的に分離しない。** 拘束付き精密化の GOF は拘束項を観測と自由度の双方に数えるのが
+慣行で、GSAS の式 (`√(χ²/(Nobs+RestraintTerms−Nvars))`) はそのとおり書かれている。加えて
+penalty 込みで残すと**拘束がデータと争っている状態が値に現れる** (実測: `final_rwp` 33.07 に
+対し `final_gof` 1641.8) — データ項 Rwp だけでは見えない警報なので潰さない。
 
 #### D4-b. 副作用計測 — **「自動パラメータ削除+再試行を失う」は既定 deriv type には当てはまらない**
 

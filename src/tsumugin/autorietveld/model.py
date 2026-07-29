@@ -420,6 +420,13 @@ class StabilityOptions:
         外す (`restraint_dlg` docstring) ため、有効にしない限り登録した拘束は**効かない**。
         ⚠ **``prune_weak_vars`` との併用が必須** (D4): 拘束で母数が増えると弱い変数が生き残る
         ため、esd 駆動の自動プルーニングを肩代わりに置く。単独指定は ``ValueError``。
+
+        **有効時の Rwp の扱い**: GSAS の ``Rvals['Rwp']`` は penalty 込みの値になるが、engine は
+        `diagnostics.data_term_rwp` で**データ項だけの Rwp** を復元し、段の受理/revert も
+        `StageResult.rwp` / `AutoRietveldResult.final_rwp` もそちらを使う。penalty 込みの生値は
+        `rwp_penalized` / `final_rwp_penalized` に分けて載る。拘束は「引く力」であって適合の
+        悪化ではないので、penalty の増減で段を revert してはならない (分離前は bond weight 1e5 で
+        Rwp 3558 = **全段 revert** した)。
     """
 
     require_convergence: bool = False
@@ -542,7 +549,17 @@ class StabilityOptions:
 
 @dataclass(frozen=True)
 class StageResult:
-    """段階実行の結果メトリクス。"""
+    """段階実行の結果メトリクス。
+
+    :param rwp: **データ項のみの Rwp** — 「観測パターンにどれだけ合っているか」。段の受理/revert
+        判定に使うのもこの値である。拘束を χ² に入れていない既定経路では GSAS の
+        ``Rvals['Rwp']`` と**ビット同一**なので、従来の意味は一切変わらない。
+    :param rwp_penalized: restraint penalty を**含む** GSAS 生の ``Rvals['Rwp']``。
+        ``StabilityOptions.enable_restraints`` で拘束を χ² に入れたときだけ非 ``None`` になる
+        (``None`` = penalty なし = ``rwp`` と同義)。**出版値ではない** — 拘束の重みに依存する
+        目的関数の値であって、データへの合わなさではない。拘束がどれだけ引いているかを
+        ``rwp_penalized`` と ``rwp`` の差として読むための診断値として残す。
+    """
 
     label: str
     rwp: float
@@ -551,6 +568,7 @@ class StageResult:
     converged: bool
     reverted: bool = False
     note: str = ""
+    rwp_penalized: "float | None" = None
 
 
 @dataclass(frozen=True)
@@ -595,7 +613,23 @@ def coerce_cell_esd(values: object) -> CellEsd:
 
 @dataclass(frozen=True)
 class AutoRietveldResult:
-    """自動 Rietveld 解析の総合結果。"""
+    """自動 Rietveld 解析の総合結果。
+
+    :param final_rwp: **データ項のみの Rwp** (= ``stage_results[-1].rwp``)。**これが出版値**であり、
+        restraint の有無に関わらず「観測パターンへの合わなさ」だけを表す。拘束を χ² に入れて
+        いない既定経路では GSAS の ``Rvals['Rwp']`` と**ビット同一** (意味は変わっていない)。
+        penalty 込みの値が要るときは `final_rwp_penalized` を見ること。
+    :param final_gof: GSAS の ``Rvals['GOF']`` を**そのまま**。拘束を χ² に入れた場合は
+        ``√(χ²/(Nobs + RestraintTerms − Nvars))`` = **penalty 込みのまま**である。
+
+        **これは分離し忘れではなく意図した非対称**である。Rwp は定義上「観測プロファイルとの
+        一致度」なので拘束項を混ぜてはならないが、GOF は拘束付き精密化では**拘束項を観測と
+        自由度の双方に数えるのが慣行**であり、GSAS の式 (分母に ``RestraintTerms`` を足す)
+        はその慣行どおりに書かれている。加えて、GOF を penalty 込みで残すと**拘束がデータと
+        争っている状態が値に現れる** (実測: S–O ターゲットを 2.3 Å に誤設定 + weight 1e5 で
+        ``final_rwp`` 33.07 に対し ``final_gof`` 1641.8)。データ項 Rwp だけを見ていると
+        見落とすこの警報を、わざと潰さない。
+    """
 
     stage_results: tuple[StageResult, ...]
     final_rwp: float
@@ -667,3 +701,11 @@ class AutoRietveldResult:
     #   ``>0.0`` = Afrac が最終共分散 varyList に載り精密化された su / ``None`` = この精密化では
     #   決まっていない (F フラグ無し・段 revert・共分散なし)。**0.0 を捏造しない**。
     atom_occupancy_esd: Mapping[str, Mapping[str, float | None]] = field(default_factory=dict)
+    # 【restraint penalty 込みの Rwp (末尾追加・既定 None で後方互換)】: `StabilityOptions.
+    #   enable_restraints` で拘束を χ² に入れたときだけ非 None。``None`` = penalty なし =
+    #   `final_rwp` と同義。**`final_rwp` の意味は決して penalty 込みにしない** — 出版される
+    #   数値の意味をオプションで切り替えると、同じ列に載った 2 つの Rwp が比較できなくなる。
+    final_rwp_penalized: "float | None" = None
+    # 拘束の χ² 寄与 (``Rvals['RestraintSum']`` = pSum) の最終値。拘束が「どれだけ引いているか」を
+    #   絶対量で見る唯一の窓 (0.0 = 拘束なし/無効)。
+    final_restraint_penalty: float = 0.0

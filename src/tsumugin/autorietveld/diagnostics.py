@@ -28,6 +28,7 @@ __all__ = [
     "RefinementDiagnostics",
     "WeakVariable",
     "correlated_pairs",
+    "data_term_rwp",
     "diagnostics_from_cov_data",
     "read_diagnostics",
     "read_variable_values",
@@ -78,9 +79,13 @@ class RefinementDiagnostics:
         **1 を大きく超えていれば収束していない** — 実測ログには 258.8 を出しながら
         「改善した」として段が通過する例がある
     :param svd_singularities: ``Rvals['SVD0']``。>0 は特異な変数があった = 悪条件の直接証拠
-    :param restraint_sum: 拘束の χ² 寄与 (``Rvals['RestraintSum']``)。
+    :param restraint_sum: 拘束の χ² 寄与 (``Rvals['RestraintSum']`` = ``pSum``)。
         ⚠ **報告は GSAS のゲート外なので、これが非ゼロでも拘束が効いている証明にはならない**
         (`GSASIIstrMath.errRefine:5203` の `dlg` ゲート, requirements.md F5)
+    :param rwp: ``Rvals['Rwp']`` — **拘束が χ² に入っているときは penalty 込みの値**。
+        「データへの合わなさ」として読んではならない (`data_rwp` を使う)
+    :param chisq: ``Rvals['chisq']`` = ``Σ fvec²``。拘束が χ² に入っていれば penalty を含む。
+        `data_rwp` の分離に使う唯一の追加情報
     """
 
     converged: "bool | None" = None
@@ -93,6 +98,18 @@ class RefinementDiagnostics:
     message: str = ""
     weak_vars: tuple[WeakVariable, ...] = ()
     correlated_pairs: tuple[CorrelatedPair, ...] = ()
+    # 【末尾追加】: 既存の位置引数構築を壊さないため必ず末尾に置く (既定 None = 情報なし)。
+    rwp: "float | None" = None
+    chisq: "float | None" = None
+
+    @property
+    def data_rwp(self) -> "float | None":
+        """**データ項のみの Rwp** — 段の受理/revert 判定に使う唯一の適合指標。
+
+        penalty が χ² に入っていない (拘束無効・拘束なし) 場合は ``rwp`` を**そのまま**返すので、
+        既定経路ではビット同一である (`data_term_rwp` の縮退条件を参照)。
+        """
+        return data_term_rwp(self.rwp, self.chisq, self.restraint_sum)
 
     def is_converged(self, *, max_shift_esd: float = 1.0) -> "bool | None":
         """収束したか — **GSAS のフラグと shift/esd の両方**を要求する (REQ-SAR-101)。
@@ -117,6 +134,10 @@ class RefinementDiagnostics:
             "n_obs": self.n_obs,
             "n_vars": self.n_vars,
             "restraint_sum": finite_or_none(self.restraint_sum),
+            "rwp": finite_or_none(self.rwp),
+            "chisq": finite_or_none(self.chisq),
+            # 【分離値を必ず載せる】: ③ が「penalty 込みの Rwp」を適合値として読むのを防ぐ。
+            "data_rwp": finite_or_none(self.data_rwp),
             "message": self.message,
             "weak_vars": [w.to_dict() for w in self.weak_vars],
             "correlated_pairs": [p.to_dict() for p in self.correlated_pairs],
@@ -172,6 +193,56 @@ def weak_variables(
             out.append(WeakVariable(name=str(name), value=value, esd=esd, ratio=ratio))
     out.sort(key=lambda w: w.ratio, reverse=True)
     return tuple(out)
+
+
+def data_term_rwp(
+    rwp: Any, chisq: Any, restraint_sum: Any
+) -> "float | None":
+    """penalty 込みの Rwp から**データ項だけの Rwp** を復元する (GSAS 非依存の純関数)。
+
+    **なぜ必要か**: `restraint_dlg.RefineProgressStub` を渡して restraint を有効にすると、
+    `GSASIIstrMath.errRefine`:5210 が残差ベクトル ``M`` へ penalty ``√pWt·pVals`` を**連結**する。
+    その ``M`` がそのまま `Rvals['Rwp']` の分子になるため、**Rwp が「データへの合わなさ」を
+    表さなくなる**。段の受理/revert は Rwp の比較なので、この値で判定すると
+    「拘束が引いた分」を「適合の悪化」と読み違えて全段を revert する (実測: bond weight 1e5 で
+    Rwp 3558)。拘束は**引く力**であって適合の悪化ではないので、判定はデータ項で行う。
+
+    **復元の根拠** (GSAS-II ソース実測):
+
+    * `GSASIIstrMath.errRefine`:5199-5213 — ``pSum = Σ pWt·pVals²``、``dlg`` があるときだけ
+      ``M = concat(M, √pWt·pVals)``。``Histograms['RestraintSum'] = pSum`` は**ゲートの外**。
+    * `GSASIIstrMain`:359 — ``Rvals['chisq'] = Σ fvec²`` (= 連結後の ``M`` の二乗和)。
+    * `GSASIIstrMain`:364/368 — ``Rvals['RestraintSum'] = pSum`` /
+      ``Rvals['Rwp'] = 100·√(chisq / sumwYo)``。
+    * `GSASIIstrMath`:5003-5004/5183 — ``sumwYo`` は**観測強度だけ**から積む (拘束と無関係)。
+
+    分母 ``sumwYo`` が共通なので、それを知らなくても比だけで割れる::
+
+        chisq_data = chisq − RestraintSum
+        Rwp_data   = 100·√(chisq_data / sumwYo) = Rwp · √(1 − RestraintSum / chisq)
+
+    **縮退 (元の ``rwp`` をそのまま返す) 条件**:
+
+    * ``restraint_sum`` が 0 以下/非有限 — penalty が無い。既定経路 (拘束無効) はここに落ち、
+      **ビット同一**の値が返る (非回帰契約)。
+    * ``rwp``/``chisq`` が非有限、``chisq <= 0`` — 情報が無い。
+    * ``restraint_sum >= chisq`` — **penalty が chisq に入っていない**証拠。GSAS は
+      ``RestraintSum`` をゲートの外で報告するので、``dlg`` を渡していない精密化でも非ゼロの
+      値が載る (実測 4.66e9 に対し chisq は Rwp 40% 相当)。ここで引き算すると負の chisq を
+      作るため、**引かない**。「情報が無いことを正常と答えない」規律で、推測で補正しない。
+
+    :returns: データ項のみの Rwp。``rwp`` が数値として読めないときのみ ``None``
+    """
+    base = _as_float(rwp)
+    if base is None:
+        return None
+    penalty = _as_float(restraint_sum)
+    total = _as_float(chisq)
+    if penalty is None or penalty <= 0.0:
+        return base
+    if total is None or total <= 0.0 or penalty >= total:
+        return base
+    return base * math.sqrt(1.0 - penalty / total)
 
 
 def correlated_pairs(
@@ -242,6 +313,8 @@ def diagnostics_from_cov_data(
         n_obs=n_obs,
         n_vars=n_vars,
         restraint_sum=_as_float(rvals.get("RestraintSum")) or 0.0,
+        rwp=_as_float(rvals.get("Rwp")),
+        chisq=_as_float(rvals.get("chisq")),
         message=str(rvals.get("msg") or ""),
         weak_vars=weak_variables(names, values, sig),
         correlated_pairs=(

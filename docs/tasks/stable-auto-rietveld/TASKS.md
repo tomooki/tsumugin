@@ -78,6 +78,7 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
 | 2-4 | `if dlg: break` の**副作用計測** | D4 | ✅ |
 | 2-5 | `TestBondRestraintHeadlessCanary` を**意味反転して書き直す** | REQ-SAR-204 | ✅ |
 | 2-6 | restraint 有効化 (**既定 OFF**, 1-4 完了が前提) | REQ-SAR-203 | ✅ |
+| 2-7 | **データ項 Rwp と penalty の分離** — 段の受理判定・報告値をデータ項で行う | REQ-SAR-205 | ✅ |
 
 **実装** (2026-07-29, branch `feat/sar-constraints`):
 `autorietveld/bounds.py` (箱の展開 + 境界検出, numpy-only) / `autorietveld/restraint_dlg.py`
@@ -102,7 +103,33 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
   **1.542264** とターゲット追従し、`RestraintSum` が **3.69e9 → 0.0876 (10 桁低下)**。
   ChemComp では Rwp が 40.349 → **1022.16** = penalty が残差ベクトルへ連結された直接証拠。
 - **⚠ 有効化すると Rwp が penalty 込みの値になる** → 段の受理/revert (Rwp 比較) の意味が変わる。
-  重みが過大だと全段 revert (bond weight 1e5 で Rwp 3558)。③ への注意事項として skill に明記。
+  重みが過大だと全段 revert (bond weight 1e5 で Rwp 3558)。→ **2-7 で解決** (下記)。
+
+**2-7 で判明した事実 (2026-07-29, branch `feat/sar-rwp-split`)**:
+
+- **penalty 込みの Rwp で判定していた間、段列は「データへの適合」を一切見ていなかった。**
+  PbSO4 で S–O ターゲットを 2.3 Å に誤設定 + weight 1e5、同一 3 段レシピの実測:
+
+  | 段 | 分離前 (penalty 込みで判定) | 分離後 (データ項で判定) |
+  |---|---|---|
+  | S1 scale+bg | 8127.50 | 40.35 |
+  | S2 cell | 8127.48 | **35.43** |
+  | S3 coords | 8127.48 (**revert**) | **33.07** (受理) |
+
+  S2 の「改善」は penalty が 0.02 減っただけで、**データ項が 4.9 点良くなった事実は Rwp に
+  現れていなかった**。S3 は penalty が増えたので revert されたが、データ項では 2.4 点改善して
+  いる = **正しい段を捨てていた**。最終報告値も 8127.48 という「Rwp ではない数」だった。
+- **分離は sumwYo を知らなくてもできる** — `Rwp_data = Rwp·√(1−RestraintSum/chisq)`。
+  分母 `sumwYo` は観測強度のみから積まれる (`GSASIIstrMath`:5003-5004/5183) ため共通で消える。
+- **★ `RestraintSum >= chisq` なら引いてはならない** — GSAS は `RestraintSum` を `dlg` ゲートの
+  **外**で報告するので、`dlg` を渡していない精密化でも巨大な値が載る (実測 4.66e9)。
+  フラグ (`split`) と縮退規則の**二重の歯止め**を置いた。片方だけだと、拘束を登録しただけの
+  既定経路 (`enable_restraints=False` + `bond_restraints` あり) で値が静かに変わる。
+- **GOF は意図的に分離しない** (慣行どおり penalty 込み)。**拘束がデータと争う状態の唯一の警報**
+  だから — 実測で `final_rwp` 33.07 に対し `final_gof` 1641.8。Rwp だけ見て「拘束は無害」と
+  読まないよう skill にも明記した。
+- 非回帰: T1 `9.80617260074067` / 段列 7 値すべて **baseline とビット同一** (`git stash` で
+  分離前コードを同じスクリプトに掛けて照合)。ベンチも T1 9.806% / T3 6.660% を再現。
 - **★ D4 の「特異行列時の自動パラメータ削除+再試行を失う」は既定 deriv type には当てはまらない**。
   削除+再試行は `'Hessian' not in deriv type` の else 分岐にしかなく、既定 `analytic Hessian`
   では `result[1] is None` が先に break するので `if dlg: break` に到達しない。弱い変数のドロップは

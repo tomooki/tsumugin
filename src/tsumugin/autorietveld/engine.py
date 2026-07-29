@@ -36,6 +36,7 @@ from .bounds import (
 from .diagnostics import (
     RefinementDiagnostics,
     WeakVariable,
+    data_term_rwp,
     read_diagnostics,
     read_variable_values,
 )
@@ -166,6 +167,30 @@ def _rvals(gpx) -> tuple[float, float, int]:
     gof = float(rv.get("GOF", float("inf")))
     nvar = len(cov.get("varyList", []))
     return rwp, gof, nvar
+
+
+def _data_rwp(gpx, rwp: float, *, split: bool) -> "tuple[float, float | None, float]":
+    """段の判定に使う **データ項 Rwp** と、penalty 込みの生 Rwp / penalty 量を返す。
+
+    :param split: 分離を試みるか。**``StabilityOptions.enable_restraints`` が真のときだけ真**に
+        すること。penalty が χ² に入るのは ``dlg`` を渡した精密化だけであり、渡していない
+        精密化でも ``Rvals['RestraintSum']`` はゲートの外で報告される (実測 4.66e9) ため、
+        フラグを見ずに引くと**拘束を登録しただけの既定経路で値が変わる**。
+        偽なら `Rvals` を 1 度も読まず ``(rwp, None, 0.0)`` を返す = 現行とビット同一。
+    :returns: ``(データ項 Rwp, penalty 込み Rwp or None, RestraintSum)``。
+        第 2 要素は**実際に penalty が分離できたときだけ**非 None (None = 分離不要)。
+    """
+    if not split or not math.isfinite(rwp):
+        return rwp, None, 0.0
+    try:
+        rv = gpx.data["Covariance"]["data"].get("Rvals", {})
+    except (KeyError, TypeError, AttributeError):  # 共分散なし → 分離材料なし (fail open)
+        return rwp, None, 0.0
+    penalty = float(rv.get("RestraintSum", 0.0) or 0.0)
+    data = data_term_rwp(rwp, rv.get("chisq"), penalty)
+    if data is None or data == rwp:
+        return rwp, None, penalty
+    return data, rwp, penalty
 
 
 def _converged(gpx) -> bool:
@@ -1875,9 +1900,14 @@ def run_auto_rietveld(
 
         stage_results: list[StageResult] = []
         # 「直前の受理状態」の指標を明示追跡する (復帰時に nvar/gof を正しく巻き戻すため, H1)。
+        # 【prev_rwp は常に**データ項**】: 拘束無効時は GSAS の Rwp とビット同一なので非回帰。
         prev_rwp = float("inf")
         prev_gof = float("inf")
         prev_nvar = 0
+        prev_penalized: float | None = None
+        # 拘束を χ² に入れたときだけ penalty を分離する (`_data_rwp` の split 引数)。
+        split_penalty = bool(stab.enable_restraints)
+        last_penalty = 0.0
         atom_flag_maps: list[dict[str, str]] = [{} for _ in g2phases]
         # 【WS-1 診断ゲート】: 既定 (stability=None) は全項目 False なので、以降の追加処理は
         #   1 行も走らない (共分散すら読まない) = 現行と完全に同一の挙動。`stab` は箱拘束の
@@ -1896,6 +1926,8 @@ def run_auto_rietveld(
             extra_cycles_used = 0
             convergence_ok: bool | None = None
             bound_hits: tuple[BoundHit, ...] = ()
+            # penalty 込みの生 Rwp (拘束を χ² に入れたときだけ非 None)。
+            rwp_penalized: float | None = None
             # 箱の境界到達 (REQ-SAR-202) は **この段の精密化呼び出しの前後**でしか測らない。
             # 同じ parmFrozen に esd プルーニング (段の末尾で実行) も書くため、窓を広げると
             # 「自分で凍らせた変数」を境界到達と誤報する。
@@ -1913,6 +1945,7 @@ def run_auto_rietveld(
                 #   戻り値を捕まえて例外化し、既存の inf→revert→ledger 経路に載せる。
                 _refine_once(gpx, refine_dlg)
                 rwp, gof, nvar = _rvals(gpx)
+                rwp, rwp_penalized, last_penalty = _data_rwp(gpx, rwp, split=split_penalty)
                 converged = _converged(gpx)
                 if stab.needs_diagnostics:
                     diagnostics = read_diagnostics(gpx, corr_threshold=stab.corr_threshold)
@@ -1936,6 +1969,11 @@ def run_auto_rietveld(
                     )
                     if payload is not None:
                         (rwp, gof, nvar), converged = payload  # type: ignore[misc]
+                        # 追加サイクルも同じ ``dlg`` で回るので penalty の分離を**必ず**やり直す
+                        #   (経路ごとに塞がないと「追加サイクルだけ penalty 込みで判定」になる)。
+                        rwp, rwp_penalized, last_penalty = _data_rwp(
+                            gpx, rwp, split=split_penalty
+                        )
                     convergence_ok = diagnostics.is_converged(
                         max_shift_esd=stab.max_shift_esd
                     )
@@ -1956,9 +1994,12 @@ def run_auto_rietveld(
                 if not _cells_physical(g2phases) or not _profiles_physical(
                     g2hists, radiations, histograms
                 ).passed:
-                    rwp, gof, converged = float("inf"), float("inf"), False
+                    rwp, gof, converged, rwp_penalized = (
+                        float("inf"), float("inf"), False, None
+                    )
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
                 rwp, gof, nvar, converged = float("inf"), float("inf"), 0, False
+                rwp_penalized = None
                 diagnostics, convergence_ok = None, None
                 ledger.append(
                     "m7_stage_error",
@@ -1987,6 +2028,10 @@ def run_auto_rietveld(
             # 悪化 (または inf) なら直前スナップショット (この段階適用前の状態) へ revert して継続
             # (REQ-105/FR-202)。snap は各段階の冒頭で必ず取得済みなので、初段失敗でも
             # 「精密化前の健全なプロジェクト」へ戻せる (H2: prev_rwp==inf でも復帰する)。
+            # 【比較は必ず**データ項 Rwp**】: 拘束を χ² に入れると GSAS の Rwp は penalty 込みに
+            #   なる。拘束は「引く力」であって適合の悪化ではないので、penalty の増減で段を
+            #   revert するのは誤りである (実測: bond weight 1e5 で Rwp 3558 → 全段 revert)。
+            #   `rwp` は `_data_rwp` が分離済みで、拘束無効時は GSAS 値とビット同一。
             if unconverged or not math.isfinite(rwp) or rwp > prev_rwp + worsen_eps:
                 shutil.copyfile(snap, gpx_path)
                 gpx = g2sc.G2Project(gpxfile=str(gpx_path))
@@ -2000,8 +2045,10 @@ def run_auto_rietveld(
                 atom_flag_maps = prev_atom_flag_maps
                 # 復帰後の指標は「直前の受理状態」を反映する (H1: nvar も巻き戻す)。
                 rwp, gof, nvar = prev_rwp, prev_gof, prev_nvar
+                rwp_penalized = prev_penalized
             else:
                 prev_rwp, prev_gof, prev_nvar = rwp, gof, nvar
+                prev_penalized = rwp_penalized
 
             # 【no-op 段の検出 (REQ-SAR-102)】: revert されていないのに n_params が増えず
             #   rwp/gof がビット同一 = その段は何も精密化していない。**revert はしない**
@@ -2109,8 +2156,24 @@ def run_auto_rietveld(
                     converged=converged,
                     reverted=reverted,
                     note=note,
+                    rwp_penalized=rwp_penalized,
                 )
             )
+            # 【penalty 分離の記録】: 拘束を χ² に入れた段だけ、分離の**材料ごと**残す。
+            #   既定経路では 1 エントリも増えない (ledger のハッシュ鎖は非回帰)。
+            #   「Rwp が下がったのは拘束を緩めたからでは?」を後から検算できるようにする。
+            if rwp_penalized is not None:
+                ledger.append(
+                    "m7_stage_restraint_split",
+                    {
+                        "stage": stage.label,
+                        "rwp_data": rwp,
+                        "rwp_penalized": rwp_penalized,
+                        "restraint_sum": last_penalty,
+                        "reverted": reverted,
+                        "note": "段の受理/revert は rwp_data で判定した (REQ-SAR-203)",
+                    },
+                )
             ledger.append(
                 "m7_stage",
                 {
@@ -2159,8 +2222,13 @@ def run_auto_rietveld(
         )
         hist_profile = tuple({k: v for k, (v, _) in d.items()} for d in prof_full)
 
+        # 【final_rwp は常にデータ項】: 拘束の有無で出版値の意味が変わらないようにする
+        #   (penalty 込みの値は `final_rwp_penalized` に分けて載せる)。拘束無効時は
+        #   `StageResult.rwp` が GSAS 生値そのものなので現行とビット同一。
         final_rwp = stage_results[-1].rwp if stage_results else float("inf")
         final_gof = stage_results[-1].gof if stage_results else float("inf")
+        final_rwp_penalized = stage_results[-1].rwp_penalized if stage_results else None
+        final_restraint_penalty = last_penalty if split_penalty else 0.0
         final_nobs = _nobs(gpx) if stage_results else 0
         phase_fractions = _phase_fraction_map(g2phases, g2hists)
         # 出版用の不確かさ: 格子 esd と GSAS 自身が算出した重量分率 (±esd)。共分散が無ければ空へ縮退。
@@ -2196,6 +2264,8 @@ def run_auto_rietveld(
         atom_occupancy=atom_occ_map,
         atom_multiplicity=atom_mult_map,
         atom_occupancy_esd=atom_occ_esd_map,
+        final_rwp_penalized=final_rwp_penalized,
+        final_restraint_penalty=final_restraint_penalty,
     )
 
 

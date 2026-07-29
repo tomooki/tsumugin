@@ -90,13 +90,21 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
     """AutoRietveldResult + spec を素の型 dict へ (③ の判断入力)。"""
     return {
         "specs": _specs_dict(inp),
+        # 【final_rwp は常に**データ項のみ**】: restraint を χ² に入れても意味が切り替わらない
+        #   (`AutoRietveldResult.final_rwp` の契約)。penalty 込みの生 Rwp は別キーで並べる —
+        #   ③ が 2 つの値を**同じ列**として比較しないための分離。
         "final_rwp": finite_or_none(result.final_rwp),
         "final_gof": finite_or_none(result.final_gof),
+        # 拘束を χ² に入れたときだけ非 None (None = penalty なし = final_rwp と同義)。
+        #   ここを落とすと ③ から見て「拘束がどれだけ引いているか」が結果に一切現れない。
+        "final_rwp_penalized": finite_or_none(result.final_rwp_penalized),
+        "final_restraint_penalty": finite_or_none(result.final_restraint_penalty),
         "n_obs": result.n_obs,
         "stages": [
             {
                 "label": s.label,
                 "rwp": finite_or_none(s.rwp),
+                "rwp_penalized": finite_or_none(s.rwp_penalized),
                 "gof": finite_or_none(s.gof),
                 "n_params": s.n_params,
                 "converged": bool(s.converged),
@@ -226,8 +234,10 @@ def auto_rietveld(
         (``bond_restraints``/``chem_comp_restraints``) を χ² に入れる (既定 OFF — GSAS-II は
         headless では penalty を目的関数から外すため、有効にしない限り拘束は効かない)。
         ⚠ **``prune_weak_vars`` との併用が必須**で、単独指定は error dict になる。
-        ⚠ 有効化すると **Rwp が penalty を含む値**に変わるため、拘束の重みは
-        データ項と同程度に抑えること (過大な重みは全段が「悪化」と判定され revert される)。
+        有効時、``final_rwp`` / ``stages[*].rwp`` は **penalty を除いたデータ項のみの Rwp**
+        (段の受理/revert もこの値で判定する — 拘束は「引く力」であって適合の悪化ではない)。
+        penalty 込みの GSAS 生値は ``final_rwp_penalized`` / ``stages[*].rwp_penalized``、
+        penalty の絶対量は ``final_restraint_penalty`` に別キーで出る (拘束なしなら ``null``)。
         判定結果は ledger (``m7_stage_unconverged``/``m7_stage_noop``/``m7_stage_prune``/
         ``m7_stage_correlation``/``m7_box_bounds``/``m7_stage_bound_hit``) と ``stages[*].note``
         (``unconverged``/``noop``/``pruned=N``/``bound_hits=N``) に出る。

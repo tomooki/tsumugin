@@ -156,10 +156,32 @@ Na>1 / O<0 に発散したこと自体が「Ow が必要」の決め手で、[0,
 
 - **`prune_weak_vars` との併用が必須** (単独指定は error dict)。拘束で実質的に母数が増えるため、
   esd 駆動の自動凍結を同時に置く。
-- **⚠ 有効化すると Rwp が penalty を含む値に変わる。** 重みが過大だと全段が「悪化」と判定されて
-  revert される。まず小さい `weight` から始め、`stages[*].reverted` を見ながら上げること。
 - 効いているかは **同じ拘束をターゲット違いで 2 回回して結果が変わるか**で確かめる
   (変わらなければ効いていない)。
+
+### 拘束を効かせたときに **どの Rwp を読むか**
+
+GSAS が返す Rwp は penalty 込みの値になる (残差ベクトルに penalty が連結されるため)。
+tsumugin は**データ項と penalty を分離**して返すので、読む列を間違えないこと:
+
+| キー | 意味 | 使い道 |
+|---|---|---|
+| `final_rwp` / `stages[*].rwp` | **データ項のみの Rwp** | **これが出版値**。拘束の有無に関わらず「観測パターンへの合わなさ」だけを表す。拘束なしの run とそのまま比較してよい |
+| `final_rwp_penalized` / `stages[*].rwp_penalized` | penalty 込みの GSAS 生値 (拘束なしなら `null`) | 最小二乗が実際に最小化している目的関数。**出版しない** |
+| `final_restraint_penalty` | penalty の絶対量 (`RestraintSum`) | 重みが過大かの判断材料 |
+
+- **段の受理/revert は `rwp` (データ項) で判定される。** 拘束は「引く力」であって適合の悪化では
+  ないので、penalty の増減で段を revert してはならない (分離前は bond weight 1e5 で
+  Rwp 3558 = **全段 revert** した)。
+- **`final_rwp_penalized` − `final_rwp` が大きい = 拘束がモデルを強く引いている。** 拘束が
+  データと争っている状態なので、`weight` を下げるか、そもそも拘束が正しいかを疑うこと。
+- **`final_gof` は penalty 込みのまま**である (拘束付き精密化では拘束項を観測と自由度の
+  双方に数えるのが慣行)。**これは分け忘れではなく警報として残してある** — 拘束がデータと
+  争うと `final_rwp` が穏やかでも GOF が跳ねる (実測: 誤ったターゲット + weight 1e5 で
+  `final_rwp` 33.07 に対し `final_gof` 1641.8)。**Rwp だけ見て「拘束は無害だった」と
+  結論しないこと。**
+- 分離の材料 (`rwp_data` / `rwp_penalized` / `restraint_sum`) は段ごとに ledger
+  `m7_stage_restraint_split` にも残る。
 
 ## 構造改訂が要るとき → `mem-model-fix` skill
 
