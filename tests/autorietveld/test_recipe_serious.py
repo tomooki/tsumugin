@@ -269,15 +269,19 @@ def test_uiso_tiers_expand_into_a_staged_relaxation():
 
 
 def test_uiso_tier_notes_warn_that_the_engine_binding_is_pending():
-    """engine 未対応の間は「拘束なし = individual と同義」であることを note に残す。
+    """★engine 未対応の間、note は**実際に起きること**を書くこと (note は ledger に出る = ③ が読む)。
 
-    黙って個別解放になると「緩和したのに効かない」を silent failure として学習させる
-    (P-SAR-2: 検出できない失敗を作らない)。note は ledger に出る。
+    以前の note は「engine 未対応時は拘束なし = individual と同義」と書いており、
+    engine が非 int 値を黙って全ラベル解放と読んでいた頃はそれで正しかった。その黙認を
+    塞いだ (`_element_rank_labels` が ValueError) 時点で記述が嘘になり、``individual`` を
+    別扱いする理由も消えた — **③ に「緩めたが効かなかっただけ」と読ませる** 誤った説明は
+    実装バグと同等に有害なので、全 tier について revert することを明記する。
     """
     stages = build_serious_recipe([_XRAY_BB], _PLAIN, uiso_tiers=("shared", "individual"))
-    shared = _find(stages, "uiso_shared")[0]
-    assert "engine 未対応" in shared.note
-    assert "engine 未対応" not in _find(stages, "uiso_individual")[0].note
+    for tier in ("shared", "individual"):
+        note = _find(stages, f"uiso_{tier}")[0].note
+        assert "engine 未対応" in note and "revert" in note, note
+        assert "individual と同義" not in note, "engine が黙って個別解放へ落ちる経路はもう無い"
 
 
 def test_uiso_tiers_do_not_use_restraints():

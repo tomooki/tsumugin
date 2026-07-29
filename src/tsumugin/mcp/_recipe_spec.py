@@ -21,6 +21,11 @@ Rwp も動かない — ③ はこれを「この knob は効かない」と誤�
 語彙を閉じた集合として持ち、未知名は許容一覧付きで大声で失敗させる (③ が自力で直せる)。
 語彙が engine/recipe 側に足されたのに本表が古いままになる drift は
 `tests/mcp/test_recipe_spec.py::test_known_flags_covers_engine_vocabulary` が検出する。
+
+さらに、engine が**値を読む**フラグ (``coords``/``occupancy``/``uiso`` の元素ランク、
+``freeze_others`` の keep 指定) は**値の形**も検証する (`_check_flag_value`)。名前が正しくても
+engine の語彙外の値を渡すと例外にならず**別の手順に化ける**ためで、名前検証だけでは
+素通りする (``{"coords": "heavy_first"}`` は正当なフラグ名の正当でない値)。
 """
 
 from __future__ import annotations
@@ -97,6 +102,16 @@ def _check_flag_value(label: str, name: str, value: object) -> None:
         if isinstance(value, bool):
             return
         if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
+            # 空リストは「何も残さず全部凍結」と読めるが、engine は `if keep:` で真偽を見るため
+            # **凍結そのものを飛ばす** = 正反対の意味になる (例外にも ledger にも出ない)。
+            # PR #129 の ``instrument.recipe: []`` と同型なので、黙って通さず綴りを教える。
+            # `recipe.build_serious_recipe` が `k or True` と書いているのはこの回避。
+            if not value:
+                raise ValueError(
+                    f"stage.flags['freeze_others'] が空リストです ({label!r})。engine はこれを"
+                    "「凍結しない」と読むため、意図した「何も残さず全部凍結」の逆になります"
+                    " — その意味なら true を指定してください"
+                )
             return
         raise ValueError(
             f"stage.flags['freeze_others'] は bool か**凍結しない名前の列** (str のリスト) "

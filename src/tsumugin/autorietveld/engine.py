@@ -1225,8 +1225,8 @@ def _frozen_variables(gpx) -> "set[str]":
 
     境界到達 (REQ-SAR-202) の検出源。`GSASIIstrMain.dropOOBvars` は箱の外へ出た変数を
     ここへ追加する。**esd プルーニング (REQ-SAR-103) も同じリストへ書く**ため、呼び出し側は
-    「箱を張った変数だけ」に絞り (`detect_bound_hits`)、かつ精密化呼び出しの前後という
-    狭い窓で差を取ることで取り違えを避ける。
+    「箱を張った変数だけ」に絞り (`detect_bound_hits`)、さらに**自分が凍らせた名前を差分の
+    基準側へ入れる** (`_bound_hit_baseline`) ことで取り違えを避ける。
     """
     try:
         return {str(v) for v in gpx.get_Frozen()}
@@ -2175,9 +2175,10 @@ def run_auto_rietveld(
             bound_hits: tuple[BoundHit, ...] = ()
             # penalty 込みの生 Rwp (拘束を χ² に入れたときだけ非 None)。
             rwp_penalized: float | None = None
-            # 箱の境界到達 (REQ-SAR-202) は **この段の精密化呼び出しの前後**でしか測らない。
-            # 同じ parmFrozen に esd プルーニング (段の末尾で実行) も書くため、窓を広げると
-            # 「自分で凍らせた変数」を境界到達と誤報する。
+            # 箱の境界到達 (REQ-SAR-202) の差分基準。dropOOBvars はこの段の**すべての**精密化
+            # 呼び出し (初回・収束サイクル・救済サイクル) で走るので、窓は段全体に及ぶ。
+            # 同じ parmFrozen へ書く esd プルーニング/救済との取り違えは、窓を狭めるのではなく
+            # **凍らせた名前を基準側へ足す** ことで切り分ける (`_bound_hit_baseline`)。
             frozen_before = _frozen_variables(gpx) if box_bounds else set()
             try:
                 auto_frozen = _apply_stage(

@@ -621,9 +621,13 @@ def build_serious_recipe(
                     RefinementStage(
                         label=f"uiso_{tier}",
                         flags={"freeze_others": k2, "uiso": tier},
+                        # note は ledger に出る = ③ が読む。**engine 未対応時に何が起きるか**を
+                        # 正確に書く (以前は「拘束なし = individual と同義」と書いていたが、
+                        # それは engine が非 int 値を黙って全ラベル解放と読んでいた頃の話。
+                        # 今は tier 値を解釈できず ValueError → revert する。個別解放へ静かに
+                        # 落ちる経路はもう無いので、individual だけを別扱いする理由も無い)。
                         note=f"Uiso ({tier} 等値拘束)"
-                        + ("" if tier == "individual"
-                           else " — engine 未対応時は拘束なし = individual と同義"),
+                        " — engine 未対応 (WS-3): 現状この段は ValueError → revert",
                     )
                 )
         return out

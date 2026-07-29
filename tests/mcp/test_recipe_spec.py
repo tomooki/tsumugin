@@ -179,3 +179,17 @@ def test_freeze_others_rejects_a_bare_string():
     #   例外にならないぶん `heavy_first` より気づきにくい (呼べるが黙って間違う)。
     with pytest.raises(ValueError):
         stage_from_dict({"label": "s", "flags": {"freeze_others": "cell"}})
+
+
+def test_freeze_others_rejects_an_empty_list():
+    """★空リストは「全部凍結」ではなく engine では「凍結しない」= 意図の正反対になる。
+
+    非トートロジー: engine の消費側は `keep = flags.get("freeze_others")` → `if keep:` で
+    真偽を見るため、``[]`` は falsy = `_freeze_all` を丸ごと飛ばす。「何も残さず全部凍結」の
+    つもりで書いた ③ は、**凍結が 1 つも起きていない**のに例外も ledger もなく完走する。
+    PR #129 で塞いだ ``instrument.recipe: []`` と同型の空値サイレント失敗。
+    `recipe.build_serious_recipe` が `k or True` と書いているのは同じ罠の回避策である。
+    """
+    with pytest.raises(ValueError) as err:
+        stage_from_dict({"label": "s", "flags": {"freeze_others": []}})
+    assert "true" in str(err.value), "正しい綴り (true) を示して ③ が自力で直せるようにする"
