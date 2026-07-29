@@ -17,6 +17,7 @@ import contextlib
 import math
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -25,6 +26,11 @@ import numpy as np
 from .._json import finite_or_none
 from ..store import Ledger
 from .absorption import apply_absorption_correction
+from .atomrows import (
+    atom_row,
+    coord_esd_states,
+    free_index_from_site_symmetry,
+)
 from .bounds import (
     BoundHit,
     BoxBound,
@@ -38,12 +44,14 @@ from .diagnostics import (
     WeakVariable,
     data_term_rwp,
     read_diagnostics,
+    read_variable_esds,
     read_variable_values,
     split_weak_variables,
 )
 from .model import (
     AutoRietveldResult,
     CellEsd,
+    CoordEsd,
     FinalPolish,
     Geometry,
     HistogramSpec,
@@ -1509,61 +1517,146 @@ def _apply_chem_comp_restraints(gpx, g2phases, chem_comp_restraints) -> None:
         cc["Use"] = True
 
 
-def _atom_result_maps(g2phases):
-    """ラベルキーの原子パラメータ (占有率/Uiso/多重度/占有率 esd) を抽出する (FR-318 T7/T11)。🔵
+@dataclass(frozen=True)
+class AtomMaps:
+    """`_atom_result_maps` の戻り値 — **タプルではなく dataclass** にしてある理由。
+
+    元は 4 要素タプルで、事前警告の呼び出し側が ``_, uiso_init, _, _ = ...`` と位置で
+    受けていた。座標/座標 esd/自由度指標/Uiso esd を足して 8 要素にすると、次に 9 要素目を
+    足した人が**位置をずらして静かに別の値を読む**。名前で受ければその事故が起きない。
+    """
+
+    occupancy: dict[str, dict[str, float]]
+    uiso: dict[str, dict[str, float]]
+    multiplicity: dict[str, dict[str, float]]
+    occupancy_esd: dict[str, dict[str, "float | None"]]
+    coords: dict[str, dict[str, tuple[float, float, float]]]
+    coord_esd: dict[str, dict[str, CoordEsd]]
+    coord_free_index: dict[str, dict[str, tuple[int, int, int]]]
+    uiso_esd: dict[str, dict[str, "float | None"]]
+
+
+def _atom_result_maps(g2phases, *, getcsxinel=None) -> AtomMaps:
+    """ラベルキーの原子パラメータを抽出する (FR-318 T7/T11 + 構造一致判定の土台)。🔵
 
     `AutoRietveldResult.atom_occupancy`/`atom_uiso` は宣言されながら未配線だった
     (`_extract_state` は validity 用の位置リストしか作らない)。本関数がラベルキーで充填する。
 
-    占有率 esd は**最終共分散の varyList** に ``<pId>::Afrac:<idx>`` が載っている原子のみ
-    ``sig`` から取り、載っていない原子は **None** (精密化していない — `_cell_was_refined` と
-    同じ規律で 0.0 を捏造しない)。抽出不能は空 dict へ縮退し例外を送出しない。
+    esd は `diagnostics.read_variable_esds` 経由で引く (``depSigDict`` を第一情報源にする唯一の
+    実装)。**得られなかった変数は写像に載らない**ので、載っていないこと自体が「決まっていない」
+    の信号になる — 呼び出し側が第 2 の規則を持たなくてよい。占有率/Uiso は 2 状態
+    (``>0.0``/``None``)、座標は 3 状態 (対称固定の ``0.0`` を含む, `atomrows.coord_esd_states`)。
+
+    抽出不能は当該相をスキップし例外を送出しない。⚠ **自由度指標の失敗で相を落としてはならない**
+    — `GetCSxinel` は sytsym 名の変更で KeyError を出すことがあり (GSAS 自身が
+    `GSASIIstrIO.py:1746-1749` でその場パッチしている)、それが相ごとの ``except`` に届くと
+    その相の ``uiso`` まで落ちて `check_initial_uiso` が黙って弱まる。実際の防御は
+    `atomrows.free_index_from_site_symmetry` の内部縮退にあり、ここで try を重ねる必要はない。
+
+    :param getcsxinel: `GSASIIspc.GetCSxinel` の注入シーム (None で遅延 import)。
+        **テストがこの機械に GSAS が入っているかで結果を変えないため**に必須の引数である —
+        注入が無いと、GSAS 有りの環境では実関数が走り無しの環境では縮退経路が走るので、
+        同じテストが CI とローカルで別の答えを出す (CI 導入時に 44 件が踏んだ穴と同型)。
     """
     occ: dict[str, dict[str, float]] = {}
     uiso: dict[str, dict[str, float]] = {}
     mult: dict[str, dict[str, float]] = {}
     occ_esd: dict[str, dict[str, float | None]] = {}
+    coords: dict[str, dict[str, tuple[float, float, float]]] = {}
+    coord_esd: dict[str, dict[str, CoordEsd]] = {}
+    free_index: dict[str, dict[str, tuple[int, int, int]]] = {}
+    uiso_esd: dict[str, dict[str, float | None]] = {}
+    if getcsxinel is None:
+        try:
+            from GSASII import GSASIIspc as G2spc
+
+            getcsxinel = G2spc.GetCSxinel
+        except Exception:  # noqa: BLE001 — GSAS 無しは一般位置判定へ縮退 (fail open)
+
+            def getcsxinel(_sym):  # type: ignore[misc]
+                raise KeyError("GSASIIspc unavailable")
+
     for ph in g2phases:
         try:
             atoms = ph.data["Atoms"]
-            cx, ct, cs, cia = ph.data["General"]["AtomPtrs"]
+            ptrs = ph.data["General"]["AtomPtrs"]
+            cs = int(ptrs[2])
             try:
-                cov = ph.proj["Covariance"]["data"]
-                # ⚠ varyList/sig は numpy 配列のことがある — `arr or ()` は真偽値評価で
-                # ValueError になるため None 判定で分岐する (実測でこの罠を踏んだ)。
-                vary_raw = cov.get("varyList")
-                vary = [str(v) for v in (vary_raw if vary_raw is not None else ())]
-                sig_raw = cov.get("sig")
-                sig = list(sig_raw) if sig_raw is not None else []
+                esds = read_variable_esds(ph.proj)
             except Exception:  # noqa: BLE001 — 共分散なしは「未精密化」に縮退
-                vary, sig = [], []
+                esds = {}
+            lookup = esds.get
             pid = ph.id
             p_occ: dict[str, float] = {}
             p_uiso: dict[str, float] = {}
             p_mult: dict[str, float] = {}
-            p_esd: dict[str, float | None] = {}
+            p_occ_esd: dict[str, float | None] = {}
+            p_coords: dict[str, tuple[float, float, float]] = {}
+            p_coord_esd: dict[str, CoordEsd] = {}
+            p_free: dict[str, tuple[int, int, int]] = {}
+            p_uiso_esd: dict[str, float | None] = {}
             for i, row in enumerate(atoms):
-                label = str(row[ct - 1])
-                p_occ[label] = float(row[cx + 3])
-                p_mult[label] = float(row[cs + 1])
-                if row[cia] == "I":
-                    p_uiso[label] = float(row[cia + 1])
-                var = f"{pid}::Afrac:{i}"
-                esd: float | None = None
-                if var in vary:
-                    j = vary.index(var)
-                    if j < len(sig):
-                        esd = finite_or_none(sig[j])
-                        if esd is not None and esd <= 0.0:
-                            esd = None
-                p_esd[label] = esd
+                info = atom_row(row, ptrs)
+                label = info.label
+                p_occ[label] = info.occupancy
+                p_mult[label] = info.multiplicity
+                p_coords[label] = info.coords
+                if info.uiso is not None:
+                    p_uiso[label] = info.uiso
+                    p_uiso_esd[label] = lookup(f"{pid}::AUiso:{i}")
+                p_occ_esd[label] = lookup(f"{pid}::Afrac:{i}")
+                # `GetCSxinel` の失敗は `free_index_from_site_symmetry` が内部で吸って
+                # 保守的な縮退値を返す (ここで try を重ねても到達しない)。相ごとの
+                # ``except`` に巻き込まれず uiso が生き残ることは
+                # `test_a_failing_getcsxinel_does_not_drop_the_phase` が振る舞いで固定する。
+                fi = free_index_from_site_symmetry(getcsxinel, row[cs])
+                p_free[label] = fi
+                p_coord_esd[label] = coord_esd_states(
+                    fi, pid=pid, index=i, esd_lookup=lookup
+                )
             occ[ph.name] = p_occ
             uiso[ph.name] = p_uiso
             mult[ph.name] = p_mult
-            occ_esd[ph.name] = p_esd
+            occ_esd[ph.name] = p_occ_esd
+            coords[ph.name] = p_coords
+            coord_esd[ph.name] = p_coord_esd
+            free_index[ph.name] = p_free
+            uiso_esd[ph.name] = p_uiso_esd
         except Exception:  # noqa: BLE001 — 構造差/抽出失敗は当該相をスキップし継続
             continue
-    return occ, uiso, mult, occ_esd
+    return AtomMaps(
+        occupancy=occ,
+        uiso=uiso,
+        multiplicity=mult,
+        occupancy_esd=occ_esd,
+        coords=coords,
+        coord_esd=coord_esd,
+        coord_free_index=free_index,
+        uiso_esd=uiso_esd,
+    )
+
+
+def _profile_esd_map(g2hists) -> tuple[dict[str, "float | None"], ...]:
+    """ヒストグラム毎のプロファイル項 esd (索引順)。**2 状態** (``>0.0``/``None``)。
+
+    ⚠ GSAS の装置変数名は ``:{hist.id}:{key}`` であって列挙索引ではない。単一プロジェクトでは
+    一致するので既存の `_apply_profile_bounds` (enumerate 索引を使用) は実害を出していないが、
+    ここは読み取りなので実 id を使う。
+    """
+    out: list[dict[str, float | None]] = []
+    for h in g2hists:
+        row: dict[str, float | None] = {}
+        try:
+            esds = read_variable_esds(h.proj)
+            inst = h.data["Instrument Parameters"][0]
+            hid = h.id
+            for key in _PROFILE_INTROSPECT_KEYS:
+                if key in inst:
+                    row[key] = esds.get(f":{hid}:{key}")
+        except Exception:  # noqa: BLE001 — 抽出不能は空 dict (EDGE-001 と同じ縮退)
+            row = {}
+        out.append(row)
+    return tuple(out)
 
 
 def _extract_state(phases):
@@ -2084,7 +2177,7 @@ def run_auto_rietveld(
             or check_occupancy_uiso
         )
         if _touches_occupancy:
-            _, uiso_init, _, _ = _atom_result_maps(g2phases)
+            uiso_init = _atom_result_maps(g2phases).uiso
             pre_warnings = check_initial_uiso(uiso_init) + warn_occupancy_uiso_coupling(stages)
 
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
@@ -2635,6 +2728,9 @@ def run_auto_rietveld(
             warnings=validity.warnings + prof_report.warnings + pre_warnings,
         )
         hist_profile = tuple({k: v for k, (v, _) in d.items()} for d in prof_full)
+        # 解放フラグは捨てない (esd の有無とは別の問いに答える — model.py の宣言を参照)。
+        hist_profile_refined = tuple({k: bool(r) for k, (_, r) in d.items()} for d in prof_full)
+        hist_profile_esd = _profile_esd_map(g2hists)
 
         # 【final_rwp は常にデータ項】: 拘束の有無で出版値の意味が変わらないようにする
         #   (penalty 込みの値は `final_rwp_penalized` に分けて載せる)。拘束無効時は
@@ -2654,7 +2750,7 @@ def run_auto_rietveld(
         cell_esd = _cell_esd_map(g2phases)
         wt_fracs, wt_frac_esd = _weight_fraction_maps(g2phases, g2hists)
         # 原子パラメータ (FR-318 T7/T11: ラベルキー占有率/Uiso/多重度 + 占有率 esd の 2 状態)。
-        atom_occ_map, atom_uiso_map, atom_mult_map, atom_occ_esd_map = _atom_result_maps(g2phases)
+        atom_maps = _atom_result_maps(g2phases)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
         out_gpx = ""
@@ -2679,10 +2775,10 @@ def run_auto_rietveld(
         cell_esd=cell_esd,
         phase_weight_fractions=wt_fracs,
         phase_weight_fraction_esd=wt_frac_esd,
-        atom_uiso=atom_uiso_map,
-        atom_occupancy=atom_occ_map,
-        atom_multiplicity=atom_mult_map,
-        atom_occupancy_esd=atom_occ_esd_map,
+        atom_uiso=atom_maps.uiso,
+        atom_occupancy=atom_maps.occupancy,
+        atom_multiplicity=atom_maps.multiplicity,
+        atom_occupancy_esd=atom_maps.occupancy_esd,
         final_rwp_penalized=final_rwp_penalized,
         final_restraint_penalty=final_restraint_penalty,
         undetermined_parameters=undetermined,
@@ -2690,6 +2786,12 @@ def run_auto_rietveld(
         # 出版値がどの母数集合の上に載っているか (救済 + 毎段プルーニング + 研磨の総和)。
         frozen_parameters=tuple(sorted(frozen_vars)),
         final_polish=final_polish,
+        atom_coords=atom_maps.coords,
+        atom_coord_esd=atom_maps.coord_esd,
+        atom_coord_free_index=atom_maps.coord_free_index,
+        atom_uiso_esd=atom_maps.uiso_esd,
+        hist_profile_refined=hist_profile_refined,
+        hist_profile_esd=hist_profile_esd,
     )
 
 

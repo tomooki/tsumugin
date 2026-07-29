@@ -1,17 +1,18 @@
 """実サイト抽出 — 精密化済み gpx から STRUCTURE タブの sites を構築する
 (`docs/design/gui-workbench/api-contract.md` §解析ループ A2)。
 
-``ph.data["Atoms"]`` + ``ph.data["General"]["AtomPtrs"]`` (`autorietveld.engine._phase_atom_info`/
-``_extract_state`` と同じ抽出テンプレート, ``AtomPtrs=[cx, ct, cs, cia]``) から
-``{label, el, x, y, z, occ, uiso}`` を読み、``GSASIIspc.GetCSxinel(site_sym)`` (`engine._phase_atom_info`
-と同じ判定) で特殊位置の座標ロックを判定する。GSAS-II は関数内で遅延 import する
-(curves.py と同じ流儀 — コアへ GSAS 依存を持ち込まない)。
+行の読み取りと対称性の解釈は `autorietveld.atomrows` に集約してある (**唯一の実装**)。
+以前はここが独自にレイアウトを解釈し、``not bool(free[i])`` で対称性を bool へ潰していた —
+GUI のロック表示には足りるが、`GetCSxinel` は軸ごとに 3 状態 (固定/結束/独立) を返すので
+esd の状態源としては誤りであり、engine 側と解釈が二重化していた。GSAS-II は関数内で
+遅延 import する (curves.py と同じ流儀 — コアへ GSAS 依存を持ち込まない)。
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping
 
+from ..autorietveld.atomrows import atom_row, free_index_from_site_symmetry, lock_from_free_index
 from .._json import finite_or_none
 from .curves import _g2sc
 
@@ -20,26 +21,6 @@ __all__ = ["extract_sites"]
 
 def _fmt(value: "float | None") -> str:
     return f"{value:.4f}" if value is not None else ""
-
-
-def _lock_from_site_symmetry(g2spc: Any, site_sym: object) -> dict[str, bool]:
-    """site symmetry から x/y/z の特殊位置ロックを判定する (``engine._phase_atom_info`` と同じ判定)。
-
-    ``GetCSxinel`` が返す自由項リストの各軸が非零なら「自由 (ロックなし)」、0 なら「対称拘束で
-    固定」。判定に失敗した構造差異は site symmetry 文字列が ``"1"`` (一般位置) かどうかで代用する
-    フォールバックへ縮退する (`engine._phase_atom_info` と同じ安全側)。
-    """
-    try:
-        free = g2spc.GetCSxinel(site_sym)[0]
-        return {
-            "x": not bool(free[0]),
-            "y": not bool(free[1]),
-            "z": not bool(free[2]),
-        }
-    except Exception:  # noqa: BLE001 — 構造差異は保守的に「一般位置か否か」で代用する
-        general = str(site_sym).strip() == "1"
-        fixed = not general
-        return {"x": fixed, "y": fixed, "z": fixed}
 
 
 def extract_sites(
@@ -68,21 +49,20 @@ def extract_sites(
     idx = 0
     for ph in gpx.phases():
         try:
-            cx, ct, cs, cia = ph.data["General"]["AtomPtrs"]
+            ptrs = ph.data["General"]["AtomPtrs"]
+            cs = int(ptrs[2])
             atoms = ph.data["Atoms"]
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, IndexError):
             continue
         esd_map = esd_by_phase.get(ph.name, {})
         for row in atoms:
             idx += 1
-            label = str(row[ct - 1])
-            el = str(row[ct])
-            x = finite_or_none(row[cx])
-            y = finite_or_none(row[cx + 1])
-            z = finite_or_none(row[cx + 2])
-            occ = finite_or_none(row[cx + 3])
-            uiso = finite_or_none(row[cia + 1]) if row[cia] == "I" else None
-            lock = _lock_from_site_symmetry(g2spc, row[cs])
+            info = atom_row(row, ptrs)
+            label, el = info.label, info.element
+            x, y, z = (finite_or_none(v) for v in info.coords)
+            occ = finite_or_none(info.occupancy)
+            uiso = finite_or_none(info.uiso) if info.uiso is not None else None
+            lock = lock_from_free_index(free_index_from_site_symmetry(g2spc.GetCSxinel, row[cs]))
             esd = esd_map.get(label)
             note = f"occ esd ±{esd:.4f}" if esd else ""
             sites.append(

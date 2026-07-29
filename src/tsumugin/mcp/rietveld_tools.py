@@ -165,6 +165,18 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "cell_esd": {
             name: [finite_or_none(x) for x in esd] for name, esd in result.cell_esd.items()
         },
+        # 【精密化座標 + esd】: 座標は出版値なので esd とセットで出す。**esd の 3 状態を潰さない** —
+        #   ``>0.0`` = 精密化した su / ``0.0`` = 対称拘束で厳密に固定 (真の陳述) /
+        #   ``null`` = この精密化では決まっていない。0.0 と null を同一視すると「厳密に固定された
+        #   座標」と「決まらなかった座標」が読み分けられなくなる (`cell_esd` と同じ規律)。
+        "atom_coords": {
+            phase: {label: [finite_or_none(x) for x in xyz] for label, xyz in atoms.items()}
+            for phase, atoms in result.atom_coords.items()
+        },
+        "atom_coord_esd": {
+            phase: {label: [finite_or_none(x) for x in esd] for label, esd in atoms.items()}
+            for phase, atoms in result.atom_coord_esd.items()
+        },
         # 【決まらなかったパラメータ (REQ-SAR-103)】: 最終収束後に残った ``esd >= |値|``。
         #   **これは失敗ではなく所見** — 「このデータではこのパラメータは決まらない」という
         #   情報であり、③ がモデルを疑う材料になる (NaCuHCF の占有率発散が Ow 必要性の決め手に

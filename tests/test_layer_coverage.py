@@ -390,6 +390,42 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     ),
     "hist_absorption": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。負吸収の検出源)"),
     "hist_profile": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。プロファイル現値)"),
+    # --- 構造の一致判定 (収束安定性): 座標は出版値なので esd とセットで露出する ---
+    "atom_coords": (
+        "atom_coords",
+        "**露出**: 精密化座標は出版値であり (`cell_esd` と同じ論拠 — esd を伴わない精密化値は "
+        "出版できない)、これまで ② に座標が一切無かったため ③ は構造を報告できなかった。"
+        "ペイロードは相×原子×3 で残差配列と違い小さい。値は GSAS 原子行由来で `dAx` "
+        "(精密化ごとに 0 へ再初期化されるシフト) ではない",
+    ),
+    "atom_coord_esd": (
+        "atom_coord_esd",
+        "**露出**: 上と対。3 状態を素の型で運ぶ (>0.0=精密化した su / 0.0=対称拘束で厳密固定 "
+        "= 真の陳述 / null=この精密化では決まっていない)。0.0 と null を潰さないのが要点で、"
+        "潰すと「厳密に固定された座標」と「決まらなかった座標」が区別できなくなる",
+    ),
+    "atom_coord_free_index": (
+        UNEXPOSED,
+        "意図的: `GetCSxinel` の生の整数三つ組は対称性の内部プリミティブ。③ に必要な情報は "
+        "`atom_coord_esd` の 0.0 状態と、一致判定の INCOMPARABLE (片方だけ対称固定) に畳んで "
+        "届く。生の整数を ③ が読む用途が無い",
+    ),
+    "atom_uiso_esd": (
+        UNEXPOSED,
+        "Issue #97: 対応する `atom_uiso` が未露出なので esd 単体を出すと「値のない不確かさ」に "
+        "なる。露出は #97 の一括解決で `atom_uiso` と同時に行う。一致判定には uiso クラスとして "
+        "寄与する (2 状態: >0.0 / None)",
+    ),
+    "hist_profile_refined": (
+        UNEXPOSED,
+        "Issue #97: `hist_profile` と同じ ① 内省フィールド。③ への意味は一致判定の ASYMMETRIC "
+        "件数 (どの手順がどの項を解放したか) に畳む — 生の解放フラグ表は ③ の判断材料にならない",
+    ),
+    "hist_profile_esd": (
+        UNEXPOSED,
+        "Issue #97: 同上 (`hist_profile` が未露出なので esd 単体では意味を持たない)。"
+        "装置パラメータに対称固定は無いため 2 状態 (>0.0 / None)",
+    ),
     "peak_width_ratio": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。幅ずれ)"),
     "asymmetry_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。残差非対称)"),
     "intensity_bias_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。選択配向)"),
