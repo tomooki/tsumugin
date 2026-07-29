@@ -23,9 +23,15 @@ Rwp も動かない — ③ はこれを「この knob は効かない」と誤�
 `tests/mcp/test_recipe_spec.py::test_known_flags_covers_engine_vocabulary` が検出する。
 
 さらに、engine が**値を読む**フラグ (``coords``/``occupancy``/``uiso`` の元素ランク、
-``freeze_others`` の keep 指定) は**値の形**も検証する (`_check_flag_value`)。名前が正しくても
-engine の語彙外の値を渡すと例外にならず**別の手順に化ける**ためで、名前検証だけでは
-素通りする (``{"coords": "heavy_first"}`` は正当なフラグ名の正当でない値)。
+``freeze_others`` の keep 指定) は**値の形**も検証する (`_check_flag_value`)。名前検証だけでは
+素通りするため (``{"coords": "heavy_first"}`` は正当なフラグ名の正当でない値)。失敗の見え方は
+フラグごとに違い、必要な理由も違う:
+
+- ``freeze_others`` に裸の文字列/空リストを渡すと engine は**例外を出さずに別の意味へ縮退**する
+  (それぞれ「何も残さない」「凍結しない」)。ここは ② で止めないと検出手段が無い。
+- 元素ランクの語彙外の値は engine 側 (`_element_rank_labels`) が `ValueError` を出すので
+  黙りはしないが、③ から見えるのは revert された段と ledger の ``m7_stage_error`` だけになる。
+  ② で弾けば「どの値が駄目でいつ使えるか」を**入力を送った時点で**返せる。
 """
 
 from __future__ import annotations
