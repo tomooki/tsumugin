@@ -317,19 +317,37 @@ class TestBondRestraintHeadlessCanary:
         ★ **fail したら朗報** — GSAS-II 更新で headless restraint が修復された可能性が高い。
         engine の非機能 caveat・`insitu.charge` の soft→diagnose 縮退・本ファイルの
         `TestChemCompRestraint` を実態に合わせて再検証すること。
+
+        **両方向を pin する** (commit 1c1a19e/cabfda9 の意図。書き直しで ③ が失われていた):
+        ①②だけでは「Bond が ChemComp と同様に**完全不動化**した」退化を検出できない — その場合も
+        ①②は自明に通り、カナリアは黙って green のままになる (落ちないガードは無いより悪い)。
+        現状の Bond は非ゲートの `HessRefine` 経由で**小さな飽和摂動**を注入している
+        (`_apply_bond_restraints` の docstring がそう主張している) ので、③で
+        **拘束ありがベースライン (拘束なし) と異なる**ことも同時に固定する。
         """
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
+            _rwp0, d_none, _ = self._run(tmp, None)
             rwp_a, d_a, _ = self._run(tmp, 1.9)
             rwp_b, d_b, _ = self._run(tmp, 2.3)
 
+        # ①ターゲット非追従: 0.4 Å 離れたターゲットで最終距離が実質同一 (機能拘束では不可能)
         assert abs(d_a - d_b) < 1.0e-6, (
             f"既定経路で bond restraint がターゲットに追従した (1.9→{d_a:.4f}, 2.3→{d_b:.4f}) — "
             "GSAS-II が headless restraint を修復した可能性。非機能 caveat を再検証せよ"
         )
         assert rwp_a == pytest.approx(rwp_b, abs=1.0e-6), "Rwp も penalty を含んでいない"
+        # ②データ値近傍に留まりターゲット (>=1.9) へ到達しない
         assert d_a < 1.55, f"S–O2={d_a:.4f} が想定外にターゲット側へ動いた"
+        # ③拘束ありは拘束なしと異なる (非ゲート HessRefine 経由の小摂動が残っていること)。
+        #   完全不動化 (ChemComp 化) したらここが fail し docstring の「小摂動」記述を再検証させる。
+        #   閾 5e-3 は weight=0 対照の cross-machine ノイズ上限 5e-4 の 10 倍 (ノイズで満たさない)
+        #   かつ実摂動 0.055 Å の 1/10 (現状は余裕で満たす) — 両閾の間のデッドゾーンを作らない。
+        assert abs(d_a - d_none) > 5.0e-3, (
+            f"bond restraint がベースラインと同一 (d={d_a:.6f}) = 完全不動 — Bond が "
+            "ChemComp のように no-op 化した可能性。engine docstring の『小摂動』記述を再検証せよ"
+        )
 
     def test_restraint_enters_chi_squared_with_the_dlg_stub(self) -> None:
         """★カナリア②: `enable_restraints=True` で penalty が**実際に χ² に入る** (REQ-SAR-204)。

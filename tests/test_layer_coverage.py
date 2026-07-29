@@ -82,6 +82,20 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは**意図的に露出しない** "
         "(REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
     ),
+    "data preprocessing (REQ-SAR-401/402/403)": (
+        "propose_data_preprocessing",
+        "データ前処理の自動判定 (Phase 2, stable-auto-rietveld `autorietveld.autorange`): "
+        "**人が手で決めていた**背景項数 (CaTeO3 の 24 項) とデータレンジ (T4 の非収束主因は "
+        "リミット未設定) を観測パターンから決める。② は `path` から `two_theta_range` "
+        "(→ HistogramSpec.two_theta_limits) / `background_terms` (→ background_coeffs) / "
+        "`excluded_region_candidates` (→ HistogramSpec.excluded_regions) を返す。"
+        "⚠ **除外領域は提案のみ** (P-SAR-3: 未知相のピークを消すと相同定を殺す) — "
+        "`requires_human_approval` は常に true で、ツール自身も提案を自分のレンジ判定へ "
+        "流し込まない (承認済み区間は `excluded_regions` 引数で明示的に渡す)。"
+        "`explained_two_theta` の到達可能性は `phases` (PhaseSpec + refined_cell) から "
+        "サーバ側で反射位置を立てることで確保した (② に反射位置を返すツールが無いため)。"
+        "`search` の adaptive 候補は同じ ① を内部で使うが、③ から**名指しで**呼ぶ経路は本ツール",
+    ),
     "reference (M6)": ("identify_phases", "相同定 (単相/多相)"),
     "refine_loop (M8)": (
         "propose_next_actions",

@@ -198,8 +198,16 @@ def test_polish_with_nothing_to_freeze_reports_why_instead_of_claiming_success()
     T1 の最短レシピは決まらないパラメータを残さない。ここで ``applied=True`` を返したり
     黙って何もしなかったりすると、③ から見て「研磨したのか / する必要が無かったのか」が
     区別できない (② の「情報が無いことを正常と答えない」規律の ① 側)。
+
+    **併せて「判定対象外 (`undetermined_exempt`) を早期 return が潰さない」を固定する**
+    (レビュー MEDIUM-2)。座標段を足すと ``dA*`` が exempt に載る (実測 5 件) ので、
+    研磨しない経路でも結果と ledger `m7_undetermined` が一致しなければならない。
+    ここが空になると、報告が**何を見なかったか**を隠す (REQ-SAR-103 の「捨てずに別列で返す」に反する)。
     """
-    hists, phases, recipe = _t1_inputs()
+    hists, phases, short = _t1_inputs()
+    # 座標段を足す: `dA*` が exempt に載る = 早期 return が exempt を潰すかを測れる状態にする
+    # (最短レシピのままだと exempt が空で、下の照合が空虚に真になる)。
+    recipe = (*short, RefinementStage(label="S3 coords", flags={"coords": True}))
     ledger = Ledger()
 
     result = run_auto_rietveld(
@@ -216,6 +224,14 @@ def test_polish_with_nothing_to_freeze_reports_why_instead_of_claiming_success()
     # 出版値は段列の最終値のまま (研磨していないので差し替えない)。
     assert result.final_rwp == result.stage_results[-1].rwp == polish.rwp_before
     assert result.stage_results[-1].label != "final polish"
+
+    # ★ 研磨しなかった経路でも「判定対象外」を捨てない (結果 == ledger)。
+    entry = next(e for e in ledger.entries if e.kind == "m7_undetermined")
+    recorded = [str(v["name"]) for v in entry.payload["exempt_variables"]]
+    assert recorded, "T1 + 座標段で exempt が空 = テストの前提が崩れている (照合が空虚に真)"
+    assert [w.name for w in result.undetermined_exempt] == recorded, (
+        "undetermined_exempt が ledger と食い違う — 研磨の早期 return が潰している"
+    )
 
 
 @pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")

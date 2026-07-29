@@ -177,6 +177,7 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
 | 4-2 ✅ | **データレンジ自動決定** (ノイズ支配域の検出) | REQ-SAR-402 | ⬜ |
 | 4-3 ✅ | **除外領域の提案** (自動適用禁止) | REQ-SAR-403 | ⬜ |
 | 4-4 ⏸ | **Le Bail 基準線** (格子固定・プロファイル+背景のみ) | REQ-SAR-404 | ⬜ |
+| 4-5 ✅ | **② 露出** (`propose_data_preprocessing`) + `analyze` skill の「いつ使うか」 | ★不変条件 | ⬜ |
 
 ---
 
@@ -357,4 +358,4 @@ BIC で勝った** (17875 → 16785、Rwp 差はわずか 0.019)。原因は χ�
 | **3-4 周回入口の最良復元** | 設計メモのみ (engine 側の作業) |
 | **4-4 Le Bail 基準線** | 設計のみ (`autorange.py` docstring に 6 手順) |
 | **WS-2 拘束・境界** | 未着手。1-4 (esd プルーニング) が入ったので restraint 有効化の前提は満たされた |
-| **② 露出 (autorange)** | `autorange` は ② 未露出。★不変条件として要対応 |
+| ~~**② 露出 (autorange)**~~ | **解決 (セルフレビュー HIGH-1)**: ② `propose_data_preprocessing` (`mcp/rietveld_tools.py`, MCP_TOOLS 36→37) を新設し、③ は `analyze` skill の「精密化する前に」節から呼ぶ。1 呼び出しで `two_theta_range` (→ `HistogramSpec.two_theta_limits`) / `background_terms` (→ `background_coeffs`) / `excluded_region_candidates` (→ `HistogramSpec.excluded_regions`, **承認必須**) を返す。`explained_two_theta` の到達可能性は `phases` (PhaseSpec + `refined_cell`) からサーバ側で反射位置を立てて確保した (② に反射位置を返すツールが無いため)。宣言は `tests/test_layer_coverage.py::LAYER1_FEATURES` の "data preprocessing (REQ-SAR-401/402/403)" |

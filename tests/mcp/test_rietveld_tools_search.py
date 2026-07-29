@@ -209,3 +209,43 @@ def _serious_stage_count():
            geometry=G.BRAGG_BRENTANO)],
         [P(structure_path="a.cif", phase_name="ph")],
     )
+
+
+# ---------------------------------------------------------------------------
+# 空列を「探索しない」と同義にしない (レビュー LOW-5)
+# ---------------------------------------------------------------------------
+
+
+def test_empty_search_list_is_an_error_not_a_silent_no_search():
+    # 【目的】: 候補名をフィルタして空になった呼び手が**黙って別経路** (探索なし) を踏まないこと。
+    #   `if search:` のままだと `[]` は falsy なので探索なし経路へ落ち、返り値から `search` キーが
+    #   消えるだけで「探索したが全滅した」との区別が付かない (PR #129 の `instrument.recipe: []`
+    #   と同型のサイレント失敗)。
+    called: list[str] = []
+
+    def runner(candidate: RecipeCandidate) -> AutoRietveldResult:
+        called.append(candidate.name)
+        return _result(9.0)
+
+    out = auto_rietveld([_H], [_P], search=[], search_runner=runner, runner=lambda inp: _result(9.0))
+
+    assert out["error_type"] == "ValueError"
+    assert "search" in out["error"]
+    assert called == [], "空列で探索が走った"
+    assert "final_rwp" not in out, "空列が精密化を実行してしまった (サイレント別経路)"
+
+
+def test_empty_search_string_is_also_an_error():
+    out = auto_rietveld([_H], [_P], search="", runner=lambda inp: _result(9.0))
+
+    assert out["error_type"] == "ValueError"
+    assert "final_rwp" not in out
+
+
+@pytest.mark.parametrize("value", [None, False])
+def test_explicit_no_search_still_runs_the_plain_path(value):
+    # 【対照】: 「探索しない」の明示 (None/false) は従来どおり通常経路 (非回帰)。
+    out = auto_rietveld([_H], [_P], search=value, runner=lambda inp: _result(9.0))
+
+    assert "search" not in out
+    assert out["final_rwp"] == pytest.approx(9.0)

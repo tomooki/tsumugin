@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ループで進める。MCP 3 ツール (auto_rietveld / propose_next_actions / refine_with_revisions) を反復駆動し、SafeAction (背景/母数解放) は自律適用、ModelAction (データリミット/相追加削除/構造改訂/混合占有) は判断してユーザー承認を挟む。Rwp/GOF と物理妥当性でチュートリアル同等を目指す。
+description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ループで進める。MCP 4 ツール (propose_data_preprocessing でデータレンジ/背景項数/除外領域候補を測って決めてから auto_rietveld / propose_next_actions / refine_with_revisions) を反復駆動し、SafeAction (背景/母数解放) は自律適用、ModelAction (データリミット/相追加削除/構造改訂/混合占有) は判断してユーザー承認を挟む。Rwp/GOF と物理妥当性でチュートリアル同等を目指す。
 ---
 
 # tsumugin: Agentic Rietveld 解析 (③ 判断層)
@@ -16,6 +16,7 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 | ツール | 役割 | 入出力 |
 |---|---|---|
 | `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル**。任意で `stages` (追加段階, 下記) / `max_cyc` / **`search` (レシピ探索, 下記)** |
+| `propose_data_preprocessing` | 計器 (提案) | 観測ファイルパス → **データレンジ / 背景項数 / 除外領域候補** (下記「精密化する前に」) |
 | `propose_next_actions` | 計器 (診断) | 直前結果 + 残差シグネチャ → `ActionProposal[]` (rationale/priority/**safe**) |
 | `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行。`stages`/`max_cyc` も同様に渡せる |
 
@@ -23,6 +24,8 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 ## 手順
 
+0. **前処理を測って決める** (`propose_data_preprocessing`, 下記「精密化する前に」)。
+   手で決めた背景項数/データリミットは次のデータで壊れる。
 1. **入力を組み立てる** (AGENT_PLAYBOOK §1): データ/装置ファイルから `Radiation`・`Geometry`・
    `data_format` を判定し `HistogramSpec`/`PhaseSpec` の JSON を作る。CIF が無い相は
    `identify_phases` (元素一覧 → 単相ランキング) で候補構造を得る。
@@ -66,6 +69,45 @@ Uiso<0・占有率逸脱・格子逸脱を生む手は過剰適合として棄�
 Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発散→混合占有制約 (SetMixedOccupancy)、
 座標段階でセル発散→特殊位置の座標解放を避ける、TOF/放射光の高止まり→データリミット、
 未指数ピーク→相追加 (AddPhase, 相同定へ)。いずれも ModelAction はユーザー承認を挟む。
+
+## 精密化する前に — データレンジ/背景項数/除外領域を**測って決める** (`propose_data_preprocessing`)
+
+**手で決めた前処理は次のデータで壊れる。** 実測された 2 件:
+
+- CaTeO3 の **背景 24 項**は人が決めた定数だった。データが変われば適正項数も変わる。
+- **T4 (NAC+CaF2) の非収束の主因は「データリミット未設定」だった** — 高角のノイズ支配域が
+  点数で最小二乗を支配し、フィットを平坦化させていた。`two_theta_limits` を入れて解消した。
+
+```json
+{"path": "data/t4.fxye", "data_format": "FXYE",
+ "phases": [{"structure_path": "nac.cif", "phase_name": "NAC"}], "wavelength": 0.4137}
+```
+
+| いつ使うか | 読むキー | 貼り先 |
+|---|---|---|
+| **精密化を始める前** (既定の一手にしてよい) | `two_theta_range.two_theta_limits` | `HistogramSpec.two_theta_limits` / `FrameSpec` 同名 |
+| Rwp が高止まりし残差が背景のうねりに見える | `background_terms.recommended` / `candidates` | `auto_rietveld(background_coeffs=)` |
+| 相で説明できない**鋭い孤立**ピークがある (検出器スパイク/宇宙線/試料ホルダ) | `excluded_region_candidates.candidates[]` | `HistogramSpec.excluded_regions` (**承認を得てから**) |
+| 背景係数が `undetermined_parameters` に載った | `background_terms` | 項数が多すぎないか検算する |
+
+**⛔ 除外領域は勝手に適用しない。** `requires_human_approval` は常に true。除外は解析の解釈を
+変える操作であり、**未知相のピークをアーチファクトとして消せば相同定を殺す**。候補は
+ユーザーに提示して承認を得ること。**通常幅の未説明ピークは除外候補ではなく「相が足りない」証拠**
+であり、そちらは `identify_pattern` / `residual_report` の担当である。
+
+- **`phases` を渡すこと。** 渡さないと「どの相でも説明できない」の判定ができず偽陽性が増える
+  (`note` に警告が出る)。`auto_rietveld` に渡した `phases` と、結果の `refined_cells` を
+  `refined_cell` として貼れる。
+- **放射光/中性子では `wavelength` を必ず渡す。** 判らないなら `null` — 推測させない
+  (誤波長の反射位置で「説明済み」判定が丸ごと誤る)。何を使ったかは `explained_source`
+  (`phases`/`explicit`/`none`/`unavailable`/`wavelength_unknown`) で確認する。
+- **承認済みの除外区間は `excluded_regions` 引数で戻す。** 上限判定から外れる (寄生ピークを
+  混ぜると上限がそこまで押し出される)。ツールは自分の提案候補を自分のレンジ判定へ流し込まない。
+- `assess_data_quality` (背景減算検出 + 上限 1 値) とは契約が違う。**下限/上限の組**が要るとき、
+  esd を noise 推定に使いたいとき、切り詰めすぎのガードが要るときは本ツールを使う。
+
+**レンジを変えたら Rwp は前の値と比較できない** (観測集合が変わる)。`search` の候補比較でも
+同じ規則が効いている (下記「選択規則」3)。
 
 ## 精密化段階を追加する (`stages` / `max_cyc`)
 
@@ -184,7 +226,7 @@ Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発�
 |---|---|
 | 特定の原子の `AUiso` / `Afrac` | その原子は本当に要るか / 別サイトと縮退していないか (`compare_structure_models`) |
 | プロファイル係数 (`U`/`V`/`W`/`X`/`Y`) | データがその項を分離できるだけの分解能・角度域を持っているか (`assess_data_quality`) |
-| 背景係数 | 背景項数が多すぎる (`autorange` の背景エスカレーションを疑う) |
+| 背景係数 | 背景項数が多すぎる (`propose_data_preprocessing` の `background_terms` で検算する) |
 | ほぼ全変数 | 段が実は収束していない (`require_convergence` を足す) / 相集合が間違っている (`check_phase_set`) |
 
 - **`undetermined_exempt` は「決まっている」ではない。** 座標シフト (`dAx/dAy/dAz`) は

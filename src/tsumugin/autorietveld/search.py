@@ -260,11 +260,21 @@ class CandidateOutcome:
     def bic(self) -> float:
         return math.inf if self.result is None else candidate_bic(self.result)
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self, *, require_convergence: bool = True) -> dict[str, object]:
+        """素の型 dict へ (② / ledger / GUI)。
+
+        :param require_convergence: **報告する tier を、実際に順位付けへ使った規則で計算する**
+            ためのキー。``require_convergence`` は ② の ``search_config`` から設定できる公開ノブ
+            であり、``rank_outcomes``/`summarize_search` は ``config.require_convergence`` で
+            tier を計算する。ここで ``True`` を決め打ちすると、``false`` を渡した呼び手には
+            **「報告された tier」と「選択に使われた tier」が食い違う**答えが返る
+            (③ は「なぜその候補が勝ったか」を tier_label で読む)。呼び出し側は
+            `RecipeSearchResult.to_dict` / `run_recipe_search` が config の値を渡す。
+        """
         verdict, reason = (None, "実行失敗") if self.result is None else convergence_verdict(
             self.result
         )
-        tier = outcome_tier(self, require_convergence=True)
+        tier = outcome_tier(self, require_convergence=require_convergence)
         return {
             "index": self.index,
             "candidate": self.candidate.to_dict(),
@@ -331,7 +341,12 @@ class RecipeSearchResult:
     def to_dict(self) -> dict[str, object]:
         """素の型 dict へ (② MCP 境界。非有限は None 化され ``allow_nan=False`` で安全)。"""
         return {
-            "candidates": [o.to_dict() for o in self.outcomes],
+            # tier は**この結果を選んだ規則**で計算する (config を落として True 決め打ちにすると
+            # 報告 tier と選択 tier が食い違う — `CandidateOutcome.to_dict` の docstring 参照)。
+            "candidates": [
+                o.to_dict(require_convergence=self.config.require_convergence)
+                for o in self.outcomes
+            ],
             "ranking": list(self.ranking),
             "selected_index": self.selected_index,
             "selected": None if self.selected is None else self.selected.candidate.name,
@@ -877,7 +892,10 @@ def run_recipe_search(
             result, error = None, repr(exc)[:200]
         outcome = CandidateOutcome(index=i, candidate=cand, result=result, error=error)
         outcomes.append(outcome)
-        ledger.append("m7_search_candidate", outcome.to_dict())
+        ledger.append(
+            "m7_search_candidate",
+            outcome.to_dict(require_convergence=config.require_convergence),
+        )
 
     summary = summarize_search(outcomes, config)
     if candidates is None:

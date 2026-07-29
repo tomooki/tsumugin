@@ -40,6 +40,7 @@
 | `autorietveld/recipe.py` | 相関群の不変条件、`build_serious_recipe`、Le Bail 前段 | 変更 |
 | `autorietveld/search.py` | レシピ候補の多重実行と選択 (REQ-SAR-500/501) | 新規 |
 | `autorietveld/autorange.py` | データレンジ/背景項数/除外領域の自動決定 (REQ-SAR-401/402/403) | 新規 |
+| `mcp/rietveld_tools.py` | ↑の ② 露出 `propose_data_preprocessing` (★不変条件。`search` の adaptive 候補経由でしか到達できないと ③ から**名指しで呼べない** = M10 anchor の再演) | 変更 |
 | `tools/bench_recipes.py` (または `scripts/`) | **並列ベンチマークハーネス** | 新規 |
 
 ## 設計判断

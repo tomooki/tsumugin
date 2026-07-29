@@ -598,6 +598,10 @@ class _PolishProject:
         return []
 
 
+#: 研磨前に判定済みの「判定対象外」(座標シフト)。**早期 return がこれを潰さない**ことを測る。
+_EXEMPT = (_weak("0::dAx:2"), _weak("0::dAy:5"))
+
+
 def _polish(monkeypatch, tmp_path, *, refine, rwp=9.9, physical=True):
     """`_run_final_polish` を GSAS 無しで回す (段列ループ外の分岐を直接測る)。"""
     from tsumugin.autorietveld import engine as eng
@@ -631,6 +635,7 @@ def _polish(monkeypatch, tmp_path, *, refine, rwp=9.9, physical=True):
         gpx_path=gpx_path,
         snap_path=tmp_path / "polish.gpx",
         undetermined=(_weak("0::AUiso:4"),),
+        exempt=_EXEMPT,
         already_frozen=set(),
         stab=StabilityOptions(report_undetermined=True, polish_frozen_undetermined=True),
         stage_results=stages,
@@ -663,11 +668,17 @@ def test_polish_is_thrown_away_when_the_refinement_breaks(monkeypatch, tmp_path)
     def _boom(*_a, **_k):
         raise RuntimeError("Refine failed")
 
-    polish, stages, ledger, *_ = _polish(monkeypatch, tmp_path, refine=_boom)
+    polish, stages, ledger, _gpx, undet, exempt = _polish(
+        monkeypatch, tmp_path, refine=_boom
+    )
 
     assert polish.applied is False and polish.reverted is True
     assert "Refine failed" in polish.reason
     assert stages[-1].label == "S9", "破棄した研磨を段列に足さない"
+    # ★ revert = 研磨前へ戻した = 研磨前の判定がそのまま最終判定。**exempt を空で潰さない**
+    #   (潰すと結果の undetermined_exempt が ledger `m7_undetermined` と食い違う, MEDIUM-2)。
+    assert undet == (_weak("0::AUiso:4"),)
+    assert exempt == _EXEMPT, "revert で判定対象外が消えた (報告が何を見なかったかを隠す)"
 
 
 def test_polish_is_thrown_away_when_the_result_is_unphysical(monkeypatch, tmp_path):
@@ -695,12 +706,13 @@ def test_polish_with_nothing_to_freeze_states_the_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(eng, "_refine_once", _boom)
     stages = [StageResult(label="S9", rwp=9.8, gof=1.2, n_params=35, converged=True)]
     ledger = Ledger()
-    _gpx, polish, _u, _e = eng._run_final_polish(
+    _gpx, polish, undet, exempt = eng._run_final_polish(
         _PolishProject(gpx_path),
         None,
         gpx_path=gpx_path,
         snap_path=tmp_path / "polish.gpx",
         undetermined=(),
+        exempt=_EXEMPT,
         already_frozen=set(),
         stab=StabilityOptions(report_undetermined=True, polish_frozen_undetermined=True),
         stage_results=stages,
@@ -715,6 +727,10 @@ def test_polish_with_nothing_to_freeze_states_the_reason(monkeypatch, tmp_path):
     assert polish.applied is False and polish.reverted is False
     assert polish.reason and polish.rwp_before == polish.rwp_after == 9.8
     assert [e.kind for e in ledger.entries] == ["m7_final_polish"]
+    # ★ 研磨しなかった経路でも「判定対象外」を返す (MEDIUM-2)。空タプルを返すと呼び出し側の
+    #   再代入で握り潰され、結果の undetermined_exempt が ledger と食い違う。
+    assert undet == ()
+    assert exempt == _EXEMPT, "研磨しなかっただけで判定対象外が消えた"
 
 
 def test_a_default_result_reports_nothing_rather_than_claiming_all_is_well():

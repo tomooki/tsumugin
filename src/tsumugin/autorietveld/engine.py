@@ -387,6 +387,7 @@ def _run_final_polish(
     gpx_path: Path,
     snap_path: Path,
     undetermined: "Sequence[WeakVariable]",
+    exempt: "Sequence[WeakVariable]",
     already_frozen: "set[str]",
     stab: StabilityOptions,
     stage_results: "list[StageResult]",
@@ -408,6 +409,16 @@ def _run_final_polish(
     revert 条件にすると研磨は決して適用されない。破棄するのは**破綻**だけ — GSAS の失敗・
     非有限 Rwp・格子崩壊/プロファイル非物理 (既存の revert ガードと同じ基準)。
 
+    **``exempt`` を引数で受けるのは早期 return のためである**: 研磨しなかった (凍結対象なし) /
+    revert した経路では、呼び出し側が**研磨前に算出して ledger `m7_undetermined` へ書いた**
+    判定対象外リストがそのまま正しい。ここで空タプルを返すと呼び出し側の再代入で握り潰され、
+    結果 (`AutoRietveldResult.undetermined_exempt` → ② の同名キー) が **ledger の
+    ``exempt_variables`` と食い違う**。実測 T1 で ``dA*`` 12 個が exempt に載るので実データで
+    必ず踏む。「捨てずに別列で返す — 報告が何を見なかったかを隠さない」(REQ-SAR-103) は
+    **研磨の有無で切り替わってはならない**。
+
+    :param undetermined: 研磨前に判定した「決まらなかったパラメータ」
+    :param exempt: 研磨前に判定した「判定対象外」(``dAx`` 等)。早期 return ではこれをそのまま返す
     :returns: ``(gpx, 研磨の記録, 研磨後の undetermined, 研磨後の判定対象外)``。gpx は
         revert 時にスナップショットから読み直した**新しい** `G2Project` になり得る
     """
@@ -423,7 +434,8 @@ def _run_final_polish(
             reason="凍結対象なし (決まらなかったパラメータが無い)",
         )
         ledger.append("m7_final_polish", polish.to_dict())
-        return gpx, polish, tuple(undetermined), ()
+        # 研磨していない = 研磨前の判定がそのまま最終判定。**exempt を空で潰さない**。
+        return gpx, polish, tuple(undetermined), tuple(exempt)
 
     gpx.save()
     shutil.copyfile(gpx_path, snap_path)
@@ -455,7 +467,8 @@ def _run_final_polish(
             reason=reason,
         )
         ledger.append("m7_final_polish", polish.to_dict())
-        return gpx, polish, tuple(undetermined), ()
+        # revert = 研磨前の状態へ戻した = 研磨前の判定がそのまま最終判定 (exempt も同じ)。
+        return gpx, polish, tuple(undetermined), tuple(exempt)
 
     diag = read_diagnostics(gpx, corr_threshold=stab.corr_threshold)
     after, after_exempt = split_weak_variables(
@@ -2490,6 +2503,7 @@ def run_auto_rietveld(
                 gpx_path=gpx_path,
                 snap_path=tmp_path / "polish.gpx",
                 undetermined=undetermined,
+                exempt=undetermined_exempt,
                 already_frozen=frozen_vars,
                 stab=stab,
                 stage_results=stage_results,

@@ -1,4 +1,4 @@
-"""薄い MCP 3 ツール (M8 要素3) — 実構造自動 Rietveld の計器+アクチュエータ。
+"""薄い MCP 4 ツール (M8 要素3 + REQ-SAR-40x) — 実構造自動 Rietveld の計器+アクチュエータ。
 
 閉ループの丸ごと (agentic_analyze) は **出さない**。③ (Claude Code) が以下を反復駆動して回す
 (architecture.md §0, §6, 二重反転回避):
@@ -11,11 +11,16 @@
   ⚠ **``phase_weight_fractions`` が定量相分析の出版値**であり ``phase_fractions`` (Scale) ではない。
 - ``propose_next_actions``: 直前結果 + 残差シグネチャ → ActionProposal[] (rationale/priority/**safe**)。
 - ``refine_with_revisions``: spec + ③ が決めた AnalysisAction[] を適用して再実行。
+- ``propose_data_preprocessing``: 観測ファイル → **データレンジ / 背景項数 / 除外領域候補**
+  (① `autorietveld.autorange`, REQ-SAR-401/402/403)。**提案のみ** — 除外領域は自動適用しない
+  (P-SAR-3: 未知相のピークをアーチファクトとして消すと相同定を殺す)。手で決めていた前処理
+  (CaTeO3 の背景 24 項・T4 のデータリミット) を関数化したもので、返り値は ``auto_rietveld`` /
+  ``sequential_rietveld`` の入力へそのまま貼れる。
 
 **SDK 非依存**: 素の型 dict のみを返す (json.dumps allow_nan=False 安全)。GSAS は runner 内で遅延
 import。runner は注入可能 (既定 GSAS 駆動; テストは決定論スタブ)。
 
-信頼性: 🔵 architecture.md §6 の 3 ツール表と 1:1。
+信頼性: 🔵 architecture.md §6 の 3 ツール表 + docs/design/stable-auto-rietveld/architecture.md WS-4。
 """
 
 from __future__ import annotations
@@ -46,6 +51,9 @@ from ..refine_loop.serialization import (
     features_from_dicts,
     proposal_to_dict,
 )
+#: 反射位置を自前で立てるときの既定波長 (Cu Kα1 = 実験室 X 線であるという**主張**)。
+#: `identify_and_add_phase` と**同じ定数を共有する** — 値を 2 系統持つと片方だけが古くなる。
+from .insitu_tools import _CU_KA1
 from .operando_diag_tools import residual_report_to_dict
 
 Runner = Callable[[AnalysisInput], AutoRietveldResult]
@@ -57,6 +65,7 @@ SearchRunner = Callable[[RecipeCandidate], AutoRietveldResult]
 __all__ = [
     "RIETVELD_TOOLS",
     "auto_rietveld",
+    "propose_data_preprocessing",
     "propose_next_actions",
     "refine_with_revisions",
 ]
@@ -285,12 +294,31 @@ def _search_names(search: "bool | Sequence[str]") -> tuple[str, ...]:
     ``True`` は全候補、名前の列は**その部分集合**を意味する。名前を 1 つだけ渡す使い方
     (``["serious"]``) は「そのレシピ 1 本で回す」に等しく、**探索で勝ったレシピを次の反復でも
     使い続ける唯一の JSON 経路**である (② には既定レシピを丸ごと差し替える引数が無い)。
+
+    **空列 (``[]``/``""``) は ``ValueError``** (レビュー LOW-5): 空は「探索しない」ではなく
+    「探索したい候補が 1 つも残らなかった」であり、両者を同一視すると**候補名をフィルタして空に
+    なった呼び手が黙って別経路 (探索なし) を踏む** — 返り値から ``search`` キーが消えるだけで、
+    ③ には「探索したが全滅した」との区別が付かない。PR #129 で塞いだ ``instrument.recipe: []``
+    のサイレント失敗と同型なので、同じ規律 (② は error dict へ縮退) を適用する。
+    明示的に探索しないときは ``search`` を省略するか ``false``/``null`` を渡す。
     """
     if search is True:
         return CANDIDATE_NAMES
     if isinstance(search, str):  # "serious" のような単一名を親切に受ける
+        if not search:
+            raise ValueError(
+                "search が空文字です。探索しないなら search を省略 (または false) してください "
+                f"(候補名: {list(CANDIDATE_NAMES)})"
+            )
         return (search,)
-    return tuple(str(n) for n in search)
+    names = tuple(str(n) for n in search)
+    if not names:
+        raise ValueError(
+            "search が空列です。空は「探索しない」ではなく「候補が 1 つも残らなかった」なので "
+            "黙って探索なし経路へは落としません。探索しないなら search を省略 (または false)、"
+            f"探索するなら候補名を 1 つ以上指定してください (候補名: {list(CANDIDATE_NAMES)})"
+        )
+    return names
 
 
 @degrade_oserror
@@ -366,7 +394,8 @@ def auto_rietveld(
         付き、``final_rwp`` 以下は**採用候補の結果**になる。``specs`` も採用候補の入力を返すので
         持ち回れば同じ土俵で継続できる。⚠ **operando (`sequential_rietveld`) では使わない**
         — フレーム数 × 候補数の積は時間予算に収まらない (REQ-SAR-502)。既定 None (探索なし・
-        現行と同一)。
+        現行と同一)。``false``/``null`` は明示的に「探索しない」。**空列 ``[]`` は error dict**
+        (「探索しない」ではなく「候補が 1 つも残らなかった」なので黙って別経路へ落とさない)。
     :param search_config: 探索の判定閾値 ``{"rwp_tie_eps": 0.1, "disagreement_rwp_eps": 0.5,
         "cell_rel_tol": 0.001, "fraction_abs_tol": 0.02, "require_convergence": true}``。
         ``rwp_tie_eps`` 以内の同点は **BIC** で裁定し (母数の違う候補を Rwp だけで比べない)、
@@ -381,7 +410,10 @@ def auto_rietveld(
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)
         opts = StabilityOptions.from_dict(stability)
-        if search:
+        # 【`if search:` にしない】: 空列 `[]` は falsy なので**黙って探索なし経路**へ落ちる。
+        #   「探索しない」(None/false) と「候補が空」(=[]) を区別し、後者は _search_names が
+        #   ValueError → error dict へ縮退させる (LOW-5)。
+        if search is not None and search is not False:
             return _run_search(
                 inp, _search_names(search), search_config, max_cyc, opts, search_runner
             )
@@ -444,9 +476,202 @@ def refine_with_revisions(
     return _result_to_dict(run(inp), inp)
 
 
-# 【ツールレジストリ断片】: tools.py の MCP_TOOLS へ合流する 3 ツール (要素3)。
+# ===========================================================================
+# データ前処理の提案 (REQ-SAR-401/402/403) — ① `autorietveld.autorange` の ② 露出
+# ===========================================================================
+
+
+def _explained_positions(
+    phases: Sequence[Mapping[str, object]],
+    wavelength: float | None,
+    two_theta_range: "tuple[float, float]",
+) -> "tuple[tuple[float, ...], str]":
+    """相 spec (CIF) から「相が説明する反射位置」を立てる → ``(位置, 出所)``。
+
+    ``propose_excluded_regions(explained_two_theta=)`` の**到達可能性**を作るための層である
+    (§4.5: 各引数について「どの ② ツールの出力から来るのか」を言えること)。② に反射位置を返す
+    ツールは無いので、③ が既に持っている **`PhaseSpec` (+ `refined_cells`)** から
+    サーバ側で立てる — `identify_and_add_phase(known_phases=)` と同じ入力の形にしてある。
+
+    **波長を知らない (`None`) なら立てない**: hkl→2θ は波長に直接効くため、λ=0.7996 の放射光を
+    Cu Kα1 として扱うと 2θ が数度ずれ、「説明済み」判定が丸ごと誤る。推測するより
+    「未確認」と答える方が安全である (③ には ``explained_source`` で見える)。
+
+    :returns: ``(2θ 位置の昇順タプル, 出所)``。出所は ``"phases"`` / ``"none"`` (相未指定) /
+        ``"unavailable"`` (pymatgen 不在 or CIF 読込失敗) / ``"wavelength_unknown"``
+    """
+    if not phases:
+        return (), "none"
+    if wavelength is None:
+        return (), "wavelength_unknown"
+
+    from ..insitu.phaseid import phasespec_to_reference
+    from .insitu_tools import _parse_known_phases
+
+    positions: list[float] = []
+    converted = 0
+    for spec, cell in _parse_known_phases(phases):
+        ref = phasespec_to_reference(
+            spec,
+            refined_cell=cell,
+            wavelength=float(wavelength),
+            two_theta_range=two_theta_range,
+        )
+        if ref is None:  # pymatgen 不在 / CIF 読込失敗 → 安全側 (未確認) へ縮退
+            continue
+        converted += 1
+        positions.extend(float(p.position) for p in ref.peaks)
+    if converted == 0:
+        return (), "unavailable"
+    return tuple(sorted(positions)), "phases"
+
+
+@degrade_oserror
+def propose_data_preprocessing(
+    path: str,
+    *,
+    data_format: str | None = None,
+    excluded_regions: Sequence[Sequence[float]] | None = None,
+    phases: Sequence[Mapping[str, object]] = (),
+    wavelength: float | None = _CU_KA1,
+    explained_two_theta: Sequence[float] | None = None,
+    background_ladder: Sequence[int] | None = None,
+    snr_min: float = 5.0,
+    min_fraction_kept: float = 0.15,
+    reason: str = "",
+) -> dict:
+    """観測ファイル → **データレンジ / 背景項数 / 除外領域候補**を提案する (計器・提案のみ)。
+
+    ① `autorietveld.autorange` (REQ-SAR-401/402/403) の ② 露出。**人が手で決めていた前処理**を
+    関数にしたもので、返り値は `auto_rietveld` / `sequential_rietveld` の入力へそのまま貼れる:
+
+    | 返り値 | 貼り先 |
+    |---|---|
+    | ``two_theta_range.two_theta_limits`` | ``HistogramSpec.two_theta_limits`` / ``FrameSpec`` 同名 |
+    | ``background_terms.recommended`` (or ``candidates``) | ``auto_rietveld(background_coeffs=)`` |
+    | ``excluded_region_candidates.candidates[].{lower,upper}`` | ``HistogramSpec.excluded_regions`` |
+
+    **⛔ 除外領域は自動適用しない** (P-SAR-3)。除外は解析の解釈を変える操作であり、未知相の
+    ピークをアーチファクトとして消せば相同定を殺す。``requires_human_approval`` は常に true で、
+    **本ツール自身も提案候補を自分のレンジ判定へ流し込まない** — 承認済みの区間だけを
+    ``excluded_regions`` 引数で明示的に渡すこと (提案を内部で自己適用したら「提案のみ」が嘘になる)。
+
+    `assess_data_quality` との違い: あちらは operando の**背景減算検出 + 上限 1 値**の助言
+    (esd 非対応・切り詰めガードなし)。本ツールは **下限/上限の組**を返し esd を noise 推定に使い、
+    切り詰め量にガードを掛ける。契約が違うので統合していない (同じ信号終端域を指すことは
+    ``test_range_upper_is_consistent_with_dataquality_single_limit`` が縛っている)。
+
+    :param path: 観測データファイルパス (``HistogramSpec.data_path`` と同じもの)
+    :param data_format: 形式名。語彙は `assess_data_quality` / ``reference.io.load_pattern`` と共通
+        ("XY"/"XYE"/"XRDML"/"FXYE"/"GSAS"/"INT"/"IGOR")。None は "XY"。
+        3 列 ascii の "XY"/"XYE" のみ esd を保持し、noise 推定を計数統計にできる
+    :param excluded_regions: **既に承認済み**の除外区間 ``[lo, hi]`` の列。上限判定から外す
+        (寄生ピークを混ぜると上限がそこまで押し出される)
+    :param phases: 相 spec の列 (``PhaseSpec.to_dict()`` + 任意の ``refined_cell`` [a,b,c,α,β,γ])。
+        除外候補の「どの相でも説明できない」判定に使う反射位置を CIF から立てる。
+        ``auto_rietveld`` に渡した ``phases`` と ``refined_cells`` をそのまま貼れる。
+        **渡さないと偽陽性が増える** (``note`` に警告が出る)
+    :param wavelength: 反射位置生成の線源波長 (Å)。既定 Cu Kα1。**放射光/中性子では実波長を必ず
+        渡す**。判らないときは ``None`` — 推測せず反射位置生成を止める (``explained_source``)
+    :param explained_two_theta: 反射位置を**既に手元に持つ**呼び手のための明示入力
+        (``phases`` より優先)。算出元は問わない
+    :param background_ladder: 背景項数の梯子 (既定 ``[6, 12, 18, 24, 36]``)
+    :param snr_min: レンジ判定の窓内 S/N 閾値
+    :param min_fraction_kept: 残さなければならない点数比の下限 (これを割る提案は中心を保って広げる)
+    :returns: ``two_theta_range`` / ``background_terms`` / ``excluded_region_candidates`` /
+        ``explained_source`` / ``reason``。読み込み失敗・引数不正は ``{"error", "error_type"}``
+    """
+    from dataclasses import asdict
+
+    from ..autorietveld.autorange import (
+        propose_excluded_regions,
+        suggest_background_terms,
+        suggest_two_theta_range,
+    )
+    from .operando_diag_tools import _load_pattern_with_esd, _parse_excluded_regions
+
+    try:
+        regions = _parse_excluded_regions(excluded_regions)
+        x, y, esd = _load_pattern_with_esd(path, data_format)
+        if x.size == 0:
+            raise ValueError(
+                f"観測データが空です: {path!r}。空パターンを「切り詰め不要」とは答えません。"
+            )
+        tt_range = (float(x.min()), float(x.max()))
+        explained: "tuple[float, ...] | None" = None
+        if explained_two_theta is not None:
+            explicit = tuple(float(v) for v in explained_two_theta)
+            # 【空を「供給された」と扱わない】: 空列で判定できることは何も無いのに、
+            #   `propose_excluded_regions` は supplied=True と読んで note の警告を落とす。
+            #   ③ は「未説明を確認済み」と誤読するので、空は未供給へ正規化する。
+            explained, source = (explicit, "explicit") if explicit else (None, "none")
+        else:
+            found, source = _explained_positions(phases, wavelength, tt_range)
+            if source == "phases":
+                explained = found
+        ladder = (
+            tuple(int(v) for v in background_ladder)
+            if background_ladder is not None
+            else (6, 12, 18, 24, 36)
+        )
+        rng = suggest_two_theta_range(
+            x, y, esd,
+            snr_min=snr_min,
+            min_fraction_kept=min_fraction_kept,
+            excluded_regions=regions,
+        )
+        bg = suggest_background_terms(x, y, ladder=ladder)
+        excl = propose_excluded_regions(x, y, explained_two_theta=explained)
+    # OSError は**捕まえない** — `@degrade_oserror` が実クラス名 (FileNotFoundError 等) を
+    # error_type に入れて縮退させるので、③ は「入力ファイルが無い」と「別の失敗」を区別できる。
+    except (ValueError, TypeError, IndexError, KeyError, AttributeError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
+    range_out = {k: finite_or_none(v) if isinstance(v, float) else v
+                 for k, v in asdict(rng).items()}
+    range_out["two_theta_limits"] = [finite_or_none(rng.lower), finite_or_none(rng.upper)]
+    return {
+        "two_theta_range": range_out,
+        "background_terms": {
+            "candidates": list(bg.candidates),
+            "recommended": bg.recommended,
+            "n_inflections": bg.n_inflections,
+            "noise_level": finite_or_none(bg.noise_level),
+            "misfits": [[t, finite_or_none(r)] for t, r in bg.misfits],
+            "reason": bg.reason,
+        },
+        "excluded_region_candidates": {
+            "candidates": [
+                {
+                    "center": finite_or_none(c.center),
+                    "lower": finite_or_none(c.lower),
+                    "upper": finite_or_none(c.upper),
+                    "height": finite_or_none(c.height),
+                    "snr": finite_or_none(c.snr),
+                    "fwhm": finite_or_none(c.fwhm),
+                    "sharpness": finite_or_none(c.sharpness),
+                    "nearest_explained": finite_or_none(c.nearest_explained)
+                    if c.nearest_explained is not None
+                    else None,
+                    "reason": c.reason,
+                }
+                for c in excl.candidates
+            ],
+            "requires_human_approval": excl.requires_human_approval,
+            "note": excl.note,
+            "n_peaks_examined": excl.n_peaks_examined,
+            "median_fwhm": finite_or_none(excl.median_fwhm),
+            "noise_level": finite_or_none(excl.noise_level),
+        },
+        "explained_source": source,
+        "reason": reason,
+    }
+
+
+# 【ツールレジストリ断片】: tools.py の MCP_TOOLS へ合流する 4 ツール (要素3 + REQ-SAR-40x)。
 RIETVELD_TOOLS: Mapping[str, object] = {
     "auto_rietveld": auto_rietveld,
     "propose_next_actions": propose_next_actions,
+    "propose_data_preprocessing": propose_data_preprocessing,
     "refine_with_revisions": refine_with_revisions,
 }

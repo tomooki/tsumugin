@@ -457,6 +457,54 @@ def test_run_recipe_search_records_every_candidate_in_the_ledger():
     assert ledger.verify()
 
 
+def test_reported_tier_uses_the_same_rule_that_ranked_the_candidates():
+    # 【目的】: **報告される tier は順位付けに使われた tier と一致すること** (レビュー MEDIUM-3)。
+    #   `require_convergence` は ② の `search_config` から設定できる公開ノブなので、
+    #   `to_dict` が True を決め打ちすると `false` を渡した呼び手には
+    #   「未収束∧妥当」と報告されながら順位は「収束∧妥当」で付いた表が返る。
+    #   ③ は「なぜその候補が勝ったか」を tier_label で読むので、これは誤った説明になる。
+    outcomes = _outcomes(
+        ("default", _result(6.02, converged=False)),
+        ("serious", _result(6.66, converged=True)),
+    )
+
+    lenient = summarize_search(outcomes, SearchConfig(require_convergence=False))
+    strict = summarize_search(outcomes, SearchConfig(require_convergence=True))
+
+    # 前提: このノブは実際に選択を変える (変えないなら以下の照合は空虚に真になる)
+    assert lenient.selected.candidate.name == "default"
+    assert strict.selected.candidate.name == "serious"
+
+    lenient_rows = lenient.to_dict()["candidates"]
+    strict_rows = strict.to_dict()["candidates"]
+    # 未収束候補の tier が規則ごとに変わる = 報告が config を見ている
+    assert lenient_rows[0]["tier_label"] == "収束∧妥当"
+    assert strict_rows[0]["tier_label"] == "未収束∧妥当"
+    # そして tier 順は必ず順位表 (ranking) と整合する — 上位ほど tier が小さい
+    for res, rows in ((lenient, lenient_rows), (strict, strict_rows)):
+        tiers = [rows[i]["tier"] for i in res.ranking]
+        assert tiers == sorted(tiers), f"報告 tier が順位と食い違う: {tiers}"
+    # 収束判定そのもの (converged) は規則に依らず報告される (tier は降格規則・converged は事実)
+    assert lenient_rows[0]["converged"] is False and strict_rows[0]["converged"] is False
+
+
+def test_ledger_candidate_rows_use_the_configured_tier_rule():
+    # 【目的】: ledger `m7_search_candidate` も同じ規則で書かれること (ledger と応答の食い違い禁止)。
+    from tsumugin.store import Ledger
+
+    ledger = Ledger()
+    run_recipe_search(
+        [_H], [_P],
+        runner=lambda c: _result(9.0, converged=False),
+        ledger=ledger,
+        names=("default",),
+        config=SearchConfig(require_convergence=False),
+    )
+
+    rows = [e.payload for e in ledger.entries if e.kind == "m7_search_candidate"]
+    assert [r["tier_label"] for r in rows] == ["収束∧妥当"]
+
+
 def test_result_dict_is_json_safe():
     import json
 
