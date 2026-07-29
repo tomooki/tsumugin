@@ -84,6 +84,10 @@ DATASETS: dict[str, dict[str, object]] = {
 
 RECIPES = ("default", "serious")
 
+#: 日常ベンチマークから外すデータセット。**T4 の serious は 1 回 ~3 時間**かかり、反復の
+#: フィードバックループを壊す。`--all` は既定でこれを除き、節目でだけ `--with-slow` を付ける。
+SLOW_DATASETS = ("T4",)
+
 
 def _available(name: str) -> bool:
     return all((_DATA / p).exists() for p in DATASETS[name]["paths"])  # type: ignore[index]
@@ -169,14 +173,22 @@ def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--datasets", nargs="*", default=None, choices=list(DATASETS))
     ap.add_argument("--recipes", nargs="*", default=["default"], choices=list(RECIPES))
-    ap.add_argument("--all", action="store_true", help="全データ × 全レシピ")
+    ap.add_argument("--all", action="store_true",
+                    help=f"全データ × 全レシピ (既定で {SLOW_DATASETS} を除く)")
+    ap.add_argument("--with-slow", action="store_true",
+                    help=f"低速データ {SLOW_DATASETS} も含める (節目のみ)")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     ap.add_argument("--timeout", type=float, default=4 * 3600, help="1 件あたりの上限秒")
     ap.add_argument("--out", type=Path, default=None, help="Markdown 出力先ディレクトリ")
     ap.add_argument("--label", default="", help="表に付ける見出し (何を測ったか)")
     args = ap.parse_args(argv)
 
-    datasets = list(DATASETS) if args.all else (args.datasets or ["T1"])
+    if args.all:
+        datasets = [d for d in DATASETS if args.with_slow or d not in SLOW_DATASETS]
+    else:
+        datasets = args.datasets or ["T1"]
+    if args.all and not args.with_slow:
+        print(f"# 低速データ {SLOW_DATASETS} を除外 (--with-slow で含める)", flush=True)
     recipes = list(RECIPES) if args.all else args.recipes
     jobs = [(d, r) for d in datasets for r in recipes]
 

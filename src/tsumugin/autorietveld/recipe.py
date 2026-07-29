@@ -303,30 +303,17 @@ def build_recipe(
         label="uiso", flags={"uiso": True}, note="等方温度因子 Uiso (混合占有は等価制約下)"
     )
 
-    # 【規定 (2026-07-27): 格子は単独 → 試料変位は後段】
-    #   格子と試料変位はどちらも 2θ を動かすため強く相関する (Bragg-Brentano の Shift は
-    #   ``pos -= const·4·Shift·cosθ`` で、格子定数の変化とほぼ同じ形のピークシフトを作る)。
-    #   同じ段で自由にすると片方が他方を吸収し、**物理的に誤った格子で自己整合な解**へ落ちる —
-    #   実測 (Kα1 単色 CaTeO3): Shift −274 µm 相当 (2θ −0.15°) を格子が肩代わりしていた。
-    #   相関するパラメータを段で分ける、という段階解放の規律そのもの。
-    #   Zero (`profile_lorentzian` 段) も 2θ オフセットなので、変位段はその**前**に置く。
-    #   【交互精密化 cell → shift → cell】: 段のフラグは**累積 (enable のみ)** なので、変位段を
-    #   分けただけでは格子は解放されたままで相関は切れない。変位段では格子を**明示的に凍結**し
-    #   (``{"cell": False}``)、直後に格子を再解放する。これで「格子 → 変位 → 格子」の交互
-    #   精密化になり、どちらか一方が他方を吸収したまま固まるのを防ぐ。
-    displacement_stages = (
-        RefinementStage(
-            label="displacement",
-            flags={"cell": False, "displacement": disp},
-            note="ジオメトリ別 試料変位 (格子は凍結 — 2θ シフトが格子と相関するため)",
-        ),
-        RefinementStage(
-            label="cell (repolish)",
-            flags={"cell": True},
-            note="変位を入れた上で格子を再解放 (交互精密化の戻り)",
-        ),
-    )
-
+    # 【段順序の実験と差し戻し (2026-07-27/28)】
+    #   「格子は単独 → 試料変位は後段」を規定として 3 通り (末尾 / cell 直後 / cell→変位→cell の
+    #   交互) 実装し実データで測ったが、**どの配置でも 1 つ以上のベンチマークが落ちた**:
+    #     - 末尾・交互      : T3 PbSO4 joint 6.66% → 14.38% (格子発散)
+    #     - cell 直後       : T4 NAC+CaF2 ~12.8% → 17.53%
+    #   格子と試料変位が強相関なのは事実 (実測: Kα1 単色 CaTeO3 で Shift −274 µm 相当 = 2θ
+    #   −0.15° を格子が肩代わりしていた) だが、**単一の段順序で全データを満たすことはできない**。
+    #   よって既定は M7 の実績ある「格子 + 変位 同段」に戻し、順序の選択は Phase 2 の
+    #   レシピ探索 (REQ-SAR-500) に委ねる。実験の記録は
+    #   `chore/stage-order-cell-then-displacement` ブランチと
+    #   `docs/spec/stable-auto-rietveld/requirements.md` F1 にある。
     stages: list[RefinementStage] = []
 
     # S0: 相分率スケール + 背景 (全チュートリアル共通の起点)
@@ -350,13 +337,18 @@ def build_recipe(
                 note="相分率 (各ヒストグラム和=1 制約)",
             )
         )
-        cell_flags: dict[str, object] = {"cell": True, "profile": ["U", "V", "W"]}
-        cell_note = "格子 + プロファイル(CW)"
+        cell_flags: dict[str, object] = {
+            "cell": True,
+            "displacement": disp,
+            "profile": ["U", "V", "W"],
+        }
+        cell_note = "格子 + 試料変位 + プロファイル(CW)"
         if temp_diff:
             cell_flags["hydrostatic_strain"] = True
             cell_note += " + 温度差 Dij"
-        stages.append(RefinementStage(label="cell+profile", flags=cell_flags, note=cell_note))
-        stages.extend(displacement_stages)
+        stages.append(
+            RefinementStage(label="cell+displacement+profile", flags=cell_flags, note=cell_note)
+        )
         stages.append(coords_stage)
         stages.append(uiso_stage)
         stages.append(
@@ -367,14 +359,15 @@ def build_recipe(
             )
         )
     else:
-        # 単相 (T1/T2/T3): 格子 (温度差なら Dij も; どちらも格子側パラメータ) を単独で先に張る
-        s1_flags: dict[str, object] = {"cell": True}
-        note_bits = ["格子 (試料変位とは別段)"]
+        # 単相 (T1/T2/T3): 格子+変位 (温度差なら Dij) を先に張る
+        s1_flags: dict[str, object] = {"cell": True, "displacement": disp}
+        note_bits = ["格子 + ジオメトリ別試料変位"]
         if temp_diff:
             s1_flags["hydrostatic_strain"] = True
             note_bits.append("温度差の静水圧歪み Dij")
-        stages.append(RefinementStage(label="cell", flags=s1_flags, note="; ".join(note_bits)))
-        stages.extend(displacement_stages)
+        stages.append(
+            RefinementStage(label="cell+displacement", flags=s1_flags, note="; ".join(note_bits))
+        )
         # 混合占有の有無で解放順序を切り替える:
         # - 混合占有あり (中性子 garnet 型): 占有率 → Uiso(等価) → プロファイル → 一般位置座標。
         # - 混合占有なし (ラボ X 線 fluoroapatite 型): プロファイル → 座標 → Uiso。
