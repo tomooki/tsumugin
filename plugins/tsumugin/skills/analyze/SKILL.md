@@ -157,19 +157,60 @@ Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発�
 
 ```json
 {"stability": {"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 2,
-               "detect_noop_stages": true, "prune_weak_vars": true, "record_correlations": true}}
+               "detect_noop_stages": true, "record_weak_vars": true,
+               "report_undetermined": true, "record_correlations": true}}
 ```
 
 | いつ使うか | キー | 効果 |
 |---|---|---|
 | 段が進むほど結果が不安定・後段が壊れる | `require_convergence` (+ `max_shift_esd`/`extra_cycles`) | 未収束段は**追加サイクルで回し直し**、駄目なら revert |
 | ある段から Rwp が全く動かない (段列が死んでいる疑い) | `detect_noop_stages` | n_params 不変 + rwp/gof ビット同一の段を警告 (**revert はしない**) |
-| 母数が多すぎて esd が発散している | `prune_weak_vars` | `esd >= 値` の変数を次段以降で凍結。座標シフト (`dAx/dAy/dAz`) は既定で除外 |
+| どのパラメータが決まっていないか知りたい / 出版前 | `report_undetermined` | 最終収束後の `esd >= 値` を `undetermined_parameters` に**所見として報告** (凍結しない) |
+| どの段でどのパラメータが暴れたか追いたい | `record_weak_vars` | 各段の弱い変数を ledger に**記録するだけ** |
 | 段の順序を疑っている / 何と何が縛られているか知りたい | `record_correlations` (+ `corr_threshold`) | \|r\|≥閾値 のペアを記録 (**検出のみ・自動凍結しない**) |
 
-結果は `stages[*].note` (`unconverged` / `noop` / `pruned=N` / `extra_cycles=N`) に出る。
+結果は `stages[*].note` (`unconverged` / `noop` / `extra_cycles=N`) に出る。
 **既定 (未指定) は現行と完全に同一の挙動**なので、まず既定で回し、疑いが出てから足すこと。
 未知のキーは黙って無視されず error dict になる (綴り間違いで「有効にしたつもり」にならない)。
+
+## 「決まらなかったパラメータ」をどう読むか (`report_undetermined`)
+
+`undetermined_parameters` (`esd >= |値|` = 標準不確かさが値そのものより大きい) は**失敗では
+なく所見**である。「このデータ・このモデルではこのパラメータは決まらない」という情報であり、
+握り潰すと NaCuHCF の Ow 判別 (占有率が Na>1 / O<0 に発散したこと自体が決め手だった) と
+同種の診断信号を失う。**まず報告し、原因を疑うこと**:
+
+| 何が載っているか | 疑うこと |
+|---|---|
+| 特定の原子の `AUiso` / `Afrac` | その原子は本当に要るか / 別サイトと縮退していないか (`compare_structure_models`) |
+| プロファイル係数 (`U`/`V`/`W`/`X`/`Y`) | データがその項を分離できるだけの分解能・角度域を持っているか (`assess_data_quality`) |
+| 背景係数 | 背景項数が多すぎる (`autorange` の背景エスカレーションを疑う) |
+| ほぼ全変数 | 段が実は収束していない (`require_convergence` を足す) / 相集合が間違っている (`check_phase_set`) |
+
+- **`undetermined_exempt` は「決まっている」ではない。** 座標シフト (`dAx/dAy/dAz`) は
+  そのサイクルでの**シフト量**で、収束するほど分母が 0 に近づくため比が構造的に発散する
+  (よく決まっている座標ほど大きくなる = 向きが逆)。判定できないので別列に分けてある。
+  座標の不確かさを見たいときは `cell_esd` や gpx の座標 esd を見ること。
+- **凍結して消してはいけない。** 報告のあとに何をするかは ③ とユーザーの判断であって、
+  ツールが黙って母数を削る対象ではない (提案 ≠ 適用)。
+
+### どうしても凍結したいとき
+
+| いつ使うか | キー | 効果 |
+|---|---|---|
+| 出版用に「決まらない変数を固定した最終値」が欲しい | `polish_frozen_undetermined` (要 `report_undetermined`) | 報告された変数を凍結して**もう 1 回**精密化し再報告 |
+| 段が収束しない / 悪条件で進めない | `rescue_freeze_on_failure` | **未収束か `SVD0>0` のときだけ**最弱を 1 個凍結して再試行 |
+| 上でも駄目・条件数が進行を妨げている | `prune_weak_vars_each_stage` | 受理された段のたびに永続凍結 (**最終手段**) |
+
+**⚠ `polish_frozen_undetermined` を使ったら、その `final_rwp` は「一部の変数を凍結した fit」の
+値である。** 拘束なしの run と同じ列に並べる前に `final_polish` (`applied` / `frozen` /
+`rwp_before` → `rwp_after`) と `frozen_parameters` を必ず報告に含めること。
+
+**⚠ `prune_weak_vars_each_stage` は不可逆なラチェットである。** 途中段階の大きな esd は
+「決まらない」ではなく「まだ決まっていない」だけ (座標がずれた段階の Uiso など) で、そこで
+凍結すると後段で本来決まるようになっても二度と解放されない。実測: 背景 6 項が S1 完了時に
+全部凍り、`n_params` が S2 で 10 → 4 のまま最後まで走った (最終 Rwp も悪化)。
+**まず `rescue_freeze_on_failure` を試すこと。**
 
 ## 格子や試料変位が暴走するとき (箱拘束 — 同じ `stability` 引数)
 
@@ -207,11 +248,13 @@ Na>1 / O<0 に発散したこと自体が「Ow が必要」の決め手で、[0,
 最小二乗の目的関数から外すため、登録はされるが χ² に入らない。効かせるには:
 
 ```json
-{"stability": {"enable_restraints": true, "prune_weak_vars": true}}
+{"stability": {"enable_restraints": true, "report_undetermined": true}}
 ```
 
-- **`prune_weak_vars` との併用が必須** (単独指定は error dict)。拘束で実質的に母数が増えるため、
-  esd 駆動の自動凍結を同時に置く。
+- **`report_undetermined` との併用が必須** (単独指定は error dict)。拘束は実質的に母数を
+  増やすので、**何が決まらなかったかを見ないまま**回すことは認めていない。
+  ⚠ 凍結 (`prune_weak_vars_each_stage`) を足す必要は**ない** — 拘束下で毎段凍結すると
+  母数が不可逆に痩せる (実測: 背景 6 項が S1 で全部凍り n_params 10→4)。
 - 効いているかは **同じ拘束をターゲット違いで 2 回回して結果が変わるか**で確かめる
   (変わらなければ効いていない)。
 

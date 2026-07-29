@@ -32,6 +32,7 @@ __all__ = [
     "diagnostics_from_cov_data",
     "read_diagnostics",
     "read_variable_values",
+    "split_weak_variables",
     "values_from_cov_data",
     "weak_variables",
 ]
@@ -193,6 +194,36 @@ def weak_variables(
             out.append(WeakVariable(name=str(name), value=value, esd=esd, ratio=ratio))
     out.sort(key=lambda w: w.ratio, reverse=True)
     return tuple(out)
+
+
+def split_weak_variables(
+    weak_vars: Sequence[WeakVariable], exempt_tokens: Sequence[str]
+) -> "tuple[tuple[WeakVariable, ...], tuple[WeakVariable, ...]]":
+    """弱い変数を「``esd/|値|`` が意味を持つもの」と「持たないもの」に分ける (純関数)。
+
+    **なぜ捨てずに分けるか**: 除外する変数を黙って落とすと、「決まらなかったパラメータ」の
+    報告 (REQ-SAR-103) が**何を見なかったか**を隠してしまう。除外は「判定できない」であって
+    「決まっている」ではないので、第 2 の列として返し呼び出し側が両方報告できるようにする。
+
+    **既定の除外トークン ``dAx/dAy/dAz`` の根拠** (GSAS-II ソース実測):
+    座標は ``x`` そのものではなく **``dAx`` = その精密化での x からのシフト**として精密化され、
+    ``GSASIIstrIO.py:1732`` が精密化のたびに ``dAx/dAy/dAz`` を **0 に初期化**し、
+    ``GSASIIstrMath.ApplyXYZshifts:2940`` が終了時にシフトを座標へ足し込む。したがって
+    ``|dAx|`` は「そのサイクルで動いた量」であり、**収束するほど 0 に近づく**。分母が 0 へ
+    向かうので ``esd/|dAx|`` は**座標が well-determined であるほど大きくなる** —
+    比の向きが逆である。段の途中か最終かに依らない**パラメータ化由来の構造的偽陽性**なので、
+    最終判定だけにしても除外は外せない (むしろ収束点で最も強く出る)。
+
+    :param exempt_tokens: 変数名の**部分一致**トークン (空列なら除外なし)
+    :returns: ``(判定対象, 判定対象外)`` — どちらも入力の順序 (比の悪い順) を保つ
+    """
+    if not exempt_tokens:
+        return tuple(weak_vars), ()
+    judged: list[WeakVariable] = []
+    exempt: list[WeakVariable] = []
+    for w in weak_vars:
+        (exempt if any(tok in w.name for tok in exempt_tokens) else judged).append(w)
+    return tuple(judged), tuple(exempt)
 
 
 def data_term_rwp(

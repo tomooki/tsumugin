@@ -156,6 +156,22 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "cell_esd": {
             name: [finite_or_none(x) for x in esd] for name, esd in result.cell_esd.items()
         },
+        # 【決まらなかったパラメータ (REQ-SAR-103)】: 最終収束後に残った ``esd >= |値|``。
+        #   **これは失敗ではなく所見** — 「このデータではこのパラメータは決まらない」という
+        #   情報であり、③ がモデルを疑う材料になる (NaCuHCF の占有率発散が Ow 必要性の決め手に
+        #   なったのと同種の診断信号)。凍結して隠さず、そのまま渡す。
+        #   ⚠ 空リストは「弱い変数が無かった」**ではなく**「診断を要求していない」ことがある —
+        #   `stability.report_undetermined` を立てて初めて埋まる。
+        "undetermined_parameters": [w.to_dict() for w in result.undetermined_parameters],
+        # 比 (``esd/|値|``) が構造的に意味を持たないため判定対象外にした変数 (既定 dAx/dAy/dAz)。
+        #   捨てずに並べるのは、報告が**何を見なかったか**を隠さないため。
+        "undetermined_exempt": [w.to_dict() for w in result.undetermined_exempt],
+        # この結果の fit で凍結されていた変数 (救済 + 毎段プルーニング + 最終研磨)。
+        #   出版値がどの母数集合の上に載っているかを ③ が読める唯一の窓。
+        "frozen_parameters": list(result.frozen_parameters),
+        # 最終研磨 (opt-in) の記録。null = 研磨していない。非 null かつ ``applied`` なら
+        #   **final_rwp は一部の変数を凍結した fit の値**である (黙って意味を変えない)。
+        "final_polish": result.final_polish.to_dict() if result.final_polish else None,
         "gpx_path": result.gpx_path,
     }
 
@@ -307,9 +323,19 @@ def auto_rietveld(
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
         診断 (WS-1): ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
-        "detect_noop_stages": true, "prune_weak_vars": true, "record_correlations": true}``。
-        収束判定 (未収束段を追加サイクル → 駄目なら revert) / no-op 段の警告 / esd >= |値| の
-        自動凍結 / 高相関ペアの記録を opt-in で有効化する。
+        "detect_noop_stages": true, "record_weak_vars": true, "report_undetermined": true,
+        "record_correlations": true}``。
+        収束判定 (未収束段を追加サイクル → 駄目なら revert) / no-op 段の警告 / 弱い変数
+        (``esd >= |値|``) の観測と報告 / 高相関ペアの記録を opt-in で有効化する。
+        **弱い変数の扱いはタイミングで分かれる** (REQ-SAR-103。軸は「凍結は判断、記録は観測」):
+        ``record_weak_vars`` = 各段で ledger に記録するだけ (凍結しない) /
+        ``report_undetermined`` = 最終収束後に残ったものを ``undetermined_parameters`` へ
+        **所見として報告** /
+        ``polish_frozen_undetermined`` = それを凍結して 1 回精密化し直す (opt-in。有効時
+        ``final_rwp`` は**一部を凍結した fit** の値になり ``final_polish`` で判別できる) /
+        ``rescue_freeze_on_failure`` = 段が収束しない/``SVD0>0`` のときだけ最弱を凍結して再試行 /
+        ``prune_weak_vars_each_stage`` = **旧挙動** (受理された段のたびに永続凍結)。母数が
+        不可逆に痩せる (実測 ``n_params`` が S2 で 7→4) ため既定 OFF の逃げ道。
         拘束 (WS-2): ``{"bound_cell": 0.05, "bound_displacement": 5000.0,
         "bound_size_strain": true, "enable_restraints": true}``。**装置・幾何パラメータだけ**に
         箱拘束 (格子 ±X% / 試料変位 µm / Size・Mustrain の正値性) を張り、境界に到達したら
@@ -318,14 +344,18 @@ def auto_rietveld(
         (そのためのキーは存在しない)。``enable_restraints`` は登録済み restraint
         (``bond_restraints``/``chem_comp_restraints``) を χ² に入れる (既定 OFF — GSAS-II は
         headless では penalty を目的関数から外すため、有効にしない限り拘束は効かない)。
-        ⚠ **``prune_weak_vars`` との併用が必須**で、単独指定は error dict になる。
+        ⚠ **``report_undetermined`` との併用が必須**で、単独指定は error dict になる
+        (拘束は実質的に母数を増やすので、何が決まらなかったかを見ないまま回させない)。
         有効時、``final_rwp`` / ``stages[*].rwp`` は **penalty を除いたデータ項のみの Rwp**
         (段の受理/revert もこの値で判定する — 拘束は「引く力」であって適合の悪化ではない)。
         penalty 込みの GSAS 生値は ``final_rwp_penalized`` / ``stages[*].rwp_penalized``、
         penalty の絶対量は ``final_restraint_penalty`` に別キーで出る (拘束なしなら ``null``)。
-        判定結果は ledger (``m7_stage_unconverged``/``m7_stage_noop``/``m7_stage_prune``/
-        ``m7_stage_correlation``/``m7_box_bounds``/``m7_stage_bound_hit``) と ``stages[*].note``
-        (``unconverged``/``noop``/``pruned=N``/``bound_hits=N``) に出る。
+        判定結果は返り値の ``undetermined_parameters`` / ``undetermined_exempt`` /
+        ``frozen_parameters`` / ``final_polish`` と、ledger (``m7_stage_unconverged``/
+        ``m7_stage_noop``/``m7_stage_weak_vars``/``m7_stage_rescue``/``m7_stage_prune``/
+        ``m7_undetermined``/``m7_final_polish``/``m7_stage_correlation``/``m7_box_bounds``/
+        ``m7_stage_bound_hit``) と ``stages[*].note``
+        (``unconverged``/``noop``/``rescue_frozen=N``/``pruned=N``/``bound_hits=N``) に出る。
         **未知キーは error dict へ縮退**する (黙って無視しない)。
         既定 None = 現行と同一挙動 (共分散も Controls も触らない)。``runner`` 注入時は無視される。
     :param search: **レシピ探索** (REQ-SAR-500)。``true`` で全候補
@@ -401,7 +431,7 @@ def refine_with_revisions(
     :param max_cyc: `auto_rietveld` と同じ (既定 GSAS runner への転送)。
     :param stability: `auto_rietveld` と同じ安定性診断ゲート + 箱拘束 spec (既定 None = 非回帰)。
         箱拘束 (``bound_cell``/``bound_displacement``/``bound_size_strain``) と restraint 有効化
-        (``enable_restraints``, 要 ``prune_weak_vars``) も同じキーで到達できる。
+        (``enable_restraints``, 要 ``report_undetermined``) も同じキーで到達できる。
     """
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)

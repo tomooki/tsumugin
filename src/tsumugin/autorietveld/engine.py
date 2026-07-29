@@ -39,10 +39,12 @@ from .diagnostics import (
     data_term_rwp,
     read_diagnostics,
     read_variable_values,
+    split_weak_variables,
 )
 from .model import (
     AutoRietveldResult,
     CellEsd,
+    FinalPolish,
     Geometry,
     HistogramSpec,
     PhaseSpec,
@@ -278,18 +280,82 @@ def _is_noop_stage(
 def _prune_candidates(
     weak_vars: "Sequence[WeakVariable]", already_frozen: "set[str]", exempt: "Sequence[str]"
 ) -> "tuple[WeakVariable, ...]":
-    """`esd >= |値|` の変数から**今回新たに凍結すべきもの**を選ぶ (REQ-SAR-103, 純関数)。
+    """`esd >= |値|` の変数から**凍結の候補になり得るもの**を選ぶ (REQ-SAR-103, 純関数)。
 
-    既に凍結済みの変数は除く (ledger に同じ凍結を毎段記録しない)。``exempt`` は変数名の
-    **部分一致**トークン: 既定の ``dAx/dAy/dAz`` は座標シフト変数で、収束するほど値が 0 に
-    近づき ``esd/|値|`` が必ず 1 を超える = 「決まらなかった」の偽陽性になる (無条件に凍結
-    すると収束した瞬間に全座標が凍る)。
+    既に凍結済みの変数は除く (同じ凍結を二重登録しない)。``exempt`` は ``esd/|値|`` の比が
+    構造的に意味を持たない変数名トークン (`diagnostics.split_weak_variables` に根拠)。
+
+    ⚠ **これは「凍結すべき」ではなく「凍結できる」の列挙である。** 実際に凍結するかは
+    タイミングの判断 (救済 / 最終研磨 / opt-in の毎段プルーニング) であり、呼び出し側が持つ。
+    比の悪い順 (`weak_variables` の並び) を保つので、先頭が**最弱**の変数になる。
     """
-    return tuple(
-        w
-        for w in weak_vars
-        if w.name not in already_frozen and not any(tok in w.name for tok in exempt)
-    )
+    judged, _exempt = split_weak_variables(weak_vars, exempt)
+    return tuple(w for w in judged if w.name not in already_frozen)
+
+
+def _needs_rescue(diagnostics: RefinementDiagnostics, *, max_shift_esd: float) -> bool:
+    """その段が**行き詰まっている**か — 救済プルーニングの発火条件 (純関数)。
+
+    2 つの直接証拠だけを見る:
+
+    * ``Rvals['SVD0'] > 0`` — GSAS が特異な変数を検出した = 悪条件の**直接**証拠。
+      収束フラグが立っていても発火させる (特異行列の上に載った「収束」は信用できない)。
+    * 収束していない (`is_converged` が明示的に ``False``)。判定材料が無い ``None`` は
+      **発火させない** (情報が無いことを異常と断じない, fail open)。
+
+    **``not reverted`` (= うまく行っている段) では発火しない**のが要点である。途中段階の
+    大きな esd は「決定不能」ではなく「まだ決まっていない」だけなので、順調な段で凍結すると
+    後段で決まるようになったパラメータを二度と解放できない (不可逆なラチェット)。
+    """
+    if diagnostics.svd_singularities > 0:
+        return True
+    return diagnostics.is_converged(max_shift_esd=max_shift_esd) is False
+
+
+def _run_rescue_freezes(
+    diagnostics: RefinementDiagnostics,
+    freeze,
+    cycle,
+    *,
+    max_shift_esd: float,
+    exempt: "Sequence[str]",
+    already_frozen: "set[str]",
+    max_freeze: int,
+    max_rounds: int,
+) -> "tuple[RefinementDiagnostics, object | None, int, tuple[str, ...]]":
+    """行き詰まった段を**最弱の変数を落として**回し直す (REQ-SAR-103 の救済経路)。
+
+    GSAS-II 自身の `GSASIImath.HessianLSQ` の ``dropTerms`` と同じ思想 — 特異/悪条件のときだけ
+    母数を減らす。違いは「何を落としたかを台帳に残す」ことである (GSAS は黙って落とす)。
+
+    凍結は `Controls['parmFrozen']` に載るので、**段が revert されればスナップショット復元と
+    一緒に巻き戻る** (呼び出し側が `already_frozen` の追跡からも外すこと)。
+
+    :param freeze: 変数名の列を凍結し**実際に凍結できた名前**を返す callable (GSAS 依存を注入)
+    :param cycle: 1 サイクル精密化して ``(新しい診断, 付随値)`` を返す callable
+    :param max_freeze: 1 回あたり凍結する最大数 (0 以下は 1 に丸める — 「救済するが何も
+        落とさない」は無限ループの元)
+    :param max_rounds: 段あたりの救済回数上限 (0 で救済なし)
+    :returns: ``(最終診断, 最後の付随値 or None, 実施回数, 凍結した変数名)``
+    """
+    frozen_all: list[str] = []
+    payload: object | None = None
+    rounds = 0
+    limit = max(0, int(max_rounds))
+    per_round = max(1, int(max_freeze))
+    seen = set(already_frozen)
+    while rounds < limit and _needs_rescue(diagnostics, max_shift_esd=max_shift_esd):
+        candidates = _prune_candidates(diagnostics.weak_vars, seen, exempt)
+        if not candidates:
+            break  # 落とせる変数が無い = 救済では直せない (呼び出し側の revert に任せる)
+        got = list(freeze([w.name for w in candidates[:per_round]]))
+        if not got:
+            break  # 1 つも凍結できなかった → 回しても同じ結果になる (無限ループを作らない)
+        frozen_all.extend(got)
+        seen.update(got)
+        rounds += 1
+        diagnostics, payload = cycle()
+    return diagnostics, payload, rounds, tuple(frozen_all)
 
 
 def _freeze_variables(gpx, names: "Sequence[str]") -> list[str]:
@@ -312,6 +378,114 @@ def _freeze_variables(gpx, names: "Sequence[str]") -> list[str]:
         except Exception:  # noqa: BLE001 — 解釈不能な変数名は当該変数のみスキップ
             continue
     return frozen
+
+
+def _run_final_polish(
+    gpx,
+    g2sc,
+    *,
+    gpx_path: Path,
+    snap_path: Path,
+    undetermined: "Sequence[WeakVariable]",
+    already_frozen: "set[str]",
+    stab: StabilityOptions,
+    stage_results: "list[StageResult]",
+    dlg: object | None,
+    split_penalty: bool,
+    max_cyc: int,
+    radiations,
+    histograms,
+    ledger: Ledger,
+) -> "tuple[object, FinalPolish, tuple[WeakVariable, ...], tuple[WeakVariable, ...]]":
+    """**最終研磨** (opt-in): 決まらなかった変数を凍結して 1 回だけ精密化し、再報告する。
+
+    **なぜ既定 OFF なのか**: 研磨後の値は「一部の変数を凍結した fit」のものであり、拘束なしの
+    run と同じ列に並べて比較できない。出版値の意味を黙って切り替えないため、有効化は明示に限り、
+    有効時は ``final polish`` という**独立した段**を段列の末尾に足して結果から判別できるようにする
+    (`FinalPolish` も同時に返る)。
+
+    **なぜ悪化しても採用するのか**: 凍結は自由度を減らすので Rwp は普通わずかに悪化する。それを
+    revert 条件にすると研磨は決して適用されない。破棄するのは**破綻**だけ — GSAS の失敗・
+    非有限 Rwp・格子崩壊/プロファイル非物理 (既存の revert ガードと同じ基準)。
+
+    :returns: ``(gpx, 研磨の記録, 研磨後の undetermined, 研磨後の判定対象外)``。gpx は
+        revert 時にスナップショットから読み直した**新しい** `G2Project` になり得る
+    """
+    names = [w.name for w in undetermined if w.name not in already_frozen]
+    rwp_before = stage_results[-1].rwp if stage_results else float("inf")
+    if not names:
+        # 「決まらなかった変数が無い」= 研磨する対象が無い。**成功でも失敗でもない**ので
+        #   理由を残す (有効にしたのに何も起きなかった、を静かにしない)。
+        polish = FinalPolish(
+            applied=False,
+            rwp_before=rwp_before,
+            rwp_after=rwp_before,
+            reason="凍結対象なし (決まらなかったパラメータが無い)",
+        )
+        ledger.append("m7_final_polish", polish.to_dict())
+        return gpx, polish, tuple(undetermined), ()
+
+    gpx.save()
+    shutil.copyfile(gpx_path, snap_path)
+    frozen = tuple(_freeze_variables(gpx, names))
+    reason = ""
+    try:
+        if not frozen:
+            raise RefinementFailedError("凍結できた変数が 0 個 (GSAS が変数名を解釈できない)")
+        _refine_once(gpx, dlg)
+        rwp, gof, nvar = _rvals(gpx)
+        rwp, _penalized, _penalty = _data_rwp(gpx, rwp, split=split_penalty)
+        if not math.isfinite(rwp):
+            raise RefinementFailedError("研磨後の Rwp が非有限")
+        if not _cells_physical(gpx.phases()) or not _profiles_physical(
+            gpx.histograms(), radiations, histograms
+        ).passed:
+            raise RefinementFailedError("研磨後の格子/プロファイルが非物理")
+    except Exception as exc:  # noqa: BLE001 — 破綻は revert に変換 (既存ガードと同じ規律)
+        reason = repr(exc)[:200]
+        shutil.copyfile(snap_path, gpx_path)
+        gpx = g2sc.G2Project(gpxfile=str(gpx_path))
+        gpx.data["Controls"]["data"]["max cyc"] = max_cyc
+        polish = FinalPolish(
+            applied=False,
+            frozen=frozen,
+            rwp_before=rwp_before,
+            rwp_after=float("inf"),
+            reverted=True,
+            reason=reason,
+        )
+        ledger.append("m7_final_polish", polish.to_dict())
+        return gpx, polish, tuple(undetermined), ()
+
+    diag = read_diagnostics(gpx, corr_threshold=stab.corr_threshold)
+    after, after_exempt = split_weak_variables(
+        diag.weak_vars, stab.esd_ratio_exempt_tokens
+    )
+    stage_results.append(
+        StageResult(
+            label="final polish",
+            rwp=rwp,
+            gof=gof,
+            n_params=nvar,
+            converged=_converged(gpx),
+            reverted=False,
+            # 出版値がこの段の産物であることを ③ が読める形で残す (② は note を返す)。
+            note=f"final polish; frozen_undetermined={len(frozen)}",
+        )
+    )
+    polish = FinalPolish(
+        applied=True, frozen=frozen, rwp_before=rwp_before, rwp_after=rwp
+    )
+    ledger.append(
+        "m7_final_polish",
+        {
+            **polish.to_dict(),
+            "n_undetermined_after": len(after),
+            "variables_after": [w.to_dict() for w in after],
+            "note": "出版値は一部の変数を凍結した fit のもの (REQ-SAR-103)",
+        },
+    )
+    return gpx, polish, after, after_exempt
 
 
 def _cells_physical(
@@ -1701,7 +1875,7 @@ def run_auto_rietveld(
         完全決定され XRD は分率に寄与しなくなる。実行可能性/縮退ゲートは呼び出し側の責務
         (`operando.coulometry.feasibility`)。既定 None。
     :param stability: 安定性最優先の**診断ゲート + 箱拘束** (stable-auto-rietveld)。収束判定
-        (REQ-SAR-101) / no-op 段の検出 (102) / esd プルーニング (103) / 高相関の記録 (104) と、
+        (REQ-SAR-101) / no-op 段の検出 (102) / 弱い変数の観測・報告・凍結 (103) / 高相関の記録 (104) と、
         装置・幾何パラメータの箱拘束 (201) / 境界到達の報告 (202) / restraint の有効化 (203) を
         opt-in で有効化する。**既定 None は現行と完全に同一の挙動** (共分散も Controls も
         1 度も触らず、``Refine`` の呼び出しも現行のまま)。詳細は `StabilityOptions`。
@@ -1912,7 +2086,11 @@ def run_auto_rietveld(
         # 【WS-1 診断ゲート】: 既定 (stability=None) は全項目 False なので、以降の追加処理は
         #   1 行も走らない (共分散すら読まない) = 現行と完全に同一の挙動。`stab` は箱拘束の
         #   登録 (上) で既に解決済み。
-        pruned_vars: set[str] = set()
+        # 【凍結の追跡】: 救済 (`rescue_freeze_on_failure`) と毎段プルーニング
+        #   (`prune_weak_vars_each_stage`) で `parmFrozen` に入れた変数。段が revert されたら
+        #   凍結もスナップショットごと巻き戻るので、この集合からも外す (追跡だけ残ると
+        #   「凍結したつもりの変数」が以降の候補から永久に消える)。
+        frozen_vars: set[str] = set()
 
         for stage in stages:
             snap = tmp_path / "snap.gpx"
@@ -1924,6 +2102,8 @@ def run_auto_rietveld(
             before = (prev_rwp, prev_gof, prev_nvar)
             diagnostics: RefinementDiagnostics | None = None
             extra_cycles_used = 0
+            rescue_rounds = 0
+            rescue_frozen: tuple[str, ...] = ()
             convergence_ok: bool | None = None
             bound_hits: tuple[BoundHit, ...] = ()
             # penalty 込みの生 Rwp (拘束を χ² に入れたときだけ非 None)。
@@ -1949,34 +2129,65 @@ def run_auto_rietveld(
                 converged = _converged(gpx)
                 if stab.needs_diagnostics:
                     diagnostics = read_diagnostics(gpx, corr_threshold=stab.corr_threshold)
+
+                def _cycle():
+                    """同じ段のまま 1 サイクル回し直す (収束サイクルと救済で共有)。"""
+                    _refine_once(gpx, refine_dlg)
+                    return (
+                        read_diagnostics(gpx, corr_threshold=stab.corr_threshold),
+                        (_rvals(gpx), _converged(gpx)),
+                    )
+
+                def _absorb(payload: object | None) -> None:
+                    """サイクルの付随値を段の指標へ取り込む (penalty 分離を必ずやり直す)。"""
+                    nonlocal rwp, gof, nvar, converged, rwp_penalized, last_penalty
+                    if payload is None:
+                        return
+                    (rwp, gof, nvar), converged = payload  # type: ignore[misc]
+                    # 追加サイクルも同じ ``dlg`` で回るので penalty の分離を**必ず**やり直す
+                    #   (経路ごとに塞がないと「追加サイクルだけ penalty 込みで判定」になる)。
+                    rwp, rwp_penalized, last_penalty = _data_rwp(gpx, rwp, split=split_penalty)
+
                 if stab.require_convergence and diagnostics is not None:
                     # 【収束判定 (REQ-SAR-101)】: GSAS の「改善した」は max|shift|/esd が
                     #   258 でも成立する (実測ログ)。Rwp の改善だけを受理条件にすると
                     #   **収束していない段**が通過し、以降の段がその上に積み上がる。
                     #   未収束なら同じ段のまま追加サイクルを回し、駄目なら下の revert 経路へ。
-                    def _cycle():
-                        _refine_once(gpx, refine_dlg)
-                        return (
-                            read_diagnostics(gpx, corr_threshold=stab.corr_threshold),
-                            (_rvals(gpx), _converged(gpx)),
-                        )
-
                     diagnostics, payload, extra_cycles_used = _run_convergence_cycles(
                         diagnostics,
                         _cycle,
                         max_shift_esd=stab.max_shift_esd,
                         extra_cycles=stab.extra_cycles,
                     )
-                    if payload is not None:
-                        (rwp, gof, nvar), converged = payload  # type: ignore[misc]
-                        # 追加サイクルも同じ ``dlg`` で回るので penalty の分離を**必ず**やり直す
-                        #   (経路ごとに塞がないと「追加サイクルだけ penalty 込みで判定」になる)。
-                        rwp, rwp_penalized, last_penalty = _data_rwp(
-                            gpx, rwp, split=split_penalty
-                        )
+                    _absorb(payload)
                     convergence_ok = diagnostics.is_converged(
                         max_shift_esd=stab.max_shift_esd
                     )
+                if stab.rescue_freeze_on_failure and diagnostics is not None:
+                    # 【救済プルーニング (REQ-SAR-103)】: **同じ母数で回し切ってもなお**
+                    #   収束しない、あるいは特異行列 (SVD0>0) が出た段だけ、最弱の変数を
+                    #   落として回し直す。順序が重要 — 先に追加サイクル (母数はそのまま、
+                    #   反復を増やす) を尽くし、それでも駄目なときに初めて母数を削る。
+                    #   逆にすると「収束が遅いだけのパラメータ」を決定不能と誤断して捨てる。
+                    diagnostics, payload, rescue_rounds, rescue_frozen = _run_rescue_freezes(
+                        diagnostics,
+                        lambda names: _freeze_variables(gpx, names),
+                        _cycle,
+                        max_shift_esd=stab.max_shift_esd,
+                        exempt=stab.esd_ratio_exempt_tokens,
+                        already_frozen=frozen_vars,
+                        max_freeze=stab.rescue_max_freeze,
+                        max_rounds=stab.rescue_max_rounds,
+                    )
+                    _absorb(payload)
+                    if rescue_frozen:
+                        frozen_vars.update(rescue_frozen)
+                        if stab.require_convergence:
+                            # 救済後の収束状態で受理/revert を判定し直す (救済前の判定を
+                            # 引きずると「救済で収束した段」を未収束として捨ててしまう)。
+                            convergence_ok = diagnostics.is_converged(
+                                max_shift_esd=stab.max_shift_esd
+                            )
                 if box_bounds:
                     # 【境界到達の検出 (REQ-SAR-202)】: 箱の外へ出た変数は GSAS が境界値へ
                     #   丸めて凍結する = 結果にも Rwp にも現れない。**握り潰さず所見にする**
@@ -2043,6 +2254,11 @@ def run_auto_rietveld(
                 gpx.data["Controls"]["data"]["max cyc"] = max_cyc
                 reverted = True
                 atom_flag_maps = prev_atom_flag_maps
+                # 【救済凍結も巻き戻る】: 凍結先の ``Controls['parmFrozen']`` は gpx ツリーの
+                #   一部なのでスナップショット復元で消える。追跡集合だけ残すと、以降その変数が
+                #   「凍結済み」として候補から永久に外れる (実際には解放されたまま)。
+                if rescue_frozen:
+                    frozen_vars.difference_update(rescue_frozen)
                 # 復帰後の指標は「直前の受理状態」を反映する (H1: nvar も巻き戻す)。
                 rwp, gof, nvar = prev_rwp, prev_gof, prev_nvar
                 rwp_penalized = prev_penalized
@@ -2072,23 +2288,71 @@ def run_auto_rietveld(
                     },
                 )
 
-            # 【esd プルーニング (REQ-SAR-103)】: 受理された段の完了時に esd >= |値| の変数を
-            #   凍結し、次段以降の varyList から外す。revert された段では読まない — 診断は
-            #   巻き戻した状態のものではなく、その段で捨てた解のものだから (凍結だけが残る)。
+            # 【救済プルーニングの記録 (REQ-SAR-103)】: 何を落として回し直したかを残す。
+            #   GSAS 自身の `dropTerms` は黙って落とすので、ここで見えるようにしないと
+            #   「なぜこの段だけ母数が少ないのか」が後から追えない。
+            if rescue_frozen:
+                ledger.append(
+                    "m7_stage_rescue",
+                    {
+                        "stage": stage.label,
+                        "reason": "未収束 または SVD0>0 (悪条件) の救済 (REQ-SAR-103)",
+                        "rounds": rescue_rounds,
+                        "reverted": reverted,
+                        "svd_singularities": (
+                            diagnostics.svd_singularities if diagnostics else 0
+                        ),
+                        "variables": list(rescue_frozen),
+                        "note": (
+                            "段が revert されたので凍結も巻き戻った"
+                            if reverted
+                            else "凍結は以降の段でも維持される"
+                        ),
+                    },
+                )
+
+            # 【弱い変数の観測 (REQ-SAR-103)】: 各段では **記録するだけで凍結しない**。
+            #   途中段階の大きな esd は「決定不能」の証拠ではなく「まだ決まっていない」だけで
+            #   あり (座標がずれた段階の Uiso など)、ここで凍らせると後段で本来決まるように
+            #   なっても二度と解放されない。**凍結は判断、記録は観測** (提案 ≠ 適用)。
+            #   revert された段でも記録する — その段が壊れた理由の一次証拠だから。
+            if stab.record_weak_vars and diagnostics is not None and diagnostics.weak_vars:
+                judged, exempt_vars = split_weak_variables(
+                    diagnostics.weak_vars, stab.esd_ratio_exempt_tokens
+                )
+                if judged:
+                    ledger.append(
+                        "m7_stage_weak_vars",
+                        {
+                            "stage": stage.label,
+                            "reverted": reverted,
+                            "n_weak": len(judged),
+                            "n_exempt": len(exempt_vars),
+                            # 変数数は母数に比例する — 台帳には比の悪い上位のみ載せる。
+                            "variables": [
+                                w.to_dict() for w in judged[: stab.max_recorded_pairs]
+                            ],
+                            "note": "観測のみ — 凍結していない (REQ-SAR-103)",
+                        },
+                    )
+
+            # 【毎段プルーニング (opt-in の逃げ道)】: 受理された段の完了時に esd >= |値| の
+            #   変数を凍結し、次段以降の varyList から外す。**既定 OFF** — 上記のとおり
+            #   不可逆なラチェットになるため、条件数が本当に進行を妨げるデータ限定の手段。
             newly_frozen: list[str] = []
-            if stab.prune_weak_vars and not reverted and diagnostics is not None:
+            if stab.prune_weak_vars_each_stage and not reverted and diagnostics is not None:
                 candidates = _prune_candidates(
-                    diagnostics.weak_vars, pruned_vars, stab.prune_exempt_tokens
+                    diagnostics.weak_vars, frozen_vars, stab.esd_ratio_exempt_tokens
                 )
                 newly_frozen = _freeze_variables(gpx, [w.name for w in candidates])
-                pruned_vars.update(newly_frozen)
+                frozen_vars.update(newly_frozen)
                 if newly_frozen:
                     frozen_set = set(newly_frozen)
                     ledger.append(
                         "m7_stage_prune",
                         {
                             "stage": stage.label,
-                            "reason": "esd >= |value| (REQ-SAR-103)",
+                            "reason": "esd >= |value| (毎段プルーニング, opt-in)",
                             "variables": [
                                 w.to_dict() for w in candidates if w.name in frozen_set
                             ],
@@ -2140,6 +2404,8 @@ def run_auto_rietveld(
                 note_extras.append("unconverged")
             if is_noop:
                 note_extras.append("noop")
+            if rescue_frozen:
+                note_extras.append(f"rescue_frozen={len(rescue_frozen)}")
             if newly_frozen:
                 note_extras.append(f"pruned={len(newly_frozen)}")
             if bound_hits:
@@ -2188,6 +2454,56 @@ def run_auto_rietveld(
                     "auto_frozen_cells": list(auto_frozen),
                 },
             )
+
+        # --- 決まらなかったパラメータの報告 (+ opt-in の最終研磨) ---
+        # 【なぜ最終なのか】: ここで残っている ``esd >= |値|`` は「まだ決まっていない」ではなく
+        #   **「このデータ・このモデルでは決まらない」**という所見である。段の途中の同じ値は
+        #   単に収束の途上なので、両者は同じ数式でも意味が違う。所見はモデルの誤りを示唆する
+        #   情報 (P-SAR-1) なので、凍結して隠さず結果へ載せる。
+        undetermined: tuple[WeakVariable, ...] = ()
+        undetermined_exempt: tuple[WeakVariable, ...] = ()
+        final_polish: FinalPolish | None = None
+        if stab.needs_final_diagnostics:
+            final_diag = read_diagnostics(gpx, corr_threshold=stab.corr_threshold)
+            undetermined, undetermined_exempt = split_weak_variables(
+                final_diag.weak_vars, stab.esd_ratio_exempt_tokens
+            )
+            ledger.append(
+                "m7_undetermined",
+                {
+                    "n_undetermined": len(undetermined),
+                    "n_exempt": len(undetermined_exempt),
+                    "variables": [w.to_dict() for w in undetermined],
+                    # 判定対象外にした変数も件数と名前は残す (何を見なかったかを隠さない)。
+                    "exempt_variables": [w.to_dict() for w in undetermined_exempt],
+                    "exempt_tokens": list(stab.esd_ratio_exempt_tokens),
+                    "note": (
+                        "esd >= |値| = このデータでは決まらなかったパラメータ (所見; "
+                        "凍結していない)"
+                    ),
+                },
+            )
+        if stab.polish_frozen_undetermined:
+            gpx, final_polish, undetermined, undetermined_exempt = _run_final_polish(
+                gpx,
+                g2sc,
+                gpx_path=gpx_path,
+                snap_path=tmp_path / "polish.gpx",
+                undetermined=undetermined,
+                already_frozen=frozen_vars,
+                stab=stab,
+                stage_results=stage_results,
+                dlg=refine_dlg,
+                split_penalty=split_penalty,
+                max_cyc=max_cyc,
+                radiations=radiations,
+                histograms=histograms,
+                ledger=ledger,
+            )
+            # 研磨は revert しても新しい `G2Project` を返す (スナップショット再読込) ので、
+            # live オブジェクトは**常に**取り直す (片方だけ古いと最終抽出が食い違う)。
+            g2hists, g2phases = gpx.histograms(), gpx.phases()
+            frozen_vars.update(final_polish.frozen if final_polish.applied else ())
 
         # --- 妥当性判定 ---
         refined_cells, uiso, occ = _extract_state(g2phases)
@@ -2266,6 +2582,11 @@ def run_auto_rietveld(
         atom_occupancy_esd=atom_occ_esd_map,
         final_rwp_penalized=final_rwp_penalized,
         final_restraint_penalty=final_restraint_penalty,
+        undetermined_parameters=undetermined,
+        undetermined_exempt=undetermined_exempt,
+        # 出版値がどの母数集合の上に載っているか (救済 + 毎段プルーニング + 研磨の総和)。
+        frozen_parameters=tuple(sorted(frozen_vars)),
+        final_polish=final_polish,
     )
 
 

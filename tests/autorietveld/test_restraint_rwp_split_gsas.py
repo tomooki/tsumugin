@@ -28,8 +28,8 @@ _DATA = Path("docs/benchmark/testdata")
 
 pytestmark = pytest.mark.gsas
 
-#: 拘束を χ² に入れる設定 (prune_weak_vars は REQ-SAR-203 の必須前提)。
-_ON = StabilityOptions(enable_restraints=True, prune_weak_vars=True)
+#: 拘束を χ² に入れる設定 (report_undetermined は REQ-SAR-203 の必須前提)。
+_ON = StabilityOptions(enable_restraints=True, report_undetermined=True)
 
 #: **データ項を桁で上回る penalty** を作る重み。分離しなければ全段 revert する領域
 #: (WS-2 実測の bond weight 1e5 と同じ狙い)。

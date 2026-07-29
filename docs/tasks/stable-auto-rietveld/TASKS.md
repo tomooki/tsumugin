@@ -41,7 +41,7 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
 | 1-1 ✅ | `Rvals['Max shft/sig']` による**収束判定**を段の受理条件に追加 | REQ-SAR-101 | ✅ |
 | 1-2 ✅ | 未収束段の**追加サイクル再実行** → それでも駄目なら revert | REQ-SAR-101 | ✅ |
 | 1-3 ✅ | **no-op 段の検出** (n_params 不変 + rwp/gof ビット同一 → 警告) | REQ-SAR-102 | ✅ |
-| 1-4 ✅ | **esd > \|値\| の自動プルーニング** + ledger 記録 | REQ-SAR-103 | ✅ |
+| 1-4 ✅ | **esd >= \|値\| の検出**: 各段は記録 (観測) / 最終は報告 / 凍結は救済・最終研磨・opt-in の毎段のみ | REQ-SAR-103 | ✅ |
 | 1-5 ✅ | **高相関ペア検出** (\|r\|>閾値) → 記録のみ (自動凍結は Phase 2) | REQ-SAR-104 | ✅ |
 | 1-6 | ②`auto_rietveld`/`refine_with_revisions` の `stability` spec + ③ `analyze` skill 節 | ★不変条件 | ✅ |
 
@@ -50,8 +50,26 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
 `test_default_run_emits_no_stability_entries` が `read_diagnostics` を爆発させて固定)。
 判断ロジックは `engine._run_convergence_cycles` / `_is_noop_stage` / `_prune_candidates` /
 `_freeze_variables` に純関数として切り出し `-m "not gsas"` で回る。凍結は GSAS の
-`parmFrozen`(`set_Frozen`) = 値を動かさず varyList から外すだけ。ledger kind 4 種
-(`m7_stage_unconverged`/`_noop`/`_prune`/`_correlation`) を GUI (`workbench.session`) にも配線。
+`parmFrozen`(`set_Frozen`) = 値を動かさず varyList から外すだけ。ledger kind 8 種
+(`m7_stage_unconverged`/`_noop`/`_weak_vars`/`_rescue`/`_prune`/`_correlation`/
+`m7_undetermined`/`m7_final_polish`) を GUI (`workbench.session`) にも配線。
+
+**⚠ 1-4 は 2026-07-29 に作り直した (タイミングの誤り)**。当初は「受理された段のたびに永続凍結」
+だったが、(a) 途中段階の esd は「決定不能」ではなく「まだ決まっていない」だけ (b) 発火条件が
+`not reverted` = **うまく行っている段でだけ刈っていた** (c) 必須化の根拠 (D4-b) が既に崩れていた、
+の 3 点で誤り。現在は **凍結は判断・記録は観測**に分離 (REQ-SAR-103 詳細表 / architecture D3-a)。
+実測 (PbSO4 + `enable_restraints` + bond weight 1e5、4 段レシピ):
+
+| 設定 | n_params 推移 | 最終 Rwp |
+|---|---|---|
+| 拘束なし (素の母数) | 7 → 10 → 21 → 26 | 27.94 |
+| 拘束 + **報告のみ** (新既定の使い方) | 7 → 10 → 10 → 15 | **30.66** |
+| 拘束 + **毎段凍結** (旧実装) | 7 → **4** → 4 → 9 | 30.75 |
+
+旧実装は S1 (scale+background) 完了時点で**背景 6 項を全部凍結**し、以降の全段が痩せた母数で
+走っていた (背景の esd が大きいのは「1 段目でまだ決まっていない」だけである)。
+最終研磨の実測 (T1): `:0:U` 1 個を凍結 → Rwp 9.80617 → **9.67230** (`final polish` 段 +
+`final_polish` で判別可能)。
 
 **WS-1 で判明した事実**:
 
@@ -136,7 +154,10 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
   `HessianLSQ.dropTerms` にあり dlg を見ない。**実測でも完全縮退 (同一構造 2 相) / 真の特異行列
   (cov=None 強制注入) の双方で dlg の有無が結果をビット同一に保った**。
   → 既定 OFF を維持する理由は「Rwp の意味が変わる」+「母数が実質増える」であって、
-  当初の理由 (GSAS の自動削除を失う) ではない。`prune_weak_vars` 併用必須は前者の理由で残す。
+  当初の理由 (GSAS の自動削除を失う) ではない。
+  **⚠ 2026-07-29 追記: この実測は「毎段プルーニング必須」の根拠そのものを崩していた。**
+  併用必須は残すが、要求するのは `report_undetermined` (**見ること**) だけに変更した —
+  拘束下で毎段凍結すると母数が不可逆に痩せる (実測 `n_params` が S2 で 10 → 4)。REQ-SAR-103 詳細表を参照。
 
 ### WS-3 レシピ規則
 
@@ -325,7 +346,7 @@ BIC で勝った** (17875 → 16785、Rwp 差はわずか 0.019)。原因は χ�
 | **T1 の「成功している」段は shift/esd 基準では収束していない** (max shft/sig = 86 / 116 / 47、S1/S2 は GSAS 自身の `converged` も False) | `require_convergence` を既定 ON にすると**現行レシピはほぼ全段 revert する**。収束予算 (max_cyc / extra_cycles) とセットで設計しないと使えない |
 | **`Max shft/sig` は絶対値ではない** (`GSASIIstrMain:402` = `np.max(Lastshft/sig)`) | 強い**負**シフトは小さい値として通る = 判定は片側にしか効かない。厳密にやるなら `sig` から自前計算が要る (上流仕様) |
 | **動的相関検出が静的知識を裏付けた** — T1 プロファイル段の実測 `V×W` r=−0.959 / `U×V` r=−0.955 | architecture.md D2 の二段構え (静的な相関群 + 実測補正) が機能している。Caglioti 群の分割禁止は実測でも正しい |
-| **座標シフト `dAx/dAy/dAz` は esd プルーニングの構造的な偽陽性** (収束するほど値が 0 に近づき比が必ず 1 を超える) | 既定で除外している (`prune_exempt_tokens`)。**仕様書に無い追加判断なので要レビュー** |
+| **座標シフト `dAx/dAy/dAz` は esd 判定の構造的な偽陽性** (`GSASIIstrIO`:1732 が精密化のたび 0 初期化 → 分母が収束とともに 0 へ) | 既定で除外 (`esd_ratio_exempt_tokens`)。**最終判定だけにしても消えない** — T1 の最終収束 fit で実測 12 個の `dA*` が `esd ≥ |値|` に載った。捨てずに `undetermined_exempt` へ分けて返す (REQ-SAR-103 に明文化済) |
 | **既存 `dataquality.suggest_two_theta_limit` に偽陽性** (実ピーク終端 40° のデータで 48.44° を返す) | Issue 化候補。`autorange` は持続性要求で 40.54° |
 
 ## 積み残し (要判断)

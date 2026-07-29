@@ -242,7 +242,7 @@ class TestBondRestraintHeadlessCanary:
     """
 
     #: 拘束を有効化する設定。REQ-SAR-203 により esd プルーニングとセットでしか有効にできない。
-    _ON = StabilityOptions(enable_restraints=True, prune_weak_vars=True)
+    _ON = StabilityOptions(enable_restraints=True, report_undetermined=True)
 
     @staticmethod
     def _bond_spec(target: float, weight: float) -> dict:

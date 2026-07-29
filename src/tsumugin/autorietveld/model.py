@@ -15,6 +15,7 @@ from typing import Mapping
 
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
+from .diagnostics import WeakVariable
 
 
 class Radiation(Enum):
@@ -380,12 +381,55 @@ class StabilityOptions:
         「この段は何もしていない」と ledger に警告を残す (REQ-SAR-102)。**revert はしない** —
         検出のみ。Rwp が動かないことを「改善しなかった」と解釈すると無言失敗と区別が付かない
         (P-SAR-2) ので、区別できる形で台帳に残すのが目的。
-    :param prune_weak_vars: 段の完了時に ``esd >= |値|`` の変数を**次段以降で凍結**する
-        (REQ-SAR-103)。凍結は GSAS の ``parmFrozen`` (varyList から外す) で行い、値は動かさない。
-    :param prune_exempt_tokens: プルーニングから除外する変数名トークン (部分一致)。既定の
-        ``dAx/dAy/dAz`` は**座標シフト変数**で、収束するほど値が 0 に近づき esd との比が必ず
-        1 を超える = 「決まらなかった」の偽陽性クラスになる。無条件に凍結すると
-        **収束した瞬間に全座標が凍る**ため既定で除外する (空タプルを渡せば除外なし)。
+    ---- 弱い変数 (``esd >= |値|``) の扱い (REQ-SAR-103) ----
+
+    **軸は「凍結は判断、記録は観測」** (P-SAR-3 の「提案 ≠ 適用」と同じ規律)。⚠ 旧版はこれを
+    ``prune_weak_vars`` 1 個で表し、**受理された段のたびに永続凍結**していた。それは誤りだった:
+
+    1. **途中段階の esd は「決定不能」の証拠ではなく「まだ決まっていない」だけ**である。座標が
+       まだずれている段階で Uiso を解放すれば esd が大きいのは当然で、そこで凍結すると
+       後段で座標が正しくなり Uiso が本来決まるようになっても**二度と解放されない**
+       (不可逆なラチェット。実測: 拘束下で ``n_params`` が S2 で 7 → 3 まで落ちた)。
+    2. **発火条件が逆だった** — ``not reverted`` = 物事がうまく行っている段でだけ刈っていた。
+       プルーニングが要るのは悪条件で収束しない/特異行列のときである。
+    3. 毎段凍結を必須にしていた根拠 (「``dlg`` スタブで GSAS 自身の自動パラメータ削除を失う」)
+       は WS-2 の実測で**誤り**と判明した (requirements.md F5 / architecture.md D4-b:
+       その再試行は ``'Hessian' not in deriv type`` の分岐にしかなく既定では到達しない。
+       弱い変数のドロップは ``HessianLSQ.dropTerms`` にあり ``dlg`` を見ない)。
+
+    :param record_weak_vars: **各段**で弱い変数を ledger (``m7_stage_weak_vars``) に
+        **記録するだけ** — 凍結しない (観測)。revert された段でも記録する (その段が壊れた
+        理由の一次証拠だから)。
+    :param report_undetermined: **最終収束後**に残った弱い変数を「**決まらなかったパラメータ**」
+        として結果 (`AutoRietveldResult.undetermined_parameters`) と ledger
+        (``m7_undetermined``) に載せる。**弱い変数はそれ自体が価値ある所見**である
+        (「このデータではこのパラメータは決まらない」= NaCuHCF の占有率発散が Ow 必要性の
+        決め手になったのと同じ種類の診断信号)。**凍結して隠すのではなく報告する。**
+    :param polish_frozen_undetermined: **最終研磨** (opt-in)。``report_undetermined`` が拾った
+        変数を凍結して**もう 1 回だけ**精密化し、再報告する。要 ``report_undetermined``。
+        ⚠ 有効にすると**出版値が「一部を凍結した fit」のものになる**ので、結果からそれと
+        判別できるようにしてある (`AutoRietveldResult.final_polish` / `frozen_parameters` /
+        末尾に付く ``final polish`` 段)。既定 False。
+    :param prune_weak_vars_each_stage: **旧 ``prune_weak_vars``** — 受理された段のたびに弱い
+        変数を永続凍結する (上記 1.2. の不可逆ラチェット)。削除ではなく **opt-in の逃げ道**
+        として残す: 条件数が本当に進行を妨げるデータでは母数を毎段落とすしかないことがある。
+        **既定 False で、通常は使わない** (まず ``rescue_freeze_on_failure`` を試すこと)。
+        ⚠ 名前を変えたのは意味を変えたからである (旧名の JSON は未知キーとして大声で落ちる)。
+    :param rescue_freeze_on_failure: **救済** — 段が (追加サイクルを使っても) 収束しない、
+        または ``Rvals['SVD0'] > 0`` (特異な変数があった = 悪条件の直接証拠) のときに限り、
+        **最弱の変数を凍結して再試行**する。GSAS 自身の ``HessianLSQ.dropTerms`` と同じ思想で、
+        「うまく行っている段では刈らず、行き詰まったときだけ母数を落とす」。既定 False。
+    :param rescue_max_freeze: 救済 1 回あたりに凍結する変数の最大数 (既定 1 = 最弱のみ)。
+        まとめて刈ると「本当はどれが効いたのか」が分からなくなるので既定は 1。
+    :param rescue_max_rounds: 1 段あたりの救済の最大回数 (既定 2)。0 で救済なし。
+    :param esd_ratio_exempt_tokens: ``esd/|値|`` の比が**意味を持たない**変数名トークン
+        (部分一致)。既定の ``dAx/dAy/dAz`` は座標そのものではなく**そのサイクルでのシフト量**
+        で、GSAS は精密化のたびに 0 へ初期化する (``GSASIIstrIO``:1732) ため、
+        **収束するほど分母が 0 に近づき比が発散する** = 「よく決まっている座標ほど
+        『決まらなかった』と報告される」構造的な偽陽性になる。**最終判定だけにしても消えない**
+        (むしろ収束点で最も強く出る) ので除外は維持する。除外された変数は捨てずに
+        `AutoRietveldResult.undetermined_exempt` に別列で載る (何を見なかったかを隠さない)。
+        ⚠ 旧名 ``prune_exempt_tokens`` — 凍結だけでなく**報告**からも外すので改名した。
     :param record_correlations: 共分散から測った ``|r| >= corr_threshold`` の変数ペアを ledger に
         記録する (REQ-SAR-104)。**この段階では検出と記録のみ**で自動凍結はしない (同時解放の
         回避はレシピ側の判断: Phase 2)。
@@ -418,8 +462,11 @@ class StabilityOptions:
     :param enable_restraints: restraint (bond/ChemComp) を **``dlg`` スタブ経由で χ² に入れる**
         (REQ-SAR-203)。既定 False。本バージョンの GSAS-II は headless で penalty を目的関数から
         外す (`restraint_dlg` docstring) ため、有効にしない限り登録した拘束は**効かない**。
-        ⚠ **``prune_weak_vars`` との併用が必須** (D4): 拘束で母数が増えると弱い変数が生き残る
-        ため、esd 駆動の自動プルーニングを肩代わりに置く。単独指定は ``ValueError``。
+        ⚠ **``report_undetermined`` との併用が必須**: 拘束は実質的に母数を増やすので、
+        「どのパラメータが決まらなかったか」を**見ないまま**回すことは認めない。単独指定は
+        ``ValueError``。**旧版は ``prune_weak_vars`` (毎段凍結) を必須にしていたが、その根拠
+        (GSAS の自動削除を失う) は D4-b の実測で誤りと判明したため、必須要件を「見ること」
+        だけに落とした** — 拘束下で毎段凍結すると母数が不可逆に痩せる実害の方が大きい。
 
         **有効時の Rwp の扱い**: GSAS の ``Rvals['Rwp']`` は penalty 込みの値になるが、engine は
         `diagnostics.data_term_rwp` で**データ項だけの Rwp** を復元し、段の受理/revert も
@@ -433,8 +480,15 @@ class StabilityOptions:
     max_shift_esd: float = 1.0
     extra_cycles: int = 1
     detect_noop_stages: bool = False
-    prune_weak_vars: bool = False
-    prune_exempt_tokens: tuple[str, ...] = ("dAx", "dAy", "dAz")
+    # --- 弱い変数 (esd >= |値|) の扱い: 記録 (観測) / 報告 / 凍結 (判断) を分ける ---
+    record_weak_vars: bool = False
+    report_undetermined: bool = False
+    polish_frozen_undetermined: bool = False
+    prune_weak_vars_each_stage: bool = False
+    rescue_freeze_on_failure: bool = False
+    rescue_max_freeze: int = 1
+    rescue_max_rounds: int = 2
+    esd_ratio_exempt_tokens: tuple[str, ...] = ("dAx", "dAy", "dAz")
     record_correlations: bool = False
     corr_threshold: float = 0.9
     max_recorded_pairs: int = 10
@@ -449,26 +503,47 @@ class StabilityOptions:
     enable_restraints: bool = False
 
     def __post_init__(self) -> None:
-        """REQ-SAR-203 の前提を**大声で**強制する (黙って片肺運転させない)。
+        """「見ないまま処置する」構成を**大声で**拒む (黙って片肺運転させない)。
 
-        restraint を有効にすると母数が実質増える一方で、GSAS の自動プルーニングは
-        `HessianLSQ` 内の特異項ドロップに限られる。REQ-SAR-103 の esd 駆動プルーニングを
-        同時に有効化していない構成は設計上認めない (② では ValueError → error dict に落ちる)。
+        * ``enable_restraints``: 拘束は実質的に母数を増やすので、**決まらなかったパラメータを
+          報告しない**まま回すことは認めない (REQ-SAR-203)。
+        * ``polish_frozen_undetermined``: 研磨は「報告された変数を凍結する」操作なので、
+          報告そのものが無効なら**凍結対象が定義されない**。
+
+        いずれも ② では `StabilityOptions.from_dict` の ``ValueError`` → error dict に落ちる。
         """
-        if self.enable_restraints and not self.prune_weak_vars:
+        if self.enable_restraints and not self.report_undetermined:
             raise ValueError(
-                "enable_restraints=True には prune_weak_vars=True が必須です "
-                "(REQ-SAR-203: 拘束で増えた弱い変数を esd 駆動プルーニングで肩代わりする)"
+                "enable_restraints=True には report_undetermined=True が必須です "
+                "(REQ-SAR-203: 拘束で増えた母数のうち何が決まらなかったかを必ず報告する)"
+            )
+        if self.polish_frozen_undetermined and not self.report_undetermined:
+            raise ValueError(
+                "polish_frozen_undetermined=True には report_undetermined=True が必須です "
+                "(凍結対象は報告された『決まらなかったパラメータ』そのものである)"
             )
 
     @property
     def needs_diagnostics(self) -> bool:
-        """段ごとに共分散を読む必要があるか。
+        """**段ごとに**共分散を読む必要があるか。
 
         全部無効なら `read_diagnostics` を **1 度も呼ばない** — 既定経路に新しい失敗点を
-        持ち込まないため (非回帰契約)。
+        持ち込まないため (非回帰契約)。最終判定だけの項目 (`needs_final_diagnostics`) は
+        **含めない** — 毎段の読み出しを要さないものを混ぜると、報告を足しただけで段ごとの
+        コストと失敗点が増える。
         """
-        return bool(self.require_convergence or self.prune_weak_vars or self.record_correlations)
+        return bool(
+            self.require_convergence
+            or self.record_correlations
+            or self.record_weak_vars
+            or self.prune_weak_vars_each_stage
+            or self.rescue_freeze_on_failure
+        )
+
+    @property
+    def needs_final_diagnostics(self) -> bool:
+        """**最終収束後に 1 度だけ**共分散を読む必要があるか (REQ-SAR-103 の報告/研磨)。"""
+        return bool(self.report_undetermined or self.polish_frozen_undetermined)
 
     @property
     def has_box_bounds(self) -> bool:
@@ -490,8 +565,14 @@ class StabilityOptions:
             "max_shift_esd": self.max_shift_esd,
             "extra_cycles": self.extra_cycles,
             "detect_noop_stages": self.detect_noop_stages,
-            "prune_weak_vars": self.prune_weak_vars,
-            "prune_exempt_tokens": list(self.prune_exempt_tokens),
+            "record_weak_vars": self.record_weak_vars,
+            "report_undetermined": self.report_undetermined,
+            "polish_frozen_undetermined": self.polish_frozen_undetermined,
+            "prune_weak_vars_each_stage": self.prune_weak_vars_each_stage,
+            "rescue_freeze_on_failure": self.rescue_freeze_on_failure,
+            "rescue_max_freeze": self.rescue_max_freeze,
+            "rescue_max_rounds": self.rescue_max_rounds,
+            "esd_ratio_exempt_tokens": list(self.esd_ratio_exempt_tokens),
             "record_correlations": self.record_correlations,
             "corr_threshold": self.corr_threshold,
             "max_recorded_pairs": self.max_recorded_pairs,
@@ -521,15 +602,23 @@ class StabilityOptions:
             raise ValueError(
                 f"stability に未知のキーがあります: {unknown} (既知: {sorted(known)})"
             )
-        tokens = d.get("prune_exempt_tokens")
+        tokens = d.get("esd_ratio_exempt_tokens")
         return cls(
             require_convergence=bool(d.get("require_convergence", False)),
             max_shift_esd=float(d.get("max_shift_esd", 1.0)),  # type: ignore[arg-type]
             extra_cycles=int(d.get("extra_cycles", 1)),  # type: ignore[arg-type]
             detect_noop_stages=bool(d.get("detect_noop_stages", False)),
-            prune_weak_vars=bool(d.get("prune_weak_vars", False)),
-            prune_exempt_tokens=(
-                cls.prune_exempt_tokens if tokens is None else tuple(str(t) for t in tokens)  # type: ignore[union-attr]
+            record_weak_vars=bool(d.get("record_weak_vars", False)),
+            report_undetermined=bool(d.get("report_undetermined", False)),
+            polish_frozen_undetermined=bool(d.get("polish_frozen_undetermined", False)),
+            prune_weak_vars_each_stage=bool(d.get("prune_weak_vars_each_stage", False)),
+            rescue_freeze_on_failure=bool(d.get("rescue_freeze_on_failure", False)),
+            rescue_max_freeze=int(d.get("rescue_max_freeze", 1)),  # type: ignore[arg-type]
+            rescue_max_rounds=int(d.get("rescue_max_rounds", 2)),  # type: ignore[arg-type]
+            esd_ratio_exempt_tokens=(
+                cls.esd_ratio_exempt_tokens  # type: ignore[union-attr]
+                if tokens is None
+                else tuple(str(t) for t in tokens)  # type: ignore[union-attr]
             ),
             record_correlations=bool(d.get("record_correlations", False)),
             corr_threshold=float(d.get("corr_threshold", 0.9)),  # type: ignore[arg-type]
@@ -569,6 +658,42 @@ class StageResult:
     reverted: bool = False
     note: str = ""
     rwp_penalized: "float | None" = None
+
+
+@dataclass(frozen=True)
+class FinalPolish:
+    """最終研磨 (opt-in, REQ-SAR-103) の記録 — **出版値がどう作られたか**を明示する。
+
+    研磨は「決まらなかったパラメータを凍結して 1 回だけ精密化し直す」操作なので、有効にすると
+    ``final_rwp`` 以下は**一部の変数を凍結した fit** の値になる。黙って値だけ変えると、
+    拘束なしの run と同じ列に並べて比較できなくなるため、**何を凍結して Rwp がどう動いたか**を
+    結果に必ず残す。
+
+    :param applied: 研磨後の状態を採用したか (False = 研磨しなかった / revert した)
+    :param frozen: 研磨のために凍結した変数名 (= 研磨前に「決まらなかった」と報告された変数)
+    :param rwp_before: 研磨前のデータ項 Rwp (段列の最終値)
+    :param rwp_after: 研磨後のデータ項 Rwp。**凍結は自由度を減らすので普通わずかに悪化する** —
+        悪化を理由に revert しないのが研磨の目的であり、コストはこの 2 値の差として見せる
+    :param reverted: 研磨を試みたが破棄したか (非有限 Rwp / 格子崩壊 / GSAS 失敗)
+    :param reason: revert あるいは非実施の理由 (空文字 = 通常適用)
+    """
+
+    applied: bool
+    frozen: tuple[str, ...] = ()
+    rwp_before: float = float("inf")
+    rwp_after: float = float("inf")
+    reverted: bool = False
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "applied": self.applied,
+            "frozen": list(self.frozen),
+            "rwp_before": finite_or_none(self.rwp_before),
+            "rwp_after": finite_or_none(self.rwp_after),
+            "reverted": self.reverted,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -706,6 +831,21 @@ class AutoRietveldResult:
     #   `final_rwp` と同義。**`final_rwp` の意味は決して penalty 込みにしない** — 出版される
     #   数値の意味をオプションで切り替えると、同じ列に載った 2 つの Rwp が比較できなくなる。
     final_rwp_penalized: "float | None" = None
+    # 【決まらなかったパラメータ (REQ-SAR-103, 末尾追加・既定空で後方互換)】: 最終収束後に残った
+    #   ``esd >= |値|`` の変数。**これは失敗ではなく所見**である — 「このデータではこのパラメータは
+    #   決まらない」という情報であり、握り潰すと NaCuHCF の Ow 判別 (占有率が Na>1/O<0 に発散した
+    #   こと自体が決め手だった) と同種の診断信号を失う。`StabilityOptions.report_undetermined`
+    #   を立てたときだけ埋まる (既定は空 = 診断を要求していない、であって「無かった」ではない)。
+    undetermined_parameters: tuple[WeakVariable, ...] = ()
+    # 上と同じ検出をしたが ``esd/|値|`` の比が**構造的に意味を持たない**ため判定対象外にした変数
+    #   (既定 ``dAx/dAy/dAz`` = 座標シフト。`StabilityOptions.esd_ratio_exempt_tokens` 参照)。
+    #   捨てずに別列で返すのは、報告が**何を見なかったか**を隠さないため。
+    undetermined_exempt: tuple[WeakVariable, ...] = ()
+    # この結果の fit で**凍結されていた**変数 (救済凍結 + 毎段プルーニング + 最終研磨の総和)。
+    #   出版値がどの母数集合の上に載っているかを示す (空 = 何も凍結していない)。
+    frozen_parameters: tuple[str, ...] = ()
+    # 最終研磨 (opt-in) の記録。None = 研磨を要求していない。`FinalPolish` 参照。
+    final_polish: "FinalPolish | None" = None
     # 拘束の χ² 寄与 (``Rvals['RestraintSum']`` = pSum) の最終値。拘束が「どれだけ引いているか」を
     #   絶対量で見る唯一の窓 (0.0 = 拘束なし/無効)。
     final_restraint_penalty: float = 0.0

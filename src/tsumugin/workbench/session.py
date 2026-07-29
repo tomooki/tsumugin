@@ -111,6 +111,14 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "m7_stage_unconverged": "GUARD",
     "m7_stage_noop": "GUARD",
     "m7_stage_prune": "GUARD",
+    # 弱い変数の**観測**と**報告** (REQ-SAR-103)。凍結という処置を伴わないが、「このパラメータは
+    # 決まっていない」はモデルを疑う所見なので GUARD (通常進行と色を分ける)。
+    "m7_stage_weak_vars": "GUARD",
+    "m7_stage_rescue": "GUARD",
+    "m7_undetermined": "GUARD",
+    # 最終研磨は**出版値を差し替える処置**なので CORE ① ではなく GUARD で目立たせる
+    # (「どの母数集合の上の Rwp か」を見落とさせない)。
+    "m7_final_polish": "GUARD",
     "m7_stage_correlation": "GUARD",
     # 拘束・境界 (WS-2)。何を拘束したかは設定なので CORE ①、境界に**当たった**のは
     # 「モデルか箱のどちらかが間違っている」という所見なので GUARD。
@@ -280,6 +288,31 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         names = [str(v.get("name")) for v in (payload.get("variables") or [])]
         head = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
         return f"stage {payload.get('stage')} froze {len(names)} weak vars [{head}]"
+    if kind == "m7_stage_weak_vars":
+        # **凍結していない**ことを文面に出す (LEDGER で処置と観測を取り違えさせない)。
+        return (
+            f"stage {payload.get('stage')} {payload.get('n_weak')} weak vars observed "
+            f"(not frozen)"
+        )
+    if kind == "m7_stage_rescue":
+        names = [str(v) for v in (payload.get("variables") or [])]
+        head = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
+        return (
+            f"stage {payload.get('stage')} rescue: froze {len(names)} var(s) [{head}] "
+            f"in {payload.get('rounds')} round(s)"
+        )
+    if kind == "m7_undetermined":
+        return (
+            f"{payload.get('n_undetermined')} undetermined params "
+            f"(esd ≥ |value|; {payload.get('n_exempt')} exempt) — 所見, 凍結なし"
+        )
+    if kind == "m7_final_polish":
+        if not payload.get("applied"):
+            return f"final polish skipped ({payload.get('reason') or '—'})"
+        return (
+            f"final polish: froze {len(payload.get('frozen') or [])} params, "
+            f"rwp {_fmt_rwp(payload.get('rwp_before'))} → {_fmt_rwp(payload.get('rwp_after'))}"
+        )
     if kind == "m7_stage_correlation":
         pairs = payload.get("pairs") or []
         top = pairs[0] if pairs else {}

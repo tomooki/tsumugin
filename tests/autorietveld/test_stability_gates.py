@@ -1,4 +1,4 @@
-"""WS-1 診断ゲート — 収束判定 / no-op 検出 / esd プルーニング / 高相関記録。
+"""WS-1 診断ゲート — 収束判定 / no-op 検出 / 弱い変数の観測・報告・凍結 / 高相関記録。
 
 要件: `docs/spec/stable-auto-rietveld/requirements.md` REQ-SAR-101〜104。
 情報源は `autorietveld.diagnostics` に集約済み (REQ-SAR-105) なので、ここで固定するのは
@@ -14,14 +14,20 @@ import math
 
 import pytest
 
-from tsumugin.autorietveld.diagnostics import RefinementDiagnostics, WeakVariable
+from tsumugin.autorietveld.diagnostics import (
+    RefinementDiagnostics,
+    WeakVariable,
+    split_weak_variables,
+)
 from tsumugin.autorietveld.engine import (
     _freeze_variables,
     _is_noop_stage,
+    _needs_rescue,
     _prune_candidates,
     _run_convergence_cycles,
+    _run_rescue_freezes,
 )
-from tsumugin.autorietveld.model import StabilityOptions
+from tsumugin.autorietveld.model import FinalPolish, StabilityOptions
 
 
 # ---------------------------------------------------------------------------
@@ -36,9 +42,14 @@ def test_defaults_are_all_off_so_existing_runs_are_bit_identical():
 
     assert opts.require_convergence is False
     assert opts.detect_noop_stages is False
-    assert opts.prune_weak_vars is False
+    assert opts.record_weak_vars is False
+    assert opts.report_undetermined is False
+    assert opts.polish_frozen_undetermined is False
+    assert opts.prune_weak_vars_each_stage is False
+    assert opts.rescue_freeze_on_failure is False
     assert opts.record_correlations is False
     assert opts.needs_diagnostics is False, "既定では共分散を 1 度も読まない"
+    assert opts.needs_final_diagnostics is False, "既定では最終診断も読まない"
     # WS-2: 箱拘束と restraint 有効化も既定 OFF (REQ-SAR-201/203)。
     assert opts.bound_cell is None
     assert opts.bound_displacement is None
@@ -48,10 +59,17 @@ def test_defaults_are_all_off_so_existing_runs_are_bit_identical():
 
 
 @pytest.mark.parametrize(
-    "field", ["require_convergence", "prune_weak_vars", "record_correlations"]
+    "field",
+    [
+        "require_convergence",
+        "record_correlations",
+        "record_weak_vars",
+        "prune_weak_vars_each_stage",
+        "rescue_freeze_on_failure",
+    ],
 )
-def test_any_diagnostic_gate_turns_on_covariance_reading(field):
-    # 【目的】: 診断を要する項目を 1 つでも立てたら read_diagnostics が呼ばれること。
+def test_any_per_stage_gate_turns_on_covariance_reading(field):
+    # 【目的】: **段ごとに**診断を要する項目を 1 つでも立てたら read_diagnostics が呼ばれること。
     #   ここが漏れると「有効にしたのに何も起きない」という最悪の静かな失敗になる。
     assert StabilityOptions(**{field: True}).needs_diagnostics is True
 
@@ -59,6 +77,24 @@ def test_any_diagnostic_gate_turns_on_covariance_reading(field):
 def test_noop_detection_alone_does_not_read_covariance():
     # 【目的】: no-op 検出 (REQ-SAR-102) は rwp/gof/n_params だけで判定でき、共分散を要さない。
     assert StabilityOptions(detect_noop_stages=True).needs_diagnostics is False
+
+
+def test_final_reporting_does_not_add_per_stage_covariance_reads():
+    # 【目的】: 「決まらなかったパラメータの報告」は**最終収束後に 1 度**読めば足りる。
+    #   毎段の読み出しに混ぜると、報告を足しただけで段ごとのコストと失敗点が増える。
+    opts = StabilityOptions(report_undetermined=True)
+    assert opts.needs_diagnostics is False
+    assert opts.needs_final_diagnostics is True
+
+
+def test_polish_requires_the_report_it_freezes():
+    # 【目的】: 研磨の凍結対象は「報告された決まらなかったパラメータ」そのもの。報告が無効なら
+    #   凍結対象が定義されないので、黙って何もしないのではなく大声で落ちる。
+    with pytest.raises(ValueError, match="report_undetermined"):
+        StabilityOptions(polish_frozen_undetermined=True)
+    assert StabilityOptions(
+        polish_frozen_undetermined=True, report_undetermined=True
+    ).needs_final_diagnostics is True
 
 
 # ---------------------------------------------------------------------------
@@ -86,14 +122,23 @@ def test_box_bounds_do_not_require_the_covariance_reader():
     assert StabilityOptions(bound_cell=0.05).needs_diagnostics is False
 
 
-def test_enabling_restraints_without_pruning_is_rejected_loudly():
-    # 【目的】: REQ-SAR-203/D4。restraint を χ² に入れると母数が実質増え弱い変数が生き残る。
-    #   esd 駆動プルーニング (REQ-SAR-103) を肩代わりに置かない構成は設計上認めない。
-    #   黙って片肺で走らせるくらいなら大声で落ちる (② では error dict へ縮退する)。
-    with pytest.raises(ValueError, match="prune_weak_vars"):
+def test_enabling_restraints_without_reporting_is_rejected_loudly():
+    # 【目的】: REQ-SAR-203。restraint を χ² に入れると母数が実質増えるので、**何が決まらな
+    #   かったかを見ないまま**回すことは認めない。黙って片肺で走らせるくらいなら大声で落ちる
+    #   (② では error dict へ縮退する)。
+    #   ⚠ 旧版は毎段プルーニング (prune_weak_vars) を必須にしていたが、その根拠 (GSAS 自身の
+    #   自動パラメータ削除を失う) は D4-b の実測で誤りと判明したため、必須要件は「見ること」だけ。
+    with pytest.raises(ValueError, match="report_undetermined"):
         StabilityOptions(enable_restraints=True)
-    # 併用は通る。
-    assert StabilityOptions(enable_restraints=True, prune_weak_vars=True).enable_restraints
+    # 報告との併用は通る。
+    assert StabilityOptions(enable_restraints=True, report_undetermined=True).enable_restraints
+
+
+def test_restraints_do_not_force_the_irreversible_freeze():
+    # 【目的】: 上の必須要件が**毎段凍結ではない**ことを固定する。拘束下で毎段凍結すると
+    #   母数が不可逆に痩せる (実測: n_params が S2 で 7→3)。要求するのは観測だけである。
+    opts = StabilityOptions(enable_restraints=True, report_undetermined=True)
+    assert opts.prune_weak_vars_each_stage is False
 
 
 def test_spec_round_trips_through_json():
@@ -104,9 +149,23 @@ def test_spec_round_trips_through_json():
         bound_size_strain=True,
         max_size=5.0e3,
         enable_restraints=True,
-        prune_weak_vars=True,
+        record_weak_vars=True,
+        report_undetermined=True,
+        polish_frozen_undetermined=True,
+        rescue_freeze_on_failure=True,
+        rescue_max_freeze=2,
+        rescue_max_rounds=3,
+        esd_ratio_exempt_tokens=("dAx",),
     )
     assert StabilityOptions.from_dict(opts.to_dict()) == opts
+
+
+def test_the_renamed_freeze_key_is_rejected_not_silently_ignored():
+    # 【目的】: 旧 ``prune_weak_vars`` は**意味が変わった** (毎段永続凍結 → 観測/報告/救済に分割)。
+    #   旧名の JSON をそのまま受けると「凍結しているつもりで凍結していない」逆の静かな失敗に
+    #   なるため、未知キーとして大声で落ちること。
+    with pytest.raises(ValueError, match="prune_weak_vars"):
+        StabilityOptions.from_dict({"prune_weak_vars": True})
 
 
 def test_unknown_box_key_is_rejected_not_ignored():
@@ -279,11 +338,13 @@ def test_already_frozen_variables_are_not_reported_again():
 
 
 def test_coordinate_shift_variables_are_exempt_by_default():
-    # 【目的】: dAx/dAy/dAz は**座標シフト**変数で、収束するほど値が 0 に近づき esd/|値| が
-    #   必ず 1 を超える = 「決まらなかった」の偽陽性。既定で凍結すると収束した瞬間に
-    #   全座標が凍り、構造精密化が止まる。
+    # 【目的】: dAx/dAy/dAz は座標そのものではなく**そのサイクルでのシフト量**であり、GSAS は
+    #   精密化のたびに 0 へ初期化する (`GSASIIstrIO`:1732 → `ApplyXYZshifts`:2940 で座標へ
+    #   足し込む)。したがって分母は収束するほど 0 に近づき、比は**よく決まっている座標ほど
+    #   大きくなる** = 向きが逆の構造的偽陽性。**最終判定だけにしても消えない**
+    #   (むしろ収束点で最大になる) ので、タイミングを変えた後も除外は維持する。
     weak = (_weak("0::dAx:3"), _weak("0::dAz:7"), _weak("0::AUiso:4"))
-    exempt = StabilityOptions().prune_exempt_tokens
+    exempt = StabilityOptions().esd_ratio_exempt_tokens
 
     assert [w.name for w in _prune_candidates(weak, set(), exempt)] == ["0::AUiso:4"]
 
@@ -291,6 +352,137 @@ def test_coordinate_shift_variables_are_exempt_by_default():
 def test_exemption_can_be_disabled_explicitly():
     weak = (_weak("0::dAx:3"),)
     assert [w.name for w in _prune_candidates(weak, set(), ())] == ["0::dAx:3"]
+
+
+def test_exempt_variables_are_returned_not_discarded():
+    # 【目的】: 除外は「判定できない」であって「決まっている」ではない。黙って捨てると報告が
+    #   **何を見なかったか**を隠す (② が「弱い変数は無かった」と読む最悪の形)。
+    weak = (_weak("0::dAx:3"), _weak("0::AUiso:4"))
+    judged, exempt = split_weak_variables(weak, ("dAx",))
+
+    assert [w.name for w in judged] == ["0::AUiso:4"]
+    assert [w.name for w in exempt] == ["0::dAx:3"]
+
+
+def test_split_preserves_the_worst_first_ordering():
+    # 【目的】: 先頭が「最弱」であることに救済 (最弱から凍結) が依存している。
+    weak = (_weak("a", 9.0), _weak("b", 4.0), _weak("c", 2.0))
+    judged, _exempt = split_weak_variables(weak, ())
+    assert [w.name for w in judged] == ["a", "b", "c"]
+    assert [w.name for w in _prune_candidates(weak, set(), ())] == ["a", "b", "c"]
+
+
+# ---------------------------------------------------------------------------
+# REQ-SAR-103 救済プルーニング (行き詰まったときだけ落とす)
+# ---------------------------------------------------------------------------
+
+
+def _diag_weak(
+    *, shift: "float | None" = 0.1, svd: int = 0, names: "tuple[str, ...]" = ("v1", "v2", "v3")
+) -> RefinementDiagnostics:
+    return RefinementDiagnostics(
+        converged=True,
+        max_shift_esd=shift,
+        svd_singularities=svd,
+        weak_vars=tuple(_weak(n, 9.0 - i) for i, n in enumerate(names)),
+    )
+
+
+def test_a_healthy_stage_is_never_rescued():
+    # 【★ 今回の設計変更の核】: 順調な段では**凍結しない**。途中段階の大きな esd は
+    #   「決定不能」ではなく「まだ決まっていない」だけで、ここで凍らせると後段で決まるように
+    #   なったパラメータを二度と解放できない (不可逆なラチェット)。
+    assert _needs_rescue(_diag_weak(), max_shift_esd=1.0) is False
+
+
+def test_unconverged_stage_is_rescued():
+    assert _needs_rescue(_diag_weak(shift=42.0), max_shift_esd=1.0) is True
+
+
+def test_singular_matrix_is_rescued_even_when_gsas_says_converged():
+    # 【目的】: SVD0>0 は悪条件の**直接**証拠。収束フラグの上に載っていても信用しない。
+    assert _needs_rescue(_diag_weak(svd=2), max_shift_esd=1.0) is True
+
+
+def test_missing_convergence_information_does_not_trigger_a_rescue():
+    # 【目的】: 情報が無いことを異常と断じない (fail open)。共分散を持たない精密化で毎段
+    #   母数を削り始めると、静かに全部凍る。
+    assert _needs_rescue(RefinementDiagnostics(), max_shift_esd=1.0) is False
+
+
+def _rescue(diag, *, results=(), max_freeze=1, max_rounds=2, already=frozenset(), reject=()):
+    """`_run_rescue_freezes` を GSAS 無しで回す薄いハーネス。"""
+    frozen: list[str] = []
+    seq = list(results)
+
+    def freeze(names):
+        got = [n for n in names if n not in reject]
+        frozen.extend(got)
+        return got
+
+    def cycle():
+        return seq.pop(0) if seq else (diag, "payload")
+
+    out = _run_rescue_freezes(
+        diag,
+        freeze,
+        cycle,
+        max_shift_esd=1.0,
+        exempt=(),
+        already_frozen=set(already),
+        max_freeze=max_freeze,
+        max_rounds=max_rounds,
+    )
+    return out, frozen
+
+
+def test_rescue_freezes_only_the_weakest_variable_by_default():
+    # 【目的】: まとめて刈ると「どれが効いたのか」が分からなくなる。既定は 1 個ずつ。
+    (_diag, _payload, rounds, names), frozen = _rescue(
+        _diag_weak(shift=42.0), results=[(_diag_weak(), "p1")]
+    )
+    assert rounds == 1
+    assert names == ("v1",) and frozen == ["v1"]
+
+
+def test_rescue_stops_as_soon_as_the_stage_converges():
+    (_d, payload, rounds, names), _frozen = _rescue(
+        _diag_weak(shift=42.0), results=[(_diag_weak(), "p1")], max_rounds=5
+    )
+    assert (rounds, payload) == (1, "p1")
+    assert len(names) == 1, "収束したらそれ以上母数を削らない"
+
+
+def test_rescue_gives_up_when_it_runs_out_of_budget():
+    stuck = _diag_weak(shift=42.0)
+    (_d, _p, rounds, names), _frozen = _rescue(stuck, max_rounds=2)
+    assert rounds == 2 and len(names) == 2
+
+
+def test_rescue_does_nothing_with_a_zero_budget():
+    (_d, payload, rounds, names), frozen = _rescue(_diag_weak(shift=42.0), max_rounds=0)
+    assert (rounds, payload, names, frozen) == (0, None, (), [])
+
+
+def test_rescue_never_refreezes_an_already_frozen_variable():
+    (_d, _p, _rounds, names), _frozen = _rescue(
+        _diag_weak(shift=42.0), already={"v1"}, max_rounds=1
+    )
+    assert names == ("v2",)
+
+
+def test_rescue_stops_when_nothing_can_be_frozen():
+    # 【目的】: GSAS が全部拒否したら回しても同じ結果になる = 無限ループを作らない。
+    (_d, _p, rounds, names), _frozen = _rescue(
+        _diag_weak(shift=42.0), reject=("v1", "v2", "v3"), max_rounds=5
+    )
+    assert (rounds, names) == (0, ())
+
+
+def test_rescue_stops_when_there_are_no_weak_variables_left():
+    stuck = RefinementDiagnostics(converged=False, max_shift_esd=42.0, weak_vars=())
+    (_d, _p, rounds, names), _frozen = _rescue(stuck, max_rounds=5)
+    assert (rounds, names) == (0, ()), "落とせる変数が無いなら revert に任せる"
 
 
 class _FakeProject:
@@ -348,3 +540,193 @@ def test_recorded_pairs_are_capped_to_keep_the_ledger_readable():
     # ペア数は O(n²)。既定の上限が「全部載せる」になっていないことを固定する。
     assert StabilityOptions().max_recorded_pairs > 0
     assert StabilityOptions().max_recorded_pairs <= 50
+
+
+# ---------------------------------------------------------------------------
+# REQ-SAR-103 最終研磨の記録 (出版値がどう作られたかを隠さない)
+# ---------------------------------------------------------------------------
+
+
+def test_polish_record_is_json_ready_and_shows_the_cost():
+    # 【目的】: 研磨は**出版値を「一部を凍結した fit」のものに変える**。黙って値だけ変えると
+    #   拘束なしの run と同じ列で比較できなくなるので、何を凍結して Rwp がどう動いたかを残す。
+    polish = FinalPolish(
+        applied=True, frozen=("0::AUiso:4",), rwp_before=9.80, rwp_after=9.86
+    )
+    assert polish.to_dict() == {
+        "applied": True,
+        "frozen": ["0::AUiso:4"],
+        "rwp_before": 9.80,
+        "rwp_after": 9.86,
+        "reverted": False,
+        "reason": "",
+    }
+
+
+def test_polish_that_was_thrown_away_says_so_with_a_reason():
+    # 【目的】: 「研磨したが破棄した」を無言にしない (適用したのかしなかったのかが結果から
+    #   分からないと、published Rwp がどちらのものか決められない)。
+    polish = FinalPolish(
+        applied=False, frozen=("x",), rwp_before=9.8, rwp_after=float("inf"),
+        reverted=True, reason="研磨後の格子/プロファイルが非物理",
+    )
+    d = polish.to_dict()
+    assert d["applied"] is False and d["reverted"] is True
+    assert d["rwp_after"] is None, "非有限は None (JSON 化できない値を ② へ流さない)"
+    assert d["reason"]
+
+
+class _PolishProject:
+    """`_run_final_polish` に必要な `G2Project` の口だけを持つスタブ。"""
+
+    def __init__(self, path):
+        self.path = path
+        self.frozen: list[str] = []
+        self.data = {"Controls": {"data": {}}}
+
+    def save(self):
+        self.path.write_text("gpx", encoding="utf-8")
+
+    def set_Frozen(self, variable, mode="remove"):  # noqa: N802 — GSAS-II の命名
+        self.frozen.append(variable)
+        return True
+
+    def phases(self):
+        return []
+
+    def histograms(self):
+        return []
+
+
+def _polish(monkeypatch, tmp_path, *, refine, rwp=9.9, physical=True):
+    """`_run_final_polish` を GSAS 無しで回す (段列ループ外の分岐を直接測る)。"""
+    from tsumugin.autorietveld import engine as eng
+    from tsumugin.autorietveld.model import StageResult
+    from tsumugin.store import Ledger
+
+    gpx_path = tmp_path / "auto.gpx"
+    gpx_path.write_text("gpx", encoding="utf-8")
+    gpx = _PolishProject(gpx_path)
+
+    monkeypatch.setattr(eng, "_refine_once", refine)
+    monkeypatch.setattr(eng, "_rvals", lambda _g: (rwp, 1.1, 34))
+    monkeypatch.setattr(eng, "_data_rwp", lambda _g, r, split: (r, None, 0.0))
+    monkeypatch.setattr(eng, "_converged", lambda _g: True)
+    monkeypatch.setattr(eng, "_cells_physical", lambda _p: physical)
+    monkeypatch.setattr(
+        eng, "_profiles_physical", lambda *a, **k: eng.ValidityReport(passed=physical)
+    )
+    monkeypatch.setattr(eng, "read_diagnostics", lambda _g, **k: RefinementDiagnostics())
+
+    class _G2sc:
+        @staticmethod
+        def G2Project(gpxfile):  # noqa: N802 — GSAS-II の命名
+            return _PolishProject(tmp_path / "auto.gpx")
+
+    stages = [StageResult(label="S9", rwp=9.8, gof=1.2, n_params=35, converged=True)]
+    ledger = Ledger()
+    out_gpx, polish, undet, exempt = eng._run_final_polish(
+        gpx,
+        _G2sc,
+        gpx_path=gpx_path,
+        snap_path=tmp_path / "polish.gpx",
+        undetermined=(_weak("0::AUiso:4"),),
+        already_frozen=set(),
+        stab=StabilityOptions(report_undetermined=True, polish_frozen_undetermined=True),
+        stage_results=stages,
+        dlg=None,
+        split_penalty=False,
+        max_cyc=12,
+        radiations=[],
+        histograms=[],
+        ledger=ledger,
+    )
+    return polish, stages, ledger, out_gpx, undet, exempt
+
+
+def test_polish_applies_even_though_freezing_costs_a_little_rwp(monkeypatch, tmp_path):
+    # 【目的】: 凍結は自由度を減らすので Rwp は普通わずかに悪化する。それを revert 条件に
+    #   すると研磨は**決して適用されない**。コストは rwp_before → rwp_after で見せる。
+    polish, stages, ledger, *_ = _polish(
+        monkeypatch, tmp_path, refine=lambda *a, **k: None, rwp=9.86
+    )
+
+    assert polish.applied is True and polish.reverted is False
+    assert (polish.rwp_before, polish.rwp_after) == (9.8, 9.86)
+    assert stages[-1].label == "final polish", "出版値がどの段の産物か段列から判る"
+    assert [e.kind for e in ledger.entries] == ["m7_final_polish"]
+
+
+def test_polish_is_thrown_away_when_the_refinement_breaks(monkeypatch, tmp_path):
+    # 【目的】: 破綻 (GSAS の失敗) は revert する。ここが抜けると研磨が壊れた状態を**出版値に
+    #   昇格させる** — 段の revert ガードと同じ規律を最後の 1 回にも適用する。
+    def _boom(*_a, **_k):
+        raise RuntimeError("Refine failed")
+
+    polish, stages, ledger, *_ = _polish(monkeypatch, tmp_path, refine=_boom)
+
+    assert polish.applied is False and polish.reverted is True
+    assert "Refine failed" in polish.reason
+    assert stages[-1].label == "S9", "破棄した研磨を段列に足さない"
+
+
+def test_polish_is_thrown_away_when_the_result_is_unphysical(monkeypatch, tmp_path):
+    # 【目的】: 格子崩壊/プロファイル非物理も破綻。Rwp が下がっていても採らない。
+    polish, _stages, _ledger, *_ = _polish(
+        monkeypatch, tmp_path, refine=lambda *a, **k: None, rwp=1.0, physical=False
+    )
+
+    assert polish.applied is False and polish.reverted is True
+    assert "非物理" in polish.reason
+
+
+def test_polish_with_nothing_to_freeze_states_the_reason(monkeypatch, tmp_path):
+    # 【目的】: 「有効にしたのに何も起きなかった」を静かにしない。
+    from tsumugin.autorietveld import engine as eng
+    from tsumugin.autorietveld.model import StageResult
+    from tsumugin.store import Ledger
+
+    gpx_path = tmp_path / "auto.gpx"
+    gpx_path.write_text("gpx", encoding="utf-8")
+
+    def _boom(*_a, **_k):  # pragma: no cover - 呼ばれたら失敗
+        raise AssertionError("凍結対象が無いのに精密化してはいけない")
+
+    monkeypatch.setattr(eng, "_refine_once", _boom)
+    stages = [StageResult(label="S9", rwp=9.8, gof=1.2, n_params=35, converged=True)]
+    ledger = Ledger()
+    _gpx, polish, _u, _e = eng._run_final_polish(
+        _PolishProject(gpx_path),
+        None,
+        gpx_path=gpx_path,
+        snap_path=tmp_path / "polish.gpx",
+        undetermined=(),
+        already_frozen=set(),
+        stab=StabilityOptions(report_undetermined=True, polish_frozen_undetermined=True),
+        stage_results=stages,
+        dlg=None,
+        split_penalty=False,
+        max_cyc=12,
+        radiations=[],
+        histograms=[],
+        ledger=ledger,
+    )
+
+    assert polish.applied is False and polish.reverted is False
+    assert polish.reason and polish.rwp_before == polish.rwp_after == 9.8
+    assert [e.kind for e in ledger.entries] == ["m7_final_polish"]
+
+
+def test_a_default_result_reports_nothing_rather_than_claiming_all_is_well():
+    # 【目的】: 診断を要求していない run の空リストを「弱い変数は無かった」と読ませない。
+    #   ② 不変条件「空/不正入力を『正常』と答えない」の ① 側の対応物。
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+
+    r = AutoRietveldResult(
+        stage_results=(), final_rwp=9.8, final_gof=1.1, refined_cells={},
+        validity=ValidityReport(passed=True),
+    )
+    assert r.undetermined_parameters == ()
+    assert r.undetermined_exempt == ()
+    assert r.frozen_parameters == ()
+    assert r.final_polish is None, "研磨していない = None (False や空 dict ではない)"

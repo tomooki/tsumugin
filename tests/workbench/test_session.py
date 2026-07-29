@@ -4263,6 +4263,51 @@ def test_stability_gate_entries_are_shown_as_guard_with_their_evidence():
     assert "0::A0" in corr and "0.9" in corr
 
 
+def test_weak_variable_entries_distinguish_observation_from_treatment():
+    # 【目的】: REQ-SAR-103 は「凍結は判断、記録は観測」で分かれている。LEDGER でこの 2 つが
+    #   同じに見えると、**母数を削っていないのに削ったと読む** (逆も然り) 誤読が起きる。
+    #   `_ACTOR_BY_KIND` / `_text_for_kind` に無い kind は生の kind 名が出て判断できない。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage_weak_vars",
+        {"stage": "S2 cell", "reverted": False, "n_weak": 6, "n_exempt": 2,
+         "variables": [{"name": ":0:Back;5", "value": 1.0, "esd": 9.0, "ratio": 9.0}],
+         "note": "観測のみ — 凍結していない (REQ-SAR-103)"},
+    )
+    session.ledger.append(
+        "m7_stage_rescue",
+        {"stage": "S3 coords", "reason": "未収束 または SVD0>0 (悪条件) の救済 (REQ-SAR-103)",
+         "rounds": 1, "reverted": False, "svd_singularities": 2,
+         "variables": ["0::AUiso:4"], "note": "凍結は以降の段でも維持される"},
+    )
+    session.ledger.append(
+        "m7_undetermined",
+        {"n_undetermined": 1, "n_exempt": 12,
+         "variables": [{"name": ":0:U", "value": -1.9, "esd": 3.0, "ratio": 1.6}],
+         "exempt_variables": [], "exempt_tokens": ["dAx", "dAy", "dAz"], "note": ""},
+    )
+    session.ledger.append(
+        "m7_final_polish",
+        {"applied": True, "frozen": [":0:U"], "rwp_before": 9.80617, "rwp_after": 9.67230,
+         "reverted": False, "reason": ""},
+    )
+
+    entries = session.ledger_view()["entries"][-4:]
+    assert [e["actor"] for e in entries] == ["GUARD"] * 4
+    observed, rescue, undetermined, polish = (e["text"] for e in entries)
+    # 観測は「凍結していない」と明言すること (処置と取り違えさせない)。
+    assert "not frozen" in observed and "S2 cell" in observed
+    # 救済は「何を落としたか」が出ること (GSAS 自身の dropTerms は黙って落とす)。
+    assert "0::AUiso:4" in rescue and "rescue" in rescue
+    # 報告は所見であって処置ではない。
+    assert ":0:U" not in undetermined or "凍結なし" in undetermined
+    assert "undetermined" in undetermined
+    # 研磨は**出版値を差し替える** → 前後の Rwp が文面に出ること。
+    assert "9.8" in polish and "9.6" in polish
+    # 診断エントリは適合度列を持たない (段が進んだように読める)。
+    assert all(e["rwp"] is None for e in entries[:3])
+
+
 def test_box_bound_entries_reach_the_ledger_with_which_variable_hit_which_side():
     # 【目的】: 箱拘束 (WS-2) の 3 kind が LEDGER に届くこと。特に境界到達は **GUARD** で、
     #   「どの変数がどちら側に当たったか」まで文面に出ること — 「当たった」だけでは箱が悪いのか

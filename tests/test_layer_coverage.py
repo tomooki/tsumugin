@@ -380,6 +380,11 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "asymmetry_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。残差非対称)"),
     "intensity_bias_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。選択配向)"),
     "bg_extrema": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。背景 overfit)"),
+    # REQ-SAR-103 (弱い変数の観測/報告/凍結の分離)。**報告経路が本体**なので全部露出する。
+    "undetermined_parameters": ("undetermined_parameters", ""),
+    "undetermined_exempt": ("undetermined_exempt", ""),
+    "frozen_parameters": ("frozen_parameters", ""),
+    "final_polish": ("final_polish", ""),
 }
 
 _H = HistogramSpec(

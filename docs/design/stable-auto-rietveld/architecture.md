@@ -82,7 +82,7 @@
 * 拘束は発散を*防ぐ*のではなく*止める* (1 サイクルは外へ出る)、
 * 境界に到達した変数は `parmFrozen` に載る → **これが REQ-SAR-202 の検出源**。
 
-esd プルーニング (REQ-SAR-103) も同じ `parmFrozen` へ書くため、検出は
+救済プルーニング/最終研磨 (REQ-SAR-103) も同じ `parmFrozen` へ書くため、検出は
 **(a) 箱を張った変数に限定** し **(b) 精密化呼び出しの前後という狭い窓で差を取る**。
 どちら側の境界かは covData に残る**丸められる前の値**から決める (推測しない)。
 
@@ -105,7 +105,32 @@ esd プルーニング (REQ-SAR-103) も同じ `parmFrozen` へ書くため、�
 代わりに REQ-SAR-202 で「境界到達を所見として報告」する経路を持つ。数値上限を置く場合も
 **物理的必要値を十分上回る**値にする (低 cap は境界不安定 = 偽の「改善せず」を作る)。
 
-### D4. restraint 有効化は既定 OFF・プルーニングとセット
+### D3-a. 弱い変数は「観測 → 報告 → (判断としての) 凍結」に分ける (REQ-SAR-103)
+
+**当初の実装は「受理された段のたびに `esd >= |値|` を永続凍結」だった。これは誤りである。**
+理由と正しいタイミングは requirements.md の REQ-SAR-103 詳細表にあり、ここには**実装の分界**を書く。
+
+| タイミング | 実装 | ledger |
+|---|---|---|
+| 各段 (観測) | `record_weak_vars` → 記録のみ。**凍結しない** | `m7_stage_weak_vars` |
+| 救済 (判断) | `_needs_rescue` (`SVD0>0` or 未収束) → `_run_rescue_freezes` が最弱から凍結して再試行 | `m7_stage_rescue` |
+| 最終 (報告) | `needs_final_diagnostics` → `split_weak_variables` → `AutoRietveldResult.undetermined_parameters` | `m7_undetermined` |
+| 最終研磨 (opt-in) | `_run_final_polish` → 凍結 → 1 回精密化 → 段列末尾に `final polish` 段 + `FinalPolish` | `m7_final_polish` |
+| 毎段凍結 (opt-in) | `prune_weak_vars_each_stage` (旧既定挙動。逃げ道として残置) | `m7_stage_prune` |
+
+**順序が意味を持つ**: 追加サイクル (`_run_convergence_cycles`, 母数はそのまま反復を増やす) を
+**先に**尽くし、それでも収束しない/特異なときに初めて救済 (母数を削る) へ進む。逆にすると
+「収束が遅いだけのパラメータ」を決定不能と誤断して捨てる。
+
+**救済凍結は revert と一緒に巻き戻る**: 凍結先の `Controls['parmFrozen']` は gpx ツリーの一部
+なので、段のスナップショット復元で消える。engine 側の追跡集合 (`frozen_vars`) からも同時に外す
+(追跡だけ残ると、実際は解放されている変数が以降の候補から永久に消える)。
+
+**研磨は破綻だけを revert する**: 凍結は自由度を減らすので Rwp は普通わずかに悪化する。それを
+revert 条件にすると研磨は決して適用されない。破棄するのは GSAS の失敗・非有限 Rwp・格子崩壊/
+プロファイル非物理だけで、コストは `FinalPolish.rwp_before/rwp_after` の差として見せる。
+
+### D4. restraint 有効化は既定 OFF・「決まらなかったパラメータの報告」とセット
 
 `G2strMain.Refine(gpx, dlg=<stub>)` で penalty が χ² に入る。実装は
 `autorietveld/restraint_dlg.py` (スタブ) + `engine._capture_refine_status(dlg=…)` (既に
@@ -194,7 +219,11 @@ penalty 込みで残すと**拘束がデータと争っている状態が値に�
 
 → **失うものは無い。** それでも既定 OFF を維持する理由は D4-a の副産物 (Rwp の意味が変わる)
 と、拘束で母数が実質増えることの 2 点であり、「GSAS の自動削除を失うから」ではない。
-`prune_weak_vars` との併用必須 (`StabilityOptions.__post_init__` が強制) はこの理由で残す。
+
+⚠ **この実測は「毎段プルーニング必須」の根拠そのものを崩している** (2026-07-29 改訂)。
+併用必須 (`StabilityOptions.__post_init__`) は残すが、**要求するのは `report_undetermined`
+(見ること) だけ**に落とした — 拘束下で毎段凍結すると母数が不可逆に痩せる実害
+(実測 `n_params` S2 で 7 → 3) の方が大きい。D3-a を参照。
 恒久ガードは `tests/autorietveld/test_restraint_dlg_gsas.py` (deriv type の前提ごと固定)。
 
 ### D5. 元素ランク展開は engine 側 (レシピは宣言的に保つ)
@@ -242,7 +271,8 @@ REQ-SAR-500 の選択規則は **Rwp 単独ではない**:
 | リスク | 対処 |
 |---|---|
 | 探索の導入で実行時間が線形に増える | operando は既定オフ (REQ-SAR-502)。ハーネスで並列化 |
-| restraint 有効化で自動プルーニングを失う | D4 (プルーニング先行) |
+| ~~restraint 有効化で自動プルーニングを失う~~ | **前提が誤りだった** (D4-b の実測)。代わりに「決まらなかったパラメータの報告」を必須にする (D3-a) |
+| 自動凍結が母数を不可逆に痩せさせる | D3-a (凍結は最終研磨と救済のみ。各段は観測に留める) |
 | 箱拘束が診断信号を潰す | D3 (構造パラメータには張らない) |
 | 改善の合成で原因が追えなくなる | D7 (単独測定) |
 | 決定論が壊れる | 候補列挙・実行順・選択をすべて seed 固定 (NFR-102) |

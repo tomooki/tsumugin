@@ -31,7 +31,7 @@ _DATA = Path("docs/benchmark/testdata")
 pytestmark = pytest.mark.gsas
 
 #: 拘束を有効化する設定 (= dlg スタブが Refine へ渡る唯一の入口)。
-_ON = StabilityOptions(enable_restraints=True, prune_weak_vars=True)
+_ON = StabilityOptions(enable_restraints=True, report_undetermined=True)
 
 
 def _data_present() -> bool:

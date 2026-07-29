@@ -149,7 +149,7 @@ class TestBoxBoundsWiring:
         なければならない (自分で凍らせた変数を「境界に当たった」と誤報しない)。
         """
         _r, ledger = _run(
-            StabilityOptions(bound_displacement=1.0, prune_weak_vars=True)
+            StabilityOptions(bound_displacement=1.0, prune_weak_vars_each_stage=True)
         )
         boxed_names = {
             b["variable"]
