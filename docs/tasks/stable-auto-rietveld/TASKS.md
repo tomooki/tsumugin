@@ -353,7 +353,7 @@ BIC で勝った** (17875 → 16785、Rwp 差はわずか 0.019)。原因は χ�
 | **`Max shft/sig` は絶対値ではない** (`GSASIIstrMain:402` = `np.max(Lastshft/sig)`) | 強い**負**シフトは小さい値として通る = 判定は片側にしか効かない。厳密にやるなら `sig` から自前計算が要る (上流仕様) |
 | **動的相関検出が静的知識を裏付けた** — T1 プロファイル段の実測 `V×W` r=−0.959 / `U×V` r=−0.955 | architecture.md D2 の二段構え (静的な相関群 + 実測補正) が機能している。Caglioti 群の分割禁止は実測でも正しい |
 | **座標シフト `dAx/dAy/dAz` は esd 判定の構造的な偽陽性** (`GSASIIstrIO`:1732 が精密化のたび 0 初期化 → 分母が収束とともに 0 へ) | 既定で除外 (`esd_ratio_exempt_tokens`)。**最終判定だけにしても消えない** — T1 の最終収束 fit で実測 12 個の `dA*` が `esd ≥ |値|` に載った。捨てずに `undetermined_exempt` へ分けて返す (REQ-SAR-103 に明文化済) |
-| **既存 `dataquality.suggest_two_theta_limit` に偽陽性** (実ピーク終端 40° のデータで 48.44° を返す) | Issue 化候補。`autorange` は持続性要求で 40.54° |
+| **既存 `dataquality.suggest_two_theta_limit` に偽陽性** (実ピーク終端 40° のデータで 48.44° を返す) | **Issue #168** で追跡。窓内 S/N の単独判定で持続性を要求しないため多重比較で純ノイズを信号と誤る。`autorange` は持続性要求で 40.54° |
 
 ## 積み残し (要判断)
 
