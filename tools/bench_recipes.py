@@ -30,13 +30,17 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[1]
 _DATA = _REPO / "docs" / "benchmark" / "testdata"
 
-#: 既知のベンチマーク値 (2026-07-27/28 実測)。回帰の即時判定に使う。
+#: 既定レシピの基準値。**このハーネス自身で測り直した値** (2026-07-28, `build_recipe` 差し戻し後)。
+#: CLAUDE.md の記録値 (T1 9.83 / T2 4.33 / T3 6.66) をほぼビット一致で再現しており、
+#: ハーネスが gated テストと同じ条件を測れていることの裏付けでもある。
+#: CaTeO3 だけ 12.43 → 12.20 と改善しているのは、本ブランチの Sample Type 修正
+#: (Kα1 単色 Bragg-Brentano で cell 段が死んでいた) が効いているため。
 BASELINE: dict[str, float] = {
-    "T1": 9.83,
+    "T1": 9.81,
     "T2": 4.33,
     "T3": 6.66,
-    "T4": 12.8,
-    "CaTeO3": 12.43,
+    "T4": 12.8,   # 未再測定 (SLOW_DATASETS)
+    "CaTeO3": 12.20,
 }
 
 #: 参考: GSAS-II チュートリアルの到達値。
