@@ -72,6 +72,30 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
     ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
+    "recipe search (REQ-SAR-500)": (
+        "auto_rietveld",
+        "レシピ探索 (Phase 2, stable-auto-rietveld): 単一レシピは全データで勝てない "
+        "(実測 T1=default 9.81% / T3=serious 6.10%) ため候補を独立実行し「収束したものの中で"
+        "最良」を採る。② は `search` (true or 候補名の列) と `search_config` (閾値) で到達し、"
+        "返り値の `search.candidates[]`/`warnings[]` に候補ごとの Rwp/収束/tier と順序依存警告 "
+        "(REQ-SAR-501) が載る。`search: [\"serious\"]` は**勝ったレシピ 1 本で回す**唯一の "
+        "JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは**意図的に露出しない** "
+        "(REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
+    ),
+    "data preprocessing (REQ-SAR-401/402/403)": (
+        "propose_data_preprocessing",
+        "データ前処理の自動判定 (Phase 2, stable-auto-rietveld `autorietveld.autorange`): "
+        "**人が手で決めていた**背景項数 (CaTeO3 の 24 項) とデータレンジ (T4 の非収束主因は "
+        "リミット未設定) を観測パターンから決める。② は `path` から `two_theta_range` "
+        "(→ HistogramSpec.two_theta_limits) / `background_terms` (→ background_coeffs) / "
+        "`excluded_region_candidates` (→ HistogramSpec.excluded_regions) を返す。"
+        "⚠ **除外領域は提案のみ** (P-SAR-3: 未知相のピークを消すと相同定を殺す) — "
+        "`requires_human_approval` は常に true で、ツール自身も提案を自分のレンジ判定へ "
+        "流し込まない (承認済み区間は `excluded_regions` 引数で明示的に渡す)。"
+        "`explained_two_theta` の到達可能性は `phases` (PhaseSpec + refined_cell) から "
+        "サーバ側で反射位置を立てることで確保した (② に反射位置を返すツールが無いため)。"
+        "`search` の adaptive 候補は同じ ① を内部で使うが、③ から**名指しで**呼ぶ経路は本ツール",
+    ),
     "reference (M6)": ("identify_phases", "相同定 (単相/多相)"),
     "refine_loop (M8)": (
         "propose_next_actions",
@@ -306,8 +330,19 @@ def test_unexposed_features_state_a_reason():
 #: `AutoRietveldResult` の各フィールド → ② `auto_rietveld` 出力キー or UNEXPOSED(理由)。
 AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "stage_results": ("stages", "段階別 Rwp/GOF/母数/revert"),
-    "final_rwp": ("final_rwp", "最終 Rwp"),
+    "final_rwp": ("final_rwp", "最終 Rwp (**常にデータ項のみ** — restraint の有無で意味が変わらない)"),
     "final_gof": ("final_gof", "最終 GOF"),
+    # --- restraint penalty の分離 (REQ-SAR-203) ---
+    "final_rwp_penalized": (
+        "final_rwp_penalized",
+        "penalty 込みの GSAS 生 Rwp。`enable_restraints` 有効時のみ非 null。**出版値ではない** "
+        "(拘束の重みに依存する目的関数の値) が、③ が「拘束がどれだけ引いているか」を "
+        "final_rwp との差で読む唯一の窓",
+    ),
+    "final_restraint_penalty": (
+        "final_restraint_penalty",
+        "拘束の χ² 寄与 (RestraintSum = pSum) の絶対量。重みが過大かを ③ が判断する材料",
+    ),
     "refined_cells": ("refined_cells", "精密化格子"),
     "validity": ("validity", "物理妥当性ゲート"),
     "gpx_path": ("gpx_path", "成果物パス"),
@@ -359,6 +394,11 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "asymmetry_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。残差非対称)"),
     "intensity_bias_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。選択配向)"),
     "bg_extrema": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。背景 overfit)"),
+    # REQ-SAR-103 (弱い変数の観測/報告/凍結の分離)。**報告経路が本体**なので全部露出する。
+    "undetermined_parameters": ("undetermined_parameters", ""),
+    "undetermined_exempt": ("undetermined_exempt", ""),
+    "frozen_parameters": ("frozen_parameters", ""),
+    "final_polish": ("final_polish", ""),
 }
 
 _H = HistogramSpec(

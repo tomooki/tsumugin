@@ -155,13 +155,17 @@ def run_refinement_loop(
 # ---------------- 既定の GSAS 駆動 runner / 粗診断 ----------------
 
 
-def _default_gsas_runner(seed: int, max_cyc: int = 12) -> Runner:
+def _default_gsas_runner(seed: int, max_cyc: int = 12, stability: object | None = None) -> Runner:
     """AnalysisInput を run_auto_rietveld で実行する既定 runner (GSAS 遅延 import)。
 
     :param seed: 乱数種 (現状 runner 内では未使用 — 呼び出し側の再現性記録用に残置)
     :param max_cyc: 各段階の最大精密化サイクル (Issue #101: ② `auto_rietveld`/
         `refine_with_revisions` の ``max_cyc`` 引数から届く。既定 12 は
         ``run_auto_rietveld`` 自体の既定と同一で非回帰)
+    :param stability: 安定性診断ゲート (`autorietveld.model.StabilityOptions`, WS-1
+        stable-auto-rietveld)。② の ``stability`` spec から届く。**None は現行と同一挙動**
+        (共分散を読まない)。型注釈が ``object`` なのは refine_loop コアを autorietveld の
+        import から切り離しておくため (実体は `run_auto_rietveld` が受け取る)
     """
 
     def runner(inp: AnalysisInput) -> AutoRietveldResult:
@@ -172,7 +176,8 @@ def _default_gsas_runner(seed: int, max_cyc: int = 12) -> Runner:
         )
         recipe = (*recipe, *inp.extra_stages)
         return run_auto_rietveld(
-            list(inp.histograms), list(inp.phases), recipe=recipe, max_cyc=max_cyc
+            list(inp.histograms), list(inp.phases), recipe=recipe, max_cyc=max_cyc,
+            stability=stability,  # type: ignore[arg-type]
         )
 
     return runner

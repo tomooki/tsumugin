@@ -240,7 +240,8 @@ def test_create_mcp_server_wires_all_eight_tools():
     # +1: alkali_budget (FR-318) → 32。+2: list_review_queue/resolve_review_item (Issue #125) → 34
     # +1: write_sequential_csv (FR-504 トラジェクトリ CSV, Issue #116/#117 調査) → 35
     # +1: discriminate (FR-313 固溶体 vs 二相判別の実データ GSAS 露出, Issue #130) → 36
-    assert len(MCP_TOOLS) == 36
+    # +1: propose_data_preprocessing (REQ-SAR-401/402/403 `autorietveld.autorange` の露出) → 37
+    assert len(MCP_TOOLS) == 37
 
 
 def _collect_tool_names(server: object) -> list[str]:

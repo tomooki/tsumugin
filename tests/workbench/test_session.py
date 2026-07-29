@@ -4220,3 +4220,168 @@ def test_ledger_text_for_stage_error_includes_the_reason():
 
     assert "S1 cell+displacement" in text
     assert "boom" in text
+
+
+# ---------------------------------------------------------------------------
+# 安定自動 Rietveld の診断ゲート (WS-1) — LEDGER タブ表示
+# ---------------------------------------------------------------------------
+
+
+def test_stability_gate_entries_are_shown_as_guard_with_their_evidence():
+    # 【目的】: 「段が黙って壊れている/効いていない」を示す 4 kind が LEDGER に届くこと。
+    #   `_ACTOR_BY_KIND` / `_text_for_kind` に無い kind は actor が CORE ① に化け、
+    #   text が生の kind 名 (例 "m7_stage_noop") になり、GUI から判断できない。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage_unconverged",
+        {"stage": "S3 profile", "max_shift_esd": 258.8, "limit": 1.0, "extra_cycles": 2},
+    )
+    session.ledger.append(
+        "m7_stage_noop",
+        {"stage": "S5 profile_U", "rwp": 38.9858, "gof": 5.57, "n_params": 27,
+         "prev_n_params": 27},
+    )
+    session.ledger.append(
+        "m7_stage_prune",
+        {"stage": "S6 uiso", "reason": "esd >= |value| (REQ-SAR-103)",
+         "variables": [{"name": "0::AUiso:4", "value": 0.01, "esd": 0.05, "ratio": 5.0}]},
+    )
+    session.ledger.append(
+        "m7_stage_correlation",
+        {"stage": "S2 cell", "threshold": 0.9, "reverted": False, "n_pairs": 3,
+         "pairs": [{"a": "0::A0", "b": ":0:Shift", "r": -0.987}]},
+    )
+
+    entries = session.ledger_view()["entries"][-4:]
+
+    assert [e["actor"] for e in entries] == ["GUARD"] * 4
+    unconverged, noop, prune, corr = (e["text"] for e in entries)
+    # 未収束は Rwp に現れない → 判断材料 (max shft/sig) が文面に出ること。
+    assert "S3 profile" in unconverged and "258" in unconverged
+    assert "no-op" in noop and "S5 profile_U" in noop
+    assert "0::AUiso:4" in prune and "1" in prune
+    assert "0::A0" in corr and "0.9" in corr
+
+
+def test_weak_variable_entries_distinguish_observation_from_treatment():
+    # 【目的】: REQ-SAR-103 は「凍結は判断、記録は観測」で分かれている。LEDGER でこの 2 つが
+    #   同じに見えると、**母数を削っていないのに削ったと読む** (逆も然り) 誤読が起きる。
+    #   `_ACTOR_BY_KIND` / `_text_for_kind` に無い kind は生の kind 名が出て判断できない。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage_weak_vars",
+        {"stage": "S2 cell", "reverted": False, "n_weak": 6, "n_exempt": 2,
+         "variables": [{"name": ":0:Back;5", "value": 1.0, "esd": 9.0, "ratio": 9.0}],
+         "note": "観測のみ — 凍結していない (REQ-SAR-103)"},
+    )
+    session.ledger.append(
+        "m7_stage_rescue",
+        {"stage": "S3 coords", "reason": "未収束 または SVD0>0 (悪条件) の救済 (REQ-SAR-103)",
+         "rounds": 1, "reverted": False, "svd_singularities": 2,
+         "variables": ["0::AUiso:4"], "note": "凍結は以降の段でも維持される"},
+    )
+    session.ledger.append(
+        "m7_undetermined",
+        {"n_undetermined": 1, "n_exempt": 12,
+         "variables": [{"name": ":0:U", "value": -1.9, "esd": 3.0, "ratio": 1.6}],
+         "exempt_variables": [], "exempt_tokens": ["dAx", "dAy", "dAz"], "note": ""},
+    )
+    session.ledger.append(
+        "m7_final_polish",
+        {"applied": True, "frozen": [":0:U"], "rwp_before": 9.80617, "rwp_after": 9.67230,
+         "reverted": False, "reason": ""},
+    )
+
+    entries = session.ledger_view()["entries"][-4:]
+    assert [e["actor"] for e in entries] == ["GUARD"] * 4
+    observed, rescue, undetermined, polish = (e["text"] for e in entries)
+    # 観測は「凍結していない」と明言すること (処置と取り違えさせない)。
+    assert "not frozen" in observed and "S2 cell" in observed
+    # 救済は「何を落としたか」が出ること (GSAS 自身の dropTerms は黙って落とす)。
+    assert "0::AUiso:4" in rescue and "rescue" in rescue
+    # 報告は所見であって処置ではない。
+    assert ":0:U" not in undetermined or "凍結なし" in undetermined
+    assert "undetermined" in undetermined
+    # 研磨は**出版値を差し替える** → 前後の Rwp が文面に出ること。
+    assert "9.8" in polish and "9.6" in polish
+    # 診断エントリは適合度列を持たない (段が進んだように読める)。
+    assert all(e["rwp"] is None for e in entries[:3])
+
+
+def test_box_bound_entries_reach_the_ledger_with_which_variable_hit_which_side():
+    # 【目的】: 箱拘束 (WS-2) の 3 kind が LEDGER に届くこと。特に境界到達は **GUARD** で、
+    #   「どの変数がどちら側に当たったか」まで文面に出ること — 「当たった」だけでは箱が悪いのか
+    #   モデルが悪いのかを GUI から判断できず、握り潰しと大差なくなる (REQ-SAR-202)。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_box_bounds",
+        {"n_bounds": 4,
+         "bounds": [{"variable": "0::A0", "lo": 1.0, "hi": 2.0, "kind": "cell", "reason": ""},
+                    {"variable": ":0:Shift", "lo": -5000.0, "hi": 5000.0,
+                     "kind": "displacement", "reason": ""}]},
+    )
+    session.ledger.append(
+        "m7_restraints_enabled",
+        {"bond_phases": ["pbso4"], "chem_comp_phases": [],
+         "note": "restraint を χ² に入れた (Rwp は penalty 込みの値になる)"},
+    )
+    session.ledger.append(
+        "m7_stage_bound_hit",
+        {"stage": "S1 cell+displacement", "reverted": False, "n_hits": 1,
+         "hits": [{"variable": ":0:Shift", "side": "max", "lo": -1.0, "hi": 1.0,
+                   "kind": "displacement", "reason": "試料変位"}]},
+    )
+
+    registered, enabled, hit = session.ledger_view()["entries"][-3:]
+
+    assert [registered["actor"], enabled["actor"], hit["actor"]] == ["CORE ①", "CORE ①", "GUARD"]
+    assert "cell" in registered["text"] and "displacement" in registered["text"]
+    assert "penalty" in enabled["text"]
+    assert ":0:Shift" in hit["text"] and "max" in hit["text"]
+    # 診断エントリは適合度を持たない (Rwp 列に出ると段が進んだように読める)。
+    assert hit["rwp"] is None and hit["bic"] is None
+
+
+def test_stability_gate_entries_carry_no_fabricated_fit_quality():
+    # 【目的】: 診断エントリに rwp/bic を持たせない (適合度は m7_stage / refine_finished のみ)。
+    #   no-op の payload は rwp を含むが、それは**直前段と同じ値**であり「この段の適合度」
+    #   ではない — LEDGER の Rwp 列に出すと段が進んだように読める。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_stage_noop",
+        {"stage": "S5", "rwp": 38.9858, "gof": 5.57, "n_params": 27, "prev_n_params": 27},
+    )
+
+    entry = session.ledger_view()["entries"][-1]
+
+    assert entry["rwp"] is None
+    assert entry["bic"] is None
+
+
+def test_recipe_search_entries_reach_the_ledger_with_why_and_confidence():
+    # 【目的】: レシピ探索 (Phase 2) の 2 kind が LEDGER に届くこと。特に **select は GUARD** で、
+    #   「なぜ選んだか (rwp/bic)」と「信頼度の所見 (未収束フォールバック/順序依存)」まで文面に
+    #   出ること — Rwp だけ見せると「探索したから正しい」という誤読を招く。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_search_candidate",
+        {"index": 0, "candidate": {"name": "serious", "origin": "fixed", "n_stages": 59},
+         "rwp": 6.0997, "gof": 2.0588, "n_params": 60, "n_obs": 4000, "bic": 1.0,
+         "tier": 0, "tier_label": "収束∧妥当", "error": ""},
+    )
+    session.ledger.append(
+        "m7_search_select",
+        {"selected": "serious", "selection_reason": "rwp", "n_candidates": 2, "rwp": 6.0997,
+         "convergence_fallback": True, "order_dependent": True, "warnings": []},
+    )
+
+    candidate, select = session.ledger_view()["entries"][-2:]
+
+    assert [candidate["actor"], select["actor"]] == ["CORE ①", "GUARD"]
+    assert "serious" in candidate["text"] and "収束∧妥当" in candidate["text"]
+    assert "rwp" in select["text"] and "順序依存" in select["text"]
+    # 候補は実際に精密化を回した事実なので Rwp/BIC 列に出す (段と同じ扱い)。
+    assert candidate["rwp"] == pytest.approx(6.0997)
+    assert candidate["bic"] is not None
+    # 選択は適合度を持たない判断エントリ (Rwp 列に出ると段が進んだように読める)。
+    assert select["bic"] is None

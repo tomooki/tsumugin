@@ -21,6 +21,17 @@ Rwp も動かない — ③ はこれを「この knob は効かない」と誤�
 語彙を閉じた集合として持ち、未知名は許容一覧付きで大声で失敗させる (③ が自力で直せる)。
 語彙が engine/recipe 側に足されたのに本表が古いままになる drift は
 `tests/mcp/test_recipe_spec.py::test_known_flags_covers_engine_vocabulary` が検出する。
+
+さらに、engine が**値を読む**フラグ (``coords``/``occupancy``/``uiso`` の元素ランク、
+``freeze_others`` の keep 指定) は**値の形**も検証する (`_check_flag_value`)。名前検証だけでは
+素通りするため (``{"coords": "heavy_first"}`` は正当なフラグ名の正当でない値)。失敗の見え方は
+フラグごとに違い、必要な理由も違う:
+
+- ``freeze_others`` に裸の文字列/空リストを渡すと engine は**例外を出さずに別の意味へ縮退**する
+  (それぞれ「何も残さない」「凍結しない」)。ここは ② で止めないと検出手段が無い。
+- 元素ランクの語彙外の値は engine 側 (`_element_rank_labels`) が `ValueError` を出すので
+  黙りはしないが、③ から見えるのは revert された段と ledger の ``m7_stage_error`` だけになる。
+  ② で弾けば「どの値が駄目でいつ使えるか」を**入力を送った時点で**返せる。
 """
 
 from __future__ import annotations
@@ -44,6 +55,10 @@ KNOWN_STAGE_FLAGS = frozenset(
         "cell",
         "coords",
         "displacement",
+        # 段の適用前に既存の解放を落とす (`engine._apply_stage` の `flags.get("freeze_others")`)。
+        # 既定の累積セマンティクスでは不要だが、"本気フィット" の順次解放/凍結手順を ③ が
+        # JSON で組めるようにするため露出する (値: True または凍結しない名前の列)。
+        "freeze_others",
         "hydrostatic_strain",
         "occupancy",
         "phase_fraction_sum",
@@ -57,6 +72,58 @@ KNOWN_STAGE_FLAGS = frozenset(
         "uiso",
     }
 )
+
+#: 元素ランクで解放範囲を絞れるフラグ (`engine._element_rank_labels` が**値を読む**)。
+#: 許容値は bool (全解放) か int (重い方から N 番目の元素) だけ。
+_ELEMENT_RANK_FLAGS = frozenset({"coords", "occupancy", "uiso"})
+
+#: 名前だけでなく**値の形**まで検証する理由: 上の未知フラグ名と違い、engine が読む値を誤ると
+#: 例外にもならず**別の手順に化ける**。実例として `recipe.build_serious_recipe` の
+#: ``element_expansion="heavy_first"`` / ``uiso_tiers=[...]`` は「engine が実元素数へ展開する」
+#: 宣言だが、その展開 (WS-3 3-3) は未実装で、以前は `_element_rank_labels` の catch-all に
+#: 落ちて**1 段で全原子を解放**していた。宣言と実際の手順が食い違う状態を ② の入口で止める。
+_UNIMPLEMENTED_DECLARATIONS = ("heavy_first", "shared", "by_element", "individual")
+
+
+def _check_flag_value(label: str, name: str, value: object) -> None:
+    """フラグの**値**が engine の解釈できる形かを検証する (:raises ValueError:)。
+
+    値を読むフラグだけを対象にする。値を見ないフラグ (``if "cell" in flags`` 型) は
+    どんな値でも意味が変わらないので触らない (過剰な検証は ③ の正当な入力を弾く)。
+    """
+    if name in _ELEMENT_RANK_FLAGS:
+        if isinstance(value, bool) or isinstance(value, int):
+            return
+        extra = ""
+        if isinstance(value, str) and value in _UNIMPLEMENTED_DECLARATIONS:
+            extra = (
+                f" — {value!r} は engine 側の展開 (WS-3 3-3) が未実装の宣言値です。"
+                "実装が入るまでは bool か int のランク指定を使ってください"
+            )
+        raise ValueError(
+            f"stage.flags[{name!r}] は bool (全解放) か int (重い方から N 番目の元素) "
+            f"である必要があります ({label!r}): {value!r}{extra}"
+        )
+    if name == "freeze_others":
+        if isinstance(value, bool):
+            return
+        if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
+            # 空リストは「何も残さず全部凍結」と読めるが、engine は `if keep:` で真偽を見るため
+            # **凍結そのものを飛ばす** = 正反対の意味になる (例外にも ledger にも出ない)。
+            # PR #129 の ``instrument.recipe: []`` と同型なので、黙って通さず綴りを教える。
+            # `recipe.build_serious_recipe` が `k or True` と書いているのはこの回避。
+            if not value:
+                raise ValueError(
+                    f"stage.flags['freeze_others'] が空リストです ({label!r})。engine はこれを"
+                    "「凍結しない」と読むため、意図した「何も残さず全部凍結」の逆になります"
+                    " — その意味なら true を指定してください"
+                )
+            return
+        raise ValueError(
+            f"stage.flags['freeze_others'] は bool か**凍結しない名前の列** (str のリスト) "
+            f"である必要があります ({label!r}): {value!r}。engine はそれ以外を「何も残さない」"
+            "へ縮退するため、指定したつもりの名前まで凍る"
+        )
 
 
 def stage_from_dict(d: Mapping[str, object]) -> RefinementStage:
@@ -93,6 +160,10 @@ def stage_from_dict(d: Mapping[str, object]) -> RefinementStage:
             f"engine は未知フラグを黙って無視するため、この段階は何も解放しません "
             f"(許容フラグ: {sorted(KNOWN_STAGE_FLAGS)})"
         )
+    # 【値の検証】: 名前が正しくても値が engine の語彙外だと例外にならず**別の手順に化ける**
+    #   (上の `_check_flag_value` 参照)。名前順に見て決定論的な順序でエラーを出す。
+    for flag_name in sorted(flags):
+        _check_flag_value(label, flag_name, flags[flag_name])
     note = d.get("note", "")
     if not isinstance(note, str):
         raise ValueError(f"stage.note は str である必要があります ({label!r}): {type(note).__name__}")

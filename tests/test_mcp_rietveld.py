@@ -268,3 +268,209 @@ def test_refine_with_revisions_exposes_publication_values():
 
     assert out["phase_weight_fractions"] == {"cubic": 0.472, "tetra": 0.528}
     assert out["cell_esd"]["ph"] == [0.0002, 0.0002, 0.0002, 0.0, 0.0, 0.0]
+
+
+# ---------------------------------------------------------------------------
+# 安定性診断ゲート (WS-1 stable-auto-rietveld) の ② 到達可能性
+# ---------------------------------------------------------------------------
+
+
+def test_stability_spec_reaches_the_real_runner(monkeypatch):
+    """③ が JSON で送った ``stability`` が既定 (実 GSAS) runner まで届く。
+
+    【目的】: ① に実装したゲートが ② から呼べること (CLAUDE.md ★ 不変条件)。runner を注入すると
+    ゲートはその runner の責務になるので、**注入しない経路**で `_default_gsas_runner` に何が
+    渡ったかを見る。ここが繋がっていないと ③ から見て機能は存在しない (dead on arrival)。
+    """
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+
+    def _spy(seed, max_cyc=12, stability=None):
+        seen.update(seed=seed, max_cyc=max_cyc, stability=stability)
+        return _stub_runner
+
+    monkeypatch.setattr(rt, "_default_gsas_runner", _spy)
+
+    out = rt.auto_rietveld(
+        [_H], [_P], stability={"require_convergence": True, "max_shift_esd": 2.0}
+    )
+
+    assert "error" not in out
+    assert seen["stability"] == StabilityOptions(require_convergence=True, max_shift_esd=2.0)
+
+
+def test_stability_spec_defaults_to_the_no_op_options(monkeypatch):
+    # 【目的】: 未指定は「全ゲート無効」の StabilityOptions (= 現行と同一挙動) であること。
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        rt, "_default_gsas_runner",
+        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+    )
+
+    rt.auto_rietveld([_H], [_P])
+
+    assert seen["stability"] == StabilityOptions()
+    assert seen["stability"].needs_diagnostics is False
+
+
+def test_stage_note_is_returned_so_diagnostics_are_visible_to_layer3():
+    """★②到達可能性: 段の所見 (`note`) が ② の戻り値に出ること。
+
+    【目的】: `unconverged` / `noop` / `pruned=N` / `bound_hits=N` は **`StageResult.note` に
+    しか出ない** (ledger は ② の戻り値に含まれない)。ここを落とすと、診断ゲートも箱拘束も
+    「有効にしたのに結果に何も現れない」機能になり、③ から見て存在しないのと同じになる。
+    """
+    def _noted(inp):
+        return AutoRietveldResult(
+            stage_results=(
+                StageResult(label="S1", rwp=12.0, gof=1.2, n_params=9, converged=True,
+                            note="unconverged; bound_hits=2"),
+            ),
+            final_rwp=12.0, final_gof=1.2,
+            refined_cells={"ph": (9.37, 9.37, 6.89, 90.0, 90.0, 120.0)},
+            validity=ValidityReport(passed=True),
+        )
+
+    out = auto_rietveld([_H], [_P], runner=_noted)
+
+    json.dumps(out, allow_nan=False)
+    assert out["stages"][0]["note"] == "unconverged; bound_hits=2"
+
+
+def test_box_bound_spec_reaches_the_real_runner(monkeypatch):
+    """③ が JSON で送った**箱拘束** (WS-2) が既定 runner まで届く (REQ-SAR-201/202)。
+
+    【目的】: ① に実装した箱拘束が ② から到達可能であること。診断ゲートと同じ `stability`
+    引数に同居させたので、そこが本当に配線されているかを別途見る (同居 ≠ 到達可能)。
+    """
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        rt, "_default_gsas_runner",
+        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+    )
+
+    out = rt.auto_rietveld(
+        [_H], [_P],
+        stability={"bound_cell": 0.05, "bound_displacement": 5000.0, "bound_size_strain": True},
+    )
+
+    assert "error" not in out
+    assert seen["stability"] == StabilityOptions(
+        bound_cell=0.05, bound_displacement=5000.0, bound_size_strain=True
+    )
+    assert seen["stability"].has_box_bounds is True
+
+
+def test_enabling_restraints_without_reporting_degrades_to_an_error_dict():
+    """② は例外を送出しない — REQ-SAR-203 の前提違反も error dict へ縮退する。
+
+    【目的】: ③ は LLM なので例外は回復不能なハード失敗になる。かつ**黙って片肺で走らせない**
+    (拘束は実質的に母数を増やすので、何が決まらなかったかを報告しない構成は認めない)。
+    """
+    out = auto_rietveld([_H], [_P], stability={"enable_restraints": True})
+
+    assert out["error_type"] == "ValueError"
+    assert "report_undetermined" in out["error"]
+
+
+def test_the_renamed_prune_key_degrades_to_an_error_dict():
+    """旧 ``prune_weak_vars`` を送ったら error dict になること (黙って無視しない)。
+
+    【目的】: 意味が変わった (毎段永続凍結 → 観測/報告/救済の分離) キーを黙殺すると、
+    ③ から見て「凍結しているつもりで凍結していない」逆向きの静かな失敗になる。
+    """
+    out = auto_rietveld([_H], [_P], stability={"prune_weak_vars": True})
+
+    assert out["error_type"] == "ValueError"
+    assert "prune_weak_vars" in out["error"]
+
+
+def test_undetermined_parameters_reach_the_third_layer_with_their_numbers():
+    """「決まらなかったパラメータ」が ② の出力に**値ごと**届くこと (REQ-SAR-103 の本体)。
+
+    【目的】: ① で持っているだけでは ③ にとって存在しない (★ 不変条件)。所見として使うには
+    名前だけでなく値と esd が要る (「どれくらい決まっていないか」が判断材料)。
+    """
+    from tsumugin.autorietveld.diagnostics import WeakVariable
+    from tsumugin.autorietveld.model import FinalPolish
+
+    def runner(_inp: AnalysisInput) -> AutoRietveldResult:
+        return AutoRietveldResult(
+            stage_results=(),
+            final_rwp=9.86,
+            final_gof=1.1,
+            refined_cells={},
+            validity=ValidityReport(passed=True),
+            undetermined_parameters=(
+                WeakVariable(name="0::AUiso:4", value=0.004, esd=0.012, ratio=3.0),
+            ),
+            undetermined_exempt=(
+                WeakVariable(name="0::dAx:3", value=1e-6, esd=0.002, ratio=2000.0),
+            ),
+            frozen_parameters=("0::AUiso:4",),
+            final_polish=FinalPolish(
+                applied=True, frozen=("0::AUiso:4",), rwp_before=9.80, rwp_after=9.86
+            ),
+        )
+
+    out = auto_rietveld([_H], [_P], runner=runner)
+    json.dumps(out, allow_nan=False)
+
+    assert out["undetermined_parameters"] == [
+        {"name": "0::AUiso:4", "value": 0.004, "esd": 0.012, "ratio": 3.0}
+    ]
+    # 判定対象外にした変数も**捨てずに**届く (何を見なかったかを隠さない)。
+    assert [w["name"] for w in out["undetermined_exempt"]] == ["0::dAx:3"]
+    # 出版値が「一部を凍結した fit」のものであることが結果から判別できる。
+    assert out["frozen_parameters"] == ["0::AUiso:4"]
+    assert out["final_polish"]["applied"] is True
+    assert out["final_polish"]["rwp_before"] == 9.80
+    assert out["final_polish"]["rwp_after"] == 9.86
+
+
+def test_a_run_without_diagnostics_does_not_claim_everything_was_determined():
+    """診断を要求していない run で「決まらなかったパラメータは無い」と読ませない。
+
+    【目的】: ② 不変条件「空/不正入力を『正常』と答えない」。キーは常に在るが空であり、
+    それは *診断していない* の意味である — `final_polish` は null で区別できる。
+    """
+    out = auto_rietveld([_H], [_P], runner=_stub_runner)
+
+    assert out["undetermined_parameters"] == []
+    assert out["frozen_parameters"] == []
+    assert out["final_polish"] is None
+
+
+def test_unknown_stability_key_degrades_to_an_error_dict():
+    # 【目的】: ② は例外を送出しない。かつ**黙って無視しない** — キー名を間違えたまま
+    #   「ゲートを有効にしたつもり」で回るのが最悪 (静かな失敗)。
+    out = auto_rietveld([_H], [_P], stability={"require_convergance": True})
+
+    assert out["error_type"] == "ValueError"
+    assert "require_convergance" in out["error"]
+
+
+def test_refine_with_revisions_accepts_the_same_stability_spec(monkeypatch):
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        rt, "_default_gsas_runner",
+        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+    )
+
+    out = rt.refine_with_revisions(
+        [_H], [_P], [], stability={"detect_noop_stages": True}
+    )
+
+    assert "error" not in out
+    assert seen["stability"] == StabilityOptions(detect_noop_stages=True)

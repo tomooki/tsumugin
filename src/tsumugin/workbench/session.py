@@ -106,6 +106,30 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "refine_failed": "CORE ①",
     "m7_stage": "CORE ①",
     "m7_stage_error": "GUARD",
+    # 安定自動 Rietveld の診断ゲート (WS-1)。いずれも「段が黙って壊れている/効いていない」を
+    # 可視化するガードレール由来なので GUARD 扱いにする (CORE ① の通常進行と色を分ける)。
+    "m7_stage_unconverged": "GUARD",
+    "m7_stage_noop": "GUARD",
+    "m7_stage_prune": "GUARD",
+    # 弱い変数の**観測**と**報告** (REQ-SAR-103)。凍結という処置を伴わないが、「このパラメータは
+    # 決まっていない」はモデルを疑う所見なので GUARD (通常進行と色を分ける)。
+    "m7_stage_weak_vars": "GUARD",
+    "m7_stage_rescue": "GUARD",
+    "m7_undetermined": "GUARD",
+    # 最終研磨は**出版値を差し替える処置**なので CORE ① ではなく GUARD で目立たせる
+    # (「どの母数集合の上の Rwp か」を見落とさせない)。
+    "m7_final_polish": "GUARD",
+    "m7_stage_correlation": "GUARD",
+    # 拘束・境界 (WS-2)。何を拘束したかは設定なので CORE ①、境界に**当たった**のは
+    # 「モデルか箱のどちらかが間違っている」という所見なので GUARD。
+    "m7_box_bounds": "CORE ①",
+    "m7_restraints_enabled": "CORE ①",
+    "m7_stage_bound_hit": "GUARD",
+    # レシピ探索 (Phase 2)。候補を 1 本回したのは通常進行なので CORE ①、**選択**は
+    # 「収束フィルタのフォールバック」「順序依存」という信頼度の所見を運ぶので GUARD
+    # (Rwp だけ見て納得されると探索の価値が消える)。
+    "m7_search_candidate": "CORE ①",
+    "m7_search_select": "GUARD",
     "transcript_message": "HUMAN",
     "agent_proposal": "AGENT ③",
     "approval_decision": "HUMAN",
@@ -168,7 +192,7 @@ def _actor_for_kind(kind: str) -> str:
 #: 適合度 (rwp/bic) を持ちうる ledger kind (api-contract.md GET /api/ledger)。ここに無い kind は
 #: 両方 null — モード切替や承認に Rwp は存在せず、直前段の値を引き継いで「見かけ上の適合度」を
 #: 作ることは台帳の誤読を招く。
-_FIT_QUALITY_KINDS = frozenset({"m7_stage", "refine_finished"})
+_FIT_QUALITY_KINDS = frozenset({"m7_stage", "refine_finished", "m7_search_candidate"})
 
 
 def _bic_from_payload(payload: dict[str, Any]) -> "float | None":
@@ -245,6 +269,103 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         # 追えなくて詰まった (段が黙って revert された理由が GUI から見えない)。
         reason = payload.get("error")
         return f"stage {payload.get('stage')} error" + (f": {reason}" if reason else "")
+    if kind == "m7_stage_unconverged":
+        # 未収束は Rwp に現れない (改善していても収束していないことがある) ので、
+        # 判断材料 (max shft/sig と使った追加サイクル数) をそのまま文面に出す。
+        shift = payload.get("max_shift_esd")
+        shift_txt = f"{shift:g}" if isinstance(shift, (int, float)) else "―"
+        return (
+            f"stage {payload.get('stage')} unconverged "
+            f"(max shft/sig={shift_txt} > {payload.get('limit')}, "
+            f"extra cycles={payload.get('extra_cycles')}) → revert"
+        )
+    if kind == "m7_stage_noop":
+        return (
+            f"stage {payload.get('stage')} no-op "
+            f"(n_params {payload.get('prev_n_params')}→{payload.get('n_params')}, rwp/gof 不変)"
+        )
+    if kind == "m7_stage_prune":
+        names = [str(v.get("name")) for v in (payload.get("variables") or [])]
+        head = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
+        return f"stage {payload.get('stage')} froze {len(names)} weak vars [{head}]"
+    if kind == "m7_stage_weak_vars":
+        # **凍結していない**ことを文面に出す (LEDGER で処置と観測を取り違えさせない)。
+        return (
+            f"stage {payload.get('stage')} {payload.get('n_weak')} weak vars observed "
+            f"(not frozen)"
+        )
+    if kind == "m7_stage_rescue":
+        names = [str(v) for v in (payload.get("variables") or [])]
+        head = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
+        return (
+            f"stage {payload.get('stage')} rescue: froze {len(names)} var(s) [{head}] "
+            f"in {payload.get('rounds')} round(s)"
+        )
+    if kind == "m7_undetermined":
+        return (
+            f"{payload.get('n_undetermined')} undetermined params "
+            f"(esd ≥ |value|; {payload.get('n_exempt')} exempt) — 所見, 凍結なし"
+        )
+    if kind == "m7_final_polish":
+        if not payload.get("applied"):
+            return f"final polish skipped ({payload.get('reason') or '—'})"
+        return (
+            f"final polish: froze {len(payload.get('frozen') or [])} params, "
+            f"rwp {_fmt_rwp(payload.get('rwp_before'))} → {_fmt_rwp(payload.get('rwp_after'))}"
+        )
+    if kind == "m7_stage_correlation":
+        pairs = payload.get("pairs") or []
+        top = pairs[0] if pairs else {}
+        top_r = top.get("r")
+        top_txt = (
+            f" top {top.get('a')}×{top.get('b')} r={top_r:.2f}"
+            if isinstance(top_r, (int, float))
+            else ""
+        )
+        return (
+            f"stage {payload.get('stage')} {payload.get('n_pairs')} correlated pairs "
+            f"(|r|≥{payload.get('threshold')}){top_txt}"
+        )
+    if kind == "m7_box_bounds":
+        kinds = sorted({str(b.get("kind")) for b in (payload.get("bounds") or [])})
+        return f"box bounds registered: {payload.get('n_bounds')} ({', '.join(kinds)})"
+    if kind == "m7_restraints_enabled":
+        return f"restraints enabled — {payload.get('note')}"
+    if kind == "m7_stage_bound_hit":
+        # **どの変数がどちら側の境界に当たったか**まで出す。「当たった」だけでは箱が悪いのか
+        # モデルが悪いのかを GUI から判断できない (握り潰しと大差なくなる)。
+        hits = payload.get("hits") or []
+        head = ", ".join(
+            f"{h.get('variable')}({h.get('side')})" for h in hits[:3]
+        ) + ("…" if len(hits) > 3 else "")
+        return (
+            f"stage {payload.get('stage')} hit {payload.get('n_hits')} box bound(s) [{head}]"
+        )
+    if kind == "m7_search_candidate":
+        cand = payload.get("candidate") or {}
+        tier = payload.get("tier_label") or "―"
+        err = payload.get("error")
+        if err:
+            return f"search candidate {cand.get('name')} failed: {err}"
+        return (
+            f"search candidate {cand.get('name')} ({cand.get('origin')}, "
+            f"{cand.get('n_stages')} stages) rwp={_fmt_rwp(payload.get('rwp'))} [{tier}]"
+        )
+    if kind == "m7_search_select":
+        # **何を選んだか**だけでなく**なぜ**と**信頼度**まで出す。Rwp 最小を選んだのか
+        # BIC で裁定したのか、収束フィルタが効いたのか外したのかが見えないと、
+        # 「探索したから正しい」という誤読を招く。
+        flags = []
+        if payload.get("convergence_fallback"):
+            flags.append("未収束フォールバック")
+        if payload.get("order_dependent"):
+            flags.append("順序依存")
+        suffix = f" ⚠ {', '.join(flags)}" if flags else ""
+        return (
+            f"search selected {payload.get('selected')} "
+            f"({payload.get('selection_reason')}) of {payload.get('n_candidates')} "
+            f"candidates, rwp={_fmt_rwp(payload.get('rwp'))}{suffix}"
+        )
     if kind == "transcript_message":
         return "transcript message posted"
     if kind == "agent_proposal":

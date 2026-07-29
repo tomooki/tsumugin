@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
 from tsumugin.autorietveld.recipe import build_recipe
 
@@ -30,9 +31,17 @@ def _find(stages, key):
 
 def test_universal_sequence_order():
     stages = build_recipe([_XRAY_BB], _SINGLE_PHASE)
-    # S0 背景+scale が先頭、格子→プロファイル→座標→Uiso の順
-    keys_in_order = [k for s in stages for k in ("background", "cell", "profile", "coords", "uiso") if k in s.flags]
-    assert keys_in_order == ["background", "cell", "profile", "coords", "uiso"]
+    # S0 背景+scale が先頭、格子→プロファイル→座標→Uiso の順。
+    # 【解放と凍結を区別する】: 変位段は格子を **凍結** する (`{"cell": False}`) ため
+    # メンバシップ (`k in s.flags`) だけ見ると「格子を解放した段」と数えてしまう。
+    # 初出の順序だけを見る (交互精密化 cell → 変位 → cell の再解放は重複として畳む)。
+    released = [
+        k
+        for s in stages
+        for k in ("background", "cell", "profile", "coords", "uiso")
+        if s.flags.get(k) not in (None, False)
+    ]
+    assert list(dict.fromkeys(released)) == ["background", "cell", "profile", "coords", "uiso"]
     # 先頭は必ず scale+background
     assert "background" in stages[0].flags and stages[0].flags.get("scale") is True
 
@@ -162,3 +171,29 @@ def test_mixed_xray_neutron_recipe_appends_xray_stages_once():
     stages = build_recipe([_XRAY_BB, _NEUTRON_DS], _SINGLE_PHASE)
     assert len(_find(stages, "profile_lorentzian")) == 1
     assert len(_find(stages, "profile_asymmetry")) == 1
+
+
+# ---------------------------------------------------------------------------
+# 【削除済み】規定「cell 単独 → 試料変位は後段」(2026-07-27 追加 → 2026-07-28 実測で棄却)
+#
+# 格子と試料変位が強相関なのは事実だが (実測: Kα1 単色 CaTeO3 で Shift −274 µm 相当 =
+# 2θ −0.15° を格子が肩代わりしていた)、**段を分ける配置は 3 通り試して全て別のデータを壊した**:
+#   - 末尾配置 / 交互 (cell→変位→cell) : T3 PbSO4 joint 6.66% → 14.38% (格子発散)
+#   - cell 直後                        : T4 NAC+CaF2 ~12.8% → 17.53%
+# 「単一の段順序で全データを満たすことはできない」というのが実測の結論であり (requirements.md
+# F1)、この規定をテストで固定すると**正しくない前提を将来にわたって強制する**ため削除した。
+# 順序の選択は Phase 2 のレシピ探索 (REQ-SAR-500) が担う。
+# ---------------------------------------------------------------------------
+
+
+def _histograms(multiphase: bool):
+    """X 線 Bragg-Brentano 1 本 (規定テスト用; 多相でも装置は共通)。"""
+    return [_XRAY_BB]
+
+
+def _phases(multiphase: bool, mixed_occ: bool):
+    groups = (("Fe1", "Al1"),) if mixed_occ else ()
+    out = [PhaseSpec(structure_path="p.cif", phase_name="a", mixed_occupancy_groups=groups)]
+    if multiphase:
+        out.append(PhaseSpec(structure_path="q.cif", phase_name="b"))
+    return out

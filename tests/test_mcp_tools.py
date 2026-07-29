@@ -179,7 +179,9 @@ def test_eight_tools_registered_in_mcp_tools():
     #   + interop 変換 2 (convert_pattern/write_instrument_params, #108)
     #   + alkali_budget 1 (FR-318) + review queue 露出 2 (list_review_queue/resolve_review_item,
     #   Issue #125) + write_sequential_csv 1 (FR-504 トラジェクトリ CSV, Issue #116/#117 調査)
-    #   + discriminate 1 (FR-313 固溶体 vs 二相判別の実データ GSAS 露出, Issue #130) = 36 ツール登録
+    #   + discriminate 1 (FR-313 固溶体 vs 二相判別の実データ GSAS 露出, Issue #130)
+    #   + propose_data_preprocessing 1 (REQ-SAR-401/402/403 `autorietveld.autorange` の露出)
+    #   = 37 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -217,6 +219,7 @@ def test_eight_tools_registered_in_mcp_tools():
         "resolve_review_item",
         "write_sequential_csv",
         "discriminate",
+        "propose_data_preprocessing",
     }
     assert set(MCP_TOOLS.keys()) == expected
 
