@@ -25,7 +25,20 @@ import numpy as np
 from .._json import finite_or_none
 from ..store import Ledger
 from .absorption import apply_absorption_correction
-from .diagnostics import RefinementDiagnostics, WeakVariable, read_diagnostics
+from .bounds import (
+    BoundHit,
+    BoxBound,
+    cell_box_bounds,
+    detect_bound_hits,
+    displacement_box_bounds,
+    size_strain_box_bounds,
+)
+from .diagnostics import (
+    RefinementDiagnostics,
+    WeakVariable,
+    read_diagnostics,
+    read_variable_values,
+)
 from .model import (
     AutoRietveldResult,
     CellEsd,
@@ -39,6 +52,7 @@ from .model import (
     ValidityReport,
 )
 from .recipe import build_recipe
+from .restraint_dlg import RefineProgressStub
 from .validity import (
     check_initial_uiso,
     check_profile_physicality,
@@ -77,7 +91,7 @@ def _refine_failure_message(ok: object, rvals: object) -> str | None:
 
 
 @contextlib.contextmanager
-def _capture_refine_status(_module: object | None = None):
+def _capture_refine_status(_module: object | None = None, dlg: object | None = None):
     """``GSASIIstrMain.Refine`` の戻り値を捕まえる scoped パッチ (``{"ok","msg","calls"}`` を yield)。
 
     **なぜ必要か (CaTeO3 frame180 実測)**: GSAS-II の ``G2Project.refine`` は
@@ -96,7 +110,18 @@ def _capture_refine_status(_module: object | None = None):
     載る (CLAUDE.md 不変条件「精密化バックエンドの失敗は例外でなく chi2=inf の結果に変換し、
     ガードレールに処理させる」)。revert はフラグごと巻き戻すので**後続段の連鎖失敗も止まる**。
 
+    **同じパッチ点で ``dlg`` も注入する** (REQ-SAR-203): ``G2Project.refine`` は
+    ``G2strMain.Refine(self.filename, makeBack=makeBack)`` としか呼ばず ``dlg`` を渡す口が無い。
+    ``Refine`` 自身は ``dlg`` を公開パラメータに持つので、既にここで包んでいる呼び出しへ
+    キーワードとして挿し込むのが**唯一の非侵襲な経路**である (GSAS 本体を書き換えない)。
+    ``dlg`` を渡すと ``Refine`` は成功時に ``(True, Rvals)`` を返す (無指定時は暗黙 ``None``) が、
+    失敗判定は既存の `_refine_failure_message` がそのまま扱える。
+
     :param _module: パッチ対象モジュール (テスト注入用)。None なら ``GSASII.GSASIIstrMain``
+    :param dlg: 注入する duck-typed プログレス受け口 (`restraint_dlg.RefineProgressStub`)。
+        None (既定) なら**一切触らない** = 現行と完全に同一の呼び出し。既に ``dlg`` が
+        与えられている呼び出し (位置引数 2 個目/キーワード) は上書きしない — GSAS 内部の
+        ``Refine(..., None, allDerivs=True)`` のような別用途を壊さないため
     :returns: ``{"ok": bool, "msg": str, "calls": int}``。1 回でも失敗があれば ``ok=False``。
         GSAS 不在・``Refine`` 属性なし・一度も呼ばれなかった場合は **fail open** (``ok=True``)
     """
@@ -114,6 +139,8 @@ def _capture_refine_status(_module: object | None = None):
     original = mod.Refine
 
     def _wrapped(*args, **kwargs):
+        if dlg is not None and len(args) < 2 and "dlg" not in kwargs:
+            kwargs["dlg"] = dlg
         out = original(*args, **kwargs)
         status["calls"] = int(status["calls"]) + 1  # type: ignore[arg-type]
         ok = out[0] if isinstance(out, tuple) and out else True
@@ -158,14 +185,18 @@ def _nobs(gpx) -> int:
         return 0
 
 
-def _refine_once(gpx) -> None:
+def _refine_once(gpx, dlg: object | None = None) -> None:
     """1 回精密化し、GSAS が**戻り値で返す**失敗を例外へ変換する。
 
     `_capture_refine_status` の唯一の呼び出し口。段の初回精密化と、未収束時の追加サイクル
     (REQ-SAR-101) の**両方**がここを通ることで、「追加サイクルだけ無言失敗を見逃す」穴を
     作らない (無言失敗は rwp にも reverted にも現れないため、経路ごとに塞ぐしかない)。
+
+    :param dlg: restraint を χ² に入れるための ``dlg`` スタブ (REQ-SAR-203)。None (既定) は
+        現行と完全に同一の呼び出し。**ここも経路ごとに塞ぐ**対象なので、追加サイクルでも
+        同じスタブが渡る (段の途中で拘束の有無が切り替わると段列の意味が壊れる)
     """
-    with _capture_refine_status() as status:
+    with _capture_refine_status(dlg=dlg) as status:
         gpx.do_refinements([{}])
     if not status["ok"]:
         raise RefinementFailedError(str(status["msg"]))
@@ -855,6 +886,110 @@ def _apply_profile_bounds(gpx, histograms) -> None:
                 pass
 
 
+def _plan_box_bounds(
+    g2phases, g2hists, histograms, stab: StabilityOptions
+) -> "tuple[BoxBound, ...]":
+    """`StabilityOptions` の箱拘束設定を GSAS 変数名つきの箱へ展開する (REQ-SAR-201)。
+
+    展開に必要な「相 id / ヒストグラム id / 初期格子 / 宣言ジオメトリ」は GSAS オブジェクトと
+    spec の両方に散っているため、engine 側で束ねて `bounds` の純関数へ渡す
+    (`bounds` モジュールは GSAS を一切知らない = テストが `-m "not gsas"` で回る)。
+
+    **構造パラメータ (占有率・Uiso・座標) は決して含めない** (P-SAR-1)。
+    """
+    planned: list[BoxBound] = []
+    for i, ph in enumerate(g2phases):
+        pid = getattr(ph, "id", i)
+        if stab.bound_cell is not None:
+            try:
+                cell = ph.get_cell()
+                cell6 = [
+                    float(cell[k])
+                    for k in (
+                        "length_a", "length_b", "length_c",
+                        "angle_alpha", "angle_beta", "angle_gamma",
+                    )
+                ]
+            except (KeyError, TypeError, ValueError, AttributeError):
+                cell6 = []  # 格子が読めない相は箱なし (fail open)
+            if cell6:
+                planned.extend(cell_box_bounds(pid, cell6, stab.bound_cell))
+        if stab.bound_size_strain:
+            for j, hist in enumerate(g2hists):
+                hid = getattr(hist, "id", j)
+                planned.extend(
+                    size_strain_box_bounds(
+                        pid,
+                        hid,
+                        min_size=stab.min_size,
+                        max_size=stab.max_size,
+                        min_mustrain=stab.min_mustrain,
+                        max_mustrain=stab.max_mustrain,
+                    )
+                )
+    if stab.bound_displacement is not None:
+        for j, hist in enumerate(g2hists):
+            hid = getattr(hist, "id", j)
+            spec = histograms[j] if j < len(histograms) else None
+            bragg = getattr(spec, "geometry", None) is not Geometry.DEBYE_SCHERRER
+            planned.extend(
+                displacement_box_bounds(
+                    hid, stab.bound_displacement, bragg_brentano=bragg
+                )
+            )
+    return tuple(planned)
+
+
+def _apply_box_bounds(gpx, planned: "Sequence[BoxBound]") -> "tuple[BoxBound, ...]":
+    """箱を GSAS の ``parmMin``/``parmMax`` へ登録する (REQ-SAR-201)。
+
+    ⚠ **これは最適化中の制約ではない**: `GSASIIstrMain.dropOOBvars` が精密化**後**に
+    「範囲外なら境界へ丸めて ``parmFrozen`` へ追加」する事後処理である。したがって拘束は
+    発散を*防ぐ*のではなく*止める*。止めた事実は `detect_bound_hits` が所見にする
+    (REQ-SAR-202 — 握り潰さない)。
+
+    古い GSAS で parmMin/parmMax 未対応でも精密化は継続する (`_bound_occupancy` 流儀)。
+
+    :returns: **実際に登録できた側だけ**を持つ箱。片側の登録に失敗しても、成功した側は
+        境界検出の対象に残す — 登録された箱で凍結が起きたのに所見が出ない (= 検出できない
+        失敗を作る, P-SAR-2) のを避けるため。両側とも失敗した箱は落とす
+        (張っていない箱の「境界到達」は報告しない)。
+    """
+    applied: list[BoxBound] = []
+    for b in planned:
+        lo, hi = None, None
+        if b.lo is not None:
+            try:
+                gpx.set_Controls("parmMin", float(b.lo), variable=b.variable)
+                lo = b.lo
+            except Exception:  # noqa: BLE001 — 未対応/解釈不能な変数名は当該側のみ諦める
+                pass
+        if b.hi is not None:
+            try:
+                gpx.set_Controls("parmMax", float(b.hi), variable=b.variable)
+                hi = b.hi
+            except Exception:  # noqa: BLE001
+                pass
+        if lo is None and hi is None:
+            continue
+        applied.append(BoxBound(variable=b.variable, lo=lo, hi=hi, kind=b.kind, reason=b.reason))
+    return tuple(applied)
+
+
+def _frozen_variables(gpx) -> "set[str]":
+    """``Controls['parmFrozen']['FrozenList']`` を文字列集合として読む。
+
+    境界到達 (REQ-SAR-202) の検出源。`GSASIIstrMain.dropOOBvars` は箱の外へ出た変数を
+    ここへ追加する。**esd プルーニング (REQ-SAR-103) も同じリストへ書く**ため、呼び出し側は
+    「箱を張った変数だけ」に絞り (`detect_bound_hits`)、かつ精密化呼び出しの前後という
+    狭い窓で差を取ることで取り違えを避ける。
+    """
+    try:
+        return {str(v) for v in gpx.get_Frozen()}
+    except Exception:  # noqa: BLE001 — 未対応/未初期化は「凍結なし」へ縮退 (fail open)
+        return set()
+
+
 def _equiv_positions(gpx, pid, idxs) -> None:
     """原子群の座標 (dAx/dAy/dAz shift) を等値拘束する (共有サイト/共位置を保つ)。
 
@@ -1540,10 +1675,12 @@ def run_auto_rietveld(
         (FR-318 lock_fractions)。総アルカリ量拘束は cᵢ = Zᵢ·(xᵢ − x_total)。⚠ 2 相では相分率が
         完全決定され XRD は分率に寄与しなくなる。実行可能性/縮退ゲートは呼び出し側の責務
         (`operando.coulometry.feasibility`)。既定 None。
-    :param stability: 安定性最優先の**診断ゲート** (WS-1, stable-auto-rietveld)。収束判定
-        (REQ-SAR-101) / no-op 段の検出 (102) / esd プルーニング (103) / 高相関の記録 (104) を
-        opt-in で有効化する。**既定 None は現行と完全に同一の挙動** (共分散を 1 度も読まない)。
-        詳細は `StabilityOptions`。
+    :param stability: 安定性最優先の**診断ゲート + 箱拘束** (stable-auto-rietveld)。収束判定
+        (REQ-SAR-101) / no-op 段の検出 (102) / esd プルーニング (103) / 高相関の記録 (104) と、
+        装置・幾何パラメータの箱拘束 (201) / 境界到達の報告 (202) / restraint の有効化 (203) を
+        opt-in で有効化する。**既定 None は現行と完全に同一の挙動** (共分散も Controls も
+        1 度も触らず、``Refine`` の呼び出しも現行のまま)。詳細は `StabilityOptions`。
+        ⚠ **箱拘束は装置・幾何だけ** — 占有率/Uiso/座標には張らない (P-SAR-1)。
     :returns: AutoRietveldResult
     """
     # FR-318: 占有率シーダーの範囲検証は GSAS import 前に行う (物理的に不可能な要求は即時失敗)。
@@ -1698,6 +1835,38 @@ def run_auto_rietveld(
         _apply_chem_comp_restraints(gpx, g2phases, chem_comp_restraints)
         # 装置パラメータの物理拘束 (profile_bounds; 分解能抽出の U,W,X,Y≥0 等) を登録する (Issue #38)。
         _apply_profile_bounds(gpx, histograms)
+        # 【WS-2 箱拘束 (REQ-SAR-201)】: 装置・幾何パラメータのみ。**構造パラメータには張らない**
+        #   (P-SAR-1: 占有率/Uiso/座標の逸脱はモデル誤りの診断信号であり、握り潰してはならない)。
+        #   既定 (stability=None) では `has_box_bounds` が False なので Controls を 1 度も触らない。
+        stab = stability if stability is not None else StabilityOptions()
+        box_bounds: tuple[BoxBound, ...] = ()
+        if stab.has_box_bounds:
+            box_bounds = _apply_box_bounds(
+                gpx, _plan_box_bounds(g2phases, g2hists, histograms, stab)
+            )
+            ledger.append(
+                "m7_box_bounds",
+                {"n_bounds": len(box_bounds), "bounds": [b.to_dict() for b in box_bounds]},
+            )
+        # 【WS-2 restraint 有効化 (REQ-SAR-203)】: 既定 OFF。有効時のみ dlg スタブを作り、
+        #   `_refine_once` 経由で `GSASIIstrMain.Refine(dlg=…)` へ挿し込む (restraint_dlg 参照)。
+        refine_dlg = RefineProgressStub() if stab.enable_restraints else None
+        if refine_dlg is not None:
+            # 「有効にしたのに拘束を 1 つも渡していない」を**見える形にする** — 何も登録が
+            # 無ければ効くものが無いのに Rwp だけ penalty 込みの値に変わるので、
+            # 「有効にしたつもり」の静かな失敗になりやすい (P-SAR-2)。
+            ledger.append(
+                "m7_restraints_enabled",
+                {
+                    "bond_phases": sorted(bond_restraints or {}),
+                    "chem_comp_phases": sorted(chem_comp_restraints or {}),
+                    "note": (
+                        "restraint を χ² に入れた (Rwp は penalty 込みの値になる)"
+                        if (bond_restraints or chem_comp_restraints)
+                        else "⚠ 有効化したが bond/ChemComp 拘束が 1 つも渡されていない"
+                    ),
+                },
+            )
         phase_infos = [_phase_atom_info(ph, p) for ph, p in zip(g2phases, phases)]
         # 装置プロファイル固定 (instrument_profile 指定) の per-hist フラグ (Issue #38)。
         fixed_profile = _fixed_profile_flags(histograms)
@@ -1711,8 +1880,8 @@ def run_auto_rietveld(
         prev_nvar = 0
         atom_flag_maps: list[dict[str, str]] = [{} for _ in g2phases]
         # 【WS-1 診断ゲート】: 既定 (stability=None) は全項目 False なので、以降の追加処理は
-        #   1 行も走らない (共分散すら読まない) = 現行と完全に同一の挙動。
-        stab = stability if stability is not None else StabilityOptions()
+        #   1 行も走らない (共分散すら読まない) = 現行と完全に同一の挙動。`stab` は箱拘束の
+        #   登録 (上) で既に解決済み。
         pruned_vars: set[str] = set()
 
         for stage in stages:
@@ -1726,6 +1895,11 @@ def run_auto_rietveld(
             diagnostics: RefinementDiagnostics | None = None
             extra_cycles_used = 0
             convergence_ok: bool | None = None
+            bound_hits: tuple[BoundHit, ...] = ()
+            # 箱の境界到達 (REQ-SAR-202) は **この段の精密化呼び出しの前後**でしか測らない。
+            # 同じ parmFrozen に esd プルーニング (段の末尾で実行) も書くため、窓を広げると
+            # 「自分で凍らせた変数」を境界到達と誤報する。
+            frozen_before = _frozen_variables(gpx) if box_bounds else set()
             try:
                 auto_frozen = _apply_stage(
                     gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage,
@@ -1737,7 +1911,7 @@ def run_auto_rietveld(
                 #   「悪化していない」と判断され revert されず、立てたフラグが残って
                 #   **以降の全段が失敗し続ける** (実測 CaTeO3 frame180 二相: S2 以降 7 段 no-op)。
                 #   戻り値を捕まえて例外化し、既存の inf→revert→ledger 経路に載せる。
-                _refine_once(gpx)
+                _refine_once(gpx, refine_dlg)
                 rwp, gof, nvar = _rvals(gpx)
                 converged = _converged(gpx)
                 if stab.needs_diagnostics:
@@ -1748,7 +1922,7 @@ def run_auto_rietveld(
                     #   **収束していない段**が通過し、以降の段がその上に積み上がる。
                     #   未収束なら同じ段のまま追加サイクルを回し、駄目なら下の revert 経路へ。
                     def _cycle():
-                        _refine_once(gpx)
+                        _refine_once(gpx, refine_dlg)
                         return (
                             read_diagnostics(gpx, corr_threshold=stab.corr_threshold),
                             (_rvals(gpx), _converged(gpx)),
@@ -1764,6 +1938,17 @@ def run_auto_rietveld(
                         (rwp, gof, nvar), converged = payload  # type: ignore[misc]
                     convergence_ok = diagnostics.is_converged(
                         max_shift_esd=stab.max_shift_esd
+                    )
+                if box_bounds:
+                    # 【境界到達の検出 (REQ-SAR-202)】: 箱の外へ出た変数は GSAS が境界値へ
+                    #   丸めて凍結する = 結果にも Rwp にも現れない。**握り潰さず所見にする**
+                    #   (箱が間違っているかモデルが間違っているかは人間が判断すべき事実)。
+                    #   値は丸められる**前**の精密化値なので、どちら側へ出たかを断定できる。
+                    bound_hits = detect_bound_hits(
+                        box_bounds,
+                        frozen_before,
+                        _frozen_variables(gpx),
+                        read_variable_values(gpx),
                     )
                 # 格子崩壊 (0 近傍/非有限) またはプロファイル非物理化 (幅関数がレンジ内で負・散乱/立上り
                 # 係数が非物理) は発散とみなし inf 化 → 既存 revert 経路 (物理妥当性ガード)。
@@ -1882,6 +2067,20 @@ def run_auto_rietveld(
                     },
                 )
 
+            # 【箱の境界到達 (REQ-SAR-202)】: revert された段でも記録する — 「なぜその段が
+            #   壊れたか」の一次証拠であり、revert で凍結ごと巻き戻っても事実は残すべきだから
+            #   (高相関の記録と同じ規律)。
+            if bound_hits:
+                ledger.append(
+                    "m7_stage_bound_hit",
+                    {
+                        "stage": stage.label,
+                        "reverted": reverted,
+                        "n_hits": len(bound_hits),
+                        "hits": [h.to_dict() for h in bound_hits],
+                    },
+                )
+
             # 自動セル凍結 (Issue #80) が発生した相を note に付記し挙動を可視化する
             # (非破壊: stage.note 自体は変更せず、StageResult 側でのみ拡張する)。
             note = stage.note
@@ -1896,6 +2095,8 @@ def run_auto_rietveld(
                 note_extras.append("noop")
             if newly_frozen:
                 note_extras.append(f"pruned={len(newly_frozen)}")
+            if bound_hits:
+                note_extras.append(f"bound_hits={len(bound_hits)}")
             for extra in note_extras:
                 note = f"{note}; {extra}" if note else extra
 

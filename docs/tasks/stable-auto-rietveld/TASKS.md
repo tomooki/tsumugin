@@ -10,7 +10,8 @@
 
 ## 現在の状況
 
-**Phase 0 / Phase 1 完了、Phase 2 設計確定** (2026-07-28)。残るは WS-2 (拘束・境界) と Phase 2 実装。
+**Phase 0 / Phase 1 完了 (WS-1・WS-2 済)、Phase 2 設計確定**。残るは WS-3 の一部と Phase 2 実装。
+WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完了 — 実測値は下記。
 
 | 前提 | 状態 |
 |---|---|
@@ -71,14 +72,44 @@
 
 | # | タスク | 要件 | 状態 |
 |---|---|---|---|
-| 2-1 | **箱拘束 (装置・幾何のみ)** — 格子 ±X% / 変位 / Size・Mustrain 正値 | REQ-SAR-201 | ⬜ |
-| 2-2 | **境界到達の検出と報告** (握り潰さない) | REQ-SAR-202 | ⬜ |
-| 2-3 | restraint `dlg` スタブの**対照実験** (拘束あり/なしで最終値が変わるか) | REQ-SAR-204 | ⬜ |
-| 2-4 | `if dlg: break` の**副作用計測** (特異行列が出る T4 で比較) | D4 | ⬜ |
-| 2-5 | `TestBondRestraintHeadlessCanary` を**意味反転して書き直す** | REQ-SAR-204 | ⬜ |
-| 2-6 | restraint 有効化 (**既定 OFF**, 1-4 完了が前提) | REQ-SAR-203 | ⬜ |
+| 2-1 | **箱拘束 (装置・幾何のみ)** — 格子 ±X% / 変位 / Size・Mustrain 正値 | REQ-SAR-201 | ✅ |
+| 2-2 | **境界到達の検出と報告** (握り潰さない) | REQ-SAR-202 | ✅ |
+| 2-3 | restraint `dlg` スタブの**対照実験** (拘束あり/なしで最終値が変わるか) | REQ-SAR-204 | ✅ |
+| 2-4 | `if dlg: break` の**副作用計測** | D4 | ✅ |
+| 2-5 | `TestBondRestraintHeadlessCanary` を**意味反転して書き直す** | REQ-SAR-204 | ✅ |
+| 2-6 | restraint 有効化 (**既定 OFF**, 1-4 完了が前提) | REQ-SAR-203 | ✅ |
 
-> ⚠ **2-6 は 1-4 が完了するまで着手しない** (GSAS 側の自動プルーニングを失う分の肩代わりが必要)
+**実装** (2026-07-29, branch `feat/sar-constraints`):
+`autorietveld/bounds.py` (箱の展開 + 境界検出, numpy-only) / `autorietveld/restraint_dlg.py`
+(`RefineProgressStub`) / `StabilityOptions` に `bound_cell` `bound_displacement`
+`bound_size_strain` `min|max_size` `min|max_mustrain` `enable_restraints` を追加 (**全て既定
+無効 = 現行と完全に同一**)。engine は `_plan_box_bounds` / `_apply_box_bounds` /
+`_frozen_variables` と、既存の `_capture_refine_status` へ `dlg=` 注入。ledger kind 2 種
+(`m7_box_bounds` / `m7_stage_bound_hit`) + note `bound_hits=N`。② は `auto_rietveld` /
+`refine_with_revisions` の既存 `stability` spec に同居、③ は `skills/analyze` に 2 節追加。
+
+**WS-2 で判明した事実 (実測)**:
+
+- **箱は最適化中の制約ではない** — `dropOOBvars` は精密化**後**に「境界へ丸めて `parmFrozen`
+  へ追加」する事後処理。よって拘束は発散を*防がず*止める。逆に、その `parmFrozen` が
+  REQ-SAR-202 の検出源になる。**esd プルーニングも同じリストへ書く**ので、検出は「箱を張った
+  変数」に限定し、精密化呼び出しの前後という狭い窓で差を取る必要がある。
+- **T1 実測**: 緩い箱 (±20% / 5000 µm / 正値性) は Rwp 9.80617% を**ビット同一**に保つ。
+  `bound_cell=1e-5` で `0::A0` が境界到達 (Rwp 9.618%)、`bound_displacement=1 µm` で
+  `:0:Shift` が境界到達 (Rwp 11.185%) = **締めれば実際に効く**。
+- **★ restraint は `dlg` スタブで本当に χ² に入る** (PbSO4 対照実験): 既定経路はターゲット
+  1.9/2.3 で S–O2 が**ビット同一** (1.411132) なのに対し、スタブ経路では 1.411132 vs
+  **1.542264** とターゲット追従し、`RestraintSum` が **3.69e9 → 0.0876 (10 桁低下)**。
+  ChemComp では Rwp が 40.349 → **1022.16** = penalty が残差ベクトルへ連結された直接証拠。
+- **⚠ 有効化すると Rwp が penalty 込みの値になる** → 段の受理/revert (Rwp 比較) の意味が変わる。
+  重みが過大だと全段 revert (bond weight 1e5 で Rwp 3558)。③ への注意事項として skill に明記。
+- **★ D4 の「特異行列時の自動パラメータ削除+再試行を失う」は既定 deriv type には当てはまらない**。
+  削除+再試行は `'Hessian' not in deriv type` の else 分岐にしかなく、既定 `analytic Hessian`
+  では `result[1] is None` が先に break するので `if dlg: break` に到達しない。弱い変数のドロップは
+  `HessianLSQ.dropTerms` にあり dlg を見ない。**実測でも完全縮退 (同一構造 2 相) / 真の特異行列
+  (cov=None 強制注入) の双方で dlg の有無が結果をビット同一に保った**。
+  → 既定 OFF を維持する理由は「Rwp の意味が変わる」+「母数が実質増える」であって、
+  当初の理由 (GSAS の自動削除を失う) ではない。`prune_weak_vars` 併用必須は前者の理由で残す。
 
 ### WS-3 レシピ規則
 

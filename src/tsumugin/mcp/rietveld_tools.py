@@ -101,6 +101,11 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
                 "n_params": s.n_params,
                 "converged": bool(s.converged),
                 "reverted": bool(s.reverted),
+                # 【note を落とさない (★ ②到達可能性)】: 段の所見 (``unconverged`` /
+                #   ``noop`` / ``pruned=N`` / ``bound_hits=N`` / ``auto_frozen_cells=…``) は
+                #   **ここにしか出ない**。ledger は ② の戻り値に含まれないので、note を落とすと
+                #   ③ から見て診断ゲートも箱拘束も「結果に何も現れない」機能になる。
+                "note": s.note,
             }
             for s in result.stage_results
         ],
@@ -207,14 +212,27 @@ def auto_rietveld(
         ``{"error","error_type"}`` へ縮退する (黙って無視しない)。既定 None (追加段階なし・非回帰)。
     :param max_cyc: 各段階の最大精密化サイクル (``run_auto_rietveld`` へ転送。既定 12 は非回帰)。
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
-    :param stability: **安定性診断ゲート** (WS-1 stable-auto-rietveld)。
-        ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
+    :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
+        診断 (WS-1): ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
         "detect_noop_stages": true, "prune_weak_vars": true, "record_correlations": true}``。
         収束判定 (未収束段を追加サイクル → 駄目なら revert) / no-op 段の警告 / esd >= |値| の
-        自動凍結 / 高相関ペアの記録を opt-in で有効化する。判定結果は ledger
-        (``m7_stage_unconverged``/``m7_stage_noop``/``m7_stage_prune``/``m7_stage_correlation``)
-        と ``stages[*].note`` に出る。**未知キーは error dict へ縮退**する (黙って無視しない)。
-        既定 None = 現行と同一挙動 (共分散を読まない)。``runner`` 注入時は無視される。
+        自動凍結 / 高相関ペアの記録を opt-in で有効化する。
+        拘束 (WS-2): ``{"bound_cell": 0.05, "bound_displacement": 5000.0,
+        "bound_size_strain": true, "enable_restraints": true}``。**装置・幾何パラメータだけ**に
+        箱拘束 (格子 ±X% / 試料変位 µm / Size・Mustrain の正値性) を張り、境界に到達したら
+        所見にする (握り潰さない)。⚠ **占有率・Uiso・座標には箱を張らない** — 異常値はモデル
+        誤りの診断信号であり、握り潰すと NaCuHCF model5/model6 のような判別ができなくなる
+        (そのためのキーは存在しない)。``enable_restraints`` は登録済み restraint
+        (``bond_restraints``/``chem_comp_restraints``) を χ² に入れる (既定 OFF — GSAS-II は
+        headless では penalty を目的関数から外すため、有効にしない限り拘束は効かない)。
+        ⚠ **``prune_weak_vars`` との併用が必須**で、単独指定は error dict になる。
+        ⚠ 有効化すると **Rwp が penalty を含む値**に変わるため、拘束の重みは
+        データ項と同程度に抑えること (過大な重みは全段が「悪化」と判定され revert される)。
+        判定結果は ledger (``m7_stage_unconverged``/``m7_stage_noop``/``m7_stage_prune``/
+        ``m7_stage_correlation``/``m7_box_bounds``/``m7_stage_bound_hit``) と ``stages[*].note``
+        (``unconverged``/``noop``/``pruned=N``/``bound_hits=N``) に出る。
+        **未知キーは error dict へ縮退**する (黙って無視しない)。
+        既定 None = 現行と同一挙動 (共分散も Controls も触らない)。``runner`` 注入時は無視される。
     :param seed: 既定 GSAS runner 用乱数種
     :param runner: 注入 runner (None なら GSAS 駆動)。テスト用の内部シーム
     """
@@ -265,7 +283,9 @@ def refine_with_revisions(
         (`_build_input` が stages を extra_stages に置いた後、actions ループが apply で末尾に足す)。
         不正な段階 spec は error dict へ縮退する。
     :param max_cyc: `auto_rietveld` と同じ (既定 GSAS runner への転送)。
-    :param stability: `auto_rietveld` と同じ安定性診断ゲート spec (既定 None = 非回帰)。
+    :param stability: `auto_rietveld` と同じ安定性診断ゲート + 箱拘束 spec (既定 None = 非回帰)。
+        箱拘束 (``bound_cell``/``bound_displacement``/``bound_size_strain``) と restraint 有効化
+        (``enable_restraints``, 要 ``prune_weak_vars``) も同じキーで到達できる。
     """
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)

@@ -112,6 +112,11 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "m7_stage_noop": "GUARD",
     "m7_stage_prune": "GUARD",
     "m7_stage_correlation": "GUARD",
+    # 拘束・境界 (WS-2)。何を拘束したかは設定なので CORE ①、境界に**当たった**のは
+    # 「モデルか箱のどちらかが間違っている」という所見なので GUARD。
+    "m7_box_bounds": "CORE ①",
+    "m7_restraints_enabled": "CORE ①",
+    "m7_stage_bound_hit": "GUARD",
     "transcript_message": "HUMAN",
     "agent_proposal": "AGENT ③",
     "approval_decision": "HUMAN",
@@ -282,6 +287,21 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return (
             f"stage {payload.get('stage')} {payload.get('n_pairs')} correlated pairs "
             f"(|r|≥{payload.get('threshold')}){top_txt}"
+        )
+    if kind == "m7_box_bounds":
+        kinds = sorted({str(b.get("kind")) for b in (payload.get("bounds") or [])})
+        return f"box bounds registered: {payload.get('n_bounds')} ({', '.join(kinds)})"
+    if kind == "m7_restraints_enabled":
+        return f"restraints enabled — {payload.get('note')}"
+    if kind == "m7_stage_bound_hit":
+        # **どの変数がどちら側の境界に当たったか**まで出す。「当たった」だけでは箱が悪いのか
+        # モデルが悪いのかを GUI から判断できない (握り潰しと大差なくなる)。
+        hits = payload.get("hits") or []
+        head = ", ".join(
+            f"{h.get('variable')}({h.get('side')})" for h in hits[:3]
+        ) + ("…" if len(hits) > 3 else "")
+        return (
+            f"stage {payload.get('stage')} hit {payload.get('n_hits')} box bound(s) [{head}]"
         )
     if kind == "transcript_message":
         return "transcript message posted"

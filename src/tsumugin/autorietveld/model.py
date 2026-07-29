@@ -354,6 +354,11 @@ class RefinementStage:
     note: str = ""
 
 
+def _opt_float(value: object) -> "float | None":
+    """``None`` を保ったまま float 化する (JSON spec の「無効」と「0」を潰さない)。"""
+    return None if value is None else float(value)  # type: ignore[arg-type]
+
+
 @dataclass(frozen=True)
 class StabilityOptions:
     """安定性最優先の自動 Rietveld で使う**診断ゲート**の設定 (WS-1, stable-auto-rietveld)。
@@ -387,6 +392,34 @@ class StabilityOptions:
     :param corr_threshold: 高相関とみなす ``|r|`` の閾値 (既定 0.9)。
     :param max_recorded_pairs: ledger に載せる相関ペアの上限。ペア数は O(n²) で増えるため、
         大きい配列を台帳へ流さない (② 境界の「大きい配列は ① 側で報告に畳む」と同じ規律)。
+
+    ---- WS-2 拘束・境界 (REQ-SAR-201/202/203) ----
+
+    ⚠ **構造パラメータ (占有率・Uiso・座標) に箱拘束を張るフィールドは意図的に存在しない**
+    (P-SAR-1)。異常値は「モデルの誤り」の診断信号であり、クランプすると握り潰す。実証:
+    NaCuHCF の model5 は占有率が Na>1 / O<0 に発散したこと自体が「Ow が必要」の決め手で、
+    [0,1] に拘束していれば model5/model6 を判別できなかった。ここへ構造パラメータを足さないこと。
+
+    :param bound_cell: 格子を**初期値の ±この割合**に閉じ込める (例 0.05 = ±5%)。GSAS が
+        精密化するのは逆格子計量成分 ``A0..A5`` なので、常に正である対角 3 成分 ``A0,A1,A2``
+        (= a*², b*², c*²) にのみ箱を張る (`bounds.cell_box_bounds`)。None (既定) で無効。
+    :param bound_displacement: 試料変位 (``Shift`` / ``DisplaceX,Y``, µm) の絶対値上限。
+        変位は格子と強く相関し、暴走すると「格子が変位を吸収した自己整合な誤解」を作る
+        (Rwp には現れない)。None (既定) で無効。
+    :param bound_size_strain: 等方 Size/Mustrain に**正値性**と十分緩い上限を張る。
+        ``Size;i`` は幅の式で分母に入るため 0/負は発散 = 数値的事故。異方成分 (``;a`` /
+        generalized) は符号が物理的に自由なので**対象にしない**。既定 False。
+    :param min_size: 等方サイズ下限 (µm)。既定 1e-3 µm = 10 Å (結晶と呼べる下限を更に下回る)。
+    :param max_size: 等方サイズ上限 (µm)。既定 1e4 µm = 1 cm — 粉末回折で分離できるサイズ
+        (< 数 µm) を**桁で上回る**。低い cap は境界不安定を生み偽の「改善せず」を作るため
+        (NaCuHCF 実測: ADP cap を上げたら ND 18.0→14.7%)、上限は必ず余裕を持たせる。
+    :param min_mustrain: 等方微小歪み下限 (×10⁻⁶)。既定 1e-3。
+    :param max_mustrain: 等方微小歪み上限 (×10⁻⁶)。既定 1e5 = 10% 歪み (実在値の桁上)。
+    :param enable_restraints: restraint (bond/ChemComp) を **``dlg`` スタブ経由で χ² に入れる**
+        (REQ-SAR-203)。既定 False。本バージョンの GSAS-II は headless で penalty を目的関数から
+        外す (`restraint_dlg` docstring) ため、有効にしない限り登録した拘束は**効かない**。
+        ⚠ **``prune_weak_vars`` との併用が必須** (D4): 拘束で母数が増えると弱い変数が生き残る
+        ため、esd 駆動の自動プルーニングを肩代わりに置く。単独指定は ``ValueError``。
     """
 
     require_convergence: bool = False
@@ -398,6 +431,28 @@ class StabilityOptions:
     record_correlations: bool = False
     corr_threshold: float = 0.9
     max_recorded_pairs: int = 10
+    # --- WS-2 拘束・境界 ---
+    bound_cell: "float | None" = None
+    bound_displacement: "float | None" = None
+    bound_size_strain: bool = False
+    min_size: float = 1.0e-3
+    max_size: float = 1.0e4
+    min_mustrain: float = 1.0e-3
+    max_mustrain: float = 1.0e5
+    enable_restraints: bool = False
+
+    def __post_init__(self) -> None:
+        """REQ-SAR-203 の前提を**大声で**強制する (黙って片肺運転させない)。
+
+        restraint を有効にすると母数が実質増える一方で、GSAS の自動プルーニングは
+        `HessianLSQ` 内の特異項ドロップに限られる。REQ-SAR-103 の esd 駆動プルーニングを
+        同時に有効化していない構成は設計上認めない (② では ValueError → error dict に落ちる)。
+        """
+        if self.enable_restraints and not self.prune_weak_vars:
+            raise ValueError(
+                "enable_restraints=True には prune_weak_vars=True が必須です "
+                "(REQ-SAR-203: 拘束で増えた弱い変数を esd 駆動プルーニングで肩代わりする)"
+            )
 
     @property
     def needs_diagnostics(self) -> bool:
@@ -407,6 +462,19 @@ class StabilityOptions:
         持ち込まないため (非回帰契約)。
         """
         return bool(self.require_convergence or self.prune_weak_vars or self.record_correlations)
+
+    @property
+    def has_box_bounds(self) -> bool:
+        """箱拘束 (REQ-SAR-201) を 1 つでも張るか。
+
+        共分散 (`needs_diagnostics`) とは**別の情報源** (``Controls['parmFrozen']``) を使うので
+        独立に判定する。全部無効なら Controls を 1 度も触らない = 現行と同一。
+        """
+        return bool(
+            self.bound_cell is not None
+            or self.bound_displacement is not None
+            or self.bound_size_strain
+        )
 
     def to_dict(self) -> dict[str, object]:
         """JSON spec へ (② 境界の往復用)。"""
@@ -420,6 +488,14 @@ class StabilityOptions:
             "record_correlations": self.record_correlations,
             "corr_threshold": self.corr_threshold,
             "max_recorded_pairs": self.max_recorded_pairs,
+            "bound_cell": self.bound_cell,
+            "bound_displacement": self.bound_displacement,
+            "bound_size_strain": self.bound_size_strain,
+            "min_size": self.min_size,
+            "max_size": self.max_size,
+            "min_mustrain": self.min_mustrain,
+            "max_mustrain": self.max_mustrain,
+            "enable_restraints": self.enable_restraints,
         }
 
     @classmethod
@@ -451,6 +527,16 @@ class StabilityOptions:
             record_correlations=bool(d.get("record_correlations", False)),
             corr_threshold=float(d.get("corr_threshold", 0.9)),  # type: ignore[arg-type]
             max_recorded_pairs=int(d.get("max_recorded_pairs", 10)),  # type: ignore[arg-type]
+            # WS-2: None (無効) と 0.0 (「幅ゼロの箱」= 誤設定) を潰さないため float() は
+            # 値がある場合のみ通す。
+            bound_cell=_opt_float(d.get("bound_cell")),
+            bound_displacement=_opt_float(d.get("bound_displacement")),
+            bound_size_strain=bool(d.get("bound_size_strain", False)),
+            min_size=float(d.get("min_size", 1.0e-3)),  # type: ignore[arg-type]
+            max_size=float(d.get("max_size", 1.0e4)),  # type: ignore[arg-type]
+            min_mustrain=float(d.get("min_mustrain", 1.0e-3)),  # type: ignore[arg-type]
+            max_mustrain=float(d.get("max_mustrain", 1.0e5)),  # type: ignore[arg-type]
+            enable_restraints=bool(d.get("enable_restraints", False)),
         )
 
 
