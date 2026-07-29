@@ -72,12 +72,12 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
 
 | # | タスク | 要件 | 状態 |
 |---|---|---|---|
-| 2-1 | **箱拘束 (装置・幾何のみ)** — 格子 ±X% / 変位 / Size・Mustrain 正値 | REQ-SAR-201 | ✅ |
-| 2-2 | **境界到達の検出と報告** (握り潰さない) | REQ-SAR-202 | ✅ |
-| 2-3 | restraint `dlg` スタブの**対照実験** (拘束あり/なしで最終値が変わるか) | REQ-SAR-204 | ✅ |
-| 2-4 | `if dlg: break` の**副作用計測** | D4 | ✅ |
-| 2-5 | `TestBondRestraintHeadlessCanary` を**意味反転して書き直す** | REQ-SAR-204 | ✅ |
-| 2-6 | restraint 有効化 (**既定 OFF**, 1-4 完了が前提) | REQ-SAR-203 | ✅ |
+| 2-1 ✅ | **箱拘束 (装置・幾何のみ)** — 格子 ±X% / 変位 / Size・Mustrain 正値 | REQ-SAR-201 | ✅ |
+| 2-2 ✅ | **境界到達の検出と報告** (握り潰さない) | REQ-SAR-202 | ✅ |
+| 2-3 ✅ | restraint `dlg` スタブの**対照実験** (拘束あり/なしで最終値が変わるか) | REQ-SAR-204 | ✅ |
+| 2-4 ✅ | `if dlg: break` の**副作用計測** | D4 | ✅ |
+| 2-5 ✅ | `TestBondRestraintHeadlessCanary` を**意味反転して書き直す** | REQ-SAR-204 | ✅ |
+| 2-6 ✅ | restraint 有効化 (**既定 OFF**, 1-4 完了が前提) | REQ-SAR-203 | ✅ |
 | 2-7 | **データ項 Rwp と penalty の分離** — 段の受理判定・報告値をデータ項で行う | REQ-SAR-205 | ✅ |
 
 **実装** (2026-07-29, branch `feat/sar-constraints`):
@@ -163,10 +163,10 @@ WS-2 (拘束・境界) は 2026-07-29 に branch `feat/sar-constraints` で完�
 
 | # | タスク | 要件 | 状態 |
 |---|---|---|---|
-| 5-1 | **レシピ候補の多重実行** + 「収束したものの中で最良」選択 | REQ-SAR-500 / D6 | ✅ |
-| 5-2 | 候補間の**不一致を警告として出す** (順序依存 = 信頼度低) | REQ-SAR-501 | ✅ |
-| 5-3 | **operando は軽量レシピ既定を維持** (非回帰確認) | REQ-SAR-502 | ✅ |
-| 5-4 | 決定論 (seed 固定でビット同一) の確認 | P-SAR-4 / NFR-102 | ✅ |
+| 5-1 ✅ | **レシピ候補の多重実行** + 「収束したものの中で最良」選択 | REQ-SAR-500 / D6 | ✅ |
+| 5-2 ✅ | 候補間の**不一致を警告として出す** (順序依存 = 信頼度低) | REQ-SAR-501 | ✅ |
+| 5-3 ✅ | **operando は軽量レシピ既定を維持** (非回帰確認) | REQ-SAR-502 | ✅ |
+| 5-4 ✅ | 決定論 (seed 固定でビット同一) の確認 | P-SAR-4 / NFR-102 | ✅ |
 | 5-5 | ② `auto_rietveld(search=, search_config=)` + ③ `analyze` skill 節 | ★不変条件 | ✅ |
 
 **実装** (2026-07-29, branch `feat/sar-search`): `autorietveld/search.py` (numpy-only, GSAS は
