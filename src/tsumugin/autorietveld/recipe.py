@@ -412,8 +412,10 @@ _MAX_ELEMENT_RANKS = 6
 #:   実際の元素数へ展開する。
 #:
 #: ⚠ ``"heavy_first"`` は **engine 側の展開実装 (WS-3 3-3) が入るまで既定にしない**。
-#: 現行 engine の `_element_rank_labels` は int 以外の値を「全ラベル」と解釈するため、
-#: 宣言が展開されないと 1 段で全原子を解放する別物の手順になる (黙って意味が変わる)。
+#: 展開が無い状態でこの宣言を engine へ渡すと `_element_rank_labels` が `ValueError` を送出し、
+#: 当該段は chi2=inf → revert → ledger ``m7_stage_error`` になる (② 入口の `mcp._recipe_spec`
+#: は JSON 経路でこれをより早く弾く)。**黙って別物になるよりは落とす**という選択であって、
+#: 「使える宣言」ではない — 使えるようにするのは WS-3 3-3 の仕事。
 _ELEMENT_EXPANSIONS = ("ranks", "heavy_first")
 
 #: Uiso 等値拘束の緩和段階 (REQ-SAR-305)。**緩い方へ向かう順**で並べてある。
@@ -430,7 +432,13 @@ _ELEMENT_EXPANSIONS = ("ranks", "heavy_first")
 #: χ² から除外される一方で勾配/Hessian だけが引っ張られる (requirements.md F5, Issue #112)。
 #: 等値拘束 (constraint) は変数そのものを消すので headless でも正しく効く。
 #:
-#: tier 名がそのまま ``uiso`` フラグの値になる (engine は文字列値で拘束の粒度を選ぶ)。
+#: tier 名がそのまま ``uiso`` フラグの値になる。
+#:
+#: ⚠ **engine 側で tier を等値拘束へ写す実装は未了 (WS-3)**。現状この宣言を渡すと
+#: `engine._element_rank_labels` が `ValueError` を送出して当該段が revert される
+#: (以前は catch-all に落ちて「等値拘束なしの全原子解放」= ``individual`` 相当に**黙って**
+#: 化けていた — 拘束を緩める順序を宣言したつもりで初手から最も緩い段を踏む形)。
+#: ``element_expansion="heavy_first"`` と同じ扱いで、実装が入るまでは使えない。
 UISO_TIERS: tuple[str, ...] = ("shared", "by_element", "individual")
 
 

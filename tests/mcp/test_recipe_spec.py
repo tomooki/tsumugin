@@ -119,3 +119,63 @@ def test_known_flags_covers_engine_vocabulary():
         f"engine/recipe が解釈するフラグ {sorted(missing)} が KNOWN_STAGE_FLAGS に無い。"
         "② がこれを弾くため ③ から新機能が使えない — _recipe_spec.py の表を更新すること"
     )
+
+
+# ---------------------------------------------------------------------------
+# フラグの**値**の検証 — 名前が正しくても値で手順が化ける経路を塞ぐ
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("flag", ["coords", "occupancy", "uiso"])
+def test_element_rank_flags_accept_bool_and_int(flag):
+    # 【目的】: 実在するレシピ (`build_recipe` の True / `build_serious_recipe` の rank 整数) を
+    #   検証が弾かないこと。過剰な検証は ③ の正当な入力を殺す。
+    assert stage_from_dict({"label": "s", "flags": {flag: True}}).flags == {flag: True}
+    assert stage_from_dict({"label": "s", "flags": {flag: 2}}).flags == {flag: 2}
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("coords", "heavy_first"),
+        ("occupancy", "heavy_first"),
+        ("uiso", "shared"),
+        ("uiso", "by_element"),
+        ("uiso", "individual"),
+    ],
+)
+def test_unimplemented_expansion_declarations_are_rejected_loudly(flag, value):
+    """★engine が展開できない宣言値 (WS-3 3-3 未実装) を ② の入口で止める。
+
+    非トートロジー: これらは `recipe.build_serious_recipe(element_expansion=...)` /
+    ``uiso_tiers=`` が**実際に生成する**値である。engine 側は以前 catch-all で
+    「全ラベル解放」に落としていたため、「重原子から順に 1 元素ずつ」「等値拘束を段階的に
+    緩める」と宣言した手順が**黙って 1 段の全原子解放**になっていた。名前検証だけでは
+    素通りする (`coords`/`uiso` は正当なフラグ名) ので、値まで見ないと塞がらない。
+    """
+    with pytest.raises(ValueError) as err:
+        stage_from_dict({"label": "S7", "flags": {flag: value}})
+    msg = str(err.value)
+    assert value in msg and "WS-3" in msg, "③ が自力で直せる情報 (何が駄目か/いつ使えるか) を返すこと"
+
+
+def test_element_rank_flag_rejects_other_wrong_shapes():
+    # 【目的】: 病理は "heavy_first" という特定文字列ではなく「engine が読めない値」全般。
+    #   特定値だけを弾く実装 (ブラックリスト) へ縮むとここで落ちる。
+    for bad in ("Ca", ["Ca", "P"], 1.5, {"z": 0}, None):
+        with pytest.raises(ValueError):
+            stage_from_dict({"label": "S7", "flags": {"coords": bad}})
+
+
+def test_freeze_others_accepts_bool_and_name_lists():
+    assert stage_from_dict({"label": "s", "flags": {"freeze_others": True}})
+    got = stage_from_dict({"label": "s", "flags": {"freeze_others": ["cell", "scale"]}})
+    assert got.flags["freeze_others"] == ["cell", "scale"]
+
+
+def test_freeze_others_rejects_a_bare_string():
+    # 【目的】: engine は list/tuple/set 以外を `set()` (= 何も残さない) へ縮退する。
+    #   ``"cell"`` と書いた ③ は「cell だけ残す」つもりなのに **cell ごと凍る** —
+    #   例外にならないぶん `heavy_first` より気づきにくい (呼べるが黙って間違う)。
+    with pytest.raises(ValueError):
+        stage_from_dict({"label": "s", "flags": {"freeze_others": "cell"}})

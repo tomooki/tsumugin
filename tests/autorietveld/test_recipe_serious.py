@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
+from tsumugin.autorietveld.engine import _element_rank_labels
 from tsumugin.autorietveld.recipe import (
     UISO_TIERS,
     build_recipe,
@@ -30,6 +31,9 @@ _NEUTRON_DS = HistogramSpec(
 )
 _PLAIN = (PhaseSpec(structure_path="p.cif", phase_name="a"),)
 _TWO = _PLAIN + (PhaseSpec(structure_path="q.cif", phase_name="b"),)
+
+#: engine 側の展開が未実装の宣言値 (`recipe` の docstring / `mcp._recipe_spec` と同じ集合)。
+_UNIMPLEMENTED = ("heavy_first", *UISO_TIERS)
 
 #: 既定 (X 線単相) の段列 — S 番号を除いたラベル。**この並びが本気フィットの正**。
 _SERIOUS_XRAY_LABELS = (
@@ -293,6 +297,12 @@ def test_every_recipe_flag_is_reachable_from_the_mcp_layer():
     ② は未知フラグ名を拒否する。① のレシピが使うフラグが語彙から漏れていると、③ は
     同じ手順を JSON で再現できない (= その機能は ③ から存在しない)。
     ``freeze_others`` の取りこぼしはこの検査で見つかった。
+
+    ⚠ 見るのは**フラグ名**の到達可能性であって値ではない。engine が展開できない宣言値
+    (``heavy_first`` / Uiso tier) は ② が意図的に拒否するので、名前の検査に通すときは
+    実装済みの値へ正規化する。**その拒否が意図的であること自体**は下の
+    `test_unimplemented_declaration_values_are_blocked_at_the_mcp_boundary` が固定する
+    (ここで単に読み飛ばすと「値の検証が消えた」退行に気づけない)。
     """
     from tsumugin.mcp._recipe_spec import stage_from_dict, stage_to_dict
 
@@ -303,8 +313,33 @@ def test_every_recipe_flag_is_reachable_from_the_mcp_layer():
         + build_recipe([_XRAY_BB, _NEUTRON_DS], _TWO)
     )
     for stage in stages:
-        # 例外が漏れたらそのフラグは ③ から送れない (テストが理由付きで落ちる)
-        stage_from_dict(stage_to_dict(stage))
+        d = stage_to_dict(stage)
+        d["flags"] = {
+            k: (True if isinstance(v, str) and v in _UNIMPLEMENTED else v)
+            for k, v in d["flags"].items()
+        }
+        # 例外が漏れたらそのフラグ**名**は ③ から送れない (テストが理由付きで落ちる)
+        stage_from_dict(d)
+
+
+def test_unimplemented_declaration_values_are_blocked_at_the_mcp_boundary():
+    """★engine が展開できない宣言値は ② が拒否する (上の正規化を無害化させない)。
+
+    非トートロジー: `build_serious_recipe` の opt-in 出力から**実際に**宣言値を含む段を拾い、
+    生のまま ② へ送ると `ValueError` になることを確かめる。値の検証を外すとここが落ちる。
+    """
+    from tsumugin.mcp._recipe_spec import stage_from_dict, stage_to_dict
+
+    stages = build_serious_recipe([_XRAY_BB], _PLAIN, element_expansion="heavy_first",
+                                  uiso_tiers=list(UISO_TIERS))
+    declared = [
+        s for s in stages
+        if any(isinstance(v, str) and v in _UNIMPLEMENTED for v in s.flags.values())
+    ]
+    assert declared, "宣言値を含む段が 1 つも無い = 検査が空回り"
+    for stage in declared:
+        with pytest.raises(ValueError):
+            stage_from_dict(stage_to_dict(stage))
 
 
 @pytest.mark.parametrize(
@@ -319,3 +354,66 @@ def test_every_recipe_flag_is_reachable_from_the_mcp_layer():
 def test_invalid_uiso_tiers_are_rejected(bad):
     with pytest.raises(ValueError, match="uiso_tiers"):
         build_serious_recipe([_XRAY_BB], _PLAIN, uiso_tiers=bad)
+
+
+# ---------------------------------------------------------------------------
+# 宣言と engine の整合 — 未実装の宣言は「黙って別物」ではなく大声で落ちる
+# ---------------------------------------------------------------------------
+
+
+def test_engine_expands_bool_and_int_ranks():
+    # 【目的】: 実装済みの語彙 (build_recipe の True / ranks 展開の int) は従来どおり動くこと。
+    #   下の拒否テストが「全部拒否」へ縮んだらここで落ちる。
+    info = {"coord_atoms": ["Ca", "P", "O"], "element_of": {"Ca": "Ca", "P": "P", "O": "O"}}
+    assert _element_rank_labels(info, info["coord_atoms"], True) == ["Ca", "P", "O"]
+    assert _element_rank_labels(info, info["coord_atoms"], 0) == ["Ca"]   # 最も重い元素
+    assert _element_rank_labels(info, info["coord_atoms"], 9) == []       # 存在しない rank = no-op
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["heavy_first", *UISO_TIERS],
+)
+def test_unexpanded_declarations_raise_instead_of_releasing_everything(declared):
+    """★engine が展開できない宣言値は `ValueError` (旧: catch-all で全ラベル解放)。
+
+    非トートロジー: ここに渡す値は `build_serious_recipe(element_expansion=...)` /
+    ``uiso_tiers=`` が**実際に段のフラグへ書き込む**文字列そのもの。旧実装は
+    ``isinstance(rank, int)`` でない値をすべて「全ラベル」と読んでいたため、
+    「重原子から順に 1 元素ずつ」「等値拘束を段階的に緩める」と宣言した手順が
+    **1 段で全原子解放**という別物になり、Rwp にも ledger にも痕跡が出なかった。
+    WS-3 3-3 で実展開が入ったらこのテストは「展開結果の固定」へ置き換わる。
+    """
+    info = {"coord_atoms": ["Ca", "O"], "element_of": {"Ca": "Ca", "O": "O"}}
+    with pytest.raises(ValueError):
+        _element_rank_labels(info, info["coord_atoms"], declared)
+
+
+def test_every_declaration_the_serious_recipe_emits_is_either_honored_or_rejected():
+    """★レシピが書ける値と engine が読める値の drift を検出する (逆方向カバレッジ)。
+
+    非トートロジー: `build_serious_recipe` の全 opt-in 組合せを実際に構築し、座標/占有率/Uiso
+    段のフラグ値を engine の展開器へ通す。**黙って通る値が 1 つでもあれば落ちる** —
+    「engine が読めないのに例外にもならない」= 宣言と手順が食い違ったまま完走する状態が
+    この PR で塞いだ病理そのものなので、新しい宣言語彙を足したときに気づけるようにする。
+    """
+    info = {"coord_atoms": ["Ca", "O"], "element_of": {"Ca": "Ca", "O": "O"}}
+    variants = (
+        build_serious_recipe([_XRAY_BB], _PLAIN),
+        build_serious_recipe([_XRAY_BB], _PLAIN, element_expansion="heavy_first"),
+        build_serious_recipe([_XRAY_BB], _PLAIN, uiso_tiers=list(UISO_TIERS)),
+    )
+    seen = set()
+    for stages in variants:
+        for stage in stages:
+            for key in ("coords", "occupancy", "uiso"):
+                if key not in stage.flags:
+                    continue
+                value = stage.flags[key]
+                seen.add(value if isinstance(value, (bool, int, str)) else type(value))
+                if isinstance(value, (bool, int)):
+                    _element_rank_labels(info, info["coord_atoms"], value)  # 展開できる
+                else:
+                    with pytest.raises(ValueError):
+                        _element_rank_labels(info, info["coord_atoms"], value)
+    assert {"heavy_first", *UISO_TIERS} <= seen, "宣言値が 1 つも現れていない = 検査が空回り"
