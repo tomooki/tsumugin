@@ -17,6 +17,7 @@ from tsumugin.autorietveld.diagnostics import (
     RefinementDiagnostics,
     correlated_pairs,
     diagnostics_from_cov_data,
+    esds_from_cov_data,
     weak_variables,
 )
 
@@ -249,11 +250,12 @@ def test_non_mapping_rvals_degrades_instead_of_raising():
     assert d.is_converged() is None
 
 
-def test_only_the_two_declared_functions_touch_the_gsas_project():
-    # 【目的】: モジュール docstring の「gpx に触れるのは 2 関数だけ」は**書いただけでは
+def test_only_the_declared_functions_touch_the_gsas_project():
+    # 【目的】: モジュール docstring の「gpx に触れるのは N 関数だけ」は**書いただけでは
     #   守られない** — 実際、当初は 2 関数がそれぞれ「GSAS 依存はここだけ」と名乗る矛盾した
-    #   状態で出荷されかけた。3 つ目の入口が生えたらここで落として、宣言と実装を同時に
-    #   直させる (集約の目的は「スキーマが変わったら直す場所が有限であること」)。
+    #   状態で出荷されかけた。入口が増減したらここで落として、宣言と実装を同時に直させる
+    #   (集約の目的は「スキーマが変わったら直す場所が有限であること」)。
+    #   `read_variable_esds` の追加でこのガードは実際に落ちた = ガードが機能している。
     import inspect
 
     from tsumugin.autorietveld import diagnostics as mod
@@ -265,6 +267,79 @@ def test_only_the_two_declared_functions_touch_the_gsas_project():
         and fn.__module__ == mod.__name__
         and "gpx" in inspect.signature(fn).parameters
     }
-    assert touching == {"read_diagnostics", "read_variable_values"}, (
-        "gpx を受け取る関数が増減した。docstring の宣言 (2 関数) と合わせること"
-    )
+    assert touching == {
+        "read_diagnostics",
+        "read_variable_values",
+        "read_variable_esds",
+    }, "gpx を受け取る関数が増減した。docstring の宣言 (3 関数) と合わせること"
+
+
+# ---------------------------------------------------------------------------
+# esd 写像 — depSigDict を含む 2 情報源
+# ---------------------------------------------------------------------------
+
+
+def test_esds_come_from_vary_list_and_sig():
+    got = esds_from_cov_data({"varyList": ["0::A0", ":0:U"], "sig": [0.0004, 1.2]})
+    assert got == {"0::A0": 0.0004, ":0:U": 1.2}
+
+
+def test_dep_sig_dict_supplies_constrained_variables_that_vary_list_lacks():
+    """★``depSigDict`` は ``zip(varyList, sig)`` の**真の上位集合**である。
+
+    非トートロジー: `G2mv.ComputeDepESD` が対称/等値拘束された従属変数の esd を伝播し
+    `covData['depSigDict']` に入る (`GSASIIstrMain.py:562-582`)。結束座標や共有サイトの Uiso は
+    最終 varyList に載らないので、depSigDict を見ない実装は**出版できる esd を捨てる**。
+    """
+    cov = {
+        "varyList": ["0::dAx:1"],
+        "sig": [0.002],
+        # y は x に結束されており varyList には無いが esd は伝播している
+        "depSigDict": {"0::dAy:1": (0.0, 0.002), "0::AUiso:5": (0.013, 0.0009)},
+    }
+    got = esds_from_cov_data(cov)
+    assert got["0::dAx:1"] == 0.002
+    assert got["0::dAy:1"] == 0.002, "結束軸の esd を落としてはならない"
+    assert got["0::AUiso:5"] == 0.0009
+
+
+def test_dep_sig_dict_value_is_a_pair_and_only_the_sigma_is_used():
+    """★``depSigDict[name]`` は ``(値, sig)`` のタプル。``[0]`` は罠。
+
+    非トートロジー: ``dA*`` の ``[0]`` は再初期化されたシフト (ほぼ 0) なので、誤って
+    ``[0]`` を読む実装は「esd がほぼ 0 = 完璧に決まった」という逆の結論を出す。
+    """
+    got = esds_from_cov_data({"depSigDict": {"0::dAx:0": (0.0, 0.0031)}})
+    assert got == {"0::dAx:0": 0.0031}
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+def test_non_positive_or_non_finite_esds_are_omitted_entirely(bad):
+    """★``>0.0`` のみを載せる — 欠落が唯一の「決まっていない」信号になる。
+
+    非トートロジー: `ComputeDepESD` は独立変数が varyList に無いと ``vcov`` が全 0 のまま
+    ``sqrt(0)=0.0`` を返す (`GSASIImapvars.py:1410-1423`)。0.0 を通すと呼び出し側が
+    「厳密に 0 に決まった」と読める値を受け取る (`get_cell_and_esd` が凍結セルに 0.0 を
+    返すのと同じ病理で、実データで 192/192 フレームの偽 esd を出荷した実績がある)。
+    """
+    assert esds_from_cov_data({"varyList": ["x"], "sig": [bad]}) == {}
+    assert esds_from_cov_data({"depSigDict": {"x": (1.0, bad)}}) == {}
+
+
+def test_vary_list_does_not_override_dep_sig_dict():
+    # 同名があれば depSigDict を優先 (より広い情報源を先に見る実装順序の固定)。
+    cov = {"varyList": ["x"], "sig": [9.9], "depSigDict": {"x": (1.0, 0.5)}}
+    assert esds_from_cov_data(cov) == {"x": 0.5}
+
+
+def test_numpy_arrays_do_not_raise_on_truthiness():
+    # `value or []` の罠 (実測で T1 の全段を revert させた) が esd 経路でも塞がれていること。
+    cov = {"varyList": np.array(["a", "b"]), "sig": np.array([0.1, 0.2])}
+    assert esds_from_cov_data(cov) == {"a": 0.1, "b": 0.2}
+
+
+def test_missing_or_malformed_cov_data_degrades_to_empty():
+    assert esds_from_cov_data({}) == {}
+    assert esds_from_cov_data({"depSigDict": None, "varyList": None, "sig": None}) == {}
+    # depSigDict の値がタプルでない (スキーマ変化) → その項だけ落として継続
+    assert esds_from_cov_data({"depSigDict": {"x": 0.5}}) == {}

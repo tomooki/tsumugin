@@ -7,10 +7,10 @@
 **返す型は素の Python スカラ**にして GSAS のデータ構造を外へ漏らさない。`to_dict()` は
 そのまま JSON 化でき (非有限は None)、② MCP 境界へ載せられる。
 
-GSAS (``G2Project``) に触れるのは `read_diagnostics` と `read_variable_values` の 2 関数だけで、
-どちらも同じ ``gpx.data["Covariance"]["data"]`` を読んで**素の dict/dataclass へ落とす薄い層**である
-(``*_from_cov_data`` が実処理)。それ以外は numpy だけで動く純関数なので GSAS 無しでテストできる
-(`tests/autorietveld/test_diagnostics.py`)。
+GSAS (``G2Project``) に触れるのは `read_diagnostics` / `read_variable_values` /
+`read_variable_esds` の **3 関数だけ**で、どれも同じ ``gpx.data["Covariance"]["data"]`` を読んで
+**素の dict/dataclass へ落とす薄い層**である (``*_from_cov_data`` が実処理)。それ以外は
+numpy だけで動く純関数なので GSAS 無しでテストできる (`tests/autorietveld/test_diagnostics.py`)。
 
 信頼性: 🔵 `GSASIIstrMain.py:565` の covData スキーマ + `:356-365` の Rvals キー実測。
 """
@@ -32,7 +32,9 @@ __all__ = [
     "correlated_pairs",
     "data_term_rwp",
     "diagnostics_from_cov_data",
+    "esds_from_cov_data",
     "read_diagnostics",
+    "read_variable_esds",
     "read_variable_values",
     "split_weak_variables",
     "values_from_cov_data",
@@ -378,11 +380,60 @@ def values_from_cov_data(cov_data: Mapping[str, Any]) -> dict[str, float]:
     return out
 
 
+def esds_from_cov_data(cov_data: Mapping[str, Any]) -> dict[str, float]:
+    """covData → 「変数名 → esd」の純写像。**得られた値だけを載せる** (欠落 = 決まっていない)。
+
+    2 つの情報源を**この順**で見る:
+
+    1. ``depSigDict`` (`GSASIIstrMain.py:562-582`) — ``sigDict`` に
+       `G2mv.ComputeDepESD` の結果を足したもので ``zip(varyList, sig)`` の**真の上位集合**。
+       対称/等値拘束された従属変数 (結束座標・共有サイトの Uiso 等) の esd もここに入るので、
+       これを見ないと「従属だから決まっていない」と誤って捨てる。値は ``(値, sig)`` の
+       **タプル**であり ``[0]`` は罠 (``dA*`` なら再初期化されたシフト) — ``[1]`` だけ使う。
+    2. ``varyList``/``sig`` — 独立変数の直接引き。
+
+    **``>0.0`` のみを載せる**のが要点で、これが唯一の「決まっていない」信号になる (呼び出し側に
+    第 2 の規則を要らなくする)。`ComputeDepESD` は独立変数が varyList に無いと ``vcov`` が全 0 の
+    まま ``sqrt(0)=0.0`` を返す (`GSASIImapvars.py:1410-1423`) ので、0.0 は**捏造**であって
+    「厳密に 0」ではない。`get_cell_and_esd` が凍結セルに 0.0 を返すのと同じ病理である。
+    """
+    out: dict[str, float] = {}
+    dep = cov_data.get("depSigDict")
+    if isinstance(dep, Mapping):
+        for name, pair in dep.items():
+            raw = pair[1] if isinstance(pair, (tuple, list)) and len(pair) > 1 else None
+            value = _as_float(raw) if raw is not None else None
+            if value is not None and value > 0.0:
+                out[str(name)] = value
+    names = _as_sequence(cov_data.get("varyList"))
+    sig = _as_sequence(cov_data.get("sig"))
+    for name, raw in zip(names, sig):
+        key = str(name)
+        if key in out:
+            continue
+        value = _as_float(raw)
+        if value is not None and value > 0.0:
+            out[key] = value
+    return out
+
+
+def read_variable_esds(gpx) -> dict[str, float]:
+    """精密化済み ``G2Project`` から「変数名 → esd」を読む (`esds_from_cov_data` の gpx 入口)。"""
+    try:
+        cov_data = gpx.data["Covariance"]["data"]
+    except (KeyError, TypeError, AttributeError):
+        return {}
+    if not isinstance(cov_data, Mapping):
+        return {}
+    return esds_from_cov_data(cov_data)
+
+
 def read_variable_values(gpx) -> dict[str, float]:
     """精密化済み ``G2Project`` から「変数名 → 精密化値」を読む。
 
-    `read_diagnostics` と並ぶ**もう一方の GSAS 入口** (この 2 つ以外は gpx に触れない)。
-    掘る場所も同じ ``Covariance/data`` なので、スキーマが変わったらこの 2 関数だけを直せばよい。
+    `read_diagnostics` / `read_variable_esds` と並ぶ **3 つの GSAS 入口**の 1 つ
+    (これら以外は gpx に触れない)。掘る場所はどれも同じ ``Covariance/data`` なので、
+    スキーマが変わったらこの 3 関数だけを直せばよい。
     """
     try:
         cov_data = gpx.data["Covariance"]["data"]
@@ -396,7 +447,7 @@ def read_variable_values(gpx) -> dict[str, float]:
 def read_diagnostics(gpx, *, corr_threshold: float = 0.9) -> RefinementDiagnostics:
     """精密化済み ``G2Project`` から診断を読む。
 
-    `read_variable_values` と並ぶ**もう一方の GSAS 入口** (この 2 つ以外は gpx に触れない)。
+    `read_variable_values` / `read_variable_esds` と並ぶ **3 つの GSAS 入口**の 1 つ。
     共分散が無い (未精密化 / 失敗) 場合も空の診断を返す。
     """
     try:
