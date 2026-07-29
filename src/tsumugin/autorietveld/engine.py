@@ -18,7 +18,7 @@ import math
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -743,12 +743,26 @@ _Z_ORDER: dict[str, int] = {
 def _element_rank_labels(info: dict, labels: "list[str]", rank: object) -> "list[str]":
     """``labels`` のうち **重い方から rank 番目の元素**に属するものだけを返す。
 
-    ``rank`` が int でなければ ``labels`` をそのまま返す (従来動作)。存在しない rank は空
-    (= その段は何もしない no-op)。元素記号は先頭 2 文字までを見て正規化する
-    (GSAS の type は "Fe+2" のように価数付きのことがある)。
+    ``rank`` が bool (``{"coords": True}`` = 全解放) なら ``labels`` をそのまま返す。int なら
+    そのランクの元素だけ (存在しない rank は空 = その段は no-op)。元素記号は先頭 2 文字までを
+    見て正規化する (GSAS の type は "Fe+2" のように価数付きのことがある)。
+
+    **それ以外の値は `ValueError`**。ここは以前 catch-all で ``labels`` を返していたが、
+    `recipe.build_serious_recipe` が用意する**未実装の展開宣言** (``element_expansion=
+    "heavy_first"`` の ``"heavy_first"``、``uiso_tiers`` の ``"shared"``/``"by_element"``/
+    ``"individual"``) がそこへ落ち、「重原子から順に 1 元素ずつ」と宣言した段が**黙って
+    1 段で全原子を解放する別物**になっていた (WS-3 3-3 未実装)。engine が解釈できない宣言は
+    大声で失敗させ、既存の例外 → chi2=inf → revert → ledger ``m7_stage_error`` 経路に載せる
+    (CLAUDE.md「呼べるが黙って間違う」の禁止)。② 入口でも `mcp._recipe_spec` が同じ語彙を弾く。
     """
-    if not isinstance(rank, int) or isinstance(rank, bool):
+    if isinstance(rank, bool):
         return list(labels)
+    if not isinstance(rank, int):
+        raise ValueError(
+            f"元素ランクとして解釈できない値です: {rank!r}。bool (全解放) か int (ランク) の"
+            " いずれかを指定してください"
+            " (engine 側の展開が未実装の宣言値なら WS-3 3-3 の完了まで使えません)"
+        )
     element_of = info.get("element_of") or {}
 
     def _z(label: str) -> int:
@@ -1218,6 +1232,24 @@ def _frozen_variables(gpx) -> "set[str]":
         return {str(v) for v in gpx.get_Frozen()}
     except Exception:  # noqa: BLE001 — 未対応/未初期化は「凍結なし」へ縮退 (fail open)
         return set()
+
+
+def _bound_hit_baseline(
+    frozen_before: "Iterable[str]", rescue_frozen: "Iterable[str]"
+) -> "set[str]":
+    """境界到達の差分基準 = 精密化前の凍結集合 ∪ **自分が救済で凍らせた変数** (REQ-SAR-202)。
+
+    `detect_bound_hits` は「箱を張った変数が新たに凍結された」を境界到達と読むが、救済
+    プルーニング (REQ-SAR-103) は**同じ ``parmFrozen`` へ書く**うえ、その凍結対象は箱付きの
+    変数と名前空間が重なる (``0::A0`` / ``:0:Shift`` / ``0:0:Size;i`` はいずれも弱くなり得る)。
+    救済は精密化呼び出しの**後**に走るので、素の ``frozen_before`` と突き合わせると
+    **自分で凍らせた変数を「箱の外へ出た」と誤報する** — 箱もモデルも正しいのに
+    「箱が間違っている」と読める所見が出る、最悪の静かな嘘になる。
+
+    救済で凍らせた名前を基準側へ入れることで、救済の再精密化サイクル中に**本当に**箱の外へ
+    出た変数 (別名) は引き続き拾える (窓を狭めるのではなく、帰属の判っている分だけ除く)。
+    """
+    return set(frozen_before) | set(rescue_frozen)
 
 
 def _equiv_positions(gpx, pid, idxs) -> None:
@@ -2228,9 +2260,12 @@ def run_auto_rietveld(
                     #   丸めて凍結する = 結果にも Rwp にも現れない。**握り潰さず所見にする**
                     #   (箱が間違っているかモデルが間違っているかは人間が判断すべき事実)。
                     #   値は丸められる**前**の精密化値なので、どちら側へ出たかを断定できる。
+                    #   基準側には**救済で自分が凍らせた変数**も入れる (`_bound_hit_baseline`) —
+                    #   救済はこの窓の内側で同じ parmFrozen へ書くため、入れないと
+                    #   「自分で凍らせた箱付き変数」を境界到達と誤報する。
                     bound_hits = detect_bound_hits(
                         box_bounds,
-                        frozen_before,
+                        _bound_hit_baseline(frozen_before, rescue_frozen),
                         _frozen_variables(gpx),
                         read_variable_values(gpx),
                     )

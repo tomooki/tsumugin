@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 
 import pytest
@@ -18,6 +19,7 @@ from tsumugin.autorietveld.bounds import (
     reciprocal_metric_diagonal,
     size_strain_box_bounds,
 )
+from tsumugin.autorietveld.engine import _bound_hit_baseline, run_auto_rietveld
 from tsumugin.autorietveld.model import StabilityOptions
 
 _CUBIC = (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)
@@ -218,6 +220,48 @@ def test_variables_frozen_for_other_reasons_are_not_mistaken_for_bound_hits():
     #   変数まで拾うと「自分で凍らせた変数」を境界到達と誤報する (最悪の静かな嘘)。
     hits = detect_bound_hits([_BOX], [], ["0::AUiso:0", "0::A0"])
     assert hits == ()
+
+
+def test_rescue_frozen_boxed_variable_must_be_excluded_via_the_baseline():
+    # 【目的】: 上のテストは「箱を張っていない変数」しか見ておらず、**箱付きの変数が救済
+    #   プルーニングで凍った**場合を素通りさせていた (実際 0::A0 / :0:Shift / 0:0:Size;i は
+    #   どれも弱くなり得るので救済の候補になる)。名前で絞るだけでは足りず、engine 側が
+    #   救済分を基準へ入れる責務がある (`engine._bound_hit_baseline`)。
+    #   ここは「基準に入れれば消える／入れなければ誤報される」を両方向から固定する。
+    naive = detect_bound_hits([_BOX], [], [":0:Shift"])
+    assert [h.variable for h in naive] == [":0:Shift"], "素の差分では誤報される (これが病理)"
+
+    corrected = detect_bound_hits([_BOX], _bound_hit_baseline([], [":0:Shift"]), [":0:Shift"])
+    assert corrected == (), "救済で凍らせた変数を境界到達として報告してはならない"
+
+
+def test_the_baseline_still_lets_real_bound_hits_through_during_rescue():
+    # 【目的】: 対処が「窓を閉じる」方向へ倒れていないことの固定。救済の再精密化サイクル中に
+    #   **本当に**箱の外へ出た別の変数は、救済分を除いた後も所見として残らなければならない
+    #   (誤報を消すために真の所見まで落とすのは REQ-SAR-202 の握り潰し)。
+    baseline = _bound_hit_baseline([], ["0:0:Size;i"])
+    hits = detect_bound_hits([_BOX, _FLOOR], baseline, ["0:0:Size;i", ":0:Shift"])
+    assert [h.variable for h in hits] == [":0:Shift"]
+
+
+def test_the_baseline_keeps_pre_existing_frozen_variables():
+    # 【目的】: 救済分を足す実装が、元の `frozen_before` を**置き換えて**しまわないこと
+    #   (置き換えると既に凍っていた変数が毎段「新たに到達した」として再報告される)。
+    assert _bound_hit_baseline(["0::A0"], [":0:Shift"]) == {"0::A0", ":0:Shift"}
+
+
+def test_the_stage_loop_feeds_detect_bound_hits_through_the_baseline():
+    # 【目的】: 上の 3 件はヘルパの契約しか固定しないので、**呼び出し側が使うのをやめても
+    #   green のまま**になる (段ループは実 GSAS が要るので `-m "not gsas"` からは踏めない)。
+    #   救済と箱の同時有効化は既定 OFF どうしの組合せで踏みにくく、退行が長く生き残る形なので
+    #   結線そのものをソースで固定する。`frozen_before` を直接渡す実装へ戻すと落ちる。
+    src = inspect.getsource(run_auto_rietveld)
+    start = src.index("bound_hits = detect_bound_hits(")
+    call = src[start : start + 300]
+    assert "_bound_hit_baseline(frozen_before, rescue_frozen)" in call, (
+        "detect_bound_hits の基準は _bound_hit_baseline 経由でなければならない "
+        "(救済で凍らせた箱付き変数が境界到達として誤報される)"
+    )
 
 
 def test_hit_side_is_determined_from_the_pre_clamp_value():
