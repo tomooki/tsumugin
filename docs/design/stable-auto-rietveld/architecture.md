@@ -35,6 +35,8 @@
 |---|---|---|
 | `autorietveld/diagnostics.py` | **共分散/Rvals 読み出し層** (REQ-SAR-105)。gpx → `{max_shift_esd, varyList, sig, corr_pairs, weak_vars}`。GSAS 遅延 import・返すのは素の float/list | 新規 |
 | `autorietveld/engine.py` | 段の受理判定に収束/no-op を追加、凍結 (`freeze_others`)、元素ランク展開、箱拘束、restraint スタブ | 変更 |
+| `autorietveld/bounds.py` | **箱拘束の展開と境界到達の検出** (REQ-SAR-201/202)。装置・幾何のみ。numpy-only | 新規 |
+| `autorietveld/restraint_dlg.py` | **restraint を χ² に入れる `dlg` スタブ** (REQ-SAR-203)。GSAS 非依存の duck-typed オブジェクト | 新規 |
 | `autorietveld/recipe.py` | 相関群の不変条件、`build_serious_recipe`、Le Bail 前段 | 変更 |
 | `autorietveld/search.py` | レシピ候補の多重実行と選択 (REQ-SAR-500/501) | 新規 |
 | `autorietveld/autorange.py` | データレンジ/背景項数/除外領域の自動決定 (REQ-SAR-401/402/403) | 新規 |
@@ -66,6 +68,37 @@
 |---|---|
 | 格子 (初期値 ±X%)、Shift/DisplaceX,Y、Size/Mustrain の正値性 | 占有率・Uiso・座標 |
 
+実装: `autorietveld/bounds.py` (GSAS 非依存の純関数) + `engine._plan_box_bounds` /
+`_apply_box_bounds` / `_frozen_variables`。設定は `StabilityOptions.bound_cell` /
+`bound_displacement` / `bound_size_strain` (いずれも既定無効)。
+**構造パラメータ用のフィールドは意図的に存在させない** — `tests/autorietveld/test_bounds.py`
+の `test_no_option_exists_for_boxing_structural_parameters` と、実配線側の
+`test_box_bounds_gsas.py::test_registered_bounds_never_touch_structural_parameters`
+(`Afrac`/`AUiso`/`dAx` が箱に載っていないこと) が恒久ガードになっている。
+
+**GSAS の箱は最適化中の制約ではない**: `GSASIIstrMain.dropOOBvars` が精密化の**後**に
+「範囲外なら境界へ丸めて `Controls['parmFrozen']` へ追加」する事後処理である。よって
+
+* 拘束は発散を*防ぐ*のではなく*止める* (1 サイクルは外へ出る)、
+* 境界に到達した変数は `parmFrozen` に載る → **これが REQ-SAR-202 の検出源**。
+
+esd プルーニング (REQ-SAR-103) も同じ `parmFrozen` へ書くため、検出は
+**(a) 箱を張った変数に限定** し **(b) 精密化呼び出しの前後という狭い窓で差を取る**。
+どちら側の境界かは covData に残る**丸められる前の値**から決める (推測しない)。
+
+実測 (2026-07-29, T1):
+
+| 設定 | Rwp | 境界到達 |
+|---|---|---|
+| 既定 (箱なし) | 9.80617% | — |
+| `bound_cell=0.2` + `bound_displacement=5000` + `bound_size_strain` | 9.80617% (ビット同一) | なし |
+| `bound_cell=1e-4` | 9.80617% (ビット同一) | なし |
+| `bound_cell=1e-5` | 9.61768% | `0::A0` (min) |
+| `bound_cell=1e-6` | 9.75674% | `0::A0`, `0::A2` (min) |
+| `bound_displacement=1.0` (µm) | 11.18520% | `:0:Shift` (max) |
+
+= **緩い箱は結果をビット同一に保ち、締めた箱は実際に効いて所見が出る**。
+
 構造パラメータの逸脱は**モデル誤りの証拠**であり、握り潰すと NaCuHCF の model5/model6 判別
 (占有率が Na>1/O<0 に発散したことが Ow 必要性の決め手) のような推論ができなくなる。
 
@@ -74,11 +107,10 @@
 
 ### D4. restraint 有効化は既定 OFF・プルーニングとセット
 
-`G2strMain.Refine(gpx, dlg=<stub>)` で penalty が χ² に入るようになるが、同時に
-`GSASIIstrMain:430` の `if dlg: break` により**特異行列時の自動パラメータ削除+再試行を失う**。
-
-→ **REQ-SAR-103 (esd 駆動プルーニング) が入るまで既定 ON にしない。**
-自前のプルーニングが GSAS 側の自動削除を肩代わりできることを実測で確認してから切り替える。
+`G2strMain.Refine(gpx, dlg=<stub>)` で penalty が χ² に入る。実装は
+`autorietveld/restraint_dlg.py` (スタブ) + `engine._capture_refine_status(dlg=…)` (既に
+`Refine` を包んでいるパッチ点へキーワードで挿し込む)。有効化は
+`StabilityOptions.enable_restraints` (**既定 OFF**)。
 
 スタブの要件 (ソースから確定):
 
@@ -89,6 +121,50 @@
 | `SetHistogram` | `errRefine`:4973 | `hasattr` ガードあり → **実装しない** |
 
 型名に `"G2"` を含めないこと (`errRefine`:5015 で分岐する)。
+
+#### D4-a. 対照実験 (2026-07-29 実測) — **拘束は実際に χ² に入るようになった**
+
+PbSO4 実データ・S–O 距離ターゲット 1.9 / 2.3 Å (weight 1e5)。同一データ・同一拘束で
+`enable_restraints` だけを切り替えた:
+
+| | target 1.9 | target 2.3 | 判定 |
+|---|---|---|---|
+| 既定 (dlg なし) 最終 S–O2 | 1.411132 Å | 1.411132 Å | **ビット同一** = target-invariant |
+| 既定 (dlg なし) Rwp | 40.34906 | 40.34906 | ビット同一 |
+| 既定 (dlg なし) `RestraintSum` | 4.66e9 | 3.69e9 | 下がらない (最小化されていない) |
+| **スタブ経路** 最終 S–O2 | 1.411132 Å | **1.542264 Å** | ターゲット依存 = 追従している |
+| **スタブ経路** `RestraintSum` | 4.66e9 (段が revert) | **0.0876** | **10 桁の低下** = 最小化されている |
+
+ChemComp でも同じ結論が別の指標で出る: 同一拘束 (Pb 占有 total 3.2, weight 1e4) で
+Rwp が 40.34906 → **1022.16** に変わる。`Rw = √(ΣM²/SumwYo)` なので、penalty が残差ベクトル
+M に連結された以外に Rwp が桁で動く説明が無い。
+
+**⚠ 副産物: 有効化すると Rwp が penalty 込みの値になる。** tsumugin の段の受理/revert は Rwp
+比較なので、拘束の重みが過大だと全段が「悪化」判定で revert される (実測: bond weight 1e5 で
+Rwp 3558)。**重みはデータ項と同程度に抑える**必要がある — ここは呼び手 (③) への注意事項。
+
+#### D4-b. 副作用計測 — **「自動パラメータ削除+再試行を失う」は既定 deriv type には当てはまらない**
+
+当初の懸念は `GSASIIstrMain`:430 の `if dlg: break` だったが、ソースを読むと:
+
+* 「1 個消して再試行」ループは `'Hessian' not in Controls['deriv type']` の **else 分岐だけ**
+  (`GSASIIstrMain`:431-438)。
+* 既定 `analytic Hessian` では `result[1] is None` が :326-329 で**先に break** するので、
+  `if dlg: break` を含む except 節に到達しない (= その行はこの経路では死んでいる)。
+* 弱い/特異な変数を落として続ける処理は `GSASIImath.HessianLSQ` の `dropTerms` にあり、
+  **dlg を参照しない**。
+
+実測 (2026-07-29):
+
+| 実験 | dlg なし | dlg スタブ |
+|---|---|---|
+| 完全縮退 (同一構造 2 相の相分率和=1) | `1 Parameter(s) dropped: ::constr0` / Rwp 40.34906 / 分率 0.5,0.5 | **完全に同一** |
+| 真の特異行列 (`HessianLSQ` に cov=None を強制注入) | `HessianLSQ` 1 回/精密化 → 失敗 → chi2=inf → revert | **完全に同一** |
+
+→ **失うものは無い。** それでも既定 OFF を維持する理由は D4-a の副産物 (Rwp の意味が変わる)
+と、拘束で母数が実質増えることの 2 点であり、「GSAS の自動削除を失うから」ではない。
+`prune_weak_vars` との併用必須 (`StabilityOptions.__post_init__` が強制) はこの理由で残す。
+恒久ガードは `tests/autorietveld/test_restraint_dlg_gsas.py` (deriv type の前提ごと固定)。
 
 ### D5. 元素ランク展開は engine 側 (レシピは宣言的に保つ)
 

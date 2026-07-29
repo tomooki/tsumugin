@@ -4,7 +4,8 @@
 - T8: initial_occupancies シーダー (占有率グループ非宣言なら値は凍結されたまま)
 - T10: ChemComp restraint 直接注入 (占有率が目標へ引かれる / 無拘束コントロールとの比較)
 - T12: lock_fractions 相間 EqnConstr (相分率がクーロメトリー解へ拘束される)
-- Issue #112: bond_restraints も headless で非機能 (距離ターゲット非追従) のカナリア
+- Issue #112 / REQ-SAR-203/204: restraint が χ² に入るかの **dlg スタブ有無の対照**カナリア
+  (既定は今も非機能 / `enable_restraints=True` では実際に効く — 両方向を固定)
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import pytest
 
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
 from tsumugin.autorietveld.engine import run_auto_rietveld
-from tsumugin.autorietveld.model import RefinementStage
+from tsumugin.autorietveld.model import RefinementStage, StabilityOptions
 from tsumugin.operando.coulometry import coulometric_fractions
 
 _DATA = Path("docs/benchmark/testdata")
@@ -214,23 +215,34 @@ def _so2_distance(gpx_path: str) -> float:
 
 @pytest.mark.skipif(not _data_present(), reason="PbSO4 データ未取得")
 class TestBondRestraintHeadlessCanary:
-    """Issue #112: bond_restraints も headless 最小二乗で**距離拘束として機能しない**カナリア。
+    """Issue #112 / REQ-SAR-203/204: restraint が χ² に入るかを **dlg スタブの有無で対照**する。
 
-    背景 (`_apply_chem_comp_restraints` docstring + 本ファイル TestChemCompRestraint と同根):
-    GSAS-II `GSASIIstrMath.errRefine` は penalty 残差を ``if len(pVals) and dlg:`` (L5203) で
-    ゲートし、headless (dlg=None) では**全 restraint 種の penalty を χ² から除外**する。
-    `penaltyFxn`/`penaltyDeriv` は Bond/Angle/ChemComp を共有処理するため Bond も同じゲート下。
+    **背景**: `GSASIIstrMath.errRefine` は penalty 残差を ``if len(pVals) and dlg:`` (L5203) で
+    ゲートし、``dlg=None`` (= `G2Project.refine` の既定) では penalty を χ² から除外する。
+    `penaltyFxn`/`penaltyDeriv` は Bond/Angle/ChemComp を共有処理するため全 restraint 種が
+    同じゲート下にある。一方 `dervRefine`/`HessRefine` は非ゲートなので、既定経路は
+    **目的関数だけが拘束を見ない**不整合な最適化になる。
 
-    実測 (この構成): 距離ターゲットを 1.9 Å と 2.3 Å (0.4 Å 差・データ真値 ~1.41 から遠い) に
-    しても最終 S–O2 距離は**ビット同一**で、いずれもデータ値近傍に留まりターゲットへ全く追従
-    しない。機能する距離拘束はターゲット非依存 (target-invariant) になり得ないため、これは
-    「拘束が最小二乗目的関数に入っていない」ことの決定的証拠。拘束は HessRefine 経由で
-    小さな飽和摂動を注入するのみ (dose 非依存・Rwp は僅かに悪化) で距離を引かない。
+    **2026-07-29 の対照実験 (PbSO4, S–O 距離ターゲット 1.9 / 2.3 Å, weight 1e5)**::
 
-    ★ **このカナリアが fail したら朗報** — GSAS-II 更新で bond restraint が headless で
-    機能するようになった可能性が高い。engine `_apply_bond_restraints` の非機能 caveat と
-    skill 記述を実態に合わせて再検証し、依存機能 (D/H 漂流防止等) を再有効化すること。
+        既定 (dlg なし)         : 1.9 → S–O2 1.411132 / 2.3 → S–O2 1.411132  (ビット同一)
+                                  RestraintSum 4.66e9 / 3.69e9 (下がらない = 最小化されていない)
+        stability(enable_restraints=True):
+                                  1.9 → S–O2 1.411132 / 2.3 → S–O2 1.542264  (ターゲット依存)
+                                  RestraintSum 3.69e9 → 0.0876 (10 桁の低下 = 最小化されている)
+
+    よって本クラスは **2 つの向きを同時に固定**する:
+
+    1. **既定経路は今も非機能** — 上流が直ったら気付けるようピン留めする (旧カナリアの役割)
+    2. **スタブ経路では実際に効く** — 有効化が壊れたら気付けるようピン留めする (REQ-SAR-204)
+
+    ★ 1 が fail したら朗報 (GSAS-II が修復された)。`_apply_bond_restraints` /
+    `_apply_chem_comp_restraints` の非機能 caveat と `insitu.charge` の soft→diagnose 縮退を
+    再検証すること。★ 2 が fail したらスタブ契約 (`restraint_dlg`) の破損を疑うこと。
     """
+
+    #: 拘束を有効化する設定。REQ-SAR-203 により esd プルーニングとセットでしか有効にできない。
+    _ON = StabilityOptions(enable_restraints=True, prune_weak_vars=True)
 
     @staticmethod
     def _bond_spec(target: float, weight: float) -> dict:
@@ -247,10 +259,17 @@ class TestBondRestraintHeadlessCanary:
             ]
         }
 
-    def _run(self, tmp: str, target: float | None, *, weight: float = 1.0e5) -> tuple[float, float, str]:
+    def _run(
+        self,
+        tmp: str,
+        target: float | None,
+        *,
+        weight: float = 1.0e5,
+        stability: StabilityOptions | None = None,
+    ) -> tuple[float, float, str]:
         import os
 
-        keep = os.path.join(tmp, f"o_{target}_{weight}.gpx")
+        keep = os.path.join(tmp, f"o_{target}_{weight}_{stability is not None}.gpx")
         br = None if target is None else self._bond_spec(target, weight)
         r = run_auto_rietveld(
             [_hist()],
@@ -259,8 +278,18 @@ class TestBondRestraintHeadlessCanary:
             max_cyc=10,
             bond_restraints=br,
             keep_gpx=keep,
+            stability=stability,
         )
         return r.final_rwp, _so2_distance(keep), keep
+
+    @staticmethod
+    def _restraint_sum(gpx_path: str) -> float:
+        """``Rvals['RestraintSum']`` = penalty の二乗和 (最小化されているかの直接指標)。"""
+        from GSASII import GSASIIscriptable as G2sc
+
+        from tsumugin.autorietveld.diagnostics import read_diagnostics
+
+        return read_diagnostics(G2sc.G2Project(gpx_path)).restraint_sum
 
     def test_bond_restraint_injected_and_survives(self) -> None:
         """拘束が gpx の Bond ツリーに登録され精密化後も残る (注入機構の検証)。
@@ -279,39 +308,77 @@ class TestBondRestraintHeadlessCanary:
             assert len(bonds) > 0  # S–O 対が登録された
             assert rd["pbso4"]["Bond"]["Use"] is True
 
-    def test_canary_bond_restraint_does_not_track_target(self) -> None:
-        """★カナリア: 距離ターゲット 1.9 vs 2.3 で最終 S–O2 が不変 = 距離拘束として非機能。
+    def test_canary_default_path_still_does_not_track_target(self) -> None:
+        """★カナリア①: **既定 (dlg なし)** では距離ターゲット 1.9 vs 2.3 で結果がビット同一。
 
-        機能する拘束なら target=2.3 は target=1.9 より S–O2 を長く引くはず。実際は両者
-        ビット同一かつデータ値近傍 (< 1.55 Å, ターゲット 1.9/2.3 から遠い) に留まる。
+        機能する距離拘束はターゲット非依存 (target-invariant) になり得ないので、これは
+        「penalty が最小二乗目的関数に入っていない」ことの決定的証拠である。
 
-        **両方向を pin する** (レビュー指摘): ターゲット非追従 (機能拘束なら fail) に加え、
-        拘束ありがベースライン (拘束なし) と異なる (= 現状は小さな摂動を注入している) ことも
-        assert する。GSAS-II が Bond を ChemComp のように完全不動化した場合も docstring の
-        「小さな飽和摂動を注入」記述が崩れるので、その退化も検知する。
+        ★ **fail したら朗報** — GSAS-II 更新で headless restraint が修復された可能性が高い。
+        engine の非機能 caveat・`insitu.charge` の soft→diagnose 縮退・本ファイルの
+        `TestChemCompRestraint` を実態に合わせて再検証すること。
         """
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            _rwp0, d_none, _ = self._run(tmp, None)
-            _rwp_a, d_a, _ = self._run(tmp, 1.9)
-            _rwp_b, d_b, _ = self._run(tmp, 2.3)
+            rwp_a, d_a, _ = self._run(tmp, 1.9)
+            rwp_b, d_b, _ = self._run(tmp, 2.3)
 
-        # ①ターゲット非追従: 0.4 Å 離れたターゲットで最終距離が実質同一 (機能拘束では不可能)
         assert abs(d_a - d_b) < 1.0e-6, (
-            f"bond restraint がターゲットに追従した (1.9→{d_a:.4f}, 2.3→{d_b:.4f}) — "
-            "GSAS-II が headless restraint を修復した可能性。engine の非機能 caveat を再検証せよ"
+            f"既定経路で bond restraint がターゲットに追従した (1.9→{d_a:.4f}, 2.3→{d_b:.4f}) — "
+            "GSAS-II が headless restraint を修復した可能性。非機能 caveat を再検証せよ"
         )
-        # ②データ値近傍に留まりターゲット (>=1.9) へ到達しない
+        assert rwp_a == pytest.approx(rwp_b, abs=1.0e-6), "Rwp も penalty を含んでいない"
         assert d_a < 1.55, f"S–O2={d_a:.4f} が想定外にターゲット側へ動いた"
-        # ③拘束ありは拘束なしと異なる (現状は非ゲート HessRefine 経由の小摂動を注入している)。
-        #   完全不動化 (ChemComp 化) したらここが fail し docstring の摂動記述を再検証させる。
-        #   閾 5e-3 は weight=0 対照の cross-machine ノイズ上限 5e-4 の 10 倍 (ノイズで満たさない)
-        #   かつ実摂動 0.055 Å の 1/10 (現状は余裕で満たす) — 両閾の間のデッドゾーンを作らない。
-        assert abs(d_a - d_none) > 5.0e-3, (
-            f"bond restraint がベースラインと同一 (d={d_a:.6f}) = 完全不動 — Bond が "
-            "ChemComp のように no-op 化した可能性。engine docstring の『小摂動』記述を再検証せよ"
+
+    def test_restraint_enters_chi_squared_with_the_dlg_stub(self) -> None:
+        """★カナリア②: `enable_restraints=True` で penalty が**実際に χ² に入る** (REQ-SAR-204)。
+
+        判定は 2 つの独立な数値で行う (片方だけだと解釈の余地が残る):
+
+        1. **Rwp が penalty を含む値に変わる** — ``Rw = √(ΣM²/SumwYo)`` で、M に penalty が
+           連結されるのは `errRefine`:5203 の ``dlg`` ゲート内だけ。同一データ・同一拘束で
+           Rwp が桁で変われば、penalty が残差ベクトルに入った以外の説明が付かない。
+        2. **RestraintSum が最小化される** — 実測 3.69e9 → 0.0876 (10 桁)。目的関数に入って
+           いなければ optimizer は penalty を下げる理由を持たない。
+
+        ★ fail したらスタブ契約 (`restraint_dlg`: Update の戻り値/型名の "G2"/SetHistogram)
+        の破損か、GSAS-II 側のゲート仕様変更を疑うこと。
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rwp_off, _d_off, keep_off = self._run(tmp, 2.3)
+            rwp_on, _d_on, keep_on = self._run(tmp, 2.3, stability=self._ON)
+            sum_off = self._restraint_sum(keep_off)
+            sum_on = self._restraint_sum(keep_on)
+
+        assert sum_off > 1.0e6, "対照側の penalty が最初から小さい (実験の前提が崩れている)"
+        assert sum_on < sum_off / 1.0e3, (
+            f"RestraintSum が最小化されていない ({sum_off:.3g} → {sum_on:.3g}) — "
+            "dlg スタブが Refine へ届いていないか、契約が壊れている"
         )
+        assert rwp_on != rwp_off, "Rwp が penalty を含んでいない (M に連結されていない)"
+
+    def test_restraint_target_is_tracked_only_with_the_stub(self) -> None:
+        """★カナリア③: スタブ経路では**ターゲットの違いが結果に出る** (①の裏返し)。
+
+        既定経路がビット同一 (①) なのに対し、スタブ経路では 1.9 と 2.3 で最終 S–O2 が
+        変わる。実測 2026-07-29: 1.9 → 1.411132 (段が revert される), 2.3 → 1.542264。
+        「拘束が効く」の最も直接的な表現なので、①と対にして両方向を固定する。
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _rwp_a, d_a, _ = self._run(tmp, 1.9, stability=self._ON)
+            _rwp_b, d_b, _ = self._run(tmp, 2.3, stability=self._ON)
+
+        assert abs(d_a - d_b) > 1.0e-3, (
+            f"スタブ経路でもターゲット非依存 (1.9→{d_a:.6f}, 2.3→{d_b:.6f}) — "
+            "拘束が χ² に入っていない。restraint_dlg の契約を再検証せよ"
+        )
+        # より長いターゲットの方が S–O2 が長い (符号が正しい向きに効いている)。
+        assert d_b > d_a
 
     def test_canary_zero_weight_matches_no_restraint(self) -> None:
         """対照: weight=0 でベースライン (拘束なし) へ復帰 (摂動が拘束由来であることの確認)。"""

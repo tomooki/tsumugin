@@ -30,6 +30,8 @@ __all__ = [
     "correlated_pairs",
     "diagnostics_from_cov_data",
     "read_diagnostics",
+    "read_variable_values",
+    "values_from_cov_data",
     "weak_variables",
 ]
 
@@ -246,6 +248,39 @@ def diagnostics_from_cov_data(
             correlated_pairs(names, cov, sig, corr_threshold) if cov is not None else ()
         ),
     )
+
+
+def values_from_cov_data(cov_data: Mapping[str, Any]) -> dict[str, float]:
+    """``covData`` から「変数名 → 精密化値」を取り出す (GSAS 非依存の純写像)。
+
+    ここに置く理由 (D1): 箱拘束の**境界到達がどちら側か** (REQ-SAR-202) を決めるのに変数値が
+    要るが、共分散を読む場所を増やすと drift する。読み出しは本モジュールに閉じる。
+
+    値は `GSASIIstrMain.dropOOBvars` が境界へ丸める**前**のもの (covData は丸めの前に組まれる)
+    なので、箱の外側にある = どちら側に出たかを一意に決められる。
+    長さ不一致・非有限は落とす (fail open — 診断が精密化本体を落とさない)。
+    """
+    names = _as_sequence(cov_data.get("varyList"))
+    values = _as_sequence(cov_data.get("variables"))
+    if len(names) != len(values):
+        return {}
+    out: dict[str, float] = {}
+    for name, raw in zip(names, values):
+        v = _as_float(raw)
+        if v is not None:
+            out[str(name)] = v
+    return out
+
+
+def read_variable_values(gpx) -> dict[str, float]:
+    """精密化済み ``G2Project`` から「変数名 → 精密化値」を読む (**GSAS 依存はここだけ**)。"""
+    try:
+        cov_data = gpx.data["Covariance"]["data"]
+    except (KeyError, TypeError, AttributeError):
+        return {}
+    if not isinstance(cov_data, Mapping):
+        return {}
+    return values_from_cov_data(cov_data)
 
 
 def read_diagnostics(gpx, *, corr_threshold: float = 0.9) -> RefinementDiagnostics:

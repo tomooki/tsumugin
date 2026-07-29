@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
 from tsumugin.autorietveld.recipe import build_recipe

@@ -4263,6 +4263,40 @@ def test_stability_gate_entries_are_shown_as_guard_with_their_evidence():
     assert "0::A0" in corr and "0.9" in corr
 
 
+def test_box_bound_entries_reach_the_ledger_with_which_variable_hit_which_side():
+    # 【目的】: 箱拘束 (WS-2) の 3 kind が LEDGER に届くこと。特に境界到達は **GUARD** で、
+    #   「どの変数がどちら側に当たったか」まで文面に出ること — 「当たった」だけでは箱が悪いのか
+    #   モデルが悪いのかを GUI から判断できず、握り潰しと大差なくなる (REQ-SAR-202)。
+    session = WorkbenchSession.create_demo()
+    session.ledger.append(
+        "m7_box_bounds",
+        {"n_bounds": 4,
+         "bounds": [{"variable": "0::A0", "lo": 1.0, "hi": 2.0, "kind": "cell", "reason": ""},
+                    {"variable": ":0:Shift", "lo": -5000.0, "hi": 5000.0,
+                     "kind": "displacement", "reason": ""}]},
+    )
+    session.ledger.append(
+        "m7_restraints_enabled",
+        {"bond_phases": ["pbso4"], "chem_comp_phases": [],
+         "note": "restraint を χ² に入れた (Rwp は penalty 込みの値になる)"},
+    )
+    session.ledger.append(
+        "m7_stage_bound_hit",
+        {"stage": "S1 cell+displacement", "reverted": False, "n_hits": 1,
+         "hits": [{"variable": ":0:Shift", "side": "max", "lo": -1.0, "hi": 1.0,
+                   "kind": "displacement", "reason": "試料変位"}]},
+    )
+
+    registered, enabled, hit = session.ledger_view()["entries"][-3:]
+
+    assert [registered["actor"], enabled["actor"], hit["actor"]] == ["CORE ①", "CORE ①", "GUARD"]
+    assert "cell" in registered["text"] and "displacement" in registered["text"]
+    assert "penalty" in enabled["text"]
+    assert ":0:Shift" in hit["text"] and "max" in hit["text"]
+    # 診断エントリは適合度を持たない (Rwp 列に出ると段が進んだように読める)。
+    assert hit["rwp"] is None and hit["bic"] is None
+
+
 def test_stability_gate_entries_carry_no_fabricated_fit_quality():
     # 【目的】: 診断エントリに rwp/bic を持たせない (適合度は m7_stage / refine_finished のみ)。
     #   no-op の payload は rwp を含むが、それは**直前段と同じ値**であり「この段の適合度」

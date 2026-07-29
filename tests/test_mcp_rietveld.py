@@ -318,6 +318,69 @@ def test_stability_spec_defaults_to_the_no_op_options(monkeypatch):
     assert seen["stability"].needs_diagnostics is False
 
 
+def test_stage_note_is_returned_so_diagnostics_are_visible_to_layer3():
+    """★②到達可能性: 段の所見 (`note`) が ② の戻り値に出ること。
+
+    【目的】: `unconverged` / `noop` / `pruned=N` / `bound_hits=N` は **`StageResult.note` に
+    しか出ない** (ledger は ② の戻り値に含まれない)。ここを落とすと、診断ゲートも箱拘束も
+    「有効にしたのに結果に何も現れない」機能になり、③ から見て存在しないのと同じになる。
+    """
+    def _noted(inp):
+        return AutoRietveldResult(
+            stage_results=(
+                StageResult(label="S1", rwp=12.0, gof=1.2, n_params=9, converged=True,
+                            note="unconverged; bound_hits=2"),
+            ),
+            final_rwp=12.0, final_gof=1.2,
+            refined_cells={"ph": (9.37, 9.37, 6.89, 90.0, 90.0, 120.0)},
+            validity=ValidityReport(passed=True),
+        )
+
+    out = auto_rietveld([_H], [_P], runner=_noted)
+
+    json.dumps(out, allow_nan=False)
+    assert out["stages"][0]["note"] == "unconverged; bound_hits=2"
+
+
+def test_box_bound_spec_reaches_the_real_runner(monkeypatch):
+    """③ が JSON で送った**箱拘束** (WS-2) が既定 runner まで届く (REQ-SAR-201/202)。
+
+    【目的】: ① に実装した箱拘束が ② から到達可能であること。診断ゲートと同じ `stability`
+    引数に同居させたので、そこが本当に配線されているかを別途見る (同居 ≠ 到達可能)。
+    """
+    from tsumugin.autorietveld import StabilityOptions
+    import tsumugin.mcp.rietveld_tools as rt
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        rt, "_default_gsas_runner",
+        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+    )
+
+    out = rt.auto_rietveld(
+        [_H], [_P],
+        stability={"bound_cell": 0.05, "bound_displacement": 5000.0, "bound_size_strain": True},
+    )
+
+    assert "error" not in out
+    assert seen["stability"] == StabilityOptions(
+        bound_cell=0.05, bound_displacement=5000.0, bound_size_strain=True
+    )
+    assert seen["stability"].has_box_bounds is True
+
+
+def test_enabling_restraints_without_pruning_degrades_to_an_error_dict():
+    """② は例外を送出しない — REQ-SAR-203 の前提違反も error dict へ縮退する。
+
+    【目的】: ③ は LLM なので例外は回復不能なハード失敗になる。かつ**黙って片肺で走らせない**
+    (拘束を有効にしたのにプルーニングが無い構成は設計上認めない)。
+    """
+    out = auto_rietveld([_H], [_P], stability={"enable_restraints": True})
+
+    assert out["error_type"] == "ValueError"
+    assert "prune_weak_vars" in out["error"]
+
+
 def test_unknown_stability_key_degrades_to_an_error_dict():
     # 【目的】: ② は例外を送出しない。かつ**黙って無視しない** — キー名を間違えたまま
     #   「ゲートを有効にしたつもり」で回るのが最悪 (静かな失敗)。

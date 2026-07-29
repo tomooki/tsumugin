@@ -39,6 +39,12 @@ def test_defaults_are_all_off_so_existing_runs_are_bit_identical():
     assert opts.prune_weak_vars is False
     assert opts.record_correlations is False
     assert opts.needs_diagnostics is False, "既定では共分散を 1 度も読まない"
+    # WS-2: 箱拘束と restraint 有効化も既定 OFF (REQ-SAR-201/203)。
+    assert opts.bound_cell is None
+    assert opts.bound_displacement is None
+    assert opts.bound_size_strain is False
+    assert opts.enable_restraints is False
+    assert opts.has_box_bounds is False, "既定では Controls (parmMin/parmMax) を 1 度も触らない"
 
 
 @pytest.mark.parametrize(
@@ -53,6 +59,60 @@ def test_any_diagnostic_gate_turns_on_covariance_reading(field):
 def test_noop_detection_alone_does_not_read_covariance():
     # 【目的】: no-op 検出 (REQ-SAR-102) は rwp/gof/n_params だけで判定でき、共分散を要さない。
     assert StabilityOptions(detect_noop_stages=True).needs_diagnostics is False
+
+
+# ---------------------------------------------------------------------------
+# WS-2 拘束・境界 (REQ-SAR-201/202/203)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"bound_cell": 0.05},
+        {"bound_displacement": 5000.0},
+        {"bound_size_strain": True},
+    ],
+)
+def test_any_box_option_turns_on_bound_registration(kwargs):
+    # 【目的】: 箱拘束を 1 つでも立てたら Controls への登録と境界検出が走ること。
+    #   漏れると「拘束したつもりで拘束されていない」静かな失敗になる。
+    assert StabilityOptions(**kwargs).has_box_bounds is True
+
+
+def test_box_bounds_do_not_require_the_covariance_reader():
+    # 【目的】: 箱拘束の情報源は Controls['parmFrozen'] であって共分散ではない (別経路)。
+    #   片方を有効にしただけでもう片方の読み出しが始まると非回帰契約が崩れる。
+    assert StabilityOptions(bound_cell=0.05).needs_diagnostics is False
+
+
+def test_enabling_restraints_without_pruning_is_rejected_loudly():
+    # 【目的】: REQ-SAR-203/D4。restraint を χ² に入れると母数が実質増え弱い変数が生き残る。
+    #   esd 駆動プルーニング (REQ-SAR-103) を肩代わりに置かない構成は設計上認めない。
+    #   黙って片肺で走らせるくらいなら大声で落ちる (② では error dict へ縮退する)。
+    with pytest.raises(ValueError, match="prune_weak_vars"):
+        StabilityOptions(enable_restraints=True)
+    # 併用は通る。
+    assert StabilityOptions(enable_restraints=True, prune_weak_vars=True).enable_restraints
+
+
+def test_spec_round_trips_through_json():
+    # 【目的】: ② 到達可能性 — ③ は JSON しか送れない。to_dict/from_dict が同値であること。
+    opts = StabilityOptions(
+        bound_cell=0.03,
+        bound_displacement=2500.0,
+        bound_size_strain=True,
+        max_size=5.0e3,
+        enable_restraints=True,
+        prune_weak_vars=True,
+    )
+    assert StabilityOptions.from_dict(opts.to_dict()) == opts
+
+
+def test_unknown_box_key_is_rejected_not_ignored():
+    # 【目的】: 綴り間違いで「拘束したつもり」にならないこと (既存の未知キー規律を WS-2 でも維持)。
+    with pytest.raises(ValueError, match="bound_cel"):
+        StabilityOptions.from_dict({"bound_cel": 0.05})
 
 
 # ---------------------------------------------------------------------------
