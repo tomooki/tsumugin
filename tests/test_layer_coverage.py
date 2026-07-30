@@ -86,12 +86,15 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     "recipe search (REQ-SAR-500)": (
         "auto_rietveld",
         "レシピ探索 (Phase 2, stable-auto-rietveld): 単一レシピは全データで勝てない "
-        "(実測 T1=default 9.81% / T3=serious 6.10%) ため候補を独立実行し「収束したものの中で"
-        "最良」を採る。② は `search` (true or 候補名の列) と `search_config` (閾値) で到達し、"
-        "返り値の `search.candidates[]`/`warnings[]` に候補ごとの Rwp/収束/tier と順序依存警告 "
-        "(REQ-SAR-501) が載る。`search: [\"serious\"]` は**勝ったレシピ 1 本で回す**唯一の "
-        "JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは**意図的に露出しない** "
-        "(REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
+        "(実測 2026-07-30: 採用手順は T1・CaTeO3=polish / T2=serious1 / T3=sizestrain_last) "
+        "ため候補を独立実行し「収束したものの中で最良」を採る。② は `search` "
+        "(true or 候補名の列) と `search_config` (閾値) で到達し、返り値の "
+        "`search.candidates[]`/`warnings[]` に候補ごとの Rwp/収束/tier と順序依存警告 "
+        "(REQ-SAR-501) が載る。⚠ `search: true` は `DEFAULT_CANDIDATES` (5 本) であり "
+        "`CANDIDATE_NAMES` 全部ではない — 測定で支配された `serious` (2 周) は既定から外して "
+        "名指しでのみ選べる。`search: [\"polish\"]` のように 1 本だけ渡すのが**勝ったレシピで"
+        "反復を続ける**唯一の JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは"
+        "**意図的に露出しない** (REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
     ),
     "recipe axes (build_recipe の opt-in 軸)": (
         UNEXPOSED,
