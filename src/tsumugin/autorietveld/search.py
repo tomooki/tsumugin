@@ -85,6 +85,7 @@ from .model import (
     RefinementStage,
     StageResult,
 )
+from .agreement import CorroborationReport
 from .recipe import build_recipe, build_serious_recipe
 
 __all__ = [
@@ -309,6 +310,10 @@ class RecipeSearchResult:
         ``bic`` 同点近傍の裁定 / ``only_candidate``)
     :param warnings: 人間/③ が読む警告
     :param config: 判定に使った閾値 (再現性のため結果に同梱する)
+    :param agreement: **どの手順どうしが同じ解に収束したか** (`autorietveld.agreement`)。
+        `order_dependent` とは別の問いに答える — あちらは「最良と次点が僅差なのに割れた」
+        という*選択の信頼度*の旗 (上位 2 件のみ・相分率 Scale 基準)、こちらは全対の
+        *収束の一致* (esd スケール・構造クラス) である。両者は冗長ではない
     """
 
     outcomes: tuple[CandidateOutcome, ...]
@@ -319,6 +324,10 @@ class RecipeSearchResult:
     selection_reason: str = ""
     warnings: tuple[str, ...] = field(default_factory=tuple)
     config: SearchConfig = field(default_factory=SearchConfig)
+    # 【末尾追加・既定 None で後方互換】: 傍証を計算しなかった (結果が 1 つ以下 / 呼び出し側が
+    #   要求しなかった) 場合は None。**空の報告を捏造しない** — 「一致を調べていない」と
+    #   「調べたが一致しなかった」は別の陳述である。
+    agreement: "CorroborationReport | None" = None
 
     @property
     def selected(self) -> "CandidateOutcome | None":
@@ -355,6 +364,7 @@ class RecipeSearchResult:
             "order_dependent": self.order_dependent,
             "warnings": list(self.warnings),
             "config": self.config.to_dict(),
+            "agreement": None if self.agreement is None else self.agreement.to_dict(),
         }
 
 

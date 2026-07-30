@@ -91,16 +91,17 @@ def _clip_cos(x: float) -> float:
     return max(-1.0, min(1.0, float(x)))
 
 
-def reciprocal_metric_from_cell(cell: Cell6) -> np.ndarray:
-    """直接格子 (a,b,c,α,β,γ) から逆格子計量テンソル G* (3x3) を返す。
+def direct_metric_from_cell(cell: Cell6) -> np.ndarray:
+    """直接格子 (a,b,c,α,β,γ) から**直接**計量テンソル G (3x3) を返す。
 
-    直接計量 G を組み、G* = G⁻¹ を返す。1/d² = h·G*·hᵀ の係数行列に一致する。
+    分率座標の差 Δf を実距離へ直す係数行列: ``Δr² = Δf·G·Δfᵀ`` (Å²)。逆行列を取らないので
+    退化セルでも例外にならず、決定論も自明である (`agreement` の座標比較が使う)。
     """
     a, b, c, alpha, beta, gamma = (float(x) for x in cell)
     ca = math.cos(math.radians(alpha))
     cb = math.cos(math.radians(beta))
     cg = math.cos(math.radians(gamma))
-    g = np.array(
+    return np.array(
         [
             [a * a, a * b * cg, a * c * cb],
             [a * b * cg, b * b, b * c * ca],
@@ -108,7 +109,14 @@ def reciprocal_metric_from_cell(cell: Cell6) -> np.ndarray:
         ],
         dtype=float,
     )
-    return np.linalg.inv(g)
+
+
+def reciprocal_metric_from_cell(cell: Cell6) -> np.ndarray:
+    """直接格子 (a,b,c,α,β,γ) から逆格子計量テンソル G* (3x3) を返す。
+
+    直接計量 G を組み、G* = G⁻¹ を返す。1/d² = h·G*·hᵀ の係数行列に一致する。
+    """
+    return np.linalg.inv(direct_metric_from_cell(cell))
 
 
 def cell_from_reciprocal_metric(g_star: np.ndarray) -> Cell6:
