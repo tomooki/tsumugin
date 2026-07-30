@@ -37,6 +37,7 @@ from ..autorietveld import (
 )
 from ..autorietveld.search import (
     CANDIDATE_NAMES,
+    DEFAULT_CANDIDATES,
     RecipeCandidate,
     SearchConfig,
     run_recipe_search,
@@ -315,7 +316,10 @@ def _search_names(search: "bool | Sequence[str]") -> tuple[str, ...]:
     明示的に探索しないときは ``search`` を省略するか ``false``/``null`` を渡す。
     """
     if search is True:
-        return CANDIDATE_NAMES
+        # ★``true`` は**実測で選んだ既定集合**を回す。`CANDIDATE_NAMES` は「選べる名前」の
+        #   集合であり、測定で支配された候補 (後方互換のために残してある `serious` 2 周) を
+        #   含む — それを既定で回すと ③ は毎回 1.4 倍の時間を払って何も得ない。
+        return DEFAULT_CANDIDATES
     if isinstance(search, str):  # "serious" のような単一名を親切に受ける
         if not search:
             raise ValueError(

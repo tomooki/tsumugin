@@ -83,6 +83,7 @@ from .model import (
     HistogramSpec,
     PhaseSpec,
     RefinementStage,
+    StabilityOptions,
     StageResult,
 )
 from .agreement import (
@@ -102,6 +103,7 @@ __all__ = [
     "SearchConfig",
     "TIER_LABELS",
     "build_candidates",
+    "DEFAULT_CANDIDATES",
     "candidate_bic",
     "convergence_verdict",
     "outcome_tier",
@@ -113,7 +115,29 @@ __all__ = [
 #: 候補の**列挙順** (S5)。辞書順や集合順ではなく明示的なタプルにする — 実装都合で順序が
 #: 変わると同点解決が揺れ、決定論 (P-SAR-4) が崩れる。実績のある固定層を先に置き、
 #: 自動判定の適応層を後ろに置く (同点なら実績側が勝つ)。
-CANDIDATE_NAMES: tuple[str, ...] = ("default", "serious", "adaptive")
+CANDIDATE_NAMES: tuple[str, ...] = (
+    "default",
+    "sizestrain_last",
+    "polish",
+    "serious1",
+    "serious",
+    "adaptive",
+)
+
+#: ``search=true`` が実際に回す集合 = **実測で選んだ手順** (2026-07-30, 10 案 × 4 データ)。
+#: データ毎の収束した勝者は T1/CaTeO3 = ``polish`` / T2 = ``serious1`` / T3 = ``sizestrain_last``
+#: で、``default`` は基準 (列挙 index 0 が `observation_groups` の観測集合基準になる) として置く。
+#: ``serious`` (2 周) は**測定で支配された**ため既定から外した — T3 では ``sizestrain_last``
+#: (5.98) が、T2/CaTeO3 では ``serious1`` が同等以上で、かつ 2 周は 1 周の 1.4 倍の時間を要する。
+#: 名前としては選べるまま残してある (``search: ["serious"]`` は従来どおり動く)。
+#: ⚠ **順序を変えないこと** — `observation_groups` の基準と全ての同点解決を駆動する。
+DEFAULT_CANDIDATES: tuple[str, ...] = (
+    "default",
+    "sizestrain_last",
+    "polish",
+    "serious1",
+    "adaptive",
+)
 
 #: tier → 人間が読むラベル (② / ledger / 報告に出す)。
 TIER_LABELS: tuple[str, ...] = (
@@ -221,6 +245,10 @@ class RecipeCandidate:
     histograms: tuple[HistogramSpec, ...]
     background_coeffs: int = 6
     note: str = ""
+    # 【末尾追加・既定 None で後方互換】: 候補は**段列だけでは表せない** — 最終研磨のような
+    #   「手順」は `StabilityOptions` 側にあるため、候補が自分の実行設定を持つ必要がある。
+    #   None は「既定の実行設定 (= 呼び出し側の `run_kwargs` のまま)」を意味する。
+    stability: "StabilityOptions | None" = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -748,15 +776,39 @@ def _fixed_candidate(
     background_coeffs: int,
 ) -> RecipeCandidate:
     hists = tuple(histograms)
+    stability: "StabilityOptions | None" = None
     if name == "default":
         stages = build_recipe(hists, phases, background_coeffs=background_coeffs)
-        note = "M7 既定レシピ (T1/T4 で勝っている実績)"
+        note = "M7 既定レシピ (基準。T1 9.81 / T2 4.33 / T3 6.66 / CaTeO3 12.20)"
+    elif name == "sizestrain_last":
+        stages = build_recipe(
+            hists, phases, background_coeffs=background_coeffs,
+            size_strain_placement="last",
+        )
+        note = (
+            "size/歪みを座標・Uiso の後段へ。**T3 で最良かつ収束** (5.98 — 本気フィットの "
+            "6.10 より良い)。多相分岐が実測で採っている順序を単相へ適用したもの"
+        )
+    elif name == "polish":
+        stages = build_recipe(hists, phases, background_coeffs=background_coeffs)
+        stability = StabilityOptions(
+            report_undetermined=True, polish_frozen_undetermined=True
+        )
+        note = (
+            "既定 + 最終研磨 (決まらなかった変数を最後だけ凍結)。**T1 と CaTeO3 で最良** "
+            "(T1 9.67)。研磨が効かないデータでは既定とビット同一になる"
+        )
+    elif name == "serious1":
+        stages = build_serious_recipe(
+            hists, phases, background_coeffs=background_coeffs, rounds=1
+        )
+        note = "本気フィット 1 周 (順次解放/凍結)。**T2 で最良** (4.32)。2 周版の約 0.7 倍の時間"
     else:
         stages = build_serious_recipe(hists, phases, background_coeffs=background_coeffs)
-        note = "本気フィット (順次解放/凍結 2 周 → 累積 → 全開放。T3/CaTeO3 で勝っている実績)"
+        note = "本気フィット 2 周。既定集合からは外れているが名前として選べる (後方互換)"
     return RecipeCandidate(
         name=name, stages=stages, origin="fixed", histograms=hists,
-        background_coeffs=background_coeffs, note=note,
+        background_coeffs=background_coeffs, note=note, stability=stability,
     )
 
 
@@ -830,10 +882,15 @@ def build_candidates(
 
     ===========  =====================================  ==============================
     層           内容                                    根拠
-    ===========  =====================================  ==============================
-    固定         ``default`` / ``serious``               3 データで別々に勝っている実績
-    適応         ``adaptive`` (レンジ/背景の自動判定)     手動調整の穴を埋める
-    ===========  =====================================  ==============================
+    ===========  =========================================  ==========================
+    固定         ``default`` / ``sizestrain_last`` /         データ毎に別々に勝っている
+                 ``polish`` / ``serious1`` (+ ``serious``)   (2026-07-30 実測)
+    適応         ``adaptive`` (レンジ/背景の自動判定)         手動調整の穴を埋める
+    ===========  =========================================  ==========================
+
+    既定 (``names=None``) で回るのは `DEFAULT_CANDIDATES` であり `CANDIDATE_NAMES` 全部では
+    ない — 後者は「選べる名前」の集合で、測定で支配された ``serious`` (2 周) も後方互換の
+    ために残してある。
 
     **適応層を固定層と別候補にする**のが要点である。自動判定を既定へ埋め込むと、外したときの
     逃げ道が無い。別候補なら固定層が保険になる。
@@ -843,7 +900,7 @@ def build_candidates(
     :raises ValueError: 未知の候補名 (綴り間違いを黙って無視すると「探索したつもり」で
         候補が 1 つしか回らない)
     """
-    requested = tuple(names) if names is not None else CANDIDATE_NAMES
+    requested = tuple(names) if names is not None else DEFAULT_CANDIDATES
     unknown = [n for n in requested if n not in CANDIDATE_NAMES]
     if unknown:
         raise ValueError(
@@ -852,7 +909,7 @@ def build_candidates(
     wanted = [n for n in CANDIDATE_NAMES if n in set(requested)]
     out: list[RecipeCandidate] = []
     for name in wanted:
-        if name in ("default", "serious"):
+        if name != "adaptive":
             out.append(_fixed_candidate(name, histograms, phases, background_coeffs))
             continue
         adapted = _adaptive_inputs(histograms, background_coeffs)
@@ -888,11 +945,16 @@ def _default_candidate_runner(
     def runner(candidate: RecipeCandidate) -> AutoRietveldResult:
         from .engine import run_auto_rietveld
 
+        kwargs = dict(run_kwargs)
+        if candidate.stability is not None:
+            # 候補が自分の実行設定を持つときはそれを使う (呼び出し側指定より候補が優先 —
+            # 候補の定義そのものだから)。持たない候補は run_kwargs のまま。
+            kwargs["stability"] = candidate.stability
         return run_auto_rietveld(
             list(candidate.histograms),
             list(phases),
             recipe=candidate.stages,
-            **run_kwargs,  # type: ignore[arg-type]
+            **kwargs,  # type: ignore[arg-type]
         )
 
     return runner
@@ -928,7 +990,7 @@ def run_recipe_search(
     """
     config = config or SearchConfig()
     ledger = ledger if ledger is not None else Ledger()
-    requested = tuple(names) if names is not None else CANDIDATE_NAMES
+    requested = tuple(names) if names is not None else DEFAULT_CANDIDATES
     if candidates is None:
         cands = build_candidates(
             histograms, phases, background_coeffs=background_coeffs, names=requested
