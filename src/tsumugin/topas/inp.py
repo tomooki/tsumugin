@@ -113,6 +113,14 @@ class TopasSite:
     occupancy: Param = field(default_factory=lambda: Param(1.0))
     beq: Param = field(default_factory=lambda: Param(1.0))
     """等方性温度因子 B。**Uiso とは B = 8π²·Uiso の関係** (換算は topas.structure が担う)。"""
+    free_coord_axes: tuple[str, ...] = ()
+    """**独立に解放してよい**座標軸 (``"x"``/``"y"``/``"z"``)。
+
+    サイト対称で固定される成分 (鏡面上の ``y = 1/4`` など) や、他軸と結束する成分を
+    解放すると**対称性が壊れる**。しかも Rwp は下がることがあるので静かに間違った構造へ
+    行き着く。GSAS 経路の ``GSASIIspc.GetCSxinel`` に相当する情報で、`topas.symmetry` が
+    対称操作から求める。空なら座標を解放しない (判定できないときは触らない)。
+    """
 
     def with_updates(self, **kw: object) -> "TopasSite":
         return replace(self, **kw)  # type: ignore[arg-type]
@@ -329,7 +337,18 @@ class TopasDocument:
         lines.append(f"{_INDENT_PHASE}space_group {phase.space_group}")
         for axis, param in phase.cell.items():
             prm = shared.get((name, f"cell.{axis}"))
-            value = render_param(Param.reference(prm)) if prm else render_param(param)
+            if prm:
+                value = render_param(Param.reference(prm))
+            else:
+                # 【名前を付ける】: 名前付きなら `Out(<name>, …)` で**値と esd**を回収できる。
+                #   無名の `@` は Out から参照できず、精密化後セルが取り出せない。
+                #   結果出力を要求していないときは付けない (INP を無駄に汚さない)。
+                named = (
+                    replace(param, name=f"{_slug(name)}_{axis}")
+                    if (self.results_path and not param.name)
+                    else param
+                )
+                value = render_param(named)
             lines.append(f"{_INDENT_PHASE}{axis} {value}")
         for site in phase.sites:
             lines.append(self._site_line(phase, site, shared))
@@ -354,6 +373,15 @@ class TopasDocument:
             lines.append(
                 f'{_INDENT_PHASE}Out({wt_name}, "wt_frac\\t{name}\\t%.8f", "\\t%.8f\\n")'
             )
+            # 精密化後セルを回収する。従属軸 (=Get(a);) は独立変数から復元できるので出さない。
+            for axis, param in phase.cell.items():
+                if param.is_reference or shared.get((name, f"cell.{axis}")):
+                    continue
+                prm_name = param.name or f"{_slug(name)}_{axis}"
+                lines.append(
+                    f'{_INDENT_PHASE}Out({prm_name}, '
+                    f'"cell\\t{name}\\t{axis}\\t%.8f", "\\t%.8f\\n")'
+                )
         lines.extend(f"{_INDENT_PHASE}{extra}" for extra in terms.extras)
         lines.extend(f"{_INDENT_PHASE}{extra}" for extra in phase.extras)
         return lines

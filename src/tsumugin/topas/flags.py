@@ -80,11 +80,12 @@ def _release_sites(
     for site in phase.sites:
         updates: dict[str, object] = {}
         if coords is not None:
-            # 特殊位置の座標 (0, 1/4, 1/3 …) も TOPAS では素直に解放すると対称性が壊れる。
-            # GSAS は GetCSxinel で自由軸を判定するが、ここでは**参照式でない座標のみ**を
-            # 解放し、固定すべき成分は structure 側が参照式にしておく契約とする。
+            # 【サイト対称】: 特殊位置の成分 (鏡面上の y=1/4 など) や他軸と結束する成分を
+            #   解放すると対称性が壊れる。`topas.symmetry` が対称操作から求めた自由軸だけを
+            #   解放する (GSAS の GetCSxinel 相当)。判定できていない (空) なら触らない。
             for axis in ("x", "y", "z"):
-                updates[axis] = _set_refine(getattr(site, axis), coords)
+                allowed = coords and axis in site.free_coord_axes
+                updates[axis] = _set_refine(getattr(site, axis), allowed)
         if beq is not None:
             updates["beq"] = _set_refine(site.beq, beq)
         if occupancy is not None:

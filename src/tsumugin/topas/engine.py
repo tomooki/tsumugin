@@ -16,10 +16,13 @@
 from __future__ import annotations
 
 import math
+import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
+
+import numpy as np
 
 from ..autorietveld.model import (
     AutoRietveldResult,
@@ -35,7 +38,7 @@ from .driver import run_tc
 from .flags import apply_stage
 from .inp import TopasDocument
 from .instrument import histogram_to_topas
-from .parse import limit_hits_from_out, parse_out_metrics, parse_records
+from .parse import TopasRecords, limit_hits_from_out, parse_out_metrics, parse_records
 from .structure import structure_to_topas_phase
 
 __all__ = ["run_topas_rietveld"]
@@ -208,21 +211,78 @@ def run_topas_rietveld(
             stage_results=tuple(stage_results),
             final_rwp=final_rwp,
             final_gof=final_gof,
-            refined_cells=_refined_cells(records, reference_cells),
+            refined_cells=_refined_cells(records, doc, reference_cells),
             validity=ValidityReport(passed=math.isfinite(final_rwp)),
-            n_obs=0,
+            n_obs=_count_observations(histograms, work),
             phase_weight_fractions=weight_fractions,
             backend=_BACKEND,
             project_path=str(keep_project) if keep_project else "",
         )
 
 
-def _refined_cells(
-    records: object, reference_cells: "Mapping[str, tuple[float, ...]] | None"
-) -> dict[str, tuple[float, ...]]:
-    """精密化後セル。v1 は ``Out()`` によるセル回収を未実装のため参照セルを素通しする。
+_CELL_ORDER = ("a", "b", "c", "al", "be", "ga")
+_DEFAULT_ANGLES = {"al": 90.0, "be": 90.0, "ga": 90.0}
 
-    **空 dict を返さない**のは validity ゲートが「セルが取れなかった」と「セルが動かなかった」を
-    区別できるようにするため。セルの実回収は後続タスクで `Out(Get(a), …)` を足して行う。
+
+def _refined_cells(
+    records: TopasRecords,
+    doc: TopasDocument,
+    reference_cells: "Mapping[str, tuple[float, ...]] | None",
+) -> "dict[str, tuple[float, float, float, float, float, float]]":
+    """``Out()`` が吐いたセルレコードから精密化後セルを組む。
+
+    従属軸 (``b =Get(a);``) は Out に出していないので、参照式から独立変数を引いて復元する。
+    回収できなかった相は参照セルへフォールバックする (**空にしない** — validity ゲートが
+    「取れなかった」と「動かなかった」を区別できなくなるため)。
     """
-    return dict(reference_cells) if reference_cells else {}
+    cells = records.keyed.get("cell", {})
+    resolved: dict[str, tuple[float, float, float, float, float, float]] = {}
+    for phase in doc.phases:
+        name = phase.phase_name
+        values: dict[str, float] = {}
+        for axis in phase.cell:
+            record = cells.get(f"{name}/{axis}")
+            if record is not None:
+                values[axis] = record[0]
+        if not values:
+            continue
+        for axis, param in phase.cell.items():
+            if axis in values:
+                continue
+            if param.is_reference and param.expression:
+                # ``Get(a)`` → 独立変数 a の精密化後値を使う。
+                match = re.fullmatch(r"Get\((\w+)\)", param.expression.strip())
+                if match and match.group(1) in values:
+                    values[axis] = values[match.group(1)]
+                    continue
+            values[axis] = param.value
+        resolved[name] = tuple(  # type: ignore[assignment]
+            values.get(axis, _DEFAULT_ANGLES.get(axis, 0.0)) for axis in _CELL_ORDER
+        )
+    for name, cell in (reference_cells or {}).items():
+        resolved.setdefault(name, tuple(cell))  # type: ignore[arg-type]
+    return resolved
+
+
+def _count_observations(histograms: Sequence[HistogramSpec], workdir: Path) -> int:
+    """精密化に用いた観測点数 (レンジ制限・除外区間を反映)。
+
+    TOPAS には点数を返す ``Get()`` キーが無いため、**自分で書き出した ``.xye``** から数える。
+    BIC の dof に効くので 0 のままにしない。
+    """
+    total = 0
+    for index, spec in enumerate(histograms):
+        path = workdir / f"hist{index}.xye"
+        if not path.is_file():
+            continue
+        x = np.array(
+            [float(line.split()[0]) for line in path.read_text().splitlines() if line.strip()]
+        )
+        mask = np.ones(x.shape, dtype=bool)
+        if spec.two_theta_limits is not None:
+            low, high = spec.two_theta_limits
+            mask &= (x >= low) & (x <= high)
+        for low, high in spec.excluded_regions:
+            mask &= ~((x >= low) & (x <= high))
+        total += int(mask.sum())
+    return total

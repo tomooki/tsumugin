@@ -20,6 +20,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .inp import Param, TopasPhase, TopasSite
+from .symmetry import free_coord_axes
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..autorietveld.cif_normalize import Structure
@@ -248,6 +249,8 @@ def structure_to_topas_phase(
     system = crystal_system(structure.it_number, structure.spacegroup_hm)
     cell, free_cell_keys = _cell_block(structure, system)
 
+    # 【サイト対称】: 特殊位置の座標を解放すると対称性が壊れる (しかも Rwp は下がりうるので
+    #   静かに間違った構造へ行き着く)。GSAS の GetCSxinel に相当する判定を対称操作から行う。
     sites = tuple(
         TopasSite(
             label=atom.label,
@@ -257,6 +260,7 @@ def structure_to_topas_phase(
             z=Param(atom.z),
             occupancy=Param(atom.occ),
             beq=Param(atom.uiso * BEQ_PER_UISO),
+            free_coord_axes=free_coord_axes(structure.symops, (atom.x, atom.y, atom.z)),
         )
         for atom in structure.atoms
     )
