@@ -120,6 +120,14 @@ class RietveldMultistartResult:
     corroboration_reason: str = ""
     #: valid 開始点の Rwp のばらつき (max-min)。0 に近いほど同じ最小点へ来ている。
     rwp_spread: float = 0.0
+    #: **パラメータクラスごとの収束**。単一 bool より遥かに有用である — 実測では T1 が歪で、
+    #: T3 が格子で割れており、**処方が違う** (縮退の解消 vs 格子を決める情報の不足)。
+    #: 「収束したか」ではなく「**何が**収束したか」が行動を決める。
+    class_convergence: Mapping[str, str] = field(default_factory=dict)
+    #: **初期値依存と判明したパラメータ** (開始点間で esd を超えて割れたもの)。
+    #: 縮退は手順では解消できないが、**影響を受けた値を「決まっている」として出版しない**
+    #: ことはできる。`undetermined_parameters` と同じ規律 (所見であって失敗ではない)。
+    initial_value_dependent: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -131,6 +139,8 @@ class RietveldMultistartResult:
             "corroboration_reason": self.corroboration_reason,
             "n_axes_jittered": self.n_axes_jittered,
             "rwp_spread": finite_or_none(self.rwp_spread),
+            "class_convergence": dict(self.class_convergence),
+            "initial_value_dependent": list(self.initial_value_dependent),
             "starts": [
                 {
                     "index": st.index,
@@ -214,6 +224,11 @@ def generate_perturbations(
 #: (`select_best` が既にそうしている)。ばらつき自体は所見として報告する — プロファイルが
 #: 初期値依存であることは、装置分解能の固定 (`instrument_profile`) を検討する材料になる。
 RWP_SPREAD_REPORT_THRESHOLD = 0.5
+
+#: クラス判定の深刻さ (小さいほど深刻)。全対を畳むときに**最悪の対**を採る。
+_CLASS_SEVERITY = {
+    "DISAGREE": 0, "UNDETERMINED": 1, "INCOMPARABLE": 2, "AGREE": 3,
+}
 
 
 def _is_valid(result: AutoRietveldResult) -> bool:
@@ -323,6 +338,25 @@ def summarize_multistart(
             "**この軸では試験していない**ので傍証にはならない"
         )
 
+    # 【クラス別の収束 + 初期値依存パラメータ】: 全対の判定を畳む。あるクラスがどこか 1 対でも
+    #   割れていれば、そのクラスは「収束していない」— 開始点は同格なので最悪の対が結論になる。
+    class_conv: dict[str, str] = {}
+    dependent: dict[str, float] = {}
+    if report is not None:
+        for pair in report.pairs:
+            for cls in pair.classes:
+                if not cls.n_compared:
+                    continue
+                prev = class_conv.get(cls.param_class)
+                if prev is None or _CLASS_SEVERITY.get(cls.verdict, 9) < _CLASS_SEVERITY.get(
+                    prev, 9
+                ):
+                    class_conv[cls.param_class] = cls.verdict
+                worst = cls.worst
+                if worst is not None and worst.verdict == "DISAGREE":
+                    z = worst.z if worst.z is not None else float("inf")
+                    dependent[worst.key] = max(dependent.get(worst.key, 0.0), z)
+
     best_index, best = select_best(starts)
     return RietveldMultistartResult(
         best=best,
@@ -337,6 +371,10 @@ def summarize_multistart(
         n_axes_jittered=n_axes,
         corroboration_reason=reason,
         rwp_spread=float(rwp_spread),
+        class_convergence=class_conv,
+        initial_value_dependent=tuple(
+            k for k, _ in sorted(dependent.items(), key=lambda kv: (-kv[1], kv[0]))
+        ),
     )
 
 

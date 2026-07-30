@@ -58,7 +58,9 @@ class _Recorder:
         return _result(self.rwp_by_name.get(candidate.name, 20.0))
 
 
-def _fake_multistart(rec: _Recorder, *, corroborated: bool = True):
+def _fake_multistart(rec: _Recorder, *, corroborated: bool = True,
+                     class_convergence: dict | None = None,
+                     dependent: tuple = ()):
     from tsumugin.autorietveld.multistart import (
         MultistartStart,
         RietveldMultistartResult,
@@ -82,6 +84,10 @@ def _fake_multistart(rec: _Recorder, *, corroborated: bool = True):
             n_basins=1 if corroborated else 2,
             is_global_corroborated=corroborated,
             corroboration_reason="corroborated" if corroborated else "multiple_basins",
+            class_convergence=class_convergence or {
+                "cell": "AGREE", "coord": "AGREE", "occupancy": "AGREE",
+            },
+            initial_value_dependent=dependent,
         )
 
     return fake
@@ -156,18 +162,48 @@ def test_failed_search_does_not_pretend_to_confirm():
     assert any("収束確認へ進めない" in w for w in got.warnings)
 
 
-def test_not_corroborated_is_reported_as_a_finding_not_hidden():
-    """★収束が確認できないことは**失敗ではなく所見**。閾値を緩めて隠さない旨まで書く。"""
+def test_structure_converged_but_strain_did_not_is_still_an_adoptable_answer():
+    """★**規定の判断規則**: 構造が収束していれば解を採用してよい。割れたクラスは未決定と報告。
+
+    非トートロジー: 縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消できないので、
+    全クラスの収束を採用条件にすると**どのデータでも解を出せなくなる** (実測: T1 は歪が
+    常に割れる)。構造が収束していれば構造の答えは信頼でき、割れたクラスは「決まっていない」
+    として報告すればよい — 値を捏造せず、かつ解析は前へ進む。
+    """
     rec = _Recorder({"default": 9.81})
-    fake_ms = _fake_multistart(rec, corroborated=False)
+    fake_ms = _fake_multistart(
+        rec, corroborated=False,
+        class_convergence={"cell": "AGREE", "coord": "AGREE", "occupancy": "AGREE",
+                           "microstructure": "DISAGREE"},
+        dependent=("fap.hist0.size",),
+    )
 
     got = optimize_then_confirm([_H], [_P], candidates=("default",),
                                 search_runner=rec.search_runner,
                                 multistart_runner=fake_ms)
 
-    assert got.is_corroborated is False
-    assert any("閾値を緩めて隠してはならない" in w for w in got.warnings)
-    assert got.best is not None, "確認できなくても最良フィットは返す"
+    assert got.is_corroborated is False, "全クラスの厳密 AND は False のまま"
+    assert got.structure_is_corroborated is True, "構造は収束 = 解は採用してよい"
+    assert got.undetermined_by_initial_values == ("fap.hist0.size",)
+    assert any("出版してはならない" in w for w in got.warnings)
+    assert any("構造 (格子・座標・占有率) は収束している" in w for w in got.warnings)
+    assert got.best is not None
+
+
+def test_a_diverged_structure_is_not_adoptable():
+    """【対照】構造そのものが割れていれば `structure_is_corroborated` は False。"""
+    rec = _Recorder({"default": 9.81})
+    fake_ms = _fake_multistart(
+        rec, corroborated=False,
+        class_convergence={"cell": "DISAGREE", "coord": "AGREE", "occupancy": "AGREE"},
+        dependent=("PbSO4.a",),
+    )
+    got = optimize_then_confirm([_H], [_P], candidates=("default",),
+                                search_runner=rec.search_runner,
+                                multistart_runner=fake_ms)
+
+    assert got.structure_is_corroborated is False
+    assert "PbSO4.a" in got.undetermined_by_initial_values
 
 
 def test_report_dict_is_json_safe():

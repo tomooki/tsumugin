@@ -25,7 +25,12 @@ from ..multistart.perturb import MultistartConfig, PerturbationSpec
 from ..store import Ledger
 from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
 from .multistart import RietveldMultistartResult, run_multistart_rietveld
+from .agreement import CELL, COORD, OCCUPANCY
 from .search import DEFAULT_CANDIDATES, RecipeSearchResult, SearchConfig, run_recipe_search
+
+#: 「解を採用してよいか」を決めるクラス。歪/プロファイルは縮退の影響を受けるため含めない —
+#: 含めると縮退のあるデータでは**どの手順でも解が出せなくなる** (実測: T1 は歪が常に割れる)。
+STRUCTURE_CLASSES = (CELL, COORD, OCCUPANCY)
 
 __all__ = ["DEFAULT_COORD_JITTER_ANG", "ConvergenceReport", "optimize_then_confirm"]
 
@@ -66,12 +71,46 @@ class ConvergenceReport:
 
     @property
     def is_corroborated(self) -> bool:
+        """**全クラス**が収束したか (厳密な AND)。行動を決めるのは下の 2 つの方が有用。"""
         return bool(self.multistart is not None and self.multistart.is_global_corroborated)
+
+    @property
+    def structure_is_corroborated(self) -> bool:
+        """**構造 (格子・座標・占有率) が収束したか** — 解を採用してよいかの判断。
+
+        縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消できないので、全クラスの
+        収束を採用条件にすると**どのデータでも解を出せなくなる**。構造が収束していれば
+        構造の答えは信頼でき、割れたクラスは「決まっていない」として報告すればよい。
+        """
+        ms = self.multistart
+        if ms is None or not ms.class_convergence:
+            return False
+        return all(
+            ms.class_convergence.get(c, "INCOMPARABLE") == "AGREE"
+            for c in STRUCTURE_CLASSES
+            if c in ms.class_convergence
+        ) and any(c in ms.class_convergence for c in STRUCTURE_CLASSES)
+
+    @property
+    def undetermined_by_initial_values(self) -> tuple[str, ...]:
+        """**初期値依存のため出版してはならない**パラメータ (esd を超えて開始点間で割れた)。
+
+        縮退そのものは消せないが、影響を受けた値を「決まっている」として出すのは止められる。
+        `AutoRietveldResult.undetermined_parameters` (単発の esd 判定) と同じ規律で、
+        こちらは**複数開始点でしか見えない**種類の未決定を拾う。
+        """
+        return () if self.multistart is None else self.multistart.initial_value_dependent
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "adopted_recipe": self.adopted_recipe,
             "is_corroborated": self.is_corroborated,
+            # 【行動を決めるのはこの 2 つ】: 単一 bool は「何をすべきか」を語らない。
+            "structure_is_corroborated": self.structure_is_corroborated,
+            "undetermined_by_initial_values": list(self.undetermined_by_initial_values),
+            "class_convergence": (
+                {} if self.multistart is None else dict(self.multistart.class_convergence)
+            ),
             "final_rwp": finite_or_none(self.best.final_rwp) if self.best else None,
             "search": None if self.search is None else self.search.to_dict(),
             "multistart": None if self.multistart is None else self.multistart.to_dict(),
@@ -154,11 +193,19 @@ def optimize_then_confirm(
         **confirm_kwargs,
     )
     warnings.extend(f"収束確認: {w}" for w in multistart.warnings)
-    if not multistart.is_global_corroborated:
+    diverged = [
+        c for c, v in multistart.class_convergence.items() if v != "AGREE"
+    ]
+    if diverged:
         warnings.append(
-            f"**収束は確認できていない** ({multistart.corroboration_reason})。"
-            "これは失敗ではなく所見であり、閾値を緩めて隠してはならない — "
-            "初期値依存があるという事実そのものが報告すべき結果である"
+            f"初期値依存のクラス: {sorted(diverged)} — **これらの値は「決まっている」として"
+            "出版してはならない**。縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消"
+            "できないので、閾値を緩めて隠すのではなく未決定として報告する"
+        )
+    if diverged and not set(diverged) & set(STRUCTURE_CLASSES):
+        warnings.append(
+            "**構造 (格子・座標・占有率) は収束している** — 構造の答えは採用してよい。"
+            f"割れているのは {sorted(diverged)} だけである"
         )
     # 最終値は収束確認の最良フィット (Phase A の単発結果ではない — 同じ手順で複数点走らせた
     # うちの最良の方が、常に同等以上である)。
