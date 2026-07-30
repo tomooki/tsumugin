@@ -139,3 +139,17 @@ def test_nan_values_are_rejected():
     """NaN を数値として通さない (発散を「値がある」と誤読しない)。"""
     rec = parse_records("r_wp\tnan\n")
     assert "r_wp" not in rec.scalars or not math.isnan(rec.scalars.get("r_wp", 0.0))
+
+
+def test_a_purely_numeric_key_is_not_usable():
+    """**キーに裸の数字を使えない**ことを明示する (書き出し側への制約)。
+
+    末尾の数値列を (値, esd) とみなす設計なので、``hist_rwp<TAB>0<TAB>8.6`` は
+    索引 ``0`` まで数値として吸われ、キーが空になってレコードごと落ちる。書き出し側は
+    ``h0`` のように非数値の接頭辞を付けること (`inp.TopasDocument._results_block`)。
+    """
+    assert parse_records("hist_rwp\t0\t8.6\n").keyed == {}
+    assert parse_records("hist_rwp\th0\t8.6\n").keyed["hist_rwp"]["h0"] == (
+        pytest.approx(8.6),
+        None,
+    )

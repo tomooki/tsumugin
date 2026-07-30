@@ -151,7 +151,7 @@ def test_missing_wavelength_raises_rather_than_defaulting_to_cu(tmp_path):
         histogram_to_topas(spec, workdir=tmp_path)
 
 
-def test_neutron_omits_the_xray_lp_factor(tmp_path):
+def test_neutron_omits_the_xray_polarisation_factor(tmp_path):
     prm = tmp_path / "n.PRM"
     prm.write_text(_PRM_NEUTRON, encoding="utf-8")
     spec = HistogramSpec(
@@ -159,6 +159,7 @@ def test_neutron_omits_the_xray_lp_factor(tmp_path):
         radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER, data_format="XYE",
     )
     hist = histogram_to_topas(spec, workdir=tmp_path)
+    # 偏光項 (LP_Factor) は入れないが、Lorentz 因子は入れる (下の専用テスト)。
     assert not any("LP_Factor" in line for line in hist.preamble)
     assert hist.is_neutron
 
@@ -385,3 +386,32 @@ def test_zero_lorentzian_coefficients_are_not_seeded(tmp_path):
     assert set(seed) == {"u", "v", "w"}
     # 非ゼロなら種にする。
     assert "y" in gsas_cw_profile_to_tchz({"X": 1.5})
+
+
+# ---------------- Lorentz 因子 (#174) ----------------
+
+
+def test_cw_neutron_gets_the_lorentz_factor(tmp_path):
+    """**CW 中性子にも Lorentz 因子が要る** — 偏光因子が無いだけで L は X 線と同じ。
+
+    ``1/(sin²θ·cosθ)`` は 2θ=24° と 158° で 2 桁変わる。落とすと**ピーク位置は合うのに
+    強度の 2θ 依存が系統的にずれ**、Rwp が 3 倍近く悪いところで頭打ちになる
+    (実 garnet 12.3% 対 GSAS 4.33%、実 PbSO4 joint の中性子側 14.4%)。
+    TOPAS の Tutorial (Magnetic Refinement/lamno3.inp) は ``LP_Factor(90)`` = 偏光項が
+    消える角度、で同じ式を作っている。
+    """
+    hist = histogram_to_topas(_neutron_spec(tmp_path), workdir=tmp_path)
+    joined = "\n".join(hist.preamble)
+    assert "Lorentz_Factor" in joined
+    assert "LP_Factor(" not in joined  # X 線の偏光項は入れない
+
+
+def test_xray_keeps_the_polarised_lp_factor(tmp_path):
+    prm = tmp_path / "i.instprm"
+    prm.write_text(_INSTPRM_XRAY, encoding="utf-8")
+    spec = HistogramSpec(
+        data_path=str(_xye_source(tmp_path)), instrument_path=str(prm),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XYE",
+    )
+    joined = "\n".join(histogram_to_topas(spec, workdir=tmp_path).preamble)
+    assert "LP_Factor(26.4)" in joined and "Lorentz_Factor" not in joined

@@ -376,12 +376,27 @@ class TopasDocument:
         lines.extend(self.preamble)
         return lines
 
-    def _results_block(self) -> list[str]:
+    def _results_block(self, index: int) -> list[str]:
+        """結果レコードの出力行。
+
+        ``out "file"`` は先頭ヒストグラムだけ (下記)。``Out(Get(r_wp))`` は**書かれた ``xdd``
+        の値**を返すので、各 xdd に ``hist_rwp`` として内訳を出す。総合指標は ``.out`` の
+        先頭行から採るのでここには依存しない (`engine._metrics`)。
+        """
         if not self.results_path:
             return []
-        out: list[str] = [f'{_INDENT_HIST}out "{self.results_path}"']
-        for key in ("r_wp", "gof", "r_exp", "r_wp_dash"):
-            out.append(f'{_INDENT_HIST}Out(Get({key}), "{key}\\t%.8f\\n")')
+        out: list[str] = []
+        if index == 0:
+            # 【``out`` は先頭だけ】: ``append`` を付けない限りファイルを**切り詰めて**開く。
+            #   xdd ごとに出すと joint で 2 本目が 1 本目のレコードを消す (r_wp すら残らない)。
+            out.append(f'{_INDENT_HIST}out "{self.results_path}"')
+            for key in ("r_wp", "gof", "r_exp", "r_wp_dash"):
+                out.append(f'{_INDENT_HIST}Out(Get({key}), "{key}\\t%.8f\\n")')
+        # 【キーに裸の数字を使わない】: `parse_records` は末尾の数値列を (値, esd) とみなす
+        #   ので、索引 ``0`` はキーでなく値として吸われてレコードごと落ちる。
+        out.append(
+            f'{_INDENT_HIST}Out(Get(r_wp), "hist_rwp\\th{index}\\t%.8f\\n")'
+        )
         return out
 
     def _site_line(
@@ -611,12 +626,7 @@ class TopasDocument:
             prefix = "@ " if hist.background.refine else ""
             lines.append(f"{_INDENT_HIST}bkg {prefix}{coeffs}")
         lines.extend(f"{_INDENT_HIST}{extra}" for extra in hist.extras)
-        # 【結果ブロックは先頭ヒストグラムだけ】: `out "file"` は ``append`` を付けない限り
-        #   ファイルを**切り詰めて**開く。xdd ごとに出すと joint で 2 本目が 1 本目の
-        #   レコードを消してしまう (r_wp すら残らない)。指標は文書全体で 1 つなので
-        #   先頭にだけ置く。
-        if index == 0:
-            lines.extend(self._results_block())
+        lines.extend(self._results_block(index))
         for phase in self.phases:
             lines.append("")
             terms = hist.phase_terms.get(phase.phase_name, PhaseHistogramTerms())

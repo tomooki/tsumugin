@@ -311,9 +311,18 @@ def histogram_to_topas(
     write_xye(work / data_name, x, y)
 
     preamble = list(_emission_lines(instrument, spec.radiation))
-    if not instrument.is_tof and not spec.radiation.is_neutron:
-        # Bragg-Brentano の Lorentz-偏光因子。単結晶モノクロメータ角は既定値を用いる。
-        preamble.append("LP_Factor(26.4)")
+    if not instrument.is_tof:
+        if spec.radiation.is_neutron:
+            # 【中性子にも Lorentz 因子は要る】: 無いのは**偏光**因子だけ。
+            #   1/(sin²θ·cosθ) は 2θ=24° と 158° で 2 桁変わるので、落とすとピーク位置は
+            #   合うのに強度の 2θ 依存が系統的にずれ、Rwp が 3 倍近く悪いところで頭打ちになる
+            #   (実 garnet 12.3% 対 GSAS 4.33%、実 PbSO4 joint の中性子側 14.4%)。
+            #   TOPAS Tutorial (Magnetic Refinement/lamno3.inp) は偏光項が消える
+            #   ``LP_Factor(90)`` で同じ式を作っている。
+            preamble.append("Lorentz_Factor")
+        else:
+            # Bragg-Brentano の Lorentz-偏光因子。単結晶モノクロメータ角は既定値を用いる。
+            preamble.append("LP_Factor(26.4)")
     if not instrument.is_tof:
         # 【ZE マクロを使わず箱を自前で張る】: マクロ内蔵の箱 (±100 ステップ) は緩すぎて
         #   ゼロ点が暴走する (ZERO_POINT_LIMIT_DEG 参照)。マクロの実体は th2_offset への

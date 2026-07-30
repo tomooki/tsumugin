@@ -284,3 +284,42 @@ def test_new_flags_produce_inp_that_tc_actually_accepts(label, flags):
     )
     stage = result.stage_results[-1]
     assert math.isfinite(stage.rwp), f"{label}: tc.exe が INP を受理していない (rwp=inf)"
+
+
+# ---------------- joint の総合指標 (#174) ----------------
+
+#: 実測: joint (X 線 + CW 中性子 PbSO4) の ``.out`` 先頭行は**全ヒストグラム込み**の r_wp、
+#: xdd0 の中に置いた ``Out(Get(r_wp))`` は**その xdd だけ**の r_wp を返す。
+_JOINT_OUT = "r_p 8.08 r_wp 10.7719291 r_exp 4.99 gof 2.15572354\n"
+_JOINT_RESULTS = "r_wp\t8.63512963\ngof\t1.75145516\nhist_rwp\th0\t8.63512963\n"
+
+
+def test_joint_metrics_come_from_the_global_out_header():
+    """**joint では ``results.txt`` の r_wp は第 1 ヒストグラムのものでしかない**。
+
+    `Out(Get(r_wp))` は書かれた ``xdd`` ブロックの値を返す。これを総合値として使うと、
+    第 2 ヒストグラムの当てはまりが悪化していても段が受理され、しかも**報告された数字が
+    名乗っている量と違う**ことになる (実 PbSO4 joint で 8.635 と 10.772)。
+    """
+    rwp, gof, _ = eng._metrics(_JOINT_OUT, _JOINT_RESULTS)
+    assert rwp == pytest.approx(10.7719291)
+    assert gof == pytest.approx(2.15572354)
+
+
+def test_single_histogram_metrics_are_unchanged():
+    """単一ヒストグラムでは両者が一致するので、切り替えても値は変わらない (非回帰)。"""
+    out = "r_p 6.18 r_wp 8.09334778 r_exp 4.93 gof 1.64156606\n"
+    rwp, gof, _ = eng._metrics(out, "r_wp\t8.09334778\ngof\t1.64156606\n")
+    assert rwp == pytest.approx(8.09334778)
+
+
+def test_metrics_fall_back_to_the_records_when_the_out_header_is_missing():
+    """``.out`` が壊れていても results.txt があれば段の判定はできる。"""
+    rwp, gof, _ = eng._metrics("iters 0\n", "r_wp\t9.0\ngof\t1.2\n")
+    assert rwp == pytest.approx(9.0) and gof == pytest.approx(1.2)
+
+
+def test_per_histogram_rwp_is_reported():
+    """総合値だけでなく**ヒストグラムごと**の r_wp も残す (どちらが悪いか分からないと直せない)。"""
+    result = eng._per_histogram_rwp(_JOINT_RESULTS)
+    assert result == {0: pytest.approx(8.63512963)}

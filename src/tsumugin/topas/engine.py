@@ -105,15 +105,44 @@ def _build_document(
     )
 
 
+def _per_histogram_rwp(results_text: str) -> "dict[int, float]":
+    """ヒストグラム索引 → その ``xdd`` だけの r_wp (診断用)。
+
+    総合値だけでは**どちらのヒストグラムが悪いのか分からない**。joint では放射源ごとに
+    当てはまりが大きく違うのが普通なので、内訳を残す。
+    """
+    records = parse_records(results_text)
+    return {
+        int(key[1:]): value
+        for key, (value, _) in records.keyed.get("hist_rwp", {}).items()
+        if key.startswith("h") and key[1:].isdigit()
+    }
+
+
+def _histogram_rwp_tuple(results_text: str, count: int) -> "tuple[float, ...]":
+    """索引順の内訳。**1 本でも欠けたら空タプル**を返す (歯抜けを 0 と読ませない)。"""
+    found = _per_histogram_rwp(results_text)
+    if len(found) != count or any(i not in found for i in range(count)):
+        return ()
+    return tuple(found[i] for i in range(count))
+
+
 def _metrics(run_out: str, results_text: str) -> "tuple[float, float, int]":
-    """(rwp, gof, n_params) を取り出す。``results.txt`` を優先し ``.out`` を補助に使う。
+    """(rwp, gof, n_params) を取り出す。
+
+    **総合指標は ``.out`` の先頭行から採る**。``results.txt`` の ``Out(Get(r_wp))`` は
+    それが書かれた ``xdd`` ブロックの値でしかないため、joint では**第 1 ヒストグラムの
+    r_wp を総合値と名乗る**ことになる (実 PbSO4 joint で 8.635 対 10.772)。そのまま使うと
+    第 2 ヒストグラムが悪化していても段が受理される。単一ヒストグラムでは両者が一致する。
+
+    ``.out`` が壊れているときだけ ``results.txt`` へ落ちる (段の判定は続けられる方がよい)。
 
     **`r_wp` を使う** — `r_wp_dash` は背景差引きで GSAS の rwp と同スケールでない (実測)。
     """
     records = parse_records(results_text)
     metrics = dict(parse_out_metrics(run_out))
-    rwp = records.scalars.get("r_wp", metrics.get("r_wp", float("inf")))
-    gof = records.scalars.get("gof", metrics.get("gof", float("inf")))
+    rwp = metrics.get("r_wp", records.scalars.get("r_wp", float("inf")))
+    gof = metrics.get("gof", records.scalars.get("gof", float("inf")))
     # 解放パラメータ数は .out の ``value`_esd`` 記法の個数で数える (esd が付くのは精密化した値)。
     from .parse import refined_values_from_out
 
@@ -296,6 +325,7 @@ def run_topas_rietveld(
             atom_uiso_esd=atom_uiso_esd,
             backend=_BACKEND,
             project_path=str(keep_project) if keep_project else "",
+            histogram_rwp=_histogram_rwp_tuple(best_results, len(histograms)),
         )
 
 

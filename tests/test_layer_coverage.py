@@ -398,6 +398,10 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "揃えてあるが (TOPAS は背景込みの r_wp を採る — r_wp_dash は背景差引きで非互換)、"
         "出所を隠すと ③ が「同じ数字だから同じ条件」と読んでしまう",
     ),
+    "histogram_rwp": (
+        "histogram_rwp",
+        "ヒストグラム別 Rwp (joint の内訳; 総合値だけではどちらが悪いか分からない)",
+    ),
     "project_path": (
         "project_path",
         "バックエンド中立の成果物ハンドル (GSAS は .gpx、TOPAS は INP/.out/results.txt の"
