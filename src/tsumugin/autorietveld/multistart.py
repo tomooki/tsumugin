@@ -201,19 +201,19 @@ def generate_perturbations(
     )
 
 
-#: 傍証を主張してよい **Rwp のばらつき上限** (valid 開始点の max-min, パーセントポイント)。
+#: Rwp のばらつきが**この値を超えたら報告する**閾値 (valid 開始点の max-min, ポイント)。
 #:
-#: ⚠ **構造が一致していても Rwp が離れていれば同じ最小点ではない**。実測 (T1, ±0.7% 格子,
-#: 3 開始点): 格子/座標/占有率/Uiso は全クラス AGREE なのに ``hist0.U`` が z=4634 で割れ、
-#: Rwp が **9.81 / 12.54 / 19.59** になった。構造クラスだけを見ると「同じ解」に見えるが、
-#: 目的関数の値が 10 ポイント違う 2 点を「収束した」と呼ぶのは誤りである。
+#: ⚠ **傍証の条件ではない** (一度そうしたが誤りだった)。収束の判定対象は
+#: **構造 (格子・座標・占有率) と歪 (サイズ/微小歪み)** であり、Caglioti U/V/W のような
+#: 装置側のプロファイルは nuisance である — **構造と歪が収束していれば、プロファイルについては
+#: 最良フィットを選ぶだけでよい**。
 #:
-#: 収束確認は**最適化の問題**なので目的関数の値を無視できない。構造クラスを一致条件から
-#: 外した理由 (プロファイルは平坦な相関谷) には「**同じ Rwp で**谷の別の点に落ちる」という
-#: 隠れた前提があり、Rwp が離れている時点でその前提が破れている。
-#:
-#: 0.5 は `SearchConfig.disagreement_rwp_eps` と揃えた (「僅差」の既存定義)。
-MAX_RWP_SPREAD = 0.5
+#: 実測 (T1, ±0.7% 格子, 3 開始点): 構造クラスは全て AGREE のまま ``hist0.U`` だけが z=4634 で
+#: 割れ Rwp が 9.81 / 12.54 / 19.59 になった。これは「別の解へ落ちた」のではなく
+#: 「**同じ解に対する当てはめの良し悪し**」であり、最良の 9.81 を採ればよい
+#: (`select_best` が既にそうしている)。ばらつき自体は所見として報告する — プロファイルが
+#: 初期値依存であることは、装置分解能の固定 (`instrument_profile`) を検討する材料になる。
+RWP_SPREAD_REPORT_THRESHOLD = 0.5
 
 
 def _is_valid(result: AutoRietveldResult) -> bool:
@@ -240,7 +240,7 @@ def summarize_multistart(
     starts: Sequence[MultistartStart],
     config: MultistartConfig,
     *,
-    max_rwp_spread: float = MAX_RWP_SPREAD,
+    rwp_spread_report_threshold: float = RWP_SPREAD_REPORT_THRESHOLD,
 ) -> RietveldMultistartResult:
     """実行済み開始点群からベイスン・傍証・最良を集計する (純関数, GSAS 非依存)。
 
@@ -297,9 +297,6 @@ def summarize_multistart(
         ("insufficient_valid_starts", len(valid) >= 2),
         ("diverged_starts", n_diverged == 0),
         ("multiple_basins", n_basins == 1),
-        # 【目的関数の値も見る】: 構造が一致していても Rwp が離れていれば同じ最小点ではない
-        #   (定数 `MAX_RWP_SPREAD` の実測を参照)。
-        ("rwp_spread", rwp_spread <= max_rwp_spread),
         ("perturbation_had_no_effect", (not jitter_requested) or n_axes > 0),
     )
     reason = next((name for name, ok in conditions if not ok), "corroborated")
@@ -311,10 +308,14 @@ def summarize_multistart(
         )
     if reason == "diverged_starts":
         warnings.append(f"{n_diverged} 点が発散したため傍証を主張しない")
-    if reason == "rwp_spread":
+    # 【報告するが傍証は妨げない】: 構造と歪が一致していればプロファイルは最良を選べばよい。
+    if rwp_spread > rwp_spread_report_threshold and n_basins == 1:
+        best_rwp = min(rwps) if rwps else float("nan")
         warnings.append(
-            f"構造は一致しているが Rwp が {rwp_spread:.3f} ポイントばらついている "
-            f"(上限 {max_rwp_spread}) — **同じ最小点ではない**。初期値依存が残っている"
+            f"構造と歪は一致しているが Rwp が {rwp_spread:.3f} ポイントばらついている "
+            f"(装置プロファイルの初期値依存)。**最良フィット {best_rwp:.4f} を採用**した — "
+            "解が割れているのではなく当てはめの良し悪しである。恒常的なら装置分解能の固定 "
+            "(instrument_profile) を検討する材料になる"
         )
     if reason == "perturbation_had_no_effect":
         warnings.append(

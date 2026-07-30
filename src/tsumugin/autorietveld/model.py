@@ -916,3 +916,13 @@ class AutoRietveldResult:
     # per-histogram (索引順): プロファイル項の esd。**2 状態** (``>0.0`` / ``None``)。
     #   装置パラメータに対称固定は無いので ``0.0`` 状態は存在しない。
     hist_profile_esd: tuple[Mapping[str, "float | None"], ...] = ()
+    # 【微細構造 (結晶子サイズ / 微小歪み)】: 相名 → ``"hist{i}"`` → 値。HAP パラメータなので
+    #   `hist_profile` (装置パラメータ) には入らず、これまで結果に一切載っていなかった。
+    #   **収束の判定対象は「構造 + 歪」**であり、Caglioti U/V/W のような装置側の nuisance とは
+    #   区別する必要がある (プロファイルは最良フィットを選べば足りるが、歪は物理量)。
+    #   異方 (uniaxial/generalized) の場合は代表成分 (等方相当) のみを載せる。
+    hap_size: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    hap_mustrain: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    # 同型の 2 状態 esd (``>0.0`` / ``None``)。
+    hap_size_esd: Mapping[str, Mapping[str, "float | None"]] = field(default_factory=dict)
+    hap_mustrain_esd: Mapping[str, Mapping[str, "float | None"]] = field(default_factory=dict)

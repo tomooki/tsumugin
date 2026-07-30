@@ -174,6 +174,24 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
             phase: {label: [finite_or_none(x) for x in xyz] for label, xyz in atoms.items()}
             for phase, atoms in result.atom_coords.items()
         },
+        # 【微細構造 (サイズ/微小歪み) + esd】: **収束の判定対象は「構造 + 歪」**なので、
+        #   歪は装置プロファイル (nuisance) と分けて出す。
+        "hap_size": {
+            ph: {h: finite_or_none(v) for h, v in d.items()}
+            for ph, d in result.hap_size.items()
+        },
+        "hap_mustrain": {
+            ph: {h: finite_or_none(v) for h, v in d.items()}
+            for ph, d in result.hap_mustrain.items()
+        },
+        "hap_size_esd": {
+            ph: {h: finite_or_none(v) if v is not None else None for h, v in d.items()}
+            for ph, d in result.hap_size_esd.items()
+        },
+        "hap_mustrain_esd": {
+            ph: {h: finite_or_none(v) if v is not None else None for h, v in d.items()}
+            for ph, d in result.hap_mustrain_esd.items()
+        },
         "atom_coord_esd": {
             phase: {label: [finite_or_none(x) for x in esd] for label, esd in atoms.items()}
             for phase, atoms in result.atom_coord_esd.items()

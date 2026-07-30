@@ -1932,6 +1932,50 @@ def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str
     return fracs, esds
 
 
+def _microstructure_maps(g2phases, g2hists):
+    """相×ヒストグラムの結晶子サイズ / 微小歪み (+ esd) を抽出する。
+
+    **収束の判定対象は「構造 + 歪」**である (プロファイルの Caglioti は装置側の nuisance で、
+    構造と歪が一致していれば最良フィットを選べば足りる)。しかし size/mustrain は HAP
+    パラメータなので `hist_profile` (装置パラメータ) には入らず、これまで結果に載っていなかった
+    = **歪の一致を確かめる術が無かった**。
+
+    異方 (uniaxial/generalized) は代表成分 (先頭値) のみを載せる — 成分数が設定で変わるため
+    そのまま比較すると「モデルが違う」ことと「値が違う」ことが混ざる。
+    :returns: (size, mustrain, size_esd, mustrain_esd) — いずれも 相名→"hist{i}"→値
+    """
+    size: dict[str, dict[str, float]] = {}
+    strain: dict[str, dict[str, float]] = {}
+    size_esd: dict[str, dict[str, float | None]] = {}
+    strain_esd: dict[str, dict[str, float | None]] = {}
+    for ph in g2phases:
+        try:
+            esds = read_variable_esds(ph.proj)
+        except Exception:  # noqa: BLE001 — 共分散なしは未精密化へ縮退
+            esds = {}
+        for hi, hist in enumerate(g2hists):
+            try:
+                hap = ph.getHAPvalues(hist)
+            except Exception:  # noqa: BLE001 — HAP が無い組合せはスキップ
+                continue
+            key = f"hist{hi}"
+            for name, values, esd_map, var in (
+                ("Size", size, size_esd, "Size;i"),
+                ("Mustrain", strain, strain_esd, "Mustrain;i"),
+            ):
+                try:
+                    entry = hap[name]
+                    # GSAS の HAP は [type, [値...], [refine flags...], ...] の形。
+                    raw = entry[1][0] if isinstance(entry[1], (list, tuple)) else entry[1]
+                    values.setdefault(ph.name, {})[key] = float(raw)
+                except Exception:  # noqa: BLE001 — 形が違えばその項だけ落とす
+                    continue
+                esd_map.setdefault(ph.name, {})[key] = esds.get(
+                    f"{ph.id}:{getattr(hist, 'id', hi)}:{var}"
+                )
+    return size, strain, size_esd, strain_esd
+
+
 def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
     """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。
 
@@ -2859,6 +2903,7 @@ def run_auto_rietveld(
         wt_fracs, wt_frac_esd = _weight_fraction_maps(g2phases, g2hists)
         # 原子パラメータ (FR-318 T7/T11: ラベルキー占有率/Uiso/多重度 + 占有率 esd の 2 状態)。
         atom_maps = _atom_result_maps(g2phases)
+        micro = _microstructure_maps(g2phases, g2hists)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
         out_gpx = ""
@@ -2900,6 +2945,10 @@ def run_auto_rietveld(
         atom_uiso_esd=atom_maps.uiso_esd,
         hist_profile_refined=hist_profile_refined,
         hist_profile_esd=hist_profile_esd,
+        hap_size=micro[0],
+        hap_mustrain=micro[1],
+        hap_size_esd=micro[2],
+        hap_mustrain_esd=micro[3],
     )
 
 

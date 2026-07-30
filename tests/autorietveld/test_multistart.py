@@ -306,36 +306,37 @@ def test_summary_dict_is_json_safe_and_names_the_failing_condition():
     assert payload["corroboration_reason"] == "insufficient_valid_starts"
 
 
-def test_matching_structure_with_a_large_rwp_spread_is_not_corroboration():
-    """★構造が一致していても Rwp が離れていれば**同じ最小点ではない**。
+def test_matching_structure_with_a_large_rwp_spread_still_corroborates():
+    """★構造と歪が一致していれば、プロファイル由来の Rwp のばらつきは**傍証を妨げない**。
 
-    非トートロジー: T1 の実測でまさにこれが起きた — ±0.7% の格子摂動 3 点で、格子/座標/
-    占有率/Uiso は**全クラス AGREE** なのに ``hist0.U`` が z=4634 で割れ、Rwp が
-    **9.81 / 12.54 / 19.59** になった。構造クラスだけを見ると「同じ解」に見えるが、
-    目的関数の値が 10 ポイント違う 2 点を「収束した」と呼ぶのは誤りである。
+    非トートロジー: T1 の実測でこれが起きた — ±0.7% の格子摂動 3 点で、格子/座標/占有率は
+    全クラス AGREE なのに ``hist0.U`` が z=4634 で割れ Rwp が 9.81/12.54/19.59 になった。
+    一度これを「同じ最小点ではない」として傍証条件にしたが**誤り**である: Caglioti U/V/W は
+    装置側の nuisance であり、構造と歪が収束していれば**プロファイルは最良フィットを選ぶだけ**
+    でよい。解が割れているのではなく当てはめの良し悪しである。
 
-    プロファイルを一致条件から外した根拠 (平坦な相関谷) には「**同じ Rwp で**谷の別の点に
-    落ちる」という隠れた前提があり、Rwp が離れている時点でその前提が破れている。
+    ただし**黙ってはいけない** — ばらつきは所見として報告し、採用した最良値を明示する。
     """
     starts = [
         _jittered(0, 1.00, _result(9.81, 9.372)),
-        _jittered(1, 1.01, _result(19.59, 9.372)),   # 同じ構造・全く違うフィット
+        _jittered(1, 1.01, _result(19.59, 9.372)),   # 同じ構造・当てはめだけが悪い
     ]
     got = summarize_multistart(starts, MultistartConfig(n_starts=2))
 
-    assert got.n_basins == 1, "前提: 構造クラスは一致している"
-    assert got.is_global_corroborated is False
-    assert got.corroboration_reason == "rwp_spread"
+    assert got.n_basins == 1
+    assert got.is_global_corroborated is True, "構造が一致していれば傍証は成立する"
+    assert got.corroboration_reason == "corroborated"
     assert got.rwp_spread == pytest.approx(9.78)
-    assert any("同じ最小点ではない" in w for w in got.warnings)
+    assert any("最良フィット" in w for w in got.warnings), "ばらつきは黙らず報告する"
+    assert got.best.final_rwp == pytest.approx(9.81), "採用は最良フィット"
 
 
-def test_a_small_rwp_spread_still_corroborates():
-    """【対照】ばらつきが小さければ傍証は成立する (常に False へ縮退していないこと)。"""
+def test_a_small_rwp_spread_reports_nothing_extra():
+    """【対照】ばらつきが小さければ余計な警告を出さない。"""
     starts = [
         _jittered(0, 1.00, _result(9.8060, 9.372)),
         _jittered(1, 1.01, _result(9.8062, 9.372)),
     ]
     got = summarize_multistart(starts, MultistartConfig(n_starts=2))
     assert got.is_global_corroborated is True
-    assert got.rwp_spread < 0.5
+    assert not any("最良フィット" in w for w in got.warnings)

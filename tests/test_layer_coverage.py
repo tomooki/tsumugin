@@ -432,6 +432,21 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "Issue #97: `hist_profile` と同じ ① 内省フィールド。③ への意味は一致判定の ASYMMETRIC "
         "件数 (どの手順がどの項を解放したか) に畳む — 生の解放フラグ表は ③ の判断材料にならない",
     ),
+    "hap_size": (
+        "hap_size",
+        "**露出**: 結晶子サイズは物理量であり出版値。**収束の判定対象は「構造 + 歪」**で、"
+        "Caglioti U/V/W のような装置側 nuisance とは区別する (構造と歪が収束していれば "
+        "プロファイルは最良フィットを選べば足りる)。HAP パラメータなので `hist_profile` "
+        "(装置パラメータ) には入らず、これまで結果に一切載っていなかった = 歪の一致を"
+        "確かめる術が無かった",
+    ),
+    "hap_mustrain": ("hap_mustrain", "**露出**: 微小歪み。上と対 (同じ論拠)"),
+    "hap_size_esd": (
+        "hap_size_esd",
+        "**露出**: サイズの esd。esd を伴わない精密化値は出版できない (`cell_esd` と同じ規律)。"
+        "2 状態 (>0.0 / null)",
+    ),
+    "hap_mustrain_esd": ("hap_mustrain_esd", "**露出**: 微小歪みの esd。上と対"),
     "hist_profile_esd": (
         UNEXPOSED,
         "Issue #97: 同上 (`hist_profile` が未露出なので esd 単体では意味を持たない)。"

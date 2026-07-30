@@ -61,7 +61,12 @@ __all__ = [
 #: パラメータクラス。``structure_classes`` の既定はこの前半 3 つ。
 CELL, COORD, OCCUPANCY = "cell", "coord", "occupancy"
 UISO, PROFILE, WEIGHT_FRACTION = "uiso", "profile", "weight_fraction"
-PARAM_CLASSES = (CELL, COORD, OCCUPANCY, UISO, PROFILE, WEIGHT_FRACTION)
+#: 結晶子サイズ / 微小歪み (HAP)。**装置側のプロファイルとは区別する** — こちらは物理量であり
+#: 収束の判定対象だが、Caglioti U/V/W は nuisance で最良フィットを選べば足りる。
+MICROSTRUCTURE = "microstructure"
+PARAM_CLASSES = (
+    CELL, COORD, OCCUPANCY, MICROSTRUCTURE, UISO, PROFILE, WEIGHT_FRACTION,
+)
 
 #: 判定語彙。``AGREE*`` の 3 つだけが「一致」であり、``UNDETERMINED`` は**一致ではない**。
 AGREE = "AGREE"
@@ -114,11 +119,16 @@ class AgreementTolerances:
     :param k_esd: esd スケールの許容 (``|Δ|/√(σa²+σb²) ≤ k_esd``)
     :param coord_dist_floor_ang: **Å 距離**の床 (比ではない)。0.02 Å は通常の粉末 Rietveld の
         結合距離精度で、これ以下の差は同じ構造とみなす
-    :param structure_classes: ``SAME_SOLUTION`` に一致を要求するクラス。
-        ⚠ 既定に ``profile``/``uiso`` を含めないのは意図的 — U/V/W はほぼ平坦な相関谷にあり
-        (T1 実測 ``V×W r=−0.959``)、同じ構造・同じ Rwp で谷の別の点に落ちるのが正常である。
-        `serious` は Uiso を段階的に解放し `default` は一度に解放するので、Uiso 集合は
-        **設計上違う**。ここに足すと問われている問いと無関係な理由で不一致になる
+    :param structure_classes: ``SAME_SOLUTION`` に一致を要求するクラス =
+        **構造 (格子・座標・占有率) + 歪 (結晶子サイズ/微小歪み)**。
+        ⚠ 既定に ``profile`` を含めないのは意図的 — Caglioti U/V/W は**装置側の nuisance** で
+        ほぼ平坦な相関谷にあり (T1 実測 ``V×W r=−0.959``)、**構造と歪が収束していれば
+        プロファイルは最良フィットを選べば足りる**。実測 (T1, ±0.7% 格子 3 点) では構造が
+        全クラス AGREE のまま ``hist0.U`` だけが割れ Rwp が 9.81/12.54/19.59 になったが、
+        これは「別の解」ではなく「同じ解に対する当てはめの良し悪し」であり、最良の 9.81 を
+        採ればよい (`multistart.select_best` が既にそうしている)。
+        ``uiso`` も外してある — `serious` は段階的に、`default` は一度に解放するので
+        Uiso の解放集合は**設計上違う**
     :param min_procedures: 傍証を主張するのに必要な比較可能な結果の数。
         1 つでは「クラスタが 1 つ」が空虚に成立するため
     """
@@ -129,8 +139,10 @@ class AgreementTolerances:
     occupancy_abs_floor: float = 0.02
     uiso_abs_floor: float = 0.002
     profile_rel_floor: float = 0.05
+    #: サイズ/微小歪みの相対床。装置プロファイルより厳しくする (物理量なので)。
+    microstructure_rel_floor: float = 0.02
     fraction_abs_floor: float = 0.01
-    structure_classes: tuple[str, ...] = (CELL, COORD, OCCUPANCY)
+    structure_classes: tuple[str, ...] = (CELL, COORD, OCCUPANCY, MICROSTRUCTURE)
     min_procedures: int = 3
     min_agreeing: int = 2
     duplicate_veto: bool = True
@@ -527,6 +539,29 @@ def _mapping_items(
     return out
 
 
+def _microstructure_items(
+    a: AutoRietveldResult, b: AutoRietveldResult, tol: AgreementTolerances
+) -> list[ParameterAgreement]:
+    """結晶子サイズ / 微小歪み (HAP)。**歪は物理量なので収束の判定対象**である。"""
+    out: list[ParameterAgreement] = []
+    for name, va, vb, ea, eb in (
+        ("size", a.hap_size, b.hap_size, a.hap_size_esd, b.hap_size_esd),
+        ("mustrain", a.hap_mustrain, b.hap_mustrain, a.hap_mustrain_esd, b.hap_mustrain_esd),
+    ):
+        for phase in sorted(set(va) & set(vb)):
+            for hkey in sorted(set(va[phase]) & set(vb[phase])):
+                x, y = float(va[phase][hkey]), float(vb[phase][hkey])
+                denom = max(abs(x), abs(y), 1e-12)
+                out.append(
+                    _verdict(
+                        MICROSTRUCTURE, f"{phase}.{hkey}.{name}", x, y,
+                        ea.get(phase, {}).get(hkey), eb.get(phase, {}).get(hkey),
+                        abs(x - y) / denom, tol.microstructure_rel_floor, tol.k_esd,
+                    )
+                )
+    return out
+
+
 def _profile_items(
     a: AutoRietveldResult, b: AutoRietveldResult, tol: AgreementTolerances
 ) -> list[ParameterAgreement]:
@@ -728,6 +763,7 @@ def compare_results(
             UISO, a.atom_uiso, b.atom_uiso,
             a.atom_uiso_esd, b.atom_uiso_esd, tol.uiso_abs_floor, tol.k_esd,
         ),
+        MICROSTRUCTURE: _microstructure_items(a, b, tol),
         PROFILE: _profile_items(a, b, tol),
         WEIGHT_FRACTION: _fraction_items(a, b, tol),
     }
