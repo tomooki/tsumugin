@@ -14,11 +14,11 @@
 | T1 | 可用性境界 (`topas.availability` / 例外 / marker) | ✅ | 明示指定は権威的・`=none` で強制無効化。skip ガードを 3 モードで実証 |
 | T2 | INP 文書ビルダ (`topas.inp`) | ✅ | joint の `prm` 持ち上げ。実 tc.exe で受理・収束を確認 |
 | T3 | CIF → `str` ブロック (`topas.structure`) | ✅ | 結晶系拘束。実 PbSO4 CIF で **Rwp 12.30 / GOF 2.49**・セル文献一致 |
-| T4 | 装置パラメータ変換 (`topas.instrument`) | ⬜ | GSAS `.prm`/`.instprm` → TOPAS。データは `reference.io` で `.xye` へ |
-| T5 | driver + パーサ (`topas.driver` / `topas.parse`) | ⬜ | **終了コードで判定しない** (T0-3)。PATH に home を足す (T0-4) |
-| T6 | 段階フラグ翻訳表 (`topas.flags`) | ⬜ | 17 フラグ。未対応は黙って無視せず明示的に失敗させる |
+| T5 | driver + パーサ (`topas.driver` / `topas.parse`) | ✅ | **終了コードで判定しない** (T0-3)。PATH に home を足す (T0-4)。失敗マーカー行は全部集約 |
+| T4 | 装置パラメータ変換 (`topas.instrument`) | 🟡 | `.instprm`/`.PRM` 両対応・データは `.xye` へ。**プロファイル種付けは opt-in のまま** (係数スケール未検証) |
+| T6 | 段階フラグ翻訳表 (`topas.flags`) | 🟡 | 13/17 フラグ。未対応は `UnsupportedStageFlagError` で明示的に失敗。残り: `tof_profile`/`absorption`/`hydrostatic_strain`/`preferred_orientation` |
+| T8 | TOPAS 段階解放エンジン (`topas.engine`) | ✅ | **実 PbSO4 で Rwp 8.30 / GOF 1.68** (GSAS X 線単独 11.0% 超え) |
 | T7 | 段方針の共通化 (`autorietveld.stagepolicy`) | ⬜ | リファクタ。受け入れ条件は gated T1–T4 の非回帰 |
-| T8 | TOPAS 段階解放エンジン (`topas.engine`) | ⬜ | `run_auto_rietveld` と同一シグネチャ |
 | T9 | `backends.topas.TopasBackend` | ⬜ | Protocol + `simulate` (`iters 0` + `Out_X_Ycalc`) |
 | T10 | バックエンド選択の配線 (①→②) | ⬜ | runner ファクトリ 6 箇所 + `backend` 引数 + `list_refinement_backends` |
 | T11 | ③ 手順書 (skill / PLAYBOOK) + 恒久ガード | ⬜ | 変異させて fail することを実証してから受け入れる |
@@ -47,3 +47,14 @@ uv run ruff check src tests
 | T4 | NAC+CaF2 TOF + 放射光 多相 | ~12.8% | Rw ≤ 15% |
 
 **両エンジンが同じ格子・同じ相分率に落ちるか**が最重要の観測点。
+
+## 既知の積み残し (T8 時点)
+
+- **座標段 (`coords`) が実データで revert される**。TOPAS 経路は特殊位置の自由軸判定を持たず、
+  Pnma の鏡映サイト (y=1/4 など) まで解放してしまう。GSAS 経路は `GSASIIspc.GetCSxinel` で
+  自由軸を判定している。TOPAS では `structure` 側で特殊位置成分を参照式 (固定) にしておく契約に
+  するのが筋。**現状はガードが効いて revert されるだけなので静かに壊れてはいない**が、
+  座標が一切精密化されないため T12 の合格基準に届かない可能性がある。
+- **精密化後セルの回収が未実装** (`_refined_cells` は参照セルを素通し)。`Out(Get(a), …)` を
+  足して `refined_cells`/`cell_esd` を埋める必要がある。validity ゲートが実質空回りしている。
+- `n_obs` が 0 のまま (BIC の dof に効く)。`Out(Get(Yobs_Count), …)` 相当で回収する。
