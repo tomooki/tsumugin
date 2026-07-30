@@ -7,6 +7,7 @@ ledger 追記という**方針**は GSAS 経路と同じでなければならな
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -249,3 +250,37 @@ def test_occupancy_is_released_only_for_declared_sites(synthetic_cif):
     out = apply_stage(doc, RefinementStage(label="occ", flags={"occupancy": True}))
     released = {s.label for s in out.phases[0].sites if s.occupancy.refine}
     assert released == {"O1"}
+
+
+# ---------------- 新フラグの INP が実 tc.exe に受理されるか (#173) ----------------
+
+
+@pytest.mark.topas
+@pytest.mark.parametrize(
+    ("label", "flags"),
+    [
+        ("preferred_orientation", {"preferred_orientation": 4}),
+        ("absorption", {"absorption": True}),
+    ],
+)
+def test_new_flags_produce_inp_that_tc_actually_accepts(label, flags):
+    """**tc.exe は構文エラーでも終了コード 0 を返す** — 実行して受理を確かめる。
+
+    翻訳表を「それらしく」書くだけでは、段が rwp=inf → revert に落ちて**黙って何も
+    しなかった**ことになる。マニュアルが暗号化 PDF で読めない以上、1 フラグずつ実 tc.exe で
+    検算するのが唯一の担保 (実際 `Cylindrical_I_Correction(=name;)` はこれで落ちた)。
+    """
+    hist = _histogram()
+    if flags.get("absorption"):
+        # 円筒吸収は反射光学系に当てられない (平板に円筒の式を当てない方針)。
+        hist = replace(hist, geometry=Geometry.DEBYE_SCHERRER)
+    result = eng.run_topas_rietveld(
+        [hist],
+        [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"background": {"coeffs": 6}, "scale": True}),
+            RefinementStage(label=f"S1 {label}", flags=flags),
+        ),
+    )
+    stage = result.stage_results[-1]
+    assert math.isfinite(stage.rwp), f"{label}: tc.exe が INP を受理していない (rwp=inf)"

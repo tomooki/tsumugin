@@ -49,7 +49,7 @@ from typing import Mapping
 
 import numpy as np
 
-from ..autorietveld.model import HistogramSpec, Radiation
+from ..autorietveld.model import Geometry, HistogramSpec, Radiation
 from .inp import Param, TopasHistogram
 
 __all__ = [
@@ -351,6 +351,7 @@ def histogram_to_topas(
         weight=spec.weight,
         is_neutron=spec.radiation.is_neutron,
         is_tof=spec.radiation.is_tof,
+        is_bragg_brentano=spec.geometry is Geometry.BRAGG_BRENTANO,
         tof_calibration=tof_cal,
     )
 

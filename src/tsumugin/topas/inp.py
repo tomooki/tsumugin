@@ -210,6 +210,8 @@ class TopasHistogram:
     weight: float = 1.0
     is_neutron: bool = False
     is_tof: bool = False
+    is_bragg_brentano: bool = False
+    """反射光学系か。円筒吸収補正を当ててよいのは**平板でない**試料だけ。"""
     tof_calibration: "Mapping[str, float] | None" = None
     """TOF の ``difc``/``difa``/``zero`` (GSAS の difC/difA/Zero と直写像)。"""
     profile_seed: "Mapping[str, float] | None" = None
@@ -350,6 +352,13 @@ class TopasDocument:
     """設定時、``out`` ブロックで r_wp/gof/r_exp と相分率を書き出す (決定論的パース対象)。"""
     preamble: tuple[str, ...] = ()
     """``iters`` の後に差し込む追加の制御行。"""
+    shared_params: tuple[Param, ...] = ()
+    """トップレベルの共有 ``prm`` (名前必須)。
+
+    **複数の ``str`` ブロックから 1 つの値を参照させる**ための口。試料吸収の µR のように
+    「相ごとに別の値を持つのは物理的に誤り」だが ``scale_pks`` が ``str`` にしか書けない量が
+    これに当たる。名前が重複すると TOPAS は黙って共有するため、宣言はここに 1 度だけ置く。
+    """
 
     # ------------------------------------------------------------ 部品
 
@@ -622,11 +631,13 @@ class TopasDocument:
         shared_lines, shared = _shared_prm_plan(self.phases, share=share)
         group_lines, group_map = _group_prm_plan(self.phases)
         shared = {**shared, **group_map}
+        own_lines = [f"prm {render_param(p)}" for p in self.shared_params]
         lines = self._header()
-        if shared_lines or group_lines:
+        if shared_lines or group_lines or own_lines:
             lines.append("")
             lines.extend(shared_lines)
             lines.extend(group_lines)
+            lines.extend(own_lines)
         for index, hist in enumerate(self.histograms):
             lines.append("")
             lines.extend(self._histogram_block(index, hist, shared))

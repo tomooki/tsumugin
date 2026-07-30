@@ -19,7 +19,14 @@ from dataclasses import replace
 
 from ..autorietveld.model import RefinementStage
 from ..errors import TsumuginError
-from .inp import Param, PhaseHistogramTerms, TopasDocument, TopasHistogram, TopasPhase
+from .inp import (
+    Param,
+    PhaseHistogramTerms,
+    TopasDocument,
+    TopasHistogram,
+    TopasPhase,
+    _slug,
+)
 
 __all__ = ["SUPPORTED_FLAGS", "UnsupportedStageFlagError", "apply_stage"]
 
@@ -46,11 +53,17 @@ SUPPORTED_FLAGS: frozenset[str] = frozenset(
         "profile_lorentzian",
         "profile_asymmetry",
         "phase_fraction_sum",
+        "preferred_orientation",
+        "absorption",
         "freeze_others",
     }
 )
-"""現在翻訳できるフラグ。``recipe`` が生成しうる残り (``tof_profile`` / ``absorption`` /
-``hydrostatic_strain`` / ``preferred_orientation``) は M12 の後続タスクで追加する。"""
+"""現在翻訳できるフラグ。残る ``tof_profile`` / ``hydrostatic_strain`` は実 TOF /
+マルチヒストグラム実データで検算できる段 (#174) と併せて追加する — 実行して確かめられない
+翻訳表は書かない (言語仕様の正が暗号化 PDF でなく実行結果しかないため)。"""
+
+#: 球面調和の既定次数 (GSAS 側 `engine._apply_stage` の `Pref.Ori.` 既定と揃える)。
+_PO_DEFAULT_ORDER = 4
 
 _PROFILE_NAMES = {"profile": ("u", "v", "w"), "profile_lorentzian": ("x", "y")}
 
@@ -175,6 +188,9 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
             )
             for p in phases
         ]
+        # 球面調和は**宣言そのものが解放**なので、凍結は行を落とすことで表す
+        # (`!` を付ける先が無い — 係数は TOPAS が自動生成する)。
+        histograms = [_drop_phase_extras(h, "PO_Spherical_Harmonics") for h in histograms]
 
     if "background" in flags:
         spec = flags["background"]
@@ -247,6 +263,115 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
             for h in histograms
         ]
 
+    if "preferred_orientation" in flags:
+        histograms = _apply_preferred_orientation(
+            histograms, phases, flags["preferred_orientation"]
+        )
+
+    shared = tuple(doc.shared_params)
+    if flags.get("absorption"):
+        histograms, shared = _apply_absorption(histograms, phases, shared, stage.label)
+
     # phase_fraction_sum: TOPAS は MVW が重量分率を正規化して返すため制約不要 (no-op)。
 
-    return doc.with_updates(phases=tuple(phases), histograms=tuple(histograms))
+    return doc.with_updates(
+        phases=tuple(phases), histograms=tuple(histograms), shared_params=shared
+    )
+
+
+# ---------------------------------------------------------------- 選択配向 / 吸収
+
+
+def _phase_extras(
+    hist: TopasHistogram, phase_name: str, line: str, marker: str
+) -> TopasHistogram:
+    """``str`` ブロックの追加行を**1 本だけ**保つ (同じ段を 2 度当てても重複しない)。"""
+    terms = _terms_for(hist, phase_name)
+    kept = tuple(x for x in terms.extras if marker not in x)
+    return _with_terms(hist, phase_name, terms.with_updates(extras=(*kept, line)))
+
+
+def _drop_phase_extras(hist: TopasHistogram, marker: str) -> TopasHistogram:
+    """``str`` ブロックの追加行のうち ``marker`` を含むものを落とす。"""
+    return hist.with_updates(
+        phase_terms={
+            name: terms.with_updates(
+                extras=tuple(x for x in terms.extras if marker not in x)
+            )
+            for name, terms in hist.phase_terms.items()
+        }
+    )
+
+
+def _apply_preferred_orientation(
+    histograms: "list[TopasHistogram]", phases: "list[TopasPhase]", value: object
+) -> "list[TopasHistogram]":
+    """選択配向を球面調和で入れる。
+
+    GSAS の ``Pref.Ori.`` は次数付きの球面調和で、TOPAS の ``PO_Spherical_Harmonics(sh, order)``
+    が対応する。March-Dollase (``PO``) は **hkl 方向を引数に要求する**が中立フラグはその情報を
+    運ばないので使わない — 方向を勝手に決めるのは「別のモデルを黙って当てはめた」ことになる。
+
+    球面調和は**宣言そのものが解放**である (係数は TOPAS が自動生成する) ため、解放/凍結は
+    行の有無で表す。
+    """
+    order = _PO_DEFAULT_ORDER if value is True else int(value)  # type: ignore[arg-type]
+    for index, hist in enumerate(histograms):
+        for phase in phases:
+            # 【名前は相 × ヒストグラムで一意に】: TOPAS のパラメータ名は大域なので、
+            #   同名だと全相が 1 つの配向分布を強制的に共有する。
+            name = f"po_{_slug(phase.phase_name)}_h{index}"
+            hist = _phase_extras(
+                hist,
+                phase.phase_name,
+                f"PO_Spherical_Harmonics({name}, {order})",
+                "PO_Spherical_Harmonics",
+            )
+        histograms[index] = hist
+    return histograms
+
+
+def _apply_absorption(
+    histograms: "list[TopasHistogram]",
+    phases: "list[TopasPhase]",
+    shared: "tuple[Param, ...]",
+    stage_label: str,
+) -> "tuple[list[TopasHistogram], tuple[Param, ...]]":
+    """試料吸収 (円筒 µR) を入れる。
+
+    GSAS の Sample Parameters ``Absorption`` に相当。TOPAS の ``Cylindrical_I_Correction(µR)``
+    は ``scale_pks`` を書き換えるので**``str`` ブロックにしか置けない**が、吸収は試料の性質
+    なので相ごとに別の値を持つのは物理的に誤り。宣言はトップレベルの共有 ``prm`` に 1 つ置き、
+    各相からは参照させる。
+
+    **マクロではなくその展開形を書く**: ``Cylindrical_I_Correction(=mur_h0;)`` /
+    ``Cylindrical_I_Correction(, =mur_h0;)`` はどちらも ``Error loading sstring_in`` で
+    異常終了する (実測)。マクロは名前を受け取って自分で ``prm`` を宣言する形しか通らないため、
+    共有したい場合は ``topas.inc`` の中身をそのまま書くしかない。
+
+    :raises UnsupportedStageFlagError: 反射光学系のとき。平板試料に円筒補正を当てるのは
+        **黙って別のモデルを適用する**ことになるので拒否する。
+    """
+    declared = {p.name for p in shared}
+    for index, hist in enumerate(histograms):
+        if hist.is_bragg_brentano:
+            raise UnsupportedStageFlagError(
+                f"absorption: 反射光学系 (Bragg-Brentano) のヒストグラム {index} には "
+                f"円筒吸収補正を当てられません (段 '{stage_label}')。平板試料に円筒の式を"
+                f"当てるのは別のモデルを黙って適用することになるため停止します。"
+            )
+        name = f"mur_h{index}"
+        if name not in declared:
+            # µR の箱は TOPAS マクロと同じ (0.0001–12)。初期値は薄めの試料を想定した 0.5。
+            shared = (*shared, Param(0.5, refine=True, name=name, minimum=1e-4, maximum=12.0))
+            declared.add(name)
+        for phase in phases:
+            hist = _phase_extras(
+                hist,
+                phase.phase_name,
+                f"scale_pks = AL_Cyl_Corr({name}) Cos(Th)^2 "
+                f"+ AB_Cyl_Corr({name}) Sin(Th)^2;",
+                "_Cyl_Corr(",
+            )
+        histograms[index] = hist
+    return histograms, shared
