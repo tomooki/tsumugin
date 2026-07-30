@@ -295,7 +295,8 @@ def test_basins_are_order_independent():
     """★推移的でない「同一」を貪欲に畳むと**列挙順でベイスン数が変わる**。
 
     非トートロジー: a≈b, b≈c, a≉c の鎖を作り、順列を変えても分割が同じであることを見る。
-    貪欲な「先頭一致」(`multistart.cluster_rietveld_basins`) はここで落ちる。
+    貪欲な「先頭一致」(旧 `multistart.cluster_rietveld_basins`; 本実装へ委譲して削除済) は
+    ここで落ちる。
     """
     import itertools
 

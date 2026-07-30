@@ -796,7 +796,8 @@ def cluster_agreement_basins(
     """N 手順を全対比較し、ベイスンへまとめて傍証を判定する。
 
     **union-find を使う** — 許容差による「同一」は推移的でないため、貪欲な「先頭一致」
-    (`autorietveld.multistart.cluster_rietveld_basins`) だと**列挙順でベイスン数が変わる**。
+    (旧 `autorietveld.multistart.cluster_rietveld_basins`。本モジュールへ委譲したので削除済)
+    だと**列挙順でベイスン数が変わる**。
     探索側が全ての同点を列挙順で解決している決定論規律と矛盾するので、ここでは推移閉包
     (= 一意な最細分割) を取る。ただし閉包は「鎖」を作り得るので `is_clique` を併記する。
     """
