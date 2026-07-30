@@ -56,6 +56,9 @@ Phase B  収束確認          run_multistart_rietveld(5 開始点, 並列) → 
 - 候補 = `DEFAULT_CANDIDATES` = `default` / `sizestrain_last` / `polish` / `serious1` / `adaptive`。
   **実測でデータ毎に勝った手順を覆う**集合である (T1・CaTeO3 = `polish` / T2 = `serious1` /
   T3 = `sizestrain_last`)。単一の手順で全データを満たすことはできない (F1)。
+  ⚠ `FINDINGS.md` §3 の「選定 5 案」とは**違う** — あちらは「5 案のうち 2 案以上が一致する」を
+  基準にした選定で、本設計変更 (一致を採用条件にしない) の前のものである。差と理由は
+  `FINDINGS.md` §3 の但し書きを参照。**実装の正は `search.DEFAULT_CANDIDATES`**。
 - 採用規則は既存の `rank_outcomes` をそのまま使う: **収束したものを優先**し、同層内は Rwp、
   観測集合を跨いだ Rwp/BIC 比較はしない、同点は BIC、最後は列挙順。
 - **「一つでも収束すれば採用」**でよい。手順どうしの一致は採用条件にしない — 手順差と
