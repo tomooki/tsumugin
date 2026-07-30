@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
 from tsumugin.autorietveld.recipe import build_recipe
@@ -284,3 +285,95 @@ def test_multiphase_with_mixed_occupancy_still_releases_phase_fractions():
     uiso_i = next(i for i, lab in enumerate(labels) if lab.endswith("uiso"))
     frac_i = next(i for i, lab in enumerate(labels) if "phase_fractions" in lab)
     assert frac_i < occ_i < uiso_i
+
+
+# ---------------------------------------------------------------------------
+# 候補レシピの軸 (opt-in kwargs) — 既定を汚さないこと
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({}, id="bare"),
+        pytest.param({"profile_granularity": "whole"}, id="explicit-whole"),
+        pytest.param({"size_strain_placement": "with_profile"}, id="explicit-with-profile"),
+        pytest.param({"background_escalation": ()}, id="empty-escalation"),
+        # ⚠ 既に持っている項数以下のエスカレーションは**後退させない** = 段を作らない
+        pytest.param({"background_escalation": (3, 6)}, id="escalation-not-above-default"),
+    ],
+)
+def test_optional_axes_default_to_the_pinned_sequence(kwargs):
+    """★既定値を明示的に渡しても既定段列と**完全一致**すること。
+
+    非トートロジー: 実測ベースライン (T1 9.80617 等) は既定段列の上に載っている。opt-in を
+    足した拍子に既定が 1 段でも動くと、10 案を比較する基準そのものが失われる。
+    """
+    got = build_recipe([_XRAY_BB], _SINGLE_PHASE, **kwargs)
+    assert tuple(s.label for s in got) == _XRAY_SINGLE
+    base = build_recipe([_XRAY_BB], _SINGLE_PHASE)
+    assert [(s.label, s.flags, s.note) for s in got] == [
+        (s.label, s.flags, s.note) for s in base
+    ]
+
+
+def test_accumulate_ends_in_the_same_release_state_as_whole():
+    """★累積形の**終状態**は 1 段形と同一 (途中の経路だけが違う)。
+
+    非トートロジー: 終状態が違えば「granularity の効果」ではなく「解放集合の違い」を測って
+    しまう。軸を 1 つだけ動かした比較にするには終状態が一致していなければならない。
+    """
+    acc = build_recipe([_XRAY_BB], _SINGLE_PHASE, profile_granularity="accumulate")
+    labels = [s.label for s in acc]
+    assert "S2 profile_W" in labels and "S3 profile_WU" in labels
+    last = next(s for s in acc if "profile_WUV" in s.label)
+    assert set(last.flags["profile"]) == {"U", "V", "W"}
+    assert last.flags["size_strain"] is True, "size/strain は最後の累積段に同居する"
+    # 凍結は伴わない — F2 で壊れたのは「1 つ解放 → 凍結 → 次」であって累積そのものではない。
+    assert all("freeze_others" not in s.flags for s in acc)
+
+
+def test_accumulate_passes_correlation_group_validation():
+    """★累積は規則 1 (縮めない) を満たすので生成時検証を通る。
+
+    非トートロジー: `W` → `U` (乗り換え) は `CorrelationGroupViolation` になる。ここが通るのは
+    累積だからであって、検証が緩いからではない (`test_recipe_correlation_groups.py` が別途固定)。
+    """
+    for phases in (_SINGLE_PHASE, (PhaseSpec(structure_path="a.cif", phase_name="a"),
+                                   PhaseSpec(structure_path="b.cif", phase_name="b"))):
+        build_recipe([_XRAY_BB], phases, profile_granularity="accumulate")  # 例外が出なければ可
+
+
+def test_size_strain_last_moves_it_after_uiso():
+    got = build_recipe([_XRAY_BB], _SINGLE_PHASE, size_strain_placement="last")
+    labels = [s.label for s in got]
+    assert "S2 profile" in labels, "プロファイル段から size/strain が外れる"
+    ss_i = next(i for i, lab in enumerate(labels) if lab.endswith("size_strain"))
+    uiso_i = next(i for i, lab in enumerate(labels) if lab.endswith("uiso"))
+    assert uiso_i < ss_i
+    assert sum(1 for s in got if s.flags.get("size_strain")) == 1, "二重解放しない"
+
+
+def test_background_escalation_is_inserted_right_after_s0():
+    """★エスカレーションは S0 直後 — 末尾では何も測れない。
+
+    非トートロジー: 背景が足りないと S1 以降が丸ごと歪む (実測: CaTeO3 は 3 項で 19% 頭打ち・
+    6 項で 13.7%・必要 24)。末尾に足すと「既に歪んだフィットの最後に背景を増やす」ことになり、
+    早い段で背景が足りなかった事実は測れない。
+    """
+    got = build_recipe([_XRAY_BB], _SINGLE_PHASE, background_escalation=(24, 12))
+    labels = [s.label for s in got]
+    assert labels[1] == "S1 background_12" and labels[2] == "S2 background_24", labels
+    assert [s.flags["background"]["coeffs"] for s in got[:3]] == [6, 12, 24]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"profile_granularity": "bogus"},
+        {"size_strain_placement": "bogus"},
+    ],
+)
+def test_unknown_axis_values_are_rejected(kwargs):
+    with pytest.raises(ValueError):
+        build_recipe([_XRAY_BB], _SINGLE_PHASE, **kwargs)
