@@ -506,3 +506,21 @@ def test_synchrotron_uses_the_lorentz_factor_only(tmp_path):
     )
     joined = "\n".join(histogram_to_topas(spec, workdir=tmp_path).preamble)
     assert "Lorentz_Factor" in joined and "LP_Factor(" not in joined
+
+
+def test_zero_point_derivative_step_matches_the_ze_macro(tmp_path):
+    """``del`` は ``ZE`` マクロの中身をそのまま写す — **``X1`` であって ``Xo`` ではない**。
+
+    topas.inc の ZE は ``del = .01 Yobs_dx_at(X1);`` (データ範囲の左端での刻み)。TOF の
+    ``x_calculation_step`` で使う ``Yobs_dx_at(Xo)`` とは**別物**なので、字面が揃わないのは
+    意図的である。既定に任せると数値微分が変わって収束先がわずかにずれる。
+    """
+    prm = tmp_path / "i.instprm"
+    prm.write_text(_INSTPRM_XRAY, encoding="utf-8")
+    spec = HistogramSpec(
+        data_path=str(_xye_source(tmp_path)), instrument_path=str(prm),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XYE",
+    )
+    joined = "\n".join(histogram_to_topas(spec, workdir=tmp_path).preamble)
+    assert "del = .01 Yobs_dx_at(X1);" in joined
+    assert "Yobs_dx_at(Xo)" not in joined

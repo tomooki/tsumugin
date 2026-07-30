@@ -354,8 +354,11 @@ def histogram_to_topas(
         #   ゼロ点が暴走する (ZERO_POINT_LIMIT_DEG 参照)。マクロの実体は th2_offset への
         #   代入だけなので、束縛付きの prm を宣言して同じ式を書く。
         zero = float(instrument.zero)
-        #   微分ステップ (``del``) はマクロと同じ「データ刻みの 1%」を保つ — 既定に任せると
-        #   数値微分が変わって収束先がわずかにずれる (実 PbSO4 で 7.99 → 8.09)。
+        #   微分ステップ (``del``) は ``ZE`` マクロの中身をそのまま写す。**``X1`` であって
+        #   ``Xo`` ではない** — TOF の ``x_calculation_step`` で使う ``Yobs_dx_at(Xo)`` とは
+        #   別物で、こちらはデータ範囲の左端での刻み。topas.inc の ZE が
+        #   ``del = .01 Yobs_dx_at(X1);`` と書いているのに合わせる (見た目が揃わないのは
+        #   意図的)。
         preamble.append(
             f"prm !ze{index} {zero!r} "
             f"min {zero - ZERO_POINT_LIMIT_DEG!r} max {zero + ZERO_POINT_LIMIT_DEG!r} "

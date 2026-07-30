@@ -621,7 +621,8 @@ class TopasDocument:
             #   格子の値そのものについては `TopasHistogram.calculation_step` を参照
             #   (**適応式は使えない** — 計算ピークがデータ範囲の外へ出ると同じエラーになる)。
             lines.append(f'xdd "{hist.data_path}" xye_format')
-            lines.append(f"{_INDENT_HIST}neutron_data")
+            if hist.is_neutron:
+                lines.append(f"{_INDENT_HIST}neutron_data")
             lines.append(
                 f"{_INDENT_HIST}weighting = If(SigmaYobs < 1, 1, 1/SigmaYobs^2);"
             )

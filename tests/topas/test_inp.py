@@ -632,3 +632,15 @@ def test_tof_block_declares_neutron_data_exactly_once():
         phases=(),
     )
     assert doc.render().count("neutron_data") == 1
+
+
+def test_tof_block_only_declares_neutron_data_for_neutron_histograms():
+    """``neutron_data`` は放射源で決まる — TOF であることから導かない。
+
+    現状 TOF は中性子しかないので挙動は変わらないが、条件を混ぜると**非中性子 TOF を
+    黙って中性子と宣言する**潜在的な結合が残る。
+    """
+    hist = TopasHistogram(data_path="t.xye", is_tof=True, is_neutron=False)
+    text = TopasDocument(histograms=(hist,), phases=()).render()
+    assert "neutron_data" not in text
+    assert 'xdd "t.xye" xye_format' in text  # TOF ブロック自体は出る

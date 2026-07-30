@@ -86,7 +86,14 @@ def parse_records(text: str) -> TopasRecords:
 def parse_out_metrics(out_text: str) -> dict[str, float]:
     """``.out`` の先頭に書き戻される指標 (``r_p/r_wp/r_exp/gof`` …) を拾う。
 
-    ``results.txt`` が書けなかった場合の補助経路。
+    **総合指標についてはこちらが一次**である。``results.txt`` の ``Out(Get(r_wp))`` は
+    それが書かれた ``xdd`` ブロックの値でしかなく、``out "file"`` は先頭 xdd にしか置けない
+    ため (append 無しだと後続が先行レコードを消す)、joint では**第 1 ヒストグラムの値を総合値と
+    名乗る**ことになる (実 PbSO4 joint で 8.635 対 10.772)。単一ヒストグラムでは両者が一致する。
+
+    ``.out`` は「精密化後の INP そのもの」なので INP 構文のパースが要り脆い — だから
+    **拾うのは先頭数行の指標だけ**に留め、パラメータ値は ``results.txt`` の書式指定済み
+    レコードから採る (`parse_records`)。優先順位の実装は `engine._metrics`。
     """
     metrics: dict[str, float] = {}
     head = "\n".join(out_text.splitlines()[:5])
