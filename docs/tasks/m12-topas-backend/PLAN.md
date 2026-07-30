@@ -19,9 +19,9 @@
 | T6 | 段階フラグ翻訳表 (`topas.flags`) | 🟡 | 13/17 フラグ。未対応は `UnsupportedStageFlagError` で明示的に失敗。残り: `tof_profile`/`absorption`/`hydrostatic_strain`/`preferred_orientation` |
 | T8 | TOPAS 段階解放エンジン (`topas.engine`) | ✅ | **実 PbSO4 で Rwp 8.30 / GOF 1.68** (GSAS X 線単独 11.0% 超え) |
 | T7 | 段方針の共通化 (`autorietveld.stagepolicy`) | ⬜ | リファクタ。受け入れ条件は gated T1–T4 の非回帰 |
-| T9 | `backends.topas.TopasBackend` | ⬜ | Protocol + `simulate` (`iters 0` + `Out_X_Ycalc`) |
-| T10 | バックエンド選択の配線 (①→②) | ⬜ | runner ファクトリ 6 箇所 + `backend` 引数 + `list_refinement_backends` |
-| T11 | ③ 手順書 (skill / PLAYBOOK) + 恒久ガード | ⬜ | 変異させて fail することを実証してから受け入れる |
+| T10 | バックエンド選択の配線 (①→②) | ✅ | `backend` 引数 + `list_refinement_backends` (MCP_TOOLS 38)。**JSON のみで TOPAS 到達を実測確認** |
+| T11 | ③ 手順書 (skill) + 恒久ガード | ✅ | `skills/analyze` に選択規律。ガードは**変異させて fail を実証済** |
+| T9 | `backends.topas.TopasBackend` | ⬜ | Protocol + `simulate`。`AutoRietveldBackend(runner=)` で代替可能なため優先度低 |
 | T12 | 実データ検証 T1–T4 | ⬜ | GSAS 値と併記して `docs/benchmark/m12-topas/` へ |
 
 ## 受け入れ基準
@@ -50,11 +50,13 @@ uv run ruff check src tests
 
 ## 既知の積み残し (T8 時点)
 
-- **座標段 (`coords`) が実データで revert される**。TOPAS 経路は特殊位置の自由軸判定を持たず、
-  Pnma の鏡映サイト (y=1/4 など) まで解放してしまう。GSAS 経路は `GSASIIspc.GetCSxinel` で
-  自由軸を判定している。TOPAS では `structure` 側で特殊位置成分を参照式 (固定) にしておく契約に
-  するのが筋。**現状はガードが効いて revert されるだけなので静かに壊れてはいない**が、
-  座標が一切精密化されないため T12 の合格基準に届かない可能性がある。
-- **精密化後セルの回収が未実装** (`_refined_cells` は参照セルを素通し)。`Out(Get(a), …)` を
-  足して `refined_cells`/`cell_esd` を埋める必要がある。validity ゲートが実質空回りしている。
-- `n_obs` が 0 のまま (BIC の dof に効く)。`Out(Get(Yobs_Count), …)` 相当で回収する。
+~~座標段が revert される / セル回収未実装 / n_obs が 0~~ → **すべて解消済** (`topas.symmetry` の
+サイト対称判定・名前付き `Out()` によるセル回収・`.xye` からの観測点数計上)。
+
+残るもの:
+
+- `cell_esd` / `atom_coords` など**出版値の esd がまだ結果に載っていない**。`Out()` は esd を
+  吐けているのでパース側を広げれば埋まる。
+- 段階フラグ 4 種未対応 (`tof_profile`/`absorption`/`hydrostatic_strain`/
+  `preferred_orientation`)。T12 の T4 (TOF+放射光) に必要。
+- プロファイル係数の GSAS↔TOPAS スケール等価が未検証 (`seed_profile` は opt-in のまま)。
