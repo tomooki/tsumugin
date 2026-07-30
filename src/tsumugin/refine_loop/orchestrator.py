@@ -155,8 +155,13 @@ def run_refinement_loop(
 # ---------------- 既定の GSAS 駆動 runner / 粗診断 ----------------
 
 
-def _default_gsas_runner(seed: int, max_cyc: int = 12, stability: object | None = None) -> Runner:
-    """AnalysisInput を run_auto_rietveld で実行する既定 runner (GSAS 遅延 import)。
+def _default_gsas_runner(
+    seed: int,
+    max_cyc: int = 12,
+    stability: object | None = None,
+    backend: str = "gsasii",
+) -> Runner:
+    """AnalysisInput を精密化エンジンで実行する既定 runner (エンジンは遅延 import)。
 
     :param seed: 乱数種 (現状 runner 内では未使用 — 呼び出し側の再現性記録用に残置)
     :param max_cyc: 各段階の最大精密化サイクル (Issue #101: ② `auto_rietveld`/
@@ -166,16 +171,28 @@ def _default_gsas_runner(seed: int, max_cyc: int = 12, stability: object | None 
         stable-auto-rietveld)。② の ``stability`` spec から届く。**None は現行と同一挙動**
         (共分散を読まない)。型注釈が ``object`` なのは refine_loop コアを autorietveld の
         import から切り離しておくため (実体は `run_auto_rietveld` が受け取る)
+    :param backend: 精密化エンジン (``"gsasii"`` 既定 / ``"topas"``, M12)。**フレームや仮説を
+        跨いで切り替えない**こと — Rwp/BIC の比較が成り立たなくなる
     """
+    from tsumugin.autorietveld.backends import resolve_backend
+
+    # 【名前の検証はここで】: 綴り間違いは精密化を始める前に弾く (② が error dict へ縮退できる)。
+    resolve_backend(backend)
 
     def runner(inp: AnalysisInput) -> AutoRietveldResult:
-        from tsumugin.autorietveld import build_recipe, run_auto_rietveld
+        from tsumugin.autorietveld.backends import resolve_recipe_builder
 
-        recipe = build_recipe(
+        # 【解決自体は呼び出し時】: ファクトリ生成後に注入されたスタブも拾えるようにする
+        #   (既存の注入経路は runner を作った後に monkeypatch する)。
+        engine = resolve_backend(backend)
+        # 【レシピもバックエンドごと】: エンジンだけ差し替えて GSAS 用の順序を渡すと、TOPAS では
+        #   格子がピーク幅の不一致を吸収して悪化する (backends.resolve_recipe_builder 参照)。
+        build = resolve_recipe_builder(backend)
+        recipe = build(
             inp.histograms, inp.phases, background_coeffs=inp.background_coeffs
         )
         recipe = (*recipe, *inp.extra_stages)
-        return run_auto_rietveld(
+        return engine(
             list(inp.histograms), list(inp.phases), recipe=recipe, max_cyc=max_cyc,
             stability=stability,  # type: ignore[arg-type]
         )

@@ -30,6 +30,42 @@ __all__ = [
 _CENTIDEG_TO_DEG = 0.01
 
 
+_STD_FIELD_WIDTH = 8
+_STD_COUNT_WIDTH = 2
+
+
+def _parse_std_fixed_columns(
+    data_lines: "list[str]", npts: int
+) -> "list[float] | None":
+    """GSAS STD の固定桁 ``(I2 検出器数, I6 強度)`` として読む。読めなければ ``None``。
+
+    ``None`` を返した場合、呼び出し側は従来の空白分割へフォールバックする。**桁数を
+    決め打ちしない**のは、6 桁詰めなど非標準な書き方の既存データを壊さないため。
+    """
+    values: list[float] = []
+    for raw in data_lines:
+        line = raw.rstrip("\r\n").rstrip()
+        if not line:
+            continue
+        if len(line) % _STD_FIELD_WIDTH != 0:
+            return None
+        for start in range(0, len(line), _STD_FIELD_WIDTH):
+            field = line[start:start + _STD_FIELD_WIDTH]
+            count_text = field[:_STD_COUNT_WIDTH].strip()
+            value_text = field[_STD_COUNT_WIDTH:].strip()
+            # 検出器数欄は空白 (=1 とみなす) か整数でなければ固定桁ではない。
+            if count_text and not count_text.lstrip("+-").isdigit():
+                return None
+            if not value_text:
+                return None
+            try:
+                values.append(float(value_text))
+            except ValueError:
+                return None
+    # 点数が合わないなら固定桁の読み方ではない (末尾パディングは許容)。
+    return values if len(values) >= npts else None
+
+
 def parse_gsas_powder(text: str) -> tuple[np.ndarray, np.ndarray]:
     """GSAS 粉末データテキストを ``(two_theta[deg], intensity)`` へ変換する。🔵
 
@@ -63,11 +99,19 @@ def parse_gsas_powder(text: str) -> tuple[np.ndarray, np.ndarray]:
     if fmt != "STD":
         raise ValueError(f"未対応のデータフォーマットです (STD のみ対応): {fmt}")
 
-    # 【強度読み込み】: BANK 以降の全トークンを float 化し先頭 npts を強度とする (末尾パディング無視) 🔵
-    values: list[float] = []
-    for ln in lines[bank_idx + 1:]:
-        for tok in ln.split():
-            values.append(float(tok))
+    # 【強度読み込み】: GSAS STD は **(I2, I6) の 8 桁パック**を 1 行 10 点並べる形式で、
+    #   先頭 I2 は「合算した検出器数」であって強度ではない。空白で割ると検出器数と強度が
+    #   交互に並び**半分の点が 1 になる** (実データ garnet.raw で発覚)。検出器数欄が空白の
+    #   書き方 (実質 I8) も同じ規則で読める。
+    #   ただし 6 桁詰め等の非標準な書き方もあるため、**固定桁で読めたときだけ**それを採り、
+    #   駄目なら従来の空白分割へ落ちる (桁数を決め打ちしない)。
+    data_lines = lines[bank_idx + 1:]
+    values = _parse_std_fixed_columns(data_lines, npts)
+    if values is None:
+        values = []
+        for ln in data_lines:
+            for tok in ln.split():
+                values.append(float(tok))
     if len(values) < npts:
         raise ValueError(f"データ点が不足しています: 期待 {npts}, 実際 {len(values)}。")
 

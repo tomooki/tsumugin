@@ -44,6 +44,13 @@ def _dysnomia_available() -> bool:
     return shutil.which("dysnomia") is not None
 
 
+def _topas_available() -> bool:
+    """Bruker TOPAS のコンソール実行体 tc.exe が解決できるかを判定する (dysnomia と同型)。"""
+    from tsumugin.topas.availability import topas_available
+
+    return topas_available()
+
+
 def _pyboed_available() -> bool:
     """OED 獲得関数 (optional extra ``oed``: pyboed) が import 可能かを判定する (gsas/mcp と同型)。"""
     return importlib.util.find_spec("pyboed") is not None
@@ -58,16 +65,20 @@ def _mp_available() -> bool:
 
 
 def pytest_collection_modifyitems(config, items):
-    """未導入環境で `gsas`/`mcp`/`nested`/`mem`/`oed`/`mp` マーカー付きテストを自動 skip する (同型)。"""
+    """未導入環境で `gsas`/`topas`/`mcp`/`nested`/`mem`/`oed`/`mp` マーカー付きテストを自動 skip する (同型)。"""
     gsas_ok = gsasii_available()
+    topas_ok = _topas_available()
     mcp_ok = _mcp_available()
     nested_ok = _nested_available()
     mem_ok = _dysnomia_available()
     oed_ok = _pyboed_available()
     mp_ok = _mp_available()
-    if gsas_ok and mcp_ok and nested_ok and mem_ok and oed_ok and mp_ok:
+    if gsas_ok and topas_ok and mcp_ok and nested_ok and mem_ok and oed_ok and mp_ok:
         return
     skip_gsas = pytest.mark.skip(reason="GSAS-II (GSASIIscriptable) not installed")
+    skip_topas = pytest.mark.skip(
+        reason="Bruker TOPAS (tc.exe) not installed; set TSUMUGIN_TOPAS_PATH"
+    )
     skip_mcp = pytest.mark.skip(reason="mcp SDK (optional extra mcp) not installed")
     skip_nested = pytest.mark.skip(
         reason="外部サンプラ (optional extra nested: dynesty/ultranest) not installed"
@@ -84,6 +95,8 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if not gsas_ok and item.get_closest_marker("gsas"):
             item.add_marker(skip_gsas)
+        if not topas_ok and item.get_closest_marker("topas"):
+            item.add_marker(skip_topas)
         if not mcp_ok and item.get_closest_marker("mcp"):
             item.add_marker(skip_mcp)
         if not nested_ok and item.get_closest_marker("nested"):

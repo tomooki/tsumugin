@@ -10,6 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from tsumugin.reference.io import load_gsas_powder, parse_gsas_powder
+
 # BANK: 20 点, CONST, start=1000 cd (10.0°), step=2.5 cd (0.025°), STD (強度のみ)
 _SAMPLE_GSAS = """PbSO4 sample title  Cu Ka
 BANK 1  20  2 CONST 1000 2.5 0 0 STD
@@ -95,7 +97,6 @@ def test_parse_gsas_powder_malformed_bank_raises():
 
 
 def test_load_gsas_powder_reads_file(tmp_path):
-    from tsumugin.reference.io import load_gsas_powder
 
     path = tmp_path / "sample.xra"
     path.write_text(_SAMPLE_GSAS, encoding="utf-8")
@@ -258,3 +259,48 @@ def test_load_xrdml_reads_file(tmp_path):
     tt, inten = load_xrdml(path)
     assert tt.shape == (4,)
     assert inten[0] == pytest.approx(292.0)
+
+# ---------------------------------------------------------------------------
+# GSAS STD の固定桁パック形式 (M12 で発覚した既存バグ)
+# ---------------------------------------------------------------------------
+
+
+def test_gsas_std_is_parsed_by_fixed_columns_not_whitespace():
+    """GSAS STD は **(I2, I6) の 8 桁パック**を 1 行 10 点並べる形式である。
+
+    先頭 I2 は「合算した検出器数」で強度ではない。空白分割すると検出器数と強度が交互に
+    並んだ配列になり、**半分の点が 1 になる**。M7 の GSAS 経路は GSAS-II が .raw を直接
+    読むためこのバグに当たっていなかった (M12 の TOPAS 経路で発覚)。
+    """
+    text = (
+        "TITLE\n"
+        "BANK 1 6 3 CONST 2400 5 0 0\n"
+        " 1   162 1   178 1   155 2   166 1   180 1   181\n"
+    )
+    two_theta, intensity = parse_gsas_powder(text)
+    assert intensity.tolist() == [162.0, 178.0, 155.0, 166.0, 180.0, 181.0]
+    assert two_theta[0] == pytest.approx(24.0)
+    assert two_theta[1] == pytest.approx(24.05)
+
+
+def test_gsas_std_without_detector_counts_still_parses():
+    """検出器数欄が空白 (実質 I8 の強度のみ) の書き方も同じ規則で読める (PBSO4.XRA)。"""
+    text = "TITLE\nBANK 1 4 1 CONST 1000 2.5 0 0 STD\n     179     147     165     172\n"
+    _, intensity = parse_gsas_powder(text)
+    assert intensity.tolist() == [179.0, 147.0, 165.0, 172.0]
+
+
+def test_real_garnet_raw_has_no_alternating_ones():
+    """回帰: 実データ garnet.raw が 1.0 と実測値の交互にならないこと。"""
+    from pathlib import Path
+
+    path = Path("docs/benchmark/testdata/m7/cwneutron/garnet.raw")
+    if not path.exists():
+        pytest.skip("garnet 実データが無い")
+
+    _, intensity = load_gsas_powder(path)
+    assert len(intensity) == 2679
+    # 誤読時は約半数が 1.0 になっていた
+    assert (intensity == 1.0).sum() < len(intensity) * 0.1
+    # 中性子計数の実測レンジ (誤読時は桁が混ざり 119510 という非現実的な値になっていた)
+    assert 1e3 < intensity.max() < 1e4

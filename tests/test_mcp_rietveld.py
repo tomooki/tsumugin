@@ -287,7 +287,7 @@ def test_stability_spec_reaches_the_real_runner(monkeypatch):
 
     seen: dict = {}
 
-    def _spy(seed, max_cyc=12, stability=None):
+    def _spy(seed, max_cyc=12, stability=None, backend="gsasii"):
         seen.update(seed=seed, max_cyc=max_cyc, stability=stability)
         return _stub_runner
 
@@ -309,7 +309,7 @@ def test_stability_spec_defaults_to_the_no_op_options(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(
         rt, "_default_gsas_runner",
-        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+        lambda seed, max_cyc=12, stability=None, backend="gsasii": seen.update(stability=stability) or _stub_runner,
     )
 
     rt.auto_rietveld([_H], [_P])
@@ -354,7 +354,7 @@ def test_box_bound_spec_reaches_the_real_runner(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(
         rt, "_default_gsas_runner",
-        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+        lambda seed, max_cyc=12, stability=None, backend="gsasii": seen.update(stability=stability) or _stub_runner,
     )
 
     out = rt.auto_rietveld(
@@ -465,7 +465,7 @@ def test_refine_with_revisions_accepts_the_same_stability_spec(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(
         rt, "_default_gsas_runner",
-        lambda seed, max_cyc=12, stability=None: seen.update(stability=stability) or _stub_runner,
+        lambda seed, max_cyc=12, stability=None, backend="gsasii": seen.update(stability=stability) or _stub_runner,
     )
 
     out = rt.refine_with_revisions(
