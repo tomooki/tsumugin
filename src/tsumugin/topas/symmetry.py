@@ -128,7 +128,10 @@ def read_sg_symops(space_group: str, home: "Path | None" = None) -> "tuple[str, 
     if base is None:
         return ()
     # ファイル名は H-M 記号を小文字にして空白を除いたもの (実測: Pnma → pnma.sg)。
-    name = re.sub(r"\s+", "", space_group).lower()
+    # **``/`` は ``o`` (over) にエンコードされる** (実測: P63/m → p63om.sg) —
+    # そのままだとファイル名にならないため。これを知らないと ``/`` を含む空間群
+    # (単斜晶の P21/c・C2/c、六方晶の P63/m …) で対称操作が引けず、座標段が黙って no-op になる。
+    name = re.sub(r"\s+", "", space_group).lower().replace("/", "o")
     path = Path(base) / "Sg" / f"{name}.sg"
     if not path.is_file():
         return ()

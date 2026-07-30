@@ -119,3 +119,19 @@ def test_real_pbso4_cif_site_symmetry():
     assert free["Pb"] == ("x", "z")
     assert free["S"] == ("x", "z")
     assert free["O3"] == ("x", "y", "z")
+
+
+@pytest.mark.topas
+def test_sg_filename_encodes_slash_as_o():
+    """**TOPAS は空間群名の ``/`` を ``o`` (over) にエンコードする** (実測: P63/m → p63om.sg)。
+
+    これを知らないと ``/`` を含む空間群 (P21/c・C2/c・P63/m …) で対称操作が引けず、
+    座標段が**黙って no-op** になる (実 fluoroapatite で発覚)。
+    """
+    from tsumugin.topas.symmetry import ensure_symops
+
+    ops = ensure_symops("P63/m", ())
+    assert len(ops) >= 12, "P63/m の一般位置が引けていない"
+    # 6₃ 軸上の CA1 (1/3, 2/3, z) は z のみ自由、-6 サイトの F4 は完全固定。
+    assert free_coord_axes(ops, (0.333333, 0.666667, 0.001913)) == ("z",)
+    assert free_coord_axes(ops, (0.0, 0.0, 0.25)) == ()
