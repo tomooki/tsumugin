@@ -50,9 +50,24 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 - `.gpx` が存在しないので **MEM 系ツール (`mem_density` 等) は使えない**。結果の `gpx_path` は
   空文字になり、`project_path` に INP/.out が残る。
-- 段階フラグの一部 (`tof_profile` / `absorption` / `hydrostatic_strain` /
-  `preferred_orientation`) は未対応で、指定するとその段が**明示的に失敗して revert される**
-  (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
+- 段階フラグのうち **`hydrostatic_strain` は未対応**で、指定するとその段が**明示的に失敗して
+  revert される** (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
+  `absorption` は**反射光学系 (Bragg-Brentano) では同じく失敗する** — 円筒吸収の式を平板試料に
+  当てないため。透過/Debye-Scherrer で使うこと。
+- `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
+  残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
+
+## joint (複数ヒストグラム) を読むとき
+
+`final_rwp` は**全ヒストグラム込みの総合値**で、内訳は結果の **`histogram_rwp`** (入力の
+`histograms` と同じ索引順) にある。
+
+- **総合値だけを見ない**。放射源ごとに当てはまりが大きく違うのが普通で、総合値が下がっていても
+  片方が悪化していることがある。次に何を触るかは内訳を見ないと決められない。
+- 内訳が大きく偏っているとき (例: X 線 8% に対し中性子 14%) は、悪い方の**装置モデル**を疑う。
+  相分率や座標をいじる前に、その放射源の波長・ゼロ点・ピーク幅・光学系補正を確認する。
+- `histogram_rwp` が**空**なら内訳が取れていない (バックエンドが出していない)。総合値だけで
+  判断せざるを得ないことを明示して報告する。
 
 ## 手順
 
