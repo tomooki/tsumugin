@@ -1,0 +1,177 @@
+"""M12 T8: TOPAS 段階解放エンジン。
+
+`run_auto_rietveld` と同一の入出力契約を持つ兵行実装。段の受理/revert・失敗の縮退・
+ledger 追記という**方針**は GSAS 経路と同じでなければならない (T7 で共通化する前段)。
+"""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import pytest
+
+from tsumugin.autorietveld.model import (
+    Geometry,
+    HistogramSpec,
+    PhaseSpec,
+    Radiation,
+    RefinementStage,
+)
+from tsumugin.errors import TopasRunError
+from tsumugin.store import Ledger
+from tsumugin.topas import engine as eng
+
+_DATA = Path("docs/benchmark/testdata")
+_PBSO4_CIF = _DATA / "PbSO4-Wyckoff.cif"
+_PBSO4_XRA = _DATA / "PBSO4.XRA"
+_PBSO4_PRM = _DATA / "INST_XRY.PRM"
+
+
+def _histogram() -> HistogramSpec:
+    return HistogramSpec(
+        data_path=str(_PBSO4_XRA),
+        instrument_path=str(_PBSO4_PRM),
+        radiation=Radiation.XRAY_LAB,
+        geometry=Geometry.BRAGG_BRENTANO,
+        data_format="GSAS",
+    )
+
+
+def _phase() -> PhaseSpec:
+    return PhaseSpec(structure_path=str(_PBSO4_CIF), phase_name="PbSO4")
+
+
+def _stages(*labels_rwp):
+    return tuple(
+        RefinementStage(label=label, flags={"background": {"coeffs": 6}})
+        for label, _ in labels_rwp
+    )
+
+
+class _FakeRun:
+    def __init__(self, rwp, gof=1.5, n_refined=3):
+        vals = " ".join(f"p{i} 1.0`_0.01" for i in range(n_refined))
+        self.out_text = f"r_p 1.0 r_wp {rwp} r_exp 5.0 gof {gof}\n{vals}\n"
+        self.results_text = f"r_wp\t{rwp}\ngof\t{gof}\nwt_frac\tPbSO4\t100.0\t0.0\n"
+        self.stdout = ""
+
+
+@pytest.fixture()
+def stub_driver(monkeypatch):
+    """tc.exe を呼ばずに段ごとの rwp を仕込む。"""
+    calls: list[float] = []
+
+    def make(sequence):
+        it = iter(sequence)
+
+        def fake_run_tc(inp_text, **kwargs):
+            value = next(it)
+            calls.append(value)
+            if isinstance(value, Exception):
+                raise value
+            return _FakeRun(value)
+
+        monkeypatch.setattr(eng, "run_tc", fake_run_tc)
+        return calls
+
+    return make
+
+
+def test_improving_stages_are_accepted(stub_driver):
+    stub_driver([30.0, 20.0, 12.0])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=_stages(("S0", 0), ("S1", 0), ("S2", 0)),
+    )
+    assert [s.rwp for s in result.stage_results] == [30.0, 20.0, 12.0]
+    assert not any(s.reverted for s in result.stage_results)
+    assert result.final_rwp == pytest.approx(12.0)
+
+
+def test_worsening_stage_is_reverted(stub_driver):
+    """悪化した段は revert され、最終 Rwp に影響しない (GSAS 経路と同じ方針)。"""
+    stub_driver([30.0, 12.0, 25.0])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0), ("S1", 0), ("S2", 0))
+    )
+    assert result.stage_results[2].reverted is True
+    assert result.final_rwp == pytest.approx(12.0)
+
+
+def test_backend_failure_degrades_to_infinite_rwp_not_an_exception(stub_driver):
+    """**不変条件**: バックエンドの失敗は例外でなく rwp=inf に変換しガードレールへ。"""
+    stub_driver([30.0, TopasRunError("Abnormal program termination"), 25.0])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0), ("S1", 0), ("S2", 0))
+    )
+    failed = result.stage_results[1]
+    assert math.isinf(failed.rwp) and failed.reverted is True
+    assert "TopasRunError" in failed.note
+    # 失敗段は基準を汚さない: 続く段は「最後に成功した 30.0」と比べて採否が決まる。
+    assert result.final_rwp == pytest.approx(25.0)
+    assert result.stage_results[2].reverted is False
+
+
+def test_result_declares_the_backend(stub_driver):
+    """Rwp/BIC を跨いで比較するときの前提なので出所を常に載せる。"""
+    stub_driver([15.0])
+    result = eng.run_topas_rietveld([_histogram()], [_phase()], recipe=_stages(("S0", 0)))
+    assert result.backend == "topas"
+    assert result.gpx_path == ""  # TOPAS に .gpx は無い (MEM 経路は適用不可)
+
+
+def test_weight_fractions_are_normalised_to_unity(stub_driver):
+    """TOPAS の MVW は百分率で返す。結果契約は 0-1 なので割る。"""
+    stub_driver([15.0])
+    result = eng.run_topas_rietveld([_histogram()], [_phase()], recipe=_stages(("S0", 0)))
+    assert result.phase_weight_fractions["PbSO4"] == pytest.approx(1.0)
+
+
+def test_ledger_records_every_stage(stub_driver):
+    stub_driver([30.0, 40.0])
+    ledger = Ledger()
+    eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0), ("S1", 0)), ledger=ledger
+    )
+    kinds = [e.kind for e in ledger.entries]
+    assert kinds.count("m12_topas_stage") == 2
+    assert ledger.verify()  # 追記専用ハッシュチェーンを壊さない (NFR-105)
+
+
+def test_unsupported_flag_is_reported_not_ignored(stub_driver):
+    """未対応フラグを黙って無視すると「解放されていない段」が完走する (無言 no-op 病理)。"""
+    stub_driver([30.0])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=(RefinementStage(label="S0", flags={"hydrostatic_strain": True}),),
+    )
+    stage = result.stage_results[0]
+    assert stage.reverted is True
+    assert "UnsupportedStageFlagError" in stage.note
+
+
+# ---------------- 実 tc.exe + 実データ ----------------
+
+
+_real_data = pytest.mark.skipif(
+    not (_PBSO4_CIF.exists() and _PBSO4_XRA.exists() and _PBSO4_PRM.exists()),
+    reason="PbSO4 実データが無い",
+)
+
+
+@pytest.mark.topas
+@_real_data
+def test_real_pbso4_refines_end_to_end(tmp_path):
+    """実 CIF + 実データ + 実装置ファイル → 実 tc.exe で自動 Rietveld が回ること。
+
+    GSAS-II 経路の X 線単独 Rwp は 11.0% (M7 T3 の内訳)。同等圏に入ることを見る。
+    """
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], keep_project=str(tmp_path / "proj")
+    )
+    assert result.backend == "topas"
+    assert math.isfinite(result.final_rwp), "全段が失敗した"
+    assert result.final_rwp < 20.0, f"Rwp {result.final_rwp} が高すぎる"
+    assert any(not s.reverted for s in result.stage_results)
+    assert (tmp_path / "proj").is_dir()  # 成果物が残る

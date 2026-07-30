@@ -130,6 +130,13 @@ class PhaseHistogramTerms:
     strain_lorentzian: "Param | None" = None
     preferred_orientation: "str | None" = None
     """選択配向マクロの行 (例 ``PO_Spherical_Harmonics(sh, 4)``)。"""
+    peak_type: "str | None" = None
+    """ピーク形状マクロの行 (例 ``TCHZ_Peak_Type(...)``)。
+
+    **``str`` ブロックの中に置く**必要がある (実測: xdd 直下だと
+    ``Cannot locate pk_type from gen_fit_obj`` で異常終了する)。ピーク形状は相と
+    ヒストグラムの組に属する量なので、モデル上もここが正しい置き場所である。
+    """
     extras: tuple[str, ...] = ()
     """そのまま str ブロックへ差し込む追加行。"""
 
@@ -326,6 +333,9 @@ class TopasDocument:
             lines.append(f"{_INDENT_PHASE}{axis} {value}")
         for site in phase.sites:
             lines.append(self._site_line(phase, site, shared))
+        if terms.peak_type:
+            # ピーク形状は str ブロック内でなければ TOPAS が解決できない (実測)。
+            lines.append(f"{_INDENT_PHASE}{terms.peak_type}")
         scale = terms.scale or Param(1e-4)
         lines.append(f"{_INDENT_PHASE}scale {render_param(scale)}")
         if terms.size_lorentzian is not None:

@@ -926,3 +926,12 @@ class AutoRietveldResult:
     # 同型の 2 状態 esd (``>0.0`` / ``None``)。
     hap_size_esd: Mapping[str, Mapping[str, "float | None"]] = field(default_factory=dict)
     hap_mustrain_esd: Mapping[str, Mapping[str, "float | None"]] = field(default_factory=dict)
+    # 【どのエンジンで精密化したか】: "gsasii" (既定) / "topas" (M12)。**Rwp や BIC を跨いで
+    #   比較するときの前提条件**なので結果に常設する。両バックエンドは rwp/chi2 のセマンティクスを
+    #   揃えてあるが (TOPAS は背景込みの `r_wp` を採る — `r_wp_dash` は背景差引きで非互換)、
+    #   出所を隠すと「同じ数字だから同じ条件」と読まれてしまう。
+    backend: str = "gsasii"
+    # 【バックエンド中立の成果物ハンドル】: GSAS は `gpx_path` と同じ .gpx、TOPAS は
+    #   INP/.out/results.txt を残したディレクトリ。`gpx_path` は GSAS 専用のまま残す
+    #   (MEM 経路が .gpx を要求するため; TOPAS では空文字となり MEM は適用できない)。
+    project_path: str = ""

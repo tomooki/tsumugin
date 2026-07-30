@@ -213,6 +213,12 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         #   **final_rwp は一部の変数を凍結した fit の値**である (黙って意味を変えない)。
         "final_polish": result.final_polish.to_dict() if result.final_polish else None,
         "gpx_path": result.gpx_path,
+        # 【どのエンジンで精密化したか】: "gsasii" / "topas" (M12)。Rwp や BIC を跨いで比較する
+        #   ときの前提条件なので常に出す。出所を隠すと ③ が「同じ数字だから同じ条件」と読む。
+        "backend": result.backend,
+        # バックエンド中立の成果物ハンドル。TOPAS では .gpx が無いので `gpx_path` は空になり、
+        #   MEM 経路 (gpx を要求する) は適用できない。
+        "project_path": result.project_path,
     }
 
 

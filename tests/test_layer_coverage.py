@@ -392,6 +392,19 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "refined_cells": ("refined_cells", "精密化格子"),
     "validity": ("validity", "物理妥当性ゲート"),
     "gpx_path": ("gpx_path", "成果物パス"),
+    "backend": (
+        "backend",
+        "どのエンジンで精密化したか (\"gsasii\" / \"topas\", M12)。**Rwp や BIC を跨いで"
+        "比較するときの前提条件**なので ② へ常に出す。両バックエンドは rwp のセマンティクスを"
+        "揃えてあるが (TOPAS は背景込みの r_wp を採る — r_wp_dash は背景差引きで非互換)、"
+        "出所を隠すと ③ が「同じ数字だから同じ条件」と読んでしまう",
+    ),
+    "project_path": (
+        "project_path",
+        "バックエンド中立の成果物ハンドル (GSAS は .gpx、TOPAS は INP/.out/results.txt の"
+        "ディレクトリ)。`gpx_path` は GSAS 専用のまま残す — MEM 経路が .gpx を要求するため、"
+        "TOPAS では空文字となり MEM は適用できない",
+    ),
     "n_obs": ("n_obs", "観測点数 (bic/dof 用)"),
     # --- 出版値 (Issue #96 レビュー HIGH-2 で配線) ---
     "cell_esd": ("cell_esd", "格子 esd。esd を伴わない精密化値は出版できない"),
