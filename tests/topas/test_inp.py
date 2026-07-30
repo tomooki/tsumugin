@@ -386,6 +386,22 @@ def _collect_declared_names(text: str) -> "dict[str, int]":
             match = re.search(pattern, line)
             if match:
                 counts[match.group(1)] += 1
+        # 【マクロ内の宣言も数える】: `TCHZ_Peak_Type(!pku0_P, 0.0, …)` / `ZE(!ze0, …)` /
+        #   `One_on_X(!oox0, …)` / `TOF_x_axis_calibration(!difc_h0, …)` はいずれも
+        #   名前を**宣言**する。ここを見ないと「宣言名は重複しない」という不変条件が
+        #   これらのマクロについて何も検査していないことになり、名前から index/phase_key を
+        #   落とす回帰を素通しする (この罠は 3 度出た)。
+        for macro in ("TCHZ_Peak_Type", "ZE", "One_on_X", "TOF_x_axis_calibration"):
+            head = f"{macro}("
+            if not line.startswith(head):
+                continue
+            args = line[len(head):].rstrip(")").split(",")
+            for arg in args:
+                token = arg.strip()
+                if token.startswith("!"):
+                    token = token[1:]
+                if token.isidentifier():
+                    counts[token] += 1
     return dict(counts)
 
 
@@ -540,3 +556,40 @@ def test_grouped_sites_do_not_publish_before_release():
         histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
     ).render()
     assert r"occ\tg\tFe1" not in text
+
+
+def test_no_duplicate_names_in_a_multiphase_joint_document():
+    """**多相 × joint** が名前衝突の最も厳しい条件。
+
+    単相のフィクスチャだけだと、相ごとに分けている名前 (TCHZ の `phase_key` など) の
+    衝突を検査できない — 相が 1 つなら分ける必要がそもそも無いため。
+    """
+    from tsumugin.topas.instrument import tchz_line
+
+    def phase(name: str, a: float) -> TopasPhase:
+        return TopasPhase(
+            phase_name=name, space_group="Pnma",
+            cell={"a": Param(a, refine=True), "b": Param(5.0), "c": Param(7.0)},
+            sites=(TopasSite(f"{name}1", "Fe", Param(0.1, refine=True), Param(0.25),
+                             Param(0.2), occupancy=Param(1.0), beq=Param(1.0),
+                             free_coord_axes=("x", "z")),),
+            free_cell_keys=("a", "b", "c"),
+        )
+
+    phases = (phase("A", 8.0), phase("B", 9.0))
+    hists = tuple(
+        TopasHistogram(
+            data_path=f"h{i}.xye", background=Param(0.0, refine=True),
+            phase_terms={
+                p.phase_name: PhaseHistogramTerms(
+                    scale=Param(1e-4, refine=True),
+                    peak_type=tchz_line(i, phase_key=p.phase_name),
+                )
+                for p in phases
+            },
+        )
+        for i in range(2)
+    )
+    text = TopasDocument(histograms=hists, phases=phases, results_path="r.txt").render()
+    duplicates = {k: v for k, v in _collect_declared_names(text).items() if v > 1}
+    assert not duplicates, f"多相 joint で名前が重複している: {duplicates}"

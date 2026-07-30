@@ -269,7 +269,12 @@ def _shared_prm_plan(
             if site.label not in grouped_occ and not site.occupancy.is_reference:
                 name = f"{stem}_{label}_occ"
                 mapping[(phase.phase_name, f"occ.{site.label}")] = name
-                declare(name, site.occupancy, suffix=" min 0 max 1")
+                # 拘束は解放時のみ (固定値に範囲を書いても意味が無く INP が汚れる)。
+                declare(
+                    name,
+                    site.occupancy,
+                    suffix=" min 0 max 1" if site.occupancy.refine else "",
+                )
             if site.label not in grouped_beq and not site.beq.is_reference:
                 name = f"{stem}_{label}_beq"
                 mapping[(phase.phase_name, f"beq.{site.label}")] = name
@@ -386,10 +391,21 @@ class TopasDocument:
             return render_param(named(param, axis))
 
         occ_expr = shared.get((phase.phase_name, f"occ.{site.label}"))
+        # 【[0,1] 拘束は経路によらず掛ける】: 占有率は物理的に区間内。joint (持ち上げ経路) だけに
+        #   拘束を付けると、**実データで検証済みの単一ヒストグラム経路が無拘束のまま**になる。
+        #   実 fluoroapatite で occ 0.68-2.24 という非物理解へ落ちた実績がある。
+        bounded = site.occupancy
+        if (
+            bounded.refine
+            and not bounded.is_reference
+            and bounded.minimum is None
+            and bounded.maximum is None
+        ):
+            bounded = replace(bounded, minimum=0.0, maximum=1.0)
         occ = (
             render_param(Param.reference(occ_expr))
             if occ_expr
-            else render_param(named(site.occupancy, "occ"))
+            else render_param(named(bounded, "occ"))
         )
         beq_name = shared.get((phase.phase_name, f"beq.{site.label}"))
         beq = (
