@@ -410,12 +410,16 @@ def _run_one_start(payload: tuple) -> tuple:
         )
     except Exception as exc:  # noqa: BLE001 — 実行失敗は発散扱いで継続 (pickle 可能な文字列へ)
         return (index, None, 0, repr(exc)[:200])
-    n_axes = _count_jittered_axes(result)
+    # 摂動を要求していないときは 0 (自由軸の本数ではなく**動かした軸数**である)。
+    n_axes = _count_jittered_axes(result) if jitter is not None else 0
     return (index, result, n_axes, "")
 
 
 def _count_jittered_axes(result: AutoRietveldResult) -> int:
-    """結果から「座標摂動で動かせた軸数」を読む (engine が ledger に残した値の代替)。
+    """結果から「座標摂動で**動かせた**軸数」を数える (engine が ledger に残した値の代替)。
+
+    ⚠ 呼び出し側は**摂動を要求したときだけ**呼ぶこと — 本関数が数えるのは「自由軸の本数」で
+    あり、摂動していなければそれは動いた軸ではない。
 
     ledger はワーカー内に閉じており親へ返さないので、**自由度指標から数え直す** —
     ``atom_coord_free_index`` の各原子について、``0`` でなく三つ組内で最初に現れる正値の

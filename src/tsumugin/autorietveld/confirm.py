@@ -1,0 +1,151 @@
+"""標準経路: **手順最適化 → 初期値摂動による収束確認** (Phase A → Phase B)。
+
+2 段に分ける理由は交絡の排除である。手順どうしの一致を傍証にすると、一致しても
+「同じ最小点」なのか「似た手順だから似た答え」なのかを切れない (実測: T3 の一致は rounds
+だけが違う 2 案から来て、最良解は孤立した)。**手順を先に 1 つ決めてから初期値を振る**と、
+観測されるベイスン構造は最適化問題そのものの性質になる。
+
+    Phase A  `run_recipe_search`      → 収束した候補を採用 (一つでも収束すれば採用)
+    Phase B  `run_multistart_rietveld` → その手順のまま初期値を振り、同じ解へ来るか
+
+⚠ **Phase A が変えた入力ごと固定して Phase B へ渡す**。適応候補が勝った場合はレンジも背景項数も
+変わっているので、元の入力で収束確認すると**別の土俵で確認したことになる**。
+
+`run_auto_rietveld` は**単発プリミティブのまま変えない** — `insitu` が per-frame で呼ぶため
+(REQ-SAR-502: operando は軽量な単一レシピを維持する)。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Sequence
+
+from .._json import finite_or_none
+from ..multistart.perturb import MultistartConfig, PerturbationSpec
+from ..store import Ledger
+from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
+from .multistart import RietveldMultistartResult, run_multistart_rietveld
+from .search import DEFAULT_CANDIDATES, RecipeSearchResult, SearchConfig, run_recipe_search
+
+__all__ = ["ConvergenceReport", "optimize_then_confirm"]
+
+
+@dataclass(frozen=True)
+class ConvergenceReport:
+    """標準経路の結果 = 採用した手順 + その手順での収束確認。
+
+    :param adopted_recipe: Phase A が採用した候補名 (全滅なら ``""``)
+    :param search: Phase A の全候補表 (何を試したかは結果の一部)
+    :param multistart: Phase B の開始点別結果とベイスン
+    :param best: 最終的に採用する結果 = **収束確認で最良のフィット**。構造と歪が一致して
+        いればプロファイル由来のばらつきは当てはめの良し悪しなので、最良を採ればよい
+    """
+
+    adopted_recipe: str
+    search: "RecipeSearchResult | None"
+    multistart: "RietveldMultistartResult | None"
+    best: "AutoRietveldResult | None"
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def is_corroborated(self) -> bool:
+        return bool(self.multistart is not None and self.multistart.is_global_corroborated)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "adopted_recipe": self.adopted_recipe,
+            "is_corroborated": self.is_corroborated,
+            "final_rwp": finite_or_none(self.best.final_rwp) if self.best else None,
+            "search": None if self.search is None else self.search.to_dict(),
+            "multistart": None if self.multistart is None else self.multistart.to_dict(),
+            "warnings": list(self.warnings),
+        }
+
+
+def optimize_then_confirm(
+    histograms: Sequence[HistogramSpec],
+    phases: Sequence[PhaseSpec],
+    *,
+    candidates: "Sequence[str] | None" = None,
+    search_config: "SearchConfig | None" = None,
+    n_starts: int = 5,
+    lattice_frac: float = 0.007,
+    coord_jitter_ang: float = 0.0,
+    jitter_seed: int = 0,
+    jobs: "int | None" = None,
+    ledger: "Ledger | None" = None,
+    search_runner: "Any | None" = None,
+    multistart_runner: "Any | None" = None,
+    **run_kwargs: object,
+) -> ConvergenceReport:
+    """手順を最適化してから初期値を振って収束を確認する (標準経路)。
+
+    :param candidates: Phase A の候補名 (None で `DEFAULT_CANDIDATES` = 実測で選んだ集合)
+    :param n_starts: Phase B の開始点数。**奇数**にすると格子グリッドの中央が無摂動になり
+        基準点が常に開始点集合へ入る
+    :param coord_jitter_ang: 座標摂動の振幅 (Å)。0 で格子軸のみの試験になる
+    :param jobs: Phase B の並列度 (None で開始点数)。開始点は独立なので**壁時計は最も遅い
+        開始点 1 本分**になる (平均ではなく最悪であることに注意)
+    :param search_runner: Phase A の候補実行 callable (**テスト注入専用のシーム**)。
+        実運用経路は JSON spec であり ③ はここへ callable を送れない (CLAUDE.md §4.5)
+    :param multistart_runner: Phase B の実行 callable (同上)
+    """
+    ledger = ledger if ledger is not None else Ledger()
+    warnings: list[str] = []
+
+    search = run_recipe_search(
+        list(histograms), list(phases),
+        names=tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES,
+        config=search_config, ledger=ledger, runner=search_runner, **run_kwargs,
+    )
+    selected = search.selected
+    if selected is None or selected.result is None:
+        warnings.append("全候補が失敗したため収束確認へ進めない (手順が 1 つも立たなかった)")
+        return ConvergenceReport(
+            adopted_recipe="", search=search, multistart=None, best=None,
+            warnings=tuple(warnings),
+        )
+
+    # 【採用候補の入力ごと固定する】: 適応候補はレンジ/背景項数を変えているので、元の入力で
+    #   Phase B を回すと**別の土俵で収束確認したことになる**。
+    cand = selected.candidate
+    confirm_kwargs = dict(run_kwargs)
+    confirm_kwargs["recipe"] = cand.stages
+    if cand.stability is not None:
+        confirm_kwargs["stability"] = cand.stability
+    ledger.append(
+        "convergence_phase_a",
+        {
+            "adopted": cand.name,
+            "reason": search.selection_reason,
+            "rwp": finite_or_none(selected.result.final_rwp),
+            "n_candidates": len(search.outcomes),
+        },
+    )
+
+    run_confirm = multistart_runner or run_multistart_rietveld
+    multistart = run_confirm(
+        list(cand.histograms), list(phases),
+        config=MultistartConfig(
+            n_starts=n_starts, spec=PerturbationSpec(lattice_frac=lattice_frac)
+        ),
+        ledger=ledger,
+        coord_jitter_ang=coord_jitter_ang,
+        seed=jitter_seed,
+        jobs=jobs,
+        **confirm_kwargs,
+    )
+    warnings.extend(f"収束確認: {w}" for w in multistart.warnings)
+    if not multistart.is_global_corroborated:
+        warnings.append(
+            f"**収束は確認できていない** ({multistart.corroboration_reason})。"
+            "これは失敗ではなく所見であり、閾値を緩めて隠してはならない — "
+            "初期値依存があるという事実そのものが報告すべき結果である"
+        )
+    # 最終値は収束確認の最良フィット (Phase A の単発結果ではない — 同じ手順で複数点走らせた
+    # うちの最良の方が、常に同等以上である)。
+    best = multistart.best if multistart.best is not None else selected.result
+    return ConvergenceReport(
+        adopted_recipe=cand.name, search=search, multistart=multistart,
+        best=best, warnings=tuple(warnings),
+    )
