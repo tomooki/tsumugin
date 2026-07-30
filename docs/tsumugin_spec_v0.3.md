@@ -87,7 +87,7 @@ Dara (Fei & McDermott et al., Chem. Mater. 2026) の中核思想を継承する:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 3.1 GSAS-II 採用理由と役割分担
+### 3.1 GSAS-II 採用理由と役割分担 (既定バックエンド)
 
 - **ネイティブのシーケンシャル精密化**とパラメトリックフィッティング。operando/昇温の基盤。
 - **X線・中性子(CW/TOF)・複数ヒストグラムのjoint精密化**を単一エンジンで扱える。BGMNに対する決定的優位で、本仕様のFR-240系の前提。
@@ -96,6 +96,27 @@ Dara (Fei & McDermott et al., Chem. Mater. 2026) の中核思想を継承する:
 - 占有率・座標・異方性ADP・剛体を段階戦略の管理下で解放できる。
 
 **既知のリスク**: 無人運転での最小二乗発散。→ §6のガードレール+マルチスタートで吸収。
+
+#### 3.1.1 第 2 バックエンド: Bruker TOPAS (M12)
+
+P7 (バックエンド交換可能性) の実体化として、**同一の `PhaseSpec`/`HistogramSpec`/
+`RefinementStage` から TOPAS でも自動 Rietveld を回せる** (`tsumugin.topas`)。② では
+`backend="gsasii"|"topas"` で選び、可用性は `list_refinement_backends` で確認する。
+
+- **選ぶ理由**: GSAS で乗り切らない異方線幅/微細構造モデル、TOPAS 固有マクロ、そして
+  **バックエンド間の独立確認** — 同じデータと構造から 2 実装が同じ格子・同じ相分率へ落ちれば
+  大域最適の強い傍証になる (実装のバグまで含めて独立なので `multistart` の初期値摂動より強い)。
+- **同一にしたもの**: 段階解放の入出力契約、`r_wp` のセマンティクス (TOPAS の `r_wp_dash` は
+  背景差引きで非互換なので使わない)、失敗の chi2=inf 縮退、物理妥当性ゲート。
+- **同一にできないもの**: **解放の順序**。GSAS は装置ファイルの Caglioti U,V,W から始まるが
+  TOPAS は汎用初期値から始まるため、格子より先にプロファイルを合わせないと格子が幅の不一致を
+  吸収して悪化する。レシピはバックエンドごとに持つ (`topas.recipe.build_topas_recipe`)。
+- **非対応**: MEM 経路 (GSAS の `.gpx` ハンドルに依存)、operando 逐次 (`sequential_rietveld` /
+  `anchored_sequential` は GSAS 固定)、`stability` 診断ゲート、レシピ探索との併用。
+  いずれも**黙って GSAS へ落とさず**明示的に断るか警告として結果に出す。
+
+到達点と未達は `docs/benchmark/m12-topas/README.md`、設計は
+`docs/design/m12-topas-backend/architecture.md`。
 
 ---
 
