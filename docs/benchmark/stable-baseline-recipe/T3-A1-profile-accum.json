@@ -1,0 +1,221 @@
+{
+  "dataset": "T3",
+  "recipe": "A1-profile-accum",
+  "axis": "profile_granularity",
+  "rwp": 7.0410612543744255,
+  "gof": 2.376144993451396,
+  "n_obs": 8918,
+  "n_stages": 9,
+  "n_reverted": 2,
+  "validity": "pass",
+  "validity_failed_checks": [],
+  "frozen_parameters": [],
+  "final_polish_applied": false,
+  "n_undetermined": 1,
+  "stages": [
+    {
+      "index": 0,
+      "label": "S0 scale+background",
+      "rwp": 25.586059023955443,
+      "gof": 8.617047351056224,
+      "n_params": 14,
+      "converged": true,
+      "reverted": false,
+      "note": "起点: スケールと背景のみ"
+    },
+    {
+      "index": 1,
+      "label": "S1 cell+displacement",
+      "rwp": 14.985877277960338,
+      "gof": 5.050450308297064,
+      "n_params": 26,
+      "converged": true,
+      "reverted": false,
+      "note": "格子 + ジオメトリ別試料変位; 温度差の静水圧歪み Dij"
+    },
+    {
+      "index": 2,
+      "label": "S2 profile_W",
+      "rwp": 11.827378232815137,
+      "gof": 3.986440282731633,
+      "n_params": 28,
+      "converged": true,
+      "reverted": false,
+      "note": "Caglioti 累積 (W)"
+    },
+    {
+      "index": 3,
+      "label": "S3 profile_WU",
+      "rwp": 11.225652814391065,
+      "gof": 3.784053265054602,
+      "n_params": 30,
+      "converged": true,
+      "reverted": false,
+      "note": "Caglioti 累積 (W,U)"
+    },
+    {
+      "index": 4,
+      "label": "S4 profile_WUV+size_strain",
+      "rwp": 10.197265939440827,
+      "gof": 3.4381682727532534,
+      "n_params": 34,
+      "converged": true,
+      "reverted": false,
+      "note": "Caglioti 累積 (W,U,V)"
+    },
+    {
+      "index": 5,
+      "label": "S5 coords",
+      "rwp": 8.138426118611223,
+      "gof": 2.7456984729462897,
+      "n_params": 45,
+      "converged": true,
+      "reverted": false,
+      "note": "一般位置の原子座標 X"
+    },
+    {
+      "index": 6,
+      "label": "S6 uiso",
+      "rwp": 7.0410612543744255,
+      "gof": 2.376144993451396,
+      "n_params": 50,
+      "converged": true,
+      "reverted": false,
+      "note": "等方温度因子 Uiso (混合占有は等価制約下)"
+    },
+    {
+      "index": 7,
+      "label": "S7 profile_lorentzian",
+      "rwp": 7.0410612543744255,
+      "gof": 2.376144993451396,
+      "n_params": 50,
+      "converged": true,
+      "reverted": true,
+      "note": "X 線 Lorentzian X,Y + Zero (別段階, revert ガード)"
+    },
+    {
+      "index": 8,
+      "label": "S8 profile_asymmetry",
+      "rwp": 7.0410612543744255,
+      "gof": 2.376144993451396,
+      "n_params": 50,
+      "converged": false,
+      "reverted": true,
+      "note": "X 線 軸発散非対称 SH/L (別段階, revert ガード)"
+    }
+  ],
+  "refined_cells": {
+    "PbSO4": [
+      8.479317024015543,
+      5.397617672572014,
+      6.958312033357506,
+      90.0,
+      90.0,
+      90.0
+    ]
+  },
+  "cell_esd": {
+    "PbSO4": [
+      5.005084813605825e-05,
+      3.352808742703382e-05,
+      4.210723232404054e-05,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "atom_coords": {
+    "PbSO4": {
+      "Pb": [
+        0.18757551017448013,
+        0.25,
+        0.1672335087683344
+      ],
+      "S": [
+        0.064903737413245,
+        0.25,
+        0.6839003136504016
+      ],
+      "O1": [
+        -0.09240542093378806,
+        0.25,
+        0.5952795742869954
+      ],
+      "O2": [
+        0.1934470520375836,
+        0.25,
+        0.5425466748886598
+      ],
+      "O3": [
+        0.08093850943612234,
+        0.027063886024284695,
+        0.8089227817534744
+      ]
+    }
+  },
+  "atom_coord_esd": {
+    "PbSO4": {
+      "Pb": [
+        7.5942254044465e-05,
+        0.0,
+        0.00010782243124903161
+      ],
+      "S": [
+        0.00029243358897709245,
+        0.0,
+        0.00039293962861956767
+      ],
+      "O1": [
+        0.00021966283970354606,
+        0.0,
+        0.0002342798687718322
+      ],
+      "O2": [
+        0.00021352045373485,
+        0.0,
+        0.00027281946180614757
+      ],
+      "O3": [
+        0.0001339545619437843,
+        0.0001849784408551766,
+        0.00016971193691873025
+      ]
+    }
+  },
+  "atom_occupancy": {
+    "PbSO4": {
+      "Pb": 1.0,
+      "S": 1.0,
+      "O1": 1.0,
+      "O2": 1.0,
+      "O3": 1.0
+    }
+  },
+  "atom_occupancy_esd": {
+    "PbSO4": {
+      "Pb": null,
+      "S": null,
+      "O1": null,
+      "O2": null,
+      "O3": null
+    }
+  },
+  "atom_uiso": {
+    "PbSO4": {
+      "Pb": 0.020797942612151146,
+      "S": 0.008508695072151498,
+      "O1": 0.025406821536240094,
+      "O2": 0.01871553343839728,
+      "O3": 0.017777251826361216
+    }
+  },
+  "atom_uiso_esd": {
+    "PbSO4": {
+      "Pb": 0.00022832341044566888,
+      "S": 0.0005760351495542827,
+      "O1": 0.0004950218718091646,
+      "O2": 0.00046423123487719973,
+      "O3": 0.0003167301832822789
+    }
+  }
+}

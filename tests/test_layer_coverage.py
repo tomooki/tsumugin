@@ -72,15 +72,52 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
     ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
+    "convergence agreement (収束の傍証)": (
+        "auto_rietveld",
+        "2 手順が**同じ解に収束したか**を esd スケール + クラス毎の床で判定する "
+        "(`autorietveld.agreement`)。Rwp では判定できない — T3 実測で serious と adaptive は "
+        "Rwp 差 0.361 なのに格子が 0.161% 違う。② へは `auto_rietveld(search=...)` の返り値 "
+        "`search.agreement` (is_corroborated / corroboration_reason / basins[].is_clique / "
+        "pairs[].classes[].worst) として届く。**単独ツールは作らない** — 比較には座標/esd/"
+        "解放フラグ/段軌跡が要るが `_result_from_dict` は 6 フィールドしか復元しないので、"
+        "`compare_convergence(a, b)` 型のツールは引数を他ツールの出力から作れず DOA になる "
+        "(§4.5 到達可能性)。傍証は結果を生んだ run の内側で計算するのが唯一の到達可能な形",
+    ),
     "recipe search (REQ-SAR-500)": (
         "auto_rietveld",
         "レシピ探索 (Phase 2, stable-auto-rietveld): 単一レシピは全データで勝てない "
-        "(実測 T1=default 9.81% / T3=serious 6.10%) ため候補を独立実行し「収束したものの中で"
-        "最良」を採る。② は `search` (true or 候補名の列) と `search_config` (閾値) で到達し、"
-        "返り値の `search.candidates[]`/`warnings[]` に候補ごとの Rwp/収束/tier と順序依存警告 "
-        "(REQ-SAR-501) が載る。`search: [\"serious\"]` は**勝ったレシピ 1 本で回す**唯一の "
-        "JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは**意図的に露出しない** "
-        "(REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
+        "(実測 2026-07-30: 採用手順は T1・CaTeO3=polish / T2=serious1 / T3=sizestrain_last) "
+        "ため候補を独立実行し「収束したものの中で最良」を採る。② は `search` "
+        "(true or 候補名の列) と `search_config` (閾値) で到達し、返り値の "
+        "`search.candidates[]`/`warnings[]` に候補ごとの Rwp/収束/tier と順序依存警告 "
+        "(REQ-SAR-501) が載る。⚠ `search: true` は `DEFAULT_CANDIDATES` (5 本) であり "
+        "`CANDIDATE_NAMES` 全部ではない — 測定で支配された `serious` (2 周) は既定から外して "
+        "名指しでのみ選べる。`search: [\"polish\"]` のように 1 本だけ渡すのが**勝ったレシピで"
+        "反復を続ける**唯一の JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは"
+        "**意図的に露出しない** (REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
+    ),
+    "recipe axes (build_recipe の opt-in 軸)": (
+        UNEXPOSED,
+        "**意図的な非露出**: `build_recipe(profile_granularity=, background_escalation=)` は "
+        "10 案キャンペーン (2026-07-30) で**候補を 1 軸ずつ変えて測るため**に足した実験用の軸で、"
+        "測定の結果どちらも既定集合に採らなかった — `profile_granularity=\"accumulate\"` は "
+        "T3 で 6.66→7.04 と悪化し、`background_escalation` は CaTeO3 で 12.20→17.67 と壊した "
+        "(`docs/benchmark/stable-baseline-recipe/FINDINGS.md` §2.2)。**負けた軸を ② に出すと "
+        "③ が「使える調整ノブ」と読む**ため出さない。兄弟の `size_strain_placement` だけは "
+        "勝ったので `sizestrain_last` 候補として `search` から到達可能。再挑戦するときは "
+        "名前付き候補にして `CANDIDATE_NAMES` へ足す (kwarg を ② へ生で出すのではなく)",
+    ),
+    "convergence confirmation (規定の標準経路)": (
+        "auto_rietveld",
+        "**手順最適化 → 初期値摂動による収束確認** (`autorietveld.confirm.optimize_then_confirm`, "
+        "2026-07-30 決定 `docs/design/stable-baseline-recipe/STANDARD-PROCEDURE.md`)。"
+        "② は `multistart` spec (`{n_starts, lattice_frac, coord_jitter_ang, jitter_seed, jobs}` "
+        "= **すべてスカラ**なので他ツールの出力を要しない, §4.5) で到達し、返り値の "
+        "`convergence.structure_is_corroborated` (解を採用してよいか) / `class_convergence` "
+        "(何をすべきか) / `undetermined_by_initial_values` (**出版してはならない値**) が届く。"
+        "⚠ 単一 bool を headline にしない — 実測で T1 は歪・T3 は格子で割れており**処方が違う**。"
+        "`optimize_then_confirm` の `search_runner`/`multistart_runner` は**テスト注入専用**で "
+        "② には出さない (callable は JSON にできない)",
     ),
     "data preprocessing (REQ-SAR-401/402/403)": (
         "propose_data_preprocessing",
@@ -390,6 +427,57 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     ),
     "hist_absorption": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。負吸収の検出源)"),
     "hist_profile": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。プロファイル現値)"),
+    # --- 構造の一致判定 (収束安定性): 座標は出版値なので esd とセットで露出する ---
+    "atom_coords": (
+        "atom_coords",
+        "**露出**: 精密化座標は出版値であり (`cell_esd` と同じ論拠 — esd を伴わない精密化値は "
+        "出版できない)、これまで ② に座標が一切無かったため ③ は構造を報告できなかった。"
+        "ペイロードは相×原子×3 で残差配列と違い小さい。値は GSAS 原子行由来で `dAx` "
+        "(精密化ごとに 0 へ再初期化されるシフト) ではない",
+    ),
+    "atom_coord_esd": (
+        "atom_coord_esd",
+        "**露出**: 上と対。3 状態を素の型で運ぶ (>0.0=精密化した su / 0.0=対称拘束で厳密固定 "
+        "= 真の陳述 / null=この精密化では決まっていない)。0.0 と null を潰さないのが要点で、"
+        "潰すと「厳密に固定された座標」と「決まらなかった座標」が区別できなくなる",
+    ),
+    "atom_coord_free_index": (
+        UNEXPOSED,
+        "意図的: `GetCSxinel` の生の整数三つ組は対称性の内部プリミティブ。③ に必要な情報は "
+        "`atom_coord_esd` の 0.0 状態と、一致判定の INCOMPARABLE (片方だけ対称固定) に畳んで "
+        "届く。生の整数を ③ が読む用途が無い",
+    ),
+    "atom_uiso_esd": (
+        UNEXPOSED,
+        "Issue #97: 対応する `atom_uiso` が未露出なので esd 単体を出すと「値のない不確かさ」に "
+        "なる。露出は #97 の一括解決で `atom_uiso` と同時に行う。一致判定には uiso クラスとして "
+        "寄与する (2 状態: >0.0 / None)",
+    ),
+    "hist_profile_refined": (
+        UNEXPOSED,
+        "Issue #97: `hist_profile` と同じ ① 内省フィールド。③ への意味は一致判定の ASYMMETRIC "
+        "件数 (どの手順がどの項を解放したか) に畳む — 生の解放フラグ表は ③ の判断材料にならない",
+    ),
+    "hap_size": (
+        "hap_size",
+        "**露出**: 結晶子サイズは物理量であり出版値。**収束の判定対象は「構造 + 歪」**で、"
+        "Caglioti U/V/W のような装置側 nuisance とは区別する (構造と歪が収束していれば "
+        "プロファイルは最良フィットを選べば足りる)。HAP パラメータなので `hist_profile` "
+        "(装置パラメータ) には入らず、これまで結果に一切載っていなかった = 歪の一致を"
+        "確かめる術が無かった",
+    ),
+    "hap_mustrain": ("hap_mustrain", "**露出**: 微小歪み。上と対 (同じ論拠)"),
+    "hap_size_esd": (
+        "hap_size_esd",
+        "**露出**: サイズの esd。esd を伴わない精密化値は出版できない (`cell_esd` と同じ規律)。"
+        "2 状態 (>0.0 / null)",
+    ),
+    "hap_mustrain_esd": ("hap_mustrain_esd", "**露出**: 微小歪みの esd。上と対"),
+    "hist_profile_esd": (
+        UNEXPOSED,
+        "Issue #97: 同上 (`hist_profile` が未露出なので esd 単体では意味を持たない)。"
+        "装置パラメータに対称固定は無いため 2 状態 (>0.0 / None)",
+    ),
     "peak_width_ratio": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。幅ずれ)"),
     "asymmetry_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。残差非対称)"),
     "intensity_bias_metric": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。選択配向)"),

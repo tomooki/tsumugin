@@ -37,6 +37,7 @@ from ..autorietveld import (
 )
 from ..autorietveld.search import (
     CANDIDATE_NAMES,
+    DEFAULT_CANDIDATES,
     RecipeCandidate,
     SearchConfig,
     run_recipe_search,
@@ -165,6 +166,36 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "cell_esd": {
             name: [finite_or_none(x) for x in esd] for name, esd in result.cell_esd.items()
         },
+        # 【精密化座標 + esd】: 座標は出版値なので esd とセットで出す。**esd の 3 状態を潰さない** —
+        #   ``>0.0`` = 精密化した su / ``0.0`` = 対称拘束で厳密に固定 (真の陳述) /
+        #   ``null`` = この精密化では決まっていない。0.0 と null を同一視すると「厳密に固定された
+        #   座標」と「決まらなかった座標」が読み分けられなくなる (`cell_esd` と同じ規律)。
+        "atom_coords": {
+            phase: {label: [finite_or_none(x) for x in xyz] for label, xyz in atoms.items()}
+            for phase, atoms in result.atom_coords.items()
+        },
+        # 【微細構造 (サイズ/微小歪み) + esd】: **収束の判定対象は「構造 + 歪」**なので、
+        #   歪は装置プロファイル (nuisance) と分けて出す。
+        "hap_size": {
+            ph: {h: finite_or_none(v) for h, v in d.items()}
+            for ph, d in result.hap_size.items()
+        },
+        "hap_mustrain": {
+            ph: {h: finite_or_none(v) for h, v in d.items()}
+            for ph, d in result.hap_mustrain.items()
+        },
+        "hap_size_esd": {
+            ph: {h: finite_or_none(v) if v is not None else None for h, v in d.items()}
+            for ph, d in result.hap_size_esd.items()
+        },
+        "hap_mustrain_esd": {
+            ph: {h: finite_or_none(v) if v is not None else None for h, v in d.items()}
+            for ph, d in result.hap_mustrain_esd.items()
+        },
+        "atom_coord_esd": {
+            phase: {label: [finite_or_none(x) for x in esd] for label, esd in atoms.items()}
+            for phase, atoms in result.atom_coord_esd.items()
+        },
         # 【決まらなかったパラメータ (REQ-SAR-103)】: 最終収束後に残った ``esd >= |値|``。
         #   **これは失敗ではなく所見** — 「このデータではこのパラメータは決まらない」という
         #   情報であり、③ がモデルを疑う材料になる (NaCuHCF の占有率発散が Ow 必要性の決め手に
@@ -276,6 +307,82 @@ def _run_search(
     return payload
 
 
+#: `multistart` spec が受け付けるキー (閉じた語彙 — 未知キーは大声で落とす)。
+_MULTISTART_KEYS = frozenset(
+    {"n_starts", "lattice_frac", "coord_jitter_ang", "jitter_seed", "jobs"}
+)
+
+
+def _run_convergence(
+    inp: AnalysisInput,
+    names: "Sequence[str]",
+    search_config: "Mapping[str, object] | None",
+    multistart: "Mapping[str, object]",
+    max_cyc: int,
+    opts: StabilityOptions,
+    search_runner: "SearchRunner | None",
+) -> dict:
+    """規定の標準経路 (手順最適化 → 収束確認) を実行する。
+
+    返り値は**通常の `auto_rietveld` と同じ形**に ``search`` と ``convergence`` を足したもの。
+    ③ が「収束確認したときだけ別の読み方をする」必要が無いようにする (探索と同じ規律)。
+
+    ⚠ ``final_rwp`` 以下は**収束確認の最良フィット**である (単発ではなく)。同じ手順で複数点
+    走らせた最良は単発と同等以上なので、単発を返すと確認のために回した計算を捨てることになる。
+    """
+    from dataclasses import replace as _replace
+
+    from ..autorietveld.confirm import optimize_then_confirm
+
+    unknown = set(multistart) - _MULTISTART_KEYS
+    if unknown:
+        raise ValueError(
+            f"multistart に未知のキー {sorted(unknown)} があります "
+            f"(許容キー: {sorted(_MULTISTART_KEYS)})"
+        )
+    if inp.extra_stages:
+        # 【黙って落とさない】: `optimize_then_confirm` は候補を**名前**で受けるので、③ が
+        #   渡した追加段階を運ぶ口が無い。黙って無視すると「追加段階つきで収束確認した」と
+        #   読まれる — 実際には確認していない手順の傍証になる。
+        raise ValueError(
+            "extra_stages と multistart は同時に指定できません "
+            "(収束確認は候補名で手順を固定するため追加段階を運べない)。"
+            "追加段階を試すなら search 単独で、収束確認するなら extra_stages なしで呼ぶ"
+        )
+    kwargs = {k: multistart[k] for k in _MULTISTART_KEYS if k in multistart}
+    report = optimize_then_confirm(
+        inp.histograms,
+        inp.phases,
+        candidates=tuple(names),
+        search_config=SearchConfig.from_dict(search_config),
+        background_coeffs=inp.background_coeffs,
+        max_cyc=max_cyc,
+        stability=opts,
+        search_runner=search_runner,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    if report.best is None:
+        return {
+            "error": "手順が 1 つも立たなかったため収束確認へ進めませんでした: "
+            + " / ".join(report.warnings),
+            "error_type": "ConvergenceNotAttempted",
+            "convergence": report.to_dict(),
+        }
+    selected = report.search.selected if report.search is not None else None
+    chosen = inp
+    if selected is not None:
+        chosen = _replace(
+            inp,
+            histograms=selected.candidate.histograms,
+            background_coeffs=selected.candidate.background_coeffs,
+        )
+    payload = _result_to_dict(report.best, chosen)
+    if report.search is not None:
+        payload["search"] = report.search.to_dict()
+    payload["convergence"] = report.to_dict()
+    return payload
+
+
 def _with_extra_stages(inp: AnalysisInput, names: Sequence[str]) -> tuple[RecipeCandidate, ...]:
     """全候補のレシピ末尾に ``AnalysisInput.extra_stages`` を足した候補列を組む。"""
     from dataclasses import replace as _replace
@@ -291,7 +398,9 @@ def _with_extra_stages(inp: AnalysisInput, names: Sequence[str]) -> tuple[Recipe
 def _search_names(search: "bool | Sequence[str]") -> tuple[str, ...]:
     """``search`` 引数を候補名の列へ正規化する。
 
-    ``True`` は全候補、名前の列は**その部分集合**を意味する。名前を 1 つだけ渡す使い方
+    ``True`` は**実測で選んだ既定集合** `DEFAULT_CANDIDATES` (``CANDIDATE_NAMES`` 全部では
+    ない — 測定で支配された ``serious`` を含まない)、名前の列は ``CANDIDATE_NAMES`` の
+    **部分集合**を意味する。名前を 1 つだけ渡す使い方
     (``["serious"]``) は「そのレシピ 1 本で回す」に等しく、**探索で勝ったレシピを次の反復でも
     使い続ける唯一の JSON 経路**である (② には既定レシピを丸ごと差し替える引数が無い)。
 
@@ -303,7 +412,10 @@ def _search_names(search: "bool | Sequence[str]") -> tuple[str, ...]:
     明示的に探索しないときは ``search`` を省略するか ``false``/``null`` を渡す。
     """
     if search is True:
-        return CANDIDATE_NAMES
+        # ★``true`` は**実測で選んだ既定集合**を回す。`CANDIDATE_NAMES` は「選べる名前」の
+        #   集合であり、測定で支配された候補 (後方互換のために残してある `serious` 2 周) を
+        #   含む — それを既定で回すと ③ は毎回 1.4 倍の時間を払って何も得ない。
+        return DEFAULT_CANDIDATES
     if isinstance(search, str):  # "serious" のような単一名を親切に受ける
         if not search:
             raise ValueError(
@@ -332,6 +444,7 @@ def auto_rietveld(
     stability: Mapping[str, object] | None = None,
     search: "bool | Sequence[str] | None" = None,
     search_config: Mapping[str, object] | None = None,
+    multistart: Mapping[str, object] | None = None,
     seed: int = 0,
     runner: Runner | None = None,
     search_runner: SearchRunner | None = None,
@@ -391,11 +504,14 @@ def auto_rietveld(
         (``unconverged``/``noop``/``rescue_frozen=N``/``pruned=N``/``bound_hits=N``) に出る。
         **未知キーは error dict へ縮退**する (黙って無視しない)。
         既定 None = 現行と同一挙動 (共分散も Controls も触らない)。``runner`` 注入時は無視される。
-    :param search: **レシピ探索** (REQ-SAR-500)。``true`` で全候補
-        (``["default", "serious", "adaptive"]``)、名前の列でその部分集合を実行し、
-        **「収束したものの中で最良」**を採る。単一レシピは全データで勝てない (実測: T1 は
-        ``default`` 9.81% / T3 は ``serious`` 6.10% が勝つ) ので、本気の単一フレーム解析では
-        探索を既定の一手にする。返り値に ``search`` (候補ごとの Rwp/収束/tier/採否と警告) が
+    :param search: **レシピ探索** (REQ-SAR-500)。``true`` で**実測で選んだ既定集合**
+        (``["default", "sizestrain_last", "polish", "serious1", "adaptive"]`` =
+        `DEFAULT_CANDIDATES`。``CANDIDATE_NAMES`` 全部ではない — 測定で支配された
+        ``serious`` は既定から外し、名指しでのみ選べる)、名前の列で ``CANDIDATE_NAMES`` の
+        部分集合を実行し、**「収束したものの中で最良」**を採る。単一レシピは全データで勝てない
+        (実測 2026-07-30: T1・CaTeO3 は ``polish`` / T2 は ``serious1`` / T3 は
+        ``sizestrain_last`` が勝つ) ので、本気の単一フレーム解析では探索を既定の一手に
+        する。返り値に ``search`` (候補ごとの Rwp/収束/tier/採否と警告) が
         付き、``final_rwp`` 以下は**採用候補の結果**になる。``specs`` も採用候補の入力を返すので
         持ち回れば同じ土俵で継続できる。⚠ **operando (`sequential_rietveld`) では使わない**
         — フレーム数 × 候補数の積は時間予算に収まらない (REQ-SAR-502)。既定 None (探索なし・
@@ -406,6 +522,12 @@ def auto_rietveld(
         ``rwp_tie_eps`` 以内の同点は **BIC** で裁定し (母数の違う候補を Rwp だけで比べない)、
         ``disagreement_rwp_eps`` 以内で答えが割れたら**順序依存の警告**を出す (REQ-SAR-501)。
         未知キーは error dict へ縮退する。既定 None (既定値)。
+    :param multistart: **収束確認** (規定の標準経路)。``{"n_starts": 5, "lattice_frac": 0.007,
+        "coord_jitter_ang": 0.05, "jitter_seed": 0, "jobs": 5}``。渡すと手順最適化 (Phase A) の
+        あと、採用手順を固定したまま初期値を振って (Phase B) **何が収束し何が初期値依存か**を
+        返す。返り値の ``convergence.structure_is_corroborated`` が解の採用可否、
+        ``convergence.undetermined_by_initial_values`` が**出版してはならない値**である。
+        引数はすべてスカラなので他ツールの出力を要しない (§4.5 到達可能性)
     :param seed: 既定 GSAS runner 用乱数種
     :param runner: 注入 runner (None なら GSAS 駆動)。テスト用の内部シーム
     :param search_runner: 探索用の候補ランナー注入 (テスト用の内部シーム)。``search`` 指定時に
@@ -418,6 +540,15 @@ def auto_rietveld(
         # 【`if search:` にしない】: 空列 `[]` は falsy なので**黙って探索なし経路**へ落ちる。
         #   「探索しない」(None/false) と「候補が空」(=[]) を区別し、後者は _search_names が
         #   ValueError → error dict へ縮退させる (LOW-5)。
+        if multistart is not None:
+            # 【収束確認は探索を含む】: 規定の標準経路は「手順最適化 → 収束確認」なので、
+            #   `multistart` を渡したら Phase A も回す (`search` 未指定なら既定候補集合)。
+            #   分けて渡させると「探索せずに収束確認」= 決めていない手順を確認する、という
+            #   意味を成さない呼び方が可能になる。
+            names = _search_names(search) if search not in (None, False) else DEFAULT_CANDIDATES
+            return _run_convergence(
+                inp, names, search_config, multistart, max_cyc, opts, search_runner
+            )
         if search is not None and search is not False:
             return _run_search(
                 inp, _search_names(search), search_config, max_cyc, opts, search_runner

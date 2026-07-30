@@ -276,3 +276,48 @@ def test_builder_rejects_a_split_stage_at_generation_time(monkeypatch):
         build_recipe([_NEUTRON_DS], _PLAIN)
     with pytest.raises(CorrelationGroupViolation):
         build_serious_recipe([_NEUTRON_DS], _PLAIN)
+
+
+# ---------------------------------------------------------------------------
+# engine 入口での強制 (REQ-SAR-301 を builder 不変条件で終わらせない)
+# ---------------------------------------------------------------------------
+
+
+def test_hand_built_recipe_is_validated_at_the_engine_entry():
+    """★``run_auto_rietveld(recipe=...)`` も検証すること。builder だけでは穴が残る。
+
+    非トートロジー: `validate_correlation_groups` は `recipe._finalize` からしか呼ばれておらず、
+    **builder の不変条件にすぎなかった**。手組みの段列を渡す経路 — ② の `stages` spec /
+    `insitu` の recipe 注入 / レシピ探索候補 — は検証を丸ごと素通りしていた。相関群を割った段は
+    **revert としてしか現れず、原因が群の分割であることは Rwp から読めない**ので、
+    素通りすると「効かない knob」として ③ に誤って学習される。
+
+    GSAS 非依存であること自体が要件: 入力の誤りは backend の有無と無関係なので、
+    検証は `_g2sc()` より前に走らなければならない (でないとこのテストが gated になる)。
+    """
+    from tsumugin.autorietveld.engine import run_auto_rietveld
+
+    split = (
+        RefinementStage(label="S0", flags={"scale": True}),
+        RefinementStage(label="S1 W only", flags={"profile": ["W"]}),  # {U,V,W} を分割
+    )
+    with pytest.raises(CorrelationGroupViolation) as err:
+        run_auto_rietveld([_XRAY_BB], _PLAIN, recipe=split)
+    assert "W" in str(err.value)
+
+
+def test_a_valid_hand_built_recipe_is_not_rejected_at_the_entry():
+    """【対照】検証が「手組みは常に拒否」へ縮退していないこと。
+
+    群を割らないレシピは通り、その先で初めて GSAS が要求される (= ここでは
+    `CorrelationGroupViolation` 以外の失敗になる)。検証段階を通過したことだけを固定する。
+    """
+    from tsumugin.autorietveld.engine import run_auto_rietveld
+
+    ok = (
+        RefinementStage(label="S0", flags={"scale": True}),
+        RefinementStage(label="S1 profile", flags={"profile": ["U", "V", "W"]}),
+    )
+    with pytest.raises(Exception) as err:  # noqa: PT011 — 型は問わない (GSAS 有無で変わる)
+        run_auto_rietveld([_XRAY_BB], _PLAIN, recipe=ok)
+    assert not isinstance(err.value, CorrelationGroupViolation)

@@ -80,8 +80,12 @@ def test_search_true_means_every_candidate():
 
     auto_rietveld([_H], [_P], search=True, search_runner=runner)
 
-    # adaptive は観測パターンを読めないので立たない (固定層が保険として残る)。
-    assert seen == ["default", "serious"]
+    # ★`search: true` は **`DEFAULT_CANDIDATES`** を回す (「選べる名前」全部ではない)。
+    #   adaptive は観測パターンを読めないので立たない (固定層が保険として残る)。
+    from tsumugin.autorietveld.search import DEFAULT_CANDIDATES
+
+    assert seen == [n for n in DEFAULT_CANDIDATES if n != "adaptive"]
+    assert seen == ["default", "sizestrain_last", "polish", "serious1"]
 
 
 def test_search_selects_the_converged_candidate_over_a_better_but_unconverged_one():

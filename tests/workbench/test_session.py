@@ -26,7 +26,11 @@ from tsumugin.autorietveld.model import (
     StageResult,
     ValidityReport,
 )
-from tsumugin.autorietveld.multistart import MultistartStart, RietveldMultistartResult
+from tsumugin.autorietveld.multistart import (
+    MultistartStart,
+    RietveldMultistartResult,
+    StartPerturbation,
+)
 from tsumugin.workbench import lifecycle
 from tsumugin.workbench.project import WorkbenchProject
 from tsumugin.workbench.session import WorkbenchSession
@@ -2088,11 +2092,11 @@ def test_on_multistart_success_populates_basin_points_and_corroborated_evidence(
 
     starts = (
         MultistartStart(
-            index=0, cell_scale={"phaseA": (0.98, 0.98, 0.98)},
+            index=0, perturbation=StartPerturbation(cell_scale={"phaseA": (0.98, 0.98, 0.98)}),
             result=_fake_autorietveld_result(rwp=6.5, a=9.30, phase_name="phaseA"),
         ),
         MultistartStart(
-            index=1, cell_scale={"phaseA": (1.02, 1.02, 1.02)},
+            index=1, perturbation=StartPerturbation(cell_scale={"phaseA": (1.02, 1.02, 1.02)}),
             result=_fake_autorietveld_result(rwp=6.6, a=9.31, phase_name="phaseA"),
         ),
     )

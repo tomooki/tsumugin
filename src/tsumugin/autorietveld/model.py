@@ -736,6 +736,29 @@ def coerce_cell_esd(values: object) -> CellEsd:
     return out  # type: ignore[return-value]
 
 
+#: 分率座標 (x,y,z)。**GSAS 原子行から読んだ値**であって ``dAx`` (シフト) ではない。
+CoordTriple = tuple[float, float, float]
+
+#: 座標の標準不確かさ (x,y,z)。``CellEsd`` と**同型の 3 状態**:
+#: ``>0.0`` = ``dA{axis}`` の sig 由来の su / ``0.0`` = **対称拘束で厳密に固定** /
+#: ``None`` = **この精密化では決まっていない**。三者を潰さないための ``| None``。
+CoordEsd = tuple["float | None", "float | None", "float | None"]
+
+
+def coerce_coord_esd(values: object) -> CoordEsd:
+    """任意の 3 要素列を `CoordEsd` へ正規化する (`coerce_cell_esd` の 3 要素版)。
+
+    存在理由も同じ: 要素が ``None`` を取り得るため素朴な ``tuple(float(x) for x in esd)`` は
+    ``TypeError`` になり、**それを避けるために 0.0 へ丸める誘惑**が生まれる。0.0 は既に
+    「対称拘束で固定」という別の意味を持っているので、丸めた瞬間に情報が壊れる。
+    """
+    items = list(values)  # type: ignore[call-overload]
+    if len(items) != 3:
+        raise ValueError(f"coord_esd は 3 要素 (x,y,z) である必要があります: {values!r}")
+    out = tuple(finite_or_none(x) for x in items)
+    return out  # type: ignore[return-value]
+
+
 @dataclass(frozen=True)
 class AutoRietveldResult:
     """自動 Rietveld 解析の総合結果。
@@ -859,3 +882,47 @@ class AutoRietveldResult:
     #   ledger ``m7_stage_restraint_split`` の ``trial_*`` に段ごとに残る — 報告を混ぜるのではなく
     #   層を分けて両方見えるようにする。
     final_restraint_penalty: float = 0.0
+    # 【構造の一致判定に必要な精密化座標 (末尾追加・既定空で後方互換)】: 2 つの精密化手順が
+    #   **同じ解に収束したか**は Rwp では判定できない (T3 実測: Rwp 差 0.361 で格子 0.161% 違い)。
+    #   座標は今まで結果に一切載っておらず、`_extract_state` は validity 用の位置リストを作って
+    #   捨てていたため、③ は構造を報告することも比較することもできなかった。
+    # 相名→原子ラベル→(x,y,z) 分率座標。出典は GSAS 原子行 ``row[cx..cx+2]``
+    #   (`atomrows.atom_row`)。**``dAx`` の値ではない** — あれは精密化ごとに 0 へ再初期化される
+    #   シフトである (`GSASIIstrIO.py:1732`)。
+    atom_coords: Mapping[str, Mapping[str, CoordTriple]] = field(default_factory=dict)
+    # 相名→原子ラベル→座標 esd。**3 状態を区別する** (`cell_esd` と同型):
+    #   ``>0.0`` = ``dA{axis}`` の sig (独立軸と、``depSigDict`` 経由の結束軸の双方) /
+    #   ``0.0`` = **対称拘束で厳密に固定** (GSAS は変数にすらしない = 真の陳述) /
+    #   ``None`` = この精密化では決まっていない (座標段未解放・段 revert・共分散なし)。
+    #   **0.0 を捏造しない** — 0.0 は既に「対称固定」の意味を持つため、混同すると
+    #   「厳密に固定された座標」と「決まらなかった座標」が区別できなくなる。
+    atom_coord_esd: Mapping[str, Mapping[str, CoordEsd]] = field(default_factory=dict)
+    # 相名→原子ラベル→``GetCSxinel(sytsym)[0]`` の生値 (`atomrows.FreeIndex`)。
+    #   ``0``=対称固定 / 三つ組内で一意な正値=独立 / 他軸と一致する正値=**結束**。
+    #   bool へ潰すと結束軸が独立に見えるので生の整数で運ぶ (一致判定が「片方だけ対称固定」を
+    #   `INCOMPARABLE` と言い切るための根拠)。
+    atom_coord_free_index: Mapping[str, Mapping[str, tuple[int, int, int]]] = field(
+        default_factory=dict
+    )
+    # 相名→原子ラベル→Uiso esd。**2 状態** (`atom_occupancy_esd` と同型): ``>0.0`` / ``None``。
+    #   異方性原子 (``row[cia] == "A"``) はキーごと欠落する (`atom_uiso` と同じ規律)。
+    atom_uiso_esd: Mapping[str, Mapping[str, "float | None"]] = field(default_factory=dict)
+    # per-histogram (索引順): プロファイル項の**解放フラグ**。`_extract_profile` が既に読みながら
+    #   捨てていた第 3 要素 (`inst[key][2]`)。esd の有無とは別の問いに答える —
+    #   esd は「最後の精密化で決まったか」、フラグは「この手順がそもそも解放を試みたか」。
+    #   手順ごとに解放集合が違う (default と serious) ため、両方ないと「凍結していた」と
+    #   「試したが決まらなかった」が区別できない。
+    hist_profile_refined: tuple[Mapping[str, bool], ...] = ()
+    # per-histogram (索引順): プロファイル項の esd。**2 状態** (``>0.0`` / ``None``)。
+    #   装置パラメータに対称固定は無いので ``0.0`` 状態は存在しない。
+    hist_profile_esd: tuple[Mapping[str, "float | None"], ...] = ()
+    # 【微細構造 (結晶子サイズ / 微小歪み)】: 相名 → ``"hist{i}"`` → 値。HAP パラメータなので
+    #   `hist_profile` (装置パラメータ) には入らず、これまで結果に一切載っていなかった。
+    #   **収束の判定対象は「構造 + 歪」**であり、Caglioti U/V/W のような装置側の nuisance とは
+    #   区別する必要がある (プロファイルは最良フィットを選べば足りるが、歪は物理量)。
+    #   異方 (uniaxial/generalized) の場合は代表成分 (等方相当) のみを載せる。
+    hap_size: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    hap_mustrain: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    # 同型の 2 状態 esd (``>0.0`` / ``None``)。
+    hap_size_esd: Mapping[str, Mapping[str, "float | None"]] = field(default_factory=dict)
+    hap_mustrain_esd: Mapping[str, Mapping[str, "float | None"]] = field(default_factory=dict)

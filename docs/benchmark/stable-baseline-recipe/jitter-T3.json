@@ -1,0 +1,69 @@
+{
+  "dataset": "T3",
+  "recipe": "A2-sizestrain-last",
+  "rows": [
+    {
+      "jitter_ang": 0.0,
+      "seconds": 104.3,
+      "n_axes_moved": 0,
+      "n_basins": 3,
+      "n_diverged": 0,
+      "n_invalid": 2,
+      "rwp_spread": 0.1004,
+      "best_rwp": 5.97709,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "DISAGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "AGREE",
+        "uiso": "AGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    },
+    {
+      "jitter_ang": 0.05,
+      "seconds": 98.6,
+      "n_axes_moved": 55,
+      "n_basins": 4,
+      "n_diverged": 0,
+      "n_invalid": 1,
+      "rwp_spread": 0.1466,
+      "best_rwp": 5.97708,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "DISAGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "AGREE",
+        "uiso": "AGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    },
+    {
+      "jitter_ang": 0.1,
+      "seconds": 107.5,
+      "n_axes_moved": 55,
+      "n_basins": 3,
+      "n_diverged": 0,
+      "n_invalid": 2,
+      "rwp_spread": 0.0996,
+      "best_rwp": 5.97701,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "DISAGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "AGREE",
+        "uiso": "AGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    }
+  ]
+}

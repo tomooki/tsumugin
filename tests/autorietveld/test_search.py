@@ -6,6 +6,7 @@ GSAS を一切使わない — `run_recipe_search` の runner を注入して候
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -22,6 +23,7 @@ from tsumugin.autorietveld.model import (
 )
 from tsumugin.autorietveld.search import (
     CANDIDATE_NAMES,
+    DEFAULT_CANDIDATES,
     CandidateOutcome,
     RecipeCandidate,
     SearchConfig,
@@ -365,7 +367,19 @@ def test_repeated_summaries_are_bit_identical():
 
 def test_candidate_names_are_an_explicit_tuple_not_a_sorted_set():
     # 【目的】: 列挙順が実装都合 (辞書順/集合順) で変わらないこと (S5)。
-    assert CANDIDATE_NAMES == ("default", "serious", "adaptive")
+    assert CANDIDATE_NAMES == (
+        "default", "sizestrain_last", "polish", "serious1", "serious", "adaptive",
+    )
+    # ★既定で回るのは**実測で選んだ集合**であり「選べる名前」全部ではない。
+    #   両者を分けているのは、測定で支配された `serious` (2 周) を既定から外しつつ
+    #   `search: ["serious"]` を従来どおり動かすため (③ の手順書に載っている呼び方)。
+    assert DEFAULT_CANDIDATES == (
+        "default", "sizestrain_last", "polish", "serious1", "adaptive",
+    )
+    assert set(DEFAULT_CANDIDATES) <= set(CANDIDATE_NAMES)
+    assert DEFAULT_CANDIDATES[0] == "default", (
+        "既定の先頭は observation_groups の観測集合基準になるので動かさない"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +405,10 @@ def test_adaptive_candidate_is_skipped_when_the_pattern_cannot_be_read():
     # 【目的】: 適応層が使えないデータでも**固定層が保険**として残ること (S2 の要点)。
     cands = build_candidates([_H], [_P], names=CANDIDATE_NAMES)
 
-    assert [c.name for c in cands] == ["default", "serious"]  # adaptive は落ちる
+    # adaptive だけが落ち、固定層は全部残る (順序は CANDIDATE_NAMES に正規化される)。
+    assert [c.name for c in cands] == [
+        "default", "sizestrain_last", "polish", "serious1", "serious",
+    ]
 
 
 def test_adaptive_candidate_does_not_overwrite_explicit_two_theta_limits(tmp_path):
@@ -647,3 +664,67 @@ def test_selection_reason_names_the_key_that_actually_decided():
     assert summarize_search(by_obs, SearchConfig()).selection_reason == "observation_set"
     assert summarize_search(by_rwp, SearchConfig()).selection_reason == "rwp"
     assert summarize_search(by_bic, SearchConfig()).selection_reason == "bic"
+
+
+# ---------------------------------------------------------------------------
+# 収束の一致 (傍証) の配線
+# ---------------------------------------------------------------------------
+
+
+def test_agreement_is_computed_and_reaches_the_dict():
+    """★一致判定が探索の返り値に載ること (① にあっても ② に届かなければ存在しないのと同じ)。"""
+    outcomes = _outcomes(("default", _result(9.80)), ("serious", _result(9.82)))
+    summary = summarize_search(outcomes)
+
+    assert summary.agreement is not None
+    payload = summary.to_dict()
+    assert "agreement" in payload
+    assert payload["agreement"]["corroboration_reason"]
+    json.dumps(payload, allow_nan=False)
+
+
+def test_agreement_is_none_when_there_is_nothing_to_compare():
+    """★候補が 1 つなら報告を**作らない**。
+
+    非トートロジー: 空の報告を返すと「調べたが一致しなかった」と読めてしまい、
+    「調べていない」との区別が消える (1 つでは「クラスタが 1 つ」が空虚に成立する)。
+    """
+    summary = summarize_search(_outcomes(("default", _result(9.80))))
+    assert summary.agreement is None
+    assert summary.to_dict()["agreement"] is None
+
+
+def test_default_candidates_cover_the_measured_per_dataset_winners():
+    """★既定集合は**実測でデータ毎に勝った手順**を覆うこと (2026-07-30, 10 案 × 4 データ)。
+
+    非トートロジー: 「単一の手順で全データを満たすことはできない」が本プロジェクトの
+    実測結論 (F1) なので、既定集合は勝者を落としてはならない。どれか 1 つでも外れると
+    そのデータでは収束する手順が候補に無い状態になる。
+
+    | データ | 収束した勝者 | Rwp |
+    |---|---|---|
+    | T1 | `polish` | 9.67 |
+    | T2 | `serious1` | 4.32 |
+    | T3 | `sizestrain_last` | 5.98 (収束。既定 6.66 は**未収束**) |
+    | CaTeO3 | `polish` | 12.20 |
+    """
+    winners = {"polish", "serious1", "sizestrain_last"}
+    assert winners <= set(DEFAULT_CANDIDATES), sorted(winners - set(DEFAULT_CANDIDATES))
+    # 基準 (`default`) も残す — 観測集合の基準であり、勝者が全滅したときの保険でもある。
+    assert "default" in DEFAULT_CANDIDATES
+
+
+def test_polish_candidate_carries_its_own_stability_because_a_stage_list_cannot_express_it():
+    """★「最終研磨」は段列では表せない — 候補が自分の実行設定を持つ必要がある。
+
+    非トートロジー: `polish` の段列は `default` と**同一**である。違いは
+    `StabilityOptions(polish_frozen_undetermined=True)` だけなので、候補が stability を
+    持てないと「名前だけ違う同じ候補」になり、実測 T1 9.81 → 9.67 の差が出せない。
+    """
+    cands = {c.name: c for c in build_candidates([_H], [_P], names=CANDIDATE_NAMES)}
+    polish, default = cands["polish"], cands["default"]
+
+    assert [s.label for s in polish.stages] == [s.label for s in default.stages]
+    assert default.stability is None
+    assert polish.stability is not None
+    assert polish.stability.polish_frozen_undetermined is True

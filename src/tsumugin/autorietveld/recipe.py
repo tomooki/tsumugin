@@ -248,23 +248,64 @@ def _has_temperature_difference(histograms: Sequence[HistogramSpec]) -> bool:
     return len(temps) >= 2 and (max(temps) - min(temps) > 1e-9)
 
 
+#: `build_recipe(profile_granularity=...)` の語彙。
+#: - ``"whole"`` (既定): Caglioti を 1 段で丸ごと解放する (実測ベースラインが載っている形)
+#: - ``"accumulate"``: ``W`` → ``W,U`` → ``W,U,V`` の 3 段に分けて**累積**で足す。
+#:   凍結 (`freeze_others`) は**伴わない** — F2 で壊れたのは「1 つ解放 → 凍結 → 次」であって
+#:   累積そのものではない。F2 は freeze 意味論・granularity・rounds・段数が同時に違う
+#:   `serious` との比較だったため**交絡しており**、granularity 単独の効果は未測定である。
+PROFILE_GRANULARITIES = ("whole", "accumulate")
+
+#: `build_recipe(size_strain_placement=...)` の語彙。
+#: - ``"with_profile"`` (既定): プロファイル段に同居 (実測ベースラインの形)
+#: - ``"last"``: 座標/Uiso の**後**に単独段として出す。多相分岐が実測で採っている順序
+#:   (`size/歪みを座標より先に解放すると座標段が悪化して revert する`) を単相でも試すため。
+#:   この順序は多相でしか測られていない。
+SIZE_STRAIN_PLACEMENTS = ("with_profile", "last")
+
+
 def build_recipe(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
     *,
     background_coeffs: int = 6,
+    profile_granularity: str = "whole",
+    size_strain_placement: str = "with_profile",
+    background_escalation: Sequence[int] = (),
 ) -> tuple[RefinementStage, ...]:
     """普遍段階列 + アダプタから段階解放レシピを生成する。
+
+    既定引数だけで呼ぶと**実測ベースラインが載っている段列**をそのまま返す (T1 9.80617 /
+    T2 4.3331 / T3 6.6602 / CaTeO3 12.1975)。以下の opt-in はレシピ候補の軸を 1 つずつ
+    変えるためのもので、**既定を汚さない** (`tests/autorietveld/test_recipe.py` がピン留め)。
 
     :param histograms: 観測ヒストグラム仕様 (1 本以上)
     :param phases: 相仕様 (1 つ以上)
     :param background_coeffs: 初期背景 (Chebyshev) 係数数
+    :param profile_granularity: `PROFILE_GRANULARITIES` のいずれか
+    :param size_strain_placement: `SIZE_STRAIN_PLACEMENTS` のいずれか
+    :param background_escalation: 背景項数の**追加**段 (例 ``(12, 24)``)。S0 の直後に
+        昇順で挿入し、各段は既存の revert ガードに掛かる。**早い位置に置くのが要点** —
+        背景が足りないと S1 以降が丸ごと歪むので、末尾に足しても何も測れない
+        (実測: CaTeO3 は 3 項で 19% 頭打ち・6 項で 13.7%・必要 24)。
+        ``background_coeffs`` 以下の値は無視する (後退させない)。
     :returns: RefinementStage の順序付きタプル
     """
     if not histograms:
         raise ValueError("histograms が空です")
     if not phases:
         raise ValueError("phases が空です")
+    if profile_granularity not in PROFILE_GRANULARITIES:
+        raise ValueError(
+            f"profile_granularity は {list(PROFILE_GRANULARITIES)} のいずれか: "
+            f"{profile_granularity!r}"
+        )
+    if size_strain_placement not in SIZE_STRAIN_PLACEMENTS:
+        raise ValueError(
+            f"size_strain_placement は {list(SIZE_STRAIN_PLACEMENTS)} のいずれか: "
+            f"{size_strain_placement!r}"
+        )
+    escalation = sorted({int(n) for n in background_escalation if int(n) > background_coeffs})
 
     multiphase = len(phases) > 1
     mixed_occ = any(
@@ -276,10 +317,42 @@ def build_recipe(
     has_xray = any(not h.radiation.is_neutron for h in histograms)
     disp = _displacement_map(histograms)
 
-    profile_stage = RefinementStage(
-        label="profile+size_strain",
-        flags={"profile": ["U", "V", "W"], "size_strain": True},
-        note="プロファイル係数 + 結晶子サイズ/微小歪み",
+    # 【プロファイル段の組み立て】: granularity と size/strain の位置で 1 段 or 複数段になる。
+    #   累積形でも**最後の段の解放集合は "whole" と同一**なので、ブロックの終状態は変わらない
+    #   (途中の経路だけが違う = 軸を 1 つだけ動かした比較になる)。
+    _uvw = ["W", "U", "V"]
+    ride_with_profile = size_strain_placement == "with_profile"
+    profile_stages: list[RefinementStage] = []
+    if profile_granularity == "whole":
+        flags: dict[str, object] = {"profile": ["U", "V", "W"]}
+        if ride_with_profile:
+            flags["size_strain"] = True
+        profile_stages.append(
+            RefinementStage(
+                label="profile+size_strain" if ride_with_profile else "profile",
+                flags=flags,
+                note="プロファイル係数" + (" + 結晶子サイズ/微小歪み" if ride_with_profile else ""),
+            )
+        )
+    else:
+        for k in range(1, len(_uvw) + 1):
+            members = _uvw[:k]
+            last = k == len(_uvw)
+            flags = {"profile": list(members)}
+            if last and ride_with_profile:
+                flags["size_strain"] = True
+            profile_stages.append(
+                RefinementStage(
+                    label="profile_" + "".join(members)
+                    + ("+size_strain" if last and ride_with_profile else ""),
+                    flags=flags,
+                    note=f"Caglioti 累積 ({','.join(members)})",
+                )
+            )
+    size_strain_stage = RefinementStage(
+        label="size_strain",
+        flags={"size_strain": True},
+        note="結晶子サイズ/微小歪み (座標/Uiso の後)",
     )
     # X 線は Lorentzian (X,Y) + Zero を別段階で追加解放する (実験室/放射光は Lorentzian 支配的;
     # U,V,W のみでは実測ピーク形状に合わず高止まり — CaTeO3 実測 43%→13%)。悪化時は本段階ごと
@@ -324,12 +397,24 @@ def build_recipe(
             note="起点: スケールと背景のみ",
         )
     )
+    # 背景エスカレーション (REQ-SAR-401) は**S0 の直後**に置く — 背景が足りないと S1 以降が
+    # 丸ごと歪むので、末尾に足しても何も測れない。各段は既存の revert ガードに掛かるため、
+    # 改善が止まった段は自動的に捨てられる (= 「改善が止まったら確定する」の実装)。
+    for n_terms in escalation:
+        stages.append(
+            RefinementStage(
+                label=f"background_{n_terms}",
+                flags={"background": {"coeffs": n_terms}},
+                note=f"背景項数を {n_terms} へ増やす (revert ガードあり)",
+            )
+        )
 
-    if multiphase and not mixed_occ:
-        # 多相 (T4 型: 放射光+TOF 二相) の順序 (実測で確立):
-        # 相分率(和=1)を単独で先に → 格子+変位+プロファイル(+温度差 Dij) → 座標 → Uiso →
-        # size/微小歪みを最後に。相分率を格子と同時に解放すると噛まず、size/歪みを座標より
-        # 先に解放すると座標段階が悪化して revert するため、この順序が有効。
+    if multiphase:
+        # 【相分率は多相なら必ず単独で先に出す】: 以前は ``multiphase and not mixed_occ`` の
+        #   分岐内にあったため、**多相 + 混合占有**の入力は相分率段を丸ごと失っていた
+        #   (相分率が一度も解放されないまま完走する = 各相の量が初期値のまま)。混合占有の有無は
+        #   「占有率をいつ解放するか」の話であって相分率の要否とは無関係なので、条件を分ける。
+        #   実測の根拠は相分率を格子と同時に解放すると噛まないこと (T4)。
         stages.append(
             RefinementStage(
                 label="phase_fractions",
@@ -337,6 +422,11 @@ def build_recipe(
                 note="相分率 (各ヒストグラム和=1 制約)",
             )
         )
+
+    if multiphase and not mixed_occ:
+        # 多相 (T4 型: 放射光+TOF 二相) の順序 (実測で確立):
+        # 格子+変位+プロファイル(+温度差 Dij) → 座標 → Uiso → size/微小歪みを最後に。
+        # size/歪みを座標より先に解放すると座標段階が悪化して revert するため、この順序が有効。
         cell_flags: dict[str, object] = {
             "cell": True,
             "displacement": disp,
@@ -346,18 +436,36 @@ def build_recipe(
         if temp_diff:
             cell_flags["hydrostatic_strain"] = True
             cell_note += " + 温度差 Dij"
-        stages.append(
-            RefinementStage(label="cell+displacement+profile", flags=cell_flags, note=cell_note)
-        )
+        if profile_granularity == "accumulate":
+            # 累積を要求されたら融合段からプロファイルを外し、累積段として別に出す
+            # (融合段に W だけ入れると規則 1 の「縮めない」を満たせなくなる)。
+            cell_flags.pop("profile")
+            stages.append(
+                RefinementStage(
+                    label="cell+displacement", flags=cell_flags, note=cell_note.replace(
+                        " + プロファイル(CW)", ""
+                    )
+                )
+            )
+            for st in profile_stages:
+                stages.append(
+                    RefinementStage(
+                        label=st.label.replace("+size_strain", ""),
+                        flags={k: v for k, v in st.flags.items() if k != "size_strain"},
+                        note=st.note,
+                    )
+                )
+        else:
+            stages.append(
+                RefinementStage(
+                    label="cell+displacement+profile", flags=cell_flags, note=cell_note
+                )
+            )
         stages.append(coords_stage)
         stages.append(uiso_stage)
-        stages.append(
-            RefinementStage(
-                label="size_strain",
-                flags={"size_strain": True},
-                note="結晶子サイズ/微小歪み (最後に解放)",
-            )
-        )
+        # 多相は既定で size/strain を最後に置く (実測)。``size_strain_placement`` は単相の軸
+        # なので、多相ではどちらの値でも「最後」が維持される。
+        stages.append(size_strain_stage)
     else:
         # 単相 (T1/T2/T3): 格子+変位 (温度差なら Dij) を先に張る
         s1_flags: dict[str, object] = {"cell": True, "displacement": disp}
@@ -380,12 +488,14 @@ def build_recipe(
                 )
             )
             stages.append(uiso_stage)
-            stages.append(profile_stage)
+            stages.extend(profile_stages)
             stages.append(coords_stage)
         else:
-            stages.append(profile_stage)
+            stages.extend(profile_stages)
             stages.append(coords_stage)
             stages.append(uiso_stage)
+        if size_strain_placement == "last":
+            stages.append(size_strain_stage)
 
     # X 線は Lorentzian (X,Y) + Zero → 非対称 (SH/L) を最終段で追加解放 (各 revert ガード;
     # 中性子/TOF のみなら不要)

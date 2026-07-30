@@ -174,6 +174,43 @@ result = run_auto_rietveld([hx, ht1, ht2], phases)
 - `result.refined_cells`: 相ごとの精密化格子。文献値との照合に使う。
 - `result.stage_results[*].reverted`: revert が起きた段階 (その段階のパラメータは寄与せず)。
 
+### 5.1 ⚠ 合否は単発の Rwp では決まらない — **収束確認** (規定の標準経路)
+
+**同じ手順・同じデータでも、初期値を変えると別の答えに落ちる。** 実測 (T1 fluoroapatite,
+初期格子 ±0.7% の 3 開始点): Rwp 12.54 / **9.67** / 19.59、結晶子サイズ 0.176 / 0.284 /
+**0.0010 µm (1 nm)**。**すべて `validity.passed`** である — 物理妥当性ゲートはサイズ/微小歪みを
+見ていないので、1 nm への潰れを素通りさせる。
+
+規定は **手順最適化 (Phase A) → 初期値摂動による収束確認 (Phase B)** の順で回す:
+
+```python
+from tsumugin.autorietveld.confirm import optimize_then_confirm
+
+report = optimize_then_confirm(histograms, phases, n_starts=5, coord_jitter_ang=0.05, jobs=5)
+```
+
+② からは `auto_rietveld(..., multistart={"n_starts": 5, "coord_jitter_ang": 0.05, "jobs": 5})`。
+開始点は独立なので `jobs = n_starts` で**壁時計は 1 開始点分**になる (ただしその 1 開始点は
+平均ではなく**最悪**)。
+
+| 出力 | 読み方 |
+|---|---|
+| `structure_is_corroborated` | 格子・座標・占有率が収束した = **解を採用してよい** |
+| `class_convergence` | クラスごとの収束。**何をすべきか**はここで決まる |
+| `undetermined_by_initial_values` | 開始点間で esd を超えて割れた値 = **出版してはならない** |
+| `is_corroborated` | 全クラスの厳密 AND (縮退のあるデータでは滅多に真にならない) |
+
+**割れたクラスで処方が違う** — 実測で T1 は歪 (`microstructure`) で、T3 は格子 (`cell`) で割れる。
+歪はピーク幅を支配するパラメータどうしの**縮退**で手順では解けない (標準試料による装置分解能の
+固定が要る)。格子は目的関数が平坦で情報が足りない (追加測定の検討)。
+
+⛔ **閾値を緩めて「収束した」ことにしてはならない。** 縮退は閾値では解けないので、緩める操作は
+「決まっていない」を「決まった」に書き換えるだけである。割れた値は所見として報告する。
+⛔ operando (逐次/アンカー) では使わない — フレーム数 × 開始点数は時間予算に収まらない。
+
+根拠と実測: `docs/design/stable-baseline-recipe/STANDARD-PROCEDURE.md` /
+`docs/benchmark/stable-baseline-recipe/PHASE-B-FINDINGS.md`。
+
 ## 6. 失敗時の対処 (エージェントの意思決定)
 
 | 症状 | 原因候補 | 対処 |

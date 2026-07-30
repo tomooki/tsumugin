@@ -3,17 +3,22 @@
 ## なぜ探索するのか (実測)
 
 段の順序も解放手順も、**単一のレシピで全データを満たすことはできない**。試料変位段の配置
-4 通り × 4 データではどの配置でも 1 つ以上が落ち、レシピ 3 本は 3 通りの勝ち方をした
-(真の基準表 2026-07-29):
+4 通り × 4 データではどの配置でも 1 つ以上が落ち、10 案 × 4 データのキャンペーンでは
+**採用手順がデータ毎に違った** (2026-07-30 実測。Rwp、既定集合の固定候補のみ抜粋):
 
-===========  ==========  ==========
-データ       default     serious
-===========  ==========  ==========
-T1            **9.81**    10.45
-T2             4.33        4.32
-T3             6.66       **6.10**
-CaTeO3        12.20       12.19
-===========  ==========  ==========
+============  ==========  =================  ==========  ==========  ==================
+データ        default     sizestrain_last    polish      serious1    採用
+============  ==========  =================  ==========  ==========  ==================
+T1             9.81        9.73               9.67        10.60       polish
+T2             4.33        4.33               4.33         4.32       serious1
+T3             6.66        5.98               6.66         6.18       sizestrain_last
+CaTeO3        12.20       12.20              12.20        12.19       polish
+============  ==========  =================  ==========  ==========  ==================
+
+⚠ 採用は **Rwp 単独では決まらない** (`rank_outcomes`: 収束 → 妥当性 → Rwp、同点は BIC)。
+CaTeO3 は Rwp 最小が ``serious1`` だが差が同点域なので BIC が ``polish`` を採る。T1 の
+``sizestrain_last`` 9.73 は**未収束**なので Rwp では上に来ない。全表は
+`docs/benchmark/stable-baseline-recipe/FINDINGS.md`。
 
 順序を*当てる*のは不可能なので、**候補を独立に実行して測り、規則で選ぶ**
 (`docs/design/stable-auto-rietveld/phase2-search.md` S1-S6)。
@@ -83,7 +88,14 @@ from .model import (
     HistogramSpec,
     PhaseSpec,
     RefinementStage,
+    StabilityOptions,
     StageResult,
+)
+from .agreement import (
+    CorroborationReport,
+    ProcedureProvenance,
+    cluster_agreement_basins,
+    effective_trajectory,
 )
 from .recipe import build_recipe, build_serious_recipe
 
@@ -96,6 +108,7 @@ __all__ = [
     "SearchConfig",
     "TIER_LABELS",
     "build_candidates",
+    "DEFAULT_CANDIDATES",
     "candidate_bic",
     "convergence_verdict",
     "outcome_tier",
@@ -107,7 +120,29 @@ __all__ = [
 #: 候補の**列挙順** (S5)。辞書順や集合順ではなく明示的なタプルにする — 実装都合で順序が
 #: 変わると同点解決が揺れ、決定論 (P-SAR-4) が崩れる。実績のある固定層を先に置き、
 #: 自動判定の適応層を後ろに置く (同点なら実績側が勝つ)。
-CANDIDATE_NAMES: tuple[str, ...] = ("default", "serious", "adaptive")
+CANDIDATE_NAMES: tuple[str, ...] = (
+    "default",
+    "sizestrain_last",
+    "polish",
+    "serious1",
+    "serious",
+    "adaptive",
+)
+
+#: ``search=true`` が実際に回す集合 = **実測で選んだ手順** (2026-07-30, 10 案 × 4 データ)。
+#: データ毎の収束した勝者は T1/CaTeO3 = ``polish`` / T2 = ``serious1`` / T3 = ``sizestrain_last``
+#: で、``default`` は基準 (列挙 index 0 が `observation_groups` の観測集合基準になる) として置く。
+#: ``serious`` (2 周) は**測定で支配された**ため既定から外した — T3 では ``sizestrain_last``
+#: (5.98) が、T2/CaTeO3 では ``serious1`` が同等以上で、かつ 2 周は 1 周の 1.4 倍の時間を要する。
+#: 名前としては選べるまま残してある (``search: ["serious"]`` は従来どおり動く)。
+#: ⚠ **順序を変えないこと** — `observation_groups` の基準と全ての同点解決を駆動する。
+DEFAULT_CANDIDATES: tuple[str, ...] = (
+    "default",
+    "sizestrain_last",
+    "polish",
+    "serious1",
+    "adaptive",
+)
 
 #: tier → 人間が読むラベル (② / ledger / 報告に出す)。
 TIER_LABELS: tuple[str, ...] = (
@@ -215,6 +250,10 @@ class RecipeCandidate:
     histograms: tuple[HistogramSpec, ...]
     background_coeffs: int = 6
     note: str = ""
+    # 【末尾追加・既定 None で後方互換】: 候補は**段列だけでは表せない** — 最終研磨のような
+    #   「手順」は `StabilityOptions` 側にあるため、候補が自分の実行設定を持つ必要がある。
+    #   None は「既定の実行設定 (= 呼び出し側の `run_kwargs` のまま)」を意味する。
+    stability: "StabilityOptions | None" = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -309,6 +348,10 @@ class RecipeSearchResult:
         ``bic`` 同点近傍の裁定 / ``only_candidate``)
     :param warnings: 人間/③ が読む警告
     :param config: 判定に使った閾値 (再現性のため結果に同梱する)
+    :param agreement: **どの手順どうしが同じ解に収束したか** (`autorietveld.agreement`)。
+        `order_dependent` とは別の問いに答える — あちらは「最良と次点が僅差なのに割れた」
+        という*選択の信頼度*の旗 (上位 2 件のみ・相分率 Scale 基準)、こちらは全対の
+        *収束の一致* (esd スケール・構造クラス) である。両者は冗長ではない
     """
 
     outcomes: tuple[CandidateOutcome, ...]
@@ -319,6 +362,10 @@ class RecipeSearchResult:
     selection_reason: str = ""
     warnings: tuple[str, ...] = field(default_factory=tuple)
     config: SearchConfig = field(default_factory=SearchConfig)
+    # 【末尾追加・既定 None で後方互換】: 傍証を計算しなかった (結果が 1 つ以下 / 呼び出し側が
+    #   要求しなかった) 場合は None。**空の報告を捏造しない** — 「一致を調べていない」と
+    #   「調べたが一致しなかった」は別の陳述である。
+    agreement: "CorroborationReport | None" = None
 
     @property
     def selected(self) -> "CandidateOutcome | None":
@@ -355,6 +402,7 @@ class RecipeSearchResult:
             "order_dependent": self.order_dependent,
             "warnings": list(self.warnings),
             "config": self.config.to_dict(),
+            "agreement": None if self.agreement is None else self.agreement.to_dict(),
         }
 
 
@@ -670,6 +718,43 @@ def summarize_search(
                     "追加測定か手動確認を検討すること"
                 )
 
+    # 【収束の一致 (傍証)】: 候補が 2 つ以上あるときだけ計算する — 1 つでは「クラスタが 1 つ」が
+    #   空虚に成立するので、**報告そのものを作らない** (空の報告は「調べたが一致しなかった」と
+    #   読めてしまい、「調べていない」との区別が消える)。
+    agreement = None
+    if sum(1 for o in outcomes if o.result is not None) >= 2:
+        agreement = cluster_agreement_basins(
+            [o.result for o in outcomes],
+            [
+                ProcedureProvenance(
+                    label=o.candidate.name,
+                    # 1 回の探索では**全候補が同じ相仕様を共有する** (候補が持つのは
+                    # ヒストグラムと段列だけ) ため、構造パスの食い違いは構成上起き得ない。
+                    # 空で渡すのが正しい — `getattr` で無い属性を探るのは死んだ反射になる。
+                    # この検査が意味を持つのは run をまたいだ比較 (別 CIF どうし) のときで、
+                    # そこでは呼び出し側が `compare_results` を直接使う。
+                    structure_paths={},
+                    trajectory=(
+                        effective_trajectory(o.result) if o.result is not None else ()
+                    ),
+                    stage_metrics=(
+                        tuple(
+                            (st.rwp, st.gof, st.n_params) for st in o.result.stage_results
+                        )
+                        if o.result is not None
+                        else ()
+                    ),
+                    n_obs=o.result.n_obs if o.result is not None else 0,
+                    frozen_parameters=(
+                        tuple(o.result.frozen_parameters) if o.result is not None else ()
+                    ),
+                )
+                for o in outcomes
+            ],
+        )
+        for w in agreement.warnings:
+            warnings.append(f"一致判定: {w}")
+
     return RecipeSearchResult(
         outcomes=outcomes,
         ranking=ranking,
@@ -679,7 +764,9 @@ def summarize_search(
         selection_reason=reason,
         warnings=tuple(warnings),
         config=config,
+        agreement=agreement,
     )
+
 
 
 # ===========================================================================
@@ -694,15 +781,39 @@ def _fixed_candidate(
     background_coeffs: int,
 ) -> RecipeCandidate:
     hists = tuple(histograms)
+    stability: "StabilityOptions | None" = None
     if name == "default":
         stages = build_recipe(hists, phases, background_coeffs=background_coeffs)
-        note = "M7 既定レシピ (T1/T4 で勝っている実績)"
+        note = "M7 既定レシピ (基準。T1 9.81 / T2 4.33 / T3 6.66 / CaTeO3 12.20)"
+    elif name == "sizestrain_last":
+        stages = build_recipe(
+            hists, phases, background_coeffs=background_coeffs,
+            size_strain_placement="last",
+        )
+        note = (
+            "size/歪みを座標・Uiso の後段へ。**T3 で最良かつ収束** (5.98 — 本気フィットの "
+            "6.10 より良い)。多相分岐が実測で採っている順序を単相へ適用したもの"
+        )
+    elif name == "polish":
+        stages = build_recipe(hists, phases, background_coeffs=background_coeffs)
+        stability = StabilityOptions(
+            report_undetermined=True, polish_frozen_undetermined=True
+        )
+        note = (
+            "既定 + 最終研磨 (決まらなかった変数を最後だけ凍結)。**T1 と CaTeO3 で最良** "
+            "(T1 9.67)。研磨が効かないデータでは既定とビット同一になる"
+        )
+    elif name == "serious1":
+        stages = build_serious_recipe(
+            hists, phases, background_coeffs=background_coeffs, rounds=1
+        )
+        note = "本気フィット 1 周 (順次解放/凍結)。**T2 で最良** (4.32)。2 周版の約 0.7 倍の時間"
     else:
         stages = build_serious_recipe(hists, phases, background_coeffs=background_coeffs)
-        note = "本気フィット (順次解放/凍結 2 周 → 累積 → 全開放。T3/CaTeO3 で勝っている実績)"
+        note = "本気フィット 2 周。既定集合からは外れているが名前として選べる (後方互換)"
     return RecipeCandidate(
         name=name, stages=stages, origin="fixed", histograms=hists,
-        background_coeffs=background_coeffs, note=note,
+        background_coeffs=background_coeffs, note=note, stability=stability,
     )
 
 
@@ -776,20 +887,26 @@ def build_candidates(
 
     ===========  =====================================  ==============================
     層           内容                                    根拠
-    ===========  =====================================  ==============================
-    固定         ``default`` / ``serious``               3 データで別々に勝っている実績
-    適応         ``adaptive`` (レンジ/背景の自動判定)     手動調整の穴を埋める
-    ===========  =====================================  ==============================
+    ===========  =========================================  ==========================
+    固定         ``default`` / ``sizestrain_last`` /         データ毎に別々に勝っている
+                 ``polish`` / ``serious1`` (+ ``serious``)   (2026-07-30 実測)
+    適応         ``adaptive`` (レンジ/背景の自動判定)         手動調整の穴を埋める
+    ===========  =========================================  ==========================
+
+    既定 (``names=None``) で回るのは `DEFAULT_CANDIDATES` であり `CANDIDATE_NAMES` 全部では
+    ない — 後者は「選べる名前」の集合で、測定で支配された ``serious`` (2 周) も後方互換の
+    ために残してある。
 
     **適応層を固定層と別候補にする**のが要点である。自動判定を既定へ埋め込むと、外したときの
     逃げ道が無い。別候補なら固定層が保険になる。
 
-    :param names: 生成する候補名 (既定 `CANDIDATE_NAMES` 全部)。順序は `CANDIDATE_NAMES` に
-        正規化される (呼び出し順で決定論が揺れないため)
+    :param names: 生成する候補名 (既定は上記のとおり `DEFAULT_CANDIDATES` であり
+        `CANDIDATE_NAMES` 全部ではない)。順序は `CANDIDATE_NAMES` に正規化される
+        (呼び出し順で決定論が揺れないため)
     :raises ValueError: 未知の候補名 (綴り間違いを黙って無視すると「探索したつもり」で
         候補が 1 つしか回らない)
     """
-    requested = tuple(names) if names is not None else CANDIDATE_NAMES
+    requested = tuple(names) if names is not None else DEFAULT_CANDIDATES
     unknown = [n for n in requested if n not in CANDIDATE_NAMES]
     if unknown:
         raise ValueError(
@@ -798,7 +915,7 @@ def build_candidates(
     wanted = [n for n in CANDIDATE_NAMES if n in set(requested)]
     out: list[RecipeCandidate] = []
     for name in wanted:
-        if name in ("default", "serious"):
+        if name != "adaptive":
             out.append(_fixed_candidate(name, histograms, phases, background_coeffs))
             continue
         adapted = _adaptive_inputs(histograms, background_coeffs)
@@ -834,11 +951,16 @@ def _default_candidate_runner(
     def runner(candidate: RecipeCandidate) -> AutoRietveldResult:
         from .engine import run_auto_rietveld
 
+        kwargs = dict(run_kwargs)
+        if candidate.stability is not None:
+            # 候補が自分の実行設定を持つときはそれを使う (呼び出し側指定より候補が優先 —
+            # 候補の定義そのものだから)。持たない候補は run_kwargs のまま。
+            kwargs["stability"] = candidate.stability
         return run_auto_rietveld(
             list(candidate.histograms),
             list(phases),
             recipe=candidate.stages,
-            **run_kwargs,  # type: ignore[arg-type]
+            **kwargs,  # type: ignore[arg-type]
         )
 
     return runner
@@ -874,7 +996,7 @@ def run_recipe_search(
     """
     config = config or SearchConfig()
     ledger = ledger if ledger is not None else Ledger()
-    requested = tuple(names) if names is not None else CANDIDATE_NAMES
+    requested = tuple(names) if names is not None else DEFAULT_CANDIDATES
     if candidates is None:
         cands = build_candidates(
             histograms, phases, background_coeffs=background_coeffs, names=requested

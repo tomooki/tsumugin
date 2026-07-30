@@ -1,0 +1,207 @@
+{
+  "dataset": "T3",
+  "recipe": "A5-gated",
+  "axis": "convergence_policy",
+  "rwp": 10.115436420308699,
+  "gof": 3.4098106227417406,
+  "n_obs": 8918,
+  "n_stages": 7,
+  "n_reverted": 2,
+  "validity": "pass",
+  "validity_failed_checks": [],
+  "frozen_parameters": [
+    "0:1:D11",
+    "0:1:D22",
+    "0:1:D33",
+    "0::AUiso:1",
+    ":1:Back;5"
+  ],
+  "final_polish_applied": false,
+  "n_undetermined": 1,
+  "stages": [
+    {
+      "index": 0,
+      "label": "S0 scale+background",
+      "rwp": 25.586059023955443,
+      "gof": 8.617047351056224,
+      "n_params": 14,
+      "converged": true,
+      "reverted": false,
+      "note": "起点: スケールと背景のみ; extra_cycles=1"
+    },
+    {
+      "index": 1,
+      "label": "S1 cell+displacement",
+      "rwp": 14.984749568784714,
+      "gof": 5.049786311412983,
+      "n_params": 25,
+      "converged": true,
+      "reverted": false,
+      "note": "格子 + ジオメトリ別試料変位; 温度差の静水圧歪み Dij; extra_cycles=1; rescue_frozen=1"
+    },
+    {
+      "index": 2,
+      "label": "S2 profile+size_strain",
+      "rwp": 14.984749568784714,
+      "gof": 5.049786311412983,
+      "n_params": 25,
+      "converged": true,
+      "reverted": true,
+      "note": "プロファイル係数 + 結晶子サイズ/微小歪み; extra_cycles=3; unconverged"
+    },
+    {
+      "index": 3,
+      "label": "S3 coords",
+      "rwp": 14.984749568784714,
+      "gof": 5.049786311412983,
+      "n_params": 25,
+      "converged": true,
+      "reverted": true,
+      "note": "一般位置の原子座標 X; extra_cycles=3; unconverged; rescue_frozen=1"
+    },
+    {
+      "index": 4,
+      "label": "S4 uiso",
+      "rwp": 14.378291822663291,
+      "gof": 4.846503139433778,
+      "n_params": 29,
+      "converged": true,
+      "reverted": false,
+      "note": "等方温度因子 Uiso (混合占有は等価制約下); extra_cycles=1; rescue_frozen=1"
+    },
+    {
+      "index": 5,
+      "label": "S5 profile_lorentzian",
+      "rwp": 10.1918878485776,
+      "gof": 3.435581620789012,
+      "n_params": 30,
+      "converged": true,
+      "reverted": false,
+      "note": "X 線 Lorentzian X,Y + Zero (別段階, revert ガード); extra_cycles=2; rescue_frozen=2"
+    },
+    {
+      "index": 6,
+      "label": "S6 profile_asymmetry",
+      "rwp": 10.115436420308699,
+      "gof": 3.4098106227417406,
+      "n_params": 30,
+      "converged": true,
+      "reverted": false,
+      "note": "X 線 軸発散非対称 SH/L (別段階, revert ガード); extra_cycles=3; rescue_frozen=1"
+    }
+  ],
+  "refined_cells": {
+    "PbSO4": [
+      8.474731790730498,
+      5.394778322070007,
+      6.955189354445627,
+      90.0,
+      90.0,
+      90.0
+    ]
+  },
+  "cell_esd": {
+    "PbSO4": [
+      0.0003057233144603438,
+      0.00020096982942962463,
+      0.0002653907723894423,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "atom_coords": {
+    "PbSO4": {
+      "Pb": [
+        0.1882,
+        0.25,
+        0.167
+      ],
+      "S": [
+        0.063,
+        0.25,
+        0.686
+      ],
+      "O1": [
+        -0.095,
+        0.25,
+        0.6
+      ],
+      "O2": [
+        0.181,
+        0.25,
+        0.543
+      ],
+      "O3": [
+        0.085,
+        0.026,
+        0.806
+      ]
+    }
+  },
+  "atom_coord_esd": {
+    "PbSO4": {
+      "Pb": [
+        null,
+        0.0,
+        null
+      ],
+      "S": [
+        null,
+        0.0,
+        null
+      ],
+      "O1": [
+        null,
+        0.0,
+        null
+      ],
+      "O2": [
+        null,
+        0.0,
+        null
+      ],
+      "O3": [
+        null,
+        null,
+        null
+      ]
+    }
+  },
+  "atom_occupancy": {
+    "PbSO4": {
+      "Pb": 1.0,
+      "S": 1.0,
+      "O1": 1.0,
+      "O2": 1.0,
+      "O3": 1.0
+    }
+  },
+  "atom_occupancy_esd": {
+    "PbSO4": {
+      "Pb": null,
+      "S": null,
+      "O1": null,
+      "O2": null,
+      "O3": null
+    }
+  },
+  "atom_uiso": {
+    "PbSO4": {
+      "Pb": 0.017352137418370984,
+      "S": 0.0005298836371033136,
+      "O1": 0.015660961830218863,
+      "O2": 0.008310571715822609,
+      "O3": 0.008907589620815013
+    }
+  },
+  "atom_uiso_esd": {
+    "PbSO4": {
+      "Pb": 0.0002667923523487211,
+      "S": null,
+      "O1": 0.0006054898502163117,
+      "O2": 0.0005589263984936732,
+      "O3": 0.00033598586495142793
+    }
+  }
+}

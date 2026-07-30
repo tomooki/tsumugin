@@ -17,6 +17,7 @@ import contextlib
 import math
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -25,6 +26,11 @@ import numpy as np
 from .._json import finite_or_none
 from ..store import Ledger
 from .absorption import apply_absorption_correction
+from .atomrows import (
+    atom_row,
+    coord_esd_states,
+    free_index_from_site_symmetry,
+)
 from .bounds import (
     BoundHit,
     BoxBound,
@@ -38,12 +44,14 @@ from .diagnostics import (
     WeakVariable,
     data_term_rwp,
     read_diagnostics,
+    read_variable_esds,
     read_variable_values,
     split_weak_variables,
 )
 from .model import (
     AutoRietveldResult,
     CellEsd,
+    CoordEsd,
     FinalPolish,
     Geometry,
     HistogramSpec,
@@ -54,7 +62,7 @@ from .model import (
     StageResult,
     ValidityReport,
 )
-from .recipe import build_recipe
+from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
 from .validity import (
     check_initial_uiso,
@@ -1352,6 +1360,71 @@ def _apply_content_constraint(gpx, g2phases, g2hists, content_constraint) -> Non
             gpx.add_EqnConstr(0.0, variables, mults)
 
 
+def _apply_coord_jitter(
+    g2phases, jitter_ang: "Mapping[str, float]", seed: int, getcsxinel=None
+) -> int:
+    """原子座標に**対称性を壊さない**初期摂動を掛ける (マルチスタートの構造軸)。
+
+    Rietveld の局所解は主に**構造 (原子座標)** にあり、格子だけ振っても「格子のベイスンが
+    1 つ」しか言えない。ここが Issue #13 で「原子座標摂動は M-later」と書かれていた欠落である。
+
+    **対称性が自由な軸だけを動かす**。特殊位置の原子を動かすと空間群が壊れるので、
+    `GetCSxinel` の 3 状態 (`atomrows.free_index_from_site_symmetry`) を見て:
+
+    - ``0`` (対称拘束で固定) の軸は**触らない**
+    - 正値が他軸と一致する (結束) 軸は**代表軸だけ**動かす — 従属軸は GSAS の等値拘束が追随する
+
+    :param jitter_ang: 相名 → 変位の大きさ (**Å**)。分率にしないのは軸ごとに意味が変わるため
+        (a=5Å と c=20Å では分率 0.01 の実距離が 4 倍違う)
+    :param seed: 乱数種。同じ種なら何度実行してもビット同一 (NFR-102)
+    :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
+        呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
+    """
+    if not jitter_ang:
+        return 0
+    if getcsxinel is None:
+        try:
+            from GSASII import GSASIIspc as G2spc
+
+            getcsxinel = G2spc.GetCSxinel
+        except Exception:  # noqa: BLE001 — GSAS 無しは「動かさない」へ縮退 (fail open)
+            return 0
+    rng = np.random.default_rng(seed)
+    moved = 0
+    for ph in g2phases:
+        amp = jitter_ang.get(ph.name)
+        if not amp or not math.isfinite(float(amp)) or float(amp) <= 0.0:
+            continue
+        try:
+            atoms = ph.data["Atoms"]
+            ptrs = ph.data["General"]["AtomPtrs"]
+            cx, cs = int(ptrs[0]), int(ptrs[2])
+            cell = ph.get_cell()
+            lengths = (
+                float(cell["length_a"]), float(cell["length_b"]), float(cell["length_c"])
+            )
+        except Exception:  # noqa: BLE001 — 構造が読めない相はスキップ
+            continue
+        for row in atoms:
+            free = free_index_from_site_symmetry(getcsxinel, row[cs])
+            seen: set[int] = set()
+            for axis in range(3):
+                fid = free[axis]
+                if fid == 0 or fid in seen:
+                    # 0 = 対称固定 / 既出 = 結束軸の従属側 (代表軸だけ動かす)
+                    continue
+                seen.add(fid)
+                length = lengths[axis] if lengths[axis] > 0 else 1.0
+                # Å の変位を当該軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
+                delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
+                try:
+                    row[cx + axis] = float(row[cx + axis]) + delta
+                except Exception:  # noqa: BLE001 — 書けない行はスキップ
+                    continue
+                moved += 1
+    return moved
+
+
 def _apply_initial_occupancies(g2phases, occupancies: Mapping[str, Mapping[str, float]]) -> None:
     """原子占有率を initial_occupancies で初期化する (FR-318 fix/warm-start 用, T8)。🔵
 
@@ -1509,61 +1582,146 @@ def _apply_chem_comp_restraints(gpx, g2phases, chem_comp_restraints) -> None:
         cc["Use"] = True
 
 
-def _atom_result_maps(g2phases):
-    """ラベルキーの原子パラメータ (占有率/Uiso/多重度/占有率 esd) を抽出する (FR-318 T7/T11)。🔵
+@dataclass(frozen=True)
+class AtomMaps:
+    """`_atom_result_maps` の戻り値 — **タプルではなく dataclass** にしてある理由。
+
+    元は 4 要素タプルで、事前警告の呼び出し側が ``_, uiso_init, _, _ = ...`` と位置で
+    受けていた。座標/座標 esd/自由度指標/Uiso esd を足して 8 要素にすると、次に 9 要素目を
+    足した人が**位置をずらして静かに別の値を読む**。名前で受ければその事故が起きない。
+    """
+
+    occupancy: dict[str, dict[str, float]]
+    uiso: dict[str, dict[str, float]]
+    multiplicity: dict[str, dict[str, float]]
+    occupancy_esd: dict[str, dict[str, "float | None"]]
+    coords: dict[str, dict[str, tuple[float, float, float]]]
+    coord_esd: dict[str, dict[str, CoordEsd]]
+    coord_free_index: dict[str, dict[str, tuple[int, int, int]]]
+    uiso_esd: dict[str, dict[str, "float | None"]]
+
+
+def _atom_result_maps(g2phases, *, getcsxinel=None) -> AtomMaps:
+    """ラベルキーの原子パラメータを抽出する (FR-318 T7/T11 + 構造一致判定の土台)。🔵
 
     `AutoRietveldResult.atom_occupancy`/`atom_uiso` は宣言されながら未配線だった
     (`_extract_state` は validity 用の位置リストしか作らない)。本関数がラベルキーで充填する。
 
-    占有率 esd は**最終共分散の varyList** に ``<pId>::Afrac:<idx>`` が載っている原子のみ
-    ``sig`` から取り、載っていない原子は **None** (精密化していない — `_cell_was_refined` と
-    同じ規律で 0.0 を捏造しない)。抽出不能は空 dict へ縮退し例外を送出しない。
+    esd は `diagnostics.read_variable_esds` 経由で引く (``depSigDict`` を第一情報源にする唯一の
+    実装)。**得られなかった変数は写像に載らない**ので、載っていないこと自体が「決まっていない」
+    の信号になる — 呼び出し側が第 2 の規則を持たなくてよい。占有率/Uiso は 2 状態
+    (``>0.0``/``None``)、座標は 3 状態 (対称固定の ``0.0`` を含む, `atomrows.coord_esd_states`)。
+
+    抽出不能は当該相をスキップし例外を送出しない。⚠ **自由度指標の失敗で相を落としてはならない**
+    — `GetCSxinel` は sytsym 名の変更で KeyError を出すことがあり (GSAS 自身が
+    `GSASIIstrIO.py:1746-1749` でその場パッチしている)、それが相ごとの ``except`` に届くと
+    その相の ``uiso`` まで落ちて `check_initial_uiso` が黙って弱まる。実際の防御は
+    `atomrows.free_index_from_site_symmetry` の内部縮退にあり、ここで try を重ねる必要はない。
+
+    :param getcsxinel: `GSASIIspc.GetCSxinel` の注入シーム (None で遅延 import)。
+        **テストがこの機械に GSAS が入っているかで結果を変えないため**に必須の引数である —
+        注入が無いと、GSAS 有りの環境では実関数が走り無しの環境では縮退経路が走るので、
+        同じテストが CI とローカルで別の答えを出す (CI 導入時に 44 件が踏んだ穴と同型)。
     """
     occ: dict[str, dict[str, float]] = {}
     uiso: dict[str, dict[str, float]] = {}
     mult: dict[str, dict[str, float]] = {}
     occ_esd: dict[str, dict[str, float | None]] = {}
+    coords: dict[str, dict[str, tuple[float, float, float]]] = {}
+    coord_esd: dict[str, dict[str, CoordEsd]] = {}
+    free_index: dict[str, dict[str, tuple[int, int, int]]] = {}
+    uiso_esd: dict[str, dict[str, float | None]] = {}
+    if getcsxinel is None:
+        try:
+            from GSASII import GSASIIspc as G2spc
+
+            getcsxinel = G2spc.GetCSxinel
+        except Exception:  # noqa: BLE001 — GSAS 無しは一般位置判定へ縮退 (fail open)
+
+            def getcsxinel(_sym):  # type: ignore[misc]
+                raise KeyError("GSASIIspc unavailable")
+
     for ph in g2phases:
         try:
             atoms = ph.data["Atoms"]
-            cx, ct, cs, cia = ph.data["General"]["AtomPtrs"]
+            ptrs = ph.data["General"]["AtomPtrs"]
+            cs = int(ptrs[2])
             try:
-                cov = ph.proj["Covariance"]["data"]
-                # ⚠ varyList/sig は numpy 配列のことがある — `arr or ()` は真偽値評価で
-                # ValueError になるため None 判定で分岐する (実測でこの罠を踏んだ)。
-                vary_raw = cov.get("varyList")
-                vary = [str(v) for v in (vary_raw if vary_raw is not None else ())]
-                sig_raw = cov.get("sig")
-                sig = list(sig_raw) if sig_raw is not None else []
+                esds = read_variable_esds(ph.proj)
             except Exception:  # noqa: BLE001 — 共分散なしは「未精密化」に縮退
-                vary, sig = [], []
+                esds = {}
+            lookup = esds.get
             pid = ph.id
             p_occ: dict[str, float] = {}
             p_uiso: dict[str, float] = {}
             p_mult: dict[str, float] = {}
-            p_esd: dict[str, float | None] = {}
+            p_occ_esd: dict[str, float | None] = {}
+            p_coords: dict[str, tuple[float, float, float]] = {}
+            p_coord_esd: dict[str, CoordEsd] = {}
+            p_free: dict[str, tuple[int, int, int]] = {}
+            p_uiso_esd: dict[str, float | None] = {}
             for i, row in enumerate(atoms):
-                label = str(row[ct - 1])
-                p_occ[label] = float(row[cx + 3])
-                p_mult[label] = float(row[cs + 1])
-                if row[cia] == "I":
-                    p_uiso[label] = float(row[cia + 1])
-                var = f"{pid}::Afrac:{i}"
-                esd: float | None = None
-                if var in vary:
-                    j = vary.index(var)
-                    if j < len(sig):
-                        esd = finite_or_none(sig[j])
-                        if esd is not None and esd <= 0.0:
-                            esd = None
-                p_esd[label] = esd
+                info = atom_row(row, ptrs)
+                label = info.label
+                p_occ[label] = info.occupancy
+                p_mult[label] = info.multiplicity
+                p_coords[label] = info.coords
+                if info.uiso is not None:
+                    p_uiso[label] = info.uiso
+                    p_uiso_esd[label] = lookup(f"{pid}::AUiso:{i}")
+                p_occ_esd[label] = lookup(f"{pid}::Afrac:{i}")
+                # `GetCSxinel` の失敗は `free_index_from_site_symmetry` が内部で吸って
+                # 保守的な縮退値を返す (ここで try を重ねても到達しない)。相ごとの
+                # ``except`` に巻き込まれず uiso が生き残ることは
+                # `test_a_failing_getcsxinel_does_not_drop_the_phase` が振る舞いで固定する。
+                fi = free_index_from_site_symmetry(getcsxinel, row[cs])
+                p_free[label] = fi
+                p_coord_esd[label] = coord_esd_states(
+                    fi, pid=pid, index=i, esd_lookup=lookup
+                )
             occ[ph.name] = p_occ
             uiso[ph.name] = p_uiso
             mult[ph.name] = p_mult
-            occ_esd[ph.name] = p_esd
+            occ_esd[ph.name] = p_occ_esd
+            coords[ph.name] = p_coords
+            coord_esd[ph.name] = p_coord_esd
+            free_index[ph.name] = p_free
+            uiso_esd[ph.name] = p_uiso_esd
         except Exception:  # noqa: BLE001 — 構造差/抽出失敗は当該相をスキップし継続
             continue
-    return occ, uiso, mult, occ_esd
+    return AtomMaps(
+        occupancy=occ,
+        uiso=uiso,
+        multiplicity=mult,
+        occupancy_esd=occ_esd,
+        coords=coords,
+        coord_esd=coord_esd,
+        coord_free_index=free_index,
+        uiso_esd=uiso_esd,
+    )
+
+
+def _profile_esd_map(g2hists) -> tuple[dict[str, "float | None"], ...]:
+    """ヒストグラム毎のプロファイル項 esd (索引順)。**2 状態** (``>0.0``/``None``)。
+
+    ⚠ GSAS の装置変数名は ``:{hist.id}:{key}`` であって列挙索引ではない。単一プロジェクトでは
+    一致するので既存の `_apply_profile_bounds` (enumerate 索引を使用) は実害を出していないが、
+    ここは読み取りなので実 id を使う。
+    """
+    out: list[dict[str, float | None]] = []
+    for h in g2hists:
+        row: dict[str, float | None] = {}
+        try:
+            esds = read_variable_esds(h.proj)
+            inst = h.data["Instrument Parameters"][0]
+            hid = h.id
+            for key in _PROFILE_INTROSPECT_KEYS:
+                if key in inst:
+                    row[key] = esds.get(f":{hid}:{key}")
+        except Exception:  # noqa: BLE001 — 抽出不能は空 dict (EDGE-001 と同じ縮退)
+            row = {}
+        out.append(row)
+    return tuple(out)
 
 
 def _extract_state(phases):
@@ -1774,6 +1932,50 @@ def _weight_fraction_maps(g2phases, g2hists) -> tuple[dict[str, float], dict[str
     return fracs, esds
 
 
+def _microstructure_maps(g2phases, g2hists):
+    """相×ヒストグラムの結晶子サイズ / 微小歪み (+ esd) を抽出する。
+
+    **収束の判定対象は「構造 + 歪」**である (プロファイルの Caglioti は装置側の nuisance で、
+    構造と歪が一致していれば最良フィットを選べば足りる)。しかし size/mustrain は HAP
+    パラメータなので `hist_profile` (装置パラメータ) には入らず、これまで結果に載っていなかった
+    = **歪の一致を確かめる術が無かった**。
+
+    異方 (uniaxial/generalized) は代表成分 (先頭値) のみを載せる — 成分数が設定で変わるため
+    そのまま比較すると「モデルが違う」ことと「値が違う」ことが混ざる。
+    :returns: (size, mustrain, size_esd, mustrain_esd) — いずれも 相名→"hist{i}"→値
+    """
+    size: dict[str, dict[str, float]] = {}
+    strain: dict[str, dict[str, float]] = {}
+    size_esd: dict[str, dict[str, float | None]] = {}
+    strain_esd: dict[str, dict[str, float | None]] = {}
+    for ph in g2phases:
+        try:
+            esds = read_variable_esds(ph.proj)
+        except Exception:  # noqa: BLE001 — 共分散なしは未精密化へ縮退
+            esds = {}
+        for hi, hist in enumerate(g2hists):
+            try:
+                hap = ph.getHAPvalues(hist)
+            except Exception:  # noqa: BLE001 — HAP が無い組合せはスキップ
+                continue
+            key = f"hist{hi}"
+            for name, values, esd_map, var in (
+                ("Size", size, size_esd, "Size;i"),
+                ("Mustrain", strain, strain_esd, "Mustrain;i"),
+            ):
+                try:
+                    entry = hap[name]
+                    # GSAS の HAP は [type, [値...], [refine flags...], ...] の形。
+                    raw = entry[1][0] if isinstance(entry[1], (list, tuple)) else entry[1]
+                    values.setdefault(ph.name, {})[key] = float(raw)
+                except Exception:  # noqa: BLE001 — 形が違えばその項だけ落とす
+                    continue
+                esd_map.setdefault(ph.name, {})[key] = esds.get(
+                    f"{ph.id}:{getattr(hist, 'id', hi)}:{var}"
+                )
+    return size, strain, size_esd, strain_esd
+
+
 def _extract_phase_fractions(g2phases, g2hists) -> list[float]:
     """先頭ヒストグラムにおける各相の相分率 (HAP Scale) を返す (多相の和=1 検査用, M6)。
 
@@ -1880,6 +2082,8 @@ def run_auto_rietveld(
     bond_restraints: dict[str, Sequence[Mapping[str, object]]] | None = None,
     auto_freeze_minor_cells: float | None = None,
     initial_occupancies: Mapping[str, Mapping[str, float]] | None = None,
+    initial_coord_jitter: Mapping[str, float] | None = None,
+    jitter_seed: int = 0,
     chem_comp_restraints: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     content_constraint: Mapping[str, float] | None = None,
     check_occupancy_uiso: bool = False,
@@ -1954,8 +2158,21 @@ def run_auto_rietveld(
                         f"初期占有率が物理範囲 [0,1] を外れています: "
                         f"{_ph_name}/{_lab} = {_v}"
                     )
+    if recipe is not None:
+        stages = tuple(recipe)
+        # 【REQ-SAR-301 を engine 入口でも強制する】: `validate_correlation_groups` は
+        #   `recipe._finalize` からしか呼ばれておらず、**builder の不変条件にすぎなかった**。
+        #   ``recipe=`` で手組みの段列を渡す経路 (② の `stages` spec / `insitu` の recipe 注入 /
+        #   探索候補) は検証を丸ごと素通りしていた。相関群を割った段は **revert としてしか
+        #   現れず、原因が群の分割であることは Rwp から読めない** (`CorrelationGroupViolation`
+        #   の docstring) ので、GSAS を叩く前に大声で落とす。
+        validate_correlation_groups(stages, histograms=histograms)
+    else:
+        stages = build_recipe(histograms, phases)
+    # 検証は GSAS の解決より**前**に済ませる — 不正なレシピは GSAS が無い環境でも同じ
+    # ``CorrelationGroupViolation`` で落ちるべきであり (入力の誤りは backend の有無と無関係)、
+    # そうしないと本検証のテストが GSAS 導入環境でしか回らなくなる。
     g2sc = _g2sc()
-    stages = tuple(recipe) if recipe is not None else build_recipe(histograms, phases)
     ledger = ledger if ledger is not None else Ledger()
     radiations = [h.radiation for h in histograms]
 
@@ -2071,6 +2288,23 @@ def run_auto_rietveld(
         if initial_occupancies:
             _apply_initial_occupancies(g2phases, initial_occupancies)
 
+        # --- 初期座標ジッタ (マルチスタートの構造軸, 任意) ---
+        #     対称性が自由な軸だけを動かす。動かせた軸数は ledger に残す — 0 なら
+        #     「この軸では試験していない」であって「摂動しても動かなかった」ではない。
+        n_jittered = 0
+        if initial_coord_jitter:
+            n_jittered = _apply_coord_jitter(
+                g2phases, initial_coord_jitter, jitter_seed
+            )
+            ledger.append(
+                "m7_coord_jitter",
+                {
+                    "seed": int(jitter_seed),
+                    "amplitude_ang": {k: float(v) for k, v in initial_coord_jitter.items()},
+                    "n_axes_moved": n_jittered,
+                },
+            )
+
         # --- 初期 Uiso 妥当性 + 占有率/Uiso 結合の事前警告 (FR-318 / REQ-318-005) ---
         # **FR-318 の入力 (シーダー/組成拘束/分率拘束/明示フラグ) があるときのみ**検査する。
         # レビュー M4: 「占有率段があるか」で発火させると、既存の混合占有ワークフロー
@@ -2084,7 +2318,7 @@ def run_auto_rietveld(
             or check_occupancy_uiso
         )
         if _touches_occupancy:
-            _, uiso_init, _, _ = _atom_result_maps(g2phases)
+            uiso_init = _atom_result_maps(g2phases).uiso
             pre_warnings = check_initial_uiso(uiso_init) + warn_occupancy_uiso_coupling(stages)
 
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
@@ -2537,20 +2771,31 @@ def run_auto_rietveld(
                         "note": "段の受理/revert は rwp_data で判定した (REQ-SAR-203)",
                     },
                 )
-            ledger.append(
-                "m7_stage",
-                {
-                    "stage": stage.label,
-                    "rwp": rwp,
-                    "gof": gof,
-                    "n_params": nvar,
-                    # 【n_obs】: 段ごとの BIC (= χ² + n_params·ln(n_obs)) を**このエントリだけから**
-                    #   導出できるようにする (GUI の LEDGER 表示)。レンジ制限適用後の実点数。
-                    "n_obs": _nobs(gpx),
-                    "reverted": reverted,
-                    "auto_frozen_cells": list(auto_frozen),
-                },
-            )
+            stage_entry: dict[str, object] = {
+                "stage": stage.label,
+                "rwp": rwp,
+                "gof": gof,
+                "n_params": nvar,
+                # 【n_obs】: 段ごとの BIC (= χ² + n_params·ln(n_obs)) を**このエントリだけから**
+                #   導出できるようにする (GUI の LEDGER 表示)。レンジ制限適用後の実点数。
+                "n_obs": _nobs(gpx),
+                "reverted": reverted,
+                "auto_frozen_cells": list(auto_frozen),
+            }
+            if stab.needs_diagnostics and diagnostics is not None:
+                # 【観測とゲートの分離 (REQ-SAR-101/103)】: これまで ``max_shift_esd`` は
+                #   `m7_stage_unconverged` にしか載らず、そのエントリは
+                #   ``require_convergence=True`` の時しか出なかった = **収束状態を観測するには
+                #   精密化を変えるしかない**状態だった。レシピ候補を比較する計測では、観測列
+                #   (フィットを変えない) とゲート列 (受理条件を変える) を分けられないと
+                #   「どの案が収束していたか」を公平に測れない。
+                #   ⚠ **条件付きで足す**こと — 無条件にキーを増やすと既定経路の ledger
+                #   ハッシュ鎖が変わり、ビット同一性の非回帰契約 (NFR-102) を壊す。
+                stage_entry["max_shift_esd"] = finite_or_none(diagnostics.max_shift_esd)
+                stage_entry["svd_singularities"] = diagnostics.svd_singularities
+                stage_entry["converged_flag"] = diagnostics.converged
+                stage_entry["n_weak"] = len(diagnostics.weak_vars)
+            ledger.append("m7_stage", stage_entry)
 
         # --- 決まらなかったパラメータの報告 (+ opt-in の最終研磨) ---
         # 【なぜ最終なのか】: ここで残っている ``esd >= |値|`` は「まだ決まっていない」ではなく
@@ -2635,6 +2880,9 @@ def run_auto_rietveld(
             warnings=validity.warnings + prof_report.warnings + pre_warnings,
         )
         hist_profile = tuple({k: v for k, (v, _) in d.items()} for d in prof_full)
+        # 解放フラグは捨てない (esd の有無とは別の問いに答える — model.py の宣言を参照)。
+        hist_profile_refined = tuple({k: bool(r) for k, (_, r) in d.items()} for d in prof_full)
+        hist_profile_esd = _profile_esd_map(g2hists)
 
         # 【final_rwp は常にデータ項】: 拘束の有無で出版値の意味が変わらないようにする
         #   (penalty 込みの値は `final_rwp_penalized` に分けて載せる)。拘束無効時は
@@ -2654,7 +2902,8 @@ def run_auto_rietveld(
         cell_esd = _cell_esd_map(g2phases)
         wt_fracs, wt_frac_esd = _weight_fraction_maps(g2phases, g2hists)
         # 原子パラメータ (FR-318 T7/T11: ラベルキー占有率/Uiso/多重度 + 占有率 esd の 2 状態)。
-        atom_occ_map, atom_uiso_map, atom_mult_map, atom_occ_esd_map = _atom_result_maps(g2phases)
+        atom_maps = _atom_result_maps(g2phases)
+        micro = _microstructure_maps(g2phases, g2hists)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
         out_gpx = ""
@@ -2679,10 +2928,10 @@ def run_auto_rietveld(
         cell_esd=cell_esd,
         phase_weight_fractions=wt_fracs,
         phase_weight_fraction_esd=wt_frac_esd,
-        atom_uiso=atom_uiso_map,
-        atom_occupancy=atom_occ_map,
-        atom_multiplicity=atom_mult_map,
-        atom_occupancy_esd=atom_occ_esd_map,
+        atom_uiso=atom_maps.uiso,
+        atom_occupancy=atom_maps.occupancy,
+        atom_multiplicity=atom_maps.multiplicity,
+        atom_occupancy_esd=atom_maps.occupancy_esd,
         final_rwp_penalized=final_rwp_penalized,
         final_restraint_penalty=final_restraint_penalty,
         undetermined_parameters=undetermined,
@@ -2690,6 +2939,16 @@ def run_auto_rietveld(
         # 出版値がどの母数集合の上に載っているか (救済 + 毎段プルーニング + 研磨の総和)。
         frozen_parameters=tuple(sorted(frozen_vars)),
         final_polish=final_polish,
+        atom_coords=atom_maps.coords,
+        atom_coord_esd=atom_maps.coord_esd,
+        atom_coord_free_index=atom_maps.coord_free_index,
+        atom_uiso_esd=atom_maps.uiso_esd,
+        hist_profile_refined=hist_profile_refined,
+        hist_profile_esd=hist_profile_esd,
+        hap_size=micro[0],
+        hap_mustrain=micro[1],
+        hap_size_esd=micro[2],
+        hap_mustrain_esd=micro[3],
     )
 
 

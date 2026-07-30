@@ -1,0 +1,111 @@
+{
+  "dataset": "T1",
+  "recipe": "A6-polish",
+  "rows": [
+    {
+      "jitter_ang": 0.0,
+      "seconds": 258.9,
+      "n_axes_moved": 0,
+      "n_basins": 5,
+      "n_diverged": 0,
+      "n_invalid": 0,
+      "rwp_spread": 9.9162,
+      "best_rwp": 9.6723,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "AGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "DISAGREE",
+        "uiso": "DISAGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    },
+    {
+      "jitter_ang": 0.01,
+      "seconds": 62.6,
+      "n_axes_moved": 60,
+      "n_basins": 3,
+      "n_diverged": 0,
+      "n_invalid": 0,
+      "rwp_spread": 3.5364,
+      "best_rwp": 9.77649,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "AGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "DISAGREE",
+        "uiso": "DISAGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    },
+    {
+      "jitter_ang": 0.02,
+      "seconds": 87.0,
+      "n_axes_moved": 60,
+      "n_basins": 4,
+      "n_diverged": 0,
+      "n_invalid": 0,
+      "rwp_spread": 12.1667,
+      "best_rwp": 9.67086,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "DISAGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "DISAGREE",
+        "uiso": "AGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    },
+    {
+      "jitter_ang": 0.05,
+      "seconds": 117.9,
+      "n_axes_moved": 60,
+      "n_basins": 3,
+      "n_diverged": 0,
+      "n_invalid": 0,
+      "rwp_spread": 9.5681,
+      "best_rwp": 9.67228,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "DISAGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "DISAGREE",
+        "uiso": "DISAGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    },
+    {
+      "jitter_ang": 0.1,
+      "seconds": 60.4,
+      "n_axes_moved": 60,
+      "n_basins": 4,
+      "n_diverged": 0,
+      "n_invalid": 0,
+      "rwp_spread": 9.2742,
+      "best_rwp": 9.77705,
+      "corroborated": false,
+      "reason": "multiple_basins",
+      "classes": {
+        "cell": "AGREE",
+        "coord": "AGREE",
+        "occupancy": "AGREE",
+        "microstructure": "DISAGREE",
+        "uiso": "DISAGREE",
+        "profile": "DISAGREE",
+        "weight_fraction": "AGREE"
+      }
+    }
+  ]
+}

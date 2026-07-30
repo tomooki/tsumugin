@@ -28,23 +28,25 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
-_DATA = _REPO / "docs" / "benchmark" / "testdata"
+sys.path.insert(0, str(_REPO / "tools"))
 
-#: 既定レシピの基準値。**このハーネス自身で測り直した値** (2026-07-28, `build_recipe` 差し戻し後)。
-#: CLAUDE.md の記録値 (T1 9.83 / T2 4.33 / T3 6.66) をほぼビット一致で再現しており、
-#: ハーネスが gated テストと同じ条件を測れていることの裏付けでもある。
-#: CaTeO3 だけ 12.43 → 12.20 と改善しているのは、本ブランチの Sample Type 修正
-#: (Kα1 単色 Bragg-Brentano で cell 段が死んでいた) が効いているため。
+from bench_specs import (  # noqa: E402 — sys.path 調整後
+    CAMPAIGN_DATASETS,
+    DATASETS,
+    RECIPES,
+)
+
+#: 基準値/チュートリアル値は `bench_specs.DATASETS` が持つ (二重管理をやめた)。
 BASELINE: dict[str, float] = {
-    "T1": 9.81,
-    "T2": 4.33,
-    "T3": 6.66,
-    "T4": 12.8,   # 未再測定 (SLOW_DATASETS)
-    "CaTeO3": 12.20,
+    k: v.baseline_rwp for k, v in DATASETS.items() if v.baseline_rwp is not None
+}
+TUTORIAL: dict[str, float] = {
+    k: v.tutorial_rwp for k, v in DATASETS.items() if v.tutorial_rwp is not None
 }
 
-#: 参考: GSAS-II チュートリアルの到達値。
-TUTORIAL: dict[str, float] = {"T1": 10.38, "T2": 5.18, "T3": 6.71, "T4": 6.83, "CaTeO3": 9.4}
+#: 日常ベンチマークから外すデータセット。**T4 の serious は 1 回 ~3 時間**かかり、反復の
+#: フィードバックループを壊す。`--all` は既定でこれを除き、節目でだけ `--with-slow` を付ける。
+SLOW_DATASETS: tuple[str, ...] = tuple(k for k, v in DATASETS.items() if v.slow)
 
 
 @dataclass
@@ -67,34 +69,8 @@ class BenchResult:
         return self.rwp - base
 
 
-# ---------------------------------------------------------------------------
-# データセット定義 (GSAS/実データを import しない — 子プロセスで組む)
-# ---------------------------------------------------------------------------
-
-DATASETS: dict[str, dict[str, object]] = {
-    "T1": {"paths": ["m7/labdata/FAP.XRA", "m7/labdata/INST_XRY.PRM", "m7/labdata/FAP.EXP"]},
-    "T2": {"paths": ["m7/cwneutron/garnet.raw", "m7/cwneutron/inst_d1a.prm",
-                     "m7/cwneutron/garnet_YFeAlO.cif"]},
-    "T3": {"paths": ["m7/cwcombined/PBSO4.XRA", "m7/cwcombined/INST_XRY.PRM",
-                     "m7/cwcombined/PBSO4.CWN", "m7/cwcombined/inst_d1a.prm",
-                     "PbSO4-Wyckoff.cif"]},
-    "T4": {"paths": ["m7/tofcw/11BM_NAC.fxye", "m7/tofcw/11bm_gsas.prm",
-                     "m7/tofcw/PG3_22048.gsa", "m7/tofcw/POWGEN_1066.instprm",
-                     "m7/tofcw/PG3_22049.gsa", "m7/tofcw/POWGEN_2665.instprm",
-                     "m7/tofcw/NAC.cif", "m7/tofcw/CaF2.cif"]},
-    "CaTeO3": {"paths": ["m9/cateo3/NB-LM01MO_030.XRDML", "m9/cateo3/cateo3_CuKa.instprm",
-                         "m9/cateo3/alpha_CaTeO3_H2O.cif"]},
-}
-
-RECIPES = ("default", "serious")
-
-#: 日常ベンチマークから外すデータセット。**T4 の serious は 1 回 ~3 時間**かかり、反復の
-#: フィードバックループを壊す。`--all` は既定でこれを除き、節目でだけ `--with-slow` を付ける。
-SLOW_DATASETS = ("T4",)
-
-
 def _available(name: str) -> bool:
-    return all((_DATA / p).exists() for p in DATASETS[name]["paths"])  # type: ignore[index]
+    return DATASETS[name].available
 
 
 def _child_script() -> str:
@@ -102,7 +78,8 @@ def _child_script() -> str:
     return str(Path(__file__).with_name("_bench_one.py"))
 
 
-def run_one(dataset: str, recipe: str, timeout_s: float) -> BenchResult:
+def run_one(dataset: str, recipe: str, timeout_s: float,
+            out_dir: "Path | None" = None) -> BenchResult:
     """1 (データセット, レシピ) を**別プロセス**で実行する。
 
     別プロセスにする理由: GSAS-II は大量のグローバル状態を持ち、同一プロセスで連続実行すると
@@ -113,8 +90,16 @@ def run_one(dataset: str, recipe: str, timeout_s: float) -> BenchResult:
     t0 = time.time()
     try:
         proc = subprocess.run(
-            [sys.executable, _child_script(), dataset, recipe],
+            [sys.executable, _child_script(), dataset, recipe]
+            + ([str(out_dir)] if out_dir is not None else []),
             capture_output=True, text=True, timeout=timeout_s, cwd=str(_REPO),
+            # ⚠ **親側の復号も UTF-8 で明示する**。`text=True` だけだと親は
+            #   `locale.getpreferredencoding()` (Windows では cp932) で復号し、子が出す
+            #   日本語の段 note で `UnicodeDecodeError` を起こす。この例外は読み取り
+            #   スレッドの中で死ぬので **`proc.stdout` が黙って None になる**だけで、
+            #   returncode は 0 のまま = 「実行は成功したのに出力が無い」に見える。
+            #   `PYTHONIOENCODING` は**子の出力**を UTF-8 にするだけで親の復号は直さない。
+            encoding="utf-8", errors="replace",
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except subprocess.TimeoutExpired:
@@ -130,7 +115,8 @@ def run_one(dataset: str, recipe: str, timeout_s: float) -> BenchResult:
             return BenchResult(
                 dataset, recipe, payload.get("rwp"), payload.get("gof"),
                 int(payload.get("n_stages", 0)), int(payload.get("n_reverted", 0)),
-                elapsed, "ok", payload.get("detail", ""),
+                elapsed, "ok",
+                f"validity={payload.get('validity', '?')}",
             )
     tail = (proc.stderr or proc.stdout).strip().splitlines()
     return BenchResult(dataset, recipe, None, None, 0, 0, elapsed, "failed",
@@ -138,31 +124,54 @@ def run_one(dataset: str, recipe: str, timeout_s: float) -> BenchResult:
 
 
 def format_table(results: list[BenchResult]) -> str:
-    """比較表 (Markdown)。**基準値との差**を必ず併記する — 回帰を見落とさないため。"""
-    recipes = sorted({r.recipe for r in results}, key=lambda x: RECIPES.index(x) if x in RECIPES else 99)
+    """比較表 (Markdown)。**行 = 候補 / 列 = データ**に転置してある。
+
+    候補が 2 本のうちは列に並べられたが、10 案では横に伸びて読めない。基準値との差は
+    ✅/⚠ で必ず併記する — 回帰を見落とさないため。
+    """
+    recipes = sorted(
+        {r.recipe for r in results},
+        key=lambda x: RECIPES.index(x) if x in RECIPES else 99,
+    )
     datasets = sorted({r.dataset for r in results}, key=lambda d: list(DATASETS).index(d))
     by = {(r.dataset, r.recipe): r for r in results}
 
-    head = "| データ | 基準 | " + " | ".join(recipes) + " | チュートリアル |"
-    sep = "|---|---|" + "---|" * (len(recipes) + 1)
-    lines = [head, sep]
-    for d in datasets:
-        cells = []
-        for rec in recipes:
+    lines = [
+        "| 候補 | 軸 | " + " | ".join(datasets) + " | 計 (分) |",
+        "|---|---|" + "---|" * (len(datasets) + 1),
+    ]
+    for rec in recipes:
+        cells, total = [], 0.0
+        for d in datasets:
             r = by.get((d, rec))
             if r is None or r.status != "ok" or r.rwp is None:
                 cells.append(f"— ({r.status})" if r else "—")
                 continue
+            total += r.seconds
             delta = r.delta_vs_baseline
             mark = ""
             if delta is not None:
                 mark = " ✅" if delta <= -0.05 else (" ⚠" if delta > 0.05 else "")
-            cells.append(f"{r.rwp:.2f}%{mark} ({r.seconds / 60:.0f}m)")
+            cells.append(f"{r.rwp:.2f}{mark}")
+        axis = ""
+        try:
+            from bench_specs import RECIPE_REGISTRY
+
+            axis = RECIPE_REGISTRY[rec].axis
+        except Exception:  # noqa: BLE001 — 未登録の名前は空欄
+            axis = ""
+        lines.append(f"| {rec} | {axis} | " + " | ".join(cells) + f" | {total / 60:.1f} |")
+
+    lines.append("")
+    lines.append("| データ | 基準 | チュートリアル |")
+    lines.append("|---|---|---|")
+    for d in datasets:
         base = BASELINE.get(d)
         tut = TUTORIAL.get(d)
-        base_s = "" if base is None else f"{base:.2f}%"
-        tut_s = "" if tut is None else f"{tut:.2f}%"
-        lines.append(f"| {d} | {base_s} | " + " | ".join(cells) + f" | {tut_s} |")
+        lines.append(
+            f"| {d} | {'' if base is None else f'{base:.2f}%'} | "
+            f"{'' if tut is None else f'{tut:.2f}%'} |"
+        )
     return "\n".join(lines)
 
 
@@ -188,7 +197,11 @@ def main(argv: "list[str] | None" = None) -> int:
     args = ap.parse_args(argv)
 
     if args.all:
-        datasets = [d for d in DATASETS if args.with_slow or d not in SLOW_DATASETS]
+        # キャンペーンの対象は `bench_specs.CAMPAIGN_DATASETS` が唯一の定義 (T4 除外の理由も
+        # そこに書いてある)。`--with-slow` のときだけ低速データを足す。
+        datasets = list(CAMPAIGN_DATASETS)
+        if args.with_slow:
+            datasets += [d for d in DATASETS if d not in datasets]
     else:
         datasets = args.datasets or ["T1"]
     if args.all and not args.with_slow:
@@ -199,7 +212,9 @@ def main(argv: "list[str] | None" = None) -> int:
     print(f"# {len(jobs)} 件を最大 {args.jobs} 並列で実行", flush=True)
     results: list[BenchResult] = []
     with ProcessPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(run_one, d, r, args.timeout): (d, r) for d, r in jobs}
+        futures = {
+            pool.submit(run_one, d, r, args.timeout, args.out): (d, r) for d, r in jobs
+        }
         for fut in as_completed(futures):
             res = fut.result()
             results.append(res)
