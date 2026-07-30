@@ -72,6 +72,17 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
     ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
+    "convergence agreement (収束の傍証)": (
+        "auto_rietveld",
+        "2 手順が**同じ解に収束したか**を esd スケール + クラス毎の床で判定する "
+        "(`autorietveld.agreement`)。Rwp では判定できない — T3 実測で serious と adaptive は "
+        "Rwp 差 0.361 なのに格子が 0.161% 違う。② へは `auto_rietveld(search=...)` の返り値 "
+        "`search.agreement` (is_corroborated / corroboration_reason / basins[].is_clique / "
+        "pairs[].classes[].worst) として届く。**単独ツールは作らない** — 比較には座標/esd/"
+        "解放フラグ/段軌跡が要るが `_result_from_dict` は 6 フィールドしか復元しないので、"
+        "`compare_convergence(a, b)` 型のツールは引数を他ツールの出力から作れず DOA になる "
+        "(§4.5 到達可能性)。傍証は結果を生んだ run の内側で計算するのが唯一の到達可能な形",
+    ),
     "recipe search (REQ-SAR-500)": (
         "auto_rietveld",
         "レシピ探索 (Phase 2, stable-auto-rietveld): 単一レシピは全データで勝てない "

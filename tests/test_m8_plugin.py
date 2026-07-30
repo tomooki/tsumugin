@@ -79,3 +79,33 @@ def test_skill_tells_the_agent_to_read_the_confidence_flags():
     for key in ("order_dependent", "convergence_fallback"):
         assert key in _SKILL_TEXT, f"SKILL が {key} の読み方を書いていない"
     assert "順序依存" in _SKILL_TEXT
+
+
+def test_analyze_skill_tells_the_agent_how_to_read_convergence_agreement():
+    """★`search.agreement` の読み方が ③ の手順書にあること (① にあっても読み手が居ないと無い)。
+
+    非トートロジー: 手順書が**誤った指示**を含むほうが害が大きいので、キーの存在だけでなく
+    以下 2 つの**判断規律**まで固定する:
+
+    1. `all_trajectories_duplicate` で**閾値を緩めない** (別の手順を足す)。ここを緩めると
+       「実質 1 経路を N 回試した」結果が傍証として通ってしまう。
+    2. `UNDETERMINED` を「一致」とも「不一致」とも報告しない (判断材料が無い状態である)。
+    """
+    text = _SKILL_TEXT
+
+    assert "search.agreement" in text
+    for key in ("is_corroborated", "corroboration_reason", "is_clique", "worst"):
+        assert key in text, key
+    for reason in (
+        "insufficient_procedures",
+        "all_trajectories_duplicate",
+        "no_independent_agreement",
+        "basin_too_small",
+    ):
+        assert reason in text, reason
+    # ★ 規律 1: 重複経路のときに閾値を緩めさせない
+    dup = text[text.index("all_trajectories_duplicate") :][:300]
+    assert "閾値を緩めるのではなく" in dup, dup
+    # ★ 規律 2: UNDETERMINED を一致/不一致に倒させない
+    undet = text[text.index("`UNDETERMINED` は") :][:200]
+    assert "ではない" in undet and "判断材料が無い" in undet, undet

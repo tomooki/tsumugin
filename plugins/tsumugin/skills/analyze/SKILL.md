@@ -190,6 +190,36 @@ Rwp 停滞→構造/空間群を確認 (ReviseStructure 候補)、占有率発�
 `final_rwp` 以下は**採用候補の結果**であり、`specs` も採用候補の入力 (適応候補が変えたレンジ/
 背景を含む) が返る。そのまま `refine_with_revisions` へ持ち回れば同じ土俵で継続できる。
 
+### 同じ答えに収束したかを読む (`search.agreement`)
+
+**Rwp が近いことは同じ解に来たことを意味しない。** 実測 (T3): `serious` と `adaptive` は
+Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より桁で大きい。`search.agreement` は
+全候補を総当たりで突き合わせ、**構造 (格子・座標・占有率) が同じ解か**を esd スケールで判定する。
+
+| キー | 読み方 |
+|---|---|
+| `is_corroborated` | **経路の違う 2 手順以上が同じ解に来た**か = 収束の傍証 |
+| `corroboration_reason` | 傍証にならなかった**理由** (下表)。`false` だけでは行動できない |
+| `n_distinct_trajectories` vs `n_comparable` | 前者が小さいなら「N 案回したが実質 M 経路」 |
+| `basins[].is_clique` | `false` なら鎖 (a≈b≈c だが a≉c) = clique より弱い証拠 |
+| `pairs[].verdict` | `SAME_SOLUTION` / `SAME_ON_SHARED_SUBSET` / `DIFFERENT` / `UNDETERMINED` / `INCOMPARABLE` |
+| `pairs[].classes[].worst` | **不一致の犯人**を名指す (どの相のどの軸/原子か) |
+
+| `corroboration_reason` | 次にすること |
+|---|---|
+| `insufficient_procedures` | 候補が少なすぎる。`search` に候補を足す |
+| `all_trajectories_duplicate` | **閾値を緩めるのではなく、別の手順を足す**。実効経路が重複している (revert される段だけが違う候補は同じ道を歩いている) |
+| `no_independent_agreement` | 一致した対が重複手順どうしだった。経路の違う候補を入れる |
+| `basin_too_small` | 全候補が別の解に落ちた = **順序依存が強い**。`propose_discriminating_measurements` か手動確認をユーザーに提案する |
+
+⚠ `UNDETERMINED` は「一致しなかった」**ではない** — esd も許容差も判断材料が無い状態である。
+これを「一致」とも「不一致」とも報告してはならない。esd が取れていない (段が revert された /
+そのパラメータを解放していない) ことのほうが情報なので、そちらを報告する。
+
+⚠ `profile` と `uiso` の不一致は既定では `SAME_SOLUTION` を妨げない。U/V/W はほぼ平坦な相関谷に
+あり (実測 `V×W r=−0.959`)、手順ごとに谷の別の点へ落ちるのが正常だからである。**構造が同じで
+プロファイルだけ違うのは矛盾ではない**ので、そう報告すること。
+
 ## 段が「黙って壊れている」を疑う (`stability`)
 
 **Rwp が改善したことは、その段が収束したことを意味しない。** GSAS は

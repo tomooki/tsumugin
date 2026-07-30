@@ -85,7 +85,12 @@ from .model import (
     RefinementStage,
     StageResult,
 )
-from .agreement import CorroborationReport
+from .agreement import (
+    CorroborationReport,
+    ProcedureProvenance,
+    cluster_agreement_basins,
+    effective_trajectory,
+)
 from .recipe import build_recipe, build_serious_recipe
 
 __all__ = [
@@ -680,6 +685,43 @@ def summarize_search(
                     "追加測定か手動確認を検討すること"
                 )
 
+    # 【収束の一致 (傍証)】: 候補が 2 つ以上あるときだけ計算する — 1 つでは「クラスタが 1 つ」が
+    #   空虚に成立するので、**報告そのものを作らない** (空の報告は「調べたが一致しなかった」と
+    #   読めてしまい、「調べていない」との区別が消える)。
+    agreement = None
+    if sum(1 for o in outcomes if o.result is not None) >= 2:
+        agreement = cluster_agreement_basins(
+            [o.result for o in outcomes],
+            [
+                ProcedureProvenance(
+                    label=o.candidate.name,
+                    # 1 回の探索では**全候補が同じ相仕様を共有する** (候補が持つのは
+                    # ヒストグラムと段列だけ) ため、構造パスの食い違いは構成上起き得ない。
+                    # 空で渡すのが正しい — `getattr` で無い属性を探るのは死んだ反射になる。
+                    # この検査が意味を持つのは run をまたいだ比較 (別 CIF どうし) のときで、
+                    # そこでは呼び出し側が `compare_results` を直接使う。
+                    structure_paths={},
+                    trajectory=(
+                        effective_trajectory(o.result) if o.result is not None else ()
+                    ),
+                    stage_metrics=(
+                        tuple(
+                            (st.rwp, st.gof, st.n_params) for st in o.result.stage_results
+                        )
+                        if o.result is not None
+                        else ()
+                    ),
+                    n_obs=o.result.n_obs if o.result is not None else 0,
+                    frozen_parameters=(
+                        tuple(o.result.frozen_parameters) if o.result is not None else ()
+                    ),
+                )
+                for o in outcomes
+            ],
+        )
+        for w in agreement.warnings:
+            warnings.append(f"一致判定: {w}")
+
     return RecipeSearchResult(
         outcomes=outcomes,
         ranking=ranking,
@@ -689,7 +731,9 @@ def summarize_search(
         selection_reason=reason,
         warnings=tuple(warnings),
         config=config,
+        agreement=agreement,
     )
+
 
 
 # ===========================================================================

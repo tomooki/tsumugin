@@ -6,6 +6,7 @@ GSAS を一切使わない — `run_recipe_search` の runner を注入して候
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -647,3 +648,31 @@ def test_selection_reason_names_the_key_that_actually_decided():
     assert summarize_search(by_obs, SearchConfig()).selection_reason == "observation_set"
     assert summarize_search(by_rwp, SearchConfig()).selection_reason == "rwp"
     assert summarize_search(by_bic, SearchConfig()).selection_reason == "bic"
+
+
+# ---------------------------------------------------------------------------
+# 収束の一致 (傍証) の配線
+# ---------------------------------------------------------------------------
+
+
+def test_agreement_is_computed_and_reaches_the_dict():
+    """★一致判定が探索の返り値に載ること (① にあっても ② に届かなければ存在しないのと同じ)。"""
+    outcomes = _outcomes(("default", _result(9.80)), ("serious", _result(9.82)))
+    summary = summarize_search(outcomes)
+
+    assert summary.agreement is not None
+    payload = summary.to_dict()
+    assert "agreement" in payload
+    assert payload["agreement"]["corroboration_reason"]
+    json.dumps(payload, allow_nan=False)
+
+
+def test_agreement_is_none_when_there_is_nothing_to_compare():
+    """★候補が 1 つなら報告を**作らない**。
+
+    非トートロジー: 空の報告を返すと「調べたが一致しなかった」と読めてしまい、
+    「調べていない」との区別が消える (1 つでは「クラスタが 1 つ」が空虚に成立する)。
+    """
+    summary = summarize_search(_outcomes(("default", _result(9.80))))
+    assert summary.agreement is None
+    assert summary.to_dict()["agreement"] is None
