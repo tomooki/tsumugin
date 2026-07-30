@@ -15,7 +15,7 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 | ツール | 役割 | 入出力 |
 |---|---|---|
-| `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル**。任意で `stages` (追加段階, 下記) / `max_cyc` / **`search` (レシピ探索, 下記)** |
+| `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル**。任意で `stages` (追加段階, 下記) / `max_cyc` / **`search` (レシピ探索, 下記)** / **`multistart` (収束確認, 下記)** |
 | `propose_data_preprocessing` | 計器 (提案) | 観測ファイルパス → **データレンジ / 背景項数 / 除外領域候補** (下記「精密化する前に」) |
 | `propose_next_actions` | 計器 (診断) | 直前結果 + 残差シグネチャ → `ActionProposal[]` (rationale/priority/**safe**) |
 | `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行。`stages`/`max_cyc` も同様に渡せる |
@@ -35,7 +35,10 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
      (提案のみ・採否は ③)。外部形式の生データは手順 0 で `convert_pattern` して渡す。
 2. **`auto_rietveld` を呼ぶ**。返る `specs` ハンドルを保持する。
 3. **結果を読む**: `final_rwp`/`final_gof`、`validity.passed` と項目別 `checks`、`stages[*].reverted`。
-   目標に届いていれば終了。
+   目標に届いていれば **3′ の収束確認へ進む** (Rwp が良いことは収束したことではない)。
+3′. **収束を確認する** (`multistart`, 下記「収束を確認する」)。**手順を決めたあとに**、初期値を
+   振って同じ解へ戻るかを見る。`convergence.structure_is_corroborated` が true なら解を採用してよい。
+   割れたクラスの値 (`undetermined_by_initial_values`) は**報告するが出版しない**。
 4. **`propose_next_actions` を呼ぶ** (残差シグネチャは結果と観測から見積もる)。各提案の `safe` を見る。
 5. **次手を判断する** (権限境界):
    - **`safe=True` (SafeAction)** — 背景増項 `AdjustBackground` / 母数追加解放 `ReleaseParams` は
@@ -60,7 +63,10 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 ## 受理基準
 
-各改訂は **Rwp 改善 ∧ `validity.passed` 維持** を満たすときのみ採用する。Rwp が下がっても
+各改訂は **Rwp 改善 ∧ `validity.passed` 維持** を満たすときのみ採用する。**最終解の採用は
+それに加えて収束確認** (`multistart` の `convergence.structure_is_corroborated`) を見る —
+Rwp と validity は単発の性質しか見ておらず、**同じ手順が別の初期値から別の答えを出すことを
+検出できない** (実測: T1 は validity pass のまま結晶子サイズ 1 nm へ潰れた開始点がある)。Rwp が下がっても
 Uiso<0・占有率逸脱・格子逸脱を生む手は過剰適合として棄却する。データリミット変更は観測集合が
 変わり Rwp 比較不能なので、別に妥当性で評価する。
 
@@ -219,6 +225,77 @@ Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より
 ⚠ `profile` と `uiso` の不一致は既定では `SAME_SOLUTION` を妨げない。U/V/W はほぼ平坦な相関谷に
 あり (実測 `V×W r=−0.959`)、手順ごとに谷の別の点へ落ちるのが正常だからである。**構造が同じで
 プロファイルだけ違うのは矛盾ではない**ので、そう報告すること。
+
+## 収束を確認する (`multistart`) — **規定の標準経路**
+
+**手順を最適化しただけでは、その解が最適化問題の答えなのか出発点の答えなのかが分からない。**
+実測 (T1 fluoroapatite, 同一手順の 3 開始点):
+
+| start | Rwp | 結晶子サイズ | 微小歪み |
+|---|---|---|---|
+| 0 | 12.54 | 0.176 µm | 229 |
+| 1 | **9.67** | 0.284 µm | 572 |
+| 2 | 19.59 | **0.0010 µm (1 nm)** | 1447 |
+
+同じ手順・同じデータで、初期格子を ±0.7% 振っただけでこうなる。**単発の Rwp 9.67 を見ても
+これは見えない。**
+
+```json
+{"search": true, "multistart": {"n_starts": 5, "coord_jitter_ang": 0.05, "jobs": 5}}
+```
+
+**順序が本質**: `multistart` を渡すと ② は必ず**手順最適化 (Phase A) → 収束確認 (Phase B)** の
+順で回す。逆順・片方だけは意味を成さない — 決めていない手順を確認しても、何を確認したのか
+言えない。開始点は独立なので `jobs = n_starts` で**壁時計は 1 開始点分**になる (ただしその
+1 開始点は平均ではなく**最悪**。摂動された開始点は無摂動より数倍長くかかる)。
+
+| キー | 既定 | 何のためか |
+|---|---|---|
+| `n_starts` | 5 | 開始点数。**奇数**にすると格子グリッドの中央が無摂動になり基準点が入る |
+| `lattice_frac` | 0.007 | 格子摂動の幅 (±0.7%) |
+| `coord_jitter_ang` | 0.05 | 座標摂動の振幅 (Å)。**0 にすると構造の局所解を試験しない** (格子軸だけの試験になる) |
+| `jitter_seed` | 0 | 摂動の種 (固定 = 再現する) |
+| `jobs` | 開始点数 | 並列度 |
+
+### 返り値の読み方 — **単一の bool を headline にしない**
+
+| キー | 読み方 |
+|---|---|
+| `convergence.structure_is_corroborated` | **格子・座標・占有率が収束したか = 解を採用してよいかの判断** |
+| `convergence.class_convergence` | クラスごとの収束。**何をすべきか**はここで決まる |
+| `convergence.undetermined_by_initial_values` | 開始点間で esd を超えて割れた値 = **出版してはならない値** |
+| `convergence.is_corroborated` | 全クラスの厳密 AND。縮退のあるデータでは滅多に真にならない (参考) |
+| `convergence.adopted_recipe` | Phase A が採用した手順 (何を確認したのか) |
+
+**同じ「収束しなかった」でも処方が違う** — 実測で T1 は**歪**で、T3 は**格子**で割れる:
+
+| 割れたクラス | 意味 | 次にすること |
+|---|---|---|
+| `microstructure` (サイズ/微小歪み) | ピーク幅を支配するパラメータどうしの**縮退**。手順では解けない | 標準試料で装置分解能を固定する (`propose_data_preprocessing` ではなく別途校正)。それまでは**値を出さない** |
+| `cell` | 目的関数が平坦で格子を決める情報が足りない (Rwp 差 0.1 ポイントで格子が割れる) | `propose_discriminating_measurements` (追加測定) か高角側/別波長の検討をユーザーに提案 |
+| `coord` | 構造そのものが割れている | **解を採用しない**。空間群/初期構造を疑う (`mem-model-fix` skill) |
+| `occupancy` | 混合占有の分離が効いていない | コントラストのあるヒストグラム (中性子) の追加を提案 |
+
+### ⛔ してはならないこと
+
+- **閾値を緩めて「収束した」ことにしない。** 縮退は手順でも閾値でも解けない。緩めるのは
+  「決まっていない」を「決まった」に書き換える操作であり、esd が付いているだけに
+  読み手は決まった値として受け取る。**最悪の失敗形**である。
+- **`undetermined_by_initial_values` に挙がった値を報告書・出版値に載せない。** 所見として
+  「初期値依存のため未決定」と書く。値を書くなら必ずこの但し書きを付ける。
+- **`structure_is_corroborated: false` を「解析失敗」と報告しない。** 何が割れたのかが情報
+  であり、上の表がそのまま次の手になる。
+- **⛔ operando (`sequential_rietveld` / `anchored_sequential`) では使わない。** `search` と
+  同じ理由 — フレーム数 × 開始点数は時間予算に収まらない。
+
+### プロファイル (U/V/W, X/Y) が割れたとき
+
+**構造と歪が収束していれば、プロファイルは最良フィットを選ぶだけでよい。** 装置側の nuisance
+であり値そのものを出版しない。Rwp のばらつきは所見として報告する (恒常的なら装置分解能の
+固定を検討する材料になる)。
+
+決定の根拠と実測: `docs/design/stable-baseline-recipe/STANDARD-PROCEDURE.md` /
+`docs/benchmark/stable-baseline-recipe/PHASE-B-FINDINGS.md`。
 
 ## 段が「黙って壊れている」を疑う (`stability`)
 

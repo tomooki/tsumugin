@@ -109,3 +109,93 @@ def test_analyze_skill_tells_the_agent_how_to_read_convergence_agreement():
     # ★ 規律 2: UNDETERMINED を一致/不一致に倒させない
     undet = text[text.index("`UNDETERMINED` は") :][:200]
     assert "ではない" in undet and "判断材料が無い" in undet, undet
+
+
+# ---------------------------------------------------------------------------
+# 収束確認 (規定の標準経路, 2026-07-30 決定) の手順書ガード
+#
+# ここで縛る失敗形は 3 つで、いずれも**「落ちないガードは無いより悪い」**の対象として
+# 変異させて fail することを実証済み:
+#   (1) 順序が消える — 「決めていない手順」を確認しても何を確認したのか言えない
+#   (2) 閾値を緩めて「収束した」ことにする指示が入る — 縮退は閾値では解けない
+#   (3) `undetermined_by_initial_values` を出版してよいと読める — esd が付いている分、
+#       決まった値として読まれるのが最悪の失敗形
+# ---------------------------------------------------------------------------
+
+
+def test_multistart_arguments_documented_in_the_skill_actually_exist_on_the_tool():
+    """★手順書が書いた引数が ② に実在すること (手順書だけ先行させない)。"""
+    import inspect
+
+    from tsumugin.mcp.rietveld_tools import _MULTISTART_KEYS, auto_rietveld
+
+    assert "multistart" in inspect.signature(auto_rietveld).parameters
+    assert "multistart" in _SKILL_TEXT
+    section = _SKILL_TEXT.split("## 収束を確認する")[1].split("\n## ")[0]
+    for key in _MULTISTART_KEYS:
+        assert key in section, f"手順書が {key} を書いていない"
+    # 逆向き: 手順書が ② に無いキーを指示していない。
+    for token in ("`n_start`", "`starts`", "`jitter`"):
+        assert token not in section, f"② に無い引数 {token} を手順書が指示している"
+
+
+def test_the_skill_states_that_procedure_search_comes_before_confirmation():
+    """★順序 (手順最適化 → 収束確認) が手順書に書かれていること。
+
+    非トートロジー: 逆順や片方だけでも ② は動く。動くが、**決めていない手順**を確認した
+    ことになり「何を確認したのか」が言えない。順序は実装の都合ではなく主張の前提である。
+    """
+    section = _SKILL_TEXT.split("## 収束を確認する")[1].split("\n## ")[0]
+    assert "Phase A" in section and "Phase B" in section
+    assert "手順最適化" in section and "収束確認" in section
+    # 【or にしない】: どちらか一方が残っていれば通る書き方だと、片方を消す変異を
+    #   捕まえられない (実際に変異実証で素通りした)。両方を要求する。
+    assert "順序が本質" in section, "順序が本質であるという明示が消えている"
+    assert "順で回す" in section, "Phase A → Phase B の順で回す指示が消えている"
+    # 手順そのものにも 3′ の**段として**現れること (節を読まなければ気付かない、では露出でない)。
+    assert "3′. **収束を確認する**" in _SKILL_TEXT, "手順 3′ が消えている"
+    assert "3′ の収束確認へ進む" in _SKILL_TEXT, "手順 3 から 3′ への導線が消えている"
+
+
+def test_the_skill_forbids_loosening_thresholds_to_claim_convergence():
+    """★「閾値を緩めて収束したことにする」を明示的に禁じていること。
+
+    非トートロジー: 縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は閾値では解けないので、
+    緩める操作は「決まっていない」を「決まった」に書き換えるだけである。③ は LLM なので、
+    禁じていなければ「目標に届かせる」ために必ずこれをやる。
+    """
+    section = _SKILL_TEXT.split("## 収束を確認する")[1].split("\n## ")[0]
+    assert "閾値を緩めて" in section and "しない" in section
+    assert "縮退" in section, "なぜ緩めても解けないのかが書かれていない"
+
+
+def test_the_skill_forbids_publishing_initial_value_dependent_values():
+    """★`undetermined_by_initial_values` を出版してはならないと書いてあること。
+
+    非トートロジー: これらの値には esd が付いている。禁じなければ「精密化された値」として
+    そのまま報告される — 単発の結果からは区別できないので、手順書だけが防げる。
+    """
+    section = _SKILL_TEXT.split("## 収束を確認する")[1].split("\n## ")[0]
+    assert "undetermined_by_initial_values" in section
+    assert "出版" in section and "載せない" in section
+    # 「解析失敗」と誤報告させない (何が割れたかが情報である)。
+    assert "解析失敗" in section
+
+
+def test_the_skill_names_what_to_do_per_diverging_class():
+    """★クラスごとの処方が書かれていること (単一 bool では行動が決まらない)。
+
+    非トートロジー: 実測で T1 は歪・T3 は格子で割れ、**処方が違う**。
+    「収束しなかった」だけでは ③ は次の手を選べない。
+    """
+    section = _SKILL_TEXT.split("## 収束を確認する")[1].split("\n## ")[0]
+    for cls in ("microstructure", "cell", "coord", "occupancy"):
+        assert cls in section, cls
+    assert "structure_is_corroborated" in section
+    assert "class_convergence" in section
+
+
+def test_the_skill_forbids_convergence_confirmation_in_operando():
+    """★operando では使わない (フレーム数 × 開始点数は時間予算に収まらない)。"""
+    section = _SKILL_TEXT.split("## 収束を確認する")[1].split("\n## ")[0]
+    assert "sequential_rietveld" in section and "使わない" in section

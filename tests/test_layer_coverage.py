@@ -93,6 +93,18 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは**意図的に露出しない** "
         "(REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
     ),
+    "convergence confirmation (規定の標準経路)": (
+        "auto_rietveld",
+        "**手順最適化 → 初期値摂動による収束確認** (`autorietveld.confirm.optimize_then_confirm`, "
+        "2026-07-30 決定 `docs/design/stable-baseline-recipe/STANDARD-PROCEDURE.md`)。"
+        "② は `multistart` spec (`{n_starts, lattice_frac, coord_jitter_ang, jitter_seed, jobs}` "
+        "= **すべてスカラ**なので他ツールの出力を要しない, §4.5) で到達し、返り値の "
+        "`convergence.structure_is_corroborated` (解を採用してよいか) / `class_convergence` "
+        "(何をすべきか) / `undetermined_by_initial_values` (**出版してはならない値**) が届く。"
+        "⚠ 単一 bool を headline にしない — 実測で T1 は歪・T3 は格子で割れており**処方が違う**。"
+        "`optimize_then_confirm` の `search_runner`/`multistart_runner` は**テスト注入専用**で "
+        "② には出さない (callable は JSON にできない)",
+    ),
     "data preprocessing (REQ-SAR-401/402/403)": (
         "propose_data_preprocessing",
         "データ前処理の自動判定 (Phase 2, stable-auto-rietveld `autorietveld.autorange`): "

@@ -168,6 +168,9 @@ def optimize_then_confirm(
     cand = selected.candidate
     confirm_kwargs = dict(run_kwargs)
     confirm_kwargs["recipe"] = cand.stages
+    # 背景項数も候補のものを使う (適応候補は autorange と一緒にこれも変える)。呼び出し側の
+    # 元の値のままだと**別の背景モデルで収束確認した**ことになる。
+    confirm_kwargs["background_coeffs"] = cand.background_coeffs
     if cand.stability is not None:
         confirm_kwargs["stability"] = cand.stability
     ledger.append(

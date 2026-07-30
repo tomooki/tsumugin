@@ -307,6 +307,82 @@ def _run_search(
     return payload
 
 
+#: `multistart` spec が受け付けるキー (閉じた語彙 — 未知キーは大声で落とす)。
+_MULTISTART_KEYS = frozenset(
+    {"n_starts", "lattice_frac", "coord_jitter_ang", "jitter_seed", "jobs"}
+)
+
+
+def _run_convergence(
+    inp: AnalysisInput,
+    names: "Sequence[str]",
+    search_config: "Mapping[str, object] | None",
+    multistart: "Mapping[str, object]",
+    max_cyc: int,
+    opts: StabilityOptions,
+    search_runner: "SearchRunner | None",
+) -> dict:
+    """規定の標準経路 (手順最適化 → 収束確認) を実行する。
+
+    返り値は**通常の `auto_rietveld` と同じ形**に ``search`` と ``convergence`` を足したもの。
+    ③ が「収束確認したときだけ別の読み方をする」必要が無いようにする (探索と同じ規律)。
+
+    ⚠ ``final_rwp`` 以下は**収束確認の最良フィット**である (単発ではなく)。同じ手順で複数点
+    走らせた最良は単発と同等以上なので、単発を返すと確認のために回した計算を捨てることになる。
+    """
+    from dataclasses import replace as _replace
+
+    from ..autorietveld.confirm import optimize_then_confirm
+
+    unknown = set(multistart) - _MULTISTART_KEYS
+    if unknown:
+        raise ValueError(
+            f"multistart に未知のキー {sorted(unknown)} があります "
+            f"(許容キー: {sorted(_MULTISTART_KEYS)})"
+        )
+    if inp.extra_stages:
+        # 【黙って落とさない】: `optimize_then_confirm` は候補を**名前**で受けるので、③ が
+        #   渡した追加段階を運ぶ口が無い。黙って無視すると「追加段階つきで収束確認した」と
+        #   読まれる — 実際には確認していない手順の傍証になる。
+        raise ValueError(
+            "extra_stages と multistart は同時に指定できません "
+            "(収束確認は候補名で手順を固定するため追加段階を運べない)。"
+            "追加段階を試すなら search 単独で、収束確認するなら extra_stages なしで呼ぶ"
+        )
+    kwargs = {k: multistart[k] for k in _MULTISTART_KEYS if k in multistart}
+    report = optimize_then_confirm(
+        inp.histograms,
+        inp.phases,
+        candidates=tuple(names),
+        search_config=SearchConfig.from_dict(search_config),
+        background_coeffs=inp.background_coeffs,
+        max_cyc=max_cyc,
+        stability=opts,
+        search_runner=search_runner,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    if report.best is None:
+        return {
+            "error": "手順が 1 つも立たなかったため収束確認へ進めませんでした: "
+            + " / ".join(report.warnings),
+            "error_type": "ConvergenceNotAttempted",
+            "convergence": report.to_dict(),
+        }
+    selected = report.search.selected if report.search is not None else None
+    chosen = inp
+    if selected is not None:
+        chosen = _replace(
+            inp,
+            histograms=selected.candidate.histograms,
+            background_coeffs=selected.candidate.background_coeffs,
+        )
+    payload = _result_to_dict(report.best, chosen)
+    if report.search is not None:
+        payload["search"] = report.search.to_dict()
+    payload["convergence"] = report.to_dict()
+    return payload
+
+
 def _with_extra_stages(inp: AnalysisInput, names: Sequence[str]) -> tuple[RecipeCandidate, ...]:
     """全候補のレシピ末尾に ``AnalysisInput.extra_stages`` を足した候補列を組む。"""
     from dataclasses import replace as _replace
@@ -366,6 +442,7 @@ def auto_rietveld(
     stability: Mapping[str, object] | None = None,
     search: "bool | Sequence[str] | None" = None,
     search_config: Mapping[str, object] | None = None,
+    multistart: Mapping[str, object] | None = None,
     seed: int = 0,
     runner: Runner | None = None,
     search_runner: SearchRunner | None = None,
@@ -440,6 +517,12 @@ def auto_rietveld(
         ``rwp_tie_eps`` 以内の同点は **BIC** で裁定し (母数の違う候補を Rwp だけで比べない)、
         ``disagreement_rwp_eps`` 以内で答えが割れたら**順序依存の警告**を出す (REQ-SAR-501)。
         未知キーは error dict へ縮退する。既定 None (既定値)。
+    :param multistart: **収束確認** (規定の標準経路)。``{"n_starts": 5, "lattice_frac": 0.007,
+        "coord_jitter_ang": 0.05, "jitter_seed": 0, "jobs": 5}``。渡すと手順最適化 (Phase A) の
+        あと、採用手順を固定したまま初期値を振って (Phase B) **何が収束し何が初期値依存か**を
+        返す。返り値の ``convergence.structure_is_corroborated`` が解の採用可否、
+        ``convergence.undetermined_by_initial_values`` が**出版してはならない値**である。
+        引数はすべてスカラなので他ツールの出力を要しない (§4.5 到達可能性)
     :param seed: 既定 GSAS runner 用乱数種
     :param runner: 注入 runner (None なら GSAS 駆動)。テスト用の内部シーム
     :param search_runner: 探索用の候補ランナー注入 (テスト用の内部シーム)。``search`` 指定時に
@@ -452,6 +535,15 @@ def auto_rietveld(
         # 【`if search:` にしない】: 空列 `[]` は falsy なので**黙って探索なし経路**へ落ちる。
         #   「探索しない」(None/false) と「候補が空」(=[]) を区別し、後者は _search_names が
         #   ValueError → error dict へ縮退させる (LOW-5)。
+        if multistart is not None:
+            # 【収束確認は探索を含む】: 規定の標準経路は「手順最適化 → 収束確認」なので、
+            #   `multistart` を渡したら Phase A も回す (`search` 未指定なら既定候補集合)。
+            #   分けて渡させると「探索せずに収束確認」= 決めていない手順を確認する、という
+            #   意味を成さない呼び方が可能になる。
+            names = _search_names(search) if search not in (None, False) else DEFAULT_CANDIDATES
+            return _run_convergence(
+                inp, names, search_config, multistart, max_cyc, opts, search_runner
+            )
         if search is not None and search is not False:
             return _run_search(
                 inp, _search_names(search), search_config, max_cyc, opts, search_runner
