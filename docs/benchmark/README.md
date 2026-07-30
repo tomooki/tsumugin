@@ -37,7 +37,7 @@ done
 
 ## データ取得: Jana2020 Cookbook CandAt (Calcite + Aragonite 二相混合)
 
-Jana2020 Cookbook の *Example 02.5.2 CandAt* — CaCO3 の 2 多形 (calcite R-3c + aragonite Pnma)
+Jana2020 Cookbook の *Example 02.5.2 CandAt* — CaCO3 の 2 多形 (calcite R-3c + aragonite; 真の空間群は Pmcn だが同梱 CIF は P1)
 の混合を JANA2020 で簡易シミュレーションした X線パターン (Cu Kα1, capillary)。**同一組成・異構造の
 多相同定** という難しいケース。
 
@@ -46,7 +46,7 @@ Jana2020 Cookbook の *Example 02.5.2 CandAt* — CaCO3 の 2 多形 (calcite R-
 |---|---|---|
 | `CandAt.xy` | calcite + aragonite 混合パターン (2 列 XY, Cu Kα1, 10–120°, 7333 点) | Jana2020 Cookbook Example 02.5.2 Data.zip |
 | `calcite.cif` | Calcite (CaCO3, R-3c, ICDD PDF-4) | 同上 |
-| `aragonite_mp-4626.cif` | Aragonite (CaCO3, Pnma) | Materials Project mp-4626 (`MPRester().search(["Ca","C","O"])` → CifWriter) |
+| `aragonite_mp-4626.cif` | Aragonite (CaCO3)。⚠ **ファイルは `P 1` (対称操作 `x,y,z` のみ・40 原子)** — 相同定には十分だが **Rietveld のベンチマークには使えない** (60 座標が無拘束に なり、~27 本のピークしかない模擬パターン上で手順ごとに別の対称性破れ最小点へ落ちる)。使うなら対称性付きで再生成すること | Materials Project mp-4626 (`MPRester().search(["Ca","C","O"])` → CifWriter, symprec なし) |
 
 ### 多相同定結果 (2026-07-05)
 
