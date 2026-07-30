@@ -371,6 +371,7 @@ class TopasDocument:
         phase: TopasPhase,
         terms: PhaseHistogramTerms,
         shared: Mapping[tuple[str, str], str],
+        index: int = 0,
     ) -> list[str]:
         lines = [f"{_INDENT_HIST}str"]
         name = phase.phase_name
@@ -398,10 +399,15 @@ class TopasDocument:
             # ピーク形状は str ブロック内でなければ TOPAS が解決できない (実測)。
             lines.append(f"{_INDENT_PHASE}{terms.peak_type}")
         scale = terms.scale or Param(1e-4)
+        scale_name = f"{_slug(name)}_scale_h{index}"
         if self.results_path and not scale.name:
             # 【名前を付ける】: 無名の `@` は `Out()` から指せない。名前を付けずに Out だけ
             #   書くと TOPAS が ``Uninitialized_Variable`` で異常終了する (実測)。
-            scale = replace(scale, name=f"{_slug(name)}_scale")
+            # 【ヒストグラム索引を混ぜる】: scale は**相とヒストグラムの組**に属する量
+            #   (`PhaseHistogramTerms`)。TOPAS のパラメータ名は大域なので、相名だけで命名すると
+            #   joint (X 線+中性子) で 2 本の xdd が同名を宣言し、**別々であるべき scale が
+            #   強制的に連結される**。TCHZ (`tchz_line` の tag) と同じ対処。
+            scale = replace(scale, name=scale_name)
         lines.append(f"{_INDENT_PHASE}scale {render_param(scale)}")
         if terms.size_lorentzian is not None:
             lines.append(f"{_INDENT_PHASE}CS_L(@, {_fmt(terms.size_lorentzian.value)})")
@@ -501,7 +507,7 @@ class TopasDocument:
         for phase in self.phases:
             lines.append("")
             terms = hist.phase_terms.get(phase.phase_name, PhaseHistogramTerms())
-            lines.extend(self._str_block(phase, terms, shared))
+            lines.extend(self._str_block(phase, terms, shared, index))
         return lines
 
     # ------------------------------------------------------------ 公開 API

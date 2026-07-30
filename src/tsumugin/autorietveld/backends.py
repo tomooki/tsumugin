@@ -17,6 +17,7 @@ from ..errors import TsumuginError
 __all__ = [
     "BACKEND_NAMES",
     "DEFAULT_BACKEND",
+    "normalize_backend",
     "describe_backends",
     "resolve_backend",
     "resolve_recipe_builder",
@@ -24,6 +25,16 @@ __all__ = [
 
 DEFAULT_BACKEND = "gsasii"
 BACKEND_NAMES: tuple[str, ...] = ("gsasii", "topas")
+
+
+def normalize_backend(name: "str | None") -> str:
+    """バックエンド名を正準形へ (``None``/大小/前後空白を吸収)。
+
+    **比較は必ずこれを通す**: 解決系 (`resolve_backend`) が正規化しているのに呼び出し側が
+    生文字列で比較すると、``None`` (JSON の ``null``) や ``"GSASII"`` が「既定ではない」と
+    判定されて経路が食い違う。
+    """
+    return (name or DEFAULT_BACKEND).strip().lower()
 
 
 class UnknownBackendError(TsumuginError):
@@ -38,7 +49,7 @@ def resolve_backend(name: "str | None") -> Callable[..., object]:
 
     :raises UnknownBackendError: 未知の名前 (既定へフォールバックしない)
     """
-    key = (name or DEFAULT_BACKEND).strip().lower()
+    key = normalize_backend(name)
     if key == "gsasii":
         # 【パッケージ属性経由で引く】: `.engine` から直接引くと
         #   ``monkeypatch.setattr("tsumugin.autorietveld.run_auto_rietveld", …)`` を素通りする。
@@ -87,7 +98,7 @@ def resolve_recipe_builder(name: "str | None") -> Callable[..., object]:
 
     :raises UnknownBackendError: 未知の名前
     """
-    key = (name or DEFAULT_BACKEND).strip().lower()
+    key = normalize_backend(name)
     if key == "gsasii":
         from . import build_recipe
 

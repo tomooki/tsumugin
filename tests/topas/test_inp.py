@@ -338,3 +338,30 @@ def test_group_prms_are_released_only_when_asked():
     text = TopasDocument(histograms=(_histogram(),), phases=(phase,)).render()
     assert "prm g_occ_g0 0.5 min 0 max 1\n" in text  # `!` が外れている
     assert "prm g_beq_g0 0.5\n" in text
+
+
+def test_joint_scale_names_differ_per_histogram():
+    """**scale は相とヒストグラムの組に属する** — joint で同名を宣言すると強制連結される。
+
+    fix #5 で TCHZ の名前衝突を直しながら、fix #6 で scale に同じ罠を再導入していた
+    (round 2 レビューで検出)。TOPAS のパラメータ名は大域であることを繰り返し忘れやすい。
+    """
+    xray = _histogram(phase_terms={"PbSO4": PhaseHistogramTerms(scale=Param(1e-4, refine=True))})
+    neutron = TopasHistogram(
+        data_path="n.xye", is_neutron=True,
+        background=Param(0.0, refine=True), background_coeffs=4,
+        phase_terms={"PbSO4": PhaseHistogramTerms(scale=Param(5e-5, refine=True))},
+    )
+    text = TopasDocument(
+        histograms=(xray, neutron), phases=(_pbso4_phase(),), results_path="results.txt"
+    ).render()
+    names = [ln.split()[1] for ln in text.splitlines() if ln.strip().startswith("scale ")]
+    assert len(names) == 2
+    assert names[0] != names[1], f"joint で scale 名が衝突している: {names}"
+
+
+def test_single_histogram_scale_name_is_still_stable():
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(_pbso4_phase(),), results_path="results.txt"
+    ).render()
+    assert "PbSO4_scale_h0" in text

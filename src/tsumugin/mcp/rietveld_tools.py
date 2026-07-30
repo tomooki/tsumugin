@@ -35,7 +35,7 @@ from ..autorietveld import (
     StabilityOptions,
     ValidityReport,
 )
-from ..autorietveld.backends import DEFAULT_BACKEND
+from ..autorietveld.backends import DEFAULT_BACKEND, normalize_backend
 from ..autorietveld.search import (
     CANDIDATE_NAMES,
     DEFAULT_CANDIDATES,
@@ -555,7 +555,10 @@ def auto_rietveld(
         # 【探索経路は backend を運べない】: `_run_search`/`_run_convergence` は候補ごとに
         #   GSAS 駆動 runner を組むため、ここで backend を黙って落とすと**頼んだのと違う
         #   エンジンで回った結果**が `backend` キーだけ正しく見えてしまう。明示的に断る。
-        if backend != DEFAULT_BACKEND and (
+        # 【比較は正規化を通す】: 解決系が `(name or DEFAULT).strip().lower()` している以上、
+        #   ここで生文字列比較すると `None` (JSON の null) や "GSASII" が既定でないと判定され、
+        #   既定のまま探索したいだけの呼び出しが誤って拒否される。
+        if normalize_backend(backend) != DEFAULT_BACKEND and (
             search not in (None, False) or multistart is not None
         ):
             return {
@@ -860,7 +863,7 @@ def list_refinement_backends() -> dict:
     ``available`` が false のエンジンを ``backend`` に指定すると、精密化ツール側が
     ``{"error","error_type"}`` を返す (例外は投げない)。
     """
-    from ..autorietveld.backends import DEFAULT_BACKEND, describe_backends
+    from ..autorietveld.backends import describe_backends
 
     try:
         return {"backends": describe_backends(), "default": DEFAULT_BACKEND}

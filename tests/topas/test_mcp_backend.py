@@ -229,3 +229,50 @@ def test_stability_is_not_silently_dropped_by_the_topas_engine():
     finally:
         eng.run_tc = original
     assert any("stability" in w for w in result.validity.warnings)
+
+
+@pytest.mark.parametrize("spelling", [None, "GSASII", "Gsasii", " gsasii "])
+def test_default_backend_spellings_are_not_refused_with_search(spelling, monkeypatch):
+    """**比較は正規化を通す**。解決系が正規化しているのに生文字列で比べると、
+    `null` (JSON) や大小違いの既定指定が「既定でない」と判定され誤って拒否される。
+    """
+    called: dict = {}
+
+    def fake_search(inp, names, cfg, max_cyc, opts, runner):
+        called["ok"] = True
+        return {"search": {}}
+
+    monkeypatch.setattr("tsumugin.mcp.rietveld_tools._run_search", fake_search)
+    out = auto_rietveld([_hist()], [_phase()], backend=spelling, search=True)
+    assert out.get("error_type") != "UnsupportedBackendCombination", out
+    assert called.get("ok") is True
+
+
+def test_phase_fractions_are_populated_from_scale():
+    """`phase_fractions` は Scale 正規化。空だと相分率の不一致検査が静かに空振りする。"""
+    import tsumugin.topas.engine as eng
+    from tsumugin.autorietveld.model import RefinementStage
+
+    class _R:
+        out_text = "r_p 1 r_wp 9.0 r_exp 5 gof 1.2\np 1.0`_0.01\n"
+        results_text = (
+            "r_wp\t9.0\ngof\t1.2\n"
+            "scale_val\tA\t0.0003\t1e-06\n"
+            "scale_val\tB\t0.0001\t1e-06\n"
+        )
+        stdout = ""
+
+    data = Path("docs/benchmark/testdata")
+    original = eng.run_tc
+    eng.run_tc = lambda *a, **k: _R()
+    try:
+        result = eng.run_topas_rietveld(
+            [HistogramSpec(data_path=str(data / "PBSO4.XRA"),
+                           instrument_path=str(data / "INST_XRY.PRM"),
+                           radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO)],
+            [PhaseSpec(structure_path=str(data / "PbSO4-Wyckoff.cif"), phase_name="PbSO4")],
+            recipe=(RefinementStage(label="S0", flags={}),),
+        )
+    finally:
+        eng.run_tc = original
+    assert result.phase_fractions == {"A": pytest.approx(0.75), "B": pytest.approx(0.25)}
