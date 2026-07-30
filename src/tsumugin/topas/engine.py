@@ -87,7 +87,11 @@ def _build_document(
             converted = converted.with_updates(
                 phase_terms={
                     phase.phase_name: PhaseHistogramTerms(
-                        peak_type=tchz_line(i, phase_key=_slug(phase.phase_name))
+                        peak_type=tchz_line(
+                            i,
+                            converted.profile_seed,
+                            phase_key=_slug(phase.phase_name),
+                        )
                     )
                     for phase in topas_phases
                 }

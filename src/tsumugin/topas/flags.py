@@ -133,13 +133,19 @@ def _toggle_profile_names(hist: TopasHistogram, keys: tuple[str, ...], enable: b
 
 
 def _toggle_named(hist: TopasHistogram, prefix: str, enable: bool) -> TopasHistogram:
-    """``ZE(!ze0, …)`` のような名前付きパラメータの ``!`` を付け外しする。"""
+    """``prm !ze0 …`` のような**宣言行**の ``!`` を付け外しする。
+
+    【宣言行だけを見る】: 同じ名前は参照側にも現れる (``th2_offset = ze0;``)。行全体を
+    対象に置換すると参照式が ``= !ze0;`` に化けて INP が壊れる。TOPAS で ``!`` が意味を
+    持つのは宣言のときだけなので、``prm`` で始まる行に限定する。
+    """
     preamble = []
     for line in hist.preamble:
-        if enable:
-            line = line.replace(f"!{prefix}", prefix)
-        elif prefix in line and f"!{prefix}" not in line:
-            line = line.replace(prefix, f"!{prefix}")
+        stripped = line.lstrip()
+        if stripped.startswith(f"prm !{prefix}") and enable:
+            line = line.replace(f"prm !{prefix}", f"prm {prefix}", 1)
+        elif stripped.startswith(f"prm {prefix}") and not enable:
+            line = line.replace(f"prm {prefix}", f"prm !{prefix}", 1)
         preamble.append(line)
     return hist.with_updates(preamble=tuple(preamble))
 

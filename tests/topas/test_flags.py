@@ -47,7 +47,11 @@ def _phase(**kw) -> TopasPhase:
 def _hist(**kw) -> TopasHistogram:
     base = dict(
         data_path="d.xye",
-        preamble=("ZE(!ze0, 0.0)", "TCHZ_Peak_Type(!pku0, 0.0, !pkw0, 0.003, !pky0, 0.03)"),
+        preamble=(
+            "prm !ze0 0.0 min -0.5 max 0.5",
+            "th2_offset = ze0;",
+            "TCHZ_Peak_Type(!pku0, 0.0, !pkw0, 0.003, !pky0, 0.03)",
+        ),
         background=Param(0.0),
         background_coeffs=6,
     )
@@ -167,7 +171,29 @@ def test_size_strain_releases_both_terms():
 
 def test_displacement_releases_the_zero_point():
     out = _apply({"displacement": {0: ["Shift"]}})
-    assert any("ZE(ze0" in line for line in out.histograms[0].preamble)
+    assert any(line.startswith("prm ze0 ") for line in out.histograms[0].preamble)
+
+
+def test_releasing_the_zero_point_does_not_corrupt_the_reference_expression():
+    """**同じ名前が参照側にも現れる** — ``th2_offset = ze0;`` を ``= !ze0;`` にしない。
+
+    ``!`` が意味を持つのは宣言のときだけ。行全体を置換対象にすると INP が壊れる。
+    """
+    hist = _hist(preamble=("prm !ze0 0.0 min -0.5 max 0.5", "th2_offset = ze0;"))
+    out = _apply({"displacement": {0: ["Shift"]}}, _doc(hist=hist))
+    assert out.histograms[0].preamble == (
+        "prm ze0 0.0 min -0.5 max 0.5",
+        "th2_offset = ze0;",
+    )
+
+
+def test_the_zero_point_box_survives_release_and_freeze():
+    """束縛は解放/凍結で消えない (箱が消えるとゼロ点が暴走する)。"""
+    hist = _hist(preamble=("prm !ze0 0.0 min -0.5 max 0.5", "th2_offset = ze0;"))
+    released = _apply({"displacement": {0: ["Shift"]}}, _doc(hist=hist))
+    frozen = apply_stage(released, RefinementStage(label="S", flags={"freeze_others": True}))
+    for doc in (released, frozen):
+        assert any("min -0.5 max 0.5" in line for line in doc.histograms[0].preamble)
 
 
 @pytest.mark.parametrize(

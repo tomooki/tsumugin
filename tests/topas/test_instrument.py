@@ -7,6 +7,8 @@ GSAS の ``.instprm`` (新形式 ``Key:value``) と ``.PRM`` (旧形式 固定�
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -53,8 +55,8 @@ def test_instprm_xray_wavelengths_and_zero(tmp_path):
     assert not spec.is_tof and not spec.is_neutron
 
 
-def test_instprm_keeps_gsas_profile_for_optional_seeding(tmp_path):
-    """**既定では種付けしない** (係数スケール等価が未検証) が、値自体は保持する。"""
+def test_instprm_keeps_the_gsas_profile_in_gsas_units(tmp_path):
+    """読み取り段階では**GSAS の単位系のまま**保持する (換算は別関数の責務)。"""
     path = tmp_path / "x.instprm"
     path.write_text(_INSTPRM_XRAY, encoding="utf-8")
     assert read_instrument(path).profile == {"U": 2.0, "V": -2.0, "W": 5.0, "X": 0.0, "Y": 0.5}
@@ -197,6 +199,189 @@ def test_tchz_without_phase_key_keeps_the_plain_name():
     assert "!pku0," in tchz_line(0)
 
 
-def test_tchz_seeds_from_gsas_keys_when_asked():
-    line = tchz_line(0, {"W": 0.004, "Y": 0.06})
-    assert "0.004" in line and "0.06" in line
+def test_tchz_seed_is_in_topas_space_not_gsas_space():
+    """**種は TOPAS の単位系で渡す** — GSAS 値をそのまま入れる口は塞ぐ。
+
+    GSAS の U,V,W はガウス**分散**をセンチ度²で表す係数、TOPAS の u,v,w はガウス
+    **FWHM²** を度² で表す係数。素通しすると幅が 4 桁ずれたまま「収束」する。
+    換算は `gsas_cw_profile_to_tchz` の責務 (下)。
+    """
+    line = tchz_line(0, {"w": 0.3613, "y": 0.06})
+    assert "0.3613" in line and "0.06" in line
+
+
+# ---------------- GSAS の CW プロファイル → TCHZ ----------------
+
+
+def test_gaussian_coefficients_convert_variance_centidegrees_to_fwhm_degrees():
+    """``σ²[cdeg²] → FWHM²[deg²]`` は ``× 8ln2/10⁴``。
+
+    GSAS-II ``getCWsig``: ``σ² = U tan²θ + V tanθ + W`` (センチ度²)。
+    TOPAS ``TCHZ_Peak_Type``: ``FWHM_G² = u tan²θ + v tanθ + w + z/cos²θ`` (度²)。
+    ``FWHM = √(8ln2)·σ`` かつ センチ度 → 度 が ``/100`` なので係数は ``8ln2/10⁴``。
+    """
+    from tsumugin.topas.instrument import GSAS_SIGMA_TO_TCHZ, gsas_cw_profile_to_tchz
+
+    assert GSAS_SIGMA_TO_TCHZ == pytest.approx(8.0 * math.log(2.0) / 1.0e4)
+    # 実 D1A (ILL 中性子): GU/GV/GW = 354.031 / -760.404 / 651.592
+    seed = gsas_cw_profile_to_tchz({"U": 354.031, "V": -760.404, "W": 651.592})
+    assert seed["w"] == pytest.approx(0.361319, abs=1e-6)
+    # 2θ=90° での FWHM が D1A の実分解能 (~0.37°) になること。
+    fwhm = math.sqrt(seed["u"] + seed["v"] + seed["w"])
+    assert 0.30 < fwhm < 0.45
+
+
+def test_lorentzian_coefficients_swap_names_between_the_two_engines():
+    """**X と Y は入れ替わる**。GSAS は ``X/cosθ + Y·tanθ``、TOPAS は ``x·tanθ + y/cosθ``。
+
+    名前が同じで意味が違うので、素直に写すと size 由来と歪み由来が入れ替わったまま
+    「収束」する。単位はどちらも FWHM なのでセンチ度→度の ``/100`` だけ。
+    """
+    from tsumugin.topas.instrument import gsas_cw_profile_to_tchz
+
+    seed = gsas_cw_profile_to_tchz({"X": 1.5, "Y": 2.5})
+    assert seed["y"] == pytest.approx(0.015)  # GSAS X (1/cosθ 項) → TOPAS y
+    assert seed["x"] == pytest.approx(0.025)  # GSAS Y (tanθ 項)   → TOPAS x
+
+
+def test_gsas_z_is_not_mapped_to_the_topas_z():
+    """**同名だが別物**: GSAS の Z はローレンツ幅の定数項、TOPAS の z はガウスの 1/cos²θ 項。"""
+    from tsumugin.topas.instrument import gsas_cw_profile_to_tchz
+
+    assert gsas_cw_profile_to_tchz({"Z": 5.0}).get("z", 0.0) == 0.0
+
+
+def test_missing_coefficients_are_simply_absent():
+    """装置ファイルに無い係数は種にしない (0 を積極的に置かない)。"""
+    from tsumugin.topas.instrument import gsas_cw_profile_to_tchz
+
+    assert set(gsas_cw_profile_to_tchz({"W": 651.592})) == {"w"}
+
+
+def test_tof_profile_is_not_seeded_through_the_cw_route():
+    """TOF は Caglioti でない — CW 用の換算を当てない。"""
+    from tsumugin.topas.instrument import gsas_cw_profile_to_tchz
+
+    assert gsas_cw_profile_to_tchz({"sig-1": -167.4, "difC": 22600.0}) == {}
+
+
+# ---------------- 旧 .PRM のプロファイル係数 ----------------
+
+_PRM_NEUTRON_PRCF = _PRM_NEUTRON + (
+    "INS  1PRCF1     1    6      0.01\n"
+    "INS  1PRCF11   0.354031E+03  -0.760404E+03   0.651592E+03   0.000000E+00\n"
+    "INS  1PRCF12   0.000000E+00   0.000000E+00   0.000000E+00   0.000000E+00\n"
+)
+_PRM_XRAY_PRCF3 = _PRM_XRAY + (
+    "INS  1PRCF1     3    8      0.01\n"
+    "INS  1PRCF11   2.000000E+00  -2.000000E+00   5.000000E+00   0.100000E+00\n"
+    "INS  1PRCF12   0.000000E+00   0.000000E+00   0.150000E-01   0.150000E-01\n"
+)
+
+
+def test_prm_reads_gaussian_coefficients_from_prcf11(tmp_path):
+    """``INS  1PRCF11`` の先頭 3 つが GU/GV/GW (GSAS-II ``GSASIIfiles`` 準拠)。"""
+    path = tmp_path / "n.PRM"
+    path.write_text(_PRM_NEUTRON_PRCF, encoding="utf-8")
+    profile = read_instrument(path).profile or {}
+    assert profile["U"] == pytest.approx(354.031)
+    assert profile["V"] == pytest.approx(-760.404)
+    assert profile["W"] == pytest.approx(651.592)
+
+
+def test_prm_lorentzian_coefficients_only_count_for_profile_type_3(tmp_path):
+    """**``PRCF12`` を LX/LY と読んでよいのは型 3 のときだけ** (GSAS-II と同じ規律)。
+
+    型 1 の ``PRCF12`` は別物 (D1A のファイルは 0 だが、0 でない装置で取り違えると
+    ローレンツ幅を捏造することになる)。
+    """
+    neutron = tmp_path / "n.PRM"
+    neutron.write_text(_PRM_NEUTRON_PRCF, encoding="utf-8")
+    assert "X" not in (read_instrument(neutron).profile or {})
+
+    xray = tmp_path / "x.PRM"
+    xray.write_text(_PRM_XRAY_PRCF3, encoding="utf-8")
+    profile = read_instrument(xray).profile or {}
+    assert profile["X"] == pytest.approx(0.0)
+    assert profile["Y"] == pytest.approx(0.0)
+    assert profile["SH/L"] == pytest.approx(0.03)  # S + H
+
+
+def test_prm_without_prcf_has_no_profile(tmp_path):
+    path = tmp_path / "bare.PRM"
+    path.write_text(_PRM_XRAY, encoding="utf-8")
+    assert read_instrument(path).profile is None
+
+
+# ---------------- 種付けの既定 ----------------
+
+
+def _neutron_spec(tmp_path):
+    prm = tmp_path / "n.PRM"
+    prm.write_text(_PRM_NEUTRON_PRCF, encoding="utf-8")
+    return HistogramSpec(
+        data_path=str(_xye_source(tmp_path)), instrument_path=str(prm),
+        radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER, data_format="XYE",
+    )
+
+
+def test_seeding_is_opt_in(tmp_path):
+    """**既定では種付けしない**。
+
+    TCHZ マクロの箱は ``Val`` を毎回評価する**移動する**箱なので、汎用初期値からでも
+    十分遠くまで歩ける (実 garnet で w 0.003 → 0.143)。一方 GSAS 同梱の装置ファイルは
+    "DUMMY" と自称する公称値のことがあり、実 D1A では較正値 w=0.361 が実データの好む
+    0.143 の 2.5 倍だった。そこから始めると移動箱が届かず**種付けの方が悪くなる**
+    (garnet 12.3% → 14.9%)。較正済みの実装置ファイルを持つ側が明示的に有効化する。
+    """
+    assert histogram_to_topas(_neutron_spec(tmp_path), workdir=tmp_path).profile_seed is None
+
+
+def test_seeding_when_asked_carries_the_converted_values(tmp_path):
+    hist = histogram_to_topas(_neutron_spec(tmp_path), workdir=tmp_path, seed_profile=True)
+    assert hist.profile_seed is not None
+    assert hist.profile_seed["w"] == pytest.approx(0.361319, abs=1e-6)
+
+
+# ---------------- ゼロ点の箱 (#172 garnet) ----------------
+
+
+def test_zero_point_is_written_with_an_explicit_box(tmp_path):
+    """**ゼロ点は明示的に束縛する** — TOPAS 内蔵の箱 (±100 ステップ) は緩すぎる。
+
+    実 garnet (CW 中性子, ステップ 0.05° → 内蔵の箱は ±5°) では格子解放段でゼロ点が
+    **+1.16° まで暴走**し Rwp 18.5 → 51.3。1° を超える 2θ ゼロ点は「ゼロ点」ではなく
+    波長か指数付けの誤りであって**数値的事故であり情報ではない** (GSAS 経路の
+    `bounds.displacement_box_bounds` と同じ論法)。
+
+    実測: 箱 ±0.1/±0.2/±0.5 はいずれも同じ解 (ze=−0.0406°, Rwp 19.384) に収束し、
+    ±1.0 だけが暴走側の谷 (0.994 で上限に張り付き Rwp 51.3) に落ちる。
+    """
+    from tsumugin.topas.instrument import ZERO_POINT_LIMIT_DEG
+
+    prm = tmp_path / "i.instprm"
+    prm.write_text(_INSTPRM_XRAY, encoding="utf-8")
+    spec = HistogramSpec(
+        data_path=str(_xye_source(tmp_path)), instrument_path=str(prm),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XYE",
+    )
+    joined = "\n".join(histogram_to_topas(spec, workdir=tmp_path).preamble)
+    assert "th2_offset = ze0;" in joined
+    assert f"min {0.0125 - ZERO_POINT_LIMIT_DEG!r}" in joined  # 装置の宣言値が箱の中心
+    assert f"max {0.0125 + ZERO_POINT_LIMIT_DEG!r}" in joined
+    assert "prm !ze0" in joined  # 解放は段階フラグの責務
+
+
+def test_zero_lorentzian_coefficients_are_not_seeded(tmp_path):
+    """``LX = LY = 0`` は「測って 0 だった」ではなく**情報が無い**。
+
+    GSAS が配る DUMMY 装置ファイルはローレンツ項を 0 で埋めている。これを種にすると
+    ピークが純ガウスの初期形になり、既定値 (y=0.03) から始めるより悪くなる
+    (実 fluoroapatite で初期段 45.4 → 54.2)。
+    """
+    from tsumugin.topas.instrument import gsas_cw_profile_to_tchz
+
+    seed = gsas_cw_profile_to_tchz({"U": 2.0, "V": -2.0, "W": 5.0, "X": 0.0, "Y": 0.0})
+    assert set(seed) == {"u", "v", "w"}
+    # 非ゼロなら種にする。
+    assert "y" in gsas_cw_profile_to_tchz({"X": 1.5})

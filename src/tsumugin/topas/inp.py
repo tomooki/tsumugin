@@ -212,6 +212,11 @@ class TopasHistogram:
     is_tof: bool = False
     tof_calibration: "Mapping[str, float] | None" = None
     """TOF の ``difc``/``difa``/``zero`` (GSAS の difC/difA/Zero と直写像)。"""
+    profile_seed: "Mapping[str, float] | None" = None
+    """``TCHZ_Peak_Type`` の初期値 (**TOPAS 側のキー** ``u,v,w,z,x,y``)。
+
+    装置ファイルの Caglioti 係数を `instrument.gsas_cw_profile_to_tchz` で換算したもの。
+    """
     phase_terms: Mapping[str, PhaseHistogramTerms] = field(default_factory=dict)
     """相名 → HAP 項。"""
     extras: tuple[str, ...] = ()
