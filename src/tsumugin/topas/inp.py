@@ -164,6 +164,14 @@ class TopasPhase:
     """占有率和 = 1 のサイト組 (混合占有)。1 変数 x と 1-x で表す。"""
     beq_equiv_groups: tuple[tuple[str, ...], ...] = ()
     """beq を等値拘束するサイト組。"""
+    free_occupancy_labels: tuple[str, ...] = ()
+    """占有率を**単独で**解放してよい原子ラベル。
+
+    **全サイトの占有率を一斉に解放してはならない** — 占有率はスケール因子と大域的に縮退する
+    ため、Rwp は下がるのに占有率が 1 を超える非物理解へ行ける (実 fluoroapatite で occ 0.68-2.24
+    を実測)。GSAS 経路が `PhaseSpec.free_occupancy_labels` / 混合占有サイトに限って解放するのと
+    同じ規律で、宣言されたサイトだけを解放する。
+    """
     release_occupancy_groups: bool = False
     """占有率の共有 ``prm`` を解放するか。
 
@@ -323,14 +331,35 @@ class TopasDocument:
     def _site_line(
         self, phase: TopasPhase, site: TopasSite, shared: Mapping[tuple[str, str], str]
     ) -> str:
+        stem = f"{_slug(phase.phase_name)}_{_slug(site.label)}"
+
+        def named(param: Param, suffix: str) -> Param:
+            """結果出力を要求しているときは名前を付ける (`Out()` から参照するため)。
+
+            無名の ``@`` は ``Out()`` で指せず、精密化した値と esd を回収できない。
+            """
+            if not self.results_path or param.is_reference or param.name or not param.refine:
+                return param
+            return replace(param, name=f"{stem}_{suffix}")
+
         def coord(axis: str, param: Param) -> str:
             name = shared.get((phase.phase_name, f"site.{site.label}.{axis}"))
-            return render_param(Param.reference(name)) if name else render_param(param)
+            if name:
+                return render_param(Param.reference(name))
+            return render_param(named(param, axis))
 
         occ_expr = shared.get((phase.phase_name, f"occ.{site.label}"))
-        occ = render_param(Param.reference(occ_expr)) if occ_expr else render_param(site.occupancy)
+        occ = (
+            render_param(Param.reference(occ_expr))
+            if occ_expr
+            else render_param(named(site.occupancy, "occ"))
+        )
         beq_name = shared.get((phase.phase_name, f"beq.{site.label}"))
-        beq = render_param(Param.reference(beq_name)) if beq_name else render_param(site.beq)
+        beq = (
+            render_param(Param.reference(beq_name))
+            if beq_name
+            else render_param(named(site.beq, "beq"))
+        )
         return (
             f"{_INDENT_PHASE}site {site.label}"
             f" x {coord('x', site.x)} y {coord('y', site.y)} z {coord('z', site.z)}"
@@ -395,6 +424,31 @@ class TopasDocument:
                     f'{_INDENT_PHASE}Out({prm_name}, '
                     f'"cell\\t{name}\\t{axis}\\t%.8f", "\\t%.8f\\n")'
                 )
+            # 【原子の出版値】: 座標・占有率・beq を esd 付きで回収する。**esd の無い精密化値は
+            #   出版できない**うえ、「Rwp は下がったが占有率が非物理」を検出する唯一の手段でもある。
+            #   解放していないものは出さない (固定値を「精密化した」と読ませない)。
+            for site in phase.sites:
+                stem = f"{_slug(name)}_{_slug(site.label)}"
+                for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
+                    if param.is_reference or not param.refine:
+                        continue
+                    prm = param.name or f"{stem}_{axis}"
+                    lines.append(
+                        f'{_INDENT_PHASE}Out({prm}, '
+                        f'"coord\\t{name}\\t{site.label}\\t{axis}\\t%.8f", "\\t%.8f\\n")'
+                    )
+                if not site.occupancy.is_reference and site.occupancy.refine:
+                    prm = site.occupancy.name or f"{stem}_occ"
+                    lines.append(
+                        f'{_INDENT_PHASE}Out({prm}, '
+                        f'"occ\\t{name}\\t{site.label}\\t%.8f", "\\t%.8f\\n")'
+                    )
+                if not site.beq.is_reference and site.beq.refine:
+                    prm = site.beq.name or f"{stem}_beq"
+                    lines.append(
+                        f'{_INDENT_PHASE}Out({prm}, '
+                        f'"beq\\t{name}\\t{site.label}\\t%.8f", "\\t%.8f\\n")'
+                    )
         lines.extend(f"{_INDENT_PHASE}{extra}" for extra in terms.extras)
         lines.extend(f"{_INDENT_PHASE}{extra}" for extra in phase.extras)
         return lines

@@ -89,7 +89,11 @@ def _release_sites(
         if beq is not None:
             updates["beq"] = _set_refine(site.beq, beq)
         if occupancy is not None:
-            updates["occupancy"] = _set_refine(site.occupancy, occupancy)
+            # 【全サイト一斉解放をしない】: 占有率はスケール因子と大域的に縮退するので、
+            #   全部解放すると Rwp は下がるのに占有率が 1 を超える非物理解へ行ける
+            #   (実 fluoroapatite で occ 0.68-2.24 を実測)。宣言されたサイトのみ。
+            allowed = occupancy and site.label in phase.free_occupancy_labels
+            updates["occupancy"] = _set_refine(site.occupancy, allowed)
         sites.append(site.with_updates(**updates))
     return phase.with_updates(sites=tuple(sites))
 

@@ -175,3 +175,49 @@ def test_real_pbso4_refines_end_to_end(tmp_path):
     assert result.final_rwp < 20.0, f"Rwp {result.final_rwp} が高すぎる"
     assert any(not s.reverted for s in result.stage_results)
     assert (tmp_path / "proj").is_dir()  # 成果物が残る
+
+
+def test_validity_gate_rejects_non_physical_uiso(stub_driver, monkeypatch):
+    """**Rwp が下がっても Uiso が負なら不合格**にする (中立層の `check_validity` を共用)。
+
+    これを繋がないと「Rwp 10% だが Uiso 負・占有率 1 超」が合格として返る。
+    実 fluoroapatite で実際にそうなった (占有率を全解放していた頃)。
+    """
+    def runner(inp_text, **kwargs):
+        class R:
+            out_text = "r_p 1 r_wp 9.0 r_exp 5 gof 1.2\np 1.0`_0.01\n"
+            results_text = (
+                "r_wp\t9.0\ngof\t1.2\n"
+                "beq\tPbSO4\tPb\t-2.5\t0.1\n"   # 負の beq → 負の Uiso
+            )
+            stdout = ""
+        return R()
+
+    monkeypatch.setattr(eng, "run_tc", runner)
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0))
+    )
+    assert result.final_rwp == pytest.approx(9.0)
+    assert result.validity.passed is False
+    assert any(not ok and "uiso" in name for name, ok, _ in result.validity.checks)
+
+
+def test_occupancy_is_released_only_for_declared_sites():
+    """占有率はスケール因子と大域的に縮退するので**全サイト一斉解放をしない**。
+
+    実 fluoroapatite で全解放すると occ 0.68-2.24 (1 超 = 非物理) に落ちながら
+    Rwp だけは 10% に見えた。
+    """
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+    from tsumugin.autorietveld.model import PhaseSpec as PS
+    from tsumugin.topas.flags import apply_stage
+    from tsumugin.topas.inp import TopasDocument, TopasHistogram
+    from tsumugin.topas.structure import structure_to_topas_phase
+
+    structure = read_structure_cif(str(_PBSO4_CIF))
+    spec = PS(structure_path=str(_PBSO4_CIF), phase_name="PbSO4", free_occupancy_labels=("O3",))
+    phase = structure_to_topas_phase(structure, "PbSO4", spec=spec)
+    doc = TopasDocument(histograms=(TopasHistogram(data_path="d.xye"),), phases=(phase,))
+    out = apply_stage(doc, RefinementStage(label="occ", flags={"occupancy": True}))
+    released = {s.label for s in out.phases[0].sites if s.occupancy.refine}
+    assert released == {"O3"}

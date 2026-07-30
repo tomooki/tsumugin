@@ -274,12 +274,14 @@ def structure_to_topas_phase(
 
     occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
     beq_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    free_occupancy_labels: tuple[str, ...] = ()
     if spec is not None:
         occupancy_sum_groups = tuple(tuple(g) for g in spec.mixed_occupancy_groups)
         occupancy_sum_groups += tuple(tuple(g) for g in spec.occupancy_sum_groups)
         # 【混合占有には Uiso 等価も張る】: 同一サイトを分け合う原子は同じ熱振動をする。
         #   GSAS 経路が add_EqnConstr と add_EquivConstr を対で張るのと同じ (M7 T2 の教訓)。
         beq_equiv_groups = tuple(tuple(g) for g in spec.mixed_occupancy_groups)
+        free_occupancy_labels = tuple(spec.free_occupancy_labels)
 
     return TopasPhase(
         phase_name=phase_name,
@@ -288,5 +290,6 @@ def structure_to_topas_phase(
         sites=sites,
         occupancy_sum_groups=occupancy_sum_groups,
         beq_equiv_groups=beq_equiv_groups,
+        free_occupancy_labels=free_occupancy_labels,
         free_cell_keys=free_cell_keys,
     )

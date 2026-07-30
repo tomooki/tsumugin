@@ -39,7 +39,7 @@ from .flags import apply_stage
 from .inp import TopasDocument
 from .instrument import histogram_to_topas
 from .parse import TopasRecords, limit_hits_from_out, parse_out_metrics, parse_records
-from .structure import structure_to_topas_phase, to_topas_spacegroup
+from .structure import BEQ_PER_UISO, structure_to_topas_phase, to_topas_spacegroup
 
 __all__ = ["run_topas_rietveld"]
 
@@ -208,6 +208,22 @@ def run_topas_rietveld(
         weight_fractions = {
             name: value / 100.0 for name, (value, _) in records.keyed.get("wt_frac", {}).items()
         }
+        weight_fraction_esd = {
+            name: (esd / 100.0 if esd is not None else None)
+            for name, (_, esd) in records.keyed.get("wt_frac", {}).items()
+        }
+        atom_coords, atom_coord_esd = _atom_coord_maps(records)
+        atom_occupancy, atom_occupancy_esd = _atom_scalar_maps(records, "occ")
+        atom_beq, atom_beq_esd = _atom_scalar_maps(records, "beq")
+        # TOPAS は B、結果契約は Uiso。**Uiso = B / 8π²** で戻す (取り違えると 79 倍ずれる)。
+        atom_uiso = {
+            ph: {lbl: v / BEQ_PER_UISO for lbl, v in vals.items()}
+            for ph, vals in atom_beq.items()
+        }
+        atom_uiso_esd = {
+            ph: {lbl: (v / BEQ_PER_UISO if v is not None else None) for lbl, v in vals.items()}
+            for ph, vals in atom_beq_esd.items()
+        }
         final_rwp = prev_rwp if math.isfinite(prev_rwp) else float("inf")
         final_gof = next(
             (s.gof for s in reversed(stage_results) if not s.reverted), float("inf")
@@ -220,14 +236,31 @@ def run_topas_rietveld(
                 if item.is_file():
                     shutil.copyfile(item, destination / item.name)
 
+        refined_cells = _refined_cells(records, doc, reference_cells)
+
         return AutoRietveldResult(
             stage_results=tuple(stage_results),
             final_rwp=final_rwp,
             final_gof=final_gof,
-            refined_cells=_refined_cells(records, doc, reference_cells),
-            validity=ValidityReport(passed=math.isfinite(final_rwp)),
+            refined_cells=refined_cells,
+            validity=_validity(
+                refined_cells=refined_cells,
+                reference_cells=reference_cells,
+                atom_uiso=atom_uiso,
+                atom_occupancy=atom_occupancy,
+                weight_fractions=weight_fractions,
+                converged=math.isfinite(final_rwp),
+            ),
             n_obs=_count_observations(histograms, work),
             phase_weight_fractions=weight_fractions,
+            phase_weight_fraction_esd=weight_fraction_esd,
+            cell_esd=_cell_esd_map(records, doc),
+            atom_coords=atom_coords,
+            atom_coord_esd=atom_coord_esd,
+            atom_occupancy=atom_occupancy,
+            atom_occupancy_esd=atom_occupancy_esd,
+            atom_uiso=atom_uiso,
+            atom_uiso_esd=atom_uiso_esd,
             backend=_BACKEND,
             project_path=str(keep_project) if keep_project else "",
         )
@@ -299,3 +332,101 @@ def _count_observations(histograms: Sequence[HistogramSpec], workdir: Path) -> i
             mask &= ~((x >= low) & (x <= high))
         total += int(mask.sum())
     return total
+
+
+def _atom_coord_maps(
+    records: TopasRecords,
+) -> "tuple[dict[str, dict[str, tuple[float, float, float]]], dict[str, dict[str, tuple]]]":
+    """``coord`` レコード (相/ラベル/軸) を相→ラベル→(x,y,z) と同型の esd へ畳む。
+
+    解放していない軸はレコードに現れない。**欠けた軸は 0.0 で埋めず ``None`` の esd を残す** —
+    「対称固定で厳密に決まっている」と「この精密化では決まっていない」を読み分けられるように
+    するため (GSAS 経路の 3 状態 esd と同じ規律)。
+    """
+    values: dict[str, dict[str, dict[str, float]]] = {}
+    esds: dict[str, dict[str, dict[str, "float | None"]]] = {}
+    for key, (value, esd) in records.keyed.get("coord", {}).items():
+        parts = key.split("/")
+        if len(parts) != 3:
+            continue
+        phase, label, axis = parts
+        values.setdefault(phase, {}).setdefault(label, {})[axis] = value
+        esds.setdefault(phase, {}).setdefault(label, {})[axis] = esd
+    coords: dict[str, dict[str, tuple[float, float, float]]] = {}
+    coord_esd: dict[str, dict[str, tuple]] = {}
+    for phase, labels in values.items():
+        for label, axes in labels.items():
+            triple = tuple(axes.get(a, 0.0) for a in ("x", "y", "z"))
+            coords.setdefault(phase, {})[label] = triple  # type: ignore[assignment]
+            e = esds[phase][label]
+            coord_esd.setdefault(phase, {})[label] = tuple(e.get(a) for a in ("x", "y", "z"))
+    return coords, coord_esd
+
+
+def _atom_scalar_maps(
+    records: TopasRecords, kind: str
+) -> "tuple[dict[str, dict[str, float]], dict[str, dict[str, float | None]]]":
+    """``occ`` / ``beq`` レコードを相→ラベル→値 と同型の esd へ畳む。"""
+    values: dict[str, dict[str, float]] = {}
+    esds: dict[str, dict[str, "float | None"]] = {}
+    for key, (value, esd) in records.keyed.get(kind, {}).items():
+        phase, _, label = key.partition("/")
+        if not label:
+            continue
+        values.setdefault(phase, {})[label] = value
+        esds.setdefault(phase, {})[label] = esd
+    return values, esds
+
+
+def _cell_esd_map(
+    records: TopasRecords, doc: TopasDocument
+) -> "dict[str, tuple]":
+    """``cell`` レコードの esd を GSAS 契約と同じ 6 要素 (a,b,c,al,be,ga) 順に並べる。
+
+    従属軸 (``b =Get(a);``) は独立変数と同じ esd を持つ (同一パラメータだから)。
+    出していない角は ``None`` (対称固定なので「決まっていない」ではなく「変数でない」)。
+    """
+    cells = records.keyed.get("cell", {})
+    out: dict[str, tuple] = {}
+    for phase in doc.phases:
+        name = phase.phase_name
+        per_axis: dict[str, "float | None"] = {}
+        for axis, param in phase.cell.items():
+            record = cells.get(f"{name}/{axis}")
+            if record is not None:
+                per_axis[axis] = record[1]
+            elif param.is_reference and param.expression:
+                match = re.fullmatch(r"Get\((\w+)\)", param.expression.strip())
+                source = cells.get(f"{name}/{match.group(1)}") if match else None
+                per_axis[axis] = source[1] if source else None
+        if per_axis:
+            out[name] = tuple(per_axis.get(a) for a in _CELL_ORDER)
+    return out
+
+
+def _validity(
+    *,
+    refined_cells: "Mapping[str, tuple[float, ...]]",
+    reference_cells: "Mapping[str, tuple[float, ...]] | None",
+    atom_uiso: "Mapping[str, Mapping[str, float]]",
+    atom_occupancy: "Mapping[str, Mapping[str, float]]",
+    weight_fractions: "Mapping[str, float]",
+    converged: bool,
+) -> ValidityReport:
+    """物理妥当性ゲート。**GSAS 経路と同じ `check_validity` を使う** (中立層の共用)。
+
+    これを繋がないと「Rwp は下がったが Uiso が負・占有率が 1 超」という結果が**合格として
+    返る**。実 fluoroapatite で実際にそうなった (占有率を全解放していた頃、Rwp 10.1 に見えて
+    占有率 0.68-2.24)。精密化の良し悪しを Rwp だけで判定しないための要。
+    """
+    from ..autorietveld.validity import check_validity
+
+    return check_validity(
+        refined_cells={k: tuple(v) for k, v in refined_cells.items()},
+        reference_cells={k: tuple(v) for k, v in (reference_cells or {}).items()},
+        # `check_validity` は相名→**値の並び**を取る (ラベルではなく添字で報告する既存契約)。
+        uiso={ph: list(vals.values()) for ph, vals in atom_uiso.items()},
+        occupancies={ph: list(vals.values()) for ph, vals in atom_occupancy.items()},
+        phase_fractions=dict(weight_fractions) or None,
+        converged=converged,
+    )
