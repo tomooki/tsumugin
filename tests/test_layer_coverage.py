@@ -71,6 +71,14 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "実構造 Rietveld。Issue #101 解決: 段階解放レシピの追加段階 (`stages` →"
         "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
     ),
+    "topas backend (M12)": (
+        UNEXPOSED,
+        "**実装途上 (M12 T1-T9)**。Bruker TOPAS を第 2 精密化バックエンドとして駆動する境界。"
+        "意図的に段階公開しており、可用性境界 (T1) と INP 生成 (T2-T4) の時点では ② に呼び手が"
+        "無い。M12 T10 で `list_refinement_backends` 新設 + `auto_rietveld`/`sequential_rietveld` の"
+        "`backend` 引数として露出し、本行はそのツール名へ差し替える。露出前に本行が残っていれば"
+        "**それ自体が「③ から使えない」ことの宣言**である (Issue #97 の規律)",
+    ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
     "convergence agreement (収束の傍証)": (
         "auto_rietveld",
@@ -238,6 +246,7 @@ FOUNDATIONAL = "FOUNDATIONAL"
 PACKAGE_COVERAGE: dict[str, str] = {
     # --- ③ 向け能力パッケージ (露出/未露出は LAYER1_FEATURES で管理) ---
     "autorietveld": "autorietveld (M7)",
+    "topas": "topas backend (M12)",
     "joint": "joint (M4/FR-240)",
     "reference": "reference (M6)",
     "refine_loop": "refine_loop (M8)",

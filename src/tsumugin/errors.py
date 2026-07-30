@@ -19,6 +19,30 @@ class GSASUnavailableError(TsumuginError):
     """GSAS-II (GSASIIscriptable) が未導入の環境で GSASIIBackend を要求したとき。"""
 
 
+class TopasUnavailableError(TsumuginError):
+    """Bruker TOPAS (コンソール実行体 ``tc.exe``) が未導入の環境で TOPAS 経路を要求したとき。
+
+    ``GSASUnavailableError`` と同型の「available + 専用例外」パターン。``import tsumugin.topas``
+    自体はコア (numpy/stdlib) のみで成功し、``tc.exe`` の実行を伴う経路 (``run_topas_rietveld`` /
+    ``TopasBackend.__init__``) の呼び出し時にのみ本例外を送出して導入手順を案内する。
+    TOPAS は PyPI に存在しない商用ソフトのため optional extra ではなく**外部バイナリ**として
+    解決する (Dysnomia と同じ扱い)。
+    """
+
+
+class TopasRunError(TsumuginError):
+    """``tc.exe`` の実行が失敗したとき (異常終了・タイムアウト・出力欠落)。
+
+    **⚠ tc.exe は INP の構文エラーで異常終了しても終了コード 0 を返す** (実測)。したがって
+    「終了コードが 0 だから成功」と読んではならず、driver は stdout の異常終了マーカーと
+    出力ファイルの生成有無で判定する。GSAS-II の ``G2Project.refine`` が ``Refine`` の失敗戻り値を
+    捨てる問題 (CLAUDE.md) と同じクラスの罠であり、同じ轍を踏まないための専用例外。
+
+    精密化エンジン層はこの例外を捕まえて **chi2=inf / rwp=inf** へ縮退させ、ガードレールに
+    処理させる (不変条件「バックエンドの失敗は例外でなく chi2=inf に変換」)。
+    """
+
+
 class LedgerIntegrityError(TsumuginError):
     """永続 ledger (JSONL) の破損を検出したときに送出 (EDGE-003 / NFR-105)。
 

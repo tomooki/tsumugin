@@ -105,6 +105,7 @@ testpaths = ["tests"]
 addopts = "-q --import-mode=importlib"
 markers = [
     "gsas: GSAS-II がインストールされている環境でのみ実行する contract test",
+    "topas: Bruker TOPAS (コンソール実行体 tc.exe) が導入されている環境でのみ実行する",
     "mcp: MCP SDK (optional extra mcp) がインストールされている環境でのみ実行する",
     "nested: 外部サンプラ (optional extra nested: dynesty/ultranest) がインストールされている環境でのみ実行する",
     "mem: MEM 外部バイナリ (Dysnomia) がインストールされている環境でのみ実行する",
