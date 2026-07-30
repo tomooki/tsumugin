@@ -34,6 +34,23 @@ Phase B  収束確認          run_multistart_rietveld(5 開始点, 並列) → 
 `optimize_then_confirm()` が両段を配線する。`run_auto_rietveld` は**単発プリミティブのまま**
 (operando は per-frame で呼ぶため, REQ-SAR-502)。
 
+### 1.0 ②③ からの呼び方
+
+```json
+{"search": true, "multistart": {"n_starts": 5, "coord_jitter_ang": 0.05, "jobs": 5}}
+```
+
+② `auto_rietveld` の `multistart` 引数。キーは**すべてスカラ**なので他ツールの出力を要しない
+(§4.5 到達可能性)。渡すと必ず Phase A → Phase B の順で回り、返り値は通常の形 + `search` +
+`convergence`。`convergence.structure_is_corroborated` / `class_convergence` /
+`undetermined_by_initial_values` を読む。③ の手順書は `skills/analyze` の「収束を確認する」節
+(手順 3′) と M7 `AGENT_PLAYBOOK.md` §5.1。
+
+⚠ `optimize_then_confirm` の `search_runner`/`multistart_runner` は**テスト注入専用**で ② には
+出さない (callable は JSON にできない)。⚠ `extra_stages` との併用は ValueError — 収束確認は
+候補を名前で固定するので追加段階を運ぶ口が無く、黙って無視すると「追加段階つきで確認した」と
+読まれる。
+
 ### 1.1 Phase A — 手順最適化
 
 - 候補 = `DEFAULT_CANDIDATES` = `default` / `sizestrain_last` / `polish` / `serious1` / `adaptive`。
@@ -114,3 +131,22 @@ Rwp のばらつきは所見として報告する (恒常的なら装置分解�
 | **合計** | **≈ 5–8 分** (T1/T2/CaTeO3 は 1–3 分) |
 
 規定で回して差し支えない範囲である。
+
+⚠ **開始点は 5 から減らさない。** 3 で試したところ T1 は valid な開始点が悪いベイスン
+(結晶子サイズが潰れた解) に偏って**座標まで割れ**、T3 は valid が 1 点しか残らず一致判定が
+**1 件も成立しなかった** (`insufficient_valid_starts`)。壁時計は最遅開始点で決まるので、
+3 に減らしても速くはならない。
+
+---
+
+## 5. 実装と恒久ガード
+
+| | 場所 |
+|---|---|
+| ① 標準経路 | `autorietveld.confirm.optimize_then_confirm` |
+| ① 一致判定 | `autorietveld.agreement` (basis="start") |
+| ② 露出 | `auto_rietveld(multistart={...})` |
+| ③ 手順書 | `skills/analyze` 「収束を確認する」+ 手順 3′ / M7 `AGENT_PLAYBOOK.md` §5.1 |
+| 決定論テスト | `tests/autorietveld/test_confirm.py` / `tests/mcp/test_rietveld_tools_convergence.py` |
+| 手順書ガード (変異実証済) | `tests/test_m8_plugin.py` |
+| 実データ配線 | `tests/autorietveld/test_confirm_gsas.py` (`@pytest.mark.gsas`, T1/T3) |
