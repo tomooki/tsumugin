@@ -154,6 +154,18 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     "mem (M8-③)": ("mem_density", "MEM 密度→構造改訂"),
     "operando diag (M8-③)": ("check_phase_set", "相集合の完全性"),
     # --- 未露出 (Issue #97): 宣言することで「忘れた」ではなく「既知の穴」であることを示す ---
+    "TopasBackend (M12/T9)": (
+        UNEXPOSED,
+        "**意図的な非露出** (Issue #175)。`RefinementBackend` Protocol の TOPAS 実装で、"
+        "`simulate()` を要求する search.tree / sequential.engine の口を塞ぐ。だが ② で "
+        "`RefinementBackend` を組む唯一のツール `discriminate` は**実 CIF 判別**の経路であり "
+        "(`PhaseInstance.structure_ref` → GSASIIBackend の実 CIF 分岐, Issue #130)、"
+        "TopasBackend は簡約モデル (P m m m・Ni 1 原子) しか持たない。ここへ backend 引数を"
+        "足すと**実構造で判別したつもりが捏造構造で走る**ため、structure_ref 対応が入るまで"
+        "露出しない。黙って代替しないよう TopasBackend 側は structure_ref を "
+        "NotImplementedError で拒否する。実構造の TOPAS 精密化は "
+        "`auto_rietveld(backend=\"topas\")` で既に到達可能",
+    ),
     "insitu.anchor (M10/FR-330)": (
         "anchored_sequential",
         "Issue #97 解決: run_anchored_sequential(runner=, identifier=) の callable を #93 と同型の "
@@ -1828,3 +1840,44 @@ def test_selection_escalation_is_now_reachable_or_the_note_is_stale():
             "再び ③ から不可視になった。PACKAGE_COVERAGE['selection'] を「既知の穴」に戻し、"
             "③ skill 手順 (hypothesis-search「エスカレーションを確認する」節) の整合も見直すこと"
         )
+
+
+def test_topas_backend_non_exposure_reason_is_still_true():
+    """**非露出の理由を機械検査する** — 理由が消えたら宣言を見直させる。
+
+    `TopasBackend` を ② に露出していない理由は「実 CIF (``structure_ref``) を扱えないので
+    `discriminate` に配線すると実構造判別が捏造構造で走る」である。理由が成立しなくなったら
+    (= structure_ref 対応が入ったら) このテストが落ち、非露出宣言の再検討を強制する。
+
+    宣言文だけだと**コードが変わっても宣言が古いまま残る** (それこそ本ファイルが防ぎたい
+    drift そのもの)。
+    """
+    from tsumugin.backends.topas import TopasBackend
+    from tsumugin.model import LatticeParams, PhaseInstance
+
+    backend = TopasBackend.__new__(TopasBackend)  # tc.exe 不要
+    phase = PhaseInstance(
+        phase_ref="P", lattice=LatticeParams(4.0, 4.0, 4.0), scale=1.0,
+        structure_ref="x.cif",
+    )
+    with pytest.raises(NotImplementedError):
+        backend._require_simplified_phases((phase,))
+    assert LAYER1_FEATURES["TopasBackend (M12/T9)"][0] is UNEXPOSED
+
+
+def test_no_mcp_tool_constructs_the_topas_backend():
+    """② のどのツールも `TopasBackend` を組んでいないこと (非露出宣言との整合)。
+
+    誰かが `discriminate` 等へ配線したらここが落ち、**宣言の更新を強制する**。
+    露出そのものを禁じるのではなく、露出と宣言がずれることを禁じる。
+    """
+    mcp_dir = Path(mcp_pkg.__file__).parent
+    offenders = [
+        path.name
+        for path in mcp_dir.glob("*.py")
+        if "TopasBackend" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, (
+        f"② が TopasBackend を組んでいる: {offenders}。"
+        f"LAYER1_FEATURES['TopasBackend (M12/T9)'] の非露出宣言を更新すること"
+    )

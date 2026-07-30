@@ -83,6 +83,27 @@ class TopasBackend:
 
     name = "topas"
 
+    @staticmethod
+    def _require_simplified_phases(phases: Sequence[PhaseInstance]) -> None:
+        """実 CIF (``structure_ref``) を渡されたら**黙って簡約構造で代替しない**。
+
+        `GSASIIBackend` は ``structure_ref`` があれば実 CIF を読む。TOPAS 版は簡約モデル
+        (P m m m・Ni 1 原子) しか持たないので、同じ入力を黙って代替すると **③ から見て
+        「実構造で判別した」ことになる**。実構造判別 (`discriminate`) はまさにこの経路なので、
+        捏造構造で走った結果が実データの結論として返ってしまう。
+
+        :raises NotImplementedError: いずれかの相が ``structure_ref`` を持つとき。
+        """
+        offenders = [p.phase_ref for p in phases if getattr(p, "structure_ref", None)]
+        if offenders:
+            raise NotImplementedError(
+                f"TopasBackend は実 CIF (structure_ref) に未対応です: {offenders}。"
+                f"簡約モデル (P m m m・Ni 1 原子) で黙って代替すると、実構造で判別したことに"
+                f"なってしまうため停止します。実構造の精密化には "
+                f"`topas.engine.run_topas_rietveld` (auto_rietveld の backend=\"topas\") を"
+                f"使ってください。"
+            )
+
     def __init__(self, *, wavelength: float = _DEFAULT_WAVELENGTH) -> None:
         if not topas_available():
             raise TopasUnavailableError(
@@ -102,12 +123,13 @@ class TopasBackend:
         **観測ノイズを混ぜない** (NFR-102 再現性) — TOPAS には「観測データ無しで計算だけ」の
         入口が無いので、ダミーの平坦な観測を与えて ``iters 0`` で回し ``Ycalc`` を読む。
         """
+        self._require_simplified_phases(phases)
         grid = np.asarray(two_theta, dtype=float)
         with tempfile.TemporaryDirectory(prefix="tsumugin-topas-sim-") as tmp:
             work = Path(tmp)
             write_xye(work / "obs.xye", grid, np.ones_like(grid))
             doc = self._document(
-                phases, work, cell_free=False, scale_free=(), max_cyc=0,
+                phases, work, cell_free=set(), scale_free=(), max_cyc=0,
                 extras=('Out_X_Ycalc("calc.txt")',),
             )
             run_tc(doc.render(), workdir=work, basename="sim", timeout=600.0)
@@ -119,6 +141,7 @@ class TopasBackend:
     def refine(
         self, model: RefinementModel, *, max_cycles: int = 20
     ) -> RefinementResult:
+        self._require_simplified_phases(model.phases)
         grid = np.asarray(model.two_theta, dtype=float)
         observed = np.asarray(model.intensity, dtype=float)
         weights = (
@@ -136,7 +159,7 @@ class TopasBackend:
             doc = self._document(
                 model.phases,
                 work,
-                cell_free=bool(cell_free),
+                cell_free=cell_free,
                 scale_free=tuple(scale_free),
                 max_cyc=max_cycles if any_free else 0,
                 extras=('Out_X_Yobs_Ycalc("fit.txt")',),
@@ -182,13 +205,17 @@ class TopasBackend:
         phases: Sequence[PhaseInstance],
         work: Path,
         *,
-        cell_free: bool,
+        cell_free: "set[int]",
         scale_free: Sequence[int],
         max_cyc: int,
         extras: "tuple[str, ...]" = (),
     ) -> TopasDocument:
+        # 【相ごとに解放する】: 集合を bool へ潰すと、要求していない相の格子まで動いて
+        #   要求した相のフィットと相関する。しかも `_read_back` は要求分しか読み戻さないので
+        #   **TOPAS が実際に動かした値と結果が食い違い**、`n_params` も過少申告になって
+        #   BIC 比較が意味を失う (GSAS 側は `if i in cell_free` と相ごとに判定している)。
         topas_phases = tuple(
-            _simplified_phase(i, phase, cell_free=cell_free)
+            _simplified_phase(i, phase, cell_free=i in set(cell_free))
             for i, phase in enumerate(phases)
         )
         terms = {

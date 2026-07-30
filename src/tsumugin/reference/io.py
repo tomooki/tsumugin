@@ -176,22 +176,25 @@ def _fxye_is_tof(text: str) -> bool:
 
 
 def parse_fxye(text: str) -> tuple[np.ndarray, np.ndarray]:
-    """GSAS FXYE テキスト (``X Y ESD`` 3 列) を ``(two_theta[deg], intensity)`` へ変換する。🔵
+    """GSAS FXYE テキスト (``X Y ESD`` 3 列) を ``(x, intensity)`` へ変換する。🔵
 
-    FXYE (例 APS 11BM の ``.fxye``) は X をセンチ度 (2θ×100) で持つ。タイトル行 (先頭)・``#``
-    コメント行・空行を読み飛ばし、数値 3 列の行のみを採る。ESD (第 3 列) は相同定では無視する。
-    GSAS-II の add_powder_histogram が読むのと同じ X=センチ度 規約に従う。
+    **``x`` の単位は入力依存**: 2θ データなら度、TOF データなら µs (下記 BANK 行の判定)。
 
-    **ただし TOF の FXYE は X が µs** でありセンチ度ではない。``BANK`` 行の binning モードで
-    見分ける — ``CONS`` (等間隔) は 2θ センチ度、``SLOG``/``RALF`` (対数・可変ビン) は TOF。
-    ÷100 してしまうと飛行時間が 2 桁縮んで**まったく別の d 範囲**になるが、ピークはどこかに
-    立つので静かに間違う (実 POWGEN の ``.gsa`` は SLOG)。
+    2θ の FXYE (例 APS 11BM の ``.fxye``) は X をセンチ度 (2θ×100) で持つので度へ直す
+    (GSAS-II の add_powder_histogram と同じ規約)。タイトル行 (先頭)・``#`` コメント行・空行を
+    読み飛ばし、数値 3 列の行のみを採る。ESD (第 3 列) は相同定では無視する。
+
+    **TOF の FXYE は X が µs** でありセンチ度ではないので、そのまま返す。``BANK`` 行の
+    binning モードで見分ける — ``CONS`` (等間隔) は 2θ センチ度、``SLOG``/``RALF``
+    (対数・可変ビン) は TOF。÷100 してしまうと飛行時間が 2 桁縮んで**まったく別の d 範囲**に
+    なるが、ピークはどこかに立つので静かに間違う (実 POWGEN の ``.gsa`` は SLOG)。
 
     Raises:
         ValueError: 有効な数値データ行が 1 つも無いとき。
     """
     scale = _CENTIDEG_TO_DEG if not _fxye_is_tof(text) else 1.0
-    two_theta: list[float] = []
+    # 【名前は ``axis``】: TOF では 2θ ではなく飛行時間なので ``two_theta`` と呼ばない。
+    axis: list[float] = []
     intensity: list[float] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -206,15 +209,18 @@ def parse_fxye(text: str) -> tuple[np.ndarray, np.ndarray]:
         except ValueError:
             # タイトル行など非数値行は読み飛ばす
             continue
-        two_theta.append(x * scale)
+        axis.append(x * scale)
         intensity.append(y)
-    if not two_theta:
+    if not axis:
         raise ValueError("有効な FXYE データ行が見つかりません (X Y [ESD] の数値列が必要)。")
-    return np.asarray(two_theta, dtype=float), np.asarray(intensity, dtype=float)
+    return np.asarray(axis, dtype=float), np.asarray(intensity, dtype=float)
 
 
 def load_fxye(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
-    """GSAS FXYE ファイルを読み ``(two_theta[deg], intensity)`` を返す (``parse_fxye`` 参照)。🔵"""
+    """GSAS FXYE ファイルを読み ``(x, intensity)`` を返す (``parse_fxye`` 参照)。🔵
+
+    ``x`` は 2θ[度] または TOF[µs] — **どちらかは BANK 行の binning モードで決まる**。
+    """
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     return parse_fxye(text)
 

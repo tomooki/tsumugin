@@ -139,11 +139,14 @@ class PhaseHistogramTerms:
     preferred_orientation: "str | None" = None
     """選択配向マクロの行 (例 ``PO_Spherical_Harmonics(sh, 4)``)。"""
     peak_type: "str | None" = None
-    """ピーク形状マクロの行 (例 ``TCHZ_Peak_Type(...)``)。
+    """ピーク形状マクロの行 (例 ``TCHZ_Peak_Type(...)``)。**複数行でもよい**。
 
     **``str`` ブロックの中に置く**必要がある (実測: xdd 直下だと
     ``Cannot locate pk_type from gen_fit_obj`` で異常終了する)。ピーク形状は相と
     ヒストグラムの組に属する量なので、モデル上もここが正しい置き場所である。
+
+    TOF は幅パラメータの ``prm`` 宣言を伴うので**複数行**になる
+    (`instrument.tof_peak_type`)。レンダリング側が行ごとに字下げする。
     """
     extras: tuple[str, ...] = ()
     """そのまま str ブロックへ差し込む追加行。"""
@@ -610,11 +613,13 @@ class TopasDocument:
     ) -> list[str]:
         lines: list[str] = []
         if hist.is_tof:
-            # 【``TOF_XYE`` マクロを使わず展開形を書く】: マクロは計算格子 (``x_calculation_step``)
-            #   を**定数で**要求するが、TOF の SLOG ビンは幅が t に比例して変わるので単一の
-            #   定数が置けない。0 を渡すと ``x_calculation_step too small or not defined`` で
-            #   異常終了する。データ刻みに追従する ``Yobs_dx_at(Xo)`` を使う (lamno3.inp と同じ)。
+            # 【``TOF_XYE`` マクロを使わず展開形を書く】: マクロは計算格子
+            #   (``x_calculation_step``) を引数で受け取るが、こちらはデータから算出した値を
+            #   後段で自前に置きたい (マクロへ 0 を渡すと
+            #   ``x_calculation_step too small or not defined`` で異常終了する)。
             #   ``neutron_data`` と計数重みはマクロの中身をそのまま写す。
+            #   格子の値そのものについては `TopasHistogram.calculation_step` を参照
+            #   (**適応式は使えない** — 計算ピークがデータ範囲の外へ出ると同じエラーになる)。
             lines.append(f'xdd "{hist.data_path}" xye_format')
             lines.append(f"{_INDENT_HIST}neutron_data")
             lines.append(

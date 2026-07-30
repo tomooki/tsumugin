@@ -202,3 +202,101 @@ def test_availability_helper_is_consistent_with_the_module():
     else:
         with pytest.raises(TopasUnavailableError):
             TopasBackend()
+
+
+# ---------------- 相ごとの解放 (多相) ----------------
+
+
+def _document_for(free_params, n_phases=2):
+    """`_document` は純関数 (tc.exe 不要) — 生成される INP を直接見る。"""
+    import numpy as _np
+
+    backend = TopasBackend.__new__(TopasBackend)  # __init__ の可用性検査を迂回
+    backend.wavelength = 1.5406
+    phases = tuple(_phase(a=4.0 + i, ref=f"P{i}") for i in range(n_phases))
+    scale_free, cell_free = TopasBackend._recognized(frozenset(free_params), n_phases)
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        work = _Path(tmp)
+        grid = _np.arange(20.0, 30.0, 0.05)
+        from tsumugin.topas.instrument import write_xye
+
+        write_xye(work / "obs.xye", grid, _np.ones_like(grid))
+        doc = backend._document(
+            phases, work, cell_free=cell_free, scale_free=tuple(scale_free), max_cyc=5
+        )
+        return doc.render(), scale_free, cell_free
+
+
+def test_lattice_is_released_only_for_the_requested_phase():
+    """**相ごとの指定が潰れない**こと。
+
+    `free_params={"phase1.lattice.a"}` で相 0 の格子まで解放すると、要求していない相が
+    黙って動いて相 1 のフィットと相関する。しかも `_read_back` は要求分しか読み戻さないので
+    **TOPAS が実際に動かした値と結果が食い違う**。
+    """
+    text, _, cell_free = _document_for({param_name(1, "lattice.a")})
+    assert cell_free == {1}
+    assert "a !phase0_a" in text, "相 0 の格子が解放されている"
+    assert "a phase1_a" in text, "相 1 の格子が解放されていない"
+
+
+def test_n_params_counts_what_is_actually_free():
+    """**BIC 比較の一貫性**が壊れないこと (母数を過少申告しない)。
+
+    `n_params` が実際に解放した数と食い違うと、仮説間の BIC/AIC が意味を失う。
+    """
+    text, scale_free, cell_free = _document_for({param_name(1, "lattice.a")})
+    declared = 3 * len(cell_free) + len(scale_free)
+    # 生成された INP で実際に解放されている格子パラメータ数と一致すること。
+    released = sum(
+        1 for line in text.splitlines() for axis in ("a ", "b ", "c ")
+        if line.strip().startswith(axis) and not line.strip().startswith(f"{axis}!")
+        and "=" not in line
+    )
+    assert released == 3 * len(cell_free) == declared - len(scale_free)
+
+
+def test_scale_is_also_per_phase():
+    """スケールも同様に相ごと (既に集合で渡っているが回帰ガードとして固定する)。"""
+    text, _, _ = _document_for({param_name(0, "scale")})
+    assert "scale !P1_scale" in text or "scale !phase1_scale" in text
+
+
+# ---------------- 実 CIF (structure_ref) 非対応を黙らせない ----------------
+
+
+def test_structure_ref_is_refused_rather_than_silently_replaced():
+    """**実 CIF を渡されたら黙って簡約構造で代替しない**。
+
+    `GSASIIBackend` は `structure_ref` があれば実 CIF を読む (`gsasii.py` の実 CIF 分岐)。
+    TOPAS 版は簡約モデル (P m m m・Ni 1 原子) しか持たないので、同じ入力を受けて黙って
+    代替すると **③ から見て「実構造で判別した」ことになる**。実構造判別 (`discriminate`)
+    はまさにこの経路なので、捏造構造で走った結果が実データの結論として返る。
+
+    これが `TopasBackend` を ② に露出していない理由でもある (下の非露出宣言を参照)。
+    """
+    backend = TopasBackend.__new__(TopasBackend)  # tc.exe 不要 (入力検証だけを見る)
+    backend.wavelength = 1.5406
+    phase = PhaseInstance(
+        phase_ref="P", lattice=LatticeParams(4.0, 4.0, 4.0), scale=1.0,
+        structure_ref="some.cif",
+    )
+    with pytest.raises(NotImplementedError, match="structure_ref"):
+        backend.refine(
+            RefinementModel(
+                phases=(phase,), free_params=frozenset(),
+                two_theta=_grid(), intensity=np.ones_like(_grid()),
+            )
+        )
+    with pytest.raises(NotImplementedError, match="structure_ref"):
+        backend.simulate((phase,), _grid())
+
+
+def test_phases_without_structure_ref_are_accepted():
+    """回帰: 簡約モデルの相 (structure_ref なし) は従来どおり通ること。"""
+    backend = TopasBackend.__new__(TopasBackend)
+    backend.wavelength = 1.5406
+    backend._require_simplified_phases((_phase(),))  # 例外を出さない
