@@ -1,0 +1,401 @@
+"""TOPAS INP 文書のビルダ (M12 T2) — 純関数・TOPAS 非依存。
+
+`autorietveld.recipe` / `autorietveld.validity` と同じ立ち位置で、**tc.exe を起動せずに
+テストできる**層。ここで組んだ文書を `topas.driver` が書き出して実行する。
+
+**TOPAS のパラメータ意味論** (Tutorial INP から実証):
+
+===========================  ==============================
+書き方                        意味
+===========================  ==============================
+``9.18``                     固定 (無名)
+``@ 9.18``                   精密化 (無名)
+``lpa1 9.18``                精密化 (名前付き — 名前は既定で精密化対象)
+``!lpa1 9.18``               固定 (名前付き; 参照先にできる)
+``=lpa1;``                   他パラメータの参照 (式)
+``@ 9.18 min 9 max 9.3``     範囲付き
+===========================  ==============================
+
+**joint (複数ヒストグラム) の扱い**: TOPAS には GSAS の「1 相を N 本のヒストグラムが共有する」
+ネイティブ機構が無い。公式 Tutorial (``PDF Analysis/Joint Bragg-PDF Refinement/
+neutron_Si_corefinement.inp``) の idiom に従い、**構造パラメータ (格子・座標・占有率・beq) を
+トップレベル ``prm`` へ持ち上げ、各 ``xdd`` 内の ``str`` から ``=name;`` で参照する**。
+scale・背景・プロファイル・size/strain は**ヒストグラム固有**なので持ち上げない
+(GSAS の HAP = histogram-and-phase パラメータと同じ切り分け)。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field, replace
+from typing import Mapping, Sequence
+
+__all__ = [
+    "Param",
+    "PhaseHistogramTerms",
+    "TopasDocument",
+    "TopasHistogram",
+    "TopasPhase",
+    "TopasSite",
+    "render_param",
+]
+
+_INDENT_HIST = "   "
+_INDENT_PHASE = "      "
+
+
+def _fmt(value: float) -> str:
+    """浮動小数を決定論的に整形する (repr は Python の最短往復表現でプラットフォーム非依存)。"""
+    return repr(float(value))
+
+
+def _slug(text: str) -> str:
+    """TOPAS のパラメータ名に使える識別子へ落とす (英数字と _ のみ)。
+
+    **大小を潰さない**: 原子ラベルは大小で別物になり得る (``O1`` と ``o1``) ため、
+    小文字化すると別サイトのパラメータが同名に衝突して**黙って共有される**。
+    """
+    cleaned = re.sub(r"[^0-9A-Za-z_]+", "_", text).strip("_")
+    return cleaned or "p"
+
+
+@dataclass(frozen=True)
+class Param:
+    """TOPAS のパラメータ 1 個 (値 + 精密化フラグ + 名前 + 範囲)、または他パラメータへの参照。"""
+
+    value: float = 0.0
+    refine: bool = False
+    name: "str | None" = None
+    minimum: "float | None" = None
+    maximum: "float | None" = None
+    expression: "str | None" = None
+    """設定時は値でなく式としてレンダリングする (``=expr;``)。共有参照に使う。"""
+
+    @classmethod
+    def reference(cls, name: str) -> "Param":
+        """他パラメータ ``name`` を参照するパラメータ。"""
+        return cls(expression=name)
+
+    @property
+    def is_reference(self) -> bool:
+        return self.expression is not None
+
+    def with_updates(self, **kw: object) -> "Param":
+        return replace(self, **kw)  # type: ignore[arg-type]
+
+
+def render_param(param: Param) -> str:
+    """:class:`Param` を TOPAS の字面へ落とす。"""
+    if param.expression is not None:
+        return f"={param.expression};"
+    if param.name:
+        head = f"{param.name} {_fmt(param.value)}" if param.refine else (
+            f"!{param.name} {_fmt(param.value)}"
+        )
+    else:
+        head = f"@ {_fmt(param.value)}" if param.refine else _fmt(param.value)
+    if param.minimum is not None:
+        head += f" min {_fmt(param.minimum)}"
+    if param.maximum is not None:
+        head += f" max {_fmt(param.maximum)}"
+    return head
+
+
+@dataclass(frozen=True)
+class TopasSite:
+    """結晶学的サイト 1 つ (``site`` 行)。"""
+
+    label: str
+    element: str
+    x: Param
+    y: Param
+    z: Param
+    occupancy: Param = field(default_factory=lambda: Param(1.0))
+    beq: Param = field(default_factory=lambda: Param(1.0))
+    """等方性温度因子 B。**Uiso とは B = 8π²·Uiso の関係** (換算は topas.structure が担う)。"""
+
+    def with_updates(self, **kw: object) -> "TopasSite":
+        return replace(self, **kw)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class PhaseHistogramTerms:
+    """ヒストグラムと相の**組**に属する項 (GSAS の HAP に相当)。
+
+    scale / 結晶子サイズ / 微小歪みは装置とサンプルの組で決まるため、joint でも共有しない。
+    """
+
+    scale: "Param | None" = None
+    size_lorentzian: "Param | None" = None
+    strain_lorentzian: "Param | None" = None
+    preferred_orientation: "str | None" = None
+    """選択配向マクロの行 (例 ``PO_Spherical_Harmonics(sh, 4)``)。"""
+    extras: tuple[str, ...] = ()
+    """そのまま str ブロックへ差し込む追加行。"""
+
+    def with_updates(self, **kw: object) -> "PhaseHistogramTerms":
+        return replace(self, **kw)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class TopasPhase:
+    """相 1 つの構造 (``str`` ブロック)。ヒストグラム非依存の部分のみを持つ。"""
+
+    phase_name: str
+    space_group: str
+    cell: Mapping[str, Param]
+    sites: tuple[TopasSite, ...] = ()
+    occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
+    """占有率和 = 1 のサイト組 (混合占有)。1 変数 x と 1-x で表す。"""
+    beq_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    """beq を等値拘束するサイト組。"""
+    extras: tuple[str, ...] = ()
+
+    def with_updates(self, **kw: object) -> "TopasPhase":
+        return replace(self, **kw)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class TopasHistogram:
+    """観測ヒストグラム 1 本 (``xdd`` ブロック)。"""
+
+    data_path: str
+    preamble: tuple[str, ...] = ()
+    """放射・光学系のマクロ行 (``CuKa5(0.001)`` / ``LP_Factor(...)`` 等)。"""
+    background: "Param | None" = None
+    background_coeffs: int = 6
+    two_theta_limits: "tuple[float, float] | None" = None
+    excluded_regions: tuple[tuple[float, float], ...] = ()
+    weight: float = 1.0
+    is_neutron: bool = False
+    is_tof: bool = False
+    tof_calibration: "Mapping[str, float] | None" = None
+    """TOF の ``difc``/``difa``/``zero`` (GSAS の difC/difA/Zero と直写像)。"""
+    phase_terms: Mapping[str, PhaseHistogramTerms] = field(default_factory=dict)
+    """相名 → HAP 項。"""
+    extras: tuple[str, ...] = ()
+
+    def with_updates(self, **kw: object) -> "TopasHistogram":
+        return replace(self, **kw)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------- 共有 prm の計画
+
+
+def _shared_prm_plan(
+    phases: Sequence[TopasPhase], *, share: bool
+) -> "tuple[list[str], dict[tuple[str, str], str]]":
+    """joint 用に構造パラメータをトップレベル ``prm`` へ持ち上げる計画を立てる。
+
+    :returns: (prm 宣言行, (相名, キー) → prm 名)
+    ``share=False`` (単一ヒストグラム) なら何も持ち上げない — INP が読みやすくなるうえ、
+    参照の層が 1 枚減って TOPAS 側の式評価も減る。
+    """
+    lines: list[str] = []
+    mapping: dict[tuple[str, str], str] = {}
+    if not share:
+        return lines, mapping
+    for phase in phases:
+        stem = _slug(phase.phase_name)
+        for axis, param in phase.cell.items():
+            if param.is_reference:
+                continue
+            name = f"{stem}_{axis}"
+            mapping[(phase.phase_name, f"cell.{axis}")] = name
+            lines.append(f"prm {name} {_fmt(param.value)}")
+        for site in phase.sites:
+            for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
+                if param.is_reference:
+                    continue
+                name = f"{stem}_{_slug(site.label)}_{axis}"
+                mapping[(phase.phase_name, f"site.{site.label}.{axis}")] = name
+                lines.append(f"prm {name} {_fmt(param.value)}")
+    return lines, mapping
+
+
+def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tuple[str, str], str]]":
+    """占有率和 = 1 / beq 等値の共有 ``prm`` を計画する (単一ヒストグラムでも必要)。"""
+    lines: list[str] = []
+    mapping: dict[tuple[str, str], str] = {}
+    for phase in phases:
+        stem = _slug(phase.phase_name)
+        for gi, group in enumerate(phase.occupancy_sum_groups):
+            name = f"{stem}_occ_g{gi}"
+            seed = 1.0 / max(len(group), 1)
+            for site in phase.sites:
+                if site.label == group[0]:
+                    seed = site.occupancy.value
+                    break
+            # 【[0,1] 拘束】: 占有率は物理的に区間内。境界外への逸走を TOPAS 側で止める。
+            lines.append(f"prm {name} {_fmt(seed)} min 0 max 1")
+            for position, label in enumerate(group):
+                expr = name if position == 0 else f"1-{name}"
+                mapping[(phase.phase_name, f"occ.{label}")] = expr
+        for gi, group in enumerate(phase.beq_equiv_groups):
+            name = f"{stem}_beq_g{gi}"
+            seed = 1.0
+            for site in phase.sites:
+                if site.label == group[0]:
+                    seed = site.beq.value
+                    break
+            lines.append(f"prm {name} {_fmt(seed)}")
+            for label in group:
+                mapping[(phase.phase_name, f"beq.{label}")] = name
+    return lines, mapping
+
+
+# ---------------------------------------------------------------- 文書
+
+
+@dataclass(frozen=True)
+class TopasDocument:
+    """INP 文書全体。:meth:`render` が決定論的なテキストを返す。"""
+
+    histograms: tuple[TopasHistogram, ...]
+    phases: tuple[TopasPhase, ...]
+    max_iterations: int = 1000
+    do_errors: bool = True
+    results_path: "str | None" = None
+    """設定時、``out`` ブロックで r_wp/gof/r_exp と相分率を書き出す (決定論的パース対象)。"""
+    preamble: tuple[str, ...] = ()
+    """``iters`` の後に差し込む追加の制御行。"""
+
+    # ------------------------------------------------------------ 部品
+
+    def _header(self) -> list[str]:
+        # 【r_wp 等を裸で置く】: TOPAS は精密化後に **INP を .out へ書き戻す** 際、これらの
+        #   キーワードへ実測値を埋める (T0 実測)。コメントアウトすると値が得られない。
+        lines = [
+            "' generated by tsumugin (do not edit by hand)",
+            "r_p 0 r_wp 0 r_exp 0 gof 0",
+            "r_wp_dash 0 r_exp_dash 0",
+        ]
+        if self.do_errors:
+            lines.append("do_errors")
+        lines.append(f"iters {int(self.max_iterations)}")
+        lines.extend(self.preamble)
+        return lines
+
+    def _results_block(self) -> list[str]:
+        if not self.results_path:
+            return []
+        out: list[str] = [f'{_INDENT_HIST}out "{self.results_path}"']
+        for key in ("r_wp", "gof", "r_exp", "r_wp_dash"):
+            out.append(f'{_INDENT_HIST}Out(Get({key}), "{key}\\t%.8f\\n")')
+        return out
+
+    def _site_line(
+        self, phase: TopasPhase, site: TopasSite, shared: Mapping[tuple[str, str], str]
+    ) -> str:
+        def coord(axis: str, param: Param) -> str:
+            name = shared.get((phase.phase_name, f"site.{site.label}.{axis}"))
+            return render_param(Param.reference(name)) if name else render_param(param)
+
+        occ_expr = shared.get((phase.phase_name, f"occ.{site.label}"))
+        occ = render_param(Param.reference(occ_expr)) if occ_expr else render_param(site.occupancy)
+        beq_name = shared.get((phase.phase_name, f"beq.{site.label}"))
+        beq = render_param(Param.reference(beq_name)) if beq_name else render_param(site.beq)
+        return (
+            f"{_INDENT_PHASE}site {site.label}"
+            f" x {coord('x', site.x)} y {coord('y', site.y)} z {coord('z', site.z)}"
+            f" occ {site.element} {occ} beq {beq}"
+        )
+
+    def _str_block(
+        self,
+        phase: TopasPhase,
+        terms: PhaseHistogramTerms,
+        shared: Mapping[tuple[str, str], str],
+    ) -> list[str]:
+        lines = [f"{_INDENT_HIST}str"]
+        name = phase.phase_name
+        # 常に引用する (Tutorial INP の作法。空白や記号を含む相名でも壊れない)。
+        lines.append(f'{_INDENT_PHASE}phase_name "{name}"')
+        lines.append(f"{_INDENT_PHASE}space_group {phase.space_group}")
+        for axis, param in phase.cell.items():
+            prm = shared.get((name, f"cell.{axis}"))
+            value = render_param(Param.reference(prm)) if prm else render_param(param)
+            lines.append(f"{_INDENT_PHASE}{axis} {value}")
+        for site in phase.sites:
+            lines.append(self._site_line(phase, site, shared))
+        scale = terms.scale or Param(1e-4)
+        lines.append(f"{_INDENT_PHASE}scale {render_param(scale)}")
+        if terms.size_lorentzian is not None:
+            lines.append(f"{_INDENT_PHASE}CS_L(@, {_fmt(terms.size_lorentzian.value)})")
+        if terms.strain_lorentzian is not None:
+            lines.append(f"{_INDENT_PHASE}Strain_L(@, {_fmt(terms.strain_lorentzian.value)})")
+        if terms.preferred_orientation:
+            lines.append(f"{_INDENT_PHASE}{terms.preferred_orientation}")
+        # 【相分率】: MVW は質量/体積/**重量分率**を返す。Scale ではなく wt% であることが重要
+        #   (KMnFe operando の教訓: 相分率は Scale であって wt% でない — 取り違えると描像が変わる)。
+        wt_name = f"mvw_wt_{_slug(name)}"
+        lines.append(f"{_INDENT_PHASE}MVW(0, 0, {wt_name} 0)")
+        if self.results_path:
+            # 【値と esd を 1 行に】: 値側の書式に改行を入れると esd が次行へ落ちる (実測)。
+            #   1 レコード 1 行にしておくとパーサが行単位で完結する。
+            lines.append(
+                f'{_INDENT_PHASE}Out({wt_name}, "wt_frac\\t{name}\\t%.8f", "\\t%.8f\\n")'
+            )
+        lines.extend(f"{_INDENT_PHASE}{extra}" for extra in terms.extras)
+        lines.extend(f"{_INDENT_PHASE}{extra}" for extra in phase.extras)
+        return lines
+
+    def _histogram_block(
+        self, index: int, hist: TopasHistogram, shared: Mapping[tuple[str, str], str]
+    ) -> list[str]:
+        lines: list[str] = []
+        if hist.is_tof:
+            lines.append(f'TOF_XYE("{hist.data_path}", 0)')
+        else:
+            lines.append(f'xdd "{hist.data_path}"')
+        if hist.is_neutron:
+            lines.append(f"{_INDENT_HIST}neutron_data")
+        if hist.is_tof and hist.tof_calibration:
+            cal = hist.tof_calibration
+            lines.append(
+                f"{_INDENT_HIST}TOF_x_axis_calibration("
+                f"!difc_h{index}, {_fmt(cal.get('difc', 0.0))}, "
+                f"!difa_h{index}, {_fmt(cal.get('difa', 0.0))}, "
+                f"!t0_h{index}, {_fmt(cal.get('zero', 0.0))})"
+            )
+        lines.extend(f"{_INDENT_HIST}{line}" for line in hist.preamble)
+        if hist.weight != 1.0:
+            lines.append(f"{_INDENT_HIST}weighting = {_fmt(hist.weight)};")
+        if hist.two_theta_limits is not None:
+            low, high = hist.two_theta_limits
+            lines.append(f"{_INDENT_HIST}start_X {_fmt(low)}")
+            lines.append(f"{_INDENT_HIST}finish_X {_fmt(high)}")
+        for low, high in hist.excluded_regions:
+            lines.append(f"{_INDENT_HIST}exclude {_fmt(low)} {_fmt(high)}")
+        if hist.background is not None:
+            coeffs = " ".join(_fmt(hist.background.value) for _ in range(hist.background_coeffs))
+            prefix = "@ " if hist.background.refine else ""
+            lines.append(f"{_INDENT_HIST}bkg {prefix}{coeffs}")
+        lines.extend(f"{_INDENT_HIST}{extra}" for extra in hist.extras)
+        lines.extend(self._results_block())
+        for phase in self.phases:
+            lines.append("")
+            terms = hist.phase_terms.get(phase.phase_name, PhaseHistogramTerms())
+            lines.extend(self._str_block(phase, terms, shared))
+        return lines
+
+    # ------------------------------------------------------------ 公開 API
+
+    def render(self) -> str:
+        """INP テキストを決定論的に生成する。"""
+        share = len(self.histograms) > 1
+        shared_lines, shared = _shared_prm_plan(self.phases, share=share)
+        group_lines, group_map = _group_prm_plan(self.phases)
+        shared = {**shared, **group_map}
+        lines = self._header()
+        if shared_lines or group_lines:
+            lines.append("")
+            lines.extend(shared_lines)
+            lines.extend(group_lines)
+        for index, hist in enumerate(self.histograms):
+            lines.append("")
+            lines.extend(self._histogram_block(index, hist, shared))
+        return "\n".join(lines) + "\n"
+
+    def with_updates(self, **kw: object) -> "TopasDocument":
+        return replace(self, **kw)  # type: ignore[arg-type]
