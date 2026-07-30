@@ -328,5 +328,10 @@ is not endorsed by any of them.
 
 ## License
 
-**Not yet chosen.** Until a license file is added, no usage rights are granted. This needs to be
-resolved before the repository is made public.
+[BSD 3-Clause](LICENSE) — Copyright © 2026 Tomooki Hosaka.
+
+Note on optional dependencies: Tsumugin itself contains no copyleft code, and every optional backend
+is a lazy import that you install separately. One of them, `galvani` (BioLogic `.mpr` reader, in the
+`echem` extra), is **GPLv3**. Using it from your own installation is unaffected by this, but if you
+redistribute a *bundle* that includes it — for example a packaged desktop build — that bundle is
+subject to the GPL. The desktop sidecar therefore does not ship the `echem` extra.
