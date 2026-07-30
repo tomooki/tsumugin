@@ -1360,6 +1360,71 @@ def _apply_content_constraint(gpx, g2phases, g2hists, content_constraint) -> Non
             gpx.add_EqnConstr(0.0, variables, mults)
 
 
+def _apply_coord_jitter(
+    g2phases, jitter_ang: "Mapping[str, float]", seed: int, getcsxinel=None
+) -> int:
+    """原子座標に**対称性を壊さない**初期摂動を掛ける (マルチスタートの構造軸)。
+
+    Rietveld の局所解は主に**構造 (原子座標)** にあり、格子だけ振っても「格子のベイスンが
+    1 つ」しか言えない。ここが Issue #13 で「原子座標摂動は M-later」と書かれていた欠落である。
+
+    **対称性が自由な軸だけを動かす**。特殊位置の原子を動かすと空間群が壊れるので、
+    `GetCSxinel` の 3 状態 (`atomrows.free_index_from_site_symmetry`) を見て:
+
+    - ``0`` (対称拘束で固定) の軸は**触らない**
+    - 正値が他軸と一致する (結束) 軸は**代表軸だけ**動かす — 従属軸は GSAS の等値拘束が追随する
+
+    :param jitter_ang: 相名 → 変位の大きさ (**Å**)。分率にしないのは軸ごとに意味が変わるため
+        (a=5Å と c=20Å では分率 0.01 の実距離が 4 倍違う)
+    :param seed: 乱数種。同じ種なら何度実行してもビット同一 (NFR-102)
+    :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
+        呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
+    """
+    if not jitter_ang:
+        return 0
+    if getcsxinel is None:
+        try:
+            from GSASII import GSASIIspc as G2spc
+
+            getcsxinel = G2spc.GetCSxinel
+        except Exception:  # noqa: BLE001 — GSAS 無しは「動かさない」へ縮退 (fail open)
+            return 0
+    rng = np.random.default_rng(seed)
+    moved = 0
+    for ph in g2phases:
+        amp = jitter_ang.get(ph.name)
+        if not amp or not math.isfinite(float(amp)) or float(amp) <= 0.0:
+            continue
+        try:
+            atoms = ph.data["Atoms"]
+            ptrs = ph.data["General"]["AtomPtrs"]
+            cx, cs = int(ptrs[0]), int(ptrs[2])
+            cell = ph.get_cell()
+            lengths = (
+                float(cell["length_a"]), float(cell["length_b"]), float(cell["length_c"])
+            )
+        except Exception:  # noqa: BLE001 — 構造が読めない相はスキップ
+            continue
+        for row in atoms:
+            free = free_index_from_site_symmetry(getcsxinel, row[cs])
+            seen: set[int] = set()
+            for axis in range(3):
+                fid = free[axis]
+                if fid == 0 or fid in seen:
+                    # 0 = 対称固定 / 既出 = 結束軸の従属側 (代表軸だけ動かす)
+                    continue
+                seen.add(fid)
+                length = lengths[axis] if lengths[axis] > 0 else 1.0
+                # Å の変位を当該軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
+                delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
+                try:
+                    row[cx + axis] = float(row[cx + axis]) + delta
+                except Exception:  # noqa: BLE001 — 書けない行はスキップ
+                    continue
+                moved += 1
+    return moved
+
+
 def _apply_initial_occupancies(g2phases, occupancies: Mapping[str, Mapping[str, float]]) -> None:
     """原子占有率を initial_occupancies で初期化する (FR-318 fix/warm-start 用, T8)。🔵
 
@@ -1973,6 +2038,8 @@ def run_auto_rietveld(
     bond_restraints: dict[str, Sequence[Mapping[str, object]]] | None = None,
     auto_freeze_minor_cells: float | None = None,
     initial_occupancies: Mapping[str, Mapping[str, float]] | None = None,
+    initial_coord_jitter: Mapping[str, float] | None = None,
+    jitter_seed: int = 0,
     chem_comp_restraints: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     content_constraint: Mapping[str, float] | None = None,
     check_occupancy_uiso: bool = False,
@@ -2176,6 +2243,23 @@ def run_auto_rietveld(
         # --- 初期占有率シーダー (FR-318: fix モード/占有率 warm-start, 任意) ---
         if initial_occupancies:
             _apply_initial_occupancies(g2phases, initial_occupancies)
+
+        # --- 初期座標ジッタ (マルチスタートの構造軸, 任意) ---
+        #     対称性が自由な軸だけを動かす。動かせた軸数は ledger に残す — 0 なら
+        #     「この軸では試験していない」であって「摂動しても動かなかった」ではない。
+        n_jittered = 0
+        if initial_coord_jitter:
+            n_jittered = _apply_coord_jitter(
+                g2phases, initial_coord_jitter, jitter_seed
+            )
+            ledger.append(
+                "m7_coord_jitter",
+                {
+                    "seed": int(jitter_seed),
+                    "amplitude_ang": {k: float(v) for k, v in initial_coord_jitter.items()},
+                    "n_axes_moved": n_jittered,
+                },
+            )
 
         # --- 初期 Uiso 妥当性 + 占有率/Uiso 結合の事前警告 (FR-318 / REQ-318-005) ---
         # **FR-318 の入力 (シーダー/組成拘束/分率拘束/明示フラグ) があるときのみ**検査する。

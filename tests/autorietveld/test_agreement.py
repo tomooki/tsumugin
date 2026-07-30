@@ -417,3 +417,91 @@ def test_is_agreement_accepts_only_the_three_agree_verdicts(verdict):
 @pytest.mark.parametrize("verdict", [DISAGREE, UNDETERMINED, INCOMPARABLE, DIFFERENT])
 def test_is_agreement_rejects_everything_else(verdict):
     assert is_agreement(verdict) is False
+
+
+# ---------------------------------------------------------------------------
+# ★ 独立性の根拠 (basis) — マルチスタートでは判定が**逆を向く**
+# ---------------------------------------------------------------------------
+
+
+def _start_prov(label: str, result, start_key, *, n_obs: int = 5752) -> ProcedureProvenance:
+    return ProcedureProvenance(
+        label=label,
+        structure_paths={"p": "p.cif"},
+        trajectory=effective_trajectory(result),
+        stage_metrics=tuple((s.rwp, s.gof, s.n_params) for s in result.stage_results),
+        n_obs=n_obs,
+        start_key=start_key,
+    )
+
+
+def test_start_basis_does_not_call_identical_trajectories_duplicate():
+    """★マルチスタートでは軌跡が**構造的に同一**になる — DUPLICATE にしたら傍証は永久に出ない。
+
+    非トートロジー: 全開始点が同じ手順を走るので段ラベルも母数も一致する。手順比較の規則を
+    そのまま持ち込むと、正しく実装しても `n_independent_agreeing_pairs` が常に 0 になり、
+    「収束確認が一度も成功しない」という壊れ方をする (しかも Rwp には現れない)。
+    """
+    a, b = _result(), _result(rwp=9.81)
+    pa = _start_prov("s0", a, ("cell", 1.00))
+    pb = _start_prov("s1", b, ("cell", 1.01))
+    assert pa.trajectory == pb.trajectory, "前提: 同じ手順なので軌跡は同一"
+
+    proc = compare_results(a, b, pa, pb, basis="procedure")
+    start = compare_results(a, b, pa, pb, basis="start")
+
+    assert proc.independence.verdict == DUPLICATE
+    assert start.independence.verdict == "INDEPENDENT"
+
+
+def test_start_basis_treats_bit_identical_results_as_the_strongest_evidence():
+    """★別の初期値からビット同一の解へ来ることは**収束の最強の証拠**であって重複ではない。
+
+    非トートロジー: 手順比較では同じ意味 (ビット同一) が「同じ精密化が 2 度走った」証拠に
+    なるため DUPLICATE。同じ判定を持ち込むと最良の結果を捨てる。
+    """
+    a, b = _result(), _result()  # 完全に同じ解
+    pa = _start_prov("s0", a, ("cell", 0.99))
+    pb = _start_prov("s1", b, ("cell", 1.01))
+
+    pair = compare_results(a, b, pa, pb, basis="start")
+
+    assert pair.verdict == SAME_SOLUTION
+    assert pair.independence.identical_values is True
+    assert pair.independence.verdict == "INDEPENDENT"
+    assert any("最強の証拠" in r for r in pair.independence.reasons)
+
+
+def test_start_basis_still_rejects_the_same_starting_point_twice():
+    """【対照】``start`` が「常に独立」へ縮退していないこと — 同じ初期値の 2 回は重複。"""
+    a, b = _result(), _result()
+    same = ("cell", 1.00)
+    pair = compare_results(a, b, _start_prov("s0", a, same), _start_prov("s1", b, same),
+                           basis="start")
+    assert pair.independence.verdict == DUPLICATE
+
+
+def test_start_basis_counts_distinct_starting_points_not_trajectories():
+    """★「何本の別の実験を走らせたか」の数え方もモードで変わる。"""
+    results = [_result(), _result(rwp=9.81), _result(rwp=9.82)]
+    provs = [
+        _start_prov("s0", results[0], ("cell", 0.99)),
+        _start_prov("s1", results[1], ("cell", 1.00)),
+        _start_prov("s2", results[2], ("cell", 1.01)),
+    ]
+    rep = cluster_agreement_basins(results, provs, basis="start")
+
+    assert rep.n_distinct_trajectories == 3, "初期値が 3 通り (軌跡は 1 通りしかない)"
+    assert rep.is_corroborated is True
+    assert rep.corroboration_reason == "corroborated"
+
+    # 同じ入力を procedure 基準で見ると、軌跡が 1 通りなので傍証にならない。
+    proc = cluster_agreement_basins(results, provs, basis="procedure")
+    assert proc.is_corroborated is False
+    assert proc.corroboration_reason == "all_trajectories_duplicate"
+
+
+def test_unknown_independence_basis_is_rejected():
+    a, b = _result(), _result()
+    with pytest.raises(ValueError, match="basis"):
+        compare_results(a, b, _prov("A", a), _prov("B", b), basis="bogus")

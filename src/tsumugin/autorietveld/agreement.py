@@ -50,6 +50,7 @@ __all__ = [
     "PairAgreement",
     "ParameterAgreement",
     "ProcedureIndependence",
+    "INDEPENDENCE_BASES",
     "ProcedureProvenance",
     "cluster_agreement_basins",
     "compare_results",
@@ -89,6 +90,16 @@ DIFFERENT = "DIFFERENT"
 
 #: 独立性の判定。
 INDEPENDENT, WEAK, DUPLICATE = "INDEPENDENT", "WEAK", "DUPLICATE"
+
+#: **何がこの 2 つを別の実験にしているか** — 用途で違うので明示する。
+#:
+#: - ``"procedure"`` (既定): *手順*が違うことが独立性の根拠。同じ道を歩いた 2 案の一致は
+#:   情報量ゼロなので、実効軌跡の同一とビット同一を DUPLICATE にする。
+#: - ``"start"``: *初期値*が違うことが根拠 (マルチスタート)。全開始点が同じ手順を走るので
+#:   軌跡は**構造的に同一**になり、``procedure`` のまま使うと**傍証が永久に成立しない**。
+#:   さらに別の初期値からビット同一の解へ来ることは収束の**最強の証拠**であって
+#:   「情報量ゼロ」ではない。よってこのモードでは軌跡もビット同一も DUPLICATE にしない。
+INDEPENDENCE_BASES = ("procedure", "start")
 
 
 def is_agreement(verdict: str) -> bool:
@@ -144,6 +155,9 @@ class ProcedureProvenance:
     stage_metrics: tuple[tuple[float, float, int], ...] = ()
     n_obs: int = 0
     frozen_parameters: tuple[str, ...] = ()
+    # 【末尾追加】: この実行に適用した**初期値摂動** (マルチスタートの開始点キー)。
+    #   ``basis="start"`` のときの独立性はこれが違うことで決まる。空 = 無摂動 (基準点)。
+    start_key: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -593,6 +607,7 @@ def _independence(
     pb: ProcedureProvenance,
     items: Sequence[ParameterAgreement],
     tol: AgreementTolerances,
+    basis: str = "procedure",
 ) -> ProcedureIndependence:
     reasons: list[str] = []
     # (a) ビット同一 — **許容差ではなく ``==``**。30 個超の float が偶然一致することはない。
@@ -608,6 +623,24 @@ def _independence(
     union = labels_a | labels_b
     jaccard = len(labels_a & labels_b) / len(union) if union else 1.0
     same_obs = pa.n_obs == pb.n_obs
+    if basis == "start":
+        # 【初期値が違えば独立】: 軌跡の同一もビット同一も DUPLICATE にしない (定数の docstring)。
+        #   独立でないのは「同じ初期値から 2 回走った」場合だけ。
+        same_start = pa.start_key == pb.start_key
+        if same_start:
+            reasons.append("初期値摂動が同一 (同じ開始点から 2 度走ったのと同じ)")
+        if identical_values:
+            reasons.append(
+                "別の初期値からビット同一の解へ収束した (収束の最強の証拠であって重複ではない)"
+            )
+        return ProcedureIndependence(
+            verdict=DUPLICATE if same_start else INDEPENDENT,
+            identical_values=identical_values,
+            identical_trajectory=identical_traj,
+            label_jaccard=jaccard,
+            same_observation_set=same_obs,
+            reasons=tuple(reasons),
+        )
     if identical_values:
         reasons.append("全パラメータと段指標がビット同一 (同じ精密化が 2 度走ったのと同じ)")
     if identical_traj:
@@ -651,11 +684,19 @@ def compare_results(
     tolerances: "AgreementTolerances | None" = None,
     index_a: int = 0,
     index_b: int = 1,
+    basis: str = "procedure",
 ) -> PairAgreement:
     """2 つの結果が同じ解に収束したかを判定する。
 
     ``provenance_*`` は**必須**である (docstring 冒頭の理由)。
+
+    :param basis: 独立性の根拠 (`INDEPENDENCE_BASES`)。マルチスタートは ``"start"``
+        を渡さないと**傍証が永久に成立しない** (全開始点が同じ手順を走るため)
     """
+    if basis not in INDEPENDENCE_BASES:
+        raise ValueError(
+            f"basis は {list(INDEPENDENCE_BASES)} のいずれか: {basis!r}"
+        )
     tol = tolerances or AgreementTolerances()
     warnings: list[str] = []
 
@@ -692,7 +733,9 @@ def compare_results(
     }
     classes = tuple(_class_verdict(by_class[c], c) for c in PARAM_CLASSES)
     all_items = [it for c in PARAM_CLASSES for it in by_class[c]]
-    independence = _independence(a, b, provenance_a, provenance_b, all_items, tol)
+    independence = _independence(
+        a, b, provenance_a, provenance_b, all_items, tol, basis=basis
+    )
 
     if incomparable_structure:
         verdict = INCOMPARABLE
@@ -748,6 +791,7 @@ def cluster_agreement_basins(
     provenances: Sequence[ProcedureProvenance],
     *,
     tolerances: "AgreementTolerances | None" = None,
+    basis: str = "procedure",
 ) -> CorroborationReport:
     """N 手順を全対比較し、ベイスンへまとめて傍証を判定する。
 
@@ -772,7 +816,7 @@ def cluster_agreement_basins(
             i, j = comparable[ai], comparable[bi]
             pair = compare_results(
                 results[i], results[j], provenances[i], provenances[j],  # type: ignore[arg-type]
-                tolerances=tol, index_a=i, index_b=j,
+                tolerances=tol, index_a=i, index_b=j, basis=basis,
             )
             pairs.append(pair)
             if pair.verdict in (SAME_SOLUTION, SAME_ON_SHARED_SUBSET):
@@ -802,7 +846,11 @@ def cluster_agreement_basins(
             )
         )
 
-    distinct = len({provenances[i].trajectory for i in comparable})
+    # 【何本の"別の実験"を走らせたか】: 根拠がモードで違うので数える対象も変える。
+    if basis == "start":
+        distinct = len({provenances[i].start_key for i in comparable})
+    else:
+        distinct = len({provenances[i].trajectory for i in comparable})
     independent_agreeing = sum(
         1
         for p in pairs
@@ -813,9 +861,10 @@ def cluster_agreement_basins(
 
     warnings: list[str] = []
     if distinct < len(comparable):
+        what = "初期値" if basis == "start" else "実効経路"
         warnings.append(
-            f"{len(comparable)} 手順を比較したが実効経路は {distinct} 通りしかない "
-            "(重複した手順の一致は傍証にならない)"
+            f"{len(comparable)} 件を比較したが{what}は {distinct} 通りしかない "
+            f"(重複した{what}どうしの一致は傍証にならない)"
         )
     if n_diverged:
         warnings.append(f"{n_diverged} 手順が発散/未実行のため比較対象外")
