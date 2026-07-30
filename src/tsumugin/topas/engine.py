@@ -80,7 +80,22 @@ def _build_document(
         converted = histogram_to_topas(
             hist, workdir=workdir, index=i, background_coeffs=background_coeffs
         )
-        if not hist.radiation.is_tof:
+        if hist.radiation.is_tof:
+            # TOF も**相ごと**にピーク形状を持つ (幅が d 依存なので相の微細構造で変わる)。
+            from .instrument import read_instrument, tof_peak_type
+
+            difc = read_instrument(hist.instrument_path).difc or 0.0
+            converted = converted.with_updates(
+                phase_terms={
+                    phase.phase_name: PhaseHistogramTerms(
+                        peak_type=tof_peak_type(
+                            i, difc=difc, phase_key=_slug(phase.phase_name)
+                        )
+                    )
+                    for phase in topas_phases
+                }
+            )
+        else:
             # ピーク形状は**相ごと**に str ブロックへ置く (xdd 直下では TOPAS が解決できない)。
             # 名前も相ごとに分ける — TOPAS のパラメータ名は大域なので、多相で同名を複数の
             # str ブロックへ宣言すると衝突する (全相が 1 つの形状を共有してしまう)。
@@ -491,7 +506,10 @@ def _validity(
         # `check_validity` は相名→**値の並び**を取る (ラベルではなく添字で報告する既存契約)。
         uiso={ph: list(vals.values()) for ph, vals in atom_uiso.items()},
         occupancies={ph: list(vals.values()) for ph, vals in atom_occupancy.items()},
-        phase_fractions=dict(weight_fractions) or None,
+        # 【並びで渡す】: `check_validity` は相分率を**値の列**で取る。dict を渡すと
+        #   ``sum()`` がキー (相名) を足そうとして TypeError になる。単相では和=1 検査が
+        #   たまたま通り、**多相で初めて落ちる** (T4 NAC+CaF2 で露見)。
+        phase_fractions=list(weight_fractions.values()) or None,
         converged=converged,
     )
     if extra_warnings:

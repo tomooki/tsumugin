@@ -323,3 +323,21 @@ def test_per_histogram_rwp_is_reported():
     """総合値だけでなく**ヒストグラムごと**の r_wp も残す (どちらが悪いか分からないと直せない)。"""
     result = eng._per_histogram_rwp(_JOINT_RESULTS)
     assert result == {0: pytest.approx(8.63512963)}
+
+
+def test_validity_receives_phase_fractions_as_a_sequence():
+    """**`check_validity` は相分率を「値の並び」で取る** — dict を渡すと和がキー文字列になる。
+
+    単相では和=1 検査が (要素 1 つなので) たまたま通り、**多相で初めて TypeError になる**。
+    T4 (NAC+CaF2) を回して露見した。
+    """
+    report = eng._validity(
+        refined_cells={"A": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+        reference_cells={},
+        atom_uiso={"A": {"X": 0.01}},
+        atom_occupancy={"A": {"X": 1.0}},
+        weight_fractions={"A": 60.0, "B": 40.0},
+        converged=True,
+    )
+    assert isinstance(report.passed, bool)
+    assert any("fraction" in name or "分率" in note for name, _, note in report.checks)

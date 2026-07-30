@@ -70,7 +70,7 @@ def _apply(flags: dict, doc: TopasDocument | None = None) -> TopasDocument:
 # ---------------- 未対応フラグ (最重要) ----------------
 
 
-@pytest.mark.parametrize("flag", ["tof_profile", "hydrostatic_strain"])
+@pytest.mark.parametrize("flag", ["hydrostatic_strain"])
 def test_unsupported_flags_raise_instead_of_being_ignored(flag):
     """**黙って無視しない**。無視すると解放されていない段が完走する (無言 no-op 病理)。"""
     with pytest.raises(UnsupportedStageFlagError, match=flag):
@@ -79,7 +79,7 @@ def test_unsupported_flags_raise_instead_of_being_ignored(flag):
 
 def test_error_names_the_stage_so_it_can_be_located():
     with pytest.raises(UnsupportedStageFlagError, match="S9"):
-        apply_stage(_doc(), RefinementStage(label="S9", flags={"tof_profile": True}))
+        apply_stage(_doc(), RefinementStage(label="S9", flags={"hydrostatic_strain": True}))
 
 
 def test_supported_flag_set_matches_what_the_recipe_can_emit():
@@ -323,3 +323,43 @@ def test_absorption_is_refused_for_bragg_brentano():
     hist = _hist(is_bragg_brentano=True)
     with pytest.raises(UnsupportedStageFlagError, match="absorption"):
         _apply({"absorption": True}, _doc(hist=hist))
+
+
+# ---------------- TOF プロファイル (#173 の 3/4, #174) ----------------
+
+
+def _tof_terms():
+    return PhaseHistogramTerms(
+        peak_type=(
+            "prm !tofw10_P 31.6 min 0.0001 max = 2 Val + 1;\n"
+            "prm !tofw20_P 0.0001 min 0.0001 max = 2 Val + 1;\n"
+            "peak_type pv pv_lor !tofl0_P 0.1 "
+            "pv_fwhm = tofw10_P D_spacing + tofw20_P D_spacing^2;"
+        )
+    )
+
+
+def test_tof_profile_releases_the_d_dependent_widths():
+    """GSAS の ``sig-1``/``sig-2`` に相当する d 依存幅を解放する。
+
+    TOF の装置プロファイルは較正済みなので**既定レシピには載せない** (GSAS 経路 T4 と同じ
+    教訓)。近似的な instprm を実測へ寄せたいときの opt-in 段。
+    """
+    hist = _hist(is_tof=True, phase_terms={"P": _tof_terms()})
+    out = _apply({"tof_profile": True}, _doc(hist=hist))
+    line = out.histograms[0].phase_terms["P"].peak_type
+    assert "prm tofw10_P" in line and "prm tofw20_P" in line
+    assert "!tofl0_P" in line  # ローレンツ成分は別扱い (解放しない)
+
+
+def test_tof_profile_leaves_cw_histograms_alone():
+    """CW ヒストグラムに TOF の解放を当てない (混在 joint でありうる)。"""
+    out = _apply({"tof_profile": True})
+    assert out.histograms[0].phase_terms == _doc().histograms[0].phase_terms
+
+
+def test_freeze_others_refreezes_the_tof_widths():
+    hist = _hist(is_tof=True, phase_terms={"P": _tof_terms()})
+    released = _apply({"tof_profile": True}, _doc(hist=hist))
+    frozen = apply_stage(released, RefinementStage(label="S", flags={"freeze_others": True}))
+    assert "prm !tofw10_P" in frozen.histograms[0].phase_terms["P"].peak_type

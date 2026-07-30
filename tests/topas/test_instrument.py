@@ -415,3 +415,94 @@ def test_xray_keeps_the_polarised_lp_factor(tmp_path):
     )
     joined = "\n".join(histogram_to_topas(spec, workdir=tmp_path).preamble)
     assert "LP_Factor(26.4)" in joined and "Lorentz_Factor" not in joined
+
+
+# ---------------- TOF (#174) ----------------
+
+
+def _tof_spec(tmp_path):
+    prm = tmp_path / "t.instprm"
+    prm.write_text(_INSTPRM_TOF, encoding="utf-8")
+    src = tmp_path / "t.xye"
+    src.write_text("\n".join(f"{20000 + 10 * i}.0 {100 + i} 1.0" for i in range(50)), "utf-8")
+    return HistogramSpec(
+        data_path=str(src), instrument_path=str(prm),
+        radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER, data_format="XYE",
+    )
+
+
+def test_tof_gets_the_d_fourth_lorentz_factor(tmp_path):
+    """**TOF の Lorentz 因子は ``d⁴``**。CW の 1/(sin²θcosθ) とは別式。
+
+    固定検出器角なので sinθ は定数に吸収され、残るのが ``D_spacing^4``。落とすと長 d 側の
+    強度が系統的に足りなくなる (CW 中性子で Lorentz を落としていたのと同じ病理)。
+    TOPAS Tutorial (Tof Neutron Data/ZrW2O8.inp) が同じ式を書いている。
+    """
+    hist = histogram_to_topas(_tof_spec(tmp_path), workdir=tmp_path)
+    joined = "\n".join(hist.preamble)
+    assert "scale_pks = D_spacing^4;" in joined
+    assert "Lorentz_Factor" not in joined and "LP_Factor" not in joined
+
+
+def test_tof_declares_a_flat_emission_profile(tmp_path):
+    """白色ビームなので単色の ``lam`` ではなく ``TOF_LAM``。"""
+    assert any("TOF_LAM" in x for x in histogram_to_topas(_tof_spec(tmp_path), workdir=tmp_path).preamble)
+
+
+def test_tof_peak_width_is_seeded_from_a_relative_resolution(tmp_path):
+    """初期ピーク幅は **Δd/d × difC** で置く。
+
+    GSAS の sig-1/sig-2 は**分散**の d² / d⁴ 係数、TOPAS は **FWHM** の d / d² 係数で
+    関数形が違う (√の中の和 対 和) 上、実 POWGEN の sig-1 は**負**なので平方根が取れない。
+    素直な写像が存在しないので、物理的に意味のある量 (相対分解能) から置き直す。
+    """
+    from tsumugin.topas.instrument import TOF_RELATIVE_RESOLUTION, tof_peak_type
+
+    text = tof_peak_type(0, difc=22600.25, phase_key="NAC")
+    assert "peak_type pv" in text and "D_spacing^2" in text
+    assert f"{22600.25 * TOF_RELATIVE_RESOLUTION!r}" in text
+    assert "!tofw10_NAC" in text and "!tofw20_NAC" in text  # 既定は凍結
+
+
+def test_tof_peak_width_names_are_unique_per_phase(tmp_path):
+    from tsumugin.topas.instrument import tof_peak_type
+
+    assert tof_peak_type(0, difc=1.0, phase_key="a") != tof_peak_type(0, difc=1.0, phase_key="b")
+
+
+def test_tof_calculation_step_is_the_minimum_bin_width(tmp_path):
+    """**TOF の計算格子は定数**でなければならない。
+
+    ``x_calculation_step = Yobs_dx_at(Xo);`` のような適応式は、計算ピークがデータ範囲の外へ
+    出た瞬間に ``x_calculation_step too small or not defined`` で異常終了する (実測: 実
+    POWGEN の 3 本目)。SLOG ビンは幅が t に比例するので、**最小**幅を採る — 中央値だと
+    FWHM あたり 1 点しか置けず形状が粗くなる。
+    """
+    prm = tmp_path / "t.instprm"
+    prm.write_text(_INSTPRM_TOF, encoding="utf-8")
+    src = tmp_path / "t.xye"
+    # 3, 5, 9 µs と広がるビン (SLOG を模す)。
+    src.write_text("20000.0 1 1\n20003.0 1 1\n20008.0 1 1\n20017.0 1 1\n", "utf-8")
+    spec = HistogramSpec(
+        data_path=str(src), instrument_path=str(prm),
+        radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER, data_format="XYE",
+    )
+    assert histogram_to_topas(spec, workdir=tmp_path).calculation_step == pytest.approx(3.0)
+
+
+def test_synchrotron_uses_the_lorentz_factor_only(tmp_path):
+    """**放射光に管球用の偏光項を当てない**。
+
+    散乱面内でほぼ完全偏光しているので偏光因子は ~1。topas.inc の
+    ``LP_Factor_Synchrotron_Simple`` は実体が ``Lorentz_Factor`` だけである。
+    ``LP_Factor(26.4)`` (グラファイトモノクロメータ) を当てると強度の 2θ 依存が系統的に狂う。
+    """
+    prm = tmp_path / "i.instprm"
+    prm.write_text(_INSTPRM_XRAY, encoding="utf-8")
+    spec = HistogramSpec(
+        data_path=str(_xye_source(tmp_path)), instrument_path=str(prm),
+        radiation=Radiation.XRAY_SYNCHROTRON, geometry=Geometry.DEBYE_SCHERRER,
+        data_format="XYE",
+    )
+    joined = "\n".join(histogram_to_topas(spec, workdir=tmp_path).preamble)
+    assert "Lorentz_Factor" in joined and "LP_Factor(" not in joined

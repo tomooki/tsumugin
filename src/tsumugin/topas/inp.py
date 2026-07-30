@@ -212,6 +212,14 @@ class TopasHistogram:
     is_tof: bool = False
     is_bragg_brentano: bool = False
     """反射光学系か。円筒吸収補正を当ててよいのは**平板でない**試料だけ。"""
+    calculation_step: float = 1.0
+    """計算格子 (x 軸の単位: CW は度、TOF は µs)。**必ず明示する**。
+
+    TOPAS の既定は ``x_calculation_step too small or not defined`` で異常終了することがある
+    (実測: 11BM 放射光の 0.001° 刻みと実 POWGEN TOF の双方)。``Yobs_dx_at(Xo)`` のような
+    適応式も、計算ピークがデータ範囲の外へ出た瞬間に同じエラーになるので使えない。
+    データの最小ビン幅を使う (`instrument.histogram_to_topas`)。
+    """
     tof_calibration: "Mapping[str, float] | None" = None
     """TOF の ``difc``/``difa``/``zero`` (GSAS の difC/difA/Zero と直写像)。"""
     profile_seed: "Mapping[str, float] | None" = None
@@ -479,7 +487,10 @@ class TopasDocument:
             lines.append(self._site_line(phase, site, shared))
         if terms.peak_type:
             # ピーク形状は str ブロック内でなければ TOPAS が解決できない (実測)。
-            lines.append(f"{_INDENT_PHASE}{terms.peak_type}")
+            # TOF は幅パラメータの宣言を伴う複数行になるので改行を許す。
+            lines.extend(
+                f"{_INDENT_PHASE}{part}" for part in terms.peak_type.splitlines() if part
+            )
         scale = terms.scale or Param(1e-4)
         scale_name = f"{_slug(name)}_scale_h{index}"
         if self.results_path and not scale.name:
@@ -599,18 +610,37 @@ class TopasDocument:
     ) -> list[str]:
         lines: list[str] = []
         if hist.is_tof:
-            lines.append(f'TOF_XYE("{hist.data_path}", 0)')
+            # 【``TOF_XYE`` マクロを使わず展開形を書く】: マクロは計算格子 (``x_calculation_step``)
+            #   を**定数で**要求するが、TOF の SLOG ビンは幅が t に比例して変わるので単一の
+            #   定数が置けない。0 を渡すと ``x_calculation_step too small or not defined`` で
+            #   異常終了する。データ刻みに追従する ``Yobs_dx_at(Xo)`` を使う (lamno3.inp と同じ)。
+            #   ``neutron_data`` と計数重みはマクロの中身をそのまま写す。
+            lines.append(f'xdd "{hist.data_path}" xye_format')
+            lines.append(f"{_INDENT_HIST}neutron_data")
+            lines.append(
+                f"{_INDENT_HIST}weighting = If(SigmaYobs < 1, 1, 1/SigmaYobs^2);"
+            )
+            lines.append(
+                f"{_INDENT_HIST}x_calculation_step {_fmt(hist.calculation_step)}"
+            )
         else:
             lines.append(f'xdd "{hist.data_path}"')
-        if hist.is_neutron:
-            lines.append(f"{_INDENT_HIST}neutron_data")
+            lines.append(
+                f"{_INDENT_HIST}x_calculation_step {_fmt(hist.calculation_step)}"
+            )
+            if hist.is_neutron:
+                lines.append(f"{_INDENT_HIST}neutron_data")
         if hist.is_tof and hist.tof_calibration:
             cal = hist.tof_calibration
+            # 【引数順は (t0, t1, t2) = (Zero, difC, difA)】: マクロの実体は
+            #   ``pk_xo = t0 + t1·d + t2·d²``。取り違えると difC が定数項・difA が d の係数に
+            #   入り**ピーク位置がまったく別の d 依存になる**。ピークは「どこかに立つ」ので
+            #   tc.exe は正常終了し、Rwp だけが悪い状態で完走する。
             lines.append(
                 f"{_INDENT_HIST}TOF_x_axis_calibration("
+                f"!t0_h{index}, {_fmt(cal.get('zero', 0.0))}, "
                 f"!difc_h{index}, {_fmt(cal.get('difc', 0.0))}, "
-                f"!difa_h{index}, {_fmt(cal.get('difa', 0.0))}, "
-                f"!t0_h{index}, {_fmt(cal.get('zero', 0.0))})"
+                f"!difa_h{index}, {_fmt(cal.get('difa', 0.0))})"
             )
         lines.extend(f"{_INDENT_HIST}{line}" for line in hist.preamble)
         if hist.weight != 1.0:

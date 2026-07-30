@@ -55,12 +55,16 @@ SUPPORTED_FLAGS: frozenset[str] = frozenset(
         "phase_fraction_sum",
         "preferred_orientation",
         "absorption",
+        "tof_profile",
         "freeze_others",
     }
 )
-"""現在翻訳できるフラグ。残る ``tof_profile`` / ``hydrostatic_strain`` は実 TOF /
-マルチヒストグラム実データで検算できる段 (#174) と併せて追加する — 実行して確かめられない
-翻訳表は書かない (言語仕様の正が暗号化 PDF でなく実行結果しかないため)。"""
+"""現在翻訳できるフラグ。残る ``hydrostatic_strain`` (ヒストグラム間の温度差を吸収する
+per-xdd の格子オフセット) は、それを検算できる実データが手元に無いので入れていない —
+実行して確かめられない翻訳表は書かない (言語仕様の正が暗号化 PDF でなく実行結果しかないため)。"""
+
+#: TOF のピーク幅パラメータ接頭辞 (`instrument.tof_peak_type` が宣言する名前と対)。
+_TOF_WIDTH_NAMES = ("tofw1", "tofw2")
 
 #: 球面調和の既定次数 (GSAS 側 `engine._apply_stage` の `Pref.Ori.` 既定と揃える)。
 _PO_DEFAULT_ORDER = 4
@@ -121,6 +125,28 @@ def _with_terms(
     merged = dict(hist.phase_terms)
     merged[phase_name] = terms
     return hist.with_updates(phase_terms=merged)
+
+
+def _toggle_tof_widths(hist: TopasHistogram, enable: bool) -> TopasHistogram:
+    """TOF ピーク幅 (``prm !tofw1…`` / ``!tofw2…``) の ``!`` を付け外しする。
+
+    **宣言行だけを見る** — 同じ名前は ``pv_fwhm = tofw1… D_spacing + …`` の参照側にも
+    現れるので、行全体を置換すると式が ``!tofw1…`` に化けて INP が壊れる (ゼロ点と同型)。
+    """
+    terms = dict(hist.phase_terms)
+    for phase_name, term in terms.items():
+        if not term.peak_type:
+            continue
+        lines = []
+        for line in term.peak_type.splitlines():
+            for name in _TOF_WIDTH_NAMES:
+                if enable and line.startswith(f"prm !{name}"):
+                    line = line.replace(f"prm !{name}", f"prm {name}", 1)
+                elif not enable and line.startswith(f"prm {name}"):
+                    line = line.replace(f"prm {name}", f"prm !{name}", 1)
+            lines.append(line)
+        terms[phase_name] = term.with_updates(peak_type="\n".join(lines))
+    return hist.with_updates(phase_terms=terms)
 
 
 def _toggle_profile_names(hist: TopasHistogram, keys: tuple[str, ...], enable: bool
@@ -191,6 +217,7 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
         # 球面調和は**宣言そのものが解放**なので、凍結は行を落とすことで表す
         # (`!` を付ける先が無い — 係数は TOPAS が自動生成する)。
         histograms = [_drop_phase_extras(h, "PO_Spherical_Harmonics") for h in histograms]
+        histograms = [_toggle_tof_widths(h, False) for h in histograms]
 
     if "background" in flags:
         spec = flags["background"]
@@ -261,6 +288,14 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
             if not any("Simple_Axial_Model" in line for line in h.preamble)
             else h
             for h in histograms
+        ]
+
+    if flags.get("tof_profile"):
+        # TOF の d 依存幅 (GSAS の sig-1/sig-2 相当)。装置プロファイルは較正済みなので
+        # 既定レシピには載せず、近似 instprm を実測へ寄せたいときの opt-in 段にする
+        # (GSAS 経路 T4 と同じ教訓)。CW ヒストグラムには当てない (混在 joint がありうる)。
+        histograms = [
+            _toggle_tof_widths(h, True) if h.is_tof else h for h in histograms
         ]
 
     if "preferred_orientation" in flags:

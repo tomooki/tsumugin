@@ -56,11 +56,25 @@ __all__ = [
     "GSAS_SIGMA_TO_TCHZ",
     "ZERO_POINT_LIMIT_DEG",
     "InstrumentSpec",
+    "TOF_RELATIVE_RESOLUTION",
     "gsas_cw_profile_to_tchz",
     "histogram_to_topas",
     "read_instrument",
+    "tof_peak_type",
     "write_xye",
 ]
+
+TOF_RELATIVE_RESOLUTION: float = 1.4e-3
+"""TOF の初期ピーク幅を置くための相対分解能 Δd/d。
+
+GSAS の ``sig-1``/``sig-2`` は**分散**の d²/d⁴ 係数、TOPAS は **FWHM** の d/d² 係数で
+**関数形が違う** (√の中の和 対 和)。加えて実 POWGEN の ``sig-1`` は**負** (-167.4) なので
+平方根が取れず、素直な写像が存在しない。そこで物理的に意味のある量から置き直す:
+``FWHM[µs] ≈ (Δd/d)·difC·d`` なので d の係数が ``(Δd/d)·difC`` になる。
+
+0.14% は実 POWGEN の GSAS 係数から d≈1Å で復元した値 (FWHM 30.7 µs / difC 22600)。
+以降は ``tof_profile`` 段が実測へ寄せる。
+"""
 
 GSAS_SIGMA_TO_TCHZ: float = 8.0 * math.log(2.0) / 1.0e4
 """GSAS の U,V,W (センチ度² の**分散**係数) → TOPAS の u,v,w (度² の **FWHM²** 係数)。
@@ -311,8 +325,20 @@ def histogram_to_topas(
     write_xye(work / data_name, x, y)
 
     preamble = list(_emission_lines(instrument, spec.radiation))
+    if instrument.is_tof:
+        # 【TOF の Lorentz 因子は d⁴】: 固定検出器角なので sinθ は定数に吸収され、残るのが
+        #   ``D_spacing^4``。落とすと長 d 側の強度が系統的に足りなくなる (CW 中性子で
+        #   Lorentz を落としていたのと同じ病理)。Tutorial の ZrW2O8.inp と同じ式。
+        preamble.append("TOF_LAM(0.001)")
+        preamble.append("scale_pks = D_spacing^4;")
     if not instrument.is_tof:
-        if spec.radiation.is_neutron:
+        if spec.radiation is Radiation.XRAY_SYNCHROTRON:
+            # 【放射光は Lorentz のみ】: 散乱面内でほぼ完全偏光しているので偏光因子は ~1。
+            #   ラボ管球用の ``LP_Factor(26.4)`` (グラファイトモノクロメータの偏光項) を
+            #   当てると強度の 2θ 依存が系統的に狂う。topas.inc の
+            #   ``LP_Factor_Synchrotron_Simple`` はまさに ``Lorentz_Factor`` だけである。
+            preamble.append("Lorentz_Factor")
+        elif spec.radiation.is_neutron:
             # 【中性子にも Lorentz 因子は要る】: 無いのは**偏光**因子だけ。
             #   1/(sin²θ·cosθ) は 2θ=24° と 158° で 2 桁変わるので、落とすとピーク位置は
             #   合うのに強度の 2θ 依存が系統的にずれ、Rwp が 3 倍近く悪いところで頭打ちになる
@@ -349,6 +375,14 @@ def histogram_to_topas(
     if seed_profile and not instrument.is_tof and instrument.profile:
         seed = gsas_cw_profile_to_tchz(instrument.profile) or None
 
+    # 【計算格子は必ず明示する】: TOPAS の既定は
+    #   ``x_calculation_step too small or not defined`` で異常終了することがある — 実測で
+    #   11BM 放射光 (0.001° 刻み・鋭いピーク) と実 POWGEN TOF の双方が該当した。
+    #   ``Yobs_dx_at(Xo)`` のような適応式も、計算ピークがデータ範囲の外へ出た瞬間に同じ
+    #   エラーになるので使えない。データの**最小**ビン幅を採る (中央値だと SLOG ビンで
+    #   FWHM あたり 1 点しか置けず形状が粗くなる)。
+    step = _minimum_step(x)
+
     return TopasHistogram(
         data_path=data_name,
         preamble=tuple(preamble),
@@ -361,6 +395,7 @@ def histogram_to_topas(
         is_neutron=spec.radiation.is_neutron,
         is_tof=spec.radiation.is_tof,
         is_bragg_brentano=spec.geometry is Geometry.BRAGG_BRENTANO,
+        calculation_step=step,
         tof_calibration=tof_cal,
     )
 
@@ -400,3 +435,41 @@ def tchz_line(
         prefix = "" if refine else "!"
         parts.append(f"{prefix}{name}, {float(value)!r}")
     return f"TCHZ_Peak_Type({', '.join(parts)})"
+
+
+def tof_peak_type(
+    index: int,
+    *,
+    difc: float,
+    refine: bool = False,
+    phase_key: str = "",
+    lorentzian: float = 0.1,
+) -> str:
+    """TOF の ``peak_type`` ブロック (幅パラメータの宣言を含む複数行)。
+
+    TOPAS の TOF ピーク幅は ``FWHM = f1·d + f2·d²`` (Tutorial ZrW2O8.inp と同じ形)。
+    初期値は :data:`TOF_RELATIVE_RESOLUTION` から置く (GSAS の sig-1/sig-2 とは関数形が
+    違い、しかも実測 sig-1 が負なので直接は写せない)。
+
+    :param phase_key: パラメータ名に混ぜる相の識別子。**TOPAS のパラメータ名は大域**なので、
+        分けないと全相が 1 つのピーク幅を強制的に共有する。
+    """
+    tag = f"{index}{'_' + phase_key if phase_key else ''}"
+    prefix = "" if refine else "!"
+    first = float(difc) * TOF_RELATIVE_RESOLUTION
+    return (
+        f"prm {prefix}tofw1{tag} {first!r} min 0.0001 max = 2 Val + 1;\n"
+        f"prm {prefix}tofw2{tag} 0.0001 min 0.0001 max = 2 Val + 1;\n"
+        f"peak_type pv pv_lor !tofl{tag} {float(lorentzian)!r} "
+        f"pv_fwhm = tofw1{tag} D_spacing + tofw2{tag} D_spacing^2;"
+    )
+
+
+def _minimum_step(x: np.ndarray) -> float:
+    """観測 x 軸の最小ビン幅 (計算格子の既定)。1 点以下なら 1.0 を返す。"""
+    values = np.asarray(x, dtype=float)
+    if values.size < 2:
+        return 1.0
+    widths = np.diff(values)
+    positive = widths[widths > 0.0]
+    return float(positive.min()) if positive.size else 1.0

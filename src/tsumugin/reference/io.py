@@ -161,6 +161,20 @@ def load_xy(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     return parse_xy(text)
 
 
+#: TOF を意味する ``BANK`` 行の binning モード (対数ビン / RALF 可変ビン)。
+_TOF_BINNING_MODES = ("SLOG", "RALF")
+
+
+def _fxye_is_tof(text: str) -> bool:
+    """``BANK`` 行の binning モードが TOF を示すか。BANK 行が無ければ False (従来どおり)。"""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.upper().startswith("BANK"):
+            continue
+        return any(mode in stripped.upper() for mode in _TOF_BINNING_MODES)
+    return False
+
+
 def parse_fxye(text: str) -> tuple[np.ndarray, np.ndarray]:
     """GSAS FXYE テキスト (``X Y ESD`` 3 列) を ``(two_theta[deg], intensity)`` へ変換する。🔵
 
@@ -168,9 +182,15 @@ def parse_fxye(text: str) -> tuple[np.ndarray, np.ndarray]:
     コメント行・空行を読み飛ばし、数値 3 列の行のみを採る。ESD (第 3 列) は相同定では無視する。
     GSAS-II の add_powder_histogram が読むのと同じ X=センチ度 規約に従う。
 
+    **ただし TOF の FXYE は X が µs** でありセンチ度ではない。``BANK`` 行の binning モードで
+    見分ける — ``CONS`` (等間隔) は 2θ センチ度、``SLOG``/``RALF`` (対数・可変ビン) は TOF。
+    ÷100 してしまうと飛行時間が 2 桁縮んで**まったく別の d 範囲**になるが、ピークはどこかに
+    立つので静かに間違う (実 POWGEN の ``.gsa`` は SLOG)。
+
     Raises:
         ValueError: 有効な数値データ行が 1 つも無いとき。
     """
+    scale = _CENTIDEG_TO_DEG if not _fxye_is_tof(text) else 1.0
     two_theta: list[float] = []
     intensity: list[float] = []
     for line in text.splitlines():
@@ -186,7 +206,7 @@ def parse_fxye(text: str) -> tuple[np.ndarray, np.ndarray]:
         except ValueError:
             # タイトル行など非数値行は読み飛ばす
             continue
-        two_theta.append(x * _CENTIDEG_TO_DEG)
+        two_theta.append(x * scale)
         intensity.append(y)
     if not two_theta:
         raise ValueError("有効な FXYE データ行が見つかりません (X Y [ESD] の数値列が必要)。")

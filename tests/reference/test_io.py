@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tsumugin.reference.io import load_gsas_powder, parse_gsas_powder
+from tsumugin.reference.io import load_gsas_powder, parse_fxye, parse_gsas_powder
 
 # BANK: 20 点, CONST, start=1000 cd (10.0°), step=2.5 cd (0.025°), STD (強度のみ)
 _SAMPLE_GSAS = """PbSO4 sample title  Cu Ka
@@ -304,3 +304,43 @@ def test_real_garnet_raw_has_no_alternating_ones():
     assert (intensity == 1.0).sum() < len(intensity) * 0.1
     # 中性子計数の実測レンジ (誤読時は桁が混ざり 119510 という非現実的な値になっていた)
     assert 1e3 < intensity.max() < 1e4
+
+
+# ---------------- FXYE の TOF binning (#174) ----------------
+
+
+def test_fxye_slog_bank_is_time_of_flight_and_keeps_the_x_axis():
+    """**TOF FXYE の X は µs** — センチ度として ÷100 してはいけない。
+
+    ``BANK`` 行の binning モードで見分ける: ``CONS`` は等間隔 2θ (センチ度)、``SLOG``/``RALF``
+    は TOF (対数/可変ビン)。実 POWGEN の ``.gsa`` は SLOG で、÷100 すると飛行時間が 2 桁
+    縮んで**まったく別の d 範囲**になる (ピークはどこかに立つので静かに間違う)。
+    """
+    text = (
+        "Sample Run: 22048\n"
+        "BANK 2 3 3 SLOG       6776     103816  0.0004000 0 FXYE\n"
+        "  6776.0  100.0  10.0\n"
+        "  6779.0  110.0  10.5\n"
+        "  6782.0  120.0  11.0\n"
+    )
+    x, y = parse_fxye(text)
+    assert x[0] == pytest.approx(6776.0)
+    assert y[0] == pytest.approx(100.0)
+
+
+def test_fxye_cons_bank_stays_in_centidegrees():
+    """回帰: 11BM の ``CONS`` FXYE は従来どおりセンチ度 → 度。"""
+    text = (
+        "NAC /nov12/11bmb_1804\n"
+        "BANK  1    2   2 CONS      50.00      0.10 0 0 FXYE\n"
+        "   50.00  100.0  10.0\n"
+        "   50.10  110.0  10.5\n"
+    )
+    x, _ = parse_fxye(text)
+    assert x[0] == pytest.approx(0.5)
+
+
+def test_fxye_without_a_bank_line_keeps_the_centidegree_default():
+    """BANK 行が無ければ従来どおり (既存呼び出しの非回帰)。"""
+    x, _ = parse_fxye("title\n   50.00  100.0  10.0\n")
+    assert x[0] == pytest.approx(0.5)
