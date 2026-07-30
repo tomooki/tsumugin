@@ -27,7 +27,24 @@ from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
 from .multistart import RietveldMultistartResult, run_multistart_rietveld
 from .search import DEFAULT_CANDIDATES, RecipeSearchResult, SearchConfig, run_recipe_search
 
-__all__ = ["ConvergenceReport", "optimize_then_confirm"]
+__all__ = ["DEFAULT_COORD_JITTER_ANG", "ConvergenceReport", "optimize_then_confirm"]
+
+#: 座標摂動の既定振幅 (Å) — **実測で決めた** (2026-07-30, T1/T3 掃引)。
+#:
+#: 判断材料は「構造ベイスンを実際に探れているか」と「大きすぎて壊れないか」の 2 つ。
+#: 0.0 / 0.01 / 0.02 / 0.05 / 0.10 Å を T1 (`polish`, 5 開始点) と T3 (`sizestrain_last`,
+#: 5 開始点) で掃引した結果:
+#:
+#: - **どの振幅でも座標クラスは AGREE**。0.10 Å 動かしても戻ってくる (T1 60 軸 / T3 55 軸)。
+#: - **発散 0・validity fail の増加なし**。0.10 Å でも壊れない。
+#: - 判定を分けているのは座標ではなく **T1 は歪・T3 は格子**であり、これらは摂動 0 でも割れる。
+#:
+#: つまり「壊れる上限」は 0.10 Å より上にあり、この 2 データでは 0.05 と 0.10 の情報量は
+#: 変わらなかった。そこで**一致判定の床 (0.02 Å) の 2.5 倍**を採る — 「許容差より大きく
+#: 動かして、許容差の内側へ戻ってきた」と言える最小の振幅であり、出発構造として物理的にも
+#: 無理がない。上限側の余裕は残しておく (軽原子や短い結合を持つ構造では 0.10 Å が隣接サイトへ
+#: 踏み込み得るため、2 データの無傷をもって安全とは言えない)。
+DEFAULT_COORD_JITTER_ANG = 0.05
 
 
 @dataclass(frozen=True)
@@ -70,7 +87,7 @@ def optimize_then_confirm(
     search_config: "SearchConfig | None" = None,
     n_starts: int = 5,
     lattice_frac: float = 0.007,
-    coord_jitter_ang: float = 0.0,
+    coord_jitter_ang: float = DEFAULT_COORD_JITTER_ANG,
     jitter_seed: int = 0,
     jobs: "int | None" = None,
     ledger: "Ledger | None" = None,
@@ -83,7 +100,8 @@ def optimize_then_confirm(
     :param candidates: Phase A の候補名 (None で `DEFAULT_CANDIDATES` = 実測で選んだ集合)
     :param n_starts: Phase B の開始点数。**奇数**にすると格子グリッドの中央が無摂動になり
         基準点が常に開始点集合へ入る
-    :param coord_jitter_ang: 座標摂動の振幅 (Å)。0 で格子軸のみの試験になる
+    :param coord_jitter_ang: 座標摂動の振幅 (Å, 既定 `DEFAULT_COORD_JITTER_ANG`)。
+        0 にすると格子軸だけの試験になり、**構造の局所解を試験しない**
     :param jobs: Phase B の並列度 (None で開始点数)。開始点は独立なので**壁時計は最も遅い
         開始点 1 本分**になる (平均ではなく最悪であることに注意)
     :param search_runner: Phase A の候補実行 callable (**テスト注入専用のシーム**)。
