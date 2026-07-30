@@ -11,6 +11,8 @@ joint (複数ヒストグラム) の idiom は TOPAS 公式 Tutorial
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from tsumugin.topas.inp import (
@@ -99,6 +101,7 @@ def test_single_histogram_document_is_a_stable_golden():
         "iters 100\n"
         "\n"
         "xdd \"pbso4.xye\"\n"
+        "   x_calculation_step 1.0\n"
         "   CuKa5(0.001)\n"
         "   LP_Factor(26.37)\n"
         "   bkg @ 0.0 0.0 0.0 0.0 0.0 0.0\n"
@@ -163,9 +166,12 @@ def test_tof_histogram_uses_tof_block():
         background_coeffs=4,
     )
     text = TopasDocument(histograms=(hist,), phases=(_pbso4_phase(),)).render()
-    assert "TOF_XYE(\"powgen.xye\", 0)" in text
-    assert "TOF_x_axis_calibration(!difc_h0, 22580.0, !difa_h0, -1.2, !t0_h0, -4.5)" in text
-    assert "   neutron_data\n" in text
+    # マクロは計算格子を定数で要求するが SLOG ビンは幅が変わる — 展開形+適応格子を書く。
+    assert 'xdd "powgen.xye" xye_format' in text
+    assert "x_calculation_step 1.0" in text  # 定数 (適応式は範囲外で異常終了する)
+    # 引数順は (t0, t1, t2) = (Zero, difC, difA) — マクロの実体が pk_xo = t0 + t1·d + t2·d²。
+    assert "TOF_x_axis_calibration(!t0_h0, -4.5, !difc_h0, 22580.0, !difa_h0, -1.2)" in text
+    assert text.count("neutron_data") == 1
 
 
 def test_phase_histogram_terms_render_inside_the_str_block():
@@ -593,3 +599,48 @@ def test_no_duplicate_names_in_a_multiphase_joint_document():
     text = TopasDocument(histograms=hists, phases=phases, results_path="r.txt").render()
     duplicates = {k: v for k, v in _collect_declared_names(text).items() if v > 1}
     assert not duplicates, f"多相 joint で名前が重複している: {duplicates}"
+
+
+# ---------------- TOF の x 軸較正 (#174) ----------------
+
+
+def test_tof_calibration_argument_order_is_zero_difc_difa():
+    """**``TOF_x_axis_calibration(t0, t1, t2)`` は ``pk_xo = t0 + t1·d + t2·d²``**。
+
+    つまり t0=Zero・t1=difC・t2=difA。順序を取り違えると difC が定数項に、difA が d の
+    係数に入り、**ピーク位置がまったく別の d 依存になる**。ピークが「どこかに立つ」ので
+    tc.exe は正常終了し、Rwp だけが悪い状態で完走する。
+    """
+    doc = TopasDocument(
+        histograms=(
+            TopasHistogram(
+                data_path="t.xye", is_tof=True, is_neutron=True,
+                tof_calibration={"difc": 22600.25, "difa": -0.9009, "zero": -8.5176},
+            ),
+        ),
+        phases=(),
+    )
+    line = next(x for x in doc.render().splitlines() if "TOF_x_axis_calibration" in x)
+    # 名前 (t0_h0 …) に混じる索引を拾わないよう、`, ` の後ろの数値だけを見る。
+    numbers = [float(t) for t in re.findall(r",\s*(-?\d+\.?\d*(?:[eE][-+]?\d+)?)", line)]
+    assert numbers == [pytest.approx(-8.5176), pytest.approx(22600.25), pytest.approx(-0.9009)]
+
+
+def test_tof_block_declares_neutron_data_exactly_once():
+    doc = TopasDocument(
+        histograms=(TopasHistogram(data_path="t.xye", is_tof=True, is_neutron=True),),
+        phases=(),
+    )
+    assert doc.render().count("neutron_data") == 1
+
+
+def test_tof_block_only_declares_neutron_data_for_neutron_histograms():
+    """``neutron_data`` は放射源で決まる — TOF であることから導かない。
+
+    現状 TOF は中性子しかないので挙動は変わらないが、条件を混ぜると**非中性子 TOF を
+    黙って中性子と宣言する**潜在的な結合が残る。
+    """
+    hist = TopasHistogram(data_path="t.xye", is_tof=True, is_neutron=False)
+    text = TopasDocument(histograms=(hist,), phases=()).render()
+    assert "neutron_data" not in text
+    assert 'xdd "t.xye" xye_format' in text  # TOF ブロック自体は出る

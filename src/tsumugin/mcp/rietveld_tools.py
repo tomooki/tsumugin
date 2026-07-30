@@ -222,6 +222,10 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         # バックエンド中立の成果物ハンドル。TOPAS では .gpx が無いので `gpx_path` は空になり、
         #   MEM 経路 (gpx を要求する) は適用できない。
         "project_path": result.project_path,
+        # 【joint の内訳】: 索引順のヒストグラム別 Rwp。総合値 (`final_rwp`) だけでは
+        #   **どちらのヒストグラムが悪いのか分からない** — 放射源ごとに当てはまりが大きく
+        #   違うのが普通なので、③ が次に何を触るか決めるのに要る。空 = 未計測。
+        "histogram_rwp": list(result.histogram_rwp),
     }
 
 

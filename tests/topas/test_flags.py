@@ -47,7 +47,11 @@ def _phase(**kw) -> TopasPhase:
 def _hist(**kw) -> TopasHistogram:
     base = dict(
         data_path="d.xye",
-        preamble=("ZE(!ze0, 0.0)", "TCHZ_Peak_Type(!pku0, 0.0, !pkw0, 0.003, !pky0, 0.03)"),
+        preamble=(
+            "prm !ze0 0.0 min -0.5 max 0.5",
+            "th2_offset = ze0;",
+            "TCHZ_Peak_Type(!pku0, 0.0, !pkw0, 0.003, !pky0, 0.03)",
+        ),
         background=Param(0.0),
         background_coeffs=6,
     )
@@ -66,9 +70,7 @@ def _apply(flags: dict, doc: TopasDocument | None = None) -> TopasDocument:
 # ---------------- 未対応フラグ (最重要) ----------------
 
 
-@pytest.mark.parametrize(
-    "flag", ["tof_profile", "absorption", "hydrostatic_strain", "preferred_orientation"]
-)
+@pytest.mark.parametrize("flag", ["hydrostatic_strain"])
 def test_unsupported_flags_raise_instead_of_being_ignored(flag):
     """**黙って無視しない**。無視すると解放されていない段が完走する (無言 no-op 病理)。"""
     with pytest.raises(UnsupportedStageFlagError, match=flag):
@@ -77,7 +79,7 @@ def test_unsupported_flags_raise_instead_of_being_ignored(flag):
 
 def test_error_names_the_stage_so_it_can_be_located():
     with pytest.raises(UnsupportedStageFlagError, match="S9"):
-        apply_stage(_doc(), RefinementStage(label="S9", flags={"absorption": True}))
+        apply_stage(_doc(), RefinementStage(label="S9", flags={"hydrostatic_strain": True}))
 
 
 def test_supported_flag_set_matches_what_the_recipe_can_emit():
@@ -167,7 +169,29 @@ def test_size_strain_releases_both_terms():
 
 def test_displacement_releases_the_zero_point():
     out = _apply({"displacement": {0: ["Shift"]}})
-    assert any("ZE(ze0" in line for line in out.histograms[0].preamble)
+    assert any(line.startswith("prm ze0 ") for line in out.histograms[0].preamble)
+
+
+def test_releasing_the_zero_point_does_not_corrupt_the_reference_expression():
+    """**同じ名前が参照側にも現れる** — ``th2_offset = ze0;`` を ``= !ze0;`` にしない。
+
+    ``!`` が意味を持つのは宣言のときだけ。行全体を置換対象にすると INP が壊れる。
+    """
+    hist = _hist(preamble=("prm !ze0 0.0 min -0.5 max 0.5", "th2_offset = ze0;"))
+    out = _apply({"displacement": {0: ["Shift"]}}, _doc(hist=hist))
+    assert out.histograms[0].preamble == (
+        "prm ze0 0.0 min -0.5 max 0.5",
+        "th2_offset = ze0;",
+    )
+
+
+def test_the_zero_point_box_survives_release_and_freeze():
+    """束縛は解放/凍結で消えない (箱が消えるとゼロ点が暴走する)。"""
+    hist = _hist(preamble=("prm !ze0 0.0 min -0.5 max 0.5", "th2_offset = ze0;"))
+    released = _apply({"displacement": {0: ["Shift"]}}, _doc(hist=hist))
+    frozen = apply_stage(released, RefinementStage(label="S", flags={"freeze_others": True}))
+    for doc in (released, frozen):
+        assert any("min -0.5 max 0.5" in line for line in doc.histograms[0].preamble)
 
 
 @pytest.mark.parametrize(
@@ -222,3 +246,120 @@ def test_releases_accumulate_across_stages():
     doc = apply_stage(doc, RefinementStage(label="S2", flags={"uiso": True}))
     assert doc.phases[0].cell["a"].refine is True
     assert all(s.beq.refine for s in doc.phases[0].sites)
+
+
+# ---------------- 選択配向 / 吸収 (#173) ----------------
+
+
+def _extras(doc, phase="P", hist=0):
+    return doc.histograms[hist].phase_terms[phase].extras
+
+
+def test_preferred_orientation_uses_spherical_harmonics():
+    """GSAS の ``Pref.Ori.`` (次数付き) は TOPAS の ``PO_Spherical_Harmonics`` に対応する。
+
+    March-Dollase (``PO``) は**hkl 方向を引数に要求する**が、中立フラグはその情報を運ばない。
+    方向を勝手に決めると「別のモデルを黙って当てはめた」ことになるので球面調和を使う。
+    """
+    out = _apply({"preferred_orientation": 4})
+    assert any("PO_Spherical_Harmonics" in x and " 4)" in x for x in _extras(out))
+
+
+def test_preferred_orientation_true_defaults_to_order_four():
+    assert any(" 4)" in x for x in _extras(_apply({"preferred_orientation": True})))
+
+
+def test_preferred_orientation_names_are_unique_per_phase_and_histogram():
+    """**TOPAS のパラメータ名は大域** — 相ごと/ヒストグラムごとに別の配向分布を持てること。"""
+    doc = TopasDocument(
+        histograms=(_hist(), _hist()),
+        phases=(_phase(), _phase(phase_name="Q")),
+    )
+    out = _apply({"preferred_orientation": 4}, doc)
+    names = [
+        x.split("(")[1].split(",")[0]
+        for h in out.histograms
+        for terms in h.phase_terms.values()
+        for x in terms.extras
+        if "PO_Spherical" in x
+    ]
+    assert len(names) == 4 and len(set(names)) == 4
+
+
+def test_preferred_orientation_is_added_once():
+    once = _apply({"preferred_orientation": 4})
+    twice = _apply({"preferred_orientation": 4}, once)
+    assert sum("PO_Spherical" in x for x in _extras(twice)) == 1
+
+
+def test_freeze_others_removes_preferred_orientation():
+    """球面調和は**宣言そのものが解放**なので、凍結は行を落とすことで表す。"""
+    released = _apply({"preferred_orientation": 4})
+    frozen = apply_stage(released, RefinementStage(label="S", flags={"freeze_others": True}))
+    assert not any("PO_Spherical" in x for x in _extras(frozen))
+
+
+def test_absorption_is_a_shared_cylindrical_correction():
+    """吸収は**試料**の性質なので、多相でも 1 つの µR を共有する。
+
+    TOPAS の ``scale_pks`` は ``str`` ブロックにしか書けないため各相へ行を出すが、
+    値は共有 ``prm`` を参照させる (相ごとに別の µR を持つと物理的に誤り)。
+
+    **マクロではなくその展開形**を書く: ``Cylindrical_I_Correction(=mur_h0;)`` は
+    ``Error loading sstring_in`` で異常終了する (実測)。マクロは自分で ``prm`` を宣言する
+    形しか通らないので、共有したい場合は展開形を書くしかない。
+    """
+    doc = TopasDocument(histograms=(_hist(),), phases=(_phase(), _phase(phase_name="Q")))
+    out = _apply({"absorption": True}, doc)
+    lines = [x for terms in out.histograms[0].phase_terms.values() for x in terms.extras]
+    assert len(lines) == 2
+    assert all(x.startswith("scale_pks = AL_Cyl_Corr(mur_h0)") for x in lines)
+    assert all("Cylindrical_I_Correction" not in x for x in lines)
+    assert any(p.name == "mur_h0" and p.refine for p in out.shared_params)
+
+
+def test_absorption_is_refused_for_bragg_brentano():
+    """反射光学系に円筒吸収を当てない — **黙って別のモデルを適用しない**。"""
+    hist = _hist(is_bragg_brentano=True)
+    with pytest.raises(UnsupportedStageFlagError, match="absorption"):
+        _apply({"absorption": True}, _doc(hist=hist))
+
+
+# ---------------- TOF プロファイル (#173 の 3/4, #174) ----------------
+
+
+def _tof_terms():
+    return PhaseHistogramTerms(
+        peak_type=(
+            "prm !tofw10_P 31.6 min 0.0001 max = 2 Val + 1;\n"
+            "prm !tofw20_P 0.0001 min 0.0001 max = 2 Val + 1;\n"
+            "peak_type pv pv_lor !tofl0_P 0.1 "
+            "pv_fwhm = tofw10_P D_spacing + tofw20_P D_spacing^2;"
+        )
+    )
+
+
+def test_tof_profile_releases_the_d_dependent_widths():
+    """GSAS の ``sig-1``/``sig-2`` に相当する d 依存幅を解放する。
+
+    TOF の装置プロファイルは較正済みなので**既定レシピには載せない** (GSAS 経路 T4 と同じ
+    教訓)。近似的な instprm を実測へ寄せたいときの opt-in 段。
+    """
+    hist = _hist(is_tof=True, phase_terms={"P": _tof_terms()})
+    out = _apply({"tof_profile": True}, _doc(hist=hist))
+    line = out.histograms[0].phase_terms["P"].peak_type
+    assert "prm tofw10_P" in line and "prm tofw20_P" in line
+    assert "!tofl0_P" in line  # ローレンツ成分は別扱い (解放しない)
+
+
+def test_tof_profile_leaves_cw_histograms_alone():
+    """CW ヒストグラムに TOF の解放を当てない (混在 joint でありうる)。"""
+    out = _apply({"tof_profile": True})
+    assert out.histograms[0].phase_terms == _doc().histograms[0].phase_terms
+
+
+def test_freeze_others_refreezes_the_tof_widths():
+    hist = _hist(is_tof=True, phase_terms={"P": _tof_terms()})
+    released = _apply({"tof_profile": True}, _doc(hist=hist))
+    frozen = apply_stage(released, RefinementStage(label="S", flags={"freeze_others": True}))
+    assert "prm !tofw10_P" in frozen.histograms[0].phase_terms["P"].peak_type

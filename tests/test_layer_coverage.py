@@ -154,6 +154,18 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     "mem (M8-③)": ("mem_density", "MEM 密度→構造改訂"),
     "operando diag (M8-③)": ("check_phase_set", "相集合の完全性"),
     # --- 未露出 (Issue #97): 宣言することで「忘れた」ではなく「既知の穴」であることを示す ---
+    "TopasBackend (M12/T9)": (
+        UNEXPOSED,
+        "**意図的な非露出** (Issue #175)。`RefinementBackend` Protocol の TOPAS 実装で、"
+        "`simulate()` を要求する search.tree / sequential.engine の口を塞ぐ。だが ② で "
+        "`RefinementBackend` を組む唯一のツール `discriminate` は**実 CIF 判別**の経路であり "
+        "(`PhaseInstance.structure_ref` → GSASIIBackend の実 CIF 分岐, Issue #130)、"
+        "TopasBackend は簡約モデル (P m m m・Ni 1 原子) しか持たない。ここへ backend 引数を"
+        "足すと**実構造で判別したつもりが捏造構造で走る**ため、structure_ref 対応が入るまで"
+        "露出しない。黙って代替しないよう TopasBackend 側は structure_ref を "
+        "NotImplementedError で拒否する。実構造の TOPAS 精密化は "
+        "`auto_rietveld(backend=\"topas\")` で既に到達可能",
+    ),
     "insitu.anchor (M10/FR-330)": (
         "anchored_sequential",
         "Issue #97 解決: run_anchored_sequential(runner=, identifier=) の callable を #93 と同型の "
@@ -397,6 +409,10 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "比較するときの前提条件**なので ② へ常に出す。両バックエンドは rwp のセマンティクスを"
         "揃えてあるが (TOPAS は背景込みの r_wp を採る — r_wp_dash は背景差引きで非互換)、"
         "出所を隠すと ③ が「同じ数字だから同じ条件」と読んでしまう",
+    ),
+    "histogram_rwp": (
+        "histogram_rwp",
+        "ヒストグラム別 Rwp (joint の内訳; 総合値だけではどちらが悪いか分からない)",
     ),
     "project_path": (
         "project_path",
@@ -1824,3 +1840,95 @@ def test_selection_escalation_is_now_reachable_or_the_note_is_stale():
             "再び ③ から不可視になった。PACKAGE_COVERAGE['selection'] を「既知の穴」に戻し、"
             "③ skill 手順 (hypothesis-search「エスカレーションを確認する」節) の整合も見直すこと"
         )
+
+
+def test_topas_backend_non_exposure_reason_is_still_true():
+    """**非露出の理由を機械検査する** — 理由が消えたら宣言を見直させる。
+
+    `TopasBackend` を ② に露出していない理由は「実 CIF (``structure_ref``) を扱えないので
+    `discriminate` に配線すると実構造判別が捏造構造で走る」である。理由が成立しなくなったら
+    (= structure_ref 対応が入ったら) このテストが落ち、非露出宣言の再検討を強制する。
+
+    宣言文だけだと**コードが変わっても宣言が古いまま残る** (それこそ本ファイルが防ぎたい
+    drift そのもの)。
+    """
+    from tsumugin.backends.topas import TopasBackend
+    from tsumugin.model import LatticeParams, PhaseInstance
+
+    backend = TopasBackend.__new__(TopasBackend)  # tc.exe 不要
+    phase = PhaseInstance(
+        phase_ref="P", lattice=LatticeParams(4.0, 4.0, 4.0), scale=1.0,
+        structure_ref="x.cif",
+    )
+    with pytest.raises(NotImplementedError):
+        backend._require_simplified_phases((phase,))
+    assert LAYER1_FEATURES["TopasBackend (M12/T9)"][0] is UNEXPOSED
+
+
+
+def _iter_mcp_module_code() -> "Iterator[tuple[str, str | None]]":
+    """`tsumugin.mcp` 配下の全モジュール → (モジュール名, docstring を除いたコード本体)。
+
+    `_iter_mcp_functions` は関数/メソッドしか列挙しないので、**モジュール直下の代入**
+    (registry dict 等) を見られない。「この名前が ② のコードに現れるか」を問うガードは
+    モジュール全体を見る必要がある。コメントは AST に残らず、docstring は明示的に落とす。
+
+    **読めなかったモジュールは ``None`` を返す** (``continue`` で飛ばさない)。ソースを取れない
+    モジュール (動的定義等) を黙って飛ばすと、そこだけ網の外になったことが誰にも見えない —
+    「網の穴は『無いこと』が保証されて初めて網である」。呼び出し側が ``None`` を検出して
+    落とすことで、穴が空いた事実そのものを失敗として表に出す。
+    """
+    for mod_info in pkgutil.walk_packages(mcp_pkg.__path__, f"{mcp_pkg.__name__}."):
+        module = importlib.import_module(mod_info.name)
+        try:
+            source = inspect.getsource(module)
+            tree = ast.parse(source)
+        except (OSError, SyntaxError):
+            yield mod_info.name, None
+            continue
+        for node in ast.walk(tree):
+            if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)
+            ):
+                body = getattr(node, "body", [])
+                if (
+                    body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    node.body = body[1:] or [ast.Pass()]  # type: ignore[attr-defined]
+        yield mod_info.name, ast.unparse(tree)
+
+
+def test_no_mcp_tool_constructs_the_topas_backend():
+    """② のどの関数も `TopasBackend` を**コードとして**参照していないこと (非露出宣言との整合)。
+
+    誰かが `discriminate` 等へ配線したらここが落ち、**宣言の更新を強制する**。
+    露出そのものを禁じるのではなく、露出と宣言がずれることを禁じる。
+
+    **本ファイルが既に払った授業料をそのまま使う**:
+
+    - 列挙は ``walk_packages`` (`_iter_mcp_module_code`)。``glob("*.py")`` だと `mcp` に
+      サブパッケージが生えた瞬間に網が黙って穴だらけになる。
+    - 判定は docstring を AST で落としたコード本体。生ソースの部分一致は**「使っていない
+      理由」を説明した docstring で誤検出**し、逆に説明だけ残して配線を消しても通ってしまう
+      (Issue #125 で実測した「落ちないガード」と同型)。
+    - 走査は**モジュール全体** (関数本体だけではない)。`MCP_TOOLS`/`RIETVELD_TOOLS` の
+      ような**モジュール直下の registry dict** が本リポジトリの標準的な配線先であり、
+      ``{"topas": TopasBackend}`` を足す最も自然な場所がそこだからである。関数だけを見る網
+      (`_iter_mcp_functions`) はここを素通りする。
+    """
+    scanned = list(_iter_mcp_module_code())
+    unreadable = sorted(name for name, code in scanned if code is None)
+    assert not unreadable, (
+        f"ソースを読めない ② モジュールがある: {unreadable}。"
+        f"黙って飛ばすと**そこだけ網の外**になるので、走査できないこと自体を失敗にする"
+    )
+    offenders = sorted(
+        name for name, code in scanned if code is not None and "TopasBackend" in code
+    )
+    assert not offenders, (
+        f"② が TopasBackend を参照している: {offenders}。"
+        f"LAYER1_FEATURES['TopasBackend (M12/T9)'] の非露出宣言を更新すること"
+    )

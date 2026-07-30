@@ -935,3 +935,8 @@ class AutoRietveldResult:
     #   INP/.out/results.txt を残したディレクトリ。`gpx_path` は GSAS 専用のまま残す
     #   (MEM 経路が .gpx を要求するため; TOPAS では空文字となり MEM は適用できない)。
     project_path: str = ""
+    # 【ヒストグラム別 Rwp】: 索引順の (2θ ヒストグラムごとの) Rwp。joint では放射源ごとに
+    #   当てはまりが大きく違うのが普通なので、総合値だけでは**どちらが悪いのか分からない**。
+    #   総合値 (`final_rwp`) と混同しないこと — TOPAS 経路では `.out` の総合値を `final_rwp`
+    #   に採り、ここには各 `xdd` の値を入れる。空 = 未計測 (バックエンドが出さない)。
+    histogram_rwp: tuple[float, ...] = ()

@@ -7,6 +7,7 @@ ledger 追記という**方針**は GSAS 経路と同じでなければならな
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -249,3 +250,192 @@ def test_occupancy_is_released_only_for_declared_sites(synthetic_cif):
     out = apply_stage(doc, RefinementStage(label="occ", flags={"occupancy": True}))
     released = {s.label for s in out.phases[0].sites if s.occupancy.refine}
     assert released == {"O1"}
+
+
+# ---------------- 新フラグの INP が実 tc.exe に受理されるか (#173) ----------------
+
+
+@pytest.mark.topas
+@pytest.mark.parametrize(
+    ("label", "flags"),
+    [
+        ("preferred_orientation", {"preferred_orientation": 4}),
+        ("absorption", {"absorption": True}),
+    ],
+)
+def test_new_flags_produce_inp_that_tc_actually_accepts(label, flags):
+    """**tc.exe は構文エラーでも終了コード 0 を返す** — 実行して受理を確かめる。
+
+    翻訳表を「それらしく」書くだけでは、段が rwp=inf → revert に落ちて**黙って何も
+    しなかった**ことになる。マニュアルが暗号化 PDF で読めない以上、1 フラグずつ実 tc.exe で
+    検算するのが唯一の担保 (実際 `Cylindrical_I_Correction(=name;)` はこれで落ちた)。
+    """
+    hist = _histogram()
+    if flags.get("absorption"):
+        # 円筒吸収は反射光学系に当てられない (平板に円筒の式を当てない方針)。
+        hist = replace(hist, geometry=Geometry.DEBYE_SCHERRER)
+    result = eng.run_topas_rietveld(
+        [hist],
+        [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"background": {"coeffs": 6}, "scale": True}),
+            RefinementStage(label=f"S1 {label}", flags=flags),
+        ),
+    )
+    stage = result.stage_results[-1]
+    assert math.isfinite(stage.rwp), f"{label}: tc.exe が INP を受理していない (rwp=inf)"
+
+
+# ---------------- joint の総合指標 (#174) ----------------
+
+#: 実測: joint (X 線 + CW 中性子 PbSO4) の ``.out`` 先頭行は**全ヒストグラム込み**の r_wp、
+#: xdd0 の中に置いた ``Out(Get(r_wp))`` は**その xdd だけ**の r_wp を返す。
+_JOINT_OUT = "r_p 8.08 r_wp 10.7719291 r_exp 4.99 gof 2.15572354\n"
+_JOINT_RESULTS = "r_wp\t8.63512963\ngof\t1.75145516\nhist_rwp\th0\t8.63512963\n"
+
+
+def test_joint_metrics_come_from_the_global_out_header():
+    """**joint では ``results.txt`` の r_wp は第 1 ヒストグラムのものでしかない**。
+
+    `Out(Get(r_wp))` は書かれた ``xdd`` ブロックの値を返す。これを総合値として使うと、
+    第 2 ヒストグラムの当てはまりが悪化していても段が受理され、しかも**報告された数字が
+    名乗っている量と違う**ことになる (実 PbSO4 joint で 8.635 と 10.772)。
+    """
+    rwp, gof, _ = eng._metrics(_JOINT_OUT, _JOINT_RESULTS)
+    assert rwp == pytest.approx(10.7719291)
+    assert gof == pytest.approx(2.15572354)
+
+
+def test_single_histogram_metrics_are_unchanged():
+    """単一ヒストグラムでは両者が一致するので、切り替えても値は変わらない (非回帰)。"""
+    out = "r_p 6.18 r_wp 8.09334778 r_exp 4.93 gof 1.64156606\n"
+    rwp, gof, _ = eng._metrics(out, "r_wp\t8.09334778\ngof\t1.64156606\n")
+    assert rwp == pytest.approx(8.09334778)
+
+
+def test_metrics_fall_back_to_the_records_when_the_out_header_is_missing():
+    """``.out`` が壊れていても results.txt があれば段の判定はできる。"""
+    rwp, gof, _ = eng._metrics("iters 0\n", "r_wp\t9.0\ngof\t1.2\n")
+    assert rwp == pytest.approx(9.0) and gof == pytest.approx(1.2)
+
+
+def test_per_histogram_rwp_is_reported():
+    """総合値だけでなく**ヒストグラムごと**の r_wp も残す (どちらが悪いか分からないと直せない)。"""
+    result = eng._per_histogram_rwp(_JOINT_RESULTS)
+    assert result == {0: pytest.approx(8.63512963)}
+
+
+def test_validity_receives_phase_fractions_as_a_sequence():
+    """**`check_validity` は相分率を「値の並び」で取る** — dict を渡すと和がキー文字列になる。
+
+    単相では和=1 検査が (要素 1 つなので) たまたま通り、**多相で初めて TypeError になる**。
+    T4 (NAC+CaF2) を回して露見した。
+    """
+    report = eng._validity(
+        refined_cells={"A": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+        reference_cells={},
+        atom_uiso={"A": {"X": 0.01}},
+        atom_occupancy={"A": {"X": 1.0}},
+        weight_fractions={"A": 60.0, "B": 40.0},
+        converged=True,
+    )
+    assert isinstance(report.passed, bool)
+    assert any("fraction" in name or "分率" in note for name, _, note in report.checks)
+
+
+# ---------------- ベンチマーク回帰ガード (#172-#174) ----------------
+
+_M7 = Path("docs/benchmark/testdata/m7")
+
+
+def _benchmark_available(*paths: Path) -> bool:
+    return all(p.is_file() for p in paths)
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(_M7 / "labdata" / "FAP.cif", _M7 / "labdata" / "FAP.XRA"),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t1_fluoroapatite():
+    """**六方晶の相対強度**の回帰ガード (#172)。
+
+    特殊位置の座標が 1e-8 精度で書けていないと 4f サイトが一般位置へ化け、単位胞に存在しない
+    原子が増えて Rwp 42% になる。ピーク位置は正しいままなので Rwp だけでは原因が分からない。
+    """
+    d = _M7 / "labdata"
+    result = eng.run_topas_rietveld(
+        [HistogramSpec(
+            data_path=str(d / "FAP.XRA"), instrument_path=str(d / "INST_XRY.PRM"),
+            radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+        )],
+        [PhaseSpec(structure_path=str(d / "FAP.cif"), phase_name="FAP")],
+    )
+    assert result.final_rwp < 12.0, f"Rwp {result.final_rwp:.2f} (実測 10.45, GSAS 9.83)"
+    assert result.validity.passed, "Uiso/占有率が非物理 (Rwp だけで合格にしない)"
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(
+        _M7 / "cwneutron" / "garnet.raw", _M7 / "cwneutron" / "garnet_YFeAlO.cif"
+    ),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t2_garnet_cw_neutron():
+    """**CW 中性子の Lorentz 因子**の回帰ガード (#174)。
+
+    ``1/(sin²θ·cosθ)`` を落とすと強度の 2θ 依存が系統的にずれ、Rwp が 12% で頭打ちになる。
+    混合占有が GSAS と同じ値 (16a Fe≈0.58) に落ちることも見る — **両エンジンが同じ構造へ
+    収束するか**が M12 で最も重要な観測点。
+    """
+    d = _M7 / "cwneutron"
+    result = eng.run_topas_rietveld(
+        [HistogramSpec(
+            data_path=str(d / "garnet.raw"), instrument_path=str(d / "inst_d1a.prm"),
+            radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
+        )],
+        [PhaseSpec(
+            structure_path=str(d / "garnet_YFeAlO.cif"), phase_name="garnet",
+            mixed_occupancy_groups=(("Fe1", "Al1"), ("Al2", "Fe2")),
+        )],
+    )
+    assert result.final_rwp < 6.5, f"Rwp {result.final_rwp:.2f} (実測 5.54, GSAS 4.33)"
+    assert result.validity.passed
+    assert result.atom_occupancy["garnet"]["Fe1"] == pytest.approx(0.58, abs=0.05)
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(
+        _M7 / "cwcombined" / "PBSO4.XRA", _M7 / "cwcombined" / "PBSO4.CWN"
+    ),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t3_joint_reports_the_global_rwp():
+    """**joint の総合 Rwp** の回帰ガード (#174)。
+
+    ``Out(Get(r_wp))`` は書かれた ``xdd`` の値なので、それを総合値と名乗ると第 2
+    ヒストグラムが悪化していても段が受理される。総合値が内訳の**いずれよりも小さくない**
+    ことを見る (hist0 だけを報告していたら破れる)。
+    """
+    d = _M7 / "cwcombined"
+    result = eng.run_topas_rietveld(
+        [
+            HistogramSpec(
+                data_path=str(d / "PBSO4.XRA"), instrument_path=str(d / "INST_XRY.PRM"),
+                radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+            ),
+            HistogramSpec(
+                data_path=str(d / "PBSO4.CWN"), instrument_path=str(d / "inst_d1a.prm"),
+                radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
+            ),
+        ],
+        [PhaseSpec(
+            structure_path="docs/benchmark/testdata/PbSO4-Wyckoff.cif", phase_name="PbSO4"
+        )],
+    )
+    assert len(result.histogram_rwp) == 2, "内訳が取れていない"
+    assert result.final_rwp >= min(result.histogram_rwp) - 1e-9
+    assert result.final_rwp < 9.0, f"Rwp {result.final_rwp:.2f} (実測 8.29, GSAS 6.66)"
+    assert result.validity.passed

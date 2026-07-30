@@ -107,6 +107,76 @@ def test_unparsable_symops_are_skipped_not_fatal():
     assert free_coord_axes(("x,y,z", "garbage"), (0.11, 0.22, 0.33)) == ("x", "y", "z")
 
 
+# ---------------- 特殊位置への吸着 (#172) ----------------
+#
+# **TOPAS はサイトの多重度を「対称操作で写した点が元の点と一致するか」で決める。実測した
+# 許容差は約 1e-8 (分率座標)** — 3.3e-8 ずれると別原子とみなされる。CIF の座標欄は 5-8 桁が
+# 標準なので、1/3 は必ずこの網から漏れる。漏れると P6₃/m の 4f サイトが一般位置 (多重度 12)
+# へ展開され、**単位胞に存在しない原子が 8 個増えたまま完走する** (実 fluoroapatite で
+# cell_mass 1008.6 → 1329.2、Rwp 42%)。ピーク位置は正しいままなので気づきにくい。
+
+
+def test_special_position_is_snapped_to_the_exact_value():
+    """``0.333333`` を 1/3 へ吸着する。TOPAS の 1e-8 判定を通せる精度に載せるのが目的。"""
+    from tsumugin.topas.symmetry import snap_to_special_position
+
+    ops = ("x,y,z", "-y,x-y,z", "-x+y,-x,z")  # 3 回軸
+    x, y, z = snap_to_special_position(ops, (0.333333, 0.666667, 0.001913))
+    assert abs(x - 1 / 3) < 1e-12
+    assert abs(y - 2 / 3) < 1e-12
+    assert z == pytest.approx(0.001913)  # 自由軸は動かさない
+
+
+def test_general_position_is_left_untouched():
+    """一般位置はサイト対称群が単位元だけ — 恒等写像でなければならない。"""
+    from tsumugin.topas.symmetry import snap_to_special_position
+
+    position = (0.11, 0.22, 0.33)
+    assert snap_to_special_position(("x,y,z", "-x,-y,-z"), position) == position
+
+
+def test_snapping_survives_a_lattice_translation_in_the_operation():
+    """並進を含む操作 (``-x,-y,z+1/2`` 等) でも格子並進を解いて平均する。"""
+    from tsumugin.topas.symmetry import snap_to_special_position
+
+    # 2₁ 軸上の (0, 0, z): -x,-y,z+1/2 では戻らないので鏡 -x,y,z / x,-y,z を使う。
+    x, y, z = snap_to_special_position(("x,y,z", "-x,y,z", "x,-y,z"), (1e-7, -2e-7, 0.4))
+    assert abs(x) < 1e-14 and abs(y) < 1e-14
+    assert z == pytest.approx(0.4)
+
+
+def test_no_symops_means_no_snapping():
+    """判定材料が無ければ座標に触らない (`free_coord_axes` と同じ安全側の方針)。"""
+    from tsumugin.topas.symmetry import snap_to_special_position
+
+    assert snap_to_special_position((), (0.333333, 0.666667, 0.0)) == (
+        0.333333,
+        0.666667,
+        0.0,
+    )
+
+
+def test_snapping_does_not_move_an_atom_that_is_far_from_the_special_position():
+    """許容差 (既定 1e-4) の外にある座標は特殊位置とみなさない = 動かさない。"""
+    from tsumugin.topas.symmetry import snap_to_special_position
+
+    ops = ("x,y,z", "-y,x-y,z", "-x+y,-x,z")
+    far = (0.3300, 0.6600, 0.1)
+    assert snap_to_special_position(ops, far) == far
+
+
+def test_snapped_axes_are_exactly_the_ones_that_are_not_free():
+    """**吸着と自由軸判定は同じサイト対称群から出る**こと (別々の基準だと矛盾する)。"""
+    from tsumugin.topas.symmetry import snap_to_special_position
+
+    ops = ("x,y,z", "-y,x-y,z", "-x+y,-x,z")
+    start = (0.333333, 0.666667, 0.001913)
+    snapped = snap_to_special_position(ops, start)
+    free = free_coord_axes(ops, start)
+    moved = {axis for axis, a, b in zip("xyz", start, snapped) if a != b}
+    assert moved.isdisjoint(free), "自由軸を動かしてはいけない"
+
+
 @requires_real_data
 def test_real_pbso4_cif_site_symmetry():
     """実 CIF の対称操作で PbSO4 の各サイトの自由軸を求める (回帰)。"""
@@ -138,3 +208,43 @@ def test_sg_filename_encodes_slash_as_o():
     # 6₃ 軸上の CA1 (1/3, 2/3, z) は z のみ自由、-6 サイトの F4 は完全固定。
     assert free_coord_axes(ops, (0.333333, 0.666667, 0.001913)) == ("z",)
     assert free_coord_axes(ops, (0.0, 0.0, 0.25)) == ()
+
+
+# ---------------- ``.sg`` のコメント行 ----------------
+
+
+def test_sg_comment_lines_are_not_mistaken_for_symops(tmp_path):
+    """**体心/面心群の ``.sg`` は ``' +(1/2, 1/2, 1/2) ---`` というコメント行を挟む** (実測)。
+
+    カンマが 2 つあるので素朴な行数フィルタを通ってしまい、回転行列が**零行列**の偽の操作に
+    化ける。零行列はサイト対称群の射影子を薄めるので、``(1/2,1/2,1/2)`` にあるサイト
+    (体心格子では珍しくない) の自由軸判定が崩れ、**座標が一度も解放されないまま完走する**。
+    """
+    from tsumugin.topas.symmetry import read_sg_symops
+
+    sg = tmp_path / "Sg" / "test.sg"
+    sg.parent.mkdir(parents=True)
+    sg.write_text(
+        "space_group\n{\n\txyzs\n\t{\n"
+        "\t\tx, y, z\n"
+        "\t\t-x, -y, -z\n"
+        "' +(1/2, 1/2, 1/2) -------------------------\n"
+        "\t\tx+1/2, y+1/2, z+1/2\n"
+        "\t}\n}\n",
+        encoding="utf-8",
+    )
+    ops = read_sg_symops("test", home=tmp_path)
+    assert ops == ("x, y, z", "-x, -y, -z", "x+1/2, y+1/2, z+1/2")
+
+
+def test_body_centre_site_keeps_its_free_axes_despite_the_comment_line():
+    """コメント行を操作として拾うと (1/2,1/2,1/2) のサイトで自由軸が消える (退行ガード)。"""
+    ops = ("x,y,z", "' +(1/2, 1/2, 1/2) ----", "x+1/2,y+1/2,z+1/2")
+    # コメント行を除いた真の集合では一般位置 = 3 軸とも自由。
+    assert free_coord_axes(("x,y,z", "x+1/2,y+1/2,z+1/2"), (0.5, 0.5, 0.5)) == (
+        "x",
+        "y",
+        "z",
+    )
+    # 混入した状態では壊れることを明示しておく (だから読み取り側で落とす)。
+    assert free_coord_axes(ops, (0.5, 0.5, 0.5)) == ()

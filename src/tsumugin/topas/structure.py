@@ -20,10 +20,10 @@ import re
 from typing import TYPE_CHECKING
 
 from .inp import Param, TopasPhase, TopasSite
-from .symmetry import free_coord_axes
+from .symmetry import free_coord_axes, snap_to_special_position
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..autorietveld.cif_normalize import Structure
+    from ..autorietveld.cif_normalize import Atom, Structure
     from ..autorietveld.model import PhaseSpec
 
 __all__ = [
@@ -222,6 +222,28 @@ def _cell_block(
     return cell, tuple(free)
 
 
+def _site(
+    atom: "Atom", symops: "tuple[str, ...]", *, ionic_scattering: bool
+) -> TopasSite:
+    """1 原子を `TopasSite` へ写す (特殊位置は厳密値へ吸着させる)。"""
+    raw = (atom.x, atom.y, atom.z)
+    x, y, z = snap_to_special_position(symops, raw)
+    return TopasSite(
+        label=atom.label,
+        element=to_topas_element(atom.type_symbol, ionic=ionic_scattering),
+        x=Param(x),
+        y=Param(y),
+        z=Param(z),
+        occupancy=Param(atom.occ),
+        beq=Param(atom.uiso * BEQ_PER_UISO),
+        # 【自由軸は吸着前の座標で判定する】: 吸着は判定結果を変えないが (同じサイト対称群
+        #   から出るので)、判定の入力を吸着後にすると「吸着が自分の判定根拠を作る」循環に
+        #   なる。1e-4 の許容差で拾えなかったサイトが吸着で拾えるようになる、という
+        #   取りこぼしの隠蔽を避ける。
+        free_coord_axes=free_coord_axes(symops, raw),
+    )
+
+
 def structure_to_topas_phase(
     structure: "Structure",
     phase_name: str,
@@ -255,20 +277,14 @@ def structure_to_topas_phase(
 
     # 【サイト対称】: 特殊位置の座標を解放すると対称性が壊れる (しかも Rwp は下がりうるので
     #   静かに間違った構造へ行き着く)。GSAS の GetCSxinel に相当する判定を対称操作から行う。
+    #
+    # 【特殊位置は厳密値へ吸着させる】: TOPAS は多重度を座標の一致で決め、許容差は約 1e-8。
+    #   CIF の 5-8 桁では 1/3 が届かず、4f サイトが一般位置 (多重度 12) へ化けて**単位胞に
+    #   存在しない原子が増えたまま完走する** (実 fluoroapatite で cell_mass 1008.6 → 1329.2)。
+    #   ピーク位置は正しいままなので Rwp を見ても原因に辿り着けない (#172)。
+    effective_symops = symops if symops is not None else structure.symops
     sites = tuple(
-        TopasSite(
-            label=atom.label,
-            element=to_topas_element(atom.type_symbol, ionic=ionic_scattering),
-            x=Param(atom.x),
-            y=Param(atom.y),
-            z=Param(atom.z),
-            occupancy=Param(atom.occ),
-            beq=Param(atom.uiso * BEQ_PER_UISO),
-            free_coord_axes=free_coord_axes(
-                symops if symops is not None else structure.symops,
-                (atom.x, atom.y, atom.z),
-            ),
-        )
+        _site(atom, effective_symops, ionic_scattering=ionic_scattering)
         for atom in structure.atoms
     )
 

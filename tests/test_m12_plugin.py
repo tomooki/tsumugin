@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -112,3 +113,55 @@ def test_operando_tools_are_declared_as_gsas_only():
     for tool in ("sequential_rietveld", "anchored_sequential"):
         assert "backend" not in inspect.signature(MCP_TOOLS[tool]).parameters
         assert tool in doc, f"{tool} が backend 非対応であることが書かれていない"
+
+
+# ---------------- joint の内訳 (#174) ----------------
+
+
+def test_joint_breakdown_field_is_documented(analyze_text: str):
+    """**joint では総合 Rwp だけを見てはいけない**という指示が載っていること。
+
+    総合値が下がっていても片方のヒストグラムが悪化していることがある。次に何を触るかは
+    内訳を見ないと決められないので、③ が `histogram_rwp` の存在を知らないと詰まる。
+    """
+    assert "histogram_rwp" in analyze_text
+    assert "総合値だけを見ない" in analyze_text
+
+
+def test_documented_breakdown_field_actually_exists_in_the_tool_output():
+    """**② に無い機能を手順書に書かない**。逆方向のガード。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult
+
+    assert "histogram_rwp" in {f.name for f in fields(AutoRietveldResult)}
+
+
+def test_empty_breakdown_is_not_silently_treated_as_fine(analyze_text: str):
+    """内訳が取れないときに「総合値だけで判断した」と明示させる指示があること。
+
+    空を「問題なし」と読むのは ② 不変条件「空/不正入力を『正常』と答えない」の ③ 版。
+    """
+    assert "`histogram_rwp` が**空**なら" in analyze_text
+
+
+# ---------------- 未対応フラグの記述が実装と一致すること ----------------
+
+
+def test_unsupported_flag_list_matches_the_implementation(analyze_text: str):
+    """手順書が「未対応」と書くフラグが、実装でも本当に未対応であること。
+
+    実装が対応したのに手順書が「未対応」のままだと ③ はその knob を使わない
+    (**呼べるのに使われない** = 露出していないのと同じ)。逆に対応していないものを
+    「使える」と書けば、段が黙って revert される。
+    """
+    from tsumugin.mcp._recipe_spec import KNOWN_STAGE_FLAGS
+    from tsumugin.topas.flags import SUPPORTED_FLAGS
+
+    unsupported = KNOWN_STAGE_FLAGS - SUPPORTED_FLAGS
+    for flag in unsupported:
+        assert f"`{flag}` は未対応" in analyze_text, (
+            f"{flag} は TOPAS 未対応なのに手順書がそう書いていない"
+        )
+    for flag in SUPPORTED_FLAGS & KNOWN_STAGE_FLAGS:
+        assert f"`{flag}` は未対応" not in analyze_text, (
+            f"{flag} は対応済みなのに手順書が未対応と書いている"
+        )

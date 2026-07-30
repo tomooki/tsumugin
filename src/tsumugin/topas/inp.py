@@ -139,11 +139,14 @@ class PhaseHistogramTerms:
     preferred_orientation: "str | None" = None
     """選択配向マクロの行 (例 ``PO_Spherical_Harmonics(sh, 4)``)。"""
     peak_type: "str | None" = None
-    """ピーク形状マクロの行 (例 ``TCHZ_Peak_Type(...)``)。
+    """ピーク形状マクロの行 (例 ``TCHZ_Peak_Type(...)``)。**複数行でもよい**。
 
     **``str`` ブロックの中に置く**必要がある (実測: xdd 直下だと
     ``Cannot locate pk_type from gen_fit_obj`` で異常終了する)。ピーク形状は相と
     ヒストグラムの組に属する量なので、モデル上もここが正しい置き場所である。
+
+    TOF は幅パラメータの ``prm`` 宣言を伴うので**複数行**になる
+    (`instrument.tof_peak_type`)。レンダリング側が行ごとに字下げする。
     """
     extras: tuple[str, ...] = ()
     """そのまま str ブロックへ差し込む追加行。"""
@@ -210,8 +213,23 @@ class TopasHistogram:
     weight: float = 1.0
     is_neutron: bool = False
     is_tof: bool = False
+    is_bragg_brentano: bool = False
+    """反射光学系か。円筒吸収補正を当ててよいのは**平板でない**試料だけ。"""
+    calculation_step: float = 1.0
+    """計算格子 (x 軸の単位: CW は度、TOF は µs)。**必ず明示する**。
+
+    TOPAS の既定は ``x_calculation_step too small or not defined`` で異常終了することがある
+    (実測: 11BM 放射光の 0.001° 刻みと実 POWGEN TOF の双方)。``Yobs_dx_at(Xo)`` のような
+    適応式も、計算ピークがデータ範囲の外へ出た瞬間に同じエラーになるので使えない。
+    データの最小ビン幅を使う (`instrument.histogram_to_topas`)。
+    """
     tof_calibration: "Mapping[str, float] | None" = None
     """TOF の ``difc``/``difa``/``zero`` (GSAS の difC/difA/Zero と直写像)。"""
+    profile_seed: "Mapping[str, float] | None" = None
+    """``TCHZ_Peak_Type`` の初期値 (**TOPAS 側のキー** ``u,v,w,z,x,y``)。
+
+    装置ファイルの Caglioti 係数を `instrument.gsas_cw_profile_to_tchz` で換算したもの。
+    """
     phase_terms: Mapping[str, PhaseHistogramTerms] = field(default_factory=dict)
     """相名 → HAP 項。"""
     extras: tuple[str, ...] = ()
@@ -345,6 +363,13 @@ class TopasDocument:
     """設定時、``out`` ブロックで r_wp/gof/r_exp と相分率を書き出す (決定論的パース対象)。"""
     preamble: tuple[str, ...] = ()
     """``iters`` の後に差し込む追加の制御行。"""
+    shared_params: tuple[Param, ...] = ()
+    """トップレベルの共有 ``prm`` (名前必須)。
+
+    **複数の ``str`` ブロックから 1 つの値を参照させる**ための口。試料吸収の µR のように
+    「相ごとに別の値を持つのは物理的に誤り」だが ``scale_pks`` が ``str`` にしか書けない量が
+    これに当たる。名前が重複すると TOPAS は黙って共有するため、宣言はここに 1 度だけ置く。
+    """
 
     # ------------------------------------------------------------ 部品
 
@@ -362,12 +387,27 @@ class TopasDocument:
         lines.extend(self.preamble)
         return lines
 
-    def _results_block(self) -> list[str]:
+    def _results_block(self, index: int) -> list[str]:
+        """結果レコードの出力行。
+
+        ``out "file"`` は先頭ヒストグラムだけ (下記)。``Out(Get(r_wp))`` は**書かれた ``xdd``
+        の値**を返すので、各 xdd に ``hist_rwp`` として内訳を出す。総合指標は ``.out`` の
+        先頭行から採るのでここには依存しない (`engine._metrics`)。
+        """
         if not self.results_path:
             return []
-        out: list[str] = [f'{_INDENT_HIST}out "{self.results_path}"']
-        for key in ("r_wp", "gof", "r_exp", "r_wp_dash"):
-            out.append(f'{_INDENT_HIST}Out(Get({key}), "{key}\\t%.8f\\n")')
+        out: list[str] = []
+        if index == 0:
+            # 【``out`` は先頭だけ】: ``append`` を付けない限りファイルを**切り詰めて**開く。
+            #   xdd ごとに出すと joint で 2 本目が 1 本目のレコードを消す (r_wp すら残らない)。
+            out.append(f'{_INDENT_HIST}out "{self.results_path}"')
+            for key in ("r_wp", "gof", "r_exp", "r_wp_dash"):
+                out.append(f'{_INDENT_HIST}Out(Get({key}), "{key}\\t%.8f\\n")')
+        # 【キーに裸の数字を使わない】: `parse_records` は末尾の数値列を (値, esd) とみなす
+        #   ので、索引 ``0`` はキーでなく値として吸われてレコードごと落ちる。
+        out.append(
+            f'{_INDENT_HIST}Out(Get(r_wp), "hist_rwp\\th{index}\\t%.8f\\n")'
+        )
         return out
 
     def _site_line(
@@ -450,7 +490,10 @@ class TopasDocument:
             lines.append(self._site_line(phase, site, shared))
         if terms.peak_type:
             # ピーク形状は str ブロック内でなければ TOPAS が解決できない (実測)。
-            lines.append(f"{_INDENT_PHASE}{terms.peak_type}")
+            # TOF は幅パラメータの宣言を伴う複数行になるので改行を許す。
+            lines.extend(
+                f"{_INDENT_PHASE}{part}" for part in terms.peak_type.splitlines() if part
+            )
         scale = terms.scale or Param(1e-4)
         scale_name = f"{_slug(name)}_scale_h{index}"
         if self.results_path and not scale.name:
@@ -570,18 +613,40 @@ class TopasDocument:
     ) -> list[str]:
         lines: list[str] = []
         if hist.is_tof:
-            lines.append(f'TOF_XYE("{hist.data_path}", 0)')
+            # 【``TOF_XYE`` マクロを使わず展開形を書く】: マクロは計算格子
+            #   (``x_calculation_step``) を引数で受け取るが、こちらはデータから算出した値を
+            #   後段で自前に置きたい (マクロへ 0 を渡すと
+            #   ``x_calculation_step too small or not defined`` で異常終了する)。
+            #   ``neutron_data`` と計数重みはマクロの中身をそのまま写す。
+            #   格子の値そのものについては `TopasHistogram.calculation_step` を参照
+            #   (**適応式は使えない** — 計算ピークがデータ範囲の外へ出ると同じエラーになる)。
+            lines.append(f'xdd "{hist.data_path}" xye_format')
+            if hist.is_neutron:
+                lines.append(f"{_INDENT_HIST}neutron_data")
+            lines.append(
+                f"{_INDENT_HIST}weighting = If(SigmaYobs < 1, 1, 1/SigmaYobs^2);"
+            )
+            lines.append(
+                f"{_INDENT_HIST}x_calculation_step {_fmt(hist.calculation_step)}"
+            )
         else:
             lines.append(f'xdd "{hist.data_path}"')
-        if hist.is_neutron:
-            lines.append(f"{_INDENT_HIST}neutron_data")
+            lines.append(
+                f"{_INDENT_HIST}x_calculation_step {_fmt(hist.calculation_step)}"
+            )
+            if hist.is_neutron:
+                lines.append(f"{_INDENT_HIST}neutron_data")
         if hist.is_tof and hist.tof_calibration:
             cal = hist.tof_calibration
+            # 【引数順は (t0, t1, t2) = (Zero, difC, difA)】: マクロの実体は
+            #   ``pk_xo = t0 + t1·d + t2·d²``。取り違えると difC が定数項・difA が d の係数に
+            #   入り**ピーク位置がまったく別の d 依存になる**。ピークは「どこかに立つ」ので
+            #   tc.exe は正常終了し、Rwp だけが悪い状態で完走する。
             lines.append(
                 f"{_INDENT_HIST}TOF_x_axis_calibration("
+                f"!t0_h{index}, {_fmt(cal.get('zero', 0.0))}, "
                 f"!difc_h{index}, {_fmt(cal.get('difc', 0.0))}, "
-                f"!difa_h{index}, {_fmt(cal.get('difa', 0.0))}, "
-                f"!t0_h{index}, {_fmt(cal.get('zero', 0.0))})"
+                f"!difa_h{index}, {_fmt(cal.get('difa', 0.0))})"
             )
         lines.extend(f"{_INDENT_HIST}{line}" for line in hist.preamble)
         if hist.weight != 1.0:
@@ -597,12 +662,7 @@ class TopasDocument:
             prefix = "@ " if hist.background.refine else ""
             lines.append(f"{_INDENT_HIST}bkg {prefix}{coeffs}")
         lines.extend(f"{_INDENT_HIST}{extra}" for extra in hist.extras)
-        # 【結果ブロックは先頭ヒストグラムだけ】: `out "file"` は ``append`` を付けない限り
-        #   ファイルを**切り詰めて**開く。xdd ごとに出すと joint で 2 本目が 1 本目の
-        #   レコードを消してしまう (r_wp すら残らない)。指標は文書全体で 1 つなので
-        #   先頭にだけ置く。
-        if index == 0:
-            lines.extend(self._results_block())
+        lines.extend(self._results_block(index))
         for phase in self.phases:
             lines.append("")
             terms = hist.phase_terms.get(phase.phase_name, PhaseHistogramTerms())
@@ -617,11 +677,13 @@ class TopasDocument:
         shared_lines, shared = _shared_prm_plan(self.phases, share=share)
         group_lines, group_map = _group_prm_plan(self.phases)
         shared = {**shared, **group_map}
+        own_lines = [f"prm {render_param(p)}" for p in self.shared_params]
         lines = self._header()
-        if shared_lines or group_lines:
+        if shared_lines or group_lines or own_lines:
             lines.append("")
             lines.extend(shared_lines)
             lines.extend(group_lines)
+            lines.extend(own_lines)
         for index, hist in enumerate(self.histograms):
             lines.append("")
             lines.extend(self._histogram_block(index, hist, shared))

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 
@@ -276,3 +277,116 @@ def test_duplicate_labels_are_rejected():
     )
     with pytest.raises(ValueError, match="重複"):
         structure_to_topas_phase(struct, "x")
+
+
+# ---------------- 特殊位置の精度 (#172) ----------------
+
+#: P6₃/m の一般位置 (fluoroapatite)。CIF が対称操作を持つときと同じ経路を通す。
+_P63M = (
+    "x,y,z", "-y,x-y,z", "-x+y,-x,z", "-x,-y,z+1/2", "y,-x+y,z+1/2", "x-y,x,z+1/2",
+    "-x,-y,-z", "y,-x+y,-z", "x-y,x,-z", "x,y,-z+1/2", "-y,x-y,-z+1/2", "-x+y,-x,-z+1/2",
+)
+
+
+def _hexagonal(atoms) -> Structure:
+    return Structure(
+        a=9.37172, b=9.37172, c=6.88587, alpha=90.0, beta=90.0, gamma=120.0,
+        spacegroup_hm="P 63/m", it_number=176, atoms=atoms, symops=_P63M,
+    )
+
+
+def test_special_position_coordinates_are_written_at_full_precision():
+    """**CIF の 6 桁 1/3 では TOPAS が 4f を一般位置と誤り、原子が 8 個増える** (#172)。
+
+    TOPAS は多重度を座標の一致 (許容差 ~1e-8) で決めるので、``0.333333`` のままでは
+    4f サイトが多重度 12 へ化ける。実 fluoroapatite で cell_mass 1008.6 → 1329.2、
+    Rwp 42%。ピーク位置は正しいままなので Rwp からは原因に辿り着けない。
+    """
+    struct = _hexagonal(
+        (Atom(label="CA1", type_symbol="Ca", x=0.333333, y=0.666667, z=0.001913,
+              occ=1.0, uiso=0.006),)
+    )
+    site = structure_to_topas_phase(struct, "FAP").sites[0]
+    assert abs(site.x.value - 1 / 3) < 1e-12
+    assert abs(site.y.value - 2 / 3) < 1e-12
+    assert site.z.value == pytest.approx(0.001913)  # 自由軸は動かさない
+
+
+def test_general_position_coordinates_are_not_touched():
+    struct = _hexagonal(
+        (Atom(label="O7", type_symbol="O", x=0.33951, y=0.258126, z=0.070641,
+              occ=1.0, uiso=0.0067),)
+    )
+    site = structure_to_topas_phase(struct, "FAP").sites[0]
+    assert (site.x.value, site.y.value, site.z.value) == (0.33951, 0.258126, 0.070641)
+
+
+def test_snapping_does_not_change_which_axes_are_free():
+    """吸着は**判定を変えない** — 自由軸判定と同じサイト対称群から出るため。"""
+    struct = _hexagonal(
+        (
+            Atom(label="CA1", type_symbol="Ca", x=0.333333, y=0.666667, z=0.001913,
+                 occ=1.0, uiso=0.006),
+            Atom(label="F4", type_symbol="F", x=0.0, y=0.0, z=0.25, occ=1.0, uiso=0.014),
+            Atom(label="O7", type_symbol="O", x=0.33951, y=0.258126, z=0.070641,
+                 occ=1.0, uiso=0.0067),
+        )
+    )
+    free = {s.label: s.free_coord_axes for s in structure_to_topas_phase(struct, "FAP").sites}
+    assert free == {"CA1": ("z",), "F4": (), "O7": ("x", "y", "z")}
+
+
+def test_snapping_is_skipped_when_the_cif_has_no_symops():
+    """対称操作が無ければ触らない (判定できないものは動かさない)。"""
+    struct = Structure(
+        a=9.37172, b=9.37172, c=6.88587, alpha=90.0, beta=90.0, gamma=120.0,
+        spacegroup_hm="P 63/m", it_number=176, symops=(),
+        atoms=(Atom(label="CA1", type_symbol="Ca", x=0.333333, y=0.666667, z=0.0,
+                    occ=1.0, uiso=0.006),),
+    )
+    site = structure_to_topas_phase(struct, "FAP").sites[0]
+    assert site.x.value == 0.333333
+
+
+_SITE_LINE = re.compile(r"^\s*site\s+(\S+)\s+x\s+(\S+)\s+y\s+(\S+)\s+z\s+(\S+)", re.M)
+
+
+def _rendered_coords(structure: Structure, name: str) -> "dict[str, tuple[float, ...]]":
+    """**INP の字面から**座標を読み戻す (TOPAS が実際に読む値で検算するため)。"""
+    from tsumugin.topas.inp import Param, TopasDocument, TopasHistogram
+
+    doc = TopasDocument(
+        histograms=(TopasHistogram(data_path="d.xye", background=Param(0.0)),),
+        phases=(structure_to_topas_phase(structure, name),),
+    )
+    return {
+        m.group(1): tuple(float(m.group(i)) for i in (2, 3, 4))
+        for m in _SITE_LINE.finditer(doc.render())
+    }
+
+
+def test_rendered_coordinates_satisfy_the_topas_site_merge_tolerance():
+    """**INP に書き出された数字**がサイト対称を 1e-8 精度で満たすこと (#172 の恒久ガード)。
+
+    吸着を実装した後でも、整形が桁を落とせば同じ欠陥が戻る。TOPAS が多重度判定に使う量
+    (`site_symmetry_residual`) を**レンダリング結果から**測ることで、float の値だけでなく
+    字面の精度まで含めて縛る。
+    """
+    from tsumugin.topas.symmetry import SITE_MERGE_TOLERANCE, site_symmetry_residual
+
+    struct = _hexagonal(
+        (
+            Atom(label="CA1", type_symbol="Ca", x=0.333333, y=0.666667, z=0.001913,
+                 occ=1.0, uiso=0.006),
+            Atom(label="CA2", type_symbol="Ca", x=0.241976, y=0.992603, z=0.25,
+                 occ=1.0, uiso=0.0046),
+            Atom(label="F4", type_symbol="F", x=0.0, y=0.0, z=0.25, occ=1.0, uiso=0.014),
+            Atom(label="O7", type_symbol="O", x=0.33951, y=0.258126, z=0.070641,
+                 occ=1.0, uiso=0.0067),
+        )
+    )
+    for label, position in _rendered_coords(struct, "FAP").items():
+        residual = site_symmetry_residual(_P63M, position)
+        assert residual < SITE_MERGE_TOLERANCE, (
+            f"{label}: 残差 {residual:.3e} — TOPAS が特殊位置を一般位置へ展開する"
+        )
