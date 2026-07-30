@@ -105,35 +105,51 @@ def _specs(dataset: str):
 
 
 def _negative_cell_alone_recipe(hists, phases, bg):
-    """N0 (負の対照): S1 で**格子を単独解放**し、試料変位を末尾へ回す。
+    """N0 (負の対照): **既定レシピを変形**して S1 から変位を抜き、構造段の後へ回す。
 
-    F1 実測でこの配置は T3 を 6.66 → **14.38% + 格子発散**にする。相関群は割らない
-    (格子/変位/Caglioti はそれぞれ丸ごと) ので生成時検証は通る — **順序の失敗**だけを
-    測るための対照であり、REQ-SAR-301 の問い (群の分割) とは entangle させない。
+    ⚠ **手組みの段列にしてはならない**。最初の実装は段列を一から書いており、T2 の
+    ``occupancy`` 段 (混合占有アダプタ) と T3 の ``hydrostatic_strain`` (温度差 Dij) を
+    落としていた。結果 T2 が 15.73% で壊れたが、それは**測ろうとしている順序の失敗ではなく
+    アダプタの欠落**であり、対照として無意味になる (F1 の問いは「変位をいつ解放するか」
+    だけ)。既定から**変位の位置だけ**を動かすことで他のアダプタは全部保たれる。
+
+    F1 実測ではこの配置が T3 を 6.66 → **14.38% + 格子発散**にした。
     """
     from tsumugin.autorietveld.model import RefinementStage
-    from tsumugin.autorietveld.recipe import _displacement_map, _finalize
+    from tsumugin.autorietveld.recipe import _finalize, build_recipe
 
-    disp = _displacement_map(hists)
-    stages = [
-        RefinementStage(label="scale+background",
-                        flags={"scale": True, "background": {"coeffs": bg}},
-                        note="起点"),
-        RefinementStage(label="cell", flags={"cell": True},
-                        note="★負の対照: 格子を単独解放 (F1 で T3 を壊す配置)"),
-        RefinementStage(label="profile+size_strain",
-                        flags={"profile": ["U", "V", "W"], "size_strain": True},
-                        note="プロファイル + サイズ/歪み"),
-        RefinementStage(label="coords", flags={"coords": True}, note="座標"),
-        RefinementStage(label="uiso", flags={"uiso": True}, note="Uiso"),
-        RefinementStage(label="displacement", flags={"displacement": disp},
-                        note="★負の対照: 試料変位を末尾へ"),
-    ]
-    if any(not h.radiation.is_neutron for h in hists):
-        stages.append(RefinementStage(label="profile_lorentzian",
-                                      flags={"profile_lorentzian": True}, note="X 線 X,Y+Zero"))
-        stages.append(RefinementStage(label="profile_asymmetry",
-                                      flags={"profile_asymmetry": True}, note="X 線 SH/L"))
+    base = build_recipe(hists, phases, background_coeffs=bg)
+    moved = None
+    stages: list[RefinementStage] = []
+    for st in base:
+        label = st.label.split(" ", 1)[1] if " " in st.label else st.label
+        flags = dict(st.flags)
+        if "displacement" in flags:
+            moved = flags.pop("displacement")
+            # 変位を抜いた残り (格子・Dij・多相のプロファイル併合) はその場に残す。
+            stages.append(
+                RefinementStage(
+                    label=label.replace("+displacement", ""),
+                    flags=flags,
+                    note=st.note + " [N0: 変位を抜いて格子を単独解放]",
+                )
+            )
+            continue
+        stages.append(RefinementStage(label=label, flags=flags, note=st.note))
+    if moved is None:  # 変位アダプタが無い構成 (対照にならないので既定のまま)
+        return base
+    # 構造段 (uiso) の直後へ差し込む — F1 の「…構造段… → 変位」配置。
+    idx = next(
+        (i + 1 for i, st in enumerate(stages) if st.label.endswith("uiso")), len(stages)
+    )
+    stages.insert(
+        idx,
+        RefinementStage(
+            label="displacement",
+            flags={"displacement": moved},
+            note="★負の対照: 試料変位を構造段の後へ (F1 で T3 を壊した配置)",
+        ),
+    )
     return _finalize(stages, hists)
 
 

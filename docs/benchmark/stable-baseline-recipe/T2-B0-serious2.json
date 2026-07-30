@@ -1,0 +1,675 @@
+{
+  "dataset": "T2",
+  "recipe": "B0-serious2",
+  "axis": "freeze_semantics",
+  "rwp": 4.323335030556779,
+  "gof": 1.6248317522136475,
+  "n_obs": 2678,
+  "n_stages": 53,
+  "n_reverted": 28,
+  "validity": "pass",
+  "validity_failed_checks": [],
+  "frozen_parameters": [],
+  "final_polish_applied": false,
+  "n_undetermined": 1,
+  "stages": [
+    {
+      "index": 0,
+      "label": "S0 bkg+scale",
+      "rwp": 25.416134470008373,
+      "gof": 9.519862727491628,
+      "n_params": 7,
+      "converged": true,
+      "reverted": false,
+      "note": "背景 + スケール (以降 常時解放)"
+    },
+    {
+      "index": 1,
+      "label": "S1 cell",
+      "rwp": 17.639588572676075,
+      "gof": 6.608318268796556,
+      "n_params": 8,
+      "converged": true,
+      "reverted": false,
+      "note": "格子のみ"
+    },
+    {
+      "index": 2,
+      "label": "S2 displacement",
+      "rwp": 15.877204804689413,
+      "gof": 5.949190702533062,
+      "n_params": 9,
+      "converged": true,
+      "reverted": false,
+      "note": "試料変位のみ"
+    },
+    {
+      "index": 3,
+      "label": "S3 profile_W",
+      "rwp": 14.905771688831651,
+      "gof": 5.584148573306157,
+      "n_params": 8,
+      "converged": true,
+      "reverted": false,
+      "note": "プロファイル W (累積)"
+    },
+    {
+      "index": 4,
+      "label": "S4 profile_WU",
+      "rwp": 14.292040783789203,
+      "gof": 5.355229538012205,
+      "n_params": 9,
+      "converged": true,
+      "reverted": false,
+      "note": "プロファイル W,U (累積)"
+    },
+    {
+      "index": 5,
+      "label": "S5 profile_WUV",
+      "rwp": 14.265515357313197,
+      "gof": 5.346292104507866,
+      "n_params": 10,
+      "converged": true,
+      "reverted": false,
+      "note": "プロファイル W,U,V (累積)"
+    },
+    {
+      "index": 6,
+      "label": "S6 cell+displacement",
+      "rwp": 14.011909663597482,
+      "gof": 5.251248211314378,
+      "n_params": 10,
+      "converged": true,
+      "reverted": false,
+      "note": "格子 + 変位 (収束確認。以降 格子は常時解放)"
+    },
+    {
+      "index": 7,
+      "label": "S7 size_strain",
+      "rwp": 13.868652539022577,
+      "gof": 5.197559689389603,
+      "n_params": 10,
+      "converged": true,
+      "reverted": false,
+      "note": "サイズ / 微小歪み"
+    },
+    {
+      "index": 8,
+      "label": "S8 coords_z0",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": false,
+      "note": "座標 (重い方から 1 番目の元素)"
+    },
+    {
+      "index": 9,
+      "label": "S9 coords_z1",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 2 番目の元素)"
+    },
+    {
+      "index": 10,
+      "label": "S10 coords_z2",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 3 番目の元素)"
+    },
+    {
+      "index": 11,
+      "label": "S11 coords_z3",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 4 番目の元素)"
+    },
+    {
+      "index": 12,
+      "label": "S12 coords_z4",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 5 番目の元素)"
+    },
+    {
+      "index": 13,
+      "label": "S13 coords_z5",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 6 番目の元素)"
+    },
+    {
+      "index": 14,
+      "label": "S14 occupancy_z0",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 1 番目の元素)"
+    },
+    {
+      "index": 15,
+      "label": "S15 occupancy_z1",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 2 番目の元素)"
+    },
+    {
+      "index": 16,
+      "label": "S16 occupancy_z2",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 3 番目の元素)"
+    },
+    {
+      "index": 17,
+      "label": "S17 occupancy_z3",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 4 番目の元素)"
+    },
+    {
+      "index": 18,
+      "label": "S18 occupancy_z4",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 5 番目の元素)"
+    },
+    {
+      "index": 19,
+      "label": "S19 occupancy_z5",
+      "rwp": 12.23802180682744,
+      "gof": 4.5873074190475425,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 6 番目の元素)"
+    },
+    {
+      "index": 20,
+      "label": "S20 aniso_strain",
+      "rwp": 12.233277208058315,
+      "gof": 4.585528950805079,
+      "n_params": 11,
+      "converged": false,
+      "reverted": false,
+      "note": "異方性 微小歪み"
+    },
+    {
+      "index": 21,
+      "label": "S21 uiso",
+      "rwp": 7.4015717786641995,
+      "gof": 2.7749298787678676,
+      "n_params": 12,
+      "converged": true,
+      "reverted": false,
+      "note": "Uiso"
+    },
+    {
+      "index": 22,
+      "label": "S22 cell",
+      "rwp": 7.4015717786641995,
+      "gof": 2.7749298787678676,
+      "n_params": 12,
+      "converged": true,
+      "reverted": true,
+      "note": "格子のみ"
+    },
+    {
+      "index": 23,
+      "label": "S23 displacement",
+      "rwp": 7.401026420154759,
+      "gof": 2.7736852209158362,
+      "n_params": 10,
+      "converged": true,
+      "reverted": false,
+      "note": "試料変位のみ"
+    },
+    {
+      "index": 24,
+      "label": "S24 profile_W",
+      "rwp": 7.3459798710025535,
+      "gof": 2.7525396117996546,
+      "n_params": 9,
+      "converged": true,
+      "reverted": false,
+      "note": "プロファイル W (累積)"
+    },
+    {
+      "index": 25,
+      "label": "S25 profile_WU",
+      "rwp": 7.0862659050774175,
+      "gof": 2.6557223142546245,
+      "n_params": 10,
+      "converged": true,
+      "reverted": false,
+      "note": "プロファイル W,U (累積)"
+    },
+    {
+      "index": 26,
+      "label": "S26 profile_WUV",
+      "rwp": 7.082481177830539,
+      "gof": 2.6548014838640928,
+      "n_params": 11,
+      "converged": true,
+      "reverted": false,
+      "note": "プロファイル W,U,V (累積)"
+    },
+    {
+      "index": 27,
+      "label": "S27 cell+displacement",
+      "rwp": 7.082280594297051,
+      "gof": 2.6542287379606453,
+      "n_params": 10,
+      "converged": true,
+      "reverted": false,
+      "note": "格子 + 変位 (収束確認。以降 格子は常時解放)"
+    },
+    {
+      "index": 28,
+      "label": "S28 size_strain",
+      "rwp": 7.001509593594396,
+      "gof": 2.6239581622040933,
+      "n_params": 10,
+      "converged": true,
+      "reverted": false,
+      "note": "サイズ / 微小歪み"
+    },
+    {
+      "index": 29,
+      "label": "S29 coords_z0",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": false,
+      "note": "座標 (重い方から 1 番目の元素)"
+    },
+    {
+      "index": 30,
+      "label": "S30 coords_z1",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 2 番目の元素)"
+    },
+    {
+      "index": 31,
+      "label": "S31 coords_z2",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 3 番目の元素)"
+    },
+    {
+      "index": 32,
+      "label": "S32 coords_z3",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 4 番目の元素)"
+    },
+    {
+      "index": 33,
+      "label": "S33 coords_z4",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 5 番目の元素)"
+    },
+    {
+      "index": 34,
+      "label": "S34 coords_z5",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "座標 (重い方から 6 番目の元素)"
+    },
+    {
+      "index": 35,
+      "label": "S35 occupancy_z0",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 1 番目の元素)"
+    },
+    {
+      "index": 36,
+      "label": "S36 occupancy_z1",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 2 番目の元素)"
+    },
+    {
+      "index": 37,
+      "label": "S37 occupancy_z2",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 3 番目の元素)"
+    },
+    {
+      "index": 38,
+      "label": "S38 occupancy_z3",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 4 番目の元素)"
+    },
+    {
+      "index": 39,
+      "label": "S39 occupancy_z4",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 5 番目の元素)"
+    },
+    {
+      "index": 40,
+      "label": "S40 occupancy_z5",
+      "rwp": 6.675766878658136,
+      "gof": 2.5023484525265096,
+      "n_params": 11,
+      "converged": true,
+      "reverted": true,
+      "note": "占有率 (重い方から 6 番目の元素)"
+    },
+    {
+      "index": 41,
+      "label": "S41 aniso_strain",
+      "rwp": 6.6738209686412056,
+      "gof": 2.501619046451054,
+      "n_params": 11,
+      "converged": true,
+      "reverted": false,
+      "note": "異方性 微小歪み"
+    },
+    {
+      "index": 42,
+      "label": "S42 uiso",
+      "rwp": 6.624685343181573,
+      "gof": 2.4836666921505954,
+      "n_params": 12,
+      "converged": true,
+      "reverted": false,
+      "note": "Uiso"
+    },
+    {
+      "index": 43,
+      "label": "S43 all_open",
+      "rwp": 5.491187628187723,
+      "gof": 2.063354999534621,
+      "n_params": 24,
+      "converged": true,
+      "reverted": false,
+      "note": "全開放 (収束確認)"
+    },
+    {
+      "index": 44,
+      "label": "S44 cum_cell",
+      "rwp": 5.490027736007471,
+      "gof": 2.0629191613351106,
+      "n_params": 24,
+      "converged": true,
+      "reverted": false,
+      "note": "累積解放"
+    },
+    {
+      "index": 45,
+      "label": "S45 cum_displacement",
+      "rwp": 5.489845295624642,
+      "gof": 2.062850607990822,
+      "n_params": 24,
+      "converged": true,
+      "reverted": false,
+      "note": "累積解放"
+    },
+    {
+      "index": 46,
+      "label": "S46 cum_profile",
+      "rwp": 5.489839190521148,
+      "gof": 2.062848313952325,
+      "n_params": 24,
+      "converged": true,
+      "reverted": false,
+      "note": "累積解放"
+    },
+    {
+      "index": 47,
+      "label": "S47 cum_size_strain",
+      "rwp": 5.489839190521148,
+      "gof": 2.062848313952325,
+      "n_params": 24,
+      "converged": true,
+      "reverted": true,
+      "note": "累積解放"
+    },
+    {
+      "index": 48,
+      "label": "S48 cum_coords",
+      "rwp": 5.489839190521148,
+      "gof": 2.062848313952325,
+      "n_params": 24,
+      "converged": true,
+      "reverted": true,
+      "note": "累積解放"
+    },
+    {
+      "index": 49,
+      "label": "S49 cum_occupancy",
+      "rwp": 5.489839190521148,
+      "gof": 2.062848313952325,
+      "n_params": 24,
+      "converged": true,
+      "reverted": true,
+      "note": "累積解放"
+    },
+    {
+      "index": 50,
+      "label": "S50 cum_aniso_strain",
+      "rwp": 4.323335030556779,
+      "gof": 1.6248317522136475,
+      "n_params": 25,
+      "converged": true,
+      "reverted": false,
+      "note": "累積解放"
+    },
+    {
+      "index": 51,
+      "label": "S51 cum_uiso",
+      "rwp": 4.323335030556779,
+      "gof": 1.6248317522136475,
+      "n_params": 25,
+      "converged": true,
+      "reverted": true,
+      "note": "累積解放"
+    },
+    {
+      "index": 52,
+      "label": "S52 all_open_final",
+      "rwp": 4.323335030556779,
+      "gof": 1.6248317522136475,
+      "n_params": 25,
+      "converged": true,
+      "reverted": true,
+      "note": "全開放"
+    }
+  ],
+  "refined_cells": {
+    "garnet": [
+      12.186665827193943,
+      12.186665827193943,
+      12.186665827193943,
+      90.0,
+      90.0,
+      90.0
+    ]
+  },
+  "cell_esd": {
+    "garnet": [
+      0.0001334029390488726,
+      0.0001334029390488726,
+      0.0001334029390488726,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "atom_coords": {
+    "garnet": {
+      "Y1": [
+        0.125,
+        0.0,
+        0.25
+      ],
+      "Fe1": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "Al1": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "Al2": [
+        0.375,
+        0.0,
+        0.25
+      ],
+      "Fe2": [
+        0.375,
+        0.0,
+        0.25
+      ],
+      "O1": [
+        -0.02945493327497064,
+        0.053914707329412496,
+        0.15063071286021973
+      ]
+    }
+  },
+  "atom_coord_esd": {
+    "garnet": {
+      "Y1": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "Fe1": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "Al1": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "Al2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "Fe2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "O1": [
+        4.953068322430517e-05,
+        5.355845962588906e-05,
+        5.594250139029435e-05
+      ]
+    }
+  },
+  "atom_occupancy": {
+    "garnet": {
+      "Y1": 1.0,
+      "Fe1": 0.5795202946733031,
+      "Al1": 0.4204797053266969,
+      "Al2": 0.7020954859753699,
+      "Fe2": 0.29790451402463014,
+      "O1": 1.0
+    }
+  },
+  "atom_occupancy_esd": {
+    "garnet": {
+      "Y1": null,
+      "Fe1": 0.007560241535326535,
+      "Al1": 0.007560241535326535,
+      "Al2": 0.006203507534083269,
+      "Fe2": 0.006203507534083269,
+      "O1": null
+    }
+  },
+  "atom_uiso": {
+    "garnet": {
+      "Y1": 0.005621759116984794,
+      "Fe1": 0.004901963701327383,
+      "Al1": 0.004901963701327383,
+      "Al2": 0.0013200950601336176,
+      "Fe2": 0.0013200950601336176,
+      "O1": 0.006491281816757419
+    }
+  },
+  "atom_uiso_esd": {
+    "garnet": {
+      "Y1": 0.00030190343086065804,
+      "Fe1": 0.0005033205841847337,
+      "Al1": 0.0005033205841847337,
+      "Al2": 0.0006281641691928805,
+      "Fe2": 0.0006281641691928805,
+      "O1": 0.00024149451298095524
+    }
+  }
+}
