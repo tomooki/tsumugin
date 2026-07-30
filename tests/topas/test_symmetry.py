@@ -10,6 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from .conftest import requires_real_data
+
 from tsumugin.topas.symmetry import free_coord_axes, parse_symop, site_symmetry_projector
 
 # Pnma (#62) の一般位置 8 個 (PbSO4-Wyckoff.cif 由来の書き方)
@@ -105,6 +107,7 @@ def test_unparsable_symops_are_skipped_not_fatal():
     assert free_coord_axes(("x,y,z", "garbage"), (0.11, 0.22, 0.33)) == ("x", "y", "z")
 
 
+@requires_real_data
 def test_real_pbso4_cif_site_symmetry():
     """実 CIF の対称操作で PbSO4 の各サイトの自由軸を求める (回帰)。"""
     from tsumugin.autorietveld.cif_normalize import read_structure_cif

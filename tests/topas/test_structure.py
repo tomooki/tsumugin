@@ -12,6 +12,8 @@ import math
 
 import pytest
 
+from .conftest import requires_real_data
+
 from tsumugin.autorietveld.cif_normalize import Atom, Structure
 from tsumugin.topas.structure import (
     BEQ_PER_UISO,
@@ -142,6 +144,7 @@ def test_genuinely_oblique_angles_are_released_in_the_triclinic_fallback():
     assert phase.free_cell_keys == ("a", "b", "c", "al", "be", "ga")
 
 
+@requires_real_data
 def test_real_pbso4_cif_without_it_number_is_orthorhombic():
     """回帰: 実 CIF (IT 番号なし・H-M のみ) で角度が解放されないこと。"""
     from tsumugin.autorietveld.cif_normalize import read_structure_cif

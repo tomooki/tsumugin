@@ -28,18 +28,29 @@ _PBSO4_XRA = _DATA / "PBSO4.XRA"
 _PBSO4_PRM = _DATA / "INST_XRY.PRM"
 
 
+_DATA: "tuple[Path, Path] | None" = None
+
+
 def _histogram() -> HistogramSpec:
+    assert _DATA is not None, "synthetic_data フィクスチャが未適用"
     return HistogramSpec(
-        data_path=str(_PBSO4_XRA),
-        instrument_path=str(_PBSO4_PRM),
+        data_path=str(_DATA[0]),
+        instrument_path=str(_DATA[1]),
         radiation=Radiation.XRAY_LAB,
         geometry=Geometry.BRAGG_BRENTANO,
-        data_format="GSAS",
+        data_format="XYE",
     )
 
 
+#: スタブ driver 経路は**実データを必要としない** — 構造ファイルは読めさえすればよい。
+#: `docs/benchmark/testdata` は gitignore 対象で CI に無いため、合成 CIF を使って
+#: CI でもこれらのテストが走るようにする (skip で逃げるとカバレッジが CI から消える)。
+_SYNTHETIC: "PhaseSpec | None" = None
+
+
 def _phase() -> PhaseSpec:
-    return PhaseSpec(structure_path=str(_PBSO4_CIF), phase_name="PbSO4")
+    assert _SYNTHETIC is not None, "synthetic_cif フィクスチャが未適用"
+    return _SYNTHETIC
 
 
 def _stages(*labels_rwp):
@@ -55,6 +66,16 @@ class _FakeRun:
         self.out_text = f"r_p 1.0 r_wp {rwp} r_exp 5.0 gof {gof}\n{vals}\n"
         self.results_text = f"r_wp\t{rwp}\ngof\t{gof}\nwt_frac\tPbSO4\t100.0\t0.0\n"
         self.stdout = ""
+
+
+@pytest.fixture(autouse=True)
+def _use_synthetic_inputs(synthetic_cif, synthetic_data):
+    """実データ非依存の入力を既定にする (CI で走らせるため)。"""
+    global _SYNTHETIC, _DATA
+    _SYNTHETIC = PhaseSpec(structure_path=str(synthetic_cif), phase_name="PbSO4")
+    _DATA = synthetic_data
+    yield
+    _SYNTHETIC = _DATA = None
 
 
 @pytest.fixture()
@@ -163,12 +184,18 @@ _real_data = pytest.mark.skipif(
 @pytest.mark.topas
 @_real_data
 def test_real_pbso4_refines_end_to_end(tmp_path):
+    """実データ (gitignore 対象) が要る — CI では `_real_data` で skip される。"""
     """実 CIF + 実データ + 実装置ファイル → 実 tc.exe で自動 Rietveld が回ること。
 
     GSAS-II 経路の X 線単独 Rwp は 11.0% (M7 T3 の内訳)。同等圏に入ることを見る。
     """
+    real_hist = HistogramSpec(
+        data_path=str(_PBSO4_XRA), instrument_path=str(_PBSO4_PRM),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="GSAS",
+    )
+    real_phase = PhaseSpec(structure_path=str(_PBSO4_CIF), phase_name="PbSO4")
     result = eng.run_topas_rietveld(
-        [_histogram()], [_phase()], keep_project=str(tmp_path / "proj")
+        [real_hist], [real_phase], keep_project=str(tmp_path / "proj")
     )
     assert result.backend == "topas"
     assert math.isfinite(result.final_rwp), "全段が失敗した"
@@ -202,7 +229,7 @@ def test_validity_gate_rejects_non_physical_uiso(stub_driver, monkeypatch):
     assert any(not ok and "uiso" in name for name, ok, _ in result.validity.checks)
 
 
-def test_occupancy_is_released_only_for_declared_sites():
+def test_occupancy_is_released_only_for_declared_sites(synthetic_cif):
     """占有率はスケール因子と大域的に縮退するので**全サイト一斉解放をしない**。
 
     実 fluoroapatite で全解放すると occ 0.68-2.24 (1 超 = 非物理) に落ちながら
@@ -214,10 +241,11 @@ def test_occupancy_is_released_only_for_declared_sites():
     from tsumugin.topas.inp import TopasDocument, TopasHistogram
     from tsumugin.topas.structure import structure_to_topas_phase
 
-    structure = read_structure_cif(str(_PBSO4_CIF))
-    spec = PS(structure_path=str(_PBSO4_CIF), phase_name="PbSO4", free_occupancy_labels=("O3",))
+    structure = read_structure_cif(str(synthetic_cif))
+    spec = PS(structure_path=str(synthetic_cif), phase_name="PbSO4",
+              free_occupancy_labels=("O1",))
     phase = structure_to_topas_phase(structure, "PbSO4", spec=spec)
     doc = TopasDocument(histograms=(TopasHistogram(data_path="d.xye"),), phases=(phase,))
     out = apply_stage(doc, RefinementStage(label="occ", flags={"occupancy": True}))
     released = {s.label for s in out.phases[0].sites if s.occupancy.refine}
-    assert released == {"O3"}
+    assert released == {"O1"}

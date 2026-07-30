@@ -26,6 +26,9 @@ def fake_topas(tmp_path, monkeypatch):
     home.mkdir()
     exe = home / "tc.exe"
     exe.write_text("stub")
+    # 【TOPAS の目印】: 名前だけでは Linux の /sbin/tc (traffic control) と区別できないため、
+    #   マクロ定義ファイルの同居を確認する実装になっている。
+    (home / "topas.inc").write_text("' stub macros")
     monkeypatch.setenv("TSUMUGIN_TOPAS_PATH", str(exe))
     return home, exe
 

@@ -18,15 +18,32 @@ from tsumugin.mcp.tools import MCP_TOOLS
 
 def _hist() -> dict:
     return HistogramSpec(
-        data_path="d.xra",
-        instrument_path="i.prm",
+        data_path=str(_DATA[0]),
+        instrument_path=str(_DATA[1]),
         radiation=Radiation.XRAY_LAB,
         geometry=Geometry.BRAGG_BRENTANO,
     ).to_dict()
 
 
+#: 実データ (gitignore 対象) に依存しないよう合成 CIF を使う。スタブ経路では
+#: 構造ファイルは「読めること」しか要らない。
+_SYNTHETIC: "Path | None" = None
+
+
+_DATA: "tuple[Path, Path] | None" = None
+
+
+@pytest.fixture(autouse=True)
+def _use_synthetic_cif(synthetic_cif, synthetic_data):
+    global _SYNTHETIC, _DATA
+    _SYNTHETIC, _DATA = synthetic_cif, synthetic_data
+    yield
+    _SYNTHETIC = _DATA = None
+
+
 def _phase() -> dict:
-    return PhaseSpec(structure_path="p.cif", phase_name="P").to_dict()
+    assert _SYNTHETIC is not None
+    return PhaseSpec(structure_path=str(_SYNTHETIC), phase_name="P").to_dict()
 
 
 # ---------------- list_refinement_backends ----------------
@@ -217,12 +234,11 @@ def test_stability_is_not_silently_dropped_by_the_topas_engine():
     try:
         from tsumugin.autorietveld.model import RefinementStage
 
-        data = Path("docs/benchmark/testdata")
         result = run_topas_rietveld(
-            [HistogramSpec(data_path=str(data / "PBSO4.XRA"),
-                           instrument_path=str(data / "INST_XRY.PRM"),
-                           radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO)],
-            [PhaseSpec(structure_path=str(data / "PbSO4-Wyckoff.cif"), phase_name="P")],
+            [HistogramSpec(data_path=str(_DATA[0]), instrument_path=str(_DATA[1]),
+                           radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+                           data_format="XYE")],
+            [PhaseSpec(structure_path=str(_SYNTHETIC), phase_name="P")],
             recipe=(RefinementStage(label="S0", flags={}),),
             stability=StabilityOptions(require_convergence=True),
         )
@@ -262,15 +278,14 @@ def test_phase_fractions_are_populated_from_scale():
         )
         stdout = ""
 
-    data = Path("docs/benchmark/testdata")
     original = eng.run_tc
     eng.run_tc = lambda *a, **k: _R()
     try:
         result = eng.run_topas_rietveld(
-            [HistogramSpec(data_path=str(data / "PBSO4.XRA"),
-                           instrument_path=str(data / "INST_XRY.PRM"),
-                           radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO)],
-            [PhaseSpec(structure_path=str(data / "PbSO4-Wyckoff.cif"), phase_name="PbSO4")],
+            [HistogramSpec(data_path=str(_DATA[0]), instrument_path=str(_DATA[1]),
+                           radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+                           data_format="XYE")],
+            [PhaseSpec(structure_path=str(_SYNTHETIC), phase_name="PbSO4")],
             recipe=(RefinementStage(label="S0", flags={}),),
         )
     finally:

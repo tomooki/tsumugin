@@ -20,6 +20,9 @@ def fake_tc(tmp_path):
     home.mkdir()
     exe = home / "tc.exe"
     exe.write_text("stub")
+    # 【TOPAS の目印】: 名前だけでは Linux の /sbin/tc (traffic control) と区別できないため、
+    #   マクロ定義ファイルの同居を確認する実装になっている。
+    (home / "topas.inc").write_text("' stub macros")
     return home, exe
 
 
@@ -57,6 +60,7 @@ def test_env_var_precedence(monkeypatch, tmp_path, fake_tc):
     other_home = tmp_path / "TOPAS6"
     other_home.mkdir()
     (other_home / "tc.exe").write_text("stub")
+    (other_home / "topas.inc").write_text("' stub macros")
     monkeypatch.setenv("TSUMUGIN_TOPAS_PATH", str(preferred))
     monkeypatch.setenv("TOPAS_PATH", str(other_home))
     assert av.resolve_tc_exe() == preferred

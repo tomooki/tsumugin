@@ -31,6 +31,16 @@ TOPAS_ENV_VARS: tuple[str, ...] = ("TSUMUGIN_TOPAS_PATH", "TOPAS_PATH")
 _TC_EXE_NAMES: tuple[str, ...] = ("tc.exe", "tc")
 """コンソール実行体のファイル名候補 (Windows / それ以外)。"""
 
+_TOPAS_MARKERS: tuple[str, ...] = ("topas.inc", "TOPAS.INC")
+"""同じディレクトリに在れば TOPAS のインストールとみなす目印。
+
+**``tc`` という名前は TOPAS の専有ではない**: Linux では ``/sbin/tc`` が iproute2 の
+traffic control コマンドである。名前だけで判断すると PATH から**まったく別のバイナリ**を
+掴み、`topas_available()` が True になって gated テストが skip されず、無関係な実行体に
+INP を渡して終了コード 255 で落ちる (CI で実際に発生)。マクロ定義ファイルの同居を
+確認して「本当に TOPAS か」を検証する。
+"""
+
 _DEFAULT_INSTALL_DIRS: tuple[Path, ...] = (
     Path("C:/TOPAS7"),
     Path("C:/TOPAS6"),
@@ -48,8 +58,18 @@ _HINT = (
 )
 
 
+def _looks_like_topas(directory: Path) -> bool:
+    """そのディレクトリが TOPAS のインストールか (マクロ定義ファイルの同居で判定)。"""
+    return any((directory / marker).is_file() for marker in _TOPAS_MARKERS)
+
+
 def _tc_in_dir(directory: Path) -> "Path | None":
-    """ディレクトリ直下の tc 実行体を返す (無ければ None)。"""
+    """ディレクトリ直下の tc 実行体を返す (無ければ None)。
+
+    **同名の別コマンドを掴まない**ため、TOPAS の目印が同居していることを確認する。
+    """
+    if not _looks_like_topas(directory):
+        return None
     for name in _TC_EXE_NAMES:
         candidate = directory / name
         if candidate.is_file():
@@ -61,7 +81,8 @@ def _from_hint(raw: str) -> "Path | None":
     """環境変数の値 (実行体 or ディレクトリ) を tc.exe パスへ解決する。"""
     path = Path(raw).expanduser()
     if path.is_file():
-        return path
+        # 明示指定でも「本当に TOPAS か」は確認する (別の tc を指していたら None)。
+        return path if _looks_like_topas(path.parent) else None
     if path.is_dir():
         return _tc_in_dir(path)
     # 【指定されたのに実在しない】: 握って先へ進まず None を返す (fail closed)。
@@ -87,7 +108,12 @@ def resolve_tc_exe() -> "Path | None":
         if found is not None:
             return found
     which = shutil.which("tc")
-    return Path(which) if which else None
+    if not which:
+        return None
+    # 【PATH の ``tc`` を鵜呑みにしない】: Linux の ``/sbin/tc`` (traffic control) を
+    #   TOPAS と誤認すると、無関係な実行体に INP を渡して落ちる (CI で実際に発生)。
+    candidate = Path(which)
+    return candidate if _looks_like_topas(candidate.parent) else None
 
 
 def topas_available() -> bool:
