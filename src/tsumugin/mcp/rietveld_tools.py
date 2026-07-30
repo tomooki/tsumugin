@@ -42,6 +42,7 @@ from ..autorietveld.search import (
     SearchConfig,
     run_recipe_search,
 )
+from ..errors import TsumuginError
 from ._degrade import degrade_oserror
 from ._recipe_spec import stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
@@ -66,6 +67,7 @@ SearchRunner = Callable[[RecipeCandidate], AutoRietveldResult]
 __all__ = [
     "RIETVELD_TOOLS",
     "auto_rietveld",
+    "list_refinement_backends",
     "propose_data_preprocessing",
     "propose_next_actions",
     "refine_with_revisions",
@@ -452,10 +454,11 @@ def auto_rietveld(
     search_config: Mapping[str, object] | None = None,
     multistart: Mapping[str, object] | None = None,
     seed: int = 0,
+    backend: str = "gsasii",
     runner: Runner | None = None,
     search_runner: SearchRunner | None = None,
 ) -> dict:
-    """spec (JSON) を run_auto_rietveld で実行し段階別/最終メトリクスを構造化して返す (計器)。
+    """spec (JSON) を精密化エンジンで実行し段階別/最終メトリクスを構造化して返す (計器)。
 
     :param histograms: HistogramSpec.to_dict の列
     :param phases: PhaseSpec.to_dict の列
@@ -466,7 +469,12 @@ def auto_rietveld(
         (語彙は ``autorietveld.recipe`` docstring 参照: ``profile_lorentzian``/``tof_profile``/
         ``size_strain``/``preferred_orientation``/``absorption`` 等)。不正なキー/型は
         ``{"error","error_type"}`` へ縮退する (黙って無視しない)。既定 None (追加段階なし・非回帰)。
-    :param max_cyc: 各段階の最大精密化サイクル (``run_auto_rietveld`` へ転送。既定 12 は非回帰)。
+    :param backend: 精密化エンジン。``"gsasii"`` (既定) / ``"topas"`` (M12, Bruker TOPAS)。
+        **先に ``list_refinement_backends`` で可用性を確認すること**。未知の名前は
+        ``{"error","error_type"}`` へ縮退する (綴り間違いを既定へ黙って落とすと、意図と違う
+        エンジンで回った結果に気づけない)。**仮説やフレームを跨いで切り替えないこと** —
+        Rwp/BIC の比較が成り立たなくなる。返り値の ``backend`` キーで出所を確認できる。
+    :param max_cyc: 各段階の最大精密化サイクル (エンジンへ転送。既定 12 は非回帰)。
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
         診断 (WS-1): ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
@@ -561,7 +569,12 @@ def auto_rietveld(
             )
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
-    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc, stability=opts)
+    try:
+        run = runner or _default_gsas_runner(
+            seed, max_cyc=max_cyc, stability=opts, backend=backend
+        )
+    except TsumuginError as exc:  # 未知バックエンド名 / エンジン未導入
+        return {"error": str(exc), "error_type": type(exc).__name__}
     return _result_to_dict(run(inp), inp)
 
 
@@ -590,6 +603,7 @@ def refine_with_revisions(
     max_cyc: int = 12,
     stability: Mapping[str, object] | None = None,
     seed: int = 0,
+    backend: str = "gsasii",
     runner: Runner | None = None,
 ) -> dict:
     """③ が決めた AnalysisAction[] を spec に適用して再実行する (アクチュエータ)。
@@ -614,7 +628,12 @@ def refine_with_revisions(
         opts = StabilityOptions.from_dict(stability)
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
-    run = runner or _default_gsas_runner(seed, max_cyc=max_cyc, stability=opts)
+    try:
+        run = runner or _default_gsas_runner(
+            seed, max_cyc=max_cyc, stability=opts, backend=backend
+        )
+    except TsumuginError as exc:  # 未知バックエンド名 / エンジン未導入
+        return {"error": str(exc), "error_type": type(exc).__name__}
     return _result_to_dict(run(inp), inp)
 
 
@@ -811,8 +830,31 @@ def propose_data_preprocessing(
 
 
 # 【ツールレジストリ断片】: tools.py の MCP_TOOLS へ合流する 4 ツール (要素3 + REQ-SAR-40x)。
+def list_refinement_backends() -> dict:
+    """利用可能な精密化エンジンとその可用性を返す (計器・**副作用なし**)。
+
+    ③ が「今この環境でどのエンジンを ``backend`` 引数に渡せるか」を問える唯一の窓口。
+    ``auto_rietveld`` / ``refine_with_revisions`` / ``sequential_rietveld`` に ``backend`` を
+    渡す**前に**呼ぶこと。
+
+    返り値: ``{"backends": {"gsasii": {"available": bool, "hint": str},
+    "topas": {"available": bool, "tc_path": str|null, "home": str|null, "hint": str}},
+    "default": "gsasii"}``
+
+    ``available`` が false のエンジンを ``backend`` に指定すると、精密化ツール側が
+    ``{"error","error_type"}`` を返す (例外は投げない)。
+    """
+    from ..autorietveld.backends import DEFAULT_BACKEND, describe_backends
+
+    try:
+        return {"backends": describe_backends(), "default": DEFAULT_BACKEND}
+    except Exception as exc:  # noqa: BLE001 — ② は例外を送出しない
+        return {"error": str(exc), "error_type": type(exc).__name__}
+
+
 RIETVELD_TOOLS: Mapping[str, object] = {
     "auto_rietveld": auto_rietveld,
+    "list_refinement_backends": list_refinement_backends,
     "propose_next_actions": propose_next_actions,
     "propose_data_preprocessing": propose_data_preprocessing,
     "refine_with_revisions": refine_with_revisions,

@@ -72,12 +72,11 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "AnalysisInput.extra_stages) と `max_cyc` も ② から到達可能 (`_recipe_spec` 共有ヘルパ)",
     ),
     "topas backend (M12)": (
-        UNEXPOSED,
-        "**実装途上 (M12 T1-T9)**。Bruker TOPAS を第 2 精密化バックエンドとして駆動する境界。"
-        "意図的に段階公開しており、可用性境界 (T1) と INP 生成 (T2-T4) の時点では ② に呼び手が"
-        "無い。M12 T10 で `list_refinement_backends` 新設 + `auto_rietveld`/`sequential_rietveld` の"
-        "`backend` 引数として露出し、本行はそのツール名へ差し替える。露出前に本行が残っていれば"
-        "**それ自体が「③ から使えない」ことの宣言**である (Issue #97 の規律)",
+        "list_refinement_backends",
+        "Bruker TOPAS を第 2 精密化バックエンドとして駆動する境界。③ は "
+        "`list_refinement_backends` で可用性 (tc.exe の解決可否) を確認してから "
+        "`auto_rietveld(backend=\"topas\")` / `refine_with_revisions(backend=...)` で選ぶ。"
+        "返り値の `backend` キーで出所を検算できる (Rwp/BIC を跨いで比較する際の前提条件)",
     ),
     "joint (M4/FR-240)": ("auto_rietveld", "auto_rietveld(histograms=[...]) で多ヒストグラム=joint"),
     "convergence agreement (収束の傍証)": (

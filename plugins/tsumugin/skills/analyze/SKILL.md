@@ -18,9 +18,41 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 | `auto_rietveld` | 計器 (実行) | histograms/phases spec (JSON) → 段階別/最終 Rwp・格子・validity・**spec ハンドル**。任意で `stages` (追加段階, 下記) / `max_cyc` / **`search` (レシピ探索, 下記)** / **`multistart` (収束確認, 下記)** |
 | `propose_data_preprocessing` | 計器 (提案) | 観測ファイルパス → **データレンジ / 背景項数 / 除外領域候補** (下記「精密化する前に」) |
 | `propose_next_actions` | 計器 (診断) | 直前結果 + 残差シグネチャ → `ActionProposal[]` (rationale/priority/**safe**) |
-| `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行。`stages`/`max_cyc` も同様に渡せる |
+| `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行。`stages`/`max_cyc`/`backend` も同様に渡せる |
+| `list_refinement_backends` | 計器 (可用性) | (引数なし) → 各精密化エンジンの `available` と解決パス。`backend` を渡す**前に**呼ぶ |
 
 閉ループ丸ごと (agentic_analyze) は MCP に**無い**。回すのはあなた。
+
+## どの精密化エンジンで回すか (`backend`)
+
+既定は **`"gsasii"`** (GSAS-II)。M12 から **`"topas"`** (Bruker TOPAS) も選べる。
+
+**手順**: `list_refinement_backends` → 目的のエンジンの `available` が `true` であることを確認 →
+`auto_rietveld(..., backend="topas")`。返り値の `backend` キーで**実際にどちらで回ったか**を検算する。
+
+**TOPAS を選ぶのはこういうとき**:
+
+- GSAS-II で異方的な線幅・微細構造が乗り切らず、TOPAS 固有のモデルが要る。
+- **バックエンド間の独立確認を取りたい** — 同じデータと同じ構造から 2 つの独立実装が同じ格子・
+  同じ相分率に落ちれば、大域最適の強い傍証になる (`multistart` の初期値摂動より強い。実装の
+  バグまで含めて独立だから)。**食い違ったらどちらかが間違っている**ので、Rwp が低い方を
+  黙って採らずに原因を追うこと。
+
+**してはならないこと**:
+
+- ⛔ **仮説やフレームを跨いで `backend` を切り替える**。Rwp/BIC の比較が成り立たなくなる。
+  比較するなら全部を同じエンジンで回し直す。
+- ⛔ `available` を確認せずに `backend` を渡す。未導入なら `{"error","error_type"}` が返る。
+- ⛔ 綴りを推測して渡す。未知の名前は**既定へ落とさずエラーになる** (意図と違うエンジンで
+  回った結果に気づけなくなるのを防ぐため)。
+
+**TOPAS 経路の制約** (知らないと詰まる):
+
+- `.gpx` が存在しないので **MEM 系ツール (`mem_density` 等) は使えない**。結果の `gpx_path` は
+  空文字になり、`project_path` に INP/.out が残る。
+- 段階フラグの一部 (`tof_profile` / `absorption` / `hydrostatic_strain` /
+  `preferred_orientation`) は未対応で、指定するとその段が**明示的に失敗して revert される**
+  (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
 
 ## 手順
 
