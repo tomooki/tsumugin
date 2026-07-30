@@ -440,3 +440,33 @@ def test_hoisted_params_respect_staged_release():
     assert "prm PbSO4_a 8.48" in text  # 解放済み → ! 無し
     assert "prm !PbSO4_b 5.4" in text  # 未解放 → ! 付き
     assert "prm !PbSO4_Pb_beq 1.5" in text
+
+
+def test_results_block_is_emitted_once_even_in_joint():
+    """`out "file"` は append 無しだと**切り詰めて**開く。
+
+    xdd ごとに出すと joint で 2 本目が 1 本目のレコードを消し、r_wp すら残らない。
+    """
+    text = _joint_document().render()
+    assert text.count('out "r.txt"') == 1
+
+
+def test_joint_still_emits_the_structural_publication_values():
+    """**持ち上げたから skip** にすると joint でセルが 1 度も出力されず
+
+    `refined_cells`/`cell_esd`/`atom_*` が静かに空になる。持ち上げ先の名前を指して出す。
+    """
+    text = _joint_document().render()
+    # INP には**リテラルの** `\t` (バックスラッシュ + t) が入るので raw 文字列で書く。
+    for record in (r"cell\tPbSO4\ta", r"coord\tPbSO4\tPb\tx", r"occ\tPbSO4\tPb"):
+        assert text.count(record) == 1, f"{record} が 1 回出力されていない"
+
+
+def test_structural_out_records_are_not_duplicated_per_histogram():
+    """構造は全ヒストグラム共通の 1 つの量。xdd ごとに出すと同じレコードが重複する。"""
+    import collections
+
+    text = _joint_document().render()
+    outs = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("Out(")]
+    dupes = [k for k, v in collections.Counter(outs).items() if v > 1]
+    assert not dupes, f"Out が重複している: {dupes}"

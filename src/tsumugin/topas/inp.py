@@ -444,7 +444,10 @@ class TopasDocument:
         #   出力。相名だけで命名すると joint で 2 本の xdd が同名を宣言して衝突する。
         wt_name = f"mvw_wt_{_slug(name)}_h{index}"
         lines.append(f"{_INDENT_PHASE}MVW(0, 0, {wt_name} 0)")
-        if self.results_path:
+        # 【出版値は先頭ヒストグラム由来】: 相分率は GSAS 経路も「先頭ヒストグラム」の
+        #   契約なので揃える。joint で xdd ごとに同じレコードキーを書くと、パーサ側で
+        #   後勝ちになりどちらの値か分からなくなる。
+        if self.results_path and index == 0:
             # 【値と esd を 1 行に】: 値側の書式に改行を入れると esd が次行へ落ちる (実測)。
             #   1 レコード 1 行にしておくとパーサが行単位で完結する。
             lines.append(
@@ -458,42 +461,71 @@ class TopasDocument:
                 f'{_INDENT_PHASE}Out({scale.name or f"{_slug(name)}_scale"}, '
                 f'"scale_val\\t{name}\\t%.8f", "\\t%.8f\\n")'
             )
-            # 精密化後セルを回収する。従属軸 (=Get(a);) は独立変数から復元できるので出さない。
-            for axis, param in phase.cell.items():
-                if param.is_reference or shared.get((name, f"cell.{axis}")):
-                    continue
-                prm_name = param.name or f"{_slug(name)}_{axis}"
+            # 【構造の出版値は先頭ヒストグラムで 1 回だけ】: 構造は全ヒストグラムで共有される
+            #   1 つの量なので、xdd ごとに Out すると同じレコードが重複して書かれる。
+            if index == 0:
+                lines.extend(self._structure_out_lines(phase, shared))
+        lines.extend(f"{_INDENT_PHASE}{extra}" for extra in terms.extras)
+        lines.extend(f"{_INDENT_PHASE}{extra}" for extra in phase.extras)
+        return lines
+
+    def _structure_out_lines(
+        self, phase: TopasPhase, shared: Mapping[tuple[str, str], str]
+    ) -> list[str]:
+        """構造 (セル・座標・占有率・beq) の出版値を ``Out()`` で回収する行。
+
+        **持ち上げた名前も必ず出す**: joint では構造が共有 ``prm`` になるが、出力は同じだけ
+        必要である。「持ち上げたから」と skip すると **joint でセルが 1 度も出力されず**
+        ``refined_cells``/``cell_esd``/``atom_*`` が静かに空になる (実測)。
+        参照式 (従属軸) だけは独立変数から復元できるので出さない。
+        """
+        lines: list[str] = []
+        name = phase.phase_name
+
+        def prm_for(key: str, param: Param, fallback: str) -> "str | None":
+            hoisted = shared.get((name, key))
+            if hoisted:
+                # `1-x` のような式は Out の引数にできない (変数名ではない)。
+                return hoisted if hoisted.isidentifier() else None
+            return None if param.is_reference else (param.name or fallback)
+
+        for axis, param in phase.cell.items():
+            if param.is_reference and not shared.get((name, f"cell.{axis}")):
+                continue
+            prm = prm_for(f"cell.{axis}", param, f"{_slug(name)}_{axis}")
+            if prm:
                 lines.append(
-                    f'{_INDENT_PHASE}Out({prm_name}, '
+                    f'{_INDENT_PHASE}Out({prm}, '
                     f'"cell\\t{name}\\t{axis}\\t%.8f", "\\t%.8f\\n")'
                 )
-            # 【原子の出版値】: 座標・占有率・beq を esd 付きで回収する。**esd の無い精密化値は
-            #   出版できない**うえ、「Rwp は下がったが占有率が非物理」を検出する唯一の手段でもある。
-            #   解放していないものは出さない (固定値を「精密化した」と読ませない)。
-            for site in phase.sites:
-                stem = f"{_slug(name)}_{_slug(site.label)}"
-                for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
-                    if param.is_reference or not param.refine:
-                        continue
-                    prm = param.name or f"{stem}_{axis}"
+        # 【原子の出版値】: 座標・占有率・beq を esd 付きで回収する。**esd の無い精密化値は
+        #   出版できない**うえ、「Rwp は下がったが占有率が非物理」を検出する唯一の手段でもある。
+        #   解放していないものは出さない (固定値を「精密化した」と読ませない)。
+        for site in phase.sites:
+            stem = f"{_slug(name)}_{_slug(site.label)}"
+            for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
+                if not param.refine:
+                    continue
+                prm = prm_for(f"site.{site.label}.{axis}", param, f"{stem}_{axis}")
+                if prm:
                     lines.append(
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"coord\\t{name}\\t{site.label}\\t{axis}\\t%.8f", "\\t%.8f\\n")'
                     )
-                if not site.occupancy.is_reference and site.occupancy.refine:
-                    prm = site.occupancy.name or f"{stem}_occ"
+            if site.occupancy.refine:
+                prm = prm_for(f"occ.{site.label}", site.occupancy, f"{stem}_occ")
+                if prm:
                     lines.append(
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"occ\\t{name}\\t{site.label}\\t%.8f", "\\t%.8f\\n")'
                     )
-                if not site.beq.is_reference and site.beq.refine:
-                    prm = site.beq.name or f"{stem}_beq"
+            if site.beq.refine:
+                prm = prm_for(f"beq.{site.label}", site.beq, f"{stem}_beq")
+                if prm:
                     lines.append(
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"beq\\t{name}\\t{site.label}\\t%.8f", "\\t%.8f\\n")'
                     )
-        lines.extend(f"{_INDENT_PHASE}{extra}" for extra in terms.extras)
-        lines.extend(f"{_INDENT_PHASE}{extra}" for extra in phase.extras)
         return lines
 
     def _histogram_block(
@@ -528,7 +560,12 @@ class TopasDocument:
             prefix = "@ " if hist.background.refine else ""
             lines.append(f"{_INDENT_HIST}bkg {prefix}{coeffs}")
         lines.extend(f"{_INDENT_HIST}{extra}" for extra in hist.extras)
-        lines.extend(self._results_block())
+        # 【結果ブロックは先頭ヒストグラムだけ】: `out "file"` は ``append`` を付けない限り
+        #   ファイルを**切り詰めて**開く。xdd ごとに出すと joint で 2 本目が 1 本目の
+        #   レコードを消してしまう (r_wp すら残らない)。指標は文書全体で 1 つなので
+        #   先頭にだけ置く。
+        if index == 0:
+            lines.extend(self._results_block())
         for phase in self.phases:
             lines.append("")
             terms = hist.phase_terms.get(phase.phase_name, PhaseHistogramTerms())
