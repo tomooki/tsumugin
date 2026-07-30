@@ -340,3 +340,29 @@ def test_a_small_rwp_spread_reports_nothing_extra():
     got = summarize_multistart(starts, MultistartConfig(n_starts=2))
     assert got.is_global_corroborated is True
     assert not any("最良フィット" in w for w in got.warnings)
+
+
+def test_start_failures_report_why_not_just_that_they_failed():
+    """★開始点の失敗**理由**が warnings に残ること。
+
+    非トートロジー: 開始点は子プロセスで走るので `TypeError` などは例外として上がらず
+    「結果なし」に化ける。理由を捨てると「収束確認が空振りした」ことは判っても**なぜか**が
+    判らない (実測: エンジンが受け取らない引数を渡して全開始点が落ちた。Rwp にも例外にも
+    現れなかった)。
+    """
+    starts = (
+        MultistartStart(
+            index=0, perturbation=StartPerturbation(cell_scale={"ph": (1.0, 1.0, 1.0)}),
+            result=None, error="TypeError: unexpected keyword argument 'background_coeffs'",
+        ),
+        MultistartStart(
+            index=1, perturbation=StartPerturbation(cell_scale={"ph": (1.007, 1.007, 1.007)}),
+            result=None, error="TypeError: unexpected keyword argument 'background_coeffs'",
+        ),
+    )
+    got = summarize_multistart(starts, MultistartConfig(n_starts=2))
+
+    assert got.is_global_corroborated is False
+    joined = " / ".join(got.warnings)
+    assert "2/2 開始点が失敗" in joined, joined
+    assert "background_coeffs" in joined, "失敗理由が落ちている"

@@ -168,9 +168,11 @@ def optimize_then_confirm(
     cand = selected.candidate
     confirm_kwargs = dict(run_kwargs)
     confirm_kwargs["recipe"] = cand.stages
-    # 背景項数も候補のものを使う (適応候補は autorange と一緒にこれも変える)。呼び出し側の
-    # 元の値のままだと**別の背景モデルで収束確認した**ことになる。
-    confirm_kwargs["background_coeffs"] = cand.background_coeffs
+    # 【`background_coeffs` は渡さない】: これは**レシピを組み立てる**引数であって
+    #   `run_auto_rietveld` は受け取らない (渡すと全開始点が TypeError で落ちる)。採用候補の
+    #   背景項数は `cand.stages` の `background: {"coeffs": N}` に既に焼き込まれているので、
+    #   段列を運べば背景モデルも一緒に運ばれる。呼び出し側が渡してきた分もここで落とす。
+    confirm_kwargs.pop("background_coeffs", None)
     if cand.stability is not None:
         confirm_kwargs["stability"] = cand.stability
     ledger.append(

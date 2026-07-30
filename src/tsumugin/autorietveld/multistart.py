@@ -294,6 +294,18 @@ def summarize_multistart(
     warnings: list[str] = []
     if not executed:
         warnings.append("実行された開始点がありません")
+    # 【失敗の理由を落とさない】: 開始点は子プロセスで走るので例外は上がらず「結果なし」に
+    #   化ける。理由を捨てると「収束確認が空振りした」ことは判っても**なぜか**が判らない
+    #   (実測: エンジンが受け取らない引数を渡して全開始点が TypeError で落ちた)。
+    failed = [s for s in starts if s.result is None and s.error]
+    if failed:
+        seen: list[str] = []
+        for st in failed:
+            if st.error not in seen:
+                seen.append(st.error)
+        warnings.append(
+            f"{len(failed)}/{len(starts)} 開始点が失敗: " + " / ".join(seen[:3])
+        )
     if valid and n_basins > 1:
         warnings.append(f"収束先が {n_basins} ベイスンに分岐 (大域最適は未確定)")
     if executed and not valid:

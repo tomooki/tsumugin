@@ -227,3 +227,33 @@ def test_final_value_comes_from_the_confirmation_not_the_single_shot():
                                 search_runner=rec.search_runner,
                                 multistart_runner=fake_ms)
     assert got.best.final_rwp == pytest.approx(9.5)
+
+
+def test_phase_b_is_only_given_kwargs_that_the_engine_accepts():
+    """★Phase B へ渡す引数が実際に `run_auto_rietveld` の引数であること。
+
+    非トートロジー: 収束確認は開始点を**子プロセス**で回すので、`TypeError` は例外として
+    上がらず「全開始点が失敗」(`corroboration_reason='no_valid_start'`) に化ける。Rwp にも
+    例外にも現れないまま**収束確認が丸ごと空振りする**。実測でこれを起こしたのが
+    `background_coeffs` — レシピを**組む**引数であって精密化の引数ではない (採用候補の背景
+    項数は `cand.stages` に焼き込まれて運ばれる)。
+    """
+    import inspect
+
+    from tsumugin.autorietveld.engine import run_auto_rietveld
+    from tsumugin.autorietveld.multistart import run_multistart_rietveld
+
+    rec = _Recorder({"default": 9.81})
+    fake_ms = _fake_multistart(rec)
+    optimize_then_confirm(
+        [_H], [_P], candidates=("default",), search_runner=rec.search_runner,
+        multistart_runner=fake_ms,
+        # ③/② が渡してくる「レシピを組む」引数。ここで落とさないと子へ漏れる。
+        background_coeffs=24, max_cyc=8,
+    )
+
+    allowed = set(inspect.signature(run_multistart_rietveld).parameters) | set(
+        inspect.signature(run_auto_rietveld).parameters
+    )
+    unknown = set(rec.multistart_kwargs) - allowed
+    assert not unknown, f"Phase B へエンジンが受け取れない引数が渡っている: {sorted(unknown)}"
