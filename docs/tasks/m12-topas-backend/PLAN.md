@@ -76,3 +76,17 @@ uv run ruff check src tests
 M7 の GSAS 経路は GSAS-II が .raw を直接読むため露見していなかった。
 
 **残タスク**: Issue #172 (相対強度) / #173 (残り 4 フラグ) / #174 (T3-joint/T4) / #175 (TopasBackend + stagepolicy)
+
+## /code-review round 1 の修正 (2026-07-31)
+
+自己レビューで 7 件を検出・修正した。**最も重かったのは「② 経由の `backend="topas"` が GSAS 用
+レシピで回っていた」**もので、`build_topas_recipe` を作った意味が ③ から使える唯一の経路で
+失われていた (PR 説明の到達確認が出した段列が GSAS 順だったのが証拠)。ほかに `stability` の
+無言破棄・`search`/`multistart` 併用時の backend 無視・存在しない引数の ③ への案内・多相での
+TCHZ 名衝突・`phase_fractions` 未設定・1:1 テスト欠落 3 本。
+
+**この PR で繰り返した失敗形**: 「エンジンだけ差し替えて周辺 (レシピ・オプション) を
+GSAS のまま流す」。同一契約にしたことで**差し替えが効いているように見えてしまう**のが厄介で、
+段列やオプションの行き先を実際に確認しないと気づけない。ガードは
+`test_topas_backend_uses_the_topas_recipe_not_the_gsas_one` に置き、変異させて fail することを
+実証した。
