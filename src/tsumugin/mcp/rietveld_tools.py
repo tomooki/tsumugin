@@ -1,4 +1,4 @@
-"""薄い MCP 4 ツール (M8 要素3 + REQ-SAR-40x) — 実構造自動 Rietveld の計器+アクチュエータ。
+"""薄い MCP 5 ツール (M8 要素3 + REQ-SAR-40x + M12 バックエンド選択) — 実構造自動 Rietveld の計器+アクチュエータ。
 
 閉ループの丸ごと (agentic_analyze) は **出さない**。③ (Claude Code) が以下を反復駆動して回す
 (architecture.md §0, §6, 二重反転回避):
@@ -35,6 +35,7 @@ from ..autorietveld import (
     StabilityOptions,
     ValidityReport,
 )
+from ..autorietveld.backends import DEFAULT_BACKEND
 from ..autorietveld.search import (
     CANDIDATE_NAMES,
     DEFAULT_CANDIDATES,
@@ -551,6 +552,19 @@ def auto_rietveld(
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)
         opts = StabilityOptions.from_dict(stability)
+        # 【探索経路は backend を運べない】: `_run_search`/`_run_convergence` は候補ごとに
+        #   GSAS 駆動 runner を組むため、ここで backend を黙って落とすと**頼んだのと違う
+        #   エンジンで回った結果**が `backend` キーだけ正しく見えてしまう。明示的に断る。
+        if backend != DEFAULT_BACKEND and (
+            search not in (None, False) or multistart is not None
+        ):
+            return {
+                "error": (
+                    f"backend={backend!r} と search/multistart の併用は未対応です "
+                    f"(レシピ探索・収束確認は現状 GSAS-II 経路のみ)。どちらか一方にしてください。"
+                ),
+                "error_type": "UnsupportedBackendCombination",
+            }
         # 【`if search:` にしない】: 空列 `[]` は falsy なので**黙って探索なし経路**へ落ちる。
         #   「探索しない」(None/false) と「候補が空」(=[]) を区別し、後者は _search_names が
         #   ValueError → error dict へ縮退させる (LOW-5)。
@@ -829,13 +843,15 @@ def propose_data_preprocessing(
     }
 
 
-# 【ツールレジストリ断片】: tools.py の MCP_TOOLS へ合流する 4 ツール (要素3 + REQ-SAR-40x)。
+# 【ツールレジストリ断片】: tools.py の MCP_TOOLS へ合流する 5 ツール
+#   (要素3 + REQ-SAR-40x + M12 `list_refinement_backends`)。
 def list_refinement_backends() -> dict:
     """利用可能な精密化エンジンとその可用性を返す (計器・**副作用なし**)。
 
     ③ が「今この環境でどのエンジンを ``backend`` 引数に渡せるか」を問える唯一の窓口。
-    ``auto_rietveld`` / ``refine_with_revisions`` / ``sequential_rietveld`` に ``backend`` を
-    渡す**前に**呼ぶこと。
+    ``auto_rietveld`` / ``refine_with_revisions`` に ``backend`` を渡す**前に**呼ぶこと。
+    (``sequential_rietveld`` / ``anchored_sequential`` は**まだ ``backend`` を受け取らない** —
+    operando 経路は GSAS-II 固定である。)
 
     返り値: ``{"backends": {"gsasii": {"available": bool, "hint": str},
     "topas": {"available": bool, "tc_path": str|null, "home": str|null, "hint": str}},

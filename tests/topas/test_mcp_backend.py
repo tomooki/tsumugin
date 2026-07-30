@@ -7,6 +7,8 @@ CLAUDE.md の ★: **実装は必ず ②MCP と ③skill に露出させる — 
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tsumugin.autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
@@ -141,3 +143,89 @@ def test_refine_with_revisions_also_takes_backend():
 
     signature = inspect.signature(MCP_TOOLS["refine_with_revisions"])
     assert "backend" in signature.parameters
+
+
+def test_backend_with_search_is_refused_rather_than_silently_using_gsas():
+    """探索経路は backend を運べない。**黙って GSAS で回さず**明示的に断る。
+
+    黙って落とすと「頼んだのと違うエンジンで回った結果」が `backend` キーだけ正しく見える。
+    """
+    out = auto_rietveld([_hist()], [_phase()], backend="topas", search=True)
+    assert out["error_type"] == "UnsupportedBackendCombination"
+    assert "search" in out["error"]
+
+
+def test_backend_with_multistart_is_refused():
+    out = auto_rietveld([_hist()], [_phase()], backend="topas", multistart={"n_starts": 3})
+    assert out["error_type"] == "UnsupportedBackendCombination"
+
+
+def test_default_backend_with_search_is_unaffected(monkeypatch):
+    """既定 (gsasii) の探索経路は従来どおり通ること (非回帰)。"""
+    called: dict = {}
+
+    def fake_search(inp, names, cfg, max_cyc, opts, runner):
+        called["ok"] = True
+        return {"search": {"names": list(names)}}
+
+    monkeypatch.setattr("tsumugin.mcp.rietveld_tools._run_search", fake_search)
+    auto_rietveld([_hist()], [_phase()], search=True)
+    assert called.get("ok") is True
+
+
+def test_topas_backend_uses_the_topas_recipe_not_the_gsas_one(monkeypatch):
+    """**エンジンだけ差し替えてレシピを共有しない**。
+
+    GSAS 順 (格子が先) を TOPAS へ渡すと、格子がピーク幅の不一致を吸収して悪化する
+    (実測 garnet: 23.6% 頭打ち)。② 経由でもバックエンド用のレシピが使われること。
+    """
+    seen: dict = {}
+
+    def fake_topas(histograms, phases, **kwargs):
+        seen["labels"] = [s.label for s in kwargs["recipe"]]
+        from tsumugin.autorietveld.model import AutoRietveldResult, StageResult, ValidityReport
+
+        return AutoRietveldResult(
+            stage_results=(StageResult(label="S", rwp=9.0, gof=1.2, n_params=3, converged=True),),
+            final_rwp=9.0, final_gof=1.2, refined_cells={},
+            validity=ValidityReport(passed=True), backend="topas",
+        )
+
+    monkeypatch.setattr("tsumugin.topas.engine.run_topas_rietveld", fake_topas)
+    auto_rietveld([_hist()], [_phase()], backend="topas")
+    order = seen["labels"]
+    assert any("profile" in x for x in order)
+    profile_at = next(i for i, x in enumerate(order) if "profile" in x)
+    cell_at = next(i for i, x in enumerate(order) if "cell" in x)
+    assert profile_at < cell_at, f"TOPAS 用の順序になっていない: {order}"
+
+
+def test_stability_is_not_silently_dropped_by_the_topas_engine():
+    """TOPAS は stability ゲート未実装。**黙って捨てず**警告として結果に出す。"""
+    from tsumugin.autorietveld.model import StabilityOptions
+    from tsumugin.topas.engine import run_topas_rietveld
+
+    import tsumugin.topas.engine as eng
+
+    class _R:
+        out_text = "r_p 1 r_wp 9.0 r_exp 5 gof 1.2\np 1.0`_0.01\n"
+        results_text = "r_wp\t9.0\ngof\t1.2\n"
+        stdout = ""
+
+    original = eng.run_tc
+    eng.run_tc = lambda *a, **k: _R()
+    try:
+        from tsumugin.autorietveld.model import RefinementStage
+
+        data = Path("docs/benchmark/testdata")
+        result = run_topas_rietveld(
+            [HistogramSpec(data_path=str(data / "PBSO4.XRA"),
+                           instrument_path=str(data / "INST_XRY.PRM"),
+                           radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO)],
+            [PhaseSpec(structure_path=str(data / "PbSO4-Wyckoff.cif"), phase_name="P")],
+            recipe=(RefinementStage(label="S0", flags={}),),
+            stability=StabilityOptions(require_convergence=True),
+        )
+    finally:
+        eng.run_tc = original
+    assert any("stability" in w for w in result.validity.warnings)

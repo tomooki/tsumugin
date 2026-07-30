@@ -36,7 +36,7 @@ from ..errors import TopasRunError
 from ..store import Ledger
 from .driver import run_tc
 from .flags import apply_stage
-from .inp import TopasDocument
+from .inp import TopasDocument, _slug
 from .instrument import histogram_to_topas
 from .parse import TopasRecords, limit_hits_from_out, parse_out_metrics, parse_records
 from .structure import BEQ_PER_UISO, structure_to_topas_phase, to_topas_spacegroup
@@ -82,10 +82,13 @@ def _build_document(
         )
         if not hist.radiation.is_tof:
             # ピーク形状は**相ごと**に str ブロックへ置く (xdd 直下では TOPAS が解決できない)。
-            peak = tchz_line(i)
+            # 名前も相ごとに分ける — TOPAS のパラメータ名は大域なので、多相で同名を複数の
+            # str ブロックへ宣言すると衝突する (全相が 1 つの形状を共有してしまう)。
             converted = converted.with_updates(
                 phase_terms={
-                    phase.phase_name: PhaseHistogramTerms(peak_type=peak)
+                    phase.phase_name: PhaseHistogramTerms(
+                        peak_type=tchz_line(i, phase_key=_slug(phase.phase_name))
+                    )
                     for phase in topas_phases
                 }
             )
@@ -126,15 +129,29 @@ def run_topas_rietveld(
     background_coeffs: int = 6,
     keep_project: "str | None" = None,
     timeout: float = 1800.0,
-    **_unsupported: object,
+    stability: object | None = None,
 ) -> AutoRietveldResult:
     """実構造の自動 Rietveld を **TOPAS** で実行する。
 
     `run_auto_rietveld` と同じ入出力契約 (段階解放 + 悪化段の revert + ledger)。
 
     :param keep_project: 指定すると作業ディレクトリ (INP/.out/results.txt) をここへ残す
+    :param stability: 安定性診断ゲート (`StabilityOptions`)。**TOPAS 経路は未実装**なので、
+        非 None を渡されたら黙って捨てず ``ValidityReport.warnings`` と ledger に残す。
+        黙って無視すると「ゲートを頼んだのに何も見ていない」が Rwp にも note にも現れない
+        (本モジュールが `flags.UnsupportedStageFlagError` で避けているのと同じ病理)。
     :returns: `AutoRietveldResult` (``backend="topas"``, ``gpx_path=""``)
     """
+    unsupported_warnings: list[str] = []
+    if stability is not None:
+        unsupported_warnings.append(
+            "stability ゲート (WS-1/WS-2) は TOPAS バックエンド未実装のため適用していません。"
+        )
+        if ledger is not None:
+            ledger.append(
+                "m12_topas_unsupported",
+                {"option": "stability", "backend": _BACKEND},
+            )
     from .recipe import build_topas_recipe
 
     # 【既定は TOPAS 向け順序】: 共有の `build_recipe` は GSAS 向けに調整されており、
@@ -212,6 +229,16 @@ def run_topas_rietveld(
             name: (esd / 100.0 if esd is not None else None)
             for name, (_, esd) in records.keyed.get("wt_frac", {}).items()
         }
+        # 【Scale 正規化の相分率】: `phase_fractions` は **Scale を和=1 に正規化した値**で、
+        #   `phase_weight_fractions` (wt%) とは**相互変換できない別量** (model.py の注記:
+        #   単位胞質量が相間で違うと乖離し、単一の換算係数は存在しない)。空のままにすると
+        #   `search._fraction_disagreements` や insitu の受理判定が `.get(name, 0.0)` で 0 と
+        #   読み、**相分率の不一致検査が静かに空振りする**。
+        scale_values = {n: v for n, (v, _) in records.keyed.get("scale_val", {}).items()}
+        scale_total = sum(scale_values.values())
+        phase_fractions = (
+            {n: v / scale_total for n, v in scale_values.items()} if scale_total > 0 else {}
+        )
         atom_coords, atom_coord_esd = _atom_coord_maps(records)
         atom_occupancy, atom_occupancy_esd = _atom_scalar_maps(records, "occ")
         atom_beq, atom_beq_esd = _atom_scalar_maps(records, "beq")
@@ -250,8 +277,10 @@ def run_topas_rietveld(
                 atom_occupancy=atom_occupancy,
                 weight_fractions=weight_fractions,
                 converged=math.isfinite(final_rwp),
+                extra_warnings=tuple(unsupported_warnings),
             ),
             n_obs=_count_observations(histograms, work),
+            phase_fractions=phase_fractions,
             phase_weight_fractions=weight_fractions,
             phase_weight_fraction_esd=weight_fraction_esd,
             cell_esd=_cell_esd_map(records, doc),
@@ -412,6 +441,7 @@ def _validity(
     atom_occupancy: "Mapping[str, Mapping[str, float]]",
     weight_fractions: "Mapping[str, float]",
     converged: bool,
+    extra_warnings: tuple[str, ...] = (),
 ) -> ValidityReport:
     """物理妥当性ゲート。**GSAS 経路と同じ `check_validity` を使う** (中立層の共用)。
 
@@ -421,7 +451,7 @@ def _validity(
     """
     from ..autorietveld.validity import check_validity
 
-    return check_validity(
+    report = check_validity(
         refined_cells={k: tuple(v) for k, v in refined_cells.items()},
         reference_cells={k: tuple(v) for k, v in (reference_cells or {}).items()},
         # `check_validity` は相名→**値の並び**を取る (ラベルではなく添字で報告する既存契約)。
@@ -430,3 +460,8 @@ def _validity(
         phase_fractions=dict(weight_fractions) or None,
         converged=converged,
     )
+    if extra_warnings:
+        from dataclasses import replace as _replace
+
+        report = _replace(report, warnings=(*report.warnings, *extra_warnings))
+    return report

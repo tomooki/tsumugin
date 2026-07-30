@@ -398,6 +398,10 @@ class TopasDocument:
             # ピーク形状は str ブロック内でなければ TOPAS が解決できない (実測)。
             lines.append(f"{_INDENT_PHASE}{terms.peak_type}")
         scale = terms.scale or Param(1e-4)
+        if self.results_path and not scale.name:
+            # 【名前を付ける】: 無名の `@` は `Out()` から指せない。名前を付けずに Out だけ
+            #   書くと TOPAS が ``Uninitialized_Variable`` で異常終了する (実測)。
+            scale = replace(scale, name=f"{_slug(name)}_scale")
         lines.append(f"{_INDENT_PHASE}scale {render_param(scale)}")
         if terms.size_lorentzian is not None:
             lines.append(f"{_INDENT_PHASE}CS_L(@, {_fmt(terms.size_lorentzian.value)})")
@@ -414,6 +418,14 @@ class TopasDocument:
             #   1 レコード 1 行にしておくとパーサが行単位で完結する。
             lines.append(
                 f'{_INDENT_PHASE}Out({wt_name}, "wt_frac\\t{name}\\t%.8f", "\\t%.8f\\n")'
+            )
+            # 【Scale そのものも出す】: `phase_fractions` は **Scale を和=1 に正規化した値**で、
+            #   `phase_weight_fractions` (wt%) とは**相互変換できない別量** (model.py の注記:
+            #   単位胞質量が相間で違うと乖離し、換算係数は存在しない)。wt% で代用できないので
+            #   Scale を独立に回収する。空のままだと相分率の不一致検査が静かに空振りする。
+            lines.append(
+                f'{_INDENT_PHASE}Out({scale.name or f"{_slug(name)}_scale"}, '
+                f'"scale_val\\t{name}\\t%.8f", "\\t%.8f\\n")'
             )
             # 精密化後セルを回収する。従属軸 (=Get(a);) は独立変数から復元できるので出さない。
             for axis, param in phase.cell.items():

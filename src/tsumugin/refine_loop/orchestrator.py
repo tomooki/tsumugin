@@ -180,12 +180,15 @@ def _default_gsas_runner(
     resolve_backend(backend)
 
     def runner(inp: AnalysisInput) -> AutoRietveldResult:
-        from tsumugin.autorietveld import build_recipe
+        from tsumugin.autorietveld.backends import resolve_recipe_builder
 
         # 【解決自体は呼び出し時】: ファクトリ生成後に注入されたスタブも拾えるようにする
         #   (既存の注入経路は runner を作った後に monkeypatch する)。
         engine = resolve_backend(backend)
-        recipe = build_recipe(
+        # 【レシピもバックエンドごと】: エンジンだけ差し替えて GSAS 用の順序を渡すと、TOPAS では
+        #   格子がピーク幅の不一致を吸収して悪化する (backends.resolve_recipe_builder 参照)。
+        build = resolve_recipe_builder(backend)
+        recipe = build(
             inp.histograms, inp.phases, background_coeffs=inp.background_coeffs
         )
         recipe = (*recipe, *inp.extra_stages)

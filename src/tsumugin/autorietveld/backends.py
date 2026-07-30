@@ -14,7 +14,13 @@ from typing import Callable
 
 from ..errors import TsumuginError
 
-__all__ = ["BACKEND_NAMES", "DEFAULT_BACKEND", "describe_backends", "resolve_backend"]
+__all__ = [
+    "BACKEND_NAMES",
+    "DEFAULT_BACKEND",
+    "describe_backends",
+    "resolve_backend",
+    "resolve_recipe_builder",
+]
 
 DEFAULT_BACKEND = "gsasii"
 BACKEND_NAMES: tuple[str, ...] = ("gsasii", "topas")
@@ -68,3 +74,28 @@ def describe_backends() -> dict[str, dict[str, object]]:
         },
         "topas": dict(topas_describe()),
     }
+
+
+def resolve_recipe_builder(name: "str | None") -> Callable[..., object]:
+    """バックエンド名から**既定レシピのビルダ**を返す。
+
+    **エンジンだけ切り替えてレシピを共有してはならない**: GSAS は装置ファイルから較正済みの
+    Caglioti U,V,W を読んで始まるので格子を先に解放しても収束するが、TOPAS の TCHZ は装置
+    ファイルを参照せず汎用初期値から始まるため、ピーク幅が合わないまま格子を解放すると格子が
+    幅の不一致を吸収して**悪化する** (実測 garnet: GSAS 順だと S1 cell が 42.7 → 50.7 で revert、
+    最終 23.6% 頭打ち。TOPAS 順なら 11.8%)。
+
+    :raises UnknownBackendError: 未知の名前
+    """
+    key = (name or DEFAULT_BACKEND).strip().lower()
+    if key == "gsasii":
+        from . import build_recipe
+
+        return build_recipe
+    if key == "topas":
+        from ..topas.recipe import build_topas_recipe
+
+        return build_topas_recipe
+    raise UnknownBackendError(
+        f"未知の精密化バックエンドです: {name!r}。利用可能: {', '.join(BACKEND_NAMES)}。"
+    )

@@ -78,3 +78,37 @@ def test_backend_argument_is_shown_on_a_real_tool(analyze_text: str):
     for tool in ("auto_rietveld", "refine_with_revisions"):
         assert tool in analyze_text
         assert "backend" in inspect.signature(MCP_TOOLS[tool]).parameters
+
+
+def test_every_tool_named_as_backend_aware_actually_takes_backend():
+    """**② に無い引数を ③ に案内しない**。
+
+    `list_refinement_backends` の docstring が「このツールに backend を渡せ」と挙げた名前は、
+    実際にその引数を持っていなければならない。初版は `sequential_rietveld` を挙げていたが
+    同ツールに `backend` は無く、③ が渡すと TypeError になる状態だった (誤った指示は
+    実装バグと同等に有害)。
+    """
+    import inspect
+    import re
+
+    doc = inspect.getdoc(MCP_TOOLS["list_refinement_backends"]) or ""
+    # 「``tool`` / ``tool`` に ``backend`` を渡す」の並びを取り出す
+    head = doc.split("を渡す")[0]
+    named = {n for n in re.findall(r"``([a-z_]+)``", head) if n in MCP_TOOLS}
+    assert named, "backend を渡せるツールが docstring から読み取れない"
+    for tool in named:
+        params = inspect.signature(MCP_TOOLS[tool]).parameters
+        assert "backend" in params, f"{tool} は backend を受け取らないのに案内されている"
+
+
+def test_operando_tools_are_declared_as_gsas_only():
+    """逆方向: backend を持たない operando 経路は「持たない」と明記されていること。
+
+    黙って省くと ③ は「書いていないだけで渡せるのだろう」と推測する。
+    """
+    import inspect
+
+    doc = inspect.getdoc(MCP_TOOLS["list_refinement_backends"]) or ""
+    for tool in ("sequential_rietveld", "anchored_sequential"):
+        assert "backend" not in inspect.signature(MCP_TOOLS[tool]).parameters
+        assert tool in doc, f"{tool} が backend 非対応であることが書かれていない"

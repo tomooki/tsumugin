@@ -226,7 +226,11 @@ _TCHZ_DEFAULTS = {"u": 0.0, "v": 0.0, "w": 0.003, "z": 0.0, "x": 0.0, "y": 0.03}
 
 
 def tchz_line(
-    index: int, seed: "dict[str, float] | None" = None, *, refine: bool = False
+    index: int,
+    seed: "dict[str, float] | None" = None,
+    *,
+    refine: bool = False,
+    phase_key: str = "",
 ) -> str:
     """``TCHZ_Peak_Type`` 行 (名前付き 12 引数形) を組む。
 
@@ -237,11 +241,16 @@ def tchz_line(
 
     **この行は ``str`` ブロックの中に置くこと** — xdd 直下だと
     ``Cannot locate pk_type from gen_fit_obj`` で異常終了する (実測)。
+
+    :param phase_key: パラメータ名に混ぜる相の識別子。**TOPAS のパラメータ名は大域**なので、
+        多相で同じ名前を複数の ``str`` ブロックに宣言すると衝突する (エラーか、全相が 1 つの
+        ピーク形状を強制的に共有する)。相ごとに別のピーク形状を持てるよう名前を分ける。
     """
+    tag = f"{index}{'_' + phase_key if phase_key else ''}"
     parts: list[str] = []
     for topas_key, gsas_key in _TCHZ_KEYS:
         value = (seed or {}).get(gsas_key, _TCHZ_DEFAULTS[topas_key])
-        name = f"pk{topas_key}{index}"
+        name = f"pk{topas_key}{tag}"
         prefix = "" if refine else "!"
         parts.append(f"{prefix}{name}, {float(value)!r}")
     return f"TCHZ_Peak_Type({', '.join(parts)})"
