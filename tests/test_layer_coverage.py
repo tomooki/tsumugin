@@ -1866,18 +1866,27 @@ def test_topas_backend_non_exposure_reason_is_still_true():
 
 
 def test_no_mcp_tool_constructs_the_topas_backend():
-    """② のどのツールも `TopasBackend` を組んでいないこと (非露出宣言との整合)。
+    """② のどの関数も `TopasBackend` を**コードとして**参照していないこと (非露出宣言との整合)。
 
     誰かが `discriminate` 等へ配線したらここが落ち、**宣言の更新を強制する**。
     露出そのものを禁じるのではなく、露出と宣言がずれることを禁じる。
+
+    **本ファイルが既に 2 度払った授業料をそのまま使う**:
+
+    - 列挙は `_iter_mcp_functions` (``walk_packages`` + クラス本体)。``glob("*.py")`` だと
+      `mcp` にサブパッケージが生えた瞬間に網が黙って穴だらけになる。
+    - 判定は `_code_without_docs` (docstring/コメントを AST で落とす)。生ソースの部分一致は
+      **「使っていない理由」を説明した docstring で誤検出**し、逆に説明だけ残して配線を消しても
+      通ってしまう (Issue #125 で実測した「落ちないガード」と同型)。
     """
-    mcp_dir = Path(mcp_pkg.__file__).parent
-    offenders = [
-        path.name
-        for path in mcp_dir.glob("*.py")
-        if "TopasBackend" in path.read_text(encoding="utf-8")
-    ]
+    offenders = sorted(
+        {
+            name
+            for name, func, _ in _iter_mcp_functions()
+            if "TopasBackend" in _code_without_docs(func)
+        }
+    )
     assert not offenders, (
-        f"② が TopasBackend を組んでいる: {offenders}。"
+        f"② が TopasBackend を参照している: {offenders}。"
         f"LAYER1_FEATURES['TopasBackend (M12/T9)'] の非露出宣言を更新すること"
     )

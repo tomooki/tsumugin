@@ -243,20 +243,64 @@ def test_lattice_is_released_only_for_the_requested_phase():
     assert "a phase1_a" in text, "相 1 の格子が解放されていない"
 
 
-def test_n_params_counts_what_is_actually_free():
-    """**BIC 比較の一貫性**が壊れないこと (母数を過少申告しない)。
+def _released_cell_params(text: str) -> int:
+    """生成された INP で実際に ``@``/名前付きで解放されている格子パラメータ数。"""
+    count = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        for axis in ("a ", "b ", "c "):
+            if line.startswith(axis) and not line.startswith(f"{axis}!") and "=" not in line:
+                count += 1
+    return count
 
-    `n_params` が実際に解放した数と食い違うと、仮説間の BIC/AIC が意味を失う。
+
+def test_generated_inp_releases_only_the_requested_lattices():
+    """生成された INP で解放されている格子が要求分だけであること。"""
+    text, _, cell_free = _document_for({param_name(1, "lattice.a")})
+    assert _released_cell_params(text) == 3 * len(cell_free) == 3
+
+
+@pytest.mark.topas
+def test_n_params_matches_what_the_generated_inp_actually_releases():
+    """**BIC 比較の一貫性**: `RefinementResult.n_params` が INP の実解放数と一致すること。
+
+    `n_params` が実際に解放した数と食い違うと仮説間の BIC/AIC が意味を失う。純関数側
+    (`_document`) だけを見ても `refine()` が返す `n_params` は検証されない — 数式を書き写す
+    行にタイポが入っても気づけないので、**実際に回して返り値を突き合わせる**。
     """
-    text, scale_free, cell_free = _document_for({param_name(1, "lattice.a")})
-    declared = 3 * len(cell_free) + len(scale_free)
-    # 生成された INP で実際に解放されている格子パラメータ数と一致すること。
-    released = sum(
-        1 for line in text.splitlines() for axis in ("a ", "b ", "c ")
-        if line.strip().startswith(axis) and not line.strip().startswith(f"{axis}!")
-        and "=" not in line
+    backend = TopasBackend()
+    tt = _grid()
+    phases = (_phase(a=4.0, ref="A"), _phase(a=4.3, ref="B"))
+    observed = backend.simulate(phases, tt)
+    free = {param_name(1, "lattice.a"), param_name(0, "scale")}
+    result = backend.refine(
+        RefinementModel(
+            phases=phases, free_params=frozenset(free), two_theta=tt, intensity=observed
+        )
     )
-    assert released == 3 * len(cell_free) == declared - len(scale_free)
+    text, scale_free, cell_free = _document_for(free)
+    assert result.n_params == _released_cell_params(text) + len(scale_free)
+    assert result.n_params == 3 * len(cell_free) + len(scale_free) == 4
+
+
+@pytest.mark.topas
+def test_read_back_only_updates_the_requested_phase():
+    """**要求していない相の格子を書き換えない** (TOPAS が動かした値との食い違いを作らない)。"""
+    backend = TopasBackend()
+    tt = _grid()
+    phases = (_phase(a=4.0, ref="A"), _phase(a=4.3, ref="B"))
+    observed = backend.simulate(phases, tt)
+    result = backend.refine(
+        RefinementModel(
+            phases=phases,
+            free_params=frozenset({param_name(1, "lattice.a")}),
+            two_theta=tt,
+            intensity=observed,
+        )
+    )
+    # 相 0 は解放していないので入力値のまま・σ も付かない。
+    assert result.phases[0].lattice.a == pytest.approx(4.0)
+    assert result.phases[0].lattice.sigma == {}
 
 
 def test_scale_is_also_per_phase():
