@@ -341,3 +341,101 @@ def test_validity_receives_phase_fractions_as_a_sequence():
     )
     assert isinstance(report.passed, bool)
     assert any("fraction" in name or "分率" in note for name, _, note in report.checks)
+
+
+# ---------------- ベンチマーク回帰ガード (#172-#174) ----------------
+
+_M7 = Path("docs/benchmark/testdata/m7")
+
+
+def _benchmark_available(*paths: Path) -> bool:
+    return all(p.is_file() for p in paths)
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(_M7 / "labdata" / "FAP.cif", _M7 / "labdata" / "FAP.XRA"),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t1_fluoroapatite():
+    """**六方晶の相対強度**の回帰ガード (#172)。
+
+    特殊位置の座標が 1e-8 精度で書けていないと 4f サイトが一般位置へ化け、単位胞に存在しない
+    原子が増えて Rwp 42% になる。ピーク位置は正しいままなので Rwp だけでは原因が分からない。
+    """
+    d = _M7 / "labdata"
+    result = eng.run_topas_rietveld(
+        [HistogramSpec(
+            data_path=str(d / "FAP.XRA"), instrument_path=str(d / "INST_XRY.PRM"),
+            radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+        )],
+        [PhaseSpec(structure_path=str(d / "FAP.cif"), phase_name="FAP")],
+    )
+    assert result.final_rwp < 12.0, f"Rwp {result.final_rwp:.2f} (実測 10.45, GSAS 9.83)"
+    assert result.validity.passed, "Uiso/占有率が非物理 (Rwp だけで合格にしない)"
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(
+        _M7 / "cwneutron" / "garnet.raw", _M7 / "cwneutron" / "garnet_YFeAlO.cif"
+    ),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t2_garnet_cw_neutron():
+    """**CW 中性子の Lorentz 因子**の回帰ガード (#174)。
+
+    ``1/(sin²θ·cosθ)`` を落とすと強度の 2θ 依存が系統的にずれ、Rwp が 12% で頭打ちになる。
+    混合占有が GSAS と同じ値 (16a Fe≈0.58) に落ちることも見る — **両エンジンが同じ構造へ
+    収束するか**が M12 で最も重要な観測点。
+    """
+    d = _M7 / "cwneutron"
+    result = eng.run_topas_rietveld(
+        [HistogramSpec(
+            data_path=str(d / "garnet.raw"), instrument_path=str(d / "inst_d1a.prm"),
+            radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
+        )],
+        [PhaseSpec(
+            structure_path=str(d / "garnet_YFeAlO.cif"), phase_name="garnet",
+            mixed_occupancy_groups=(("Fe1", "Al1"), ("Al2", "Fe2")),
+        )],
+    )
+    assert result.final_rwp < 6.5, f"Rwp {result.final_rwp:.2f} (実測 5.54, GSAS 4.33)"
+    assert result.validity.passed
+    assert result.atom_occupancy["garnet"]["Fe1"] == pytest.approx(0.58, abs=0.05)
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(
+        _M7 / "cwcombined" / "PBSO4.XRA", _M7 / "cwcombined" / "PBSO4.CWN"
+    ),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t3_joint_reports_the_global_rwp():
+    """**joint の総合 Rwp** の回帰ガード (#174)。
+
+    ``Out(Get(r_wp))`` は書かれた ``xdd`` の値なので、それを総合値と名乗ると第 2
+    ヒストグラムが悪化していても段が受理される。総合値が内訳の**いずれよりも小さくない**
+    ことを見る (hist0 だけを報告していたら破れる)。
+    """
+    d = _M7 / "cwcombined"
+    result = eng.run_topas_rietveld(
+        [
+            HistogramSpec(
+                data_path=str(d / "PBSO4.XRA"), instrument_path=str(d / "INST_XRY.PRM"),
+                radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+            ),
+            HistogramSpec(
+                data_path=str(d / "PBSO4.CWN"), instrument_path=str(d / "inst_d1a.prm"),
+                radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
+            ),
+        ],
+        [PhaseSpec(
+            structure_path="docs/benchmark/testdata/PbSO4-Wyckoff.cif", phase_name="PbSO4"
+        )],
+    )
+    assert len(result.histogram_rwp) == 2, "内訳が取れていない"
+    assert result.final_rwp >= min(result.histogram_rwp) - 1e-9
+    assert result.final_rwp < 9.0, f"Rwp {result.final_rwp:.2f} (実測 8.29, GSAS 6.66)"
+    assert result.validity.passed
