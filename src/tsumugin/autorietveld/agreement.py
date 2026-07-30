@@ -790,6 +790,11 @@ def compare_results(
             verdict = UNDETERMINED
         elif not any(c.verdict == AGREE for c in required):
             verdict = INCOMPARABLE
+        # 【`classes` 全体を見るのは意図】: 非構造クラス (profile/weight_fraction) の非対称でも
+        #   `SAME_ON_SHARED_SUBSET` へ落とす。片方だけが `Zero` を解放したような対は「同じ
+        #   土俵で比べきれていない」のが事実であり、ラベルを保守側へ倒すのは正しい。ベイスン
+        #   分類は両者を同じ「一致」として扱う (`cluster_agreement_basins`) ので、この選択が
+        #   傍証の強さを変えることはない — 変わるのは報告される語だけである。
         elif any(c.n_asymmetric for c in classes) or any(
             c.verdict == INCOMPARABLE for c in required
         ):

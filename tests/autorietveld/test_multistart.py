@@ -366,3 +366,49 @@ def test_start_failures_report_why_not_just_that_they_failed():
     joined = " / ".join(got.warnings)
     assert "2/2 開始点が失敗" in joined, joined
     assert "background_coeffs" in joined, "失敗理由が落ちている"
+
+
+def test_a_dead_worker_becomes_failed_starts_not_an_exception(monkeypatch):
+    """★worker の即死 (`BrokenProcessPool`) を例外として上げない。
+
+    非トートロジー: `_run_one_start` は**自分の中の**例外しか捕まえられない。worker が
+    OOM/segfault で落ちると `pool.map` 自身が投げ、その例外は `RuntimeError` の派生なので
+    ② `auto_rietveld` の except タプル (ValueError/TypeError/KeyError/IndexError/
+    AttributeError) をすり抜けて**MCP の境界を越える** — ③ は LLM なので回復不能なハード
+    失敗になる。「バックエンドの失敗は結果に変換する」不変条件は、プロセスが死ぬ場合も同じ。
+    """
+    from concurrent.futures.process import BrokenProcessPool
+
+    from tsumugin.autorietveld import multistart as ms
+
+    class _DeadPool:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def map(self, fn, payloads):
+            raise BrokenProcessPool("A process in the process pool was terminated abruptly")
+
+    from tsumugin.autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
+
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", _DeadPool)
+    hist = HistogramSpec(
+        data_path="d.xra", instrument_path="i.prm",
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+    )
+    phase = PhaseSpec(structure_path="a.cif", phase_name="ph")
+
+    got = ms.run_multistart_rietveld(
+        [hist], [phase], config=MultistartConfig(n_starts=3), jobs=3,
+    )
+
+    assert got.best is None and got.best_index == -1
+    assert got.is_global_corroborated is False
+    assert all(s.result is None for s in got.starts), "全開始点が失敗として記録される"
+    joined = " / ".join(got.warnings)
+    assert "BrokenProcessPool" in joined, f"死因が落ちている: {joined}"

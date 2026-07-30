@@ -27,7 +27,7 @@ import pytest
 
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
 from tsumugin.autorietveld.agreement import CELL, COORD, is_agreement
-from tsumugin.autorietveld.confirm import STRUCTURE_CLASSES, optimize_then_confirm
+from tsumugin.autorietveld.confirm import ADOPTION_CLASSES, optimize_then_confirm
 
 _DATA = Path("docs/benchmark/testdata")
 
@@ -88,9 +88,9 @@ def _assert_report_is_self_consistent(report) -> None:
     # (b) `structure_is_corroborated` は構造クラスの判定と一致すること (別々に作らない)。
     structure_ok = all(
         is_agreement(ms.class_convergence[c])
-        for c in STRUCTURE_CLASSES
+        for c in ADOPTION_CLASSES
         if c in ms.class_convergence
-    ) and any(c in ms.class_convergence for c in STRUCTURE_CLASSES)
+    ) and any(c in ms.class_convergence for c in ADOPTION_CLASSES)
     assert report.structure_is_corroborated is structure_ok
 
     # (c) 割れたクラスがあるなら**名指し**もあること。「割れた」と言いながら何が割れたか

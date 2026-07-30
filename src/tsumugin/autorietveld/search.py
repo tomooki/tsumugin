@@ -895,8 +895,9 @@ def build_candidates(
     **適応層を固定層と別候補にする**のが要点である。自動判定を既定へ埋め込むと、外したときの
     逃げ道が無い。別候補なら固定層が保険になる。
 
-    :param names: 生成する候補名 (既定 `CANDIDATE_NAMES` 全部)。順序は `CANDIDATE_NAMES` に
-        正規化される (呼び出し順で決定論が揺れないため)
+    :param names: 生成する候補名 (既定は上記のとおり `DEFAULT_CANDIDATES` であり
+        `CANDIDATE_NAMES` 全部ではない)。順序は `CANDIDATE_NAMES` に正規化される
+        (呼び出し順で決定論が揺れないため)
     :raises ValueError: 未知の候補名 (綴り間違いを黙って無視すると「探索したつもり」で
         候補が 1 つしか回らない)
     """

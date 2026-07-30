@@ -93,6 +93,17 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは**意図的に露出しない** "
         "(REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
     ),
+    "recipe axes (build_recipe の opt-in 軸)": (
+        UNEXPOSED,
+        "**意図的な非露出**: `build_recipe(profile_granularity=, background_escalation=)` は "
+        "10 案キャンペーン (2026-07-30) で**候補を 1 軸ずつ変えて測るため**に足した実験用の軸で、"
+        "測定の結果どちらも既定集合に採らなかった — `profile_granularity=\"accumulate\"` は "
+        "T3 で 6.66→7.04 と悪化し、`background_escalation` は CaTeO3 で 12.20→17.67 と壊した "
+        "(`docs/benchmark/stable-baseline-recipe/FINDINGS.md` §2.2)。**負けた軸を ② に出すと "
+        "③ が「使える調整ノブ」と読む**ため出さない。兄弟の `size_strain_placement` だけは "
+        "勝ったので `sizestrain_last` 候補として `search` から到達可能。再挑戦するときは "
+        "名前付き候補にして `CANDIDATE_NAMES` へ足す (kwarg を ② へ生で出すのではなく)",
+    ),
     "convergence confirmation (規定の標準経路)": (
         "auto_rietveld",
         "**手順最適化 → 初期値摂動による収束確認** (`autorietveld.confirm.optimize_then_confirm`, "

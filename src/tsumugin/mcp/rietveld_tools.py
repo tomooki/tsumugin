@@ -398,7 +398,9 @@ def _with_extra_stages(inp: AnalysisInput, names: Sequence[str]) -> tuple[Recipe
 def _search_names(search: "bool | Sequence[str]") -> tuple[str, ...]:
     """``search`` 引数を候補名の列へ正規化する。
 
-    ``True`` は全候補、名前の列は**その部分集合**を意味する。名前を 1 つだけ渡す使い方
+    ``True`` は**実測で選んだ既定集合** `DEFAULT_CANDIDATES` (``CANDIDATE_NAMES`` 全部では
+    ない — 測定で支配された ``serious`` を含まない)、名前の列は ``CANDIDATE_NAMES`` の
+    **部分集合**を意味する。名前を 1 つだけ渡す使い方
     (``["serious"]``) は「そのレシピ 1 本で回す」に等しく、**探索で勝ったレシピを次の反復でも
     使い続ける唯一の JSON 経路**である (② には既定レシピを丸ごと差し替える引数が無い)。
 
@@ -502,11 +504,13 @@ def auto_rietveld(
         (``unconverged``/``noop``/``rescue_frozen=N``/``pruned=N``/``bound_hits=N``) に出る。
         **未知キーは error dict へ縮退**する (黙って無視しない)。
         既定 None = 現行と同一挙動 (共分散も Controls も触らない)。``runner`` 注入時は無視される。
-    :param search: **レシピ探索** (REQ-SAR-500)。``true`` で全候補
-        (``["default", "serious", "adaptive"]``)、名前の列でその部分集合を実行し、
-        **「収束したものの中で最良」**を採る。単一レシピは全データで勝てない (実測: T1 は
-        ``default`` 9.81% / T3 は ``serious`` 6.10% が勝つ) ので、本気の単一フレーム解析では
-        探索を既定の一手にする。返り値に ``search`` (候補ごとの Rwp/収束/tier/採否と警告) が
+    :param search: **レシピ探索** (REQ-SAR-500)。``true`` で**実測で選んだ既定集合**
+        (``["default", "sizestrain_last", "polish", "serious1", "adaptive"]`` =
+        `DEFAULT_CANDIDATES`。``CANDIDATE_NAMES`` 全部ではない — 測定で支配された
+        ``serious`` は既定から外し、名指しでのみ選べる)、名前の列で ``CANDIDATE_NAMES`` の
+        部分集合を実行し、**「収束したものの中で最良」**を採る。単一レシピは全データで勝てない
+        (実測 2026-07-30: T1・CaTeO3 は ``polish`` / T2 は ``serious1`` / T3 は
+        ``sizestrain_last`` が勝つ) ので、本気の単一フレーム解析では探索を既定の一手にする。返り値に ``search`` (候補ごとの Rwp/収束/tier/採否と警告) が
         付き、``final_rwp`` 以下は**採用候補の結果**になる。``specs`` も採用候補の入力を返すので
         持ち回れば同じ土俵で継続できる。⚠ **operando (`sequential_rietveld`) では使わない**
         — フレーム数 × 候補数の積は時間予算に収まらない (REQ-SAR-502)。既定 None (探索なし・

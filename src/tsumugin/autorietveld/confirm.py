@@ -30,7 +30,13 @@ from .search import DEFAULT_CANDIDATES, RecipeSearchResult, SearchConfig, run_re
 
 #: 「解を採用してよいか」を決めるクラス。歪/プロファイルは縮退の影響を受けるため含めない —
 #: 含めると縮退のあるデータでは**どの手順でも解が出せなくなる** (実測: T1 は歪が常に割れる)。
-STRUCTURE_CLASSES = (CELL, COORD, OCCUPANCY)
+#:
+#: ⚠ `agreement.AgreementTolerances.structure_classes` (既定 CELL/COORD/OCCUPANCY/
+#: **MICROSTRUCTURE**) とは**別の集合**である。名前を分けてあるのは両者の問いが違うため:
+#: あちらは「2 つの結果は同じ解か」(歪が違えば違う解である) を判定し、こちらは「その解を
+#: 採用してよいか」(歪が決まらなくても構造の答えは使える) を決める。混同すると縮退のある
+#: データで解が 1 つも出せなくなるか、逆に割れた歪を「一致」として通してしまう。
+ADOPTION_CLASSES = (CELL, COORD, OCCUPANCY)
 
 __all__ = ["DEFAULT_COORD_JITTER_ANG", "ConvergenceReport", "optimize_then_confirm"]
 
@@ -87,9 +93,9 @@ class ConvergenceReport:
             return False
         return all(
             ms.class_convergence.get(c, "INCOMPARABLE") == "AGREE"
-            for c in STRUCTURE_CLASSES
+            for c in ADOPTION_CLASSES
             if c in ms.class_convergence
-        ) and any(c in ms.class_convergence for c in STRUCTURE_CLASSES)
+        ) and any(c in ms.class_convergence for c in ADOPTION_CLASSES)
 
     @property
     def undetermined_by_initial_values(self) -> tuple[str, ...]:
@@ -207,7 +213,7 @@ def optimize_then_confirm(
             "出版してはならない**。縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消"
             "できないので、閾値を緩めて隠すのではなく未決定として報告する"
         )
-    if diverged and not set(diverged) & set(STRUCTURE_CLASSES):
+    if diverged and not set(diverged) & set(ADOPTION_CLASSES):
         warnings.append(
             "**構造 (格子・座標・占有率) は収束している** — 構造の答えは採用してよい。"
             f"割れているのは {sorted(diverged)} だけである"

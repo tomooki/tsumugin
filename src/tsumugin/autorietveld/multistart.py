@@ -513,6 +513,7 @@ def run_multistart_rietveld(
     """
     import os
     from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
 
     config = config if config is not None else MultistartConfig()
     ledger = ledger if ledger is not None else Ledger()
@@ -528,19 +529,34 @@ def run_multistart_rietveld(
         for i, pert in enumerate(perturbations)
     ]
     raw: dict[int, tuple] = {}
-    if n_jobs == 1:
-        for payload in payloads:
-            got = _run_one_start(payload)
-            raw[got[0]] = got
-    else:
-        # ⚠ 環境の固定は **pool 生成の外側**で行う (子は spawn 時に環境を継承する)。
-        with _pinned_blas_threads(), ProcessPoolExecutor(max_workers=n_jobs) as pool:
-            for got in pool.map(_run_one_start, payloads):
+    pool_error = ""
+    # ⚠ 環境の固定は **pool 生成の外側**で行う (子は spawn 時に環境を継承する)。
+    #   直列分岐も**中に入れる** — 固定の目的の半分は過剰購読の回避だが、本質は
+    #   「縮約順序がスレッド数で変われば同じ入力でもビットが変わる」(NFR-102) であり、
+    #   それは jobs=1 でも同じだからである (直列は再現の基準として使われる)。
+    with _pinned_blas_threads():
+        if n_jobs == 1:
+            for payload in payloads:
+                got = _run_one_start(payload)
                 raw[got[0]] = got
+        else:
+            try:
+                with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+                    for got in pool.map(_run_one_start, payloads):
+                        raw[got[0]] = got
+            except BrokenProcessPool as exc:
+                # 【子の即死は例外にしない】: `_run_one_start` は自分の中の例外を捕まえるが、
+                #   worker が OOM/segfault で落ちると `pool.map` 自身が投げる。これを通すと
+                #   ② の境界を例外が越える (③ は LLM なので回復不能)。「全開始点が失敗」に
+                #   畳んで既存の warnings/`no_valid_start` 経路へ載せる — バックエンドの失敗を
+                #   結果に変換するという不変条件は、プロセスが死ぬ場合も同じである。
+                pool_error = f"{type(exc).__name__}: {exc}"
 
     starts: list[MultistartStart] = []
     for i, pert in enumerate(perturbations):
-        _idx, result, n_axes, error = raw[i]
+        _idx, result, n_axes, error = raw.get(
+            i, (i, None, 0, pool_error or "開始点の結果が返らなかった")
+        )
         starts.append(
             MultistartStart(
                 index=i, perturbation=pert, result=result,
