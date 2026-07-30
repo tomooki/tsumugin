@@ -470,3 +470,73 @@ def test_structural_out_records_are_not_duplicated_per_histogram():
     outs = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("Out(")]
     dupes = [k for k, v in collections.Counter(outs).items() if v > 1]
     assert not dupes, f"Out が重複している: {dupes}"
+
+
+def test_grouped_occupancy_complement_is_still_published():
+    """混合占有の相補サイト (`1-x`) の出版値を落とさない。
+
+    TOPAS の ``macro Out(eqn, fmt, fmt_err)`` は**変数名でなく式**を取り、esd も伝播する
+    (実 tc.exe で確認)。識別子に限ると相補サイトの占有率が**静かに欠落**し、
+    `check_validity` の占有率チェックが片側しか見なくなる。
+    """
+    phase = TopasPhase(
+        phase_name="g", space_group="Fm-3m", cell={"a": Param(5.46)},
+        sites=(
+            TopasSite("Fe", "Fe", Param(0.0), Param(0.0), Param(0.0),
+                      occupancy=Param(0.6, refine=True), beq=Param(1.0)),
+            TopasSite("Al", "Al", Param(0.0), Param(0.0), Param(0.0),
+                      occupancy=Param(0.4, refine=True), beq=Param(1.0)),
+        ),
+        occupancy_sum_groups=(("Fe", "Al"),),
+        release_occupancy_groups=True,
+    )
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
+    ).render()
+    assert r"occ\tg\tFe" in text
+    assert r"occ\tg\tAl" in text
+    assert "Out(1-g_occ_g0," in text  # 相補側は式で出す
+
+
+def test_grouped_sites_publish_even_though_their_param_is_not_refined():
+    """グループサイトの解放フラグは**相側** (`release_*_groups`) にある。
+
+    site の `Param.refine` だけを見ると、混合占有の占有率が**静かに欠落する**
+    (実 garnet で `atom_occupancy` が空になっていた)。
+    """
+    phase = TopasPhase(
+        phase_name="g", space_group="Ia-3d", cell={"a": Param(12.19)},
+        sites=(
+            TopasSite("Fe1", "Fe", Param(0.0), Param(0.0), Param(0.0),
+                      occupancy=Param(0.9), beq=Param(0.8)),
+            TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0),
+                      occupancy=Param(0.1), beq=Param(0.8)),
+        ),
+        occupancy_sum_groups=(("Fe1", "Al1"),),
+        beq_equiv_groups=(("Fe1", "Al1"),),
+        release_occupancy_groups=True,
+        release_beq_groups=True,
+    )
+    # site の Param 自体は refine=False のまま
+    assert not any(s.occupancy.refine or s.beq.refine for s in phase.sites)
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
+    ).render()
+    for record in (r"occ\tg\tFe1", r"occ\tg\tAl1", r"beq\tg\tFe1", r"beq\tg\tAl1"):
+        assert record in text, f"{record} が出力されていない"
+
+
+def test_grouped_sites_do_not_publish_before_release():
+    """未解放なら出さない (固定値を「精密化した」と読ませない)。"""
+    phase = TopasPhase(
+        phase_name="g", space_group="Ia-3d", cell={"a": Param(12.19)},
+        sites=(
+            TopasSite("Fe1", "Fe", Param(0.0), Param(0.0), Param(0.0), occupancy=Param(0.9)),
+            TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0), occupancy=Param(0.1)),
+        ),
+        occupancy_sum_groups=(("Fe1", "Al1"),),
+    )
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
+    ).render()
+    assert r"occ\tg\tFe1" not in text

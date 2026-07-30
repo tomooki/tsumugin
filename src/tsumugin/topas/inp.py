@@ -277,6 +277,20 @@ def _shared_prm_plan(
     return lines, mapping
 
 
+def _grouped_labels(phase: TopasPhase) -> "set[tuple[str, str]]":
+    """グループ拘束に属する (原子ラベル, 種別) の集合。
+
+    グループサイトの ``Param.refine`` は常に False で、解放は共有 prm 側
+    (`release_occupancy_groups` / `release_beq_groups`) が持つ。出版値を出すかの判定に使う。
+    """
+    labels: set[tuple[str, str]] = set()
+    for group in phase.occupancy_sum_groups:
+        labels.update((label, "occ") for label in group)
+    for group in phase.beq_equiv_groups:
+        labels.update((label, "beq") for label in group)
+    return labels
+
+
 def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tuple[str, str], str]]":
     """占有率和 = 1 / beq 等値の共有 ``prm`` を計画する (単一ヒストグラムでも必要)。"""
     lines: list[str] = []
@@ -485,8 +499,10 @@ class TopasDocument:
         def prm_for(key: str, param: Param, fallback: str) -> "str | None":
             hoisted = shared.get((name, key))
             if hoisted:
-                # `1-x` のような式は Out の引数にできない (変数名ではない)。
-                return hoisted if hoisted.isidentifier() else None
+                # 【式でもよい】: ``macro Out(eqn, fmt, fmt_err)`` は**変数名でなく式**を取る。
+                #   混合占有の相補サイト (``1-x``) もそのまま出せ、esd も伝播する (実測)。
+                #   識別子に限ると相補サイトの出版値が**静かに欠落**する。
+                return hoisted
             return None if param.is_reference else (param.name or fallback)
 
         for axis, param in phase.cell.items():
@@ -512,14 +528,19 @@ class TopasDocument:
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"coord\\t{name}\\t{site.label}\\t{axis}\\t%.8f", "\\t%.8f\\n")'
                     )
-            if site.occupancy.refine:
+            # 【グループサイトの解放フラグは相側にある】: 混合占有/等値サイトの `Param.refine`
+            #   は常に False で、解放は共有 prm 側 (`release_*_groups`) が持つ。site 側だけを
+            #   見ると**グループ化した占有率の出版値が静かに欠落する** (実 garnet で実測)。
+            in_occ_group = (site.label, "occ") in _grouped_labels(phase)
+            if site.occupancy.refine or (in_occ_group and phase.release_occupancy_groups):
                 prm = prm_for(f"occ.{site.label}", site.occupancy, f"{stem}_occ")
                 if prm:
                     lines.append(
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"occ\\t{name}\\t{site.label}\\t%.8f", "\\t%.8f\\n")'
                     )
-            if site.beq.refine:
+            in_beq_group = (site.label, "beq") in _grouped_labels(phase)
+            if site.beq.refine or (in_beq_group and phase.release_beq_groups):
                 prm = prm_for(f"beq.{site.label}", site.beq, f"{stem}_beq")
                 if prm:
                     lines.append(
