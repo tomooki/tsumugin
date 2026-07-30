@@ -16,13 +16,13 @@
 | T3 | CIF → `str` ブロック (`topas.structure`) | ✅ | 結晶系拘束。実 PbSO4 CIF で **Rwp 12.30 / GOF 2.49**・セル文献一致 |
 | T5 | driver + パーサ (`topas.driver` / `topas.parse`) | ✅ | **終了コードで判定しない** (T0-3)。PATH に home を足す (T0-4)。失敗マーカー行は全部集約 |
 | T4 | 装置パラメータ変換 (`topas.instrument`) | 🟡 | `.instprm`/`.PRM` 両対応・データは `.xye` へ。**プロファイル種付けは opt-in のまま** (係数スケール未検証) |
-| T6 | 段階フラグ翻訳表 (`topas.flags`) | 🟡 | 13/17 フラグ。未対応は `UnsupportedStageFlagError` で明示的に失敗。残り: `tof_profile`/`absorption`/`hydrostatic_strain`/`preferred_orientation` |
+| T6 | 段階フラグ翻訳表 (`topas.flags`) | 🟡 | 13/17 フラグ。未対応は `UnsupportedStageFlagError` で明示的に失敗。残り 4 種は **Issue #173** |
 | T8 | TOPAS 段階解放エンジン (`topas.engine`) | ✅ | **実 PbSO4 で Rwp 8.30 / GOF 1.68** (GSAS X 線単独 11.0% 超え) |
-| T7 | 段方針の共通化 (`autorietveld.stagepolicy`) | ⬜ | リファクタ。受け入れ条件は gated T1–T4 の非回帰 |
+| T7 | 段方針の共通化 (`autorietveld.stagepolicy`) | ⏭ | **Issue #175 へ移送**。現状の到達性を損なわないため後続 |
 | T10 | バックエンド選択の配線 (①→②) | ✅ | `backend` 引数 + `list_refinement_backends` (MCP_TOOLS 38)。**JSON のみで TOPAS 到達を実測確認** |
 | T11 | ③ 手順書 (skill) + 恒久ガード | ✅ | `skills/analyze` に選択規律。ガードは**変異させて fail を実証済** |
-| T9 | `backends.topas.TopasBackend` | ⬜ | Protocol + `simulate`。`AutoRietveldBackend(runner=)` で代替可能なため優先度低 |
-| T12 | 実データ検証 T1–T4 | ⬜ | GSAS 値と併記して `docs/benchmark/m12-topas/` へ |
+| T9 | `backends.topas.TopasBackend` | ⏭ | **Issue #175 へ移送**。`AutoRietveldBackend(runner=)` で代替可能 |
+| T12 | 実データ検証 T1–T4 | 🟡 | **T1/T2 実施・未達** (原因切り分け済 → Issue #172)。T3-joint/T4 は Issue #174。結果は `docs/benchmark/m12-topas/README.md` |
 
 ## 受け入れ基準
 
@@ -60,3 +60,19 @@ uv run ruff check src tests
 - 段階フラグ 4 種未対応 (`tof_profile`/`absorption`/`hydrostatic_strain`/
   `preferred_orientation`)。T12 の T4 (TOF+放射光) に必要。
 - プロファイル係数の GSAS↔TOPAS スケール等価が未検証 (`seed_profile` は opt-in のまま)。
+
+
+## 完了時点のまとめ (2026-07-31)
+
+**動くもの**: 同一の `PhaseSpec`/`HistogramSpec` から `run_topas_rietveld` が
+`run_auto_rietveld` と同一契約で回り、③ は **JSON 引数だけ**で
+`list_refinement_backends` → `auto_rietveld(backend="topas")` に到達できる (実測確認済)。
+実 PbSO4 単独 X 線で **Rwp 7.99% / セル文献一致**。物理妥当性ゲートと出版値 (esd 付き) も配線済み。
+
+**未達**: T1 fluoroapatite 42% / T2 garnet 11.8%。原因は切り分け済 (Issue #172) で、
+構造ファイルは忠実 (GSAS に同じ CIF を渡すと 9.80%)、六方/立方晶で相対強度が誤る。
+
+**副産物**: `reference.io` の GSAS STD パーサの既存バグを修正 (固定桁 I2+I6 の空白分割)。
+M7 の GSAS 経路は GSAS-II が .raw を直接読むため露見していなかった。
+
+**残タスク**: Issue #172 (相対強度) / #173 (残り 4 フラグ) / #174 (T3-joint/T4) / #175 (TopasBackend + stagepolicy)
