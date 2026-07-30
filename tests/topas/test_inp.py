@@ -112,7 +112,7 @@ def test_single_histogram_document_is_a_stable_golden():
         "      site Pb x 0.1879 y 0.25 z 0.1667 occ Pb+2 1.0 beq 1.5\n"
         "      site S x 0.4367 y 0.75 z 0.1842 occ S 1.0 beq 0.7\n"
         "      scale 0.0001\n"
-        "      MVW(0, 0, mvw_wt_PbSO4 0)\n"
+        "      MVW(0, 0, mvw_wt_PbSO4_h0 0)\n"
     )
 
 
@@ -205,7 +205,7 @@ def test_weight_fraction_is_emitted_per_phase():
     )
     text = doc.render()
     # 値側の書式に改行を入れない — 入れると esd が次行へ落ちる (実測)。1 レコード 1 行。
-    assert '      Out(mvw_wt_PbSO4, "wt_frac\\tPbSO4\\t%.8f", "\\t%.8f\\n")\n' in text
+    assert '      Out(mvw_wt_PbSO4_h0, "wt_frac\\tPbSO4\\t%.8f", "\\t%.8f\\n")\n' in text
 
 
 # ---------------- joint: 構造の共有 ----------------
@@ -231,7 +231,7 @@ def test_joint_hoists_structural_params_into_global_prm():
     # 各 xdd の str は参照式で書かれる (2 ヒストグラム = 2 回)
     assert text.count("      a =PbSO4_a;\n") == 2
     # 座標も共有される
-    assert "prm PbSO4_Pb_x 0.1879\n" in text
+    assert "prm !PbSO4_Pb_x 0.1879\n" in text  # 未解放は `!` 付き (joint でも段階解放が効く)
     assert text.count("site Pb x =PbSO4_Pb_x;") == 2
 
 
@@ -365,3 +365,78 @@ def test_single_histogram_scale_name_is_still_stable():
         histograms=(_histogram(),), phases=(_pbso4_phase(),), results_path="results.txt"
     ).render()
     assert "PbSO4_scale_h0" in text
+
+
+def _collect_declared_names(text: str) -> "dict[str, int]":
+    """INP 中で**宣言**されるパラメータ名を数える (参照 `=name;` は含めない)。"""
+    import collections
+    import re
+
+    counts: collections.Counter[str] = collections.Counter()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("prm "):
+            counts[line.split()[1].lstrip("!")] += 1
+        for pattern in (
+            r"occ \S+ !?([A-Za-z_]\w*) ",
+            r"beq !?([A-Za-z_]\w*) ",
+            r"MVW\(0, 0, (\w+) 0\)",
+            r"^scale !?([A-Za-z_]\w*) ",
+        ):
+            match = re.search(pattern, line)
+            if match:
+                counts[match.group(1)] += 1
+    return dict(counts)
+
+
+def _joint_document() -> TopasDocument:
+    phase = TopasPhase(
+        phase_name="PbSO4", space_group="Pnma",
+        cell={"a": Param(8.48, refine=True), "b": Param(5.40), "c": Param(6.96)},
+        sites=(
+            TopasSite("Pb", "Pb", Param(0.19, refine=True), Param(0.25), Param(0.17),
+                      occupancy=Param(1.0, refine=True), beq=Param(1.5),
+                      free_coord_axes=("x", "z")),
+        ),
+        free_cell_keys=("a", "b", "c"), free_occupancy_labels=("Pb",),
+    )
+    xray = TopasHistogram(
+        data_path="x.xye", background=Param(0.0, refine=True),
+        phase_terms={"PbSO4": PhaseHistogramTerms(scale=Param(1e-4, refine=True))},
+    )
+    neutron = TopasHistogram(
+        data_path="n.xye", is_neutron=True, background=Param(0.0, refine=True),
+        phase_terms={"PbSO4": PhaseHistogramTerms(scale=Param(5e-5, refine=True))},
+    )
+    return TopasDocument(histograms=(xray, neutron), phases=(phase,), results_path="r.txt")
+
+
+def test_no_parameter_name_is_declared_twice_in_a_joint_document():
+    """**TOPAS のパラメータ名は大域**。同名を 2 度宣言すると衝突するか強制連結される。
+
+    この罠は 3 度別々の箇所で出た (TCHZ → scale → occ/beq/MVW)。個別に潰すのでなく
+    「宣言名の重複が無い」を 1 本の不変条件として固定する。
+    """
+    duplicates = {k: v for k, v in _collect_declared_names(_joint_document().render()).items()
+                  if v > 1}
+    assert not duplicates, f"joint で名前が重複している: {duplicates}"
+
+
+def test_structural_params_are_hoisted_and_shared_in_joint():
+    """構造 (格子/座標/占有率/beq) はどの検出器で測っても同じなので共有する。"""
+    text = _joint_document().render()
+    for key in ("PbSO4_a", "PbSO4_Pb_x", "PbSO4_Pb_occ", "PbSO4_Pb_beq"):
+        assert f"prm !{key} " in text or f"prm {key} " in text, f"{key} が持ち上げられていない"
+        assert text.count(f"={key};") == 2, f"{key} が両方の xdd から参照されていない"
+
+
+def test_hoisted_params_respect_staged_release():
+    """joint でも `!` で段階解放が効くこと。
+
+    持ち上げた prm を `!` 無しで宣言すると **最初の段から全構造が動く** (単一ヒストグラム
+    経路では起きないので実データで気づきにくい)。
+    """
+    text = _joint_document().render()
+    assert "prm PbSO4_a 8.48" in text  # 解放済み → ! 無し
+    assert "prm !PbSO4_b 5.4" in text  # 未解放 → ! 付き
+    assert "prm !PbSO4_Pb_beq 1.5" in text

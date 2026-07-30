@@ -236,21 +236,44 @@ def _shared_prm_plan(
     mapping: dict[tuple[str, str], str] = {}
     if not share:
         return lines, mapping
+
+    def declare(name: str, param: Param, suffix: str = "") -> None:
+        # 【`!` の有無が段階解放】: 名前付き prm は TOPAS では**既定で精密化対象**。`!` を
+        #   付けずに宣言すると joint では段階解放を無視して最初の段から全構造が動く
+        #   (単一ヒストグラム経路では起きないので実データで気づきにくい)。
+        prefix = "" if param.refine else "!"
+        lines.append(f"prm {prefix}{name} {_fmt(param.value)}{suffix}")
+
     for phase in phases:
         stem = _slug(phase.phase_name)
+        grouped_occ = {label for group in phase.occupancy_sum_groups for label in group}
+        grouped_beq = {label for group in phase.beq_equiv_groups for label in group}
         for axis, param in phase.cell.items():
             if param.is_reference:
                 continue
             name = f"{stem}_{axis}"
             mapping[(phase.phase_name, f"cell.{axis}")] = name
-            lines.append(f"prm {name} {_fmt(param.value)}")
+            declare(name, param)
         for site in phase.sites:
+            label = _slug(site.label)
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
                 if param.is_reference:
                     continue
-                name = f"{stem}_{_slug(site.label)}_{axis}"
+                name = f"{stem}_{label}_{axis}"
                 mapping[(phase.phase_name, f"site.{site.label}.{axis}")] = name
-                lines.append(f"prm {name} {_fmt(param.value)}")
+                declare(name, param)
+            # 【占有率と beq も持ち上げる】: どちらも**構造**の量なので、どの検出器で測っても
+            #   同じでなければならない。持ち上げないと `_site_line` が各 xdd の str ブロック内で
+            #   同名を宣言し、TOPAS の大域名前空間で衝突する (scale/TCHZ と同じ罠)。
+            #   グループ拘束がある場合は `_group_prm_plan` が既に大域で 1 本にしているので除く。
+            if site.label not in grouped_occ and not site.occupancy.is_reference:
+                name = f"{stem}_{label}_occ"
+                mapping[(phase.phase_name, f"occ.{site.label}")] = name
+                declare(name, site.occupancy, suffix=" min 0 max 1")
+            if site.label not in grouped_beq and not site.beq.is_reference:
+                name = f"{stem}_{label}_beq"
+                mapping[(phase.phase_name, f"beq.{site.label}")] = name
+                declare(name, site.beq)
     return lines, mapping
 
 
@@ -417,7 +440,9 @@ class TopasDocument:
             lines.append(f"{_INDENT_PHASE}{terms.preferred_orientation}")
         # 【相分率】: MVW は質量/体積/**重量分率**を返す。Scale ではなく wt% であることが重要
         #   (KMnFe operando の教訓: 相分率は Scale であって wt% でない — 取り違えると描像が変わる)。
-        wt_name = f"mvw_wt_{_slug(name)}"
+        # 【ヒストグラム索引を混ぜる】: MVW の重量分率は xdd ごとに計算される per-histogram の
+        #   出力。相名だけで命名すると joint で 2 本の xdd が同名を宣言して衝突する。
+        wt_name = f"mvw_wt_{_slug(name)}_h{index}"
         lines.append(f"{_INDENT_PHASE}MVW(0, 0, {wt_name} 0)")
         if self.results_path:
             # 【値と esd を 1 行に】: 値側の書式に改行を入れると esd が次行へ落ちる (実測)。
