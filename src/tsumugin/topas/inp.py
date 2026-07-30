@@ -164,6 +164,16 @@ class TopasPhase:
     """占有率和 = 1 のサイト組 (混合占有)。1 変数 x と 1-x で表す。"""
     beq_equiv_groups: tuple[tuple[str, ...], ...] = ()
     """beq を等値拘束するサイト組。"""
+    release_occupancy_groups: bool = False
+    """占有率の共有 ``prm`` を解放するか。
+
+    **既定 False (=``!`` 付きで固定)** が要点。TOPAS では ``prm name value`` は名前付き =
+    **既定で精密化対象**なので、`!` を付けずに宣言すると段階解放を無視して最初の段から
+    自由に動いてしまう。すると occupancy 段は「既に自由」なので何も起こらず、
+    改善しないまま revert されて**段階解放が効いていないことに気づけない**。
+    """
+    release_beq_groups: bool = False
+    """beq の共有 ``prm`` を解放するか (同上)。"""
     free_cell_keys: tuple[str, ...] = ()
     """**解放してよい**格子キー (対称性から独立なもののみ)。
 
@@ -250,7 +260,9 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
                     seed = site.occupancy.value
                     break
             # 【[0,1] 拘束】: 占有率は物理的に区間内。境界外への逸走を TOPAS 側で止める。
-            lines.append(f"prm {name} {_fmt(seed)} min 0 max 1")
+            # 【`!` の有無が段階解放】: 名前付き prm は既定で精密化対象なので、解放前は `!`。
+            prefix = "" if phase.release_occupancy_groups else "!"
+            lines.append(f"prm {prefix}{name} {_fmt(seed)} min 0 max 1")
             for position, label in enumerate(group):
                 expr = name if position == 0 else f"1-{name}"
                 mapping[(phase.phase_name, f"occ.{label}")] = expr
@@ -261,7 +273,8 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
                 if site.label == group[0]:
                     seed = site.beq.value
                     break
-            lines.append(f"prm {name} {_fmt(seed)}")
+            prefix = "" if phase.release_beq_groups else "!"
+            lines.append(f"prm {prefix}{name} {_fmt(seed)}")
             for label in group:
                 mapping[(phase.phase_name, f"beq.{label}")] = name
     return lines, mapping

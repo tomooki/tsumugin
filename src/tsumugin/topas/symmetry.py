@@ -21,10 +21,17 @@ from __future__ import annotations
 
 import re
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 
-__all__ = ["free_coord_axes", "parse_symop", "site_symmetry_projector"]
+__all__ = [
+    "ensure_symops",
+    "free_coord_axes",
+    "parse_symop",
+    "read_sg_symops",
+    "site_symmetry_projector",
+]
 
 _AXES = ("x", "y", "z")
 _TERM = re.compile(r"([+-]?)\s*(\d+/\d+|\d*\.?\d+)?\s*\*?\s*([xyz])?")
@@ -101,3 +108,79 @@ def free_coord_axes(
         if abs(diagonal - 1.0) < 1e-6 and off_row < 1e-6 and off_col < 1e-6:
             free.append(axis)
     return tuple(free)
+
+
+# ---------------------------------------------------------------- Sg/*.sg からの補完
+
+_XYZS_BLOCK = re.compile(r"xyzs\s*\{(.*?)\}", re.DOTALL)
+
+
+def read_sg_symops(space_group: str, home: "Path | None" = None) -> "tuple[str, ...]":
+    """TOPAS が生成した ``Sg/<sg>.sg`` から対称操作を読む (無ければ空タプル)。
+
+    ``Sg/`` は **sgcom6.exe がオンデマンドで生成するキャッシュ**ディレクトリで、
+    ``xyzs { x, y, z / -x, y+1/2, -z / … }`` の形で一般位置を列挙している。**CIF が対称操作を
+    持たない場合の権威的な供給元**である (空間群記号から自前で展開するより確実)。
+    """
+    from .availability import topas_home
+
+    base = home or topas_home()
+    if base is None:
+        return ()
+    # ファイル名は H-M 記号を小文字にして空白を除いたもの (実測: Pnma → pnma.sg)。
+    name = re.sub(r"\s+", "", space_group).lower()
+    path = Path(base) / "Sg" / f"{name}.sg"
+    if not path.is_file():
+        return ()
+    match = _XYZS_BLOCK.search(path.read_text(encoding="utf-8", errors="replace"))
+    if match is None:
+        return ()
+    ops = [line.strip() for line in match.group(1).splitlines()]
+    return tuple(op for op in ops if op and op.count(",") == 2)
+
+
+def ensure_symops(
+    space_group: str, symops: "tuple[str, ...]", *, generate: bool = True
+) -> "tuple[str, ...]":
+    """対称操作を確保する。CIF 由来があればそれを、無ければ TOPAS の ``Sg/`` から補完する。
+
+    ``Sg/<sg>.sg`` がまだ生成されていない場合、``generate=True`` なら**空間群だけを宣言した
+    最小 INP を 1 回流して** TOPAS に生成させる (sgcom6 は tc.exe 経由でしか呼べない)。
+    確保できなければ空タプルを返し、呼び出し側は「座標を解放しない」を選ぶ。
+    """
+    if symops:
+        return symops
+    found = read_sg_symops(space_group)
+    if found or not generate:
+        return found
+    try:
+        _generate_sg_file(space_group)
+    except Exception:  # noqa: BLE001 — 生成できなくても致命ではない (座標を解放しないだけ)
+        return ()
+    return read_sg_symops(space_group)
+
+
+def _generate_sg_file(space_group: str) -> None:
+    """空間群だけを宣言した最小 INP を流し、TOPAS に ``Sg/<sg>.sg`` を生成させる。"""
+    import tempfile
+
+    from .driver import run_tc
+
+    with tempfile.TemporaryDirectory(prefix="tsumugin-topas-sg-") as tmp:
+        work = Path(tmp)
+        (work / "sgprobe.xye").write_text(
+            "\n".join(f"{10.0 + 0.05 * i:.4f} 1.0 1.0" for i in range(200)) + "\n",
+            encoding="utf-8",
+        )
+        inp = (
+            "r_wp 0\n"
+            "iters 0\n"
+            'xdd "sgprobe.xye"\n'
+            "   bkg 0\n"
+            "   str\n"
+            f"      space_group {space_group}\n"
+            "      a 5 b 5 c 5\n"
+            "      site A x 0 y 0 z 0 occ C 1 beq 1\n"
+            "      scale 0.0001\n"
+        )
+        run_tc(inp, workdir=work, basename="sgprobe", timeout=120.0)

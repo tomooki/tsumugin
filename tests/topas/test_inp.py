@@ -280,7 +280,9 @@ def test_shared_occupancy_group_uses_one_prm_and_its_complement():
         occupancy_sum_groups=(("Fe1", "Al1"),),
     )
     text = TopasDocument(histograms=(_histogram(),), phases=(phase,)).render()
-    assert "prm garnet_occ_g0 0.5 min 0 max 1\n" in text
+    # 【`!` 付きで宣言】: TOPAS の名前付き prm は既定で精密化対象なので、解放前は固定する。
+    # これが無いと段階解放を無視して最初の段から占有率が動き、occupancy 段が空振りする。
+    assert "prm !garnet_occ_g0 0.5 min 0 max 1\n" in text
     assert "occ Fe+3 =garnet_occ_g0;" in text
     assert "occ Al+3 =1-garnet_occ_g0;" in text
 
@@ -297,7 +299,7 @@ def test_equivalent_beq_group_shares_one_prm():
         beq_equiv_groups=(("Fe1", "Al1"),),
     )
     text = TopasDocument(histograms=(_histogram(),), phases=(phase,)).render()
-    assert "prm garnet_beq_g0 0.5\n" in text
+    assert "prm !garnet_beq_g0 0.5\n" in text  # 解放前は `!` 付き (段階解放を効かせる)
     assert text.count("beq =garnet_beq_g0;") == 2
 
 
@@ -316,3 +318,23 @@ def test_phase_name_with_spaces_is_quoted():
     phase = _pbso4_phase().with_updates(phase_name="lead sulfate")
     text = TopasDocument(histograms=(_histogram(),), phases=(phase,)).render()
     assert '      phase_name "lead sulfate"\n' in text
+
+
+def test_group_prms_are_released_only_when_asked():
+    """共有 prm の `!` が段階解放そのもの。解放フラグを立てると `!` が外れる。"""
+    phase = TopasPhase(
+        phase_name="g", space_group="I_a_-3_d", cell={"a": Param(12.19)},
+        sites=(
+            TopasSite("Fe1", "Fe", Param(0.0), Param(0.0), Param(0.0),
+                      occupancy=Param(0.5), beq=Param(0.5)),
+            TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0),
+                      occupancy=Param(0.5), beq=Param(0.5)),
+        ),
+        occupancy_sum_groups=(("Fe1", "Al1"),),
+        beq_equiv_groups=(("Fe1", "Al1"),),
+        release_occupancy_groups=True,
+        release_beq_groups=True,
+    )
+    text = TopasDocument(histograms=(_histogram(),), phases=(phase,)).render()
+    assert "prm g_occ_g0 0.5 min 0 max 1\n" in text  # `!` が外れている
+    assert "prm g_beq_g0 0.5\n" in text

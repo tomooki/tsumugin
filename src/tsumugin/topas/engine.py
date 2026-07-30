@@ -39,7 +39,7 @@ from .flags import apply_stage
 from .inp import TopasDocument
 from .instrument import histogram_to_topas
 from .parse import TopasRecords, limit_hits_from_out, parse_out_metrics, parse_records
-from .structure import structure_to_topas_phase
+from .structure import structure_to_topas_phase, to_topas_spacegroup
 
 __all__ = ["run_topas_rietveld"]
 
@@ -57,10 +57,21 @@ def _build_document(
     """入力仕様から初期 (何も解放していない) 文書を組む。"""
     from ..autorietveld.cif_normalize import read_structure_cif
 
+    from .symmetry import ensure_symops
+
     topas_phases = []
     for spec in phases:
         structure = read_structure_cif(spec.structure_path)
-        topas_phases.append(structure_to_topas_phase(structure, spec.phase_name, spec=spec))
+        # 【対称操作の確保】: CIF が対称操作を持たないと座標を一切解放できない
+        #   (判定できないものは触らない方針)。TOPAS は空間群を sgcom6 で展開して
+        #   Sg/<sg>.sg に一般位置を書くので、そこから補完する (権威的な供給元)。
+        sg = to_topas_spacegroup(structure.spacegroup_hm, structure.it_number)
+        symops = ensure_symops(sg, structure.symops)
+        topas_phases.append(
+            structure_to_topas_phase(
+                structure, spec.phase_name, spec=spec, symops=symops
+            )
+        )
     from .inp import PhaseHistogramTerms
     from .instrument import tchz_line
 
@@ -124,9 +135,11 @@ def run_topas_rietveld(
     :param keep_project: 指定すると作業ディレクトリ (INP/.out/results.txt) をここへ残す
     :returns: `AutoRietveldResult` (``backend="topas"``, ``gpx_path=""``)
     """
-    from ..autorietveld.recipe import build_recipe
+    from .recipe import build_topas_recipe
 
-    stages = tuple(recipe) if recipe is not None else build_recipe(
+    # 【既定は TOPAS 向け順序】: 共有の `build_recipe` は GSAS 向けに調整されており、
+    #   TOPAS では格子より先にプロファイルを合わせないと収束しない (recipe.py の説明を参照)。
+    stages = tuple(recipe) if recipe is not None else build_topas_recipe(
         histograms, phases, background_coeffs=background_coeffs
     )
 

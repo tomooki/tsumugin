@@ -159,7 +159,12 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
     if flags.get("freeze_others"):
         # 累積解放を一旦落とす。TOPAS では「解放を落とした文書を作る」だけで表現できる。
         phases = [_release_cell(p, False) for p in phases]
-        phases = [_release_sites(p, coords=False, beq=False, occupancy=False) for p in phases]
+        phases = [
+            _release_sites(p, coords=False, beq=False, occupancy=False).with_updates(
+                release_occupancy_groups=False, release_beq_groups=False
+            )
+            for p in phases
+        ]
 
     if "background" in flags:
         spec = flags["background"]
@@ -187,9 +192,16 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
     if flags.get("coords"):
         phases = [_release_sites(p, coords=True) for p in phases]
     if flags.get("uiso"):
-        phases = [_release_sites(p, beq=True) for p in phases]
+        # 共有 prm (混合占有サイトの等値 beq) も同時に解放する。参照式のサイト側は
+        # 触れないので、ここを忘れると「uiso 段が何も解放しない」になる。
+        phases = [
+            _release_sites(p, beq=True).with_updates(release_beq_groups=True) for p in phases
+        ]
     if flags.get("occupancy"):
-        phases = [_release_sites(p, occupancy=True) for p in phases]
+        phases = [
+            _release_sites(p, occupancy=True).with_updates(release_occupancy_groups=True)
+            for p in phases
+        ]
 
     if flags.get("size_strain"):
         for i, hist in enumerate(histograms):

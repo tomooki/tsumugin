@@ -228,6 +228,7 @@ def structure_to_topas_phase(
     *,
     spec: "PhaseSpec | None" = None,
     ionic_scattering: bool = False,
+    symops: "tuple[str, ...] | None" = None,
 ) -> TopasPhase:
     """`Structure` を `TopasPhase` へ写像する。
 
@@ -235,6 +236,9 @@ def structure_to_topas_phase(
     (`topas.flags`) の責務であり、構造の読み込みと解放戦略を混ぜない。
 
     :param spec: `PhaseSpec` があれば混合占有/等値の宣言を拘束として引き継ぐ。
+    :param symops: 対称操作の上書き。CIF が対称操作を持たないとき、呼び出し側 (engine) が
+        TOPAS の ``Sg/`` から補完したものを渡す。**本関数自体は純粋なまま**にするため、
+        tc.exe を起動する補完はここでは行わない (`topas.symmetry.ensure_symops` の責務)。
     :raises ValueError: 原子ラベルが重複しているとき。共有 ``prm`` 名が衝突して
         **別サイトが黙って結合される**ため、ここで弾く。
     """
@@ -260,7 +264,10 @@ def structure_to_topas_phase(
             z=Param(atom.z),
             occupancy=Param(atom.occ),
             beq=Param(atom.uiso * BEQ_PER_UISO),
-            free_coord_axes=free_coord_axes(structure.symops, (atom.x, atom.y, atom.z)),
+            free_coord_axes=free_coord_axes(
+                symops if symops is not None else structure.symops,
+                (atom.x, atom.y, atom.z),
+            ),
         )
         for atom in structure.atoms
     )
