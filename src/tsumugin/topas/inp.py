@@ -149,6 +149,14 @@ class TopasPhase:
     """占有率和 = 1 のサイト組 (混合占有)。1 変数 x と 1-x で表す。"""
     beq_equiv_groups: tuple[tuple[str, ...], ...] = ()
     """beq を等値拘束するサイト組。"""
+    free_cell_keys: tuple[str, ...] = ()
+    """**解放してよい**格子キー (対称性から独立なもののみ)。
+
+    TOPAS は空間群から格子を自動拘束しないため、``cell`` には従属軸の参照式
+    (``b =Get(a);``) が混ざる。参照式は精密化対象になり得ないので、段階フラグ層は
+    格子を解放するときこのキー集合だけを見る。空なら ``cell`` の非参照キー全部を
+    解放してよい (後方互換)。
+    """
     extras: tuple[str, ...] = ()
 
     def with_updates(self, **kw: object) -> "TopasPhase":
