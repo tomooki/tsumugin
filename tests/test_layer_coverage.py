@@ -1866,17 +1866,26 @@ def test_topas_backend_non_exposure_reason_is_still_true():
 
 
 
-def _iter_mcp_module_code() -> "Iterator[tuple[str, str]]":
+def _iter_mcp_module_code() -> "Iterator[tuple[str, str | None]]":
     """`tsumugin.mcp` 配下の全モジュール → (モジュール名, docstring を除いたコード本体)。
 
     `_iter_mcp_functions` は関数/メソッドしか列挙しないので、**モジュール直下の代入**
     (registry dict 等) を見られない。「この名前が ② のコードに現れるか」を問うガードは
     モジュール全体を見る必要がある。コメントは AST に残らず、docstring は明示的に落とす。
+
+    **読めなかったモジュールは ``None`` を返す** (``continue`` で飛ばさない)。ソースを取れない
+    モジュール (動的定義等) を黙って飛ばすと、そこだけ網の外になったことが誰にも見えない —
+    「網の穴は『無いこと』が保証されて初めて網である」。呼び出し側が ``None`` を検出して
+    落とすことで、穴が空いた事実そのものを失敗として表に出す。
     """
     for mod_info in pkgutil.walk_packages(mcp_pkg.__path__, f"{mcp_pkg.__name__}."):
         module = importlib.import_module(mod_info.name)
-        source = inspect.getsource(module)
-        tree = ast.parse(source)
+        try:
+            source = inspect.getsource(module)
+            tree = ast.parse(source)
+        except (OSError, SyntaxError):
+            yield mod_info.name, None
+            continue
         for node in ast.walk(tree):
             if isinstance(
                 node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)
@@ -1910,10 +1919,14 @@ def test_no_mcp_tool_constructs_the_topas_backend():
       ``{"topas": TopasBackend}`` を足す最も自然な場所がそこだからである。関数だけを見る網
       (`_iter_mcp_functions`) はここを素通りする。
     """
+    scanned = list(_iter_mcp_module_code())
+    unreadable = sorted(name for name, code in scanned if code is None)
+    assert not unreadable, (
+        f"ソースを読めない ② モジュールがある: {unreadable}。"
+        f"黙って飛ばすと**そこだけ網の外**になるので、走査できないこと自体を失敗にする"
+    )
     offenders = sorted(
-        name
-        for name, code in _iter_mcp_module_code()
-        if "TopasBackend" in code
+        name for name, code in scanned if code is not None and "TopasBackend" in code
     )
     assert not offenders, (
         f"② が TopasBackend を参照している: {offenders}。"
