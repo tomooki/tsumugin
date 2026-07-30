@@ -1865,26 +1865,55 @@ def test_topas_backend_non_exposure_reason_is_still_true():
     assert LAYER1_FEATURES["TopasBackend (M12/T9)"][0] is UNEXPOSED
 
 
+
+def _iter_mcp_module_code() -> "Iterator[tuple[str, str]]":
+    """`tsumugin.mcp` 配下の全モジュール → (モジュール名, docstring を除いたコード本体)。
+
+    `_iter_mcp_functions` は関数/メソッドしか列挙しないので、**モジュール直下の代入**
+    (registry dict 等) を見られない。「この名前が ② のコードに現れるか」を問うガードは
+    モジュール全体を見る必要がある。コメントは AST に残らず、docstring は明示的に落とす。
+    """
+    for mod_info in pkgutil.walk_packages(mcp_pkg.__path__, f"{mcp_pkg.__name__}."):
+        module = importlib.import_module(mod_info.name)
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)
+            ):
+                body = getattr(node, "body", [])
+                if (
+                    body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    node.body = body[1:] or [ast.Pass()]  # type: ignore[attr-defined]
+        yield mod_info.name, ast.unparse(tree)
+
+
 def test_no_mcp_tool_constructs_the_topas_backend():
     """② のどの関数も `TopasBackend` を**コードとして**参照していないこと (非露出宣言との整合)。
 
     誰かが `discriminate` 等へ配線したらここが落ち、**宣言の更新を強制する**。
     露出そのものを禁じるのではなく、露出と宣言がずれることを禁じる。
 
-    **本ファイルが既に 2 度払った授業料をそのまま使う**:
+    **本ファイルが既に払った授業料をそのまま使う**:
 
-    - 列挙は `_iter_mcp_functions` (``walk_packages`` + クラス本体)。``glob("*.py")`` だと
-      `mcp` にサブパッケージが生えた瞬間に網が黙って穴だらけになる。
-    - 判定は `_code_without_docs` (docstring/コメントを AST で落とす)。生ソースの部分一致は
-      **「使っていない理由」を説明した docstring で誤検出**し、逆に説明だけ残して配線を消しても
-      通ってしまう (Issue #125 で実測した「落ちないガード」と同型)。
+    - 列挙は ``walk_packages`` (`_iter_mcp_module_code`)。``glob("*.py")`` だと `mcp` に
+      サブパッケージが生えた瞬間に網が黙って穴だらけになる。
+    - 判定は docstring を AST で落としたコード本体。生ソースの部分一致は**「使っていない
+      理由」を説明した docstring で誤検出**し、逆に説明だけ残して配線を消しても通ってしまう
+      (Issue #125 で実測した「落ちないガード」と同型)。
+    - 走査は**モジュール全体** (関数本体だけではない)。`MCP_TOOLS`/`RIETVELD_TOOLS` の
+      ような**モジュール直下の registry dict** が本リポジトリの標準的な配線先であり、
+      ``{"topas": TopasBackend}`` を足す最も自然な場所がそこだからである。関数だけを見る網
+      (`_iter_mcp_functions`) はここを素通りする。
     """
     offenders = sorted(
-        {
-            name
-            for name, func, _ in _iter_mcp_functions()
-            if "TopasBackend" in _code_without_docs(func)
-        }
+        name
+        for name, code in _iter_mcp_module_code()
+        if "TopasBackend" in code
     )
     assert not offenders, (
         f"② が TopasBackend を参照している: {offenders}。"

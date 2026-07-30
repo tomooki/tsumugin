@@ -244,14 +244,50 @@ def test_lattice_is_released_only_for_the_requested_phase():
 
 
 def _released_cell_params(text: str) -> int:
-    """生成された INP で実際に ``@``/名前付きで解放されている格子パラメータ数。"""
+    """生成された INP で実際に解放されている格子パラメータ数。
+
+    **TOPAS のパラメータ意味論に従って判定する** (「``!`` が付いていない」では足りない):
+
+    ============================  ==========
+    軸トークンの次                  意味
+    ============================  ==========
+    ``@``                         解放 (無名)
+    ``!name``                     固定 (名前付き)
+    ``name``                      **解放** (名前付きは既定で精密化対象)
+    数値                          固定 (無名)
+    ``=expr;``                    参照 (解放できない)
+    ============================  ==========
+
+    無名固定 (``a 4.0``) を「解放」と数えないために**数値かどうかを見る**。現状 `_document`
+    は必ず名前を付けるので該当しないが、それは呼び出し側の都合であってこの数え方の前提には
+    しない (前提にすると、名前付けをやめた瞬間に黙って過大に数える)。
+    """
     count = 0
     for raw in text.splitlines():
-        line = raw.strip()
-        for axis in ("a ", "b ", "c "):
-            if line.startswith(axis) and not line.startswith(f"{axis}!") and "=" not in line:
-                count += 1
+        head, _, rest = raw.strip().partition(" ")
+        if head not in ("a", "b", "c") or not rest:
+            continue
+        token = rest.split()[0]
+        if token.startswith(("!", "=")):
+            continue  # 固定 (名前付き) / 参照
+        if token == "@":
+            count += 1
+            continue
+        try:
+            float(token)
+        except ValueError:
+            count += 1  # 名前付き = 既定で精密化対象
     return count
+
+
+def test_released_cell_params_follows_topas_parameter_semantics():
+    """数え方そのものを固定する (このヘルパが間違うと上位のテストが静かに嘘をつく)。"""
+    assert _released_cell_params("a @ 4.0") == 1          # 無名・解放
+    assert _released_cell_params("a nm 4.0") == 1         # 名前付き = 既定で精密化対象
+    assert _released_cell_params("a !nm 4.0") == 0        # 名前付き・固定
+    assert _released_cell_params("a 4.0") == 0            # 無名・固定
+    assert _released_cell_params("b =Get(a);") == 0       # 参照
+    assert _released_cell_params("  site a1 x 0.0") == 0  # 軸行ではない
 
 
 def test_generated_inp_releases_only_the_requested_lattices():
