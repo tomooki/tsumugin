@@ -76,12 +76,79 @@ def test_inspect_instrument_returns_findings(client: TestClient, tmp_path):
     assert "radiation_type_mismatch" in {f["code"] for f in body["findings"]}
 
 
-def test_instrument_presets_route_exists(client: TestClient):
+def test_instrument_presets_route_returns_the_presets(client: TestClient, monkeypatch):
+    """プリセット一覧が届くこと。
+
+    ⚠ **その機械に GSAS-II が入っているかで結果を変えない** — プリセットは
+    `tsumugin.instprm.list_instrument_presets` が実 `GSASII.defaultIparms` を遅延 import
+    するため、素で書くと「開発機では 200・CI では 422」になる (conftest の
+    `_pretend_gsas_available` は `session.gsasii_available` しか隔離しないのでここには効かない)。
+    実プリセットの読み出しは `@pytest.mark.gsas` の gated テストが担当し、ここは**ルートの
+    契約**だけを両方向から固定する。
+    """
+    import tsumugin.instprm as _instprm
+    from tsumugin.instprm import InstrumentPreset
+
+    monkeypatch.setattr(
+        _instprm,
+        "list_instrument_presets",
+        lambda: (
+            InstrumentPreset(
+                label="CuKa lab data",
+                radiation="xray_lab",
+                geometry="bragg_brentano",
+                text="#\nType:PXC\n",
+                summary="Kα1=1.5405 Å",
+            ),
+        ),
+    )
     resp = client.get("/api/instrument/presets")
     assert resp.status_code == 200
+    assert resp.json()["presets"] == [
+        {
+            "label": "CuKa lab data",
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "summary": "Kα1=1.5405 Å",
+        }
+    ]
+
+
+def test_instrument_presets_route_degrades_without_gsasii(client: TestClient, monkeypatch):
+    """GSAS-II 未導入では error dict へ縮退し、**波長入力の経路を案内する**こと。
+
+    ここで 500 やスタックトレースを返すと、③ もフロントも「装置ファイルは作れない」と
+    読んでしまう — プリセットが引けないだけで、明示パラメータの経路は使える。
+    """
+    import tsumugin.instprm as _instprm
+    from tsumugin.errors import GSASUnavailableError
+
+    def _raise() -> None:
+        raise GSASUnavailableError("GSAS-II 未導入。radiation と wavelength を明示指定してください")
+
+    monkeypatch.setattr(_instprm, "list_instrument_presets", _raise)
+    resp = client.get("/api/instrument/presets")
     body = resp.json()
-    # GSAS-II 未導入環境では error dict へ縮退する (500 にしない)
-    assert "presets" in body or "error" in body
+    assert resp.status_code >= 400
+    assert body["error_type"] == "GSASUnavailableError"
+    assert "wavelength" in body["error"]
+
+
+def test_creating_from_explicit_parameters_works_without_presets(client: TestClient, monkeypatch):
+    """プリセットが引けなくても instprm は作れること (「作れない」で終わらせない)。"""
+    import tsumugin.instprm as _instprm
+    from tsumugin.errors import GSASUnavailableError
+
+    def _raise() -> None:
+        raise GSASUnavailableError("no GSAS-II")
+
+    monkeypatch.setattr(_instprm, "list_instrument_presets", _raise)
+    r = client.post(
+        "/api/instrument/create",
+        json={"out_path": "data/x.instprm", "radiation": "xray_lab", "wavelength": 1.5405},
+    ).json()
+    assert "error" not in r
+    assert r["type"] == "PXC"
 
 
 # =====================================================================
