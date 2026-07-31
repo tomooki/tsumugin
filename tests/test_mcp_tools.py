@@ -182,7 +182,10 @@ def test_eight_tools_registered_in_mcp_tools():
     #   + discriminate 1 (FR-313 固溶体 vs 二相判別の実データ GSAS 露出, Issue #130)
     #   + propose_data_preprocessing 1 (REQ-SAR-401/402/403 `autorietveld.autorange` の露出)
     #   + list_refinement_backends 1 (M12 TOPAS バックエンド選択の可用性確認)
-#   = 38 ツール登録
+    #   + 装置パラメータ 5 (FR-502: list_instrument_presets/read_pattern_metadata/
+    #   create_instrument_params/inspect_instrument_params/calibrate_instrument。
+    #   instrument_path の出所が Z-Code 利用者以外にも存在するようになった = §4.5)
+#   = 43 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -222,6 +225,11 @@ def test_eight_tools_registered_in_mcp_tools():
         "discriminate",
         "propose_data_preprocessing",
         "list_refinement_backends",
+        "list_instrument_presets",
+        "read_pattern_metadata",
+        "create_instrument_params",
+        "inspect_instrument_params",
+        "calibrate_instrument",
     }
     assert set(MCP_TOOLS.keys()) == expected
 

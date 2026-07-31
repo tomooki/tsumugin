@@ -76,6 +76,10 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 1. **入力を組み立てる** (AGENT_PLAYBOOK §1): データ/装置ファイルから `Radiation`・`Geometry`・
    `data_format` を判定し `HistogramSpec`/`PhaseSpec` の JSON を作る。CIF が無い相は
    `identify_phases` (元素一覧 → 単相ランキング) で候補構造を得る。
+   - **装置ファイル (`instrument_path`) が無い / 正しいか分からないときは `instrument` skill**。
+     `create_instrument_params` で作り (観測データ・プリセット・波長のいずれからでも)、
+     **`inspect_instrument_params` で精密化前に検査する** — 放射源の取り違えと Kα2 の不整合は
+     Rwp を見ても原因に辿り着けない類の誤りで、後段の全段階を壊す。
    - **相数が事前に分からない未知試料**は `identify_pattern` (M11 統一同定) を使う。1 相受理する
      ごとに残差からその寄与を減算し、**残差 S/N < 5σ になるまで**積み上げる (単相なら 1 相で停止、
      多相なら複数相)。`accepted[]` の各相の CIF/formula を `PhaseSpec` に配線して精密化へ進む

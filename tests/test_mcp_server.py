@@ -241,7 +241,10 @@ def test_create_mcp_server_wires_all_eight_tools():
     # +1: write_sequential_csv (FR-504 トラジェクトリ CSV, Issue #116/#117 調査) → 35
     # +1: discriminate (FR-313 固溶体 vs 二相判別の実データ GSAS 露出, Issue #130) → 36
     # +1: propose_data_preprocessing (REQ-SAR-401/402/403 `autorietveld.autorange` の露出) → 37
-    assert len(MCP_TOOLS) == 38
+    # +1: list_refinement_backends (M12 TOPAS バックエンド選択の可用性確認) → 38
+    # +5: 装置パラメータ (FR-502: list_instrument_presets/read_pattern_metadata/
+    #     create_instrument_params/inspect_instrument_params/calibrate_instrument) → 43
+    assert len(MCP_TOOLS) == 43
 
 
 def _collect_tool_names(server: object) -> list[str]:

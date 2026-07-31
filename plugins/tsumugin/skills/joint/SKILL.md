@@ -33,6 +33,10 @@ X 線と中性子それぞれの `HistogramSpec` (data_path・instrument_path・
   `.instprm` にして、その `path` を `HistogramSpec` に渡す。
 - `radiation` は各ヒストグラムで正しく (`xray_synchrotron`/`neutron_tof`/`neutron_cw`)。**波長/較正
   ファイルの取り違えに注意** (放射光の λ は較正ファイル値をそのまま使わないことがある — 実測 XND)。
+- **装置ファイルが無い / 正しいか分からないときは `instrument` skill**。joint は放射源の異なる
+  instprm を複数扱うので取り違えが起きやすい — 各ヒストグラムについて
+  `inspect_instrument_params(path, radiation=..., geometry=...)` を**宣言する値で**呼び、
+  `radiation_type_mismatch` が出ないことを確かめてから `auto_rietveld` に渡す。
 
 ### 2. joint で精密化する
 

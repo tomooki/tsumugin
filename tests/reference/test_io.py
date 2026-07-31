@@ -344,3 +344,95 @@ def test_fxye_without_a_bank_line_keeps_the_centidegree_default():
     """BANK 行が無ければ従来どおり (既存呼び出しの非回帰)。"""
     x, _ = parse_fxye("title\n   50.00  100.0  10.0\n")
     assert x[0] == pytest.approx(0.5)
+
+
+# ======================= 観測データの装置メタ情報 (FR-502) =======================
+# 装置パラメータファイルを持たない利用者のために、**データファイル自身が持っている**
+# 測定条件 (波長・Kα2 の有無・反射/透過) を拾う。XRDML は持っているのに従来は捨てていた。
+
+
+def test_read_pattern_metadata_xrdml_wavelength(tmp_path):
+    from tsumugin.reference.io import read_pattern_metadata
+
+    path = tmp_path / "s.xrdml"
+    path.write_text(_SAMPLE_XRDML, encoding="utf-8")
+    meta = read_pattern_metadata(path)
+    assert meta["source_format"] == "XRDML"
+    assert meta["wavelength"] == pytest.approx(1.540598)
+    assert meta["radiation"] == "xray_lab"
+
+
+def test_read_pattern_metadata_xrdml_reports_kalpha2_stripped(tmp_path):
+    """``intended="K-Alpha 1"`` は Kα2 除去済みの宣言 — 単色 instprm を選ぶ根拠になる。
+
+    M9 CaTeO3 で「Kα2 除去 XRDML に二重線 instprm を当てると最大の系統残差」と判った
+    組み合わせを、**ファイル自身の宣言から**機械的に避けられるようにする。
+    """
+    from tsumugin.reference.io import read_pattern_metadata
+
+    path = tmp_path / "s.xrdml"
+    path.write_text(_SAMPLE_XRDML, encoding="utf-8")
+    assert read_pattern_metadata(path)["kalpha2_stripped"] is True
+
+
+def test_read_pattern_metadata_xrdml_doublet_is_not_stripped(tmp_path):
+    from tsumugin.reference.io import read_pattern_metadata
+
+    text = _SAMPLE_XRDML.replace(
+        '<usedWavelength intended="K-Alpha 1">',
+        '<usedWavelength intended="K-Alpha">',
+    ).replace(
+        "</usedWavelength>",
+        "<kAlpha2 unit=\"Angstrom\">1.544426</kAlpha2>"
+        "<ratioKAlpha2KAlpha1>0.5</ratioKAlpha2KAlpha1></usedWavelength>",
+    )
+    path = tmp_path / "s.xrdml"
+    path.write_text(text, encoding="utf-8")
+    meta = read_pattern_metadata(path)
+    assert meta["kalpha2_stripped"] is False
+    assert meta["wavelength_ka2"] == pytest.approx(1.544426)
+    assert meta["ka2_ratio"] == pytest.approx(0.5)
+
+
+def test_read_pattern_metadata_xrdml_reflection_is_bragg_brentano(tmp_path):
+    """``sampleMode="Reflection"`` は反射光学系 = Bragg-Brentano。"""
+    from tsumugin.reference.io import read_pattern_metadata
+
+    path = tmp_path / "s.xrdml"
+    path.write_text(_SAMPLE_XRDML, encoding="utf-8")
+    assert read_pattern_metadata(path)["geometry"] == "bragg_brentano"
+
+    path2 = tmp_path / "t.xrdml"
+    path2.write_text(_SAMPLE_XRDML.replace('"Reflection"', '"Transmission"'), encoding="utf-8")
+    assert read_pattern_metadata(path2)["geometry"] == "debye_scherrer"
+
+
+def test_read_pattern_metadata_other_formats_report_nothing_but_do_not_fail(tmp_path):
+    """波長を構造的に持たない形式は「無い」と答える (捏造しない)。"""
+    from tsumugin.reference.io import read_pattern_metadata
+
+    path = tmp_path / "d.xye"
+    path.write_text("10.0 100.0 10.0\n10.1 110.0 10.5\n", encoding="utf-8")
+    meta = read_pattern_metadata(path)
+    assert meta["source_format"] == "XYE"
+    assert "wavelength" not in meta
+
+
+def test_read_pattern_metadata_unknown_suffix_raises(tmp_path):
+    from tsumugin.reference.io import read_pattern_metadata
+
+    path = tmp_path / "d.bogus"
+    path.write_text("x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="data_format"):
+        read_pattern_metadata(path)
+
+
+def test_read_pattern_metadata_corrupt_xrdml_returns_format_only(tmp_path):
+    """壊れた XRDML でも例外にせず「読めなかった」を返す (② 境界を跨ぐため)。"""
+    from tsumugin.reference.io import read_pattern_metadata
+
+    path = tmp_path / "s.xrdml"
+    path.write_text("<not-xml", encoding="utf-8")
+    meta = read_pattern_metadata(path)
+    assert meta["source_format"] == "XRDML"
+    assert "wavelength" not in meta

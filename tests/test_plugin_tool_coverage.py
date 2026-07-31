@@ -60,7 +60,7 @@ def _all_skill_text() -> str:
 def test_skills_directory_has_expected_number_of_files():
     """本ガードが空ディレクトリに対して偽陰性 (全ツール「未出現」だが誰も気づかない) を出さないこと。"""
     files = _skill_files()
-    assert len(files) == 7, f"SKILL.md の数が想定 (7) と違う: {[p.as_posix() for p in files]}"
+    assert len(files) == 8, f"SKILL.md の数が想定 (8) と違う: {[p.as_posix() for p in files]}"
 
 
 def test_unexposed_declarations_reference_real_mcp_tools():
