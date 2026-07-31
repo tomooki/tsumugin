@@ -355,6 +355,44 @@ def create_workbench_app(
         )
         return _to_response(result)
 
+    @app.get("/api/instrument/presets")
+    def get_instrument_presets() -> Any:
+        return _to_response(holder.session.instrument_presets())
+
+    @app.post("/api/instrument/create")
+    def post_instrument_create(body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        # **body で splat しない — 未知キー 1 つで TypeError → 500 になる。
+        # 他の project 系ルートと同じく受け取るキーを明示する。
+        return _to_response(
+            holder.session.create_instrument(
+                out_path=body.get("out_path"),
+                preset=body.get("preset"),
+                from_data_path=body.get("from_data_path"),
+                radiation=body.get("radiation"),
+                geometry=body.get("geometry"),
+                wavelength=body.get("wavelength"),
+                wavelength_ka2=body.get("wavelength_ka2"),
+                ka2_ratio=body.get("ka2_ratio"),
+                zero=body.get("zero", 0.0),
+                polarization=body.get("polarization"),
+                profile=body.get("profile"),
+                tof=body.get("tof"),
+            )
+        )
+
+    @app.post("/api/instrument/inspect")
+    def post_instrument_inspect(body: dict[str, Any] = Body(...)) -> Any:
+        return _to_response(
+            holder.session.inspect_instrument(
+                path=body.get("path"),
+                radiation=body.get("radiation"),
+                geometry=body.get("geometry"),
+            )
+        )
+
     @app.post("/api/project/histograms/{hist_id}/remove")
     def post_project_histograms_remove(hist_id: str, body: dict[str, Any] = Body(default={})) -> Any:
         guard = _guard_not_refining()

@@ -71,6 +71,10 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
   `convert_pattern(input_path, out_path, input_format=...)` で `.xye`/FXYE にし、その `path` を
   `data_path` に渡す。Z-Code `.zDiffractometer` は `write_instrument_params(zdiff_path, out_instprm)`
   で `.instprm` にし、その `path` を上記 `instrument` spec の `path` に渡す (変換は前処理・提案のみ)。
+- **装置ファイルが無い / 正しいか分からないときは `instrument` skill**。`create_instrument_params`
+  で作り (`from_data_path` に系列の 1 フレームを渡せば波長・幾何・Kα2 の扱いが決まる)、
+  `inspect_instrument_params` で検査してから `instrument` spec の `path` に渡す。
+  **系列全体が同じ instprm を使う**ので、ここでの誤りは全フレームに波及する。
 - **`instrument` spec を渡す** (下記)。省略すると**実験室 X 線 Bragg-Brentano・背景 6 項**の
   便宜既定が使われる。放射光データでは必ず明示すること。
 

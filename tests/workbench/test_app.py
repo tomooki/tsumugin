@@ -1284,10 +1284,24 @@ def test_project_upload_without_project_returns_422(client: TestClient):
     assert resp.status_code == 422
 
 
+def _seed_instprm(directory: Path, name: str = "proj1") -> None:
+    """プロジェクトの `data/` に実在する装置ファイルを置く。
+
+    `add_histogram` は装置ファイルを**実際に開いて検査する** (FR-502) ため、
+    存在しないプレースホルダのパスでは追加できない。データ側と同じ厳しさで見るのが狙いなので、
+    テストも実ファイルを置く (仕様変更ではなく、従来が装置ファイルを一度も見ていなかった)。
+    """
+    from tsumugin.instprm import write_instprm
+
+    write_instprm(directory / name / "data" / "hist.instprm", radiation="xray_lab",
+                  wavelength=1.5405)
+
+
 def test_project_histograms_add_and_remove(client: TestClient, tmp_path: Path, fake_home: Path):
     directory = tmp_path / "projects"
     directory.mkdir()
     client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+    _seed_instprm(directory)
 
     resp = client.post(
         "/api/project/histograms",
@@ -1344,6 +1358,7 @@ def test_project_settings_update(client: TestClient, tmp_path: Path, fake_home: 
     directory = tmp_path / "projects"
     directory.mkdir()
     client.post("/api/project", json={"name": "proj1", "directory": str(directory)})
+    _seed_instprm(directory)
     client.post(
         "/api/project/histograms",
         json={

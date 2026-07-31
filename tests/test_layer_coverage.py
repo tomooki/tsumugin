@@ -224,6 +224,19 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "不要の単純配線漏れだった。mpr_path + 一定ケイデンス (offset_s/interval_s/n_frames) or 明示 "
         "epoch 列 → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合",
     ),
+    "instprm (FR-502)": (
+        "create_instrument_params",
+        "装置パラメータファイルの生成・解析・検査。**初心者が最初に詰まる入力**であり、"
+        "従来 ② から instprm を作れるのは Z-Code `.zDiffractometer` を持つ利用者だけ "
+        "(`write_instrument_params`) だった — ③ の全 SKILL/PLAYBOOK が `instrument_path` を"
+        "**所与**として書かれており、§4.5 の「どの ② ツールの出力から来るのか」に答えが無かった。"
+        "5 ツールで往復を閉じる: `read_pattern_metadata` (観測データ自身が持つ波長/Kα2/反射透過。"
+        "XRDML は持っているのに従来は捨てていた) → `list_instrument_presets` (GSAS-II 同梱 "
+        "defaultIparms) → `create_instrument_params` (出力 path が histograms[].instrument_path / "
+        "instrument spec の path へ往復) → `inspect_instrument_params` (精密化**前**に誤りを告げる) "
+        "→ `calibrate_instrument` (標準試料の実測分解能を焼き込む)。① は stdlib-only leaf で、"
+        "既存 3 経路 (resolution.pxc_instprm_text / interop.instrument / backends.gsasii) の共通実装",
+    ),
     "charge-constrained rietveld (FR-318)": (
         "alkali_budget",
         "電気化学制約付き operando Rietveld: クーロメトリー (実測 Q) → per-frame 総アルカリ量 "
@@ -267,6 +280,7 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "oed": "oed (M5/FR-700)",
     "nested": "nested (M5/FR-500)",
     "interop": "interop (XND)",
+    "instprm": "instprm (FR-502)",
     "operando": "echem sync (M3/FR-311)",  # ← Issue #99: これまで宣言リストに 1 行も無かった
     # --- 基盤 (③ に露出する独立能力ではない — 露出済みツールが内部で使うインフラ) ---
     "model": (FOUNDATIONAL, "不変 dataclass 群 (§4)。全層が共有する型であり単独能力ではない"),

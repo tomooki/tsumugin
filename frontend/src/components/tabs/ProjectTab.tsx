@@ -2,10 +2,12 @@ import { formatNumber } from "../../api/format";
 import { useEffect, useState, type ChangeEvent } from "react";
 import {
   ApiError,
+  getInstrumentPresets,
   getState,
   getViewModel,
   postAddHistogram,
   postAddPhase,
+  postCreateInstrument,
   postEchem,
   postProjectFrames,
   postProjectSettings,
@@ -13,7 +15,14 @@ import {
   postRemovePhase,
   uploadProjectFile,
 } from "../../api/client";
-import type { FrameAxis, FrameSpec, ProjectHistogramRow, ProjectPhaseRow } from "../../api/types";
+import type {
+  FrameAxis,
+  FrameSpec,
+  InstrumentFinding,
+  InstrumentPreset,
+  ProjectHistogramRow,
+  ProjectPhaseRow,
+} from "../../api/types";
 import { DATA_FORMAT_OPTIONS, GEOMETRY_OPTIONS, RADIATION_OPTIONS } from "../../data/projectOptions";
 import { useI18n } from "../../i18n";
 import { useStore } from "../../state/store";
@@ -74,6 +83,16 @@ export function ProjectTab() {
   const [uploadingData, setUploadingData] = useState(false);
   const [uploadingInstrument, setUploadingInstrument] = useState(false);
   const [addingHist, setAddingHist] = useState(false);
+
+  // — 装置ファイルを持っていない利用者の導線 (FR-502) —
+  const [makingInstrument, setMakingInstrument] = useState(false);
+  const [presets, setPresets] = useState<InstrumentPreset[] | null>(null);
+  const [presetsUnavailable, setPresetsUnavailable] = useState(false);
+  const [preset, setPreset] = useState("");
+  const [instrWavelength, setInstrWavelength] = useState("");
+  const [instrWavelengthKa2, setInstrWavelengthKa2] = useState("");
+  const [creatingInstrument, setCreatingInstrument] = useState(false);
+  const [instrumentFindings, setInstrumentFindings] = useState<InstrumentFinding[]>([]);
 
   // — PHASES add form —
   const [cifPath, setCifPath] = useState("");
@@ -163,6 +182,62 @@ export function ProjectTab() {
     }
   }
 
+  // プリセットは**パネルを開いたときだけ**引く (サーバ側で GSAS-II を触るので、
+  // 装置ファイルを既に持っている利用者に余計な失敗を見せない)。
+  async function handleOpenInstrumentMaker() {
+    setMakingInstrument(true);
+    setError(null);
+    if (presets !== null || presetsUnavailable) return;
+    try {
+      const res = await getInstrumentPresets();
+      setPresets(res.presets);
+    } catch {
+      // GSAS-II 未導入でもここで詰ませない — 波長入力の経路は残る。
+      setPresetsUnavailable(true);
+      setPresets([]);
+    }
+  }
+
+  async function handleCreateInstrument() {
+    if (locked) return;
+    setError(null);
+    setCreatingInstrument(true);
+    try {
+      const lam = parseOptionalNumber(instrWavelength);
+      const lam2 = parseOptionalNumber(instrWavelengthKa2);
+      const chosen = presets?.find((p) => p.label === preset);
+      // 波長を打った利用者はプリセットより自分の値を意図している (プリセットは verbatim なので
+      // 両方送ると波長が黙って無視される)。
+      const useWavelength = lam !== null;
+      // 【固定名にしない】: joint は X 線と中性子で 2 本作る。同じ名前だと 2 本目が 1 本目を
+      // 黙って上書きし、**追加済みヒストグラムの参照先が別の装置ファイルに化ける**
+      // (追加時には検証を通っているので誰も気づかない)。パラメータから名前を作る。
+      const stem = useWavelength
+        ? `${chosen?.radiation ?? radiation}_${lam}`
+        : preset || "instrument";
+      const res = await postCreateInstrument({
+        out_path: `data/${stem}.instprm`.replace(/[^A-Za-z0-9_./-]+/g, "_"),
+        ...(useWavelength
+          ? {
+              radiation: chosen?.radiation ?? radiation,
+              geometry: chosen?.geometry ?? geometry,
+              wavelength: lam,
+              ...(lam2 !== null ? { wavelength_ka2: lam2 } : {}),
+            }
+          : { preset }),
+      });
+      setInstrumentPath(res.path);
+      setInstrumentFindings(res.findings ?? []);
+      if (res.radiation) setRadiation(res.radiation);
+      if (res.geometry) setGeometry(res.geometry);
+      setMakingInstrument(false);
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setCreatingInstrument(false);
+    }
+  }
+
   async function handleAddHistogram() {
     if (locked || !dataPath || !instrumentPath) return;
     setError(null);
@@ -171,7 +246,7 @@ export function ProjectTab() {
       const min = parseOptionalNumber(ttMin);
       const max = parseOptionalNumber(ttMax);
       const two_theta_limits: [number, number] | null = min !== null && max !== null ? [min, max] : null;
-      await postAddHistogram({
+      const res = await postAddHistogram({
         data_path: dataPath,
         instrument_path: instrumentPath,
         radiation,
@@ -180,6 +255,9 @@ export function ProjectTab() {
         two_theta_limits,
         bank: parseOptionalNumber(bank),
       });
+      // 追加を通した指摘 (question/warning/info) は**黙って捨てない** — とくに Kα2 の整合は
+      // ファイルだけでは決まらず人間の確認が要る (severity=error は例外として送出済み)。
+      setInstrumentFindings(res.instrument_findings ?? []);
       setDataPath("");
       setInstrumentPath("");
       setTtMin("");
@@ -466,6 +544,11 @@ export function ProjectTab() {
               {uploadingInstrument && (
                 <span className="proj-add__status">{t("project.histograms.add.uploading")}</span>
               )}
+              {!makingInstrument && (
+                <Btn type="button" disabled={locked} onClick={handleOpenInstrumentMaker}>
+                  {t("project.instrument.noFile")}
+                </Btn>
+              )}
             </label>
             <label className="proj-add__field">
               <span>{t("project.histograms.add.radiation")}</span>
@@ -510,6 +593,69 @@ export function ProjectTab() {
               <input value={bank} disabled={locked} onChange={(e) => setBank(e.target.value)} />
             </label>
           </div>
+          {makingInstrument && (
+            <div className="proj-add__instrument">
+              <h4>{t("project.instrument.heading")}</h4>
+              <div className="proj-add__grid">
+                <label className="proj-add__field">
+                  <span>{t("project.instrument.preset")}</span>
+                  <select
+                    value={preset}
+                    disabled={locked}
+                    onChange={(e) => setPreset(e.target.value)}
+                  >
+                    <option value="">{t("project.instrument.presetNone")}</option>
+                    {(presets ?? []).map((p) => (
+                      <option key={p.label} value={p.label}>
+                        {p.label} — {p.summary}
+                      </option>
+                    ))}
+                  </select>
+                  {presetsUnavailable && (
+                    <span className="proj-add__status">
+                      {t("project.instrument.presetsUnavailable")}
+                    </span>
+                  )}
+                </label>
+                <label className="proj-add__field">
+                  <span>{t("project.instrument.wavelength")}</span>
+                  <input
+                    value={instrWavelength}
+                    disabled={locked}
+                    onChange={(e) => setInstrWavelength(e.target.value)}
+                  />
+                </label>
+                <label className="proj-add__field">
+                  <span>{t("project.instrument.wavelengthKa2")}</span>
+                  <input
+                    value={instrWavelengthKa2}
+                    disabled={locked}
+                    onChange={(e) => setInstrWavelengthKa2(e.target.value)}
+                  />
+                  <span className="proj-add__status">
+                    {t("project.instrument.wavelengthHint")}
+                  </span>
+                </label>
+              </div>
+              <Btn type="button" disabled={locked || creatingInstrument} onClick={handleCreateInstrument}>
+                {creatingInstrument
+                  ? t("project.instrument.creating")
+                  : t("project.instrument.create")}
+              </Btn>
+            </div>
+          )}
+          {instrumentFindings.length > 0 && (
+            <div className="proj-add__findings">
+              <h4>{t("project.instrument.findings")}</h4>
+              <ul>
+                {instrumentFindings.map((f) => (
+                  <li key={f.code} data-severity={f.severity}>
+                    <strong>{f.severity}</strong> {f.message} <em>{f.hint}</em>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <Btn
             type="button"
             variant="accent"

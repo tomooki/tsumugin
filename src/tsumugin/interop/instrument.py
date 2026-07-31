@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from tsumugin.instprm import build_instprm_text
 from tsumugin.interop.zrietveld import ZDiffractometer
 
 __all__ = ["write_gsas_instprm"]
@@ -32,36 +33,25 @@ def _instprm_pxc(
     *,
     wavelength: float | None,
     polarization: float | None,
-) -> list[str]:
-    """X 線 (PXC) instprm 行を組む。"""
+) -> str:
+    """X 線 (PXC) instprm テキストを組む (``tsumugin.instprm`` へ委譲)。"""
     lam = wavelength if wavelength is not None else zd.wavelength
     if lam is None:
         raise ValueError("X 線 instprm には波長が必要です (wavelength 引数か config.wavelength)。")
     # 放射光は水平偏光でほぼ完全偏光。既定を高めに採る。
-    polar = polarization
-    if polar is None:
-        polar = 0.95 if "synchrotron" in zd.method.lower() else 0.7
+    is_synchrotron = "synchrotron" in zd.method.lower()
     zero = zd.zero if zd.zero is not None else 0.0
-    return [
-        "#GSAS-II instrument parameter file; created by tsumugin.interop",
-        "Type:PXC",
-        "Bank:1.0",
-        f"Lam:{lam:.6f}",
-        f"Zero:{zero:.6f}",
-        f"Polariz.:{polar:.4f}",
-        "Azimuth:0.0",
-        "U:2.0",
-        "V:-2.0",
-        "W:5.0",
-        "X:0.0",
-        "Y:0.0",
-        "Z:0.0",
-        "SH/L:0.002",
-    ]
+    return build_instprm_text(
+        radiation="xray_synchrotron" if is_synchrotron else "xray_lab",
+        wavelength=lam,
+        zero=zero,
+        polarization=polarization,
+        creator="tsumugin.interop",
+    )
 
 
-def _instprm_pnt(zd: ZDiffractometer) -> list[str]:
-    """TOF 中性子 (PNT) instprm 行を組む。"""
+def _instprm_pnt(zd: ZDiffractometer) -> str:
+    """TOF 中性子 (PNT) instprm テキストを組む (``tsumugin.instprm`` へ委譲)。"""
     if len(zd.conversion_params) < 2:
         raise ValueError("TOF instprm には変換係数 (c0,c1[,c2]) が必要です。")
     c0 = zd.conversion_params[0]
@@ -76,31 +66,20 @@ def _instprm_pnt(zd: ZDiffractometer) -> list[str]:
 
     # ガウス幅初期値: Z-Code SigmaSquare0/1/2 を採る (体系が近い)。無ければ 0。
     prof = zd.profile
-    sig0 = prof.get("SigmaSquare0", 0.0)
-    sig1 = prof.get("SigmaSquare1", 0.0)
-    sig2 = prof.get("SigmaSquare2", 0.0)
-
-    return [
-        "#GSAS-II instrument parameter file; created by tsumugin.interop",
-        "Type:PNT",
-        f"fltPath:{flt_path:.4f}",
-        "alpha:0.5",
-        f"sig-1:{sig1:.6f}",
-        f"2-theta:{bank_2t:.4f}",
-        "sig-q:0.0",
-        f"sig-0:{sig0:.6f}",
-        f"sig-2:{sig2:.6f}",
-        f"Zero:{c0:.6f}",
-        "difB:0.0",
-        "Azimuth:0.0",
-        "Y:0.0",
-        "X:0.0",
-        "beta-q:0.0",
-        "beta-0:0.02",
-        f"difC:{difc:.6f}",
-        "beta-1:0.0",
-        f"difA:{difa:.6f}",
-    ]
+    return build_instprm_text(
+        radiation="neutron_tof",
+        tof={
+            "difC": difc,
+            "difA": difa,
+            "Zero": c0,
+            "fltPath": flt_path,
+            "two_theta": bank_2t,
+            "sig-0": prof.get("SigmaSquare0", 0.0),
+            "sig-1": prof.get("SigmaSquare1", 0.0),
+            "sig-2": prof.get("SigmaSquare2", 0.0),
+        },
+        creator="tsumugin.interop",
+    )
 
 
 def write_gsas_instprm(
@@ -124,13 +103,13 @@ def write_gsas_instprm(
         ValueError: 放射源が判別不能 / 必須パラメータ (波長・変換係数) が欠けるとき。
     """
     if config.is_tof:
-        lines = _instprm_pnt(config)
+        text = _instprm_pnt(config)
     elif "x-ray" in config.beam_type.lower() or config.wavelength or wavelength:
-        lines = _instprm_pxc(config, wavelength=wavelength, polarization=polarization)
+        text = _instprm_pxc(config, wavelength=wavelength, polarization=polarization)
     else:
         raise ValueError(
             f"instprm の放射源を判別できません (beam_type={config.beam_type!r}, method={config.method!r})。"
         )
     out = Path(path)
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    out.write_text(text, encoding="utf-8")
     return out

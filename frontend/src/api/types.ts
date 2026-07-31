@@ -741,6 +741,57 @@ export interface AddHistogramRequest {
   bank?: number | null;
 }
 
+// 装置パラメータファイル (api-contract.md §装置パラメータファイル, FR-502)。
+// `instrument_path` を持っていない / 正しいか分からない利用者の導線。
+export interface InstrumentPreset {
+  label: string;
+  radiation: string;
+  geometry: string;
+  summary: string;
+}
+
+export interface InstrumentPresetsResponse {
+  presets: InstrumentPreset[];
+}
+
+export interface CreateInstrumentRequest {
+  out_path: string;
+  preset?: string;
+  from_data_path?: string;
+  radiation?: string;
+  geometry?: string;
+  wavelength?: number;
+  wavelength_ka2?: number;
+}
+
+/** 検査の指摘 1 件。`severity` は "error" | "warning" | "question" | "info"。
+ *  **"question" はファイルだけでは決まらない事項** (Kα2 の有無等) で、人間の確認が要る。 */
+export interface InstrumentFinding {
+  code: string;
+  severity: string;
+  message: string;
+  hint: string;
+}
+
+export interface CreateInstrumentResponse {
+  path: string;
+  type: string | null;
+  radiation: string | null;
+  geometry: string | null;
+  wavelength: number | null;
+  kalpha2_stripped: boolean;
+  source: string;
+  ok: boolean;
+  findings: InstrumentFinding[];
+}
+
+/** `POST /api/project/histograms` の応答は ShellState + 装置ファイルの指摘。
+ *  `severity=error` は追加を拒むので error dict 側に出る — ここに載るのは
+ *  **追加は通ったが黙って捨ててはいけない**指摘 (question/warning/info)。 */
+export interface AddHistogramResponse extends ShellState {
+  instrument_findings?: InstrumentFinding[];
+}
+
 export interface AddPhaseRequest {
   structure_path: string;
   phase_name: string;

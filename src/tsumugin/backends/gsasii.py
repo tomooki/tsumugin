@@ -73,23 +73,10 @@ def _g2sc():
 
 
 def _write_instprm(path: Path, wavelength: float) -> None:
-    lines = [
-        "#GSAS-II instrument parameter file; created by tsumugin",
-        "Type:PXC",
-        "Bank:1.0",
-        f"Lam:{wavelength}",
-        "Polariz.:0.7",
-        "Azimuth:0.0",
-        "Zero:0.0",
-        "U:2.0",
-        "V:-2.0",
-        "W:5.0",
-        "X:0.0",
-        "Y:0.0",
-        "Z:0.0",
-        "SH/L:0.002",
-    ]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """シミュレート/gpx 書き出し用の最小 instprm (``tsumugin.instprm`` へ委譲)。"""
+    from tsumugin.instprm import write_instprm
+
+    write_instprm(path, radiation="xray_lab", wavelength=wavelength)
 
 
 def _write_xye(

@@ -50,6 +50,7 @@ from .compare_tools import COMPARE_TOOLS as _COMPARE_TOOLS
 from .discriminate_tools import DISCRIMINATE_TOOLS as _DISCRIMINATE_TOOLS
 from .echem_tools import ECHEM_TOOLS as _ECHEM_TOOLS
 from .insitu_tools import INSITU_TOOLS as _INSITU_TOOLS
+from .instrument_tools import INSTRUMENT_TOOLS as _INSTRUMENT_TOOLS
 from .interop_tools import INTEROP_TOOLS as _INTEROP_TOOLS
 from .mem_tools import MEM_MODEL_TOOLS as _MEM_MODEL_TOOLS
 from .operando_diag_tools import OPERANDO_DIAG_TOOLS as _OPERANDO_DIAG_TOOLS
@@ -888,5 +889,6 @@ MCP_TOOLS: Mapping[str, object] = {
     **_COMPARE_TOOLS,
     **_ECHEM_TOOLS,
     **_INTEROP_TOOLS,
+    **_INSTRUMENT_TOOLS,
     **_DISCRIMINATE_TOOLS,
 }

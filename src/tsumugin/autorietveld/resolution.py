@@ -109,25 +109,21 @@ def pxc_instprm_text(
     """X 線 (PXC) の GSAS ``.instprm`` テキストを生成する (分解能抽出の初期値)。
 
     U,V,W,X,Y は抽出精密化で解放するため初期値でよい。放射光は偏光を高めに採る (既定 0.95)。
+
+    実体は :func:`tsumugin.instprm.build_instprm_text` (FR-502 の共通実装)。本関数は
+    分解能抽出が使う「X 線・単色・放射光既定」の呼び出しを固定した薄いラッパで、出力は
+    共通実装へ寄せた後もバイト同一 (`tests/test_instprm.py` が golden で縛る)。
     """
-    return "\n".join(
-        [
-            "#GSAS-II instrument parameter file; created by tsumugin.autorietveld.resolution",
-            "Type:PXC",
-            "Bank:1.0",
-            f"Lam:{wavelength:.6f}",
-            f"Zero:{zero:.6f}",
-            f"Polariz.:{polarization:.4f}",
-            "Azimuth:0.0",
-            f"U:{u}",
-            f"V:{v}",
-            f"W:{w}",
-            "X:0.0",
-            "Y:0.0",
-            "Z:0.0",
-            f"SH/L:{sh_l}",
-        ]
-    ) + "\n"
+    from ..instprm import build_instprm_text
+
+    return build_instprm_text(
+        radiation="xray_synchrotron",
+        wavelength=wavelength,
+        zero=zero,
+        polarization=polarization,
+        profile={"U": u, "V": v, "W": w, "SH/L": sh_l},
+        creator="tsumugin.autorietveld.resolution",
+    )
 
 
 def extract_instrument_profile_from_standard(

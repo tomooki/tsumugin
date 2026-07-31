@@ -1168,7 +1168,23 @@ def test_ledger_view_entries_have_required_keys_and_are_verified():
 @pytest.fixture()
 def project_session(tmp_path) -> WorkbenchSession:
     project = lifecycle.create_project("proj", str(tmp_path))
+    _seed_instprm(project.spec_dir)
     return WorkbenchSession.from_project(project)
+
+
+def _seed_instprm(spec_dir, *names: str) -> None:
+    """spec_dir に実在する装置ファイルを置く。
+
+    `add_histogram` は装置ファイルを**実際に開いて検査する** (FR-502) ため、存在しない
+    プレースホルダのパスでは追加できない。従来はデータだけを読んで装置ファイルは一度も
+    開いておらず、存在しないパスや別測定のファイルがそのまま spec に入っていた。
+    """
+    from pathlib import Path
+
+    from tsumugin.instprm import write_instprm
+
+    for name in names or ("data/hist.instprm", "d.instprm", "i", "data/d.instprm"):
+        write_instprm(Path(spec_dir) / name, radiation="xray_lab", wavelength=1.5405)
 
 
 def _block_refine(session: WorkbenchSession) -> "tuple[threading.Event, threading.Event]":
@@ -1196,6 +1212,7 @@ def test_viewmodel_project_config_echo_present_only_in_project_mode(tmp_path):
     assert "project" not in empty.viewmodel()
 
     project = lifecycle.create_project("proj", str(tmp_path))
+    _seed_instprm(project.spec_dir)
     session = WorkbenchSession.from_project(project)
     session.add_histogram(
         data_path="d.xy", instrument_path="d.instprm", radiation="xray_lab",
@@ -4175,7 +4192,7 @@ def test_phases_view_lists_the_recipe_stages_touching_each_phase(tmp_path):
     hist_data = Path(project.spec_dir) / "data" / "d.xy"
     hist_data.write_text("1 1\n", encoding="utf-8")
     instr = Path(project.spec_dir) / "data" / "d.instprm"
-    instr.write_text("#\n", encoding="utf-8")
+    _seed_instprm(project.spec_dir, "data/d.instprm")
     session = WorkbenchSession.from_project(project)
     session.add_histogram(
         data_path=str(hist_data), instrument_path=str(instr),

@@ -184,12 +184,37 @@ refine 実行中のプロジェクト変更系は 409。
 | POST `/api/project/demo` `{}` | state (source=demo) | シードのデモセッション (サンプル閲覧用) |
 | GET `/api/project/recent` | `{"projects": [{"name","path","last_opened"}]}` | — (`~/.tsumugin/workbench_recent.json`) |
 | POST `/api/project/upload` (multipart: `file`, `kind`=`data`\|`instrument`\|`structure`) | `{"stored_path": str}` | プロジェクト `data/` へ保存 (自己完結性のためコピー方式) |
-| POST `/api/project/histograms` `{data_path, instrument_path, radiation, geometry, data_format, two_theta_limits?, bank?}` | state+viewmodel 反映 | spec 追記 + 自動保存 + ledger |
+| POST `/api/project/histograms` `{data_path, instrument_path, radiation, geometry, data_format, two_theta_limits?, bank?}` | state+viewmodel 反映 + `instrument_findings: [{code, severity, message, hint}]` | spec 追記 + 自動保存 + ledger。**装置ファイルもデータと同じ厳しさで検証する** (下記) |
 | POST `/api/project/histograms/{hist_id}/remove` `{}` | 同上 | spec から除去 + ledger (**DELETE ルートは使わない** — P2 構造ガード維持。解析履歴 ledger/snapshot は不可侵、除去できるのは入力設定のみ) |
 | POST `/api/project/phases` `{structure_path, phase_name}` | 同上 | spec 追記 + ledger |
 | POST `/api/project/phases/{phase_name}/remove` `{}` | 同上 | spec から除去 + ledger |
 | POST `/api/project/phases/{phase_name}/settings` `{refine_cell: bool}` | 同上 | 相単位の精密化設定 (§PHASES タブ)。`PhaseSpec.refine_cell` を更新 + 自動保存 + ledger |
 | POST `/api/project/settings` `{two_theta_limits?, background_coeffs?, max_cyc?}` | 同上 | spec 更新 + ledger |
+
+### 装置パラメータファイル (FR-502, 2026-07-31)
+
+`instrument_path` を**持っていない / 正しいか分からない**利用者の導線。従来 workbench は
+`kind="instrument"` のアップロードしか持たず、装置ファイルを既に持っていることが前提だった。
+実体は ② の `create_instrument_params` / `inspect_instrument_params` / `list_instrument_presets`
+をそのまま呼ぶ (①②③ と GUI で挙動を分けない)。
+
+| 呼び出し | 成功レスポンス | 備考 |
+|---|---|---|
+| GET `/api/instrument/presets` | `{"presets": [{label, radiation, geometry, summary}]}` | GSAS-II 同梱 `defaultIparms`。**未導入なら error dict** (波長明示の経路へ誘導する) |
+| POST `/api/instrument/create` `{out_path, preset?, from_data_path?, radiation?, geometry?, wavelength?, wavelength_ka2?, ka2_ratio?, zero?, polarization?, profile?, tof?}` | `{path, type, radiation, geometry, wavelength, kalpha2_stripped, source, ok, findings}` | refine 実行中は 409。`path` を histograms の `instrument_path` に渡す |
+| POST `/api/instrument/inspect` `{path, radiation?, geometry?}` | `{path, ok, type, findings}` | 読取り専用 (refine 中でも可)。**ファイル不在も error でなく finding** |
+
+**`add_histogram` の装置ファイル検証**: 従来はデータファイルだけを読んで検証し
+(`convert_histogram_for_runner`)、装置ファイルは一度も開いていなかった。存在しないパスや
+別測定のファイルがそのまま spec に入り、精密化の深部まで行って初めて壊れる非対称があった。
+
+- `severity=error` の指摘 (ファイル不在・放射源の取り違え・必須キー欠落・幅ゼロ) があれば
+  **追加を拒む** — `{"error": "instrument file: ...", "error_type": "ValueError",
+  "instrument_findings": [...]}`。
+- `severity=question`/`warning`/`info` は追加を通すが、`instrument_findings` に載せて**黙って
+  捨てない** (とくに Kα2 の整合はファイルだけでは決まらず人間の確認が要る)。
+- 旧 GSAS `.PRM` (固定桁 `INS ` 行) も受ける。**GSAS-II が読める正しいファイルを「装置ファイル
+  ではない」と断じない** — 正しいものを異常と答えるのは、garbage を正常と答えるのと同じ害。
 
 ### PHASES タブ (2026-07-27)
 
