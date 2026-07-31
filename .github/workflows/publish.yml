@@ -1,0 +1,124 @@
+name: Publish to PyPI
+
+# 【このワークフローの立て付け】
+#   PyPI へは **Trusted Publishing (OIDC)** で上げる。API トークンをリポジトリの secret に
+#   置かない — 漏洩したトークンは取り消すまで誰でも使えるが、OIDC は「この repo の
+#   このワークフローからの実行である」ことを PyPI 側が検証するので、保管する秘密が無い。
+#
+# 【なぜ手動トリガも用意するのか】
+#   **PyPI は同じバージョンを再アップロードできない**。誤った内容を上げるとその番号は
+#   永久に使えなくなる。まず TestPyPI で通し、中身を確認してから本番へ上げられるよう
+#   `workflow_dispatch` を残す (release 発行時の自動公開だけだと「試す」余地が無い)。
+#
+# 【PyPI 側で必要な設定 (リポジトリからは行えない)】
+#   PyPI の Publishing → Add a new pending publisher に以下を登録する:
+#     PyPI Project Name : tsumugin
+#     Owner             : tomooki
+#     Repository name   : tsumugin
+#     Workflow name     : publish.yml
+#     Environment name  : pypi        (TestPyPI 側は testpypi)
+#   GitHub 側は Settings → Environments で `pypi` / `testpypi` を作る (承認者を付けると
+#   公開前に人間のレビューを挟める)。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "公開先 (誤爆防止のため既定は testpypi)"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      # 【中身を検証してから上げる】: sdist は既定だと「gitignore されていないもの」を
+      #   拾うため、**追跡外のローカル作業ディレクトリまで同梱される**。実測で
+      #   `.claude/worktrees/` (リポジトリの完全コピー) が入り 22.6 MB になっていた。
+      #   pyproject の `[tool.hatch.build.targets.sdist] include` で絞っているが、
+      #   設定が壊れたまま公開すると**取り消せない**のでここでも検査する。
+      - name: Check distribution contents
+        run: |
+          python - <<'PY'
+          import pathlib, sys, tarfile, zipfile
+          dist = pathlib.Path("dist")
+          sdist = next(dist.glob("*.tar.gz"))
+          wheel = next(dist.glob("*.whl"))
+          names = tarfile.open(sdist).getnames() + zipfile.ZipFile(wheel).namelist()
+
+          # 配布物に入ってはならないもの (ローカル作業状態・未確認の再配布データ・秘密)
+          FORBIDDEN = (
+              ".claude", "worktrees", "node_modules", "scratchpad",
+              "benchmark/testdata", ".env", "CLAUDE.md",
+          )
+          leaked = sorted({n for n in names if any(k in n for k in FORBIDDEN)})
+          if leaked:
+              sys.exit(f"配布物に含めてはならないものが入っている: {leaked[:20]}")
+
+          size_mb = sdist.stat().st_size / 1024 / 1024
+          if size_mb > 5:
+              sys.exit(f"sdist が大きすぎる ({size_mb:.1f} MB) — 収集範囲を疑うこと")
+          print(f"OK: sdist {size_mb:.2f} MB / {len(names)} entries")
+          PY
+
+      - name: Verify the wheel installs and imports
+        run: |
+          uv venv /tmp/verify
+          uv pip install --python /tmp/verify dist/*.whl
+          /tmp/verify/bin/python -c "import tsumugin; print(len(tsumugin.__all__), 'symbols')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write   # Trusted Publishing (OIDC) に必要
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    # release 発行時、または target=pypi を明示した手動実行のときだけ本番へ上げる。
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

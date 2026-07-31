@@ -99,6 +99,23 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/tsumugin"]
 
+# 【sdist に何を入れるかを明示する】: hatchling の既定は「gitignore されていないもの」なので、
+# **追跡外のローカル作業ディレクトリまで同梱される**。実測で `.claude/worktrees/`
+# (エージェントが作る git worktree = リポジトリの完全コピー) が入り、sdist が 22.6 MB /
+# 7388 エントリになっていた。docs/ (未確認の再配布物を含む testdata)・frontend/ の
+# node_modules 派生・desktop/ のビルド成果も配布物には要らない。
+#
+# **既定に任せず列挙する** — 「入れないもの」を数え上げる方式は、新しいディレクトリが
+# 増えるたびに黙って漏れる。
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/tsumugin",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # import-mode=importlib: 同名 basename のテストファイル (tests/test_model.py と
