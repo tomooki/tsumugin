@@ -89,15 +89,15 @@ For the garnet, both engines independently refine the octahedral site to Fe ≈ 
 give the same PbSO₄ cell to four decimals. Details — including the seven TOPAS-side defects this
 comparison exposed — are in [`docs/benchmark/m12-topas/`](docs/benchmark/m12-topas/).
 
-### Real experiments
+### Time-resolved analysis
 
-- **CaTeO₃ *in situ* dehydration** (14 frames, lab X-ray): sequential refinement with warm start,
-  automatic identification of the δ phase from Materials Project at the transition, and acceptance
-  gated on phase-fraction significance + R<sub>wp</sub> improvement + validity.
-- **K₂Mn[Fe(CN)₆] *operando* electrochemistry** (synchrotron, 63 frames analysed at stride 4):
-  R<sub>wp</sub> 6–9 % against 16.2 % for the manual reference analysis.
-- **NaCuHCF·nD₂O** (deuterated Prussian-blue analogue): simultaneous synchrotron X-ray + J-PARC TOF
-  neutron refinement; model selection by ΔBIC established that the zeolitic water site is required.
+- **CaTeO₃ *in situ* dehydration** (14 frames, lab X-ray, Jana2020 tutorial data): sequential
+  refinement with warm start, automatic identification of the δ phase from Materials Project at the
+  transition, and acceptance gated on phase-fraction significance + R<sub>wp</sub> improvement +
+  validity.
+
+The sequential, *operando* and joint X-ray/neutron pipelines have also been exercised on unpublished
+experimental datasets; those results are not reported here.
 
 Benchmark data is not vendored (size and licensing). See
 [`docs/benchmark/README.md`](docs/benchmark/README.md) for fetch instructions; the corresponding

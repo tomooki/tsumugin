@@ -28,8 +28,10 @@ CLAUDE.md
 #      恒久的に残す価値があるものは tests/ か docs/ へ昇格させるのが本筋。
 scratchpad/
 
-# ベンチの派生 GSAS-II プロジェクト (大容量バイナリ; スクリプト再実行で再生成できる)
-docs/benchmark/joint/results/*.gpx
+# joint 占有率ベンチの出力一式。**未公開の実験データ (testdata/xnd) の精密化結果**なので、
+# 大容量 .gpx だけでなく派生の csv/log も含めてディレクトリごと ignore する
+# (スクリプト再実行で再生成できる)。
+docs/benchmark/joint/results/
 
 # GUI workbench frontend (Vite + React)
 frontend/node_modules/
