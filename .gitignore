@@ -28,9 +28,15 @@ CLAUDE.md
 #      恒久的に残す価値があるものは tests/ か docs/ へ昇格させるのが本筋。
 scratchpad/
 
-# joint 占有率ベンチの出力一式。**未公開の実験データ (testdata/xnd) の精密化結果**なので、
-# 大容量 .gpx だけでなく派生の csv/log も含めてディレクトリごと ignore する
-# (スクリプト再実行で再生成できる)。
+# ベンチマークの測定結果は**既定で追跡しない**。公開したい成果物だけ `git add -f` で
+# 明示的に上げる (既定を安全側に倒す)。
+#
+# ★ 拡張子で切らないこと。v0.1 公開時、`joint/results/*.gpx` と拡張子スコープで書いていた
+#   ため、同じ精密化から出た csv/log が網から漏れ、**未公開データの Rwp・占有率が public に
+#   なった**。生データ (.gpx) は守れていたので気づきにくかった。
+#   由来の宣言と機械検査は `docs/benchmark/provenance.toml` /
+#   `tests/test_docs_provenance.py`。
+docs/benchmark/*/results/
 docs/benchmark/joint/results/
 
 # GUI workbench frontend (Vite + React)

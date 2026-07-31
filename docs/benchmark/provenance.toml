@@ -1,0 +1,94 @@
+# ベンチマーク成果物の由来宣言 (公開リポジトリの安全弁)
+#
+# **なぜ要るか**: v0.1 公開時、未公開実験データ (NaCuHCF·nD₂O) の精密化結果
+# (Rwp・占有率と esd) が `docs/benchmark/joint/results/` と `docs/benchmark/README.md`
+# の両方に載ったまま public になった。`.gitignore` は `results/*.gpx` と**拡張子スコープ**
+# だったため、同じ精密化から出る csv/log が網から漏れていた。
+#
+# 「気をつける」では再発する。**由来を宣言させ、宣言と追跡状態の食い違いを機械検査する**
+# (`tests/test_docs_provenance.py`)。本リポジトリが ①②③ の露出で採っているのと同じ型 —
+# 黙ってやらせず、宣言させる。
+#
+# ## 規約
+#
+# - `docs/benchmark/` 直下の各エントリ (ディレクトリまたはファイル) は、追跡ファイルを
+#   1 つでも持つならここに宣言する。
+# - `provenance` は次のいずれか:
+#     public    — 公開データ (`source` 必須)
+#     synthetic — 合成データ (実測でない)
+#     private   — **未公開の実験データ**。測定値の追跡は禁止。
+# - `private` エントリで追跡してよいファイルは `tracked_exceptions` に**1 件ずつ理由付きで**
+#   列挙したものだけ (再生成スクリプト等、測定値を含まないもの)。
+# - 測定結果の出力先は `*/results/` とし、既定で gitignore する (`.gitignore` 参照)。
+#   公開したい成果物だけを `git add -f` で明示的に上げる — **既定を安全側に倒す**。
+#
+# 設計文書 (`docs/design/`・`docs/spec/`) には**測定値の表を置かない**。根拠として 1 値を
+# 引くのは可だが、一覧はベンチ側に置いてリンクする (混ざると由来の追跡が効かなくなる)。
+
+[entries."README.md"]
+provenance = "public"
+source = "各ベンチの索引。個別の由来は各エントリを参照"
+
+[entries."gui-sequential-14frames.md"]
+provenance = "public"
+source = "Jana2020 Cookbook Example 02.6 'CaTeO3 cyclic'"
+
+[entries."calibration"]
+provenance = "synthetic"
+source = "確率較正ベンチ (合成仮説集合; 実測データを用いない)"
+note = """
+`calibration/results/` は `.gitignore` の `docs/benchmark/*/results/` より前から追跡されて
+おり、ignore は追跡済みファイルに効かないので残っている。**合成データなので公開して問題は
+無い**が、「results/ は ignore されるはず」という思い込みで新しい実測結果を同じ場所へ置くと
+追跡されてしまう。実測を扱うベンチでは `git status` を必ず確認すること。
+"""
+
+[entries."m12-topas"]
+provenance = "public"
+source = "GSAS-II tutorials (Advanced Photon Source) — fluoroapatite / garnet / PbSO4 / NAC+CaF2"
+
+[entries."stable-auto-rietveld"]
+provenance = "public"
+source = "GSAS-II tutorial PbSO4 + Jana2020 CaTeO3"
+
+[entries."stable-baseline-recipe"]
+provenance = "public"
+source = "Jana2020 Cookbook CaTeO3"
+
+[entries."joint"]
+provenance = "private"
+source = "NaCuHCF·nD₂O (SXRD + J-PARC TOF ND) — 未公開"
+note = """
+実測値 (Rwp・占有率・esd) は追跡しない。出力先 `joint/results/` はディレクトリごと
+gitignore 済み。設計上の知見 (中性子コントラストが Na/O 分割を決める等) は
+`docs/benchmark/README.md` に**数値を伴わない形で**残してある。
+"""
+tracked_exceptions = [
+    # 再生成スクリプト。測定値を含まず、手元にデータがある人が結果を作り直せる。
+    "run_joint_occupancy_bench.py",
+]
+
+[entries."testdata"]
+provenance = "public"
+source = "GSAS-II tutorials / Jana2020 Cookbook / 標準 Wyckoff 位置から構築した CIF"
+note = """
+本来この階層は取得先を案内するだけで**データを同梱しない**方針 (`.gitignore` に
+`docs/benchmark/testdata/` がある)。ただし ignore は追跡済みファイルに効かないため、
+機能コミットに紛れて 11 ファイルが追跡されたままになっている。
+
+いずれも公開チュートリアル由来または自作 CIF だが、**再配布の可否は未確認**である。
+追跡を続けるか外すかは Issue で追跡する。新規に追加してはならない。
+"""
+tracked_exceptions = [
+    "m7/cwneutron/garnet_YFeAlO.cif",      # 標準 Wyckoff 位置から構築 (自作)
+    "m9/README.md",                        # 取得手順 (データではない)
+    "m9/jana_to_cif.py",                   # 変換スクリプト (データではない)
+    "m9/cateo3/NB-LM01MO_030.XRDML",       # Jana2020 Cookbook 02.6
+    "m9/cateo3/NB-LM01MO_180.XRDML",       # Jana2020 Cookbook 02.6
+    "m9/cateo3/alpha_CaTeO3_H2O.cif",      # Jana2020 Cookbook 02.6
+    "m9/cateo3/delta_CaTeO3.cif",          # Jana2020 Cookbook 02.6
+    "m9/cateo3/cateo3_CuKa.instprm",       # Jana2020 Cookbook 02.6
+    "m9/cucr2o4/CuCr2O4.cif",              # GSAS-II tutorial (parametric sequential)
+    "m9/cucr2o4/CuO.cif",                  # GSAS-II tutorial (parametric sequential)
+    "m9/cucr2o4/OH_00.prm",                # GSAS-II tutorial (parametric sequential)
+]
