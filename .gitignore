@@ -18,6 +18,9 @@ docs/benchmark/testdata/
 
 # Local agent instructions
 CLAUDE.md
+# エージェントが作る git worktree (リポジトリの完全コピー)。追跡外だが ignore もされて
+# いなかったため `git add -A` や sdist の既定収集で紛れ込む余地があった。
+.claude/worktrees/
 
 # Scratchpad = ローカル解析ワークスペース (非バージョン管理)
 # 実解析は大容量の派生データ (生データ展開・ステージング xye・.gpx) と多数の図/CSV を生むため、
