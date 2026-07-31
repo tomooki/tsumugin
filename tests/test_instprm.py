@@ -437,3 +437,100 @@ def test_preset_without_gsasii_raises_dedicated_error(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _blocked)
     with pytest.raises(GSASUnavailableError):
         list_instrument_presets()
+
+
+# =====================================================================
+# 既存 3 writer の委譲リファクタ非回帰
+# ---------------------------------------------------------------------
+# `resolution.pxc_instprm_text` / `interop.instrument.write_gsas_instprm` /
+# `backends.gsasii._write_instprm` は同じ instprm を 3 通りに書いていた。共通実装へ寄せる際、
+# **X 線 CW は 1 バイトも変えない** (最も使われている経路)。TOF と backends は書式を正規化する
+# (キー順・桁) が **値は同一** — 正規化しないと共通実装が「既存の書き癖」を 3 つ抱え続ける。
+# =====================================================================
+
+_GOLDEN_PXC_RESOLUTION = """\
+#GSAS-II instrument parameter file; created by tsumugin.autorietveld.resolution
+Type:PXC
+Bank:1.0
+Lam:0.799580
+Zero:0.005900
+Polariz.:0.9500
+Azimuth:0.0
+U:2.0
+V:-2.0
+W:5.0
+X:0.0
+Y:0.0
+Z:0.0
+SH/L:0.002
+"""
+
+_GOLDEN_PXC_INTEROP = _GOLDEN_PXC_RESOLUTION.replace(
+    "created by tsumugin.autorietveld.resolution", "created by tsumugin.interop"
+).replace("Zero:0.005900", "Zero:0.005896")
+
+
+def test_pxc_instprm_text_is_byte_identical_after_delegation():
+    from tsumugin.autorietveld.resolution import pxc_instprm_text
+
+    assert pxc_instprm_text(0.79958, zero=0.0059, polarization=0.95) == _GOLDEN_PXC_RESOLUTION
+
+
+def test_interop_xray_writer_is_byte_identical_after_delegation(tmp_path):
+    from tsumugin.interop.instrument import write_gsas_instprm
+    from tsumugin.interop.zrietveld import ZDiffractometer
+
+    zd = ZDiffractometer(
+        beam_type="X-Ray", method="Synchrotron Radiation", wavelength=0.5, zero=0.005896
+    )
+    out = write_gsas_instprm(zd, tmp_path / "x.instprm", wavelength=0.79958)
+    assert out.read_text(encoding="utf-8") == _GOLDEN_PXC_INTEROP
+
+
+def test_interop_tof_writer_keeps_every_value(tmp_path):
+    """TOF は書式 (キー順) を正規化するが**値は 1 つも変えない**。"""
+    from tsumugin.interop.instrument import write_gsas_instprm
+    from tsumugin.interop.zrietveld import ZDiffractometer
+
+    zd = ZDiffractometer(
+        beam_type="Neutron",
+        method="Time Of Flight",
+        conversion_params=(-2.653194, 10060.510395, -1.125499),
+        bank_two_theta=90.0,
+        profile={"SigmaSquare0": 0.001, "SigmaSquare1": 265.946, "SigmaSquare2": 7.9156},
+    )
+    out = write_gsas_instprm(zd, tmp_path / "n.instprm")
+    d = parse_instprm(out.read_text(encoding="utf-8"))
+    expected = {
+        "Type": "PNT", "fltPath": 28.1385, "alpha": 0.5, "sig-1": 265.946, "2-theta": 90.0,
+        "sig-q": 0.0, "sig-0": 0.001, "sig-2": 7.9156, "Zero": -2.653194, "difB": 0.0,
+        "Azimuth": 0.0, "Y": 0.0, "X": 0.0, "beta-q": 0.0, "beta-0": 0.02,
+        "difC": 10060.510395, "beta-1": 0.0, "difA": -1.125499,
+    }
+    assert d["Type"] == expected.pop("Type")
+    for key, value in expected.items():
+        assert float(d[key]) == pytest.approx(value), key
+
+
+def test_gsasii_backend_writer_keeps_every_value(tmp_path):
+    from tsumugin.backends.gsasii import _write_instprm
+
+    out = tmp_path / "g.instprm"
+    _write_instprm(out, 1.5405)
+    d = parse_instprm(out.read_text(encoding="utf-8"))
+    assert d["Type"] == "PXC"
+    for key, value in {
+        "Bank": 1.0, "Lam": 1.5405, "Polariz.": 0.7, "Azimuth": 0.0, "Zero": 0.0,
+        "U": 2.0, "V": -2.0, "W": 5.0, "X": 0.0, "Y": 0.0, "Z": 0.0, "SH/L": 0.002,
+    }.items():
+        assert float(d[key]) == pytest.approx(value), key
+
+
+def test_gsasii_backend_writer_does_not_truncate_wavelength(tmp_path):
+    """⚠ 6 桁固定にすると波長が ppm 単位で丸まる。丸めで値が変わる場合は完全精度を保つこと。"""
+    from tsumugin.backends.gsasii import _write_instprm
+
+    lam = 0.7995812345678
+    out = tmp_path / "g.instprm"
+    _write_instprm(out, lam)
+    assert float(parse_instprm(out.read_text(encoding="utf-8"))["Lam"]) == lam
