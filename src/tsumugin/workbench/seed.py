@@ -43,8 +43,16 @@ def seed_project() -> dict[str, Any]:
 
 
 def seed_status() -> dict[str, Any]:
-    """GET /api/state の ``status`` (Status bar)。"""
-    return {"backend_build": "tsumugin 0.3.0", "seed": 0, "mcp_tools": 36}
+    """GET /api/state の ``status`` (Status bar)。
+
+    ``mcp_tools`` は **実際に登録されているツール数を数える**。画面は
+    「MCP tools N · layer ② reachable」と ② の到達可能性を名乗る表示なので、ここに
+    固定値を置くと**名乗っている量と実際が食い違う** (実際 36 で固定されたまま 38→43 へ
+    ドリフトしていた)。他のシード値と違い、これは事実の主張であってサンプル表示ではない。
+    """
+    from tsumugin.mcp.tools import MCP_TOOLS  # 遅延 (seed は純 dict の view-model)
+
+    return {"backend_build": "tsumugin 0.3.0", "seed": 0, "mcp_tools": len(MCP_TOOLS)}
 
 
 def seed_agent_status() -> dict[str, Any]:

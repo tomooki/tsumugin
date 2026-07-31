@@ -1913,13 +1913,29 @@ class WorkbenchSession:
         """POST /api/instrument/create: 装置パラメータファイルを作る (FR-502)。
 
         ② の ``create_instrument_params`` をそのまま呼ぶ (①②③ と GUI で挙動を分けない)。
+
+        **相対 ``out_path`` はプロジェクトの中へ解決する**。プロジェクトは「ディレクトリ +
+        project.json + data/」で自己完結する約束 (api-contract.md) なので、外へ書くと
+        プロジェクトを移動した時点で装置ファイルが失われる。プロジェクト未読込のときは
+        行き先が決まらないので**黙ってサーバの CWD に書かず**拒む。
         """
         from tsumugin.mcp.instrument_tools import create_instrument_params
 
         out_path = kwargs.pop("out_path", None)
         if not out_path:
             return {"error": "out_path is required", "error_type": "ValueError"}
-        return create_instrument_params(str(out_path), **kwargs)
+        out = Path(str(out_path))
+        if not out.is_absolute():
+            if self._project is None:
+                return {
+                    "error": (
+                        "a project must be open to use a relative out_path "
+                        "(or pass an absolute path)"
+                    ),
+                    "error_type": "ValueError",
+                }
+            out = Path(self._project.spec_dir) / out
+        return create_instrument_params(str(out), **kwargs)
 
     def inspect_instrument(self, **kwargs: Any) -> dict[str, Any]:
         """POST /api/instrument/inspect: 装置パラメータファイルを検査する (FR-502)。"""

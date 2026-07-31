@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -196,3 +198,68 @@ def test_new_routes_are_post_or_get_only(client: TestClient):
     for route in client.app.routes:
         methods = getattr(route, "methods", set()) or set()
         assert not ({"DELETE", "PUT"} & set(methods)), getattr(route, "path", route)
+
+
+def test_status_reports_the_real_mcp_tool_count(client: TestClient):
+    """「MCP tools N · layer ② reachable」は事実の主張なので固定値にしない。
+
+    実際 36 で固定されたまま 38 → 43 とドリフトしていた。② の到達可能性を名乗る表示が
+    実際と食い違うのは、この一連の作業が塞ごうとしている穴そのもの。
+    """
+    from tsumugin.mcp.tools import MCP_TOOLS
+
+    assert client.get("/api/state").json()["status"]["mcp_tools"] == len(MCP_TOOLS)
+
+
+def test_create_instrument_writes_inside_the_project_not_the_server_cwd(
+    client: TestClient, tmp_path
+):
+    """相対 `out_path` はプロジェクトの中に解決すること。
+
+    実 UI で発見: フロントは `data/<name>.instprm` という**相対**パスを送るので、
+    サーバのカレントディレクトリ (リポジトリ直下) に書かれていた。プロジェクトは
+    「ディレクトリ + project.json + data/」で**自己完結**する約束 (api-contract.md) なので、
+    外に書くとプロジェクトを移動した時点で装置ファイルが失われる。
+    """
+    resp = client.post(
+        "/api/instrument/create",
+        json={"out_path": "data/made.instprm", "radiation": "xray_lab", "wavelength": 1.5405},
+    )
+    assert resp.status_code == 200
+    written = Path(resp.json()["path"])
+    assert written.is_file()
+    spec_dir = tmp_path / "ws" / "proj"
+    assert written.resolve().is_relative_to(spec_dir.resolve()), written
+
+
+def test_created_instrument_path_is_usable_by_add_histogram(client: TestClient, tmp_path):
+    """作った path をそのまま `instrument_path` に渡せること (§4.5 の往復を GUI でも)。"""
+    created = client.post(
+        "/api/instrument/create",
+        json={"out_path": "data/made.instprm", "radiation": "xray_lab", "wavelength": 1.5405},
+    ).json()
+    data = tmp_path / "d.xye"
+    data.write_text("10.0 100.0 10.0\n10.1 110.0 10.5\n", encoding="utf-8")
+    resp = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": str(data),
+            "instrument_path": created["path"],
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XYE",
+        },
+    )
+    assert "error" not in resp.json()
+
+
+def test_create_instrument_without_a_project_is_refused(tmp_path):
+    """プロジェクト未読込では相対パスの行き先が決まらない — 黙って CWD に書かない。"""
+    c = TestClient(create_workbench_app(WorkbenchSession.create_demo()))
+    resp = c.post(
+        "/api/instrument/create",
+        json={"out_path": "data/made.instprm", "radiation": "xray_lab", "wavelength": 1.5405},
+    )
+    body = resp.json()
+    assert "error" in body
+    assert "project" in body["error"].lower()
