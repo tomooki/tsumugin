@@ -5,6 +5,7 @@ import type {
   AcceptRequest,
   AcceptResponse,
   AddHistogramRequest,
+  AddHistogramResponse,
   AddPhaseRequest,
   AgentJobStatus,
   AgentPolicy,
@@ -12,10 +13,13 @@ import type {
   ApiErrorBody,
   ApprovalDecision,
   ApprovalResponse,
+  CreateInstrumentRequest,
+  CreateInstrumentResponse,
   EchemRequest,
   EchemSyncResponse,
   FsListing,
   FsRootsResponse,
+  InstrumentPresetsResponse,
   JobStartResponse,
   LedgerResponse,
   MemRequest,
@@ -271,8 +275,21 @@ export function uploadProjectFile(file: File, kind: UploadKind): Promise<UploadR
 // updated histogram/phase/settings rows land in the *viewmodel*, so callers
 // must follow up with getViewModel() to see them (ProjectTab does this after
 // every mutating call, mirroring OperatorConsole's post-action refetch).
-export function postAddHistogram(payload: AddHistogramRequest): Promise<ShellState> {
-  return post<ShellState>("/api/project/histograms", payload);
+export function postAddHistogram(payload: AddHistogramRequest): Promise<AddHistogramResponse> {
+  return post<AddHistogramResponse>("/api/project/histograms", payload);
+}
+
+// 装置パラメータファイル (FR-502). Presets need GSAS-II server-side, so this can
+// come back as an error dict — the caller must keep the "type a wavelength"
+// path available rather than treating a preset failure as "cannot create".
+export function getInstrumentPresets(): Promise<InstrumentPresetsResponse> {
+  return get<InstrumentPresetsResponse>("/api/instrument/presets");
+}
+
+export function postCreateInstrument(
+  payload: CreateInstrumentRequest,
+): Promise<CreateInstrumentResponse> {
+  return post<CreateInstrumentResponse>("/api/instrument/create", payload);
 }
 
 export function postRemoveHistogram(histId: string): Promise<ShellState> {

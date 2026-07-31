@@ -504,6 +504,10 @@ def inspect_instprm(
         )
 
     values = parse_instprm(text)
+    if "Type" not in values:
+        # 旧 GSAS `.PRM` (固定桁 `INS ` 行)。GSAS-II は問題なく読むので「装置ファイルではない」
+        # と断じてはならない (README の例も M7 チュートリアルもこの形式)。
+        values = {**_parse_legacy_prm(text), **values}
     gsas_type = values.get("Type")
     if gsas_type is None:
         findings.append(
@@ -645,6 +649,43 @@ def _check_tof(values: Mapping[str, str]) -> list[InstprmFinding]:
             ),
         )
     ]
+
+
+def _parse_legacy_prm(text: str) -> dict[str, str]:
+    """旧 GSAS ``.PRM`` (固定桁 ``INS `` 行) を検査用のキー空間へ正規化する。
+
+    検査に要る最小限だけ読む — ``HTYPE`` (放射源) と ``ICONS`` (波長・ゼロ点)。
+    ``HTYPE PXCR`` の先頭 3 文字が ``Type``、``ICONS`` は ``<λ1> <λ2> <Zero> …`` で
+    **λ2 が正なら Kα 二重線** (``.instprm`` の ``Lam1``/``Lam2`` に対応する)。
+
+    ⚠ プロファイル係数 (``PRCF1x``) はここでは読まない。型によって意味が変わり
+    (``topas.instrument._read_prm`` 参照)、誤読するとローレンツ幅を捏造することになる。
+    幅ゼロ検査は ``U``/``V``/``W`` が無ければ静かに飛ぶ (検査しないだけで嘘は言わない)。
+    """
+    values: dict[str, str] = {}
+    for raw in text.splitlines():
+        if not raw.startswith("INS "):
+            continue
+        body = raw[4:]
+        if "HTYPE" in body:
+            token = body.split("HTYPE", 1)[1].strip().split()
+            if token and token[0][:3].upper() in _RADIATIONS_BY_TYPE:
+                values["Type"] = token[0][:3].upper()
+        elif "ICONS" in body:
+            numbers = []
+            for token in body.split("ICONS", 1)[1].split():
+                if _is_float(token):
+                    numbers.append(float(token))
+            if numbers:
+                lam2 = numbers[1] if len(numbers) >= 2 else 0.0
+                if lam2 > 0.0:
+                    values["Lam1"] = repr(numbers[0])
+                    values["Lam2"] = repr(lam2)
+                else:
+                    values["Lam"] = repr(numbers[0])
+            if len(numbers) >= 3:
+                values["Zero"] = repr(numbers[2])
+    return values
 
 
 def _is_float(text: str) -> bool:

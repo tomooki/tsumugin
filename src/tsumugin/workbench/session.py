@@ -1851,6 +1851,19 @@ class WorkbenchSession:
             bank_val = int(bank) if bank is not None else None
         except (TypeError, ValueError):
             return {"error": f"invalid bank: {bank!r}", "error_type": "ValueError"}
+        # 【装置ファイルもデータと同じ厳しさで見る】: 従来はデータだけを読んで検証し
+        # (convert_histogram_for_runner)、装置ファイルは一度も開いていなかった。存在しない
+        # パスや別測定のファイルがそのまま spec に入り、精密化の深部まで行って初めて壊れる。
+        assert self._project is not None
+        findings = self._inspect_instrument_file(str(instrument_path), rad, geo)
+        blocking = [f for f in findings if f["severity"] == "error"]
+        if blocking:
+            return {
+                "error": "instrument file: "
+                + "; ".join(f"{f['code']}: {f['message']}" for f in blocking),
+                "error_type": "ValueError",
+                "instrument_findings": findings,
+            }
         hist = HistogramSpec(
             data_path=str(data_path),
             instrument_path=str(instrument_path),
@@ -1874,7 +1887,48 @@ class WorkbenchSession:
             self._project, histograms=self._project.histograms + (hist,)
         )
         self._save_and_refresh("add_histogram", {"data_path": hist.data_path})
-        return self.state()
+        # 非ブロッキングの指摘 (Kα2 整合の question 等) は**黙って捨てない** — 追加は通すが
+        # 画面に出して人間に確認させる (severity=question はファイルだけでは決まらない事項)。
+        return {**self.state(), "instrument_findings": findings}
+
+    def _inspect_instrument_file(
+        self, instrument_path: str, radiation: Radiation, geometry: Geometry
+    ) -> list[dict[str, Any]]:
+        """装置ファイルを検査し finding の dict 列を返す (spec_dir 相対パスも解決する)。"""
+        from tsumugin.instprm import inspect_instprm
+
+        path = Path(instrument_path)
+        if not path.is_absolute() and self._project is not None:
+            path = Path(self._project.spec_dir) / path
+        report = inspect_instprm(path, radiation=radiation, geometry=geometry)
+        return [f.to_dict() for f in report.findings]
+
+    def instrument_presets(self) -> dict[str, Any]:
+        """GET /api/instrument/presets: GSAS-II 同梱の既定装置パラメータ (FR-502)。"""
+        from tsumugin.mcp.instrument_tools import list_instrument_presets
+
+        return list_instrument_presets()
+
+    def create_instrument(self, **kwargs: Any) -> dict[str, Any]:
+        """POST /api/instrument/create: 装置パラメータファイルを作る (FR-502)。
+
+        ② の ``create_instrument_params`` をそのまま呼ぶ (①②③ と GUI で挙動を分けない)。
+        """
+        from tsumugin.mcp.instrument_tools import create_instrument_params
+
+        out_path = kwargs.pop("out_path", None)
+        if not out_path:
+            return {"error": "out_path is required", "error_type": "ValueError"}
+        return create_instrument_params(str(out_path), **kwargs)
+
+    def inspect_instrument(self, **kwargs: Any) -> dict[str, Any]:
+        """POST /api/instrument/inspect: 装置パラメータファイルを検査する (FR-502)。"""
+        from tsumugin.mcp.instrument_tools import inspect_instrument_params
+
+        path = kwargs.pop("path", None)
+        if not path:
+            return {"error": "path is required", "error_type": "ValueError"}
+        return inspect_instrument_params(str(path), **kwargs)
 
     def remove_histogram(self, hist_id: str) -> dict[str, Any]:
         """POST /api/project/histograms/{hist_id}/remove: spec からヒストグラムを除去する。"""

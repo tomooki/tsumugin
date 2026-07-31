@@ -1,0 +1,198 @@
+"""GUI workbench の装置パラメータ導線 (FR-502) のテスト。
+
+**なぜ GUI にも要るか**: workbench は `kind="instrument"` のアップロードしか持たず、
+**装置ファイルを既に持っている**ことが前提だった。しかも `add_histogram` はデータファイルを
+読んで検証する (`convert_histogram_for_runner`) のに**装置ファイルは一度も開かない**という
+非対称があり、存在しないパスや別測定のファイルがそのまま spec に入っていた。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from tsumugin.instprm import build_instprm_text  # noqa: E402
+from tsumugin.workbench.app import create_workbench_app  # noqa: E402
+from tsumugin.workbench.session import WorkbenchSession  # noqa: E402
+
+
+@pytest.fixture()
+def client(tmp_path) -> TestClient:
+    c = TestClient(create_workbench_app(WorkbenchSession.create_demo()))
+    c.post("/api/project", json={"name": "proj", "directory": str(tmp_path / "ws")})
+    return c
+
+
+def _instprm(tmp_path, name: str = "x.instprm", **kwargs) -> str:
+    kwargs.setdefault("radiation", "xray_lab")
+    kwargs.setdefault("wavelength", 1.5405)
+    p = tmp_path / name
+    p.write_text(build_instprm_text(**kwargs), encoding="utf-8")
+    return str(p)
+
+
+# =====================================================================
+# 作る / 検査する
+# =====================================================================
+
+
+def test_create_instrument_writes_a_file(client: TestClient, tmp_path):
+    out = tmp_path / "made.instprm"
+    resp = client.post(
+        "/api/instrument/create",
+        json={"out_path": str(out), "radiation": "xray_synchrotron", "wavelength": 0.79958},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == str(out)
+    assert body["type"] == "PXC"
+    assert out.exists()
+
+
+def test_create_instrument_reports_errors_as_dict_not_500(client: TestClient, tmp_path):
+    """既存の規約どおり error dict → 4xx (500 やスタックトレースにしない)。"""
+    resp = client.post(
+        "/api/instrument/create", json={"out_path": str(tmp_path / "x.instprm")}
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_type"] == "ValueError"
+    assert "radiation" in body["error"]
+
+
+def test_inspect_instrument_returns_findings(client: TestClient, tmp_path):
+    path = _instprm(tmp_path, radiation="neutron_cw", wavelength=1.909)
+    resp = client.post(
+        "/api/instrument/inspect", json={"path": path, "radiation": "xray_lab"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "radiation_type_mismatch" in {f["code"] for f in body["findings"]}
+
+
+def test_instrument_presets_route_exists(client: TestClient):
+    resp = client.get("/api/instrument/presets")
+    assert resp.status_code == 200
+    body = resp.json()
+    # GSAS-II 未導入環境では error dict へ縮退する (500 にしない)
+    assert "presets" in body or "error" in body
+
+
+# =====================================================================
+# add_histogram が装置ファイルを見るようになったこと
+# =====================================================================
+
+
+def test_add_histogram_rejects_a_missing_instrument_file(client: TestClient, tmp_path):
+    """データ側と同じ厳しさで装置ファイルも見る (従来は一度も開いていなかった)。"""
+    data = tmp_path / "d.xye"
+    data.write_text("10.0 100.0 10.0\n10.1 110.0 10.5\n", encoding="utf-8")
+    resp = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": str(data),
+            "instrument_path": str(tmp_path / "nope.instprm"),
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XYE",
+        },
+    )
+    body = resp.json()
+    assert "error" in body
+    assert "instrument" in body["error"].lower()
+
+
+def test_add_histogram_rejects_a_mismatched_instrument_file(client: TestClient, tmp_path):
+    """宣言と違う放射源の装置ファイルは `error` 指摘なので追加を拒む。"""
+    data = tmp_path / "d.xye"
+    data.write_text("10.0 100.0 10.0\n10.1 110.0 10.5\n", encoding="utf-8")
+    resp = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": str(data),
+            "instrument_path": _instprm(tmp_path, radiation="neutron_cw", wavelength=1.909),
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XYE",
+        },
+    )
+    body = resp.json()
+    assert "error" in body
+    assert "radiation_type_mismatch" in body["error"]
+
+
+def test_add_histogram_surfaces_non_blocking_findings(client: TestClient, tmp_path):
+    """`question`/`info` は追加を拒まないが**黙って捨てない** (Kα2 の確認は人間の仕事)。"""
+    data = tmp_path / "d.xye"
+    data.write_text("10.0 100.0 10.0\n10.1 110.0 10.5\n", encoding="utf-8")
+    resp = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": str(data),
+            "instrument_path": _instprm(tmp_path, wavelength=1.5405, wavelength_ka2=1.5443),
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XYE",
+        },
+    )
+    body = resp.json()
+    assert "error" not in body
+    codes = {f["code"] for f in body["instrument_findings"]}
+    assert "kalpha2_consistency_question" in codes
+
+
+def test_add_histogram_still_accepts_a_clean_instrument_file(client: TestClient, tmp_path):
+    """非回帰: 正しい組み合わせは従来どおり通り、findings は空。"""
+    data = tmp_path / "d.xye"
+    data.write_text("10.0 100.0 10.0\n10.1 110.0 10.5\n", encoding="utf-8")
+    resp = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": str(data),
+            "instrument_path": _instprm(tmp_path, radiation="xray_synchrotron", wavelength=0.8),
+            "radiation": "xray_synchrotron",
+            "geometry": "debye_scherrer",
+            "data_format": "XYE",
+        },
+    )
+    body = resp.json()
+    assert "error" not in body
+    assert body["instrument_findings"] == []
+
+
+def test_add_histogram_accepts_a_legacy_prm(client: TestClient, tmp_path):
+    """旧 `.PRM` を「装置ファイルではない」と断じないこと (README の例もこの形式)。"""
+    from pathlib import Path
+
+    prm = Path("docs/benchmark/testdata/INST_XRY.PRM")
+    if not prm.is_file():
+        pytest.skip("チュートリアルデータ未取得")
+    data = tmp_path / "d.xye"
+    data.write_text("10.0 100.0 10.0\n10.1 110.0 10.5\n", encoding="utf-8")
+    resp = client.post(
+        "/api/project/histograms",
+        json={
+            "data_path": str(data),
+            "instrument_path": str(prm.resolve()),
+            "radiation": "xray_lab",
+            "geometry": "bragg_brentano",
+            "data_format": "XYE",
+        },
+    )
+    assert "error" not in resp.json()
+
+
+# =====================================================================
+# 構造ガード (既存の不変条件を壊していないこと)
+# =====================================================================
+
+
+def test_new_routes_are_post_or_get_only(client: TestClient):
+    """P2 構造ガード: DELETE/PUT を増やしていないこと。"""
+    for route in client.app.routes:
+        methods = getattr(route, "methods", set()) or set()
+        assert not ({"DELETE", "PUT"} & set(methods)), getattr(route, "path", route)

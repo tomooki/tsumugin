@@ -355,6 +355,21 @@ def create_workbench_app(
         )
         return _to_response(result)
 
+    @app.get("/api/instrument/presets")
+    def get_instrument_presets() -> Any:
+        return _to_response(holder.session.instrument_presets())
+
+    @app.post("/api/instrument/create")
+    def post_instrument_create(body: dict[str, Any] = Body(...)) -> Any:
+        guard = _guard_not_refining()
+        if guard is not None:
+            return guard
+        return _to_response(holder.session.create_instrument(**body))
+
+    @app.post("/api/instrument/inspect")
+    def post_instrument_inspect(body: dict[str, Any] = Body(...)) -> Any:
+        return _to_response(holder.session.inspect_instrument(**body))
+
     @app.post("/api/project/histograms/{hist_id}/remove")
     def post_project_histograms_remove(hist_id: str, body: dict[str, Any] = Body(default={})) -> Any:
         guard = _guard_not_refining()

@@ -53,6 +53,25 @@ export const PROJECT_STRINGS = {
   "project.histograms.add.uploading": { en: "uploading …", ja: "アップロード中 …" },
   "project.histograms.add.adding": { en: "ADDING …", ja: "追加中 …" },
 
+  // 装置パラメータファイルを持っていない利用者の導線 (FR-502)。
+  "project.instrument.noFile": { en: "don't have one?", ja: "装置ファイルが無い" },
+  "project.instrument.heading": { en: "MAKE AN INSTRUMENT FILE", ja: "装置ファイルを作る" },
+  "project.instrument.preset": { en: "preset", ja: "プリセット" },
+  "project.instrument.presetNone": { en: "(use wavelength below)", ja: "(下の波長を使う)" },
+  "project.instrument.presetsUnavailable": {
+    en: "presets need GSAS-II on the server — type a wavelength instead",
+    ja: "プリセットはサーバ側の GSAS-II が要る — 代わりに波長を入力してください",
+  },
+  "project.instrument.wavelength": { en: "wavelength (Å)", ja: "波長 (Å)" },
+  "project.instrument.wavelengthKa2": { en: "Kα2 wavelength (Å, optional)", ja: "Kα2 波長 (Å, 任意)" },
+  "project.instrument.wavelengthHint": {
+    en: "Leave Kα2 empty for Kα2-stripped data — a doublet model on stripped data is the largest systematic residual.",
+    ja: "Kα2 除去済みデータでは Kα2 を空にする — 除去済みに二重線を当てるのが最大の系統残差になる。",
+  },
+  "project.instrument.create": { en: "CREATE INSTRUMENT FILE", ja: "装置ファイルを作る" },
+  "project.instrument.creating": { en: "CREATING …", ja: "作成中 …" },
+  "project.instrument.findings": { en: "instrument file notes", ja: "装置ファイルの指摘" },
+
   "project.phases.heading": { en: "PHASES", ja: "相" },
   "project.phases.empty": { en: "no phases loaded", ja: "相未読込" },
   "project.phases.col.name": { en: "NAME", ja: "名前" },

@@ -534,3 +534,71 @@ def test_gsasii_backend_writer_does_not_truncate_wavelength(tmp_path):
     out = tmp_path / "g.instprm"
     _write_instprm(out, lam)
     assert float(parse_instprm(out.read_text(encoding="utf-8"))["Lam"]) == lam
+
+
+# =====================================================================
+# 旧 GSAS `.PRM` (固定桁 `INS ` 行) — README の例もこの形式
+# ---------------------------------------------------------------------
+# `.instprm` しか見ない検査は、**GSAS-II が問題なく読む正しいファイル**を「装置ファイルでは
+# ない」と断じる。② の最悪の失敗形 (garbage を正常と答える) の裏返しで、
+# **正しいものを異常と答える**のも同じくらい有害 — ③ が正しい入力を捨てる。
+# =====================================================================
+
+_LEGACY_PRM = """\
+            123456789012345678901234567890123456789012345678901234567890
+INS   BANK      1
+INS   HTYPE   PXCR
+INS  1 IRAD     3
+INS  1 ICONS  1.540500  1.544300       0.0         0       0.7    0       0.5
+INS  1PRCF1     3    8      0.01
+INS  1PRCF11   2.000000E+00  -2.000000E+00   5.000000E+00   0.100000E+00
+INS  1PRCF12   0.000000E+00   0.000000E+00   0.150000E-01   0.150000E-01
+"""
+
+
+def test_inspect_reads_legacy_prm_without_calling_it_invalid(tmp_path):
+    p = tmp_path / "INST_XRY.PRM"
+    p.write_text(_LEGACY_PRM, encoding="utf-8")
+    rep = inspect_instprm(p, radiation="xray_lab", geometry="bragg_brentano")
+    codes = _codes(rep)
+    assert "no_type_key" not in codes
+    assert "missing_wavelength" not in codes
+    assert rep.values["Type"] == "PXC"
+    assert rep.ok is True
+
+
+def test_inspect_legacy_prm_detects_the_kalpha_doublet(tmp_path):
+    """``ICONS`` の第 2 波長が正なら二重線 — Kα2 整合の確認は旧形式でも要る。"""
+    p = tmp_path / "INST_XRY.PRM"
+    p.write_text(_LEGACY_PRM, encoding="utf-8")
+    rep = inspect_instprm(p, radiation="xray_lab")
+    assert "kalpha2_consistency_question" in _codes(rep)
+    assert float(rep.values["Lam1"]) == pytest.approx(1.5405)
+    assert float(rep.values["Lam2"]) == pytest.approx(1.5443)
+
+
+def test_inspect_legacy_prm_monochromatic_has_lam_not_lam1(tmp_path):
+    p = tmp_path / "m.PRM"
+    p.write_text(_LEGACY_PRM.replace("1.540500  1.544300", "1.540500  0.000000"), encoding="utf-8")
+    rep = inspect_instprm(p, radiation="xray_lab")
+    assert float(rep.values["Lam"]) == pytest.approx(1.5405)
+    assert "Lam1" not in rep.values
+    assert "kalpha2_consistency_question" not in _codes(rep)
+
+
+def test_inspect_legacy_prm_detects_radiation_mismatch(tmp_path):
+    p = tmp_path / "n.PRM"
+    p.write_text(_LEGACY_PRM.replace("HTYPE   PXCR", "HTYPE   PNTR"), encoding="utf-8")
+    rep = inspect_instprm(p, radiation="xray_lab")
+    assert "radiation_type_mismatch" in _codes(rep)
+
+
+def test_inspect_real_tutorial_prm_is_accepted():
+    """M7 チュートリアルの実ファイル (README の例) を異常と言わないこと。"""
+    from pathlib import Path
+
+    p = Path("docs/benchmark/testdata/INST_XRY.PRM")
+    if not p.is_file():
+        pytest.skip("チュートリアルデータ未取得")
+    rep = inspect_instprm(p, radiation="xray_lab", geometry="bragg_brentano")
+    assert rep.ok is True, [f.to_dict() for f in rep.findings]

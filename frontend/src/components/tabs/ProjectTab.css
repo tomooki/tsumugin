@@ -157,6 +157,51 @@
   color: var(--color-neutral-600);
 }
 
+/* 【装置ファイルを作る (FR-502)】: 追加フォームの中に折りたたまれる副パネル。
+   既に装置ファイルを持っている利用者の視線を奪わないよう、開くまでは出さない。 */
+.proj-add__instrument {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: 3px;
+}
+
+.proj-add__instrument h4,
+.proj-add__findings h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--color-neutral-700);
+}
+
+.proj-add__findings {
+  margin: 10px 0;
+  font-size: 11px;
+}
+
+.proj-add__findings ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.proj-add__findings li {
+  margin-bottom: 4px;
+}
+
+.proj-add__findings em {
+  color: var(--color-neutral-600);
+}
+
+/* severity は色だけで伝えない (strong に文字としても出している) — 色覚と
+   モノクロ印刷の双方で読めるようにするため。 */
+.proj-add__findings li[data-severity="error"] strong {
+  color: var(--color-danger-700, #a11);
+}
+
+.proj-add__findings li[data-severity="question"] strong {
+  color: var(--color-accent-800);
+}
+
 /* 【可変幅】: 狭いウィンドウで表が切れないよう、テーブル単位で横スクロールさせる
    (中央本文を overflow-x: auto にすると全体が横に揺れて読みづらいため、表だけに閉じる)。 */
 .proj-table {
