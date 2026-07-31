@@ -222,3 +222,53 @@ describe("ProjectTab — instrument findings after adding a histogram", () => {
     expect(screen.getByText(/Kα2 除去済みかを確認/)).toBeInTheDocument();
   });
 });
+
+describe("ProjectTab — created instrument files must not collide (code-review)", () => {
+  it("names the file from the parameters so a second creation does not overwrite the first", async () => {
+    const fetchMock = renderTab();
+    const paths: string[] = [];
+    const outPathOf = (i: number) => {
+      const calls = fetchMock.mock.calls.filter(([u]) =>
+        String(u).endsWith("/api/instrument/create"),
+      );
+      return JSON.parse(String((calls[i][1] as RequestInit).body)).out_path as string;
+    };
+
+    await userEvent.click(screen.getByRole("button", { name: /don't have one/i }));
+    await screen.findByRole("option", { name: /CuKa lab data/ });
+    await userEvent.type(screen.getByLabelText(/^wavelength \(/i), "0.79958");
+    await userEvent.click(screen.getByRole("button", { name: /^create instrument file$/i }));
+    await waitFor(() => expect(outPathOf(0)).toBeTruthy());
+    paths.push(outPathOf(0));
+
+    // 2 本目 (joint の中性子側) — 波長も放射源も違うのに同じパスなら 1 本目を壊す
+    await userEvent.click(screen.getByRole("button", { name: /don't have one/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/^radiation$/i), "neutron_cw");
+    const lam = screen.getByLabelText(/^wavelength \(/i);
+    await userEvent.clear(lam);
+    await userEvent.type(lam, "1.909");
+    await userEvent.click(screen.getByRole("button", { name: /^create instrument file$/i }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/api/instrument/create")).length,
+      ).toBe(2),
+    );
+    paths.push(outPathOf(1));
+
+    expect(paths[0]).not.toBe(paths[1]);
+  });
+
+  it("keeps the preset name in the path so preset files stay distinguishable", async () => {
+    const fetchMock = renderTab();
+    await userEvent.click(screen.getByRole("button", { name: /don't have one/i }));
+    await screen.findByRole("option", { name: /CuKa lab data/ });
+    await userEvent.selectOptions(screen.getByLabelText(/^preset$/i), "CuKa lab data");
+    await userEvent.click(screen.getByRole("button", { name: /^create instrument file$/i }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/api/instrument/create"));
+      expect(call).toBeDefined();
+      const body = JSON.parse(String((call![1] as RequestInit).body));
+      expect(body.out_path).toContain("CuKa_lab_data");
+    });
+  });
+});

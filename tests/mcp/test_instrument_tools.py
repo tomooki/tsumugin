@@ -301,3 +301,57 @@ def test_presets_are_listed_with_reachable_labels(tmp_path):
 def test_create_with_unknown_preset_degrades(tmp_path):
     r = create_instrument_params(str(tmp_path / "x.instprm"), preset="no such preset")
     assert "error" in r and r["error_type"] == "KeyError"
+
+
+# =====================================================================
+# /code-review 指摘の回帰テスト
+# =====================================================================
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"radiation": "neutron_tof", "tof": "notadict"},
+        {"radiation": "neutron_tof", "tof": [["difC", 3500]]},
+        {"radiation": "xray_lab", "wavelength": 1.5, "profile": [1, 2]},
+    ],
+)
+def test_create_degrades_non_mapping_inputs(tmp_path, kwargs):
+    """② は例外を送出しない。JSON 由来の非写像 (配列/文字列) でも error dict へ縮退する。"""
+    r = create_instrument_params(str(tmp_path / "x.instprm"), **kwargs)
+    assert "error" in r and r["error_type"] == "ValueError"
+
+
+def test_read_pattern_metadata_degrades_non_string_format(tmp_path):
+    p = tmp_path / "s.xrdml"
+    p.write_text(_SAMPLE_XRDML, encoding="utf-8")
+    r = read_pattern_metadata(str(p), 5)  # type: ignore[arg-type]
+    assert "error" in r
+
+
+def test_create_uses_the_ka2_ratio_declared_by_the_data(tmp_path):
+    """`from_data_path` が読み取った Kα2/Kα1 比を使うこと (既定 0.5 で上書きしない)。
+
+    `ratioKAlpha2KAlpha1` は装置固有の実測定数で、`read_pattern_metadata` がわざわざ
+    取り出している。既定で潰すと黙って別の装置の値を焼き込むことになる。
+    """
+    src = tmp_path / "d.xrdml"
+    src.write_text(
+        _SAMPLE_XRDML.replace('intended="K-Alpha 1"', 'intended="K-Alpha"').replace(
+            "<ratioKAlpha2KAlpha1>0.5</ratioKAlpha2KAlpha1>",
+            "<ratioKAlpha2KAlpha1>0.497</ratioKAlpha2KAlpha1>",
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "x.instprm"
+    create_instrument_params(str(out), from_data_path=str(src))
+    text = out.read_text(encoding="utf-8")
+    assert "I(L2)/I(L1):0.4970" in text, text
+
+
+def test_explicit_ka2_ratio_still_wins_over_the_data(tmp_path):
+    src = tmp_path / "d.xrdml"
+    src.write_text(_SAMPLE_XRDML.replace('intended="K-Alpha 1"', 'intended="K-Alpha"'), "utf-8")
+    out = tmp_path / "x.instprm"
+    create_instrument_params(str(out), from_data_path=str(src), ka2_ratio=0.4)
+    assert "I(L2)/I(L1):0.4000" in out.read_text(encoding="utf-8")

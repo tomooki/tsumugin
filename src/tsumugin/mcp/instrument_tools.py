@@ -65,8 +65,11 @@ def read_pattern_metadata(data_path: str, data_format: str | None = None) -> dic
     from tsumugin.reference.io import read_pattern_metadata as _read
 
     try:
-        return dict(_read(data_path, data_format))
-    except (OSError, ValueError) as exc:
+        # JSON からは数値や配列が届きうる。`.upper()` に触れて AttributeError を
+        # 境界へ漏らさない (② は例外を送出しない)。
+        fmt = str(data_format) if data_format is not None else None
+        return dict(_read(data_path, fmt))
+    except (OSError, TypeError, ValueError) as exc:
         return _error(exc)
 
 
@@ -97,7 +100,7 @@ def create_instrument_params(
     geometry: str | None = None,
     wavelength: float | None = None,
     wavelength_ka2: float | None = None,
-    ka2_ratio: float = 0.5,
+    ka2_ratio: float | None = None,
     zero: float = 0.0,
     polarization: float | None = None,
     profile: Mapping[str, float] | None = None,
@@ -140,14 +143,17 @@ def create_instrument_params(
             return loaded
         meta = loaded
 
+    # ⚠ **明示引数の既定は None にしておく** — ここで既定値 (0.5 等) を先に置くと
+    # 「None のときだけデータから採る」ループを素通りし、`read_pattern_metadata` が
+    # わざわざ読み出した実測定数 (ratioKAlpha2KAlpha1 等) を黙って潰す。
     explicit = {
         "radiation": radiation,
         "geometry": geometry,
         "wavelength": wavelength,
         "wavelength_ka2": wavelength_ka2,
+        "ka2_ratio": ka2_ratio,
     }
     resolved = {k: explicit.get(k) for k in _FROM_DATA_KEYS}
-    resolved["ka2_ratio"] = ka2_ratio
     for key in _FROM_DATA_KEYS:
         if resolved.get(key) is None and key in meta:
             resolved[key] = meta[key]

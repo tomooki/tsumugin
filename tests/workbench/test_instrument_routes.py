@@ -263,3 +263,59 @@ def test_create_instrument_without_a_project_is_refused(tmp_path):
     body = resp.json()
     assert "error" in body
     assert "project" in body["error"].lower()
+
+
+# =====================================================================
+# /code-review 指摘の回帰テスト
+# =====================================================================
+
+
+def test_unknown_json_keys_do_not_500(client: TestClient, tmp_path):
+    """未知キー 1 つで 500 にしない。他の project 系ルートと同じ `body.get` 流儀にする。"""
+    resp = client.post(
+        "/api/instrument/create",
+        json={
+            "out_path": str(tmp_path / "x.instprm"),
+            "radiation": "xray_lab",
+            "wavelength": 1.5405,
+            "bogus": 1,
+        },
+    )
+    assert resp.status_code == 200, resp.json()
+    resp2 = client.post(
+        "/api/instrument/inspect",
+        json={"path": str(tmp_path / "x.instprm"), "radiation": "xray_lab", "bogus": 1},
+    )
+    assert resp2.status_code == 200, resp2.json()
+
+
+def test_inspect_resolves_relative_paths_like_create_does(client: TestClient):
+    """create が書いた相対パスを inspect にそのまま渡せること。
+
+    spec は `instrument_path` を spec_dir 相対で保存するので、解決しないと
+    **存在するファイルを file_not_found と答える**。
+    """
+    created = client.post(
+        "/api/instrument/create",
+        json={"out_path": "data/x.instprm", "radiation": "xray_lab", "wavelength": 1.5405},
+    ).json()
+    assert "error" not in created
+    rel = client.post(
+        "/api/instrument/inspect", json={"path": "data/x.instprm", "radiation": "xray_lab"}
+    ).json()
+    assert "file_not_found" not in {f["code"] for f in rel["findings"]}
+    assert rel["ok"] is True
+
+
+def test_inspect_absolute_paths_still_work(client: TestClient, tmp_path):
+    """非回帰: 絶対パスは従来どおり (プロジェクト外のファイルも検査できる)。"""
+    p = _instprm(tmp_path, radiation="neutron_cw", wavelength=1.909)
+    r = client.post("/api/instrument/inspect", json={"path": p, "radiation": "xray_lab"}).json()
+    assert "radiation_type_mismatch" in {f["code"] for f in r["findings"]}
+
+
+def test_inspect_without_a_project_still_works_on_absolute_paths(tmp_path):
+    c = TestClient(create_workbench_app(WorkbenchSession.create_demo()))
+    p = _instprm(tmp_path, radiation="xray_lab", wavelength=1.5405)
+    r = c.post("/api/instrument/inspect", json={"path": p}).json()
+    assert r["ok"] is True

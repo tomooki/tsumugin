@@ -144,6 +144,15 @@ def _enum_value(value: object) -> str:
     return str(getattr(value, "value", value))
 
 
+def _require_mapping(value: object, name: str) -> None:
+    """``None`` か写像でなければ ``ValueError`` (``AttributeError`` にしない)。"""
+    if value is not None and not isinstance(value, Mapping):
+        raise ValueError(
+            f"{name} は {{キー: 値}} の写像である必要があります "
+            f"(受け取ったのは {type(value).__name__})。"
+        )
+
+
 # =====================================================================
 # 解析
 # =====================================================================
@@ -220,6 +229,11 @@ def build_instprm_text(
     if gsas_type is None:
         known = ", ".join(sorted(_TYPE_BY_RADIATION))
         raise ValueError(f"未知の radiation: {rad!r} (対応: {known})")
+    # 写像でない tof/profile は ValueError にする。JSON 由来だと配列や文字列で届きうるが、
+    # そのまま `.items()` に触れると AttributeError になり ② の縮退 (ValueError/OSError 等)
+    # をすり抜けて例外が境界を越える。
+    _require_mapping(tof, "tof")
+    _require_mapping(profile, "profile")
 
     header = f"#GSAS-II instrument parameter file; created by {creator}"
     if gsas_type == "PNT":
@@ -366,11 +380,21 @@ def instprm_from_profile(
     Raises:
         ValueError: CW で波長が判らないとき (``profile`` にも引数にも無い)。
     """
-    values: Mapping[str, float]
-    raw = getattr(profile, "values", None)
-    if raw is None:
-        raw = getattr(profile, "profile", None)
-    values = dict(raw if raw is not None else profile)  # type: ignore[arg-type]
+    # ⚠ **素の写像を先に判定する** — `getattr(profile, "values")` は dict に対して
+    # 束縛メソッド `dict.values` を返すので、dataclass 想定の duck typing がそのまま
+    # 素の dict を壊す (docstring が明示する 3 番目の入力形が TypeError になっていた)。
+    if isinstance(profile, Mapping):
+        values: Mapping[str, float] = dict(profile)
+    else:
+        raw = getattr(profile, "values", None)  # InstrumentProfile
+        if raw is None:
+            raw = getattr(profile, "profile", None)  # CalibrationResult
+        if not isinstance(raw, Mapping):
+            raise ValueError(
+                "profile は InstrumentProfile / CalibrationResult / {GSAS キー: 値} の写像の"
+                f"いずれかである必要があります (受け取ったのは {type(profile).__name__})。"
+            )
+        values = dict(raw)
 
     lam = wavelength if wavelength is not None else getattr(profile, "wavelength", None)
     if zero is None:
@@ -658,34 +682,58 @@ def _parse_legacy_prm(text: str) -> dict[str, str]:
     ``HTYPE PXCR`` の先頭 3 文字が ``Type``、``ICONS`` は ``<λ1> <λ2> <Zero> …`` で
     **λ2 が正なら Kα 二重線** (``.instprm`` の ``Lam1``/``Lam2`` に対応する)。
 
+    ⚠ **``ICONS`` の意味は放射源で変わる**。CW は ``<λ1> <λ2> <Zero> …``、TOF は
+    ``<difC> <difA> <Zero>``。よって ``HTYPE`` を**先に**確定させてから解釈する
+    (順序に依存すると、TOF の difC を波長として読み「必須キーが無い」と誤診する)。
+    TOF の飛行距離とバンク角は ``BNKPAR`` 行 (``<fltPath> <2-theta>``) から採る。
+
     ⚠ プロファイル係数 (``PRCF1x``) はここでは読まない。型によって意味が変わり
     (``topas.instrument._read_prm`` 参照)、誤読するとローレンツ幅を捏造することになる。
     幅ゼロ検査は ``U``/``V``/``W`` が無ければ静かに飛ぶ (検査しないだけで嘘は言わない)。
     """
+    ins_lines = [raw[4:] for raw in text.splitlines() if raw.startswith("INS ")]
     values: dict[str, str] = {}
-    for raw in text.splitlines():
-        if not raw.startswith("INS "):
-            continue
-        body = raw[4:]
+    for body in ins_lines:
         if "HTYPE" in body:
             token = body.split("HTYPE", 1)[1].strip().split()
             if token and token[0][:3].upper() in _RADIATIONS_BY_TYPE:
                 values["Type"] = token[0][:3].upper()
-        elif "ICONS" in body:
-            numbers = []
-            for token in body.split("ICONS", 1)[1].split():
-                if _is_float(token):
-                    numbers.append(float(token))
-            if numbers:
-                lam2 = numbers[1] if len(numbers) >= 2 else 0.0
-                if lam2 > 0.0:
-                    values["Lam1"] = repr(numbers[0])
-                    values["Lam2"] = repr(lam2)
-                else:
-                    values["Lam"] = repr(numbers[0])
+                break
+    is_tof = values.get("Type") == "PNT"
+
+    for body in ins_lines:
+        if "ICONS" in body:
+            numbers = _numbers_after(body, "ICONS")
+            if not numbers:
+                continue
+            if is_tof:
+                # TOF: difC difA Zero (difB は旧形式に無いので 0 のまま既定に任せる)
+                values["difC"] = repr(numbers[0])
+                if len(numbers) >= 2:
+                    values["difA"] = repr(numbers[1])
+                if len(numbers) >= 3:
+                    values["Zero"] = repr(numbers[2])
+                continue
+            lam2 = numbers[1] if len(numbers) >= 2 else 0.0
+            if lam2 > 0.0:
+                values["Lam1"] = repr(numbers[0])
+                values["Lam2"] = repr(lam2)
+            else:
+                values["Lam"] = repr(numbers[0])
             if len(numbers) >= 3:
                 values["Zero"] = repr(numbers[2])
+        elif is_tof and "BNKPAR" in body:
+            numbers = _numbers_after(body, "BNKPAR")
+            if numbers:
+                values["fltPath"] = repr(numbers[0])
+            if len(numbers) >= 2:
+                values["2-theta"] = repr(numbers[1])
     return values
+
+
+def _numbers_after(body: str, marker: str) -> list[float]:
+    """``INS`` 行の ``<marker>`` 以降の数値トークンを順に拾う。"""
+    return [float(t) for t in body.split(marker, 1)[1].split() if _is_float(t)]
 
 
 def _is_float(text: str) -> bool:

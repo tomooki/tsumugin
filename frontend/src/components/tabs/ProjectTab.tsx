@@ -209,9 +209,14 @@ export function ProjectTab() {
       // 波長を打った利用者はプリセットより自分の値を意図している (プリセットは verbatim なので
       // 両方送ると波長が黙って無視される)。
       const useWavelength = lam !== null;
+      // 【固定名にしない】: joint は X 線と中性子で 2 本作る。同じ名前だと 2 本目が 1 本目を
+      // 黙って上書きし、**追加済みヒストグラムの参照先が別の装置ファイルに化ける**
+      // (追加時には検証を通っているので誰も気づかない)。パラメータから名前を作る。
+      const stem = useWavelength
+        ? `${chosen?.radiation ?? radiation}_${lam}`
+        : preset || "instrument";
       const res = await postCreateInstrument({
-        out_path: `data/${useWavelength ? "instrument" : (preset || "instrument")}.instprm`
-          .replace(/\s+/g, "_"),
+        out_path: `data/${stem}.instprm`.replace(/[^A-Za-z0-9_./-]+/g, "_"),
         ...(useWavelength
           ? {
               radiation: chosen?.radiation ?? radiation,

@@ -602,3 +602,99 @@ def test_inspect_real_tutorial_prm_is_accepted():
         pytest.skip("チュートリアルデータ未取得")
     rep = inspect_instprm(p, radiation="xray_lab", geometry="bragg_brentano")
     assert rep.ok is True, [f.to_dict() for f in rep.findings]
+
+
+# =====================================================================
+# /code-review 指摘の回帰テスト
+# =====================================================================
+
+
+def test_instprm_from_profile_accepts_a_plain_mapping():
+    """素の写像 (docstring が明示する 3 番目の入力形) を受けること。
+
+    ⚠ `getattr(profile, "values")` は **dict に対して束縛メソッドを返す** ので、
+    dataclass を想定した duck typing がそのまま素の dict を壊していた。
+    """
+    d = parse_instprm(
+        instprm_from_profile(
+            {"U": 1.0, "V": -1.0, "W": 2.0}, radiation="xray_lab", wavelength=1.5405
+        )
+    )
+    assert float(d["U"]) == pytest.approx(1.0)
+    assert float(d["W"]) == pytest.approx(2.0)
+    assert float(d["Lam"]) == pytest.approx(1.5405)
+
+
+def test_instprm_from_profile_mapping_can_carry_zero():
+    d = parse_instprm(
+        instprm_from_profile({"U": 1.0, "Zero": 0.01}, radiation="xray_lab", wavelength=1.5405)
+    )
+    assert float(d["Zero"]) == pytest.approx(0.01)
+
+
+# --- 旧 TOF `.PRM` (CW と同じく「正しいものを異常と答えない」) ---
+
+_LEGACY_TOF_PRM = """\
+            123456789012345678901234567890
+INS   BANK      1
+INS   HTYPE   PNTR
+INS  1 ICONS  22594.744     -0.927     -4.966
+INS  1BNKPAR     63.169     90.000
+INS  1PRCF1     1    6   0.00100
+INS  1PRCF11   0.0 0.0 0.0 0.0
+"""
+
+
+def test_inspect_reads_legacy_tof_prm_without_calling_it_invalid(tmp_path):
+    """GSAS-II が読める旧 TOF `.PRM` を `missing_tof_keys` で拒否しないこと。
+
+    `add_histogram` は `severity=error` で追加を拒むため、ここを誤ると GUI が
+    **正しい装置ファイルを受け付けなくなる** (CW 側で直したのと同じクラスの誤り)。
+    """
+    p = _write(tmp_path, "tof.PRM", _LEGACY_TOF_PRM)
+    rep = inspect_instprm(p, radiation="neutron_tof")
+    assert "missing_tof_keys" not in _codes(rep)
+    assert rep.ok is True, [f.to_dict() for f in rep.findings]
+
+
+def test_legacy_tof_prm_maps_icons_to_tof_keys_not_a_wavelength(tmp_path):
+    """TOF の ICONS は `difC difA Zero` — 波長ではない。difC を Lam と読まないこと。"""
+    p = _write(tmp_path, "tof.PRM", _LEGACY_TOF_PRM)
+    v = inspect_instprm(p, radiation="neutron_tof").values
+    assert float(v["difC"]) == pytest.approx(22594.744)
+    assert float(v["difA"]) == pytest.approx(-0.927)
+    assert float(v["Zero"]) == pytest.approx(-4.966)
+    assert float(v["fltPath"]) == pytest.approx(63.169)
+    assert float(v["2-theta"]) == pytest.approx(90.0)
+    assert "Lam" not in v and "Lam1" not in v
+
+
+def test_legacy_cw_prm_is_unaffected_by_the_tof_branch(tmp_path):
+    """非回帰: CW の ICONS は従来どおり波長として読む。"""
+    p = _write(tmp_path, "cw.PRM", _LEGACY_PRM)
+    v = inspect_instprm(p, radiation="xray_lab").values
+    assert float(v["Lam1"]) == pytest.approx(1.5405)
+    assert "difC" not in v
+
+
+def test_legacy_tof_prm_without_bnkpar_still_reports_missing_keys(tmp_path):
+    """BNKPAR が無い TOF PRM は fltPath/2-theta を欠く — そこは正直に error にする。"""
+    p = _write(tmp_path, "t2.PRM", _LEGACY_TOF_PRM.replace("INS  1BNKPAR     63.169     90.000\n", ""))
+    rep = inspect_instprm(p, radiation="neutron_tof")
+    assert "missing_tof_keys" in _codes(rep)
+
+
+# --- 不正な tof/profile は「直せる言葉」の ValueError にする (② が縮退できる型) ---
+
+
+@pytest.mark.parametrize("bad", ["notadict", [1, 2], [["difC", 3500]], 5])
+def test_build_rejects_non_mapping_tof_with_value_error(bad):
+    """JSON 由来の非写像は AttributeError でなく ValueError にする (② の縮退対象)。"""
+    with pytest.raises(ValueError, match="tof"):
+        build_instprm_text(radiation="neutron_tof", tof=bad)
+
+
+@pytest.mark.parametrize("bad", ["notadict", [1, 2], 5])
+def test_build_rejects_non_mapping_profile_with_value_error(bad):
+    with pytest.raises(ValueError, match="profile"):
+        build_instprm_text(radiation="xray_lab", wavelength=1.5405, profile=bad)

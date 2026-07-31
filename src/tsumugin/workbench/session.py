@@ -1897,10 +1897,9 @@ class WorkbenchSession:
         """装置ファイルを検査し finding の dict 列を返す (spec_dir 相対パスも解決する)。"""
         from tsumugin.instprm import inspect_instprm
 
-        path = Path(instrument_path)
-        if not path.is_absolute() and self._project is not None:
-            path = Path(self._project.spec_dir) / path
-        report = inspect_instprm(path, radiation=radiation, geometry=geometry)
+        report = inspect_instprm(
+            self._resolve_in_project(instrument_path), radiation=radiation, geometry=geometry
+        )
         return [f.to_dict() for f in report.findings]
 
     def instrument_presets(self) -> dict[str, Any]:
@@ -1908,6 +1907,18 @@ class WorkbenchSession:
         from tsumugin.mcp.instrument_tools import list_instrument_presets
 
         return list_instrument_presets()
+
+    def _resolve_in_project(self, path: str) -> Path:
+        """相対パスをプロジェクト (``spec_dir``) の中へ解決する。
+
+        プロジェクトは「ディレクトリ + project.json + data/」で自己完結する約束
+        (api-contract.md) で、spec の ``instrument_path`` も spec_dir 相対で保存される。
+        解決しないと**サーバの CWD 基準**になり、存在するファイルを見失う。
+        """
+        p = Path(path)
+        if p.is_absolute() or self._project is None:
+            return p
+        return Path(self._project.spec_dir) / p
 
     def create_instrument(self, **kwargs: Any) -> dict[str, Any]:
         """POST /api/instrument/create: 装置パラメータファイルを作る (FR-502)。
@@ -1924,18 +1935,19 @@ class WorkbenchSession:
         out_path = kwargs.pop("out_path", None)
         if not out_path:
             return {"error": "out_path is required", "error_type": "ValueError"}
-        out = Path(str(out_path))
-        if not out.is_absolute():
-            if self._project is None:
-                return {
-                    "error": (
-                        "a project must be open to use a relative out_path "
-                        "(or pass an absolute path)"
-                    ),
-                    "error_type": "ValueError",
-                }
-            out = Path(self._project.spec_dir) / out
-        return create_instrument_params(str(out), **kwargs)
+        if not Path(str(out_path)).is_absolute() and self._project is None:
+            return {
+                "error": (
+                    "a project must be open to use a relative out_path "
+                    "(or pass an absolute path)"
+                ),
+                "error_type": "ValueError",
+            }
+        out = self._resolve_in_project(str(out_path))
+        # 未指定 (None) のキーは ② の既定に委ねる — ここで None を渡すと
+        # `ka2_ratio=None → データ由来の値を使う` 等の意図した既定解決を壊す。
+        passthrough = {k: v for k, v in kwargs.items() if v is not None}
+        return create_instrument_params(str(out), **passthrough)
 
     def inspect_instrument(self, **kwargs: Any) -> dict[str, Any]:
         """POST /api/instrument/inspect: 装置パラメータファイルを検査する (FR-502)。"""
@@ -1944,7 +1956,10 @@ class WorkbenchSession:
         path = kwargs.pop("path", None)
         if not path:
             return {"error": "path is required", "error_type": "ValueError"}
-        return inspect_instrument_params(str(path), **kwargs)
+        # create と同じ規則で相対パスを解決する。spec は instrument_path を spec_dir 相対で
+        # 保存するので、揃えないと**存在するファイルを file_not_found と答える**。
+        resolved = self._resolve_in_project(str(path))
+        return inspect_instrument_params(str(resolved), **kwargs)
 
     def remove_histogram(self, hist_id: str) -> dict[str, Any]:
         """POST /api/project/histograms/{hist_id}/remove: spec からヒストグラムを除去する。"""
