@@ -1,5 +1,18 @@
 # 実測データベンチマーク (相同定 M6 + 自動 Rietveld 検証 M7)
 
+> **公開リポジトリの規約 — 成果物を足す前に読むこと**
+>
+> 1. `docs/benchmark/` 直下の各エントリは **由来を `provenance.toml` に宣言する**
+>    (`public` / `synthetic` / `private`)。宣言が無いと
+>    `tests/test_docs_provenance.py` が落ちる。
+> 2. **未公開データの測定値は追跡しない**。出力先 `*/results/` は既定で gitignore。
+>    公開したい成果物だけ `git add -f` で明示的に上げる。
+> 3. **設計文書 (`docs/design/`・`docs/spec/`) に測定値の表を置かない**。根拠として 1 値を
+>    引くのは可だが、一覧はここに置いてリンクする。混ざると由来を追えなくなる。
+>
+> v0.1 公開時、未公開データの Rwp・占有率が public になった (`.gitignore` が拡張子スコープ
+> だったため csv/log が漏れた)。生データは守れていたので気づきにくかった。
+
 M6 相同定パイプラインを **実測** 粉末回折データで検証する。データファイルは容量とライセンスの
 都合で gitignore 対象 (`docs/benchmark/testdata/`)。取得すると `tests/reference/test_realdata.py`
 の統合テストが自動で有効化される (未取得時は skip)。
