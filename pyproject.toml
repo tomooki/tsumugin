@@ -1,8 +1,11 @@
 [project]
 name = "tsumugin"
 version = "0.1.0"
-description = "多仮説・全自動 Rietveld 解析プラットフォーム (PoC / M0)"
+description = "Multi-hypothesis automated Rietveld refinement for X-ray and neutron powder diffraction"
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Tomooki Hosaka" }]
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
