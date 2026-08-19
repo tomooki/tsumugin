@@ -272,10 +272,16 @@ def test_profile_asymmetry_is_added_once():
     assert sum("Simple_Axial_Model" in x for x in twice.histograms[0].preamble) == 1
 
 
-def test_phase_fraction_sum_is_a_documented_noop():
-    """TOPAS は MVW が重量分率を正規化するので制約不要。**フラグ自体は受理する**。"""
-    out = _apply({"phase_fraction_sum": True})
-    assert out.phases[0].phase_name == "P"  # 例外にならず素通りする
+def test_phase_fraction_sum_fails_with_a_reason_instead_of_being_accepted():
+    """**受理して no-op にしない**。③ から見て「拘束を掛けた」ことになってしまう。
+
+    TOPAS では相ごとの ``scale`` が相分率そのもので、``MVW`` が重量分率を正規化して返すため
+    和=1 の拘束は存在しない (GSAS は per-histogram の HAP Scale を別々に持つので要る)。
+    以前は黙って受理していたので、相分率の段が丸ごと空振りしていた。
+    """
+    with pytest.raises(UnsupportedStageFlagError, match="phase_fraction_sum") as excinfo:
+        _apply({"phase_fraction_sum": True})
+    assert "scale" in str(excinfo.value), "代わりに何を使えばよいかが書かれていない"
 
 
 def test_freeze_others_drops_accumulated_releases():

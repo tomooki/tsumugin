@@ -37,9 +37,8 @@ def build_topas_recipe(
     """TOPAS 向けの適応段階解放レシピを組む。
 
     :param histograms: 観測ヒストグラム仕様 (放射源で分岐する)
-    :param phases: 相仕様 (多相なら相分率段を挟む)
+    :param phases: 相仕様 (占有率の宣言があれば占有率段を挟む)
     """
-    multiphase = len(phases) > 1
     any_xray = any(h.radiation.is_xray for h in histograms)
     all_tof = bool(histograms) and all(h.radiation.is_tof for h in histograms)
 
@@ -83,26 +82,27 @@ def build_topas_recipe(
             )
         )
 
-    if multiphase:
-        # 多相は相分率を構造より先に分離する (M7 T4 の教訓)。
-        stages.append(
-            RefinementStage(
-                label="S3 phase_fractions",
-                flags={"scale": True, "phase_fraction_sum": True},
-                note="相分率を構造より先に分離する",
-            )
-        )
+    # 【相分率の段は出さない】: GSAS 経路の「相分率を構造より先に分離する」(M7 T4 の教訓) は、
+    #   TOPAS では **S0 で既に済んでいる** — 相ごとの ``scale`` が相分率そのもので、S0 が
+    #   それを解放しているからである (和=1 の拘束も `MVW` の正規化があるので存在しない)。
+    #   ここで ``{"scale": True, "phase_fraction_sum": True}`` の段を置くと、**何も変わらない
+    #   段が「相分率を分離した」という顔で段列に残る** (実測 T4 で rwp・gof・n_params が
+    #   ビット同一の no-op)。段列が嘘をつくくらいなら出さない。
 
     stages.append(
         RefinementStage(label="S4 coords", flags={"coords": True}, note="原子座標 (自由軸のみ)")
     )
-    stages.append(
-        RefinementStage(
-            label="S5 occupancy",
-            flags={"occupancy": True},
-            note="占有率 (中性子は Uiso より先 — 散乱長コントラストが効く)",
+    # 【占有率の段は宣言があるときだけ】: `apply_stage` は**宣言されたサイトだけ**解放する
+    #   (全サイト一斉解放はスケール因子と縮退して占有率 1 超の非物理解へ行くため)。
+    #   宣言が無ければ解放対象がゼロ = 構造的な no-op なので、段そのものを出さない。
+    if any(p.free_occupancy_labels or p.mixed_occupancy_groups for p in phases):
+        stages.append(
+            RefinementStage(
+                label="S5 occupancy",
+                flags={"occupancy": True},
+                note="占有率 (中性子は Uiso より先 — 散乱長コントラストが効く)",
+            )
         )
-    )
     stages.append(RefinementStage(label="S6 uiso", flags={"uiso": True}, note="等方性 ADP"))
 
     if any_xray and not all_tof:

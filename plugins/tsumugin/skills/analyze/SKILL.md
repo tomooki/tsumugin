@@ -68,6 +68,13 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
     ヒストグラムが同じくらい悪くなる**。
   - `absorption` は**反射光学系 (Bragg-Brentano) では失敗する** — 円筒吸収の式を平板試料に
     当てないため。透過/Debye-Scherrer で使うこと。
+  - `size_strain` は **TOF ヒストグラムには張らない** (角度分散のモデルなので TOF には
+    対応物が無い)。混在 joint では非 TOF にだけ張り、全 TOF なら失敗する。TOF の粒径/
+    微小歪みは `tof_profile` (幅の d/d² 項) が担う。
+- **`phase_fraction_sum` は未対応** — GSAS には要るが **TOPAS には概念が無い**。相ごとの
+  `scale` が相分率そのもので、`MVW` が重量分率を正規化して返すため和=1 の拘束が存在しない。
+  相分率を動かしたいなら `scale` を解放する (既定レシピは S0 で解放済み)。指定すると
+  段が明示的に失敗する。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
 - **`seed_profile`** (TOPAS 専用の引数): TOPAS は装置ファイルのプロファイル (Caglioti U,V,W)

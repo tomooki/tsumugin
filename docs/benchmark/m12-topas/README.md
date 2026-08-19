@@ -165,6 +165,24 @@ TOF で同じ物理を担うのは**幅の d/d² 項** (`tof_profile`) である
 `UnsupportedStageFlagError` で明示的に失敗する。``Negative FWHM`` は `driver` の診断行に
 加えたので、次に同種の誤りが出たら段の note に理由が出る。
 
+### 構造的に空振りしていた 2 段を落とした (2026-08-20)
+
+段列に毎回出ていた `S3 phase_fractions` と `S5 occupancy` は、**TOPAS では定義上何も変えられない
+段**だった (no-op 検出が拾った。rwp・gof・n_params がビット同一で `reverted` も立たない)。
+
+- **S3**: フラグ `{"scale": True, "phase_fraction_sum": True}` の**両方が空振り**。TOPAS では
+  相ごとの ``scale`` が相分率そのもので **S0 で既に解放済み**、``phase_fraction_sum`` は
+  ``MVW`` が重量分率を正規化するので拘束する対象が無い。GSAS は per-histogram の HAP Scale を
+  別々に持つので拘束が要る — **同じ語彙でも指す物が違う**。
+- **S5**: `apply_stage` は**宣言されたサイトだけ**解放する (全サイト一斉解放は scale と縮退して
+  占有率 1 超の非物理解へ行く)。T4 の相は `free_occupancy_labels` も `mixed_occupancy_groups` も
+  宣言していないので解放対象がゼロだった。T2 garnet のように宣言があれば働く。
+
+段そのものを出さないようにし、``phase_fraction_sum`` は**受理せず理由付きで失敗**させるように
+した (受理して no-op にすると ③ から見て「拘束を掛けた」ことになる)。**結果はビット同一**
+(既定 67.616482 / 調整済 19.2525331 とも変化なし) — 何もしていなかったのだから当然で、
+消えたのは「相分率を分離した」という**段列の嘘**である。
+
 ### 基準の改定 (ユーザー判断 1(a))
 
 **TOPAS 側の T4 基準を「GSAS と同じ ≤15%」から改める**。到達値 **19.25%** の内訳と理由:

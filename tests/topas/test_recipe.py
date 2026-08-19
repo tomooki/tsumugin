@@ -49,7 +49,8 @@ def test_background_coefficient_count_is_threaded_through():
 
 def test_structure_comes_after_peak_position():
     """座標/占有率/Uiso はピーク位置 (格子+ゼロ点) が合ってから。"""
-    order = _order(build_topas_recipe([_hist()], [_phase()]))
+    phase = PhaseSpec(structure_path="P.cif", phase_name="P", free_occupancy_labels=("O1",))
+    order = _order(build_topas_recipe([_hist()], [phase]))
     for structural in ("coords", "occupancy", "uiso"):
         assert order.index("cell") < order.index(structural)
 
@@ -66,15 +67,30 @@ def test_displacement_covers_every_histogram():
     assert set(disp) == {0, 1}
 
 
-def test_multiphase_separates_phase_fractions_before_structure():
-    """多相は相分率を構造より先に分離する (M7 T4 の教訓)。"""
+def test_no_phase_fraction_stage_because_scale_already_is_the_phase_fraction():
+    """GSAS の「相分率を構造より先に分離する」は **TOPAS では S0 で済んでいる**。
+
+    相ごとの ``scale`` が相分率そのもので S0 が解放しており、和=1 の拘束も ``MVW`` の
+    正規化があるので存在しない。段を置いても**何も変わらない段が「相分率を分離した」という
+    顔で段列に残る**だけだった (実測 T4 で rwp・gof・n_params がビット同一の no-op)。
+    """
     order = _order(build_topas_recipe([_hist()], [_phase("A"), _phase("B")]))
-    assert "phase_fraction_sum" in order
-    assert order.index("phase_fraction_sum") < order.index("coords")
+    assert "phase_fraction_sum" not in order
+    assert "scale" in _order(build_topas_recipe([_hist()], [_phase()]))[:2]
 
 
-def test_single_phase_has_no_phase_fraction_stage():
-    assert "phase_fraction_sum" not in _order(build_topas_recipe([_hist()], [_phase()]))
+def test_occupancy_stage_only_when_some_phase_declares_it():
+    """`apply_stage` は**宣言されたサイトだけ**解放する — 宣言が無ければ段は構造的に空振り。"""
+    plain = _order(build_topas_recipe([_hist()], [_phase()]))
+    assert "occupancy" not in plain
+
+    declared = PhaseSpec(structure_path="P.cif", phase_name="P", free_occupancy_labels=("O1",))
+    assert "occupancy" in _order(build_topas_recipe([_hist()], [declared]))
+
+    mixed = PhaseSpec(
+        structure_path="P.cif", phase_name="P", mixed_occupancy_groups=(("Fe1", "Al1"),)
+    )
+    assert "occupancy" in _order(build_topas_recipe([_hist()], [mixed]))
 
 
 def test_lorentzian_stage_only_for_xray():
@@ -127,11 +143,14 @@ def test_empty_histograms_still_produces_the_opening_stage():
 
 
 @pytest.mark.parametrize("n_phases", [1, 2, 3])
-def test_recipe_length_grows_only_with_the_phase_fraction_stage(n_phases):
+def test_recipe_length_does_not_depend_on_the_phase_count(n_phases):
+    """**相数で段は増えない** — 相分率は S0 の ``scale`` で既に自由だから。
+
+    X 線単相/多相: scale+bg / profile / cell+disp / coords / uiso / lorentz / asym / size = 8。
+    占有率段は宣言があるときだけ増える (別テスト)。
+    """
     stages = build_topas_recipe([_hist()], [_phase(f"P{i}") for i in range(n_phases)])
-    # 単相 X 線: scale+bg / profile / cell+disp / coords / occ / uiso / lorentz / asym / size = 9
-    expected = 10 if n_phases > 1 else 9
-    assert len(stages) == expected
+    assert len(stages) == 8, [s.label for s in stages]
 
 
 # ---------------- 温度差の吸収 (#173) ----------------

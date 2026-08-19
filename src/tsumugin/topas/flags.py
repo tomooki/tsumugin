@@ -29,7 +29,12 @@ from .inp import (
     _slug,
 )
 
-__all__ = ["SUPPORTED_FLAGS", "UnsupportedStageFlagError", "apply_stage"]
+__all__ = [
+    "NOT_APPLICABLE_FLAGS",
+    "SUPPORTED_FLAGS",
+    "UnsupportedStageFlagError",
+    "apply_stage",
+]
 
 
 class UnsupportedStageFlagError(TsumuginError):
@@ -53,7 +58,6 @@ SUPPORTED_FLAGS: frozenset[str] = frozenset(
         "profile",
         "profile_lorentzian",
         "profile_asymmetry",
-        "phase_fraction_sum",
         "preferred_orientation",
         "absorption",
         "tof_profile",
@@ -61,11 +65,27 @@ SUPPORTED_FLAGS: frozenset[str] = frozenset(
         "freeze_others",
     }
 )
-"""現在翻訳できるフラグ (17/17)。
+"""現在翻訳できるフラグ。
 
 ``hydrostatic_strain`` は **joint 専用** — ヒストグラム間の温度差を per-xdd の格子オフセットで
 吸収する量なので、単一ヒストグラムでは格子そのものと縮退する
-(:func:`apply_stage` が明示的に失敗させる)。"""
+(:func:`apply_stage` が明示的に失敗させる)。
+
+:data:`NOT_APPLICABLE_FLAGS` は「GSAS には要るが TOPAS には**概念が無い**」フラグで、
+受理せず理由付きで失敗させる。"""
+
+#: TOPAS には対応物が無いフラグ → 理由。**黙って受理して no-op にしない**。
+#:
+#: 以前は ``phase_fraction_sum`` を受理して何もしていなかったが、それだと ③ から見て
+#: 「相分率の拘束を掛けた」ことになってしまう。実際には TOPAS の相ごと ``scale`` が
+#: 相分率そのもので、``MVW`` が重量分率を正規化して返すため拘束する対象が無い。
+NOT_APPLICABLE_FLAGS: "dict[str, str]" = {
+    "phase_fraction_sum": (
+        "TOPAS では相ごとの `scale` が相分率そのもので、`MVW` が重量分率を正規化して返すため "
+        "和=1 の拘束は存在しません (GSAS は per-histogram の HAP Scale を別々に持つので要る)。"
+        "相分率は `scale` フラグで解放してください。"
+    ),
+}
 
 #: 格子オフセットを張る軸。**角度には張らない** — 熱膨張の等方成分ではないうえ、
 #: 90° 近傍では角度方向の微分がほぼ 0 でヘッシアンが特異になる (structure.py と同じ判断)。
@@ -247,6 +267,12 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
     :raises UnsupportedStageFlagError: 未翻訳のフラグが含まれるとき
     """
     flags = dict(stage.flags)
+    inapplicable = sorted(set(flags) & set(NOT_APPLICABLE_FLAGS))
+    if inapplicable:
+        reasons = " / ".join(NOT_APPLICABLE_FLAGS[name] for name in inapplicable)
+        raise UnsupportedStageFlagError(
+            f"TOPAS に対応物が無い段階フラグです: {inapplicable} (段 '{stage.label}')。{reasons}"
+        )
     unknown = sorted(set(flags) - SUPPORTED_FLAGS)
     if unknown:
         raise UnsupportedStageFlagError(
@@ -388,7 +414,6 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
     if flags.get("absorption"):
         histograms, shared = _apply_absorption(histograms, phases, shared, stage.label)
 
-    # phase_fraction_sum: TOPAS は MVW が重量分率を正規化して返すため制約不要 (no-op)。
 
     return doc.with_updates(
         phases=tuple(phases), histograms=tuple(histograms), shared_params=shared
