@@ -2,6 +2,9 @@
 
 ブランチ: `milestone/m12-topas-backend` / 設計: `docs/design/m12-topas-backend/architecture.md`
 
+> **第 2 期 (残 5 Issue を閉じて完了させる計画) は [PLAN-COMPLETION.md](PLAN-COMPLETION.md)**。
+> 本ファイルは第 1 期 (PR #176 / #177) の記録である。
+
 到達点はユーザー選択により **「第 2 段: `autorietveld` も Topas 化」** (= `RefinementBackend` 層 +
 実構造段階解放エンジンの両方)、段階フラグは **TOF/joint まで**、バックエンド選択は
 **② に `backend` 引数を新設**。
