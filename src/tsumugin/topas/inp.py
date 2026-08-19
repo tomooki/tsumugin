@@ -493,7 +493,10 @@ class TopasDocument:
                 )
             # 宣言は**使う str ブロックの中**に置く (TOF の幅パラメータと同じ作法)。
             lines.append(f"{_INDENT_PHASE}prm {render_param(eps)}")
-            if self.results_path:
+            if self.results_path and eps.refine:
+                # 【解放しているときだけ出す】: 固定値まで出すと、revert された段や
+                #   `freeze_others` の後で「精密化した ε が 0 だった」と読めてしまう
+                #   (原子の出版値と同じ規律)。
                 # 【ε は出版値】: 温度差をどれだけ吸収したかはこの値でしか読めない。
                 #   キーに ``h{index}`` を混ぜる — ε は**ヒストグラムごと**の量なので、
                 #   相名+軸だけだと joint で後勝ちになりどの xdd の値か分からなくなる。

@@ -80,13 +80,17 @@ _LENGTH_AXES = ("a", "b", "c")
 
 
 @lru_cache(maxsize=64)
-def _read_structure(path: str) -> "tuple[object, tuple[str, ...]]":
-    """実 CIF を読んで (構造, 対称操作) を返す — **パスごとに 1 回だけ**。
+def _parse_structure(path: str, mtime_ns: int, size: int) -> "tuple[object, tuple[str, ...]]":
+    """実 CIF を読んで (構造, 対称操作) を返す — **同じ内容なら 1 回だけ**。
 
     探索層 (`search.tree` / `sequential.engine`) は同じ ``structure_ref`` を持つ仮説を
     何百回も `simulate()`/`refine()` に掛ける。毎回読み直すと CIF パースに加え、対称操作が
     CIF に無い場合は ``ensure_symops`` が **tc.exe を子プロセスで起動**して ``Sg/*.sg`` を
     作りに行く。GSAS 側は相を gpx へ 1 度追加するだけなので、ここも 1 回で済ませる。
+
+    **キーに mtime とサイズを混ぜる**のが要点。パスだけで引くと、構造改訂 (`edit_cif` /
+    物質化 / セル研磨) が**同じパスへ書き戻した**とき古い構造が黙って勝ち、改訂が
+    「効かなかった」ように見える (差分は結果のどこにも出ない)。
     """
     from ..autorietveld.cif_normalize import read_structure_cif
     from ..topas.structure import to_topas_spacegroup
@@ -95,6 +99,12 @@ def _read_structure(path: str) -> "tuple[object, tuple[str, ...]]":
     structure = read_structure_cif(path)
     spacegroup = to_topas_spacegroup(structure.spacegroup_hm, structure.it_number)
     return structure, ensure_symops(spacegroup, structure.symops)
+
+
+def _read_structure(path: str) -> "tuple[object, tuple[str, ...]]":
+    """`_parse_structure` を**ファイルの版**で引く (書き換えはキャッシュミスになる)。"""
+    stat = Path(path).stat()
+    return _parse_structure(path, stat.st_mtime_ns, stat.st_size)
 
 
 def _structure_phase(index: int, phase: PhaseInstance, *, cell_free: bool) -> TopasPhase:

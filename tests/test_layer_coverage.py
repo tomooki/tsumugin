@@ -463,6 +463,11 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "ε は「この xdd での実効セルは共有セルの (1+ε) 倍」を表す別量である。これを出さないと "
         "③ は段が効いた理由も、ε が箱に張り付いた (非物理) ことも結果から読めない",
     ),
+    "cell_strain_esd": (
+        "cell_strain_esd",
+        "`cell_strain` と同一レイアウトの標準不確かさ。**esd を伴わない精密化値は出版できない** "
+        "— ε が ±0.002% なのか ±0.4% (未決定) なのかで意味が反転する",
+    ),
     "atom_uiso": (
         UNEXPOSED,
         "Issue #97: ① `refine_loop.diagnostics`/`diagnose_residual` が消費する内省フィールド。"

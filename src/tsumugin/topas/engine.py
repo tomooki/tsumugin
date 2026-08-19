@@ -350,7 +350,7 @@ def run_topas_rietveld(
                     shutil.copyfile(item, destination / item.name)
 
         refined_cells = refined_cells_from_records(records, doc, reference_cells)
-        cell_strain = _cell_strain_from_records(records)
+        cell_strain, cell_strain_esd = _cell_strain_from_records(records)
 
         return AutoRietveldResult(
             stage_results=tuple(stage_results),
@@ -378,6 +378,7 @@ def run_topas_rietveld(
             atom_uiso=atom_uiso,
             atom_uiso_esd=atom_uiso_esd,
             cell_strain=cell_strain,
+            cell_strain_esd=cell_strain_esd,
             backend=_BACKEND,
             project_path=str(keep_project) if keep_project else "",
             histogram_rwp=_histogram_rwp_tuple(best_results, len(histograms)),
@@ -390,19 +391,26 @@ _DEFAULT_ANGLES = {"al": 90.0, "be": 90.0, "ga": 90.0}
 
 def _cell_strain_from_records(
     records: TopasRecords,
-) -> "dict[str, dict[str, float]]":
-    """``cell_strain`` レコード (相/軸/ヒストグラム) を 相→``"<軸>_h<索引>"``→値 へ畳む。
+) -> "tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]":
+    """``cell_strain`` レコードを (値, esd) の 相→``"<軸>_h<索引>"`` マップ 2 本へ畳む。
 
     **ε は per-histogram の量**なので索引をキーに残す (相名+軸だけだと joint で後勝ちになる)。
+    **esd も運ぶ** — ε が ±0.002% なのか ±0.4% (未決定) なのかで意味が反転する。
+
+    キーは ``<相名>/<軸>/h<索引>`` だが、**相名に ``/`` が入りうる**ので後ろ 2 つを軸と索引と
+    見なし、残りを相名へ戻す (末尾から数える)。3 つ未満だけを壊れたレコードとして落とす。
     """
-    out: dict[str, dict[str, float]] = {}
-    for key, (value, _esd) in records.keyed.get("cell_strain", {}).items():
+    values: dict[str, dict[str, float]] = {}
+    esds: dict[str, dict[str, float]] = {}
+    for key, (value, esd) in records.keyed.get("cell_strain", {}).items():
         parts = key.split("/")
-        if len(parts) != 3:
+        if len(parts) < 3:
             continue
-        phase, axis, hist = parts
-        out.setdefault(phase, {})[f"{axis}_{hist}"] = value
-    return out
+        phase, axis, hist = "/".join(parts[:-2]), parts[-2], parts[-1]
+        values.setdefault(phase, {})[f"{axis}_{hist}"] = value
+        if esd is not None and math.isfinite(esd) and esd > 0.0:
+            esds.setdefault(phase, {})[f"{axis}_{hist}"] = esd
+    return values, esds
 
 
 def refined_cells_from_records(

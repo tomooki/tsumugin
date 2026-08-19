@@ -101,9 +101,9 @@ def _topas_threads() -> int:
     """tc.exe を何スレッドで起動するか (`topas.driver` の既定と**同じ解決**を使う)。"""
     import os
 
-    from ..topas.driver import _thread_count
+    from ..topas.driver import thread_count
 
-    return int(_thread_count(os.environ.get("TSUMUGIN_TOPAS_THREADS")))
+    return int(thread_count(os.environ.get("TSUMUGIN_TOPAS_THREADS")))
 
 
 def describe_backends() -> dict[str, dict[str, object]]:

@@ -26,7 +26,7 @@ from pathlib import Path
 from ..errors import TopasRunError
 from .availability import require_tc_exe, topas_home
 
-__all__ = ["TopasRun", "run_tc"]
+__all__ = ["TopasRun", "run_tc", "thread_count"]
 
 _FAILURE_MARKERS: tuple[str, ...] = (
     "Abnormal program termination",
@@ -84,8 +84,11 @@ def _failure_reason(stdout: str) -> "str | None":
     return " | ".join(hits)
 
 
-def _thread_count(raw: "str | None") -> str:
+def thread_count(raw: "str | None") -> str:
     """``TSUMUGIN_TOPAS_THREADS`` を検証して ``OMP_NUM_THREADS`` の値へ (既定 "1")。
+
+    **``autorietveld.backends.describe_backends`` と共有する** — ② が報告するスレッド数と
+    実際に tc.exe を起動する値が別実装だと、報告が嘘になる。
 
     **空/非数値/0 以下は既定へ戻す** — 素通しすると OpenMP の実装依存挙動になり、
     「再現性を取っているつもりで取れていない」が結果に現れない (② の「空/不正入力を
@@ -141,7 +144,7 @@ def run_tc(
     #   ビット同一になる (実測)。**Rwp が実行ごとに変わると段の受理判定も BIC 比較も
     #   ベンチマークも意味を失う**ので既定は再現性を取る。速度が要る場面のために
     #   ``TSUMUGIN_TOPAS_THREADS`` で外せる (再現性を捨てる、という明示的な選択)。
-    env["OMP_NUM_THREADS"] = _thread_count(env.get("TSUMUGIN_TOPAS_THREADS"))
+    env["OMP_NUM_THREADS"] = thread_count(env.get("TSUMUGIN_TOPAS_THREADS"))
 
     try:
         proc = subprocess.run(

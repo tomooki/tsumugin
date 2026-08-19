@@ -145,6 +145,10 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "cell_strain": {
             phase: dict(axes) for phase, axes in (result.cell_strain or {}).items()
         },
+        # esd を伴わない精密化値は出版できない (±0.002% と ±0.4% で意味が反転する)。
+        "cell_strain_esd": {
+            phase: dict(axes) for phase, axes in (result.cell_strain_esd or {}).items()
+        },
         "refined_cells": {
             # 発散/崩壊した精密化で GSAS が NaN/Inf セルを返しうるため finite_or_none で None 化
             # (allow_nan=False の json.dumps クラッシュを防ぐ; 他フィールドと同一規律)。
@@ -577,13 +581,24 @@ def auto_rietveld(
         # 【比較は正規化を通す】: 解決系が `(name or DEFAULT).strip().lower()` している以上、
         #   ここで生文字列比較すると `None` (JSON の null) や "GSASII" が既定でないと判定され、
         #   既定のまま探索したいだけの呼び出しが誤って拒否される。
-        if normalize_backend(backend) != DEFAULT_BACKEND and (
-            search not in (None, False) or multistart is not None
-        ):
+        searching = search not in (None, False) or multistart is not None
+        if normalize_backend(backend) != DEFAULT_BACKEND and searching:
             return {
                 "error": (
                     f"backend={backend!r} と search/multistart の併用は未対応です "
                     f"(レシピ探索・収束確認は現状 GSAS-II 経路のみ)。どちらか一方にしてください。"
+                ),
+                "error_type": "UnsupportedBackendCombination",
+            }
+        # 【探索経路は seed_profile も運べない】: 探索は候補ごとに runner を組むので、ここで
+        #   黙って落とすと**種付けなしで探索した結果**が返る。単独経路では同じ引数が
+        #   ValueError になるのに探索経路だけ沈黙する、という非対称を作らない。
+        if seed_profile and searching:
+            return {
+                "error": (
+                    "seed_profile と search/multistart の併用は未対応です "
+                    "(探索は候補ごとに runner を組むため種付けを運べません)。"
+                    "どちらか一方にしてください。"
                 ),
                 "error_type": "UnsupportedBackendCombination",
             }

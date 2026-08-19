@@ -69,3 +69,14 @@ def test_cell_strain_reaches_layer_two_output():
         result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
     )
     assert payload["cell_strain"] == {"PbSO4": {"a_h1": 0.0031}}
+
+
+def test_seed_profile_with_search_is_refused_not_silently_dropped():
+    """探索経路は候補ごとに runner を組むので種付けを運べない。
+
+    単独経路では同じ引数が ValueError になるのに、探索経路だけ**沈黙して種付けなしで
+    走る**のは最悪の非対称 (結果からは区別できない)。
+    """
+    out = auto_rietveld([], [], seed_profile=True, search=["polish"])
+    assert "error" in out and out["error_type"] == "UnsupportedBackendCombination"
+    assert "seed_profile" in out["error"]

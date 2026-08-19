@@ -715,3 +715,22 @@ def test_cell_strain_is_published_per_histogram():
     ).render()
     assert 'Out(eps_PbSO4_a_h1, "cell_strain\tPbSO4\ta\th1\t%.8f"' in text
     assert text.count("cell_strain") == 1, "張っていない xdd にまで出している"
+
+
+def test_frozen_cell_strain_is_not_published():
+    """**解放していない ε は出さない** (原子の出版値と同じ規律)。
+
+    revert された段や `freeze_others` の後に固定値まで出すと、③ からは
+    「精密化した ε が 0 だった」と読めてしまう。
+    """
+    phase = _pbso4_phase()
+    strain = {"a": Param(0.0, refine=False, name="eps_PbSO4_a_h1")}
+    neutron = TopasHistogram(
+        data_path="n.xye", is_neutron=True, background=Param(0.0, refine=True),
+        phase_terms={"PbSO4": PhaseHistogramTerms(cell_strain=strain)},
+    )
+    text = TopasDocument(
+        histograms=(_histogram(), neutron), phases=(phase,), results_path="results.txt"
+    ).render()
+    assert "prm !eps_PbSO4_a_h1" in text, "宣言そのものは残る (参照式が壊れる)"
+    assert "cell_strain" not in text, "固定値を出版値として出している"

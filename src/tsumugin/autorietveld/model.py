@@ -815,6 +815,10 @@ class AutoRietveldResult:
     #   温度差の吸収がどれだけ働いたかは**この値でしか読めない** — 出さないと段が効いた理由も、
     #   ε が箱に張り付いた (非物理) ことも結果から見えない。既定空 (張っていない/未対応経路)。
     cell_strain: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    #: ``cell_strain`` と**同一レイアウト**の標準不確かさ。**esd を伴わない精密化値は
+    #: 出版できない** — ε が −0.115% ± 0.002% なのか ± 0.4% (未決定) なのかで意味が
+    #: 反転する。取得できなければ欠落 (0.0 を捏造しない)。
+    cell_strain_esd: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     # per-histogram (索引順): 現吸収値・現プロファイル値 (Zero/alpha/X/Y/U/V/W 等)。
     hist_absorption: tuple[float, ...] = ()
     hist_profile: tuple[Mapping[str, float], ...] = ()

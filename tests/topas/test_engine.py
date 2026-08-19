@@ -511,6 +511,14 @@ def test_benchmark_t3_joint_reports_the_global_rwp():
     strain = [s for s in result.stage_results if "hydrostatic_strain" in s.label]
     assert strain, "温度差があるのに歪み段がレシピに出ていない"
     assert not strain[0].reverted, f"歪み段が revert された: {strain[0].note}"
+    # 【ε が実 tc.exe から返ること】: 単体テストは自作の results.txt を読ませているだけ
+    #   なので、`Out(eps…)` を TOPAS が実際に受理して書くかは実データでしか分からない
+    #   (tc.exe は構文エラーでも終了コード 0 を返す)。値は 10 K 側の収縮 (実測 -0.115%) で、
+    #   熱膨張 α≈4e-6/K × 285 K ≈ 0.11% と一致し、箱 (±2%) からは 1 桁離れている。
+    eps = result.cell_strain.get("PbSO4", {})
+    assert set(eps) == {"a_h1", "b_h1", "c_h1"}, f"ε が返っていない: {result.cell_strain}"
+    for axis, value in eps.items():
+        assert -0.005 < value < 0.0, f"{axis}: {value} (10 K 側は縮むはず)"
 
 
 def _t4_histograms(d: Path) -> list[HistogramSpec]:
