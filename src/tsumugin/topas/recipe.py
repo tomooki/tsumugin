@@ -88,6 +88,12 @@ def build_topas_recipe(
     #   ここで ``{"scale": True, "phase_fraction_sum": True}`` の段を置くと、**何も変わらない
     #   段が「相分率を分離した」という顔で段列に残る** (実測 T4 で rwp・gof・n_params が
     #   ビット同一の no-op)。段列が嘘をつくくらいなら出さない。
+    #
+    # 【「分離を本当にやる」も測ったが効かなかった】: S0 を「背景のみ」→「+ 相分率」の 2 段に
+    #   割って軌跡を変える案を T4 で実測したところ、**A 案と全段で一致した**
+    #   (背景のみ 266.57 → 相分率を足して 27.4417 = 一括で合わせた S0 と同値。最終も
+    #   19.2525 / 67.6165 で変わらず)。背景と相分率はこの系では**分けるほど縮退していない**。
+    #   再発明を防ぐために負けた案として残す (`docs/benchmark/m12-topas/README.md`)。
 
     stages.append(
         RefinementStage(label="S4 coords", flags={"coords": True}, note="原子座標 (自由軸のみ)")
