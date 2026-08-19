@@ -32,6 +32,7 @@ from ..autorietveld.model import (
     StageResult,
     ValidityReport,
 )
+from ..autorietveld.stagepolicy import StageMetrics, decide_stage
 from ..errors import TopasRunError
 from ..store import Ledger
 from .driver import run_tc
@@ -215,7 +216,9 @@ def run_topas_rietveld(
         )
 
         stage_results: list[StageResult] = []
-        prev_rwp = float("inf")
+        # 【直前の**受理済み**状態】: 段方針 (`autorietveld.stagepolicy`) は gof/母数も見る —
+        #   「rwp・gof・n_params がビット同一で revert も立たない」段 = 無言 no-op の検出に要る。
+        prev_rwp, prev_gof, prev_nvar = float("inf"), float("inf"), 0
 
         best_results = ""
         for index, stage in enumerate(stages):
@@ -236,13 +239,26 @@ def run_topas_rietveld(
                 note = f"{type(exc).__name__}: {exc}"[:200]
                 run = None  # type: ignore[assignment]
 
-            worsened = not math.isfinite(rwp) or rwp > prev_rwp + worsen_eps
+            decision = decide_stage(
+                StageMetrics(prev_rwp, prev_gof, prev_nvar),
+                StageMetrics(rwp, gof, n_params),
+                worsen_eps=worsen_eps,
+            )
+            worsened = decision.reverted
             if worsened:
                 doc = before  # revert = 段を適用する前の文書に戻すだけ
             else:
-                prev_rwp = rwp
+                prev_rwp, prev_gof, prev_nvar = rwp, gof, n_params
                 if run is not None:
                     best_results = run.results_text
+            if decision.is_noop:
+                # 【無言 no-op】: 段を適用したのに rwp/gof/母数がビット同一 = 何も精密化して
+                #   いない。**revert はしない** (検出のみ) — 効かない理由 (解放先が無い /
+                #   バックエンドの無言失敗) は Rwp からは区別できないので、区別できる事実
+                #   として note と ledger に残す。T4 実測で S3/S5 がこの状態だった。
+                note = f"{note}; 無言 no-op (指標がビット同一)" if note else (
+                    "無言 no-op (指標がビット同一)"
+                )
 
             stage_results.append(
                 StageResult(
@@ -264,6 +280,8 @@ def run_topas_rietveld(
                         "gof": gof if math.isfinite(gof) else None,
                         "n_params": n_params,
                         "reverted": worsened,
+                        "revert_reason": decision.reason,
+                        "noop": decision.is_noop,
                         "note": note,
                         "backend": _BACKEND,
                     },
@@ -311,7 +329,7 @@ def run_topas_rietveld(
                 if item.is_file():
                     shutil.copyfile(item, destination / item.name)
 
-        refined_cells = _refined_cells(records, doc, reference_cells)
+        refined_cells = refined_cells_from_records(records, doc, reference_cells)
 
         return AutoRietveldResult(
             stage_results=tuple(stage_results),
@@ -348,12 +366,15 @@ _CELL_ORDER = ("a", "b", "c", "al", "be", "ga")
 _DEFAULT_ANGLES = {"al": 90.0, "be": 90.0, "ga": 90.0}
 
 
-def _refined_cells(
+def refined_cells_from_records(
     records: TopasRecords,
     doc: TopasDocument,
-    reference_cells: "Mapping[str, tuple[float, ...]] | None",
+    reference_cells: "Mapping[str, tuple[float, ...]] | None" = None,
 ) -> "dict[str, tuple[float, float, float, float, float, float]]":
     """``Out()`` が吐いたセルレコードから精密化後セルを組む。
+
+    **`backends.topas.TopasBackend` も使う** (#180): 従属軸の解決を別実装で持つと、
+    片方だけが「格子が動かなかった」ように見える結果を返すようになる。
 
     従属軸 (``b =Get(a);``) は Out に出していないので、参照式から独立変数を引いて復元する。
     回収できなかった相は参照セルへフォールバックする (**空にしない** — validity ゲートが

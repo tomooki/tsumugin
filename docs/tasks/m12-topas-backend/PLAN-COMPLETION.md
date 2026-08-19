@@ -157,31 +157,46 @@ W1 で届かなかった分。**上から順に 1 つずつ測る** (同時に�
 - [ ] size/mustrain の解放順序 (現状 S9 最後)。
 - [ ] 選択配向を**既定レシピに載せるか** → §5 の判断 2。
 
-### W4 `TopasBackend` の実 CIF 対応と ② 露出 (#180)
+### W4 `TopasBackend` の実 CIF 対応と ② 露出 (#180) — **完了 (2026-08-19)**
 
-- [ ] `backends/topas.py` に `structure_ref` 分岐を実装する
-      ([`backends/gsasii.py:324`](../../../src/tsumugin/backends/gsasii.py):324 相当 = 実 CIF を読んで
-      格子だけ上書き)。素材は `topas.structure.structure_to_topas_phase` に揃っている。
-- [ ] `NotImplementedError` による拒否を**外す**。外した瞬間に
-      `tests/test_layer_coverage.py::test_topas_backend_non_exposure_reason_is_still_true` が落ちる
-      (= 非露出宣言の再検討が強制される。設計どおりの挙動)。
-      `test_no_mcp_tool_constructs_the_topas_backend` も併せて更新する。
-- [ ] ② `discriminate` に `backend` 引数を足す (JSON のみで到達できること)。
-- [ ] ③ `skills/analyze/SKILL.md` に「**いつ TOPAS で判別するか**」を書く (★不変条件の 2 点目)。
-- [ ] **実データ検証**: 同じ `structure_ref` 付き仮説集合を GSAS と TOPAS の両方で判別し、
-      **順位が一致すること**を見る (不変条件「バックエンドを替えると仮説の順位が変わる」を作らない)。
+- [x] `backends/topas.py::_structure_phase` に `structure_ref` 分岐を実装
+      (実 CIF を読み**格子長だけ** warm-start へ上書き・**角度は CIF 由来**・解放は
+      **結晶系の独立軸のみ**)。GSAS 側 `_add_phases` / `_apply_cell` と対。
+- [x] `NotImplementedError` の拒否を外し、宣言を**露出側へ反転**
+      (`test_topas_backend_exposure_precondition_still_holds`: 簡約モデルへ戻ったら落ちる。
+      `test_mcp_selects_backends_only_through_the_shared_resolver`: 名前の語彙を
+      `resolve_protocol_backend` 1 か所に閉じる)。
+- [x] ② `discriminate(backend=)` を追加 (JSON のみで到達・未知名は error dict・
+      結果に `backend` キーを載せて出所を検算できる)。
+- [x] ③ `skills/analyze/SKILL.md` に「いつ TOPAS で判別するか」+ **区間内でエンジンを
+      混ぜない**規律を明記 (ガード 2 本)。
+- [x] **実データ検証**: 同じ実 CIF (PbSO4) + 同じ実データ + 同じ 0.4% 摂動から
+      **両エンジンが同じ格子へ収束** — TOPAS 8.47648/5.40376/6.95684 と
+      GSAS-II 8.48207/5.40312/6.96325 (最大 0.066% 差)。gated テストに固定。
 
-### W5 段方針の共通化 (#175 の T7)
+**副産物 (この配線で見つけた既存欠陥)**: `TopasBackend` だけ既定重みが ``w=1`` で、
+Simulated/GSAS の ``w=1/max(y,1)`` と違っていた。同じ実データで chi2 が 1.4e9 対 6.8e5 と
+数桁ずれ、**判別の `close_threshold` (絶対 ΔBIC 閾値) がエンジン依存**になっていた。
+既定重みを `backends.base.default_weights` に一本化して解消。
 
-**最後に置く**。W1–W3 で TOPAS engine の受理/revert 周りに手が入る可能性があり、
-動く形が確定してから抽出する方が安全なため。
+**BIC の母数も修正**: `n_params` を `3 * len(cell_free)` で数えていた (簡約モデル
+P m m m 専用の数え方)。実 CIF では結晶系で変わる (立方晶は 1) ので**文書が実際に解放して
+いる数**を数える。
 
-- [ ] `autorietveld/stagepolicy.py` に**判定ロジックだけ**を純関数で抽出する
-      (受理/revert 判定・`StageResult` 組立・ledger 追記キー)。
-- [ ] `.gpx` 操作・無言失敗検出 (`_capture_refine_status`)・`_apply_sample_geometry` の
-      Type 整合・セル崩壊ガードには**触らない** (実測で積み上げた振舞い)。
-- [ ] 受け入れ: `-m gsas -k "engine_t1 or engine_t2 or engine_t3 or engine_t4"` が
-      M7 記録値 (9.83 / 4.33 / 6.66 / ~12.8%) から非回帰。`-m topas` も非回帰。
+### W5 段方針の共通化 (#175 の T7) — **完了 (2026-08-19)**
+
+- [x] `autorietveld/stagepolicy.py` に**判定だけ**を純関数で抽出
+      (`decide_stage(previous, trial, worsen_eps, unconverged, detect_noop) -> StageDecision`)。
+      revert 理由 (`unconverged`/`non_finite`/`worse`) も返して ledger に残せるようにした。
+- [x] `.gpx` 操作・無言失敗検出・試料ジオメトリ整合・セル崩壊ガードには**触っていない**
+      (スナップショット復元も ledger のキーも各 engine のまま)。
+- [x] **抽出しただけで終わらせない** — 共有した結果、**GSAS 側にしか無かった no-op 検出
+      (REQ-SAR-102) が TOPAS 経路にも効くようになった**。W0 で見つけた「T4 の S3/S5 が
+      rwp・n_params ビット同一で `reverted` も立たない」がこれで表に出る
+      (`StageResult.note` + ledger `noop`/`revert_reason`)。ガードは変異させて fail を実証。
+- [x] 「両 engine が同じ関数を使っていること」を機械検査
+      (`test_both_engines_use_the_shared_policy`: 別実装に戻ったら落ちる)。
+- [ ] 受け入れ: `-m gsas -k "engine_t1 or engine_t2 or engine_t3 or engine_t4"` 非回帰 (実行中)。
 - [ ] Issue #175 本文から T9 (実装済み) を落とす。
 
 ### W6 仕上げ

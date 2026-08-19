@@ -121,6 +121,27 @@ def test_worsening_stage_is_reverted(stub_driver):
     assert result.final_rwp == pytest.approx(12.0)
 
 
+def test_silent_noop_stage_is_detected_not_swallowed(stub_driver):
+    """**指標がビット同一で `reverted` も立たない段**を、区別できる事実として残す (M12 T7)。
+
+    GSAS 経路にしか無かった検出 (REQ-SAR-102) を共有の段方針から受け取る。T4 実測で
+    S3 phase_fractions / S5 occupancy がこの状態のまま完走していた — 最終 Rwp からは
+    「効かなかった」のか「無言で失敗した」のかを区別できない。
+    """
+    ledger = Ledger()
+    stub_driver([30.0, 30.0])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=_stages(("S0", 30.0), ("S1", 30.0)), ledger=ledger,
+    )
+    second = result.stage_results[1]
+    assert not second.reverted, "no-op は revert しない (検出のみ)"
+    assert "no-op" in second.note, f"note に出ていない: {second.note!r}"
+    entries = [e for e in ledger.entries if e.kind == "m12_topas_stage"]
+    assert entries[1].payload["noop"] is True
+    assert entries[0].payload["noop"] is False, "初段まで no-op と誤報している"
+
+
 def test_backend_failure_degrades_to_infinite_rwp_not_an_exception(stub_driver):
     """**不変条件**: バックエンドの失敗は例外でなく rwp=inf に変換しガードレールへ。"""
     stub_driver([30.0, TopasRunError("Abnormal program termination"), 25.0])
