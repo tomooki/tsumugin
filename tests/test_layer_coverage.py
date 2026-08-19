@@ -155,16 +155,15 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     "operando diag (M8-③)": ("check_phase_set", "相集合の完全性"),
     # --- 未露出 (Issue #97): 宣言することで「忘れた」ではなく「既知の穴」であることを示す ---
     "TopasBackend (M12/T9)": (
-        UNEXPOSED,
-        "**意図的な非露出** (Issue #175)。`RefinementBackend` Protocol の TOPAS 実装で、"
-        "`simulate()` を要求する search.tree / sequential.engine の口を塞ぐ。だが ② で "
-        "`RefinementBackend` を組む唯一のツール `discriminate` は**実 CIF 判別**の経路であり "
-        "(`PhaseInstance.structure_ref` → GSASIIBackend の実 CIF 分岐, Issue #130)、"
-        "TopasBackend は簡約モデル (P m m m・Ni 1 原子) しか持たない。ここへ backend 引数を"
-        "足すと**実構造で判別したつもりが捏造構造で走る**ため、structure_ref 対応が入るまで"
-        "露出しない。黙って代替しないよう TopasBackend 側は structure_ref を "
-        "NotImplementedError で拒否する。実構造の TOPAS 精密化は "
-        "`auto_rietveld(backend=\"topas\")` で既に到達可能",
+        "discriminate",
+        "Issue #180 解決: `RefinementBackend` Protocol の TOPAS 実装を `discriminate(backend=)` "
+        "で露出した。**露出の前提は実 CIF 対応**だった — ② で Protocol を組む唯一のツールが"
+        "実構造判別の経路 (`PhaseInstance.structure_ref` → 実 CIF 分岐, Issue #130) なので、"
+        "簡約モデル (P m m m・Ni 1 原子) のまま配線すると**実構造で判別したつもりが捏造構造で"
+        "走る**。`backends.topas._structure_phase` が GSAS 側 `_add_phases` と対の実 CIF 分岐 "
+        "(格子長だけ warm-start へ上書き・角度は CIF 由来・解放は結晶系の独立軸のみ) を持ち、"
+        "母数も文書から数える (立方晶は 1。`3 * len(cell_free)` は簡約モデル専用だった)。"
+        "実構造の TOPAS 精密化は `auto_rietveld(backend=\"topas\")` が引き続き担当",
     ),
     "insitu.anchor (M10/FR-330)": (
         "anchored_sequential",
@@ -1856,27 +1855,29 @@ def test_selection_escalation_is_now_reachable_or_the_note_is_stale():
         )
 
 
-def test_topas_backend_non_exposure_reason_is_still_true():
-    """**非露出の理由を機械検査する** — 理由が消えたら宣言を見直させる。
+def test_topas_backend_exposure_precondition_still_holds():
+    """**露出の前提を機械検査する** (#180 で非露出 → 露出へ反転した箇所)。
 
-    `TopasBackend` を ② に露出していない理由は「実 CIF (``structure_ref``) を扱えないので
-    `discriminate` に配線すると実構造判別が捏造構造で走る」である。理由が成立しなくなったら
-    (= structure_ref 対応が入ったら) このテストが落ち、非露出宣言の再検討を強制する。
+    `discriminate(backend="topas")` を許してよい前提は「TOPAS 側も**実 CIF で**判別する」
+    ことである。簡約モデル (P m m m・Ni 1 原子) へ黙って戻ると、③ から見て「実構造で
+    判別した」結果が捏造構造で走ることになり、**その嘘は結果からは見えない**。
 
-    宣言文だけだと**コードが変わっても宣言が古いまま残る** (それこそ本ファイルが防ぎたい
-    drift そのもの)。
+    前提が壊れたらここが落ち、露出宣言の再検討を強制する (非露出時代と同じ規律を、
+    向きだけ反転して維持する)。
     """
-    from tsumugin.backends.topas import TopasBackend
+    from tsumugin.backends.topas import _structure_phase
     from tsumugin.model import LatticeParams, PhaseInstance
 
-    backend = TopasBackend.__new__(TopasBackend)  # tc.exe 不要
+    cif = Path("tests/data/layer_coverage_cubic.cif")
     phase = PhaseInstance(
-        phase_ref="P", lattice=LatticeParams(4.0, 4.0, 4.0), scale=1.0,
-        structure_ref="x.cif",
+        phase_ref="P", lattice=LatticeParams(5.5, 5.5, 5.5), scale=1.0,
+        structure_ref=str(cif),
     )
-    with pytest.raises(NotImplementedError):
-        backend._require_simplified_phases((phase,))
-    assert LAYER1_FEATURES["TopasBackend (M12/T9)"][0] is UNEXPOSED
+    built = _structure_phase(0, phase, cell_free=True)
+    assert "Pmmm" not in built.space_group, "簡約モデルへ戻っている (捏造構造で判別する)"
+    assert [s.label for s in built.sites] != ["Ni1"], "簡約モデルの原子で走っている"
+    assert built.cell["a"].value == pytest.approx(5.5), "warm-start 格子が反映されていない"
+    assert LAYER1_FEATURES["TopasBackend (M12/T9)"][0] == "discriminate"
 
 
 
@@ -1915,11 +1916,13 @@ def _iter_mcp_module_code() -> "Iterator[tuple[str, str | None]]":
         yield mod_info.name, ast.unparse(tree)
 
 
-def test_no_mcp_tool_constructs_the_topas_backend():
-    """② のどの関数も `TopasBackend` を**コードとして**参照していないこと (非露出宣言との整合)。
+def test_mcp_selects_backends_only_through_the_shared_resolver():
+    """② のどの関数も `TopasBackend` を**直接構築しない** (#180 で反転した宣言との整合)。
 
-    誰かが `discriminate` 等へ配線したらここが落ち、**宣言の更新を強制する**。
-    露出そのものを禁じるのではなく、露出と宣言がずれることを禁じる。
+    露出そのものは #180 で許可された。禁じるのは**ツールごとに backend 名の語彙を持つ**こと
+    で、`"topas"` を受けるツールと受けないツールが混ざると ③ から見た振舞いが食い違う。
+    構築は `autorietveld.backends.resolve_protocol_backend` 1 か所に集める
+    (未知の名前を既定へ黙って落とさないのもそこ)。
 
     **本ファイルが既に払った授業料をそのまま使う**:
 

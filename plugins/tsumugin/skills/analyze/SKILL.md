@@ -29,6 +29,8 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 **手順**: `list_refinement_backends` → 目的のエンジンの `available` が `true` であることを確認 →
 `auto_rietveld(..., backend="topas")`。返り値の `backend` キーで**実際にどちらで回ったか**を検算する。
+`backend` を取るのは `auto_rietveld` / `refine_with_revisions` / **`discriminate`** の 3 つで、
+operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固定である。
 
 **TOPAS を選ぶのはこういうとき**:
 
@@ -42,6 +44,13 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 - ⛔ **仮説やフレームを跨いで `backend` を切り替える**。Rwp/BIC の比較が成り立たなくなる。
   比較するなら全部を同じエンジンで回し直す。
+
+**判別 (`discriminate`) を TOPAS で回すとき**: 固溶体 vs 二相の判別は Δevidence (BIC 差) の
+比較なので、**区間の中でエンジンを混ぜてはならない**。使いどころは「GSAS で出た判定が
+エンジン依存でないことを確かめる」— 区間全体を `backend="topas"` でもう一度通し、`verdict` が
+一致するかを見る。**食い違ったらどちらかが間違っている**ので、Δevidence が大きい方を黙って
+採らずに原因を追うこと。各相の `structure_ref` (実 CIF) は両エンジンとも同じものを読む
+(TOPAS 側も実構造で判別する。簡約モデルでの代替はしない)。
 - ⛔ `available` を確認せずに `backend` を渡す。未導入なら `{"error","error_type"}` が返る。
 - ⛔ 綴りを推測して渡す。未知の名前は**既定へ落とさずエラーになる** (意図と違うエンジンで
   回った結果に気づけなくなるのを防ぐため)。

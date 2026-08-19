@@ -165,3 +165,20 @@ def test_unsupported_flag_list_matches_the_implementation(analyze_text: str):
         assert f"`{flag}` は未対応" not in analyze_text, (
             f"{flag} は対応済みなのに手順書が未対応と書いている"
         )
+
+
+# ---------------- 判別の backend 露出 (#180) ----------------
+
+
+def test_discriminate_is_documented_as_backend_aware(analyze_text: str):
+    """① に入った機能が ③ の手順書にあること (★不変条件: 手順書に無ければ ③ は使わない)。"""
+    import inspect
+
+    assert "`discriminate`" in analyze_text, "判別で backend を選べることが書かれていない"
+    assert "backend" in inspect.signature(MCP_TOOLS["discriminate"]).parameters
+
+
+def test_skill_warns_against_mixing_engines_within_an_interval(analyze_text: str):
+    """判別は Δevidence (BIC 差) の比較なので、区間内でエンジンを混ぜると比較が壊れる。"""
+    section = analyze_text.split("`discriminate`")[-1]
+    assert "混ぜてはならない" in section or "混ぜない" in section

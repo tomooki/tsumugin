@@ -20,6 +20,7 @@ __all__ = [
     "normalize_backend",
     "describe_backends",
     "resolve_backend",
+    "resolve_protocol_backend",
     "resolve_recipe_builder",
 ]
 
@@ -61,6 +62,35 @@ def resolve_backend(name: "str | None") -> Callable[..., object]:
         from ..topas.engine import run_topas_rietveld
 
         return run_topas_rietveld
+    raise UnknownBackendError(
+        f"未知の精密化バックエンドです: {name!r}。利用可能: {', '.join(BACKEND_NAMES)}。"
+        f"綴り間違いを既定へ黙って落とすと、意図と違うエンジンで回った結果に気づけません。"
+    )
+
+
+def resolve_protocol_backend(
+    name: "str | None", *, wavelength: "float | None" = None
+) -> object:
+    """バックエンド名から **`RefinementBackend` Protocol の実装インスタンス**を返す。
+
+    `resolve_backend` が返すのは実構造エンジン (`run_*_rietveld`) で、こちらは仮説探索/判別が
+    使う境界 (``simulate`` / ``refine``) である。**名前の語彙は 1 か所に持つ** — ツールごとに
+    文字列比較を書くと、``"topas"`` を受けるツールと受けないツールが混ざって ③ から見た
+    振舞いが食い違う。
+
+    :raises UnknownBackendError: 未知の名前 (既定へフォールバックしない)
+    :raises GSASUnavailableError / TopasUnavailableError: エンジン未導入 (呼び出し側が
+        ``{"error","error_type"}`` へ縮退させる)
+    """
+    key = normalize_backend(name)
+    if key == "gsasii":
+        from ..backends.gsasii import GSASIIBackend
+
+        return GSASIIBackend(wavelength=wavelength) if wavelength is not None else GSASIIBackend()
+    if key == "topas":
+        from ..backends.topas import TopasBackend
+
+        return TopasBackend(wavelength=wavelength) if wavelength is not None else TopasBackend()
     raise UnknownBackendError(
         f"未知の精密化バックエンドです: {name!r}。利用可能: {', '.join(BACKEND_NAMES)}。"
         f"綴り間違いを既定へ黙って落とすと、意図と違うエンジンで回った結果に気づけません。"

@@ -856,7 +856,8 @@ def list_refinement_backends() -> dict:
     """利用可能な精密化エンジンとその可用性を返す (計器・**副作用なし**)。
 
     ③ が「今この環境でどのエンジンを ``backend`` 引数に渡せるか」を問える唯一の窓口。
-    ``auto_rietveld`` / ``refine_with_revisions`` に ``backend`` を渡す**前に**呼ぶこと。
+    ``auto_rietveld`` / ``refine_with_revisions`` / ``discriminate`` に ``backend`` を渡す
+    **前に**呼ぶこと。
     (``sequential_rietveld`` / ``anchored_sequential`` は**まだ ``backend`` を受け取らない** —
     operando 経路は GSAS-II 固定である。)
 

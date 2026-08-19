@@ -16,7 +16,13 @@ import numpy as np
 from ..absorption.model import AbsorptionConfig, transmission_factor
 from ..evidence.noise import noise_extras
 from ..model import LatticeParams, PhaseInstance
-from .base import Curvature, RefinementModel, RefinementResult, parse_param
+from .base import (
+    Curvature,
+    RefinementModel,
+    RefinementResult,
+    default_weights,
+    parse_param,
+)
 
 # 既定の反射リスト。s = h²+k²+l² が d 間隔 (d = L/√s) を決める。
 _DEFAULT_HKL: tuple[tuple[int, int, int], ...] = (
@@ -193,10 +199,11 @@ class SimulatedBackend:
         two_theta = np.asarray(model.two_theta, dtype=float)
         y_obs = np.asarray(model.intensity, dtype=float)
         n_obs = int(y_obs.size)
-        if model.weights is not None:
-            weights = np.asarray(model.weights, dtype=float)
-        else:
-            weights = 1.0 / np.maximum(y_obs, 1.0)
+        weights = (
+            np.asarray(model.weights, dtype=float)
+            if model.weights is not None
+            else default_weights(y_obs)
+        )
         sqrt_w = np.sqrt(weights)
 
         names = self._recognized(model.free_params)
