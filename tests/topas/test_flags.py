@@ -418,3 +418,34 @@ def test_freeze_others_refreezes_the_tof_widths():
     released = _apply({"tof_profile": True}, _doc(hist=hist))
     frozen = apply_stage(released, RefinementStage(label="S", flags={"freeze_others": True}))
     assert "prm !tofw10_P" in frozen.histograms[0].phase_terms["P"].peak_type
+
+
+# ---------------- size/歪みは角度分散のモデル (#179) ----------------
+
+
+def _tof_hist(**kw) -> TopasHistogram:
+    base = dict(data_path="t.xye", is_tof=True, background=Param(0.0), background_coeffs=6)
+    base.update(kw)
+    return TopasHistogram(**base)  # type: ignore[arg-type]
+
+
+def test_size_strain_is_not_applied_to_tof_histograms():
+    """``CS_L``/``Strain_L`` は **Lam と Th を使う角度分散のマクロ**で、TOF には無い。
+
+    実 tc.exe は ``Negative FWHM encountered`` を出して**異常終了する** (実測: TOF を 1 本
+    含めるだけで落ち、X 線だけなら完走する)。TOF で同じ物理を担うのは幅の d/d² 項
+    (``tof_profile``) であって、size/歪みを「当てられないから黙って飛ばす」のではなく
+    **モデルが違う**。
+    """
+    doc = TopasDocument(histograms=(_hist(), _tof_hist()), phases=(_phase(),))
+    out = _apply({"size_strain": True}, doc)
+    assert out.histograms[0].phase_terms["P"].size_lorentzian.refine is True
+    tof_terms = out.histograms[1].phase_terms.get("P", PhaseHistogramTerms())
+    assert tof_terms.size_lorentzian is None and tof_terms.strain_lorentzian is None
+
+
+def test_size_strain_on_an_all_tof_document_fails_loudly():
+    """全部 TOF なら**張れる先が無い** — 黙って no-op にせず落とす。"""
+    doc = TopasDocument(histograms=(_tof_hist(),), phases=(_phase(),))
+    with pytest.raises(UnsupportedStageFlagError, match="size_strain"):
+        _apply({"size_strain": True}, doc)

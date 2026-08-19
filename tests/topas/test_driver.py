@@ -215,9 +215,66 @@ def test_failure_reason_keeps_the_diagnostic_line_that_explains_the_abort():
     assert "Abnormal program termination" in reason
 
 
+def test_failure_reason_keeps_the_negative_fwhm_diagnostic():
+    """TOF に角度分散の size/歪みを当てると ``Negative FWHM encountered`` で落ちる。
+
+    この 1 行が無いと段列には「異常終了」としか出ず、**当てられないモデルを当てた**
+    ことが分からない (#179: ``CS_L``/``Strain_L`` は角度分散のモデル)。
+    """
+    stdout = (
+        " Negative FWHM encountered\n"
+        " \n"
+        "Abnormal program termination.\n"
+    )
+    reason = drv._failure_reason(stdout)
+    assert reason is not None and "Negative FWHM" in reason
+
+
 def test_diagnostic_line_alone_is_not_treated_as_a_failure():
     """診断行は**判定材料にしない** — 警告として出て完走する可能性を排除できない。
 
     判定を広げると「動いていたものが落ちる」側の誤りになる。
     """
     assert drv._failure_reason(" Invalid d spacing encountered\nrefine done\n") is None
+
+# ---------------- 再現性 (NFR-102) ----------------
+
+
+def test_tc_is_run_single_threaded_for_reproducibility(monkeypatch, tmp_path):
+    """**tc.exe はスレッド数で結果が変わる** — 同じ入力で 29〜73% に散らばる (実測)。
+
+    T4 (多相 TOF+放射光) の既定設定を 4 回回すと最終 Rwp が 43.49 / 67.62 / 43.49 /
+    29.29% になった。分岐点は X 線 Lorentzian 段の受理/revert で、悪条件な最小二乗の
+    総和順序がスレッド割り当てで変わるためである。``OMP_NUM_THREADS=1`` にすると
+    **ビット同一**になる (67.616482 が 2 回)。
+
+    Rwp が実行ごとに変わると段の受理判定も BIC 比較もベンチマークも意味を失うので、
+    既定は**再現性を取る** (NFR-102)。速度が要るときだけ環境変数で外す。
+    """
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, **kw):
+        seen["env"] = kw["env"]
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(drv.subprocess, "run", fake_run)
+    monkeypatch.setattr(drv, "require_tc_exe", lambda: tmp_path / "tc.exe")
+    with pytest.raises(TopasRunError):
+        drv.run_tc("iters 0", workdir=tmp_path)
+    assert seen["env"]["OMP_NUM_THREADS"] == "1"
+
+
+def test_thread_count_can_be_overridden_for_speed(monkeypatch, tmp_path):
+    """再現性を捨てて速度を取る逃げ道 (**既定にはしない**)。"""
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, **kw):
+        seen["env"] = kw["env"]
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setenv("TSUMUGIN_TOPAS_THREADS", "8")
+    monkeypatch.setattr(drv.subprocess, "run", fake_run)
+    monkeypatch.setattr(drv, "require_tc_exe", lambda: tmp_path / "tc.exe")
+    with pytest.raises(TopasRunError):
+        drv.run_tc("iters 0", workdir=tmp_path)
+    assert seen["env"]["OMP_NUM_THREADS"] == "8"

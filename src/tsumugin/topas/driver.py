@@ -36,7 +36,7 @@ _FAILURE_MARKERS: tuple[str, ...] = (
 )
 """stdout に現れたら失敗とみなす文字列 (実測)。"""
 
-_DIAGNOSTIC_MARKERS: tuple[str, ...] = ("Invalid d spacing",)
+_DIAGNOSTIC_MARKERS: tuple[str, ...] = ("Invalid d spacing", "Negative FWHM")
 """失敗が**すでに確定したとき**にだけ拾う診断行 (実測)。
 
 TOPAS は根本原因を ``Abnormal program termination`` の直前に 1 行で書くことがあるが、
@@ -119,6 +119,13 @@ def run_tc(
     if home is not None:
         # 【sgcom6 対策】: 空間群生成の子プロセスは PATH からしか引かれない。
         env["PATH"] = f"{home}{os.pathsep}{env.get('PATH', '')}"
+    # 【再現性 (NFR-102)】: **tc.exe はスレッド数で結果が変わる**。悪条件な最小二乗では
+    #   総和順序がスレッド割り当てで変わり、同じ入力の T4 が 43.49 / 67.62 / 43.49 /
+    #   29.29% に散らばった (分岐点は X 線 Lorentzian 段の受理/revert)。1 スレッドなら
+    #   ビット同一になる (実測)。**Rwp が実行ごとに変わると段の受理判定も BIC 比較も
+    #   ベンチマークも意味を失う**ので既定は再現性を取る。速度が要る場面のために
+    #   ``TSUMUGIN_TOPAS_THREADS`` で外せる (再現性を捨てる、という明示的な選択)。
+    env["OMP_NUM_THREADS"] = env.get("TSUMUGIN_TOPAS_THREADS", "1")
 
     try:
         proc = subprocess.run(

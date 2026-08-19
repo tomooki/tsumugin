@@ -321,7 +321,24 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
         ]
 
     if flags.get("size_strain"):
+        # 【TOF には張らない — 飛ばすのではなくモデルが違う】: ``CS_L``/``Strain_L`` は
+        #   ``lor_fwhm = 0.1 Rad Lam / (Cos(Th) CS)`` と ``lor_fwhm = MS Tan(Th)`` = **波長と
+        #   Bragg 角で書かれた角度分散のモデル**で、TOF (x 軸が時間) には対応物が無い。
+        #   実 tc.exe は ``Negative FWHM encountered`` で**異常終了する** (TOF を 1 本混ぜる
+        #   だけで落ち、X 線だけなら完走することを実測)。TOF で同じ物理を担うのは幅の
+        #   d/d² 項 (``tof_profile``) である — 微小歪みは Δd/d 一定 → FWHM ∝ d、
+        #   結晶子サイズは Δd ∝ d² → FWHM ∝ d²。
+        applicable = [i for i, hist in enumerate(histograms) if not hist.is_tof]
+        if not applicable:
+            raise UnsupportedStageFlagError(
+                f"size_strain を張れるヒストグラムがありません (段 '{stage.label}')。"
+                "``CS_L``/``Strain_L`` は角度分散のモデルなので TOF には当てられません "
+                "(実 tc.exe は Negative FWHM で異常終了する)。TOF の粒径/微小歪みは "
+                "``tof_profile`` (幅の d/d² 項) が担います。"
+            )
         for i, hist in enumerate(histograms):
+            if i not in applicable:
+                continue
             for phase in phases:
                 terms = _terms_for(hist, phase.phase_name)
                 hist = _with_terms(

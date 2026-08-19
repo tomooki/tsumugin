@@ -120,11 +120,14 @@ def build_topas_recipe(
         #   相対分解能から置いた粗い当て推量である (α/β は装置ファイルから写せるが、幅の
         #   sig-0/1/2 は関数形が違う)。出発点が違うので**同じ教訓が逆向きに効く**。
         #
-        # 【置き場所は X 線プロファイルの後】: 受理判定は**全ヒストグラム込みの総合 Rwp**で
-        #   行うので、放射光がまだ大きく外れている段階で TOF の幅を解放すると、後から来る
-        #   X 線プロファイル段が総合では悪化と判定されて revert される
-        #   (実測 T4: 前に置くと TOF 48→37% でも放射光が 73% のまま残り総合 67.6%、
-        #   後ろに置くと総合 43.5%)。
+        # 【効果は実測で確認済み】: T4 (決定論実行) で本段を外すと 19.25% → 22.45% に悪化し、
+        #   内訳は TOF の 2 本が 29.0/44.6 → 47.0/46.7 と目に見えて崩れる。
+        #
+        # ⚠ **置き場所は結果に効かない**: X 線プロファイルの前に置いても後ろに置いても
+        #   19.2525% でビット同一だった。当初「前 67.6% / 後 43.5%」という 24 ポイントの差を
+        #   観測したが、それは **tc.exe のスレッド依存の非決定性**であって順序の効果ではなかった
+        #   (`driver` が 1 スレッドに固定するようになった経緯を参照)。順序は**規約**として
+        #   固定しているだけである。
         stages.append(
             RefinementStage(
                 label="S7b tof_profile",
@@ -141,11 +144,17 @@ def build_topas_recipe(
             )
         )
 
-    stages.append(
-        RefinementStage(
-            label="S9 size_strain",
-            flags={"size_strain": True},
-            note="微細構造は最後 (プロファイルと強く縮退するため)",
+    if not all_tof:
+        # 【TOF には張らない】: ``CS_L``/``Strain_L`` は波長と Bragg 角で書かれた**角度分散の
+        #   モデル**で、TOF には対応物が無い (実 tc.exe は ``Negative FWHM`` で異常終了する)。
+        #   TOF で同じ物理を担うのは上の ``tof_profile`` (幅の d/d² 項) である。
+        #   混在 joint では非 TOF ヒストグラムにだけ張る (`flags.apply_stage`)。
+        any_tof = any(h.radiation.is_tof for h in histograms)
+        stages.append(
+            RefinementStage(
+                label="S9 size_strain" + (" (非 TOF のみ)" if any_tof else ""),
+                flags={"size_strain": True},
+                note="微細構造は最後 (プロファイルと強く縮退するため)",
+            )
         )
-    )
     return tuple(stages)

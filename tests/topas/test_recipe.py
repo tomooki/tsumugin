@@ -199,11 +199,12 @@ def test_tof_histogram_gets_a_width_stage():
 
 
 def test_tof_width_stage_comes_after_the_xray_profile():
-    """**置き場所が判定を通じて結合している** (実測 T4 で 24 ポイントの差)。
+    """段列の**規約**を固定する (順序が偶然変わっても気づけるように)。
 
-    受理判定は**全ヒストグラム込みの総合 Rwp**なので、放射光がまだ大きく外れている段階で
-    TOF の幅を解放すると、後から来る X 線プロファイル段が「総合では悪化」と判定されて
-    revert される (前に置くと総合 67.6% / 後ろに置くと 43.5%)。
+    ⚠ **これは物理的な要請ではない**: 決定論実行 (1 スレッド) では前に置いても後ろに置いても
+    T4 は 19.2525% でビット同一だった。当初 24 ポイントの差を観測したが、それは
+    **tc.exe のスレッド依存の非決定性**であって順序の効果ではない — 同一入力の同一設定が
+    43.49 / 67.62 / 43.49 / 29.29% に散らばっていた。段の効果そのものは別テストで見る。
     """
     order = _order(build_topas_recipe([_synchrotron(), _tof()], [_phase()]))
     assert order.index("profile_lorentzian") < order.index("tof_profile")
@@ -212,3 +213,15 @@ def test_tof_width_stage_comes_after_the_xray_profile():
 def test_no_tof_histogram_means_no_tof_stage():
     """**呼べない段を出さない** — 段が黙って no-op になるのを避ける。"""
     assert "tof_profile" not in _order(build_topas_recipe([_hist()], [_phase()]))
+
+
+def test_all_tof_recipe_omits_the_size_strain_stage():
+    """全 TOF では ``CS_L``/``Strain_L`` を張れない — **落ちる段を出さない**。"""
+    assert "size_strain" not in _order(build_topas_recipe([_tof()], [_phase()]))
+
+
+def test_mixed_recipe_marks_the_size_strain_stage_as_non_tof_only():
+    """混在 joint では非 TOF にだけ張る。**段列を見た人に分かる**ようラベルへ出す。"""
+    stages = build_topas_recipe([_synchrotron(), _tof()], [_phase()])
+    labels = [s.label for s in stages if "size_strain" in s.flags]
+    assert labels and "非 TOF" in labels[0], labels
