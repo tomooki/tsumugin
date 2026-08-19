@@ -97,6 +97,15 @@ def resolve_protocol_backend(
     )
 
 
+def _topas_threads() -> int:
+    """tc.exe を何スレッドで起動するか (`topas.driver` の既定と**同じ解決**を使う)。"""
+    import os
+
+    from ..topas.driver import _thread_count
+
+    return int(_thread_count(os.environ.get("TSUMUGIN_TOPAS_THREADS")))
+
+
 def describe_backends() -> dict[str, dict[str, object]]:
     """② 向けの可用性一覧 (素の dict・**例外を出さない**)。
 
@@ -113,7 +122,19 @@ def describe_backends() -> dict[str, dict[str, object]]:
                 "`from GSASII import GSASIIscriptable` が通る状態にする。"
             ),
         },
-        "topas": dict(topas_describe()),
+        "topas": {
+            **dict(topas_describe()),
+            # 【再現性の既定を ③ から見えるようにする】: tc.exe はスレッド数で結果が変わる
+            #   ので既定は 1 スレッド (NFR-102)。速度が要る場面のための逃げ道も含めて
+            #   ここに出さないと、③ からは「なぜ遅いのか」も「外せるのか」も分からない。
+            "threads": _topas_threads(),
+            "threads_note": (
+                "tc.exe はスレッド数で結果が変わる (同一入力の T4 が 43.49/67.62/29.29% に "
+                "散らばった実測) ため既定は 1 スレッド。環境変数 TSUMUGIN_TOPAS_THREADS で "
+                "増やせるが、**再現性を捨てる選択**であり Rwp の比較・段の受理判定・"
+                "ベンチマークが実行ごとに変わりうる。"
+            ),
+        },
     }
 
 

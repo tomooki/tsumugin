@@ -267,18 +267,21 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
     :raises UnsupportedStageFlagError: 未翻訳のフラグが含まれるとき
     """
     flags = dict(stage.flags)
+    # 【1 回でまとめて報告する】: 「概念が無い」と「未知」を別々に投げると、両方入った段で
+    #   1 つ直すたびに実データの精密化をやり直す羽目になる (③ から見て往復が増える)。
     inapplicable = sorted(set(flags) & set(NOT_APPLICABLE_FLAGS))
-    if inapplicable:
-        reasons = " / ".join(NOT_APPLICABLE_FLAGS[name] for name in inapplicable)
-        raise UnsupportedStageFlagError(
-            f"TOPAS に対応物が無い段階フラグです: {inapplicable} (段 '{stage.label}')。{reasons}"
-        )
-    unknown = sorted(set(flags) - SUPPORTED_FLAGS)
-    if unknown:
-        raise UnsupportedStageFlagError(
-            f"TOPAS バックエンドが未対応の段階フラグです: {unknown} (段 '{stage.label}')。"
-            f"黙って無視すると「解放されていない段」が完走してしまうため停止します。"
-        )
+    unknown = sorted(set(flags) - SUPPORTED_FLAGS - set(NOT_APPLICABLE_FLAGS))
+    if inapplicable or unknown:
+        parts: list[str] = []
+        if inapplicable:
+            reasons = " / ".join(NOT_APPLICABLE_FLAGS[name] for name in inapplicable)
+            parts.append(f"TOPAS に対応物が無い段階フラグです: {inapplicable}。{reasons}")
+        if unknown:
+            parts.append(
+                f"TOPAS バックエンドが未対応の段階フラグです: {unknown}。"
+                "黙って無視すると「解放されていない段」が完走してしまうため停止します。"
+            )
+        raise UnsupportedStageFlagError(f"(段 '{stage.label}') " + " ".join(parts))
 
     phases = list(doc.phases)
     histograms = list(doc.histograms)
@@ -354,8 +357,7 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
         #   だけで落ち、X 線だけなら完走することを実測)。TOF で同じ物理を担うのは幅の
         #   d/d² 項 (``tof_profile``) である — 微小歪みは Δd/d 一定 → FWHM ∝ d、
         #   結晶子サイズは Δd ∝ d² → FWHM ∝ d²。
-        applicable = [i for i, hist in enumerate(histograms) if not hist.is_tof]
-        if not applicable:
+        if all(hist.is_tof for hist in histograms):
             raise UnsupportedStageFlagError(
                 f"size_strain を張れるヒストグラムがありません (段 '{stage.label}')。"
                 "``CS_L``/``Strain_L`` は角度分散のモデルなので TOF には当てられません "
@@ -363,7 +365,7 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
                 "``tof_profile`` (幅の d/d² 項) が担います。"
             )
         for i, hist in enumerate(histograms):
-            if i not in applicable:
+            if hist.is_tof:
                 continue
             for phase in phases:
                 terms = _terms_for(hist, phase.phase_name)

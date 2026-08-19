@@ -628,3 +628,24 @@ def test_benchmark_t4_tuned_configuration():
     assert not result.validity.passed, (
         "CaF2 の Uiso が負でなくなった — 記録を更新すること (この赤旗は既知の状態の固定)"
     )
+
+def test_cell_strain_is_reported_from_the_records(stub_driver, monkeypatch):
+    """段が効いた理由 (ε がいくつだったか) を結果から読めること。
+
+    ``refined_cells`` は**構造としての 1 本のセル**なので、温度差をどれだけ吸収したかは
+    そこからは読めない。出さないと「段が効いた」も「ε が箱に張り付いた (非物理)」も
+    結果に現れない。
+    """
+    class _Run:
+        out_text = "r_p 1.0 r_wp 12.0 r_exp 5.0 gof 2.4\n"
+        results_text = (
+            "r_wp\t12.0\ngof\t2.4\n"
+            "cell_strain\tPbSO4\ta\th1\t0.0031\t0.0002\n"
+        )
+        stdout = ""
+
+    monkeypatch.setattr(eng, "run_tc", lambda *a, **k: _Run())
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 12.0)),
+    )
+    assert result.cell_strain == {"PbSO4": {"a_h1": 0.0031}}

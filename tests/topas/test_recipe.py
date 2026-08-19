@@ -244,3 +244,12 @@ def test_mixed_recipe_marks_the_size_strain_stage_as_non_tof_only():
     stages = build_topas_recipe([_synchrotron(), _tof()], [_phase()])
     labels = [s.label for s in stages if "size_strain" in s.flags]
     assert labels and "非 TOF" in labels[0], labels
+
+
+def test_empty_histograms_do_not_get_a_stage_that_always_fails():
+    """ヒストグラムが空のとき `size_strain` を出すと、適用時に必ず例外になる。
+
+    `all_tof` は空リストでは False なので、条件を「非 TOF が 1 本でもある」にしないと
+    **適用すると必ず `UnsupportedStageFlagError` で落ちる段**をレシピが抱えることになる。
+    """
+    assert "size_strain" not in _order(build_topas_recipe([], [_phase()]))

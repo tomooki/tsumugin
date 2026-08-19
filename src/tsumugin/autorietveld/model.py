@@ -809,6 +809,12 @@ class AutoRietveldResult:
     # per-atom: 相名→原子ラベル→値。Uiso 発散/負値 (REQ-105)・占有率 [0,1] 逸脱の検出源。
     atom_uiso: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     atom_occupancy: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    # 【ヒストグラム別の格子オフセット ε】: 相名 → ``"<軸>_h<索引>"`` → 値 (TOPAS の
+    #   `hydrostatic_strain` / GSAS の HStrain Dij に相当)。**構造としての格子は 1 つ**
+    #   (`refined_cells`) で、ε は「このヒストグラムでの実効セルは共有セルの (1+ε) 倍」を表す。
+    #   温度差の吸収がどれだけ働いたかは**この値でしか読めない** — 出さないと段が効いた理由も、
+    #   ε が箱に張り付いた (非物理) ことも結果から見えない。既定空 (張っていない/未対応経路)。
+    cell_strain: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     # per-histogram (索引順): 現吸収値・現プロファイル値 (Zero/alpha/X/Y/U/V/W 等)。
     hist_absorption: tuple[float, ...] = ()
     hist_profile: tuple[Mapping[str, float], ...] = ()

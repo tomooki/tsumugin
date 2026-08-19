@@ -455,6 +455,14 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     ),
     "residual_intensity": (UNEXPOSED, "意図的: 同上 (residual_report に畳む)"),
     "residual_sigma": (UNEXPOSED, "意図的: 同上 (residual_report に畳む)"),
+    "cell_strain": (
+        "cell_strain",
+        "TOPAS の `hydrostatic_strain` (GSAS の HStrain Dij 相当) が張ったヒストグラム別の"
+        "格子オフセット ε。相名 → `\"<軸>_h<索引>\"` → 値で `auto_rietveld` の `cell_strain` "
+        "キーに出る。**`refined_cells` からは読めない** — あちらは構造としての 1 本のセルで、"
+        "ε は「この xdd での実効セルは共有セルの (1+ε) 倍」を表す別量である。これを出さないと "
+        "③ は段が効いた理由も、ε が箱に張り付いた (非物理) ことも結果から読めない",
+    ),
     "atom_uiso": (
         UNEXPOSED,
         "Issue #97: ① `refine_loop.diagnostics`/`diagnose_residual` が消費する内省フィールド。"

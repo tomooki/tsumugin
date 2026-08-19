@@ -570,3 +570,17 @@ def test_tof_peak_type_without_coefficients_keeps_the_previous_shape():
     line = inst.tof_peak_type(0, difc=22600.0, phase_key="NAC")
     assert "TOF_Exponential" not in line
     assert "pv_fwhm" in line
+
+
+def test_tof_peak_type_skips_alpha_beta_when_difc_is_missing():
+    """difC が読めない装置ファイルで α/β を出すと **0 除算**になる (`a0 = difC*β₀ = 0`)。
+
+    係数は difC 倍で時間定数へ写すので、difC=0 だと
+    ``exp_conv_const = Constant(0)/(0 + 0/d^4)`` になり tc.exe が落ちる。壊れた装置ファイルでは
+    **幅だけ置いて先へ進む** (でっち上げない)。
+    """
+    line = inst.tof_peak_type(
+        0, difc=0.0, phase_key="NAC", alpha=0.1325, beta0=0.1116, beta1=0.002727
+    )
+    assert "TOF_Exponential" not in line
+    assert "pv_fwhm" in line

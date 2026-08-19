@@ -150,11 +150,13 @@ def build_topas_recipe(
             )
         )
 
-    if not all_tof:
-        # 【TOF には張らない】: ``CS_L``/``Strain_L`` は波長と Bragg 角で書かれた**角度分散の
-        #   モデル**で、TOF には対応物が無い (実 tc.exe は ``Negative FWHM`` で異常終了する)。
-        #   TOF で同じ物理を担うのは上の ``tof_profile`` (幅の d/d² 項) である。
-        #   混在 joint では非 TOF ヒストグラムにだけ張る (`flags.apply_stage`)。
+    # 【張れる先があるときだけ出す】: ``CS_L``/``Strain_L`` は波長と Bragg 角で書かれた
+    #   **角度分散のモデル**で、TOF には対応物が無い (実 tc.exe は ``Negative FWHM`` で異常
+    #   終了する)。TOF で同じ物理を担うのは上の ``tof_profile`` (幅の d/d² 項) である。
+    #   条件を ``not all_tof`` でなく「非 TOF が 1 本でもある」にするのは、**ヒストグラムが
+    #   空のとき** (`all_tof` は False) に「適用すると必ず `UnsupportedStageFlagError` で
+    #   落ちる段」を出さないため。混在 joint では非 TOF にだけ張る (`flags.apply_stage`)。
+    if any(not h.radiation.is_tof for h in histograms):
         any_tof = any(h.radiation.is_tof for h in histograms)
         stages.append(
             RefinementStage(

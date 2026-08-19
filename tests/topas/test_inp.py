@@ -695,3 +695,23 @@ def test_cell_strain_without_a_shared_cell_is_an_error_not_a_silent_drop():
     )
     with pytest.raises(ValueError, match="eps_PbSO4_a_h0"):
         TopasDocument(histograms=(hist,), phases=(_pbso4_phase(),)).render()
+
+
+def test_cell_strain_is_published_per_histogram():
+    """**ε は出版値** — 温度差をどれだけ吸収したかは共有セルからは読めない。
+
+    キーに ``h<索引>`` を混ぜるのは、ε が**ヒストグラムごと**の量だから (相名+軸だけだと
+    joint で後勝ちになり、どの xdd の値か分からなくなる)。
+    """
+    phase = _pbso4_phase()
+    strain = {"a": Param(0.0, refine=True, name="eps_PbSO4_a_h1", minimum=-0.02, maximum=0.02)}
+    xray = _histogram()
+    neutron = TopasHistogram(
+        data_path="n.xye", is_neutron=True, background=Param(0.0, refine=True),
+        phase_terms={"PbSO4": PhaseHistogramTerms(cell_strain=strain)},
+    )
+    text = TopasDocument(
+        histograms=(xray, neutron), phases=(phase,), results_path="results.txt"
+    ).render()
+    assert 'Out(eps_PbSO4_a_h1, "cell_strain\tPbSO4\ta\th1\t%.8f"' in text
+    assert text.count("cell_strain") == 1, "張っていない xdd にまで出している"

@@ -485,14 +485,18 @@ def tof_peak_type(
         f"prm {prefix}tofw1{tag} {first!r} min 0.0001 max = 2 Val + 1;",
         f"prm {prefix}tofw2{tag} 0.0001 min 0.0001 max = 2 Val + 1;",
     ]
-    if beta0 is not None and beta1 is not None:
+    # 【difC が無ければ α/β は出さない】: 係数は difC 倍で時間定数へ写すので、difC=0 だと
+    #   ``exp_conv_const = Constant(0)/(0 + 0/d^4)`` = 0 除算になり tc.exe が落ちる。
+    #   装置ファイルが壊れているときは**幅だけ**置いて先へ進む (でっち上げない)。
+    has_difc = float(difc) > 0.0
+    if has_difc and beta0 is not None and beta1 is not None:
         lines.append(
             f"TOF_Exponential({prefix}tofb0{tag}, "
             f"{round(float(difc) * float(beta0), 4)!r}, "
             f"{prefix}tofb1{tag}, {round(float(difc) * float(beta1), 4)!r}, "
             f"4, difc_h{index}, +)"
         )
-    if alpha is not None:
+    if has_difc and alpha is not None:
         lines.append(
             f"TOF_Exponential({prefix}tofa0{tag}, 0.0, "
             f"{prefix}tofa1{tag}, {round(float(difc) * float(alpha), 4)!r}, "

@@ -350,6 +350,7 @@ def run_topas_rietveld(
                     shutil.copyfile(item, destination / item.name)
 
         refined_cells = refined_cells_from_records(records, doc, reference_cells)
+        cell_strain = _cell_strain_from_records(records)
 
         return AutoRietveldResult(
             stage_results=tuple(stage_results),
@@ -376,6 +377,7 @@ def run_topas_rietveld(
             atom_occupancy_esd=atom_occupancy_esd,
             atom_uiso=atom_uiso,
             atom_uiso_esd=atom_uiso_esd,
+            cell_strain=cell_strain,
             backend=_BACKEND,
             project_path=str(keep_project) if keep_project else "",
             histogram_rwp=_histogram_rwp_tuple(best_results, len(histograms)),
@@ -384,6 +386,23 @@ def run_topas_rietveld(
 
 _CELL_ORDER = ("a", "b", "c", "al", "be", "ga")
 _DEFAULT_ANGLES = {"al": 90.0, "be": 90.0, "ga": 90.0}
+
+
+def _cell_strain_from_records(
+    records: TopasRecords,
+) -> "dict[str, dict[str, float]]":
+    """``cell_strain`` レコード (相/軸/ヒストグラム) を 相→``"<軸>_h<索引>"``→値 へ畳む。
+
+    **ε は per-histogram の量**なので索引をキーに残す (相名+軸だけだと joint で後勝ちになる)。
+    """
+    out: dict[str, dict[str, float]] = {}
+    for key, (value, _esd) in records.keyed.get("cell_strain", {}).items():
+        parts = key.split("/")
+        if len(parts) != 3:
+            continue
+        phase, axis, hist = parts
+        out.setdefault(phase, {})[f"{axis}_{hist}"] = value
+    return out
 
 
 def refined_cells_from_records(

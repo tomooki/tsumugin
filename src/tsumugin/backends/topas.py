@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import tempfile
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
@@ -78,6 +79,24 @@ def _simplified_phase(index: int, phase: PhaseInstance, *, cell_free: bool) -> T
 _LENGTH_AXES = ("a", "b", "c")
 
 
+@lru_cache(maxsize=64)
+def _read_structure(path: str) -> "tuple[object, tuple[str, ...]]":
+    """実 CIF を読んで (構造, 対称操作) を返す — **パスごとに 1 回だけ**。
+
+    探索層 (`search.tree` / `sequential.engine`) は同じ ``structure_ref`` を持つ仮説を
+    何百回も `simulate()`/`refine()` に掛ける。毎回読み直すと CIF パースに加え、対称操作が
+    CIF に無い場合は ``ensure_symops`` が **tc.exe を子プロセスで起動**して ``Sg/*.sg`` を
+    作りに行く。GSAS 側は相を gpx へ 1 度追加するだけなので、ここも 1 回で済ませる。
+    """
+    from ..autorietveld.cif_normalize import read_structure_cif
+    from ..topas.structure import to_topas_spacegroup
+    from ..topas.symmetry import ensure_symops
+
+    structure = read_structure_cif(path)
+    spacegroup = to_topas_spacegroup(structure.spacegroup_hm, structure.it_number)
+    return structure, ensure_symops(spacegroup, structure.symops)
+
+
 def _structure_phase(index: int, phase: PhaseInstance, *, cell_free: bool) -> TopasPhase:
     """実 CIF (``structure_ref``) から `TopasPhase` を組み、格子長だけ warm-start へ上書きする。
 
@@ -89,13 +108,9 @@ def _structure_phase(index: int, phase: PhaseInstance, *, cell_free: bool) -> To
     - **解放は結晶系の独立軸だけ**: 立方晶で 3 軸を独立に動かすと対称性が壊れる
       (しかも Rwp は下がりうる)。従属軸は ``=Get(a);`` の参照式のまま触らない。
     """
-    from ..autorietveld.cif_normalize import read_structure_cif
-    from ..topas.structure import structure_to_topas_phase, to_topas_spacegroup
-    from ..topas.symmetry import ensure_symops
+    from ..topas.structure import structure_to_topas_phase
 
-    structure = read_structure_cif(str(phase.structure_ref))
-    spacegroup = to_topas_spacegroup(structure.spacegroup_hm, structure.it_number)
-    symops = ensure_symops(spacegroup, structure.symops)
+    structure, symops = _read_structure(str(phase.structure_ref))
     name = f"phase{index}"
     built = structure_to_topas_phase(structure, name, symops=symops)
 

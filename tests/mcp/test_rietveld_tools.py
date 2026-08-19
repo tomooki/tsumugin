@@ -52,3 +52,20 @@ def test_seed_profile_with_gsas_is_an_error_not_a_silent_ignore():
     """
     out = auto_rietveld([], [], seed_profile=True)
     assert "error" in out and "seed_profile" in out["error"]
+
+
+def test_cell_strain_reaches_layer_two_output():
+    """③ は結果 dict しか見ない — ε がそこに無ければ「無い」のと同じ。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(), final_rwp=7.19, final_gof=1.44,
+        refined_cells={"PbSO4": (8.48, 5.40, 6.96, 90.0, 90.0, 90.0)},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+        cell_strain={"PbSO4": {"a_h1": 0.0031}},
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    assert payload["cell_strain"] == {"PbSO4": {"a_h1": 0.0031}}

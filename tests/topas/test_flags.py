@@ -455,3 +455,11 @@ def test_size_strain_on_an_all_tof_document_fails_loudly():
     doc = TopasDocument(histograms=(_tof_hist(),), phases=(_phase(),))
     with pytest.raises(UnsupportedStageFlagError, match="size_strain"):
         _apply({"size_strain": True}, doc)
+
+
+def test_unsupported_and_inapplicable_flags_are_reported_together():
+    """1 回でまとめて報告する — 別々に投げると 1 つ直すたびに実データを回し直すことになる。"""
+    with pytest.raises(UnsupportedStageFlagError) as excinfo:
+        _apply({"phase_fraction_sum": True, "no_such_flag": True})
+    message = str(excinfo.value)
+    assert "phase_fraction_sum" in message and "no_such_flag" in message

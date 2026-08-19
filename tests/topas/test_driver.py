@@ -278,3 +278,23 @@ def test_thread_count_can_be_overridden_for_speed(monkeypatch, tmp_path):
     with pytest.raises(TopasRunError):
         drv.run_tc("iters 0", workdir=tmp_path)
     assert seen["env"]["OMP_NUM_THREADS"] == "8"
+
+
+def test_invalid_thread_override_falls_back_to_the_reproducible_default(monkeypatch, tmp_path):
+    """空/非数値/0 以下を素通しすると **OpenMP の実装依存挙動**になる。
+
+    「再現性を取っているつもりで取れていない」は結果に現れないので、既定へ戻す。
+    """
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, **kw):
+        seen["env"] = kw["env"]
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(drv.subprocess, "run", fake_run)
+    monkeypatch.setattr(drv, "require_tc_exe", lambda: tmp_path / "tc.exe")
+    for bad in ("", "   ", "0", "-4", "auto"):
+        monkeypatch.setenv("TSUMUGIN_TOPAS_THREADS", bad)
+        with pytest.raises(TopasRunError):
+            drv.run_tc("iters 0", workdir=tmp_path)
+        assert seen["env"]["OMP_NUM_THREADS"] == "1", bad

@@ -140,6 +140,11 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
             }
             for s in result.stage_results
         ],
+        # 【ε は出版値】: 温度差をどれだけ吸収したかは ``refined_cells`` からは読めない
+        #   (あちらは構造としての 1 本のセル)。空 dict = 張っていない/未対応経路。
+        "cell_strain": {
+            phase: dict(axes) for phase, axes in (result.cell_strain or {}).items()
+        },
         "refined_cells": {
             # 発散/崩壊した精密化で GSAS が NaN/Inf セルを返しうるため finite_or_none で None 化
             # (allow_nan=False の json.dumps クラッシュを防ぐ; 他フィールドと同一規律)。
@@ -486,6 +491,9 @@ def auto_rietveld(
         (T2 garnet 5.54 → 9.76% で物理妥当性も落ちる) ので既定 False。``backend="gsasii"``
         に渡すと黙って無視せず ``{"error","error_type"}`` を返す (GSAS は装置ファイルの
         U,V,W をそのまま読むので種付けの概念が無い)。
+        ⚠ **``specs`` ハンドルには載らない** (`AnalysisInput` の項目ではないため)。
+        ``refine_with_revisions`` へ改訂を回すときは**そちらにも同じ値を渡すこと** —
+        渡し忘れると種付けなしのフィットになり、Rwp の変化が改訂の効果に見えてしまう。
     :param max_cyc: 各段階の最大精密化サイクル (エンジンへ転送。既定 12 は非回帰)。
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
@@ -635,9 +643,15 @@ def refine_with_revisions(
     stability: Mapping[str, object] | None = None,
     seed: int = 0,
     backend: str = "gsasii",
+    seed_profile: bool = False,
     runner: Runner | None = None,
 ) -> dict:
     """③ が決めた AnalysisAction[] を spec に適用して再実行する (アクチュエータ)。
+
+    ⚠ ``seed_profile`` は ``auto_rietveld`` と**同じ意味**で、``specs`` ハンドルには
+    載らない (`AnalysisInput` の項目ではないため)。種付きで得た結果へ改訂を掛けるときは
+    **ここでも明示的に渡すこと** — 渡し忘れると種付けなしのフィットになり、Rwp の変化が
+    改訂の効果に見えてしまう。
 
     SafeAction (背景/パラメータ) も ModelAction (リミット/相追加/構造改訂) も適用できる。
     採否の判断は ③ が済ませた前提 (このツールは適用+再実行のみ)。
@@ -661,9 +675,11 @@ def refine_with_revisions(
         return {"error": str(exc), "error_type": type(exc).__name__}
     try:
         run = runner or _default_gsas_runner(
-            seed, max_cyc=max_cyc, stability=opts, backend=backend
+            seed, max_cyc=max_cyc, stability=opts, backend=backend,
+            seed_profile=seed_profile,
         )
-    except TsumuginError as exc:  # 未知バックエンド名 / エンジン未導入
+    except (TsumuginError, ValueError) as exc:
+        # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
         return {"error": str(exc), "error_type": type(exc).__name__}
     return _result_to_dict(run(inp), inp)
 

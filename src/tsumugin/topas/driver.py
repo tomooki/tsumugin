@@ -84,6 +84,22 @@ def _failure_reason(stdout: str) -> "str | None":
     return " | ".join(hits)
 
 
+def _thread_count(raw: "str | None") -> str:
+    """``TSUMUGIN_TOPAS_THREADS`` を検証して ``OMP_NUM_THREADS`` の値へ (既定 "1")。
+
+    **空/非数値/0 以下は既定へ戻す** — 素通しすると OpenMP の実装依存挙動になり、
+    「再現性を取っているつもりで取れていない」が結果に現れない (② の「空/不正入力を
+    正常と答えない」と同じ規律)。
+    """
+    if raw is None or not raw.strip():
+        return "1"
+    try:
+        count = int(raw.strip())
+    except ValueError:
+        return "1"
+    return str(count) if count >= 1 else "1"
+
+
 def run_tc(
     inp_text: str,
     *,
@@ -125,7 +141,7 @@ def run_tc(
     #   ビット同一になる (実測)。**Rwp が実行ごとに変わると段の受理判定も BIC 比較も
     #   ベンチマークも意味を失う**ので既定は再現性を取る。速度が要る場面のために
     #   ``TSUMUGIN_TOPAS_THREADS`` で外せる (再現性を捨てる、という明示的な選択)。
-    env["OMP_NUM_THREADS"] = env.get("TSUMUGIN_TOPAS_THREADS", "1")
+    env["OMP_NUM_THREADS"] = _thread_count(env.get("TSUMUGIN_TOPAS_THREADS"))
 
     try:
         proc = subprocess.run(

@@ -493,6 +493,14 @@ class TopasDocument:
                 )
             # 宣言は**使う str ブロックの中**に置く (TOF の幅パラメータと同じ作法)。
             lines.append(f"{_INDENT_PHASE}prm {render_param(eps)}")
+            if self.results_path:
+                # 【ε は出版値】: 温度差をどれだけ吸収したかはこの値でしか読めない。
+                #   キーに ``h{index}`` を混ぜる — ε は**ヒストグラムごと**の量なので、
+                #   相名+軸だけだと joint で後勝ちになりどの xdd の値か分からなくなる。
+                lines.append(
+                    f'{_INDENT_PHASE}Out({eps.name}, '
+                    f'"cell_strain\t{name}\t{axis}\th{index}\t%.8f", "\t%.8f\n")'
+                )
         for axis, param in phase.cell.items():
             prm = shared.get((name, f"cell.{axis}"))
             if prm:

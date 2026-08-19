@@ -192,3 +192,31 @@ def test_seed_profile_is_documented_with_its_radiation_dependence(analyze_text: 
     assert "seed_profile" in analyze_text
     section = analyze_text.split("seed_profile")[1]
     assert "放射光" in section and "中性子" in section, "どちらで効くかが書かれていない"
+
+
+def test_seed_profile_round_trip_caveat_is_documented(analyze_text: str):
+    """`specs` に載らない引数は**渡し忘れが結果の解釈を壊す** — 手順書に警告があること。"""
+    import inspect
+
+    assert "seed_profile" in inspect.signature(MCP_TOOLS["refine_with_revisions"]).parameters
+    # 最初の言及以降**すべて**を見る (注意書きは 2 度目の言及の後ろにある)。
+    section = analyze_text.split("seed_profile", 1)[1]
+    assert "refine_with_revisions" in section and "specs" in section
+
+
+def test_thread_default_is_visible_from_layer_two(analyze_text: str):
+    """再現性のための 1 スレッド既定は ③ から見えること (速度の理由が分からなくなる)。"""
+    from tsumugin.autorietveld.backends import describe_backends
+
+    assert "threads" in describe_backends()["topas"]
+    assert "TSUMUGIN_TOPAS_THREADS" in analyze_text
+
+
+def test_cell_strain_output_is_documented(analyze_text: str):
+    """段が効いた理由を読む先 (`cell_strain`) が手順書にあること。
+
+    ② に出ていても手順書に無ければ ③ は見ない (★不変条件)。
+    """
+    assert "cell_strain" in analyze_text
+    section = analyze_text.split("cell_strain", 1)[1]
+    assert "refined_cells" in section, "共有セルとの違いが書かれていない"
