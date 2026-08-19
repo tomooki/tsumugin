@@ -160,6 +160,7 @@ def _default_gsas_runner(
     max_cyc: int = 12,
     stability: object | None = None,
     backend: str = "gsasii",
+    seed_profile: bool = False,
 ) -> Runner:
     """AnalysisInput を精密化エンジンで実行する既定 runner (エンジンは遅延 import)。
 
@@ -173,11 +174,23 @@ def _default_gsas_runner(
         import から切り離しておくため (実体は `run_auto_rietveld` が受け取る)
     :param backend: 精密化エンジン (``"gsasii"`` 既定 / ``"topas"``, M12)。**フレームや仮説を
         跨いで切り替えない**こと — Rwp/BIC の比較が成り立たなくなる
+    :param seed_profile: **TOPAS 経路のみ**。装置ファイルの Caglioti 係数を TCHZ の初期値へ
+        換算して渡す。TOPAS は装置ファイルのプロファイルを読まないため、放射光のように
+        汎用初期値から遠い系では効果が大きい (実測 T4 11BM 43.9% → 8.7%)。**CW 中性子では
+        悪化する** (T2 garnet 5.54 → 9.76% で validity も落ちる) ので既定は False。
+        GSAS 経路は装置ファイルの U,V,W をそのまま読むので概念が無く、指定すると
+        **黙って無視せずエラー**にする。
     """
-    from tsumugin.autorietveld.backends import resolve_backend
+    from tsumugin.autorietveld.backends import normalize_backend, resolve_backend
 
     # 【名前の検証はここで】: 綴り間違いは精密化を始める前に弾く (② が error dict へ縮退できる)。
     resolve_backend(backend)
+    if seed_profile and normalize_backend(backend) != "topas":
+        raise ValueError(
+            "seed_profile は TOPAS 経路の引数です (GSAS-II は装置ファイルの U,V,W を"
+            "そのまま読むので種付けの概念がありません)。黙って無視すると「頼んだのに"
+            "効いていない」が結果に現れないため停止します。"
+        )
 
     def runner(inp: AnalysisInput) -> AutoRietveldResult:
         from tsumugin.autorietveld.backends import resolve_recipe_builder
@@ -192,9 +205,11 @@ def _default_gsas_runner(
             inp.histograms, inp.phases, background_coeffs=inp.background_coeffs
         )
         recipe = (*recipe, *inp.extra_stages)
+        extra: dict[str, object] = {"seed_profile": True} if seed_profile else {}
         return engine(
             list(inp.histograms), list(inp.phases), recipe=recipe, max_cyc=max_cyc,
             stability=stability,  # type: ignore[arg-type]
+            **extra,
         )
 
     return runner

@@ -460,6 +460,7 @@ def auto_rietveld(
     multistart: Mapping[str, object] | None = None,
     seed: int = 0,
     backend: str = "gsasii",
+    seed_profile: bool = False,
     runner: Runner | None = None,
     search_runner: SearchRunner | None = None,
 ) -> dict:
@@ -479,6 +480,12 @@ def auto_rietveld(
         ``{"error","error_type"}`` へ縮退する (綴り間違いを既定へ黙って落とすと、意図と違う
         エンジンで回った結果に気づけない)。**仮説やフレームを跨いで切り替えないこと** —
         Rwp/BIC の比較が成り立たなくなる。返り値の ``backend`` キーで出所を確認できる。
+    :param seed_profile: **``backend="topas"`` 専用**。装置ファイルの Caglioti 係数を TCHZ の
+        初期値へ換算して渡す (TOPAS は装置ファイルのプロファイルを読まないため)。
+        **放射光では効果が大きく** (実測 T4 の 11BM 43.9% → 8.7%)、**CW 中性子では悪化する**
+        (T2 garnet 5.54 → 9.76% で物理妥当性も落ちる) ので既定 False。``backend="gsasii"``
+        に渡すと黙って無視せず ``{"error","error_type"}`` を返す (GSAS は装置ファイルの
+        U,V,W をそのまま読むので種付けの概念が無い)。
     :param max_cyc: 各段階の最大精密化サイクル (エンジンへ転送。既定 12 は非回帰)。
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
@@ -592,9 +599,12 @@ def auto_rietveld(
         return {"error": str(exc), "error_type": type(exc).__name__}
     try:
         run = runner or _default_gsas_runner(
-            seed, max_cyc=max_cyc, stability=opts, backend=backend
+            seed, max_cyc=max_cyc, stability=opts, backend=backend,
+            seed_profile=seed_profile,
         )
-    except TsumuginError as exc:  # 未知バックエンド名 / エンジン未導入
+    except (TsumuginError, ValueError) as exc:
+        # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
+        # **② は例外を送出しない** (③ は LLM なので例外は回復不能なハード失敗になる)。
         return {"error": str(exc), "error_type": type(exc).__name__}
     return _result_to_dict(run(inp), inp)
 

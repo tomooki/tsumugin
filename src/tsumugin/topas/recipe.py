@@ -113,6 +113,25 @@ def build_topas_recipe(
                 note="X 線の Lorentzian 成分",
             )
         )
+
+    if any(h.radiation.is_tof for h in histograms):
+        # 【TOF の幅も TOPAS では解放する】: GSAS 経路は「TOF 装置プロファイルは較正済みなので
+        #   精密化しない」だったが、**TOPAS は装置ファイルの σ を読まない** — 幅の初期値は
+        #   相対分解能から置いた粗い当て推量である (α/β は装置ファイルから写せるが、幅の
+        #   sig-0/1/2 は関数形が違う)。出発点が違うので**同じ教訓が逆向きに効く**。
+        #
+        # 【置き場所は X 線プロファイルの後】: 受理判定は**全ヒストグラム込みの総合 Rwp**で
+        #   行うので、放射光がまだ大きく外れている段階で TOF の幅を解放すると、後から来る
+        #   X 線プロファイル段が総合では悪化と判定されて revert される
+        #   (実測 T4: 前に置くと TOF 48→37% でも放射光が 73% のまま残り総合 67.6%、
+        #   後ろに置くと総合 43.5%)。
+        stages.append(
+            RefinementStage(
+                label="S7b tof_profile",
+                flags={"tof_profile": True},
+                note="TOF の d 依存幅 (TOPAS は装置ファイルの σ を読まないため)",
+            )
+        )
     if not all_tof:
         stages.append(
             RefinementStage(

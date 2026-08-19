@@ -141,7 +141,12 @@ def _read_instprm(text: str) -> InstrumentSpec:
             continue
     is_tof = "difC" in values or type_token.endswith("T")
     is_neutron = type_token.startswith("PN")
-    profile = {k: values[k] for k in ("U", "V", "W", "X", "Y", "SH/L") if k in values}
+    # 【TOF の係数も残す】: alpha/beta を捨てると TOPAS 側は汎用初期値からピーク形状を
+    #   作ることになる。**ピークはどこかに立つので tc.exe は正常終了し Rwp だけが悪い**
+    #   (#179 の T4 で TOF 側が 49% で頭打ちだった主因候補)。
+    keys = ("U", "V", "W", "X", "Y", "SH/L", "alpha", "beta-0", "beta-1",
+            "sig-0", "sig-1", "sig-2")
+    profile = {k: values[k] for k in keys if k in values}
     return InstrumentSpec(
         lam1=values.get("Lam1", values.get("Lam")),
         lam2=values.get("Lam2"),
@@ -447,25 +452,57 @@ def tof_peak_type(
     refine: bool = False,
     phase_key: str = "",
     lorentzian: float = 0.1,
+    alpha: "float | None" = None,
+    beta0: "float | None" = None,
+    beta1: "float | None" = None,
 ) -> str:
-    """TOF の ``peak_type`` ブロック (幅パラメータの宣言を含む複数行)。
+    """TOF の ``peak_type`` ブロック (幅と立ち上がり/減衰の宣言を含む複数行)。
 
-    TOPAS の TOF ピーク幅は ``FWHM = f1·d + f2·d²`` (Tutorial ZrW2O8.inp と同じ形)。
+    TOPAS の TOF ピーク幅は ``FWHM = f1*d + f2*d^2`` (Tutorial ZrW2O8.inp と同じ形)。
     初期値は :data:`TOF_RELATIVE_RESOLUTION` から置く (GSAS の sig-1/sig-2 とは関数形が
     違い、しかも実測 sig-1 が負なので直接は写せない)。
 
+    **α/β は写せる** (幅と違って関数形が解ける)。``topas.inc`` の実体は
+    ``exp_conv_const = lr Constant(t1) / (a0 + a1 / d^wexp)`` = **時間定数**なので、
+    GSAS の速度定数 (1/µs) の逆数として対応する (t1 = difC):
+
+    - 減衰 (Tutorial ZrW2O8 と同じ ``+`` 側): ``β = β₀ + β₁/d⁴`` →
+      ``a0 = difC*β₀``, ``a1 = difC*β₁``, ``wexp = 4``
+    - 立ち上がり (``-`` 側): ``α = α₁/d`` → ``a0 = 0``, ``a1 = difC*α₁``, ``wexp = 1``
+
+    係数が読めない装置ファイルでは**でっち上げず**幅だけを置く。
+
     :param phase_key: パラメータ名に混ぜる相の識別子。**TOPAS のパラメータ名は大域**なので、
         分けないと全相が 1 つのピーク幅を強制的に共有する。
+    :param alpha: GSAS の ``alpha`` (立ち上がりの速度定数 α₁)。
+    :param beta0: GSAS の ``beta-0``。
+    :param beta1: GSAS の ``beta-1``。
     """
     tag = f"{index}{'_' + phase_key if phase_key else ''}"
     prefix = "" if refine else "!"
     first = float(difc) * TOF_RELATIVE_RESOLUTION
-    return (
-        f"prm {prefix}tofw1{tag} {first!r} min 0.0001 max = 2 Val + 1;\n"
-        f"prm {prefix}tofw2{tag} 0.0001 min 0.0001 max = 2 Val + 1;\n"
+    lines = [
+        f"prm {prefix}tofw1{tag} {first!r} min 0.0001 max = 2 Val + 1;",
+        f"prm {prefix}tofw2{tag} 0.0001 min 0.0001 max = 2 Val + 1;",
+    ]
+    if beta0 is not None and beta1 is not None:
+        lines.append(
+            f"TOF_Exponential({prefix}tofb0{tag}, "
+            f"{round(float(difc) * float(beta0), 4)!r}, "
+            f"{prefix}tofb1{tag}, {round(float(difc) * float(beta1), 4)!r}, "
+            f"4, difc_h{index}, +)"
+        )
+    if alpha is not None:
+        lines.append(
+            f"TOF_Exponential({prefix}tofa0{tag}, 0.0, "
+            f"{prefix}tofa1{tag}, {round(float(difc) * float(alpha), 4)!r}, "
+            f"1, difc_h{index}, -)"
+        )
+    lines.append(
         f"peak_type pv pv_lor !tofl{tag} {float(lorentzian)!r} "
         f"pv_fwhm = tofw1{tag} D_spacing + tofw2{tag} D_spacing^2;"
     )
+    return "\n".join(lines)
 
 
 def _minimum_step(x: np.ndarray) -> float:

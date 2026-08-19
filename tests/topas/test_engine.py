@@ -397,11 +397,12 @@ _M7 = Path("docs/benchmark/testdata/m7")
 #: 詰めてから課す。
 #:
 #: ⚠ 以前記録されていた 30.9% は**リミットが違う**測定 (11BM 2-40° / PG3 7000-100000・
-#: 26500-200000 µs) の値で、GSAS の 12.8% とは比較できない。同一条件では**この値**になり、
-#: 差は「広いレンジでは通った S7 profile_lorentzian / S8 profile_asymmetry が、狭いレンジ
-#: では箱に張り付いて revert される」ことに由来する (README の T4 節)。
-_T4_RWP_MEASURED = 68.61
-_T4_RWP_CEILING = 70.0
+#: 26500-200000 µs) の値で、GSAS の 12.8% とは比較できない。同一条件での初回測定は 68.61% で、
+#: そこから **TOF の α/β を装置ファイルから写す** (#179) + **tof_profile 段を X 線プロファイル
+#: の後ろに置く**で 43.49% まで来た。**既定設定の値**であり、放射光の profile 種付けと背景
+#: 20 項を足した調整済み設定は下の `test_benchmark_t4_tuned_configuration` (19.3%) を見ること。
+_T4_RWP_MEASURED = 43.49
+_T4_RWP_CEILING = 45.0
 #: 同条件での観測点数 (11BM 2.5-32° + PG3-1066 11750-103794 µs + PG3-2665 全域)。
 _T4_N_OBS = 40150
 
@@ -510,6 +511,34 @@ def test_benchmark_t3_joint_reports_the_global_rwp():
     assert not strain[0].reverted, f"歪み段が revert された: {strain[0].note}"
 
 
+def _t4_histograms(d: Path) -> list[HistogramSpec]:
+    """GSAS T4 と**同一の測定条件** (リミット / 温度) のヒストグラム 3 本。
+
+    ``data_format`` は測定条件ではなく「どのローダで読むか」である。GSAS 経路は GSAS-II の
+    importer が形式を自分で判別するので ``"GSAS"`` で通るが、TOPAS 経路は
+    `reference.io.load_pattern` が読む。PG3 の ``.gsa`` は BANK レコードが ``SLOG … FXYE``
+    = **自由形式 X Y E の対数ビン**なので FXYE ローダが正しい (``parse_gsas_powder`` は
+    CONST 固定ビンしか読めず SLOG を拒否する = Issue #181)。
+    """
+    return [
+        HistogramSpec(
+            data_path=str(d / "11BM_NAC.fxye"), instrument_path=str(d / "11bm_gsas.prm"),
+            radiation=Radiation.XRAY_SYNCHROTRON, geometry=Geometry.DEBYE_SCHERRER,
+            data_format="FXYE", two_theta_limits=(2.5, 32.0), temperature=298.0,
+        ),
+        HistogramSpec(
+            data_path=str(d / "PG3_22048.gsa"), instrument_path=str(d / "POWGEN_1066.instprm"),
+            radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
+            data_format="FXYE", two_theta_limits=(11750.0, 103794.0), temperature=298.0,
+        ),
+        HistogramSpec(
+            data_path=str(d / "PG3_22049.gsa"), instrument_path=str(d / "POWGEN_2665.instprm"),
+            radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
+            data_format="FXYE", temperature=298.0,
+        ),
+    ]
+
+
 @pytest.mark.topas
 @pytest.mark.skipif(
     not _benchmark_available(
@@ -531,28 +560,7 @@ def test_benchmark_t4_multiphase_tof_synchrotron():
     (W2 で TOF のピーク形状を詰めてから締める)。
     """
     d = _M7 / "tofcw"
-    # 【``data_format`` は測定条件ではなく「どのローダで読むか」】: GSAS 経路は GSAS-II の
-    #   importer が形式を自分で判別するので ``"GSAS"`` で通るが、TOPAS 経路は
-    #   `reference.io.load_pattern` が読む。PG3 の ``.gsa`` は BANK レコードが
-    #   ``SLOG ... FXYE`` = **自由形式 X Y E の対数ビン**なので FXYE ローダが正しい
-    #   (``parse_gsas_powder`` は CONST 固定ビンしか読めず SLOG を拒否する = Issue #181)。
-    histograms = [
-        HistogramSpec(
-            data_path=str(d / "11BM_NAC.fxye"), instrument_path=str(d / "11bm_gsas.prm"),
-            radiation=Radiation.XRAY_SYNCHROTRON, geometry=Geometry.DEBYE_SCHERRER,
-            data_format="FXYE", two_theta_limits=(2.5, 32.0), temperature=298.0,
-        ),
-        HistogramSpec(
-            data_path=str(d / "PG3_22048.gsa"), instrument_path=str(d / "POWGEN_1066.instprm"),
-            radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
-            data_format="FXYE", two_theta_limits=(11750.0, 103794.0), temperature=298.0,
-        ),
-        HistogramSpec(
-            data_path=str(d / "PG3_22049.gsa"), instrument_path=str(d / "POWGEN_2665.instprm"),
-            radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
-            data_format="FXYE", temperature=298.0,
-        ),
-    ]
+    histograms = _t4_histograms(d)
     phases = [
         PhaseSpec(structure_path=str(d / "NAC.cif"), phase_name="NAC"),
         PhaseSpec(structure_path=str(d / "CaF2.cif"), phase_name="CaF2"),
@@ -575,3 +583,46 @@ def test_benchmark_t4_multiphase_tof_synchrotron():
     # 格子は Rwp が未達でも妥当な位置に留まること (NAC 立方 a~10.25 / CaF2 蛍石 a~5.46)。
     assert 10.20 < result.refined_cells["NAC"][0] < 10.30
     assert 5.42 < result.refined_cells["CaF2"][0] < 5.50
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(
+        _M7 / "tofcw" / "11BM_NAC.fxye",
+        _M7 / "tofcw" / "PG3_22048.gsa",
+        _M7 / "tofcw" / "PG3_22049.gsa",
+        _M7 / "tofcw" / "NAC.cif",
+    ),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t4_tuned_configuration():
+    """T4 の**到達点** — 放射光のプロファイル種付け + 背景 20 項 (#179)。
+
+    既定 (43.5%) から効いた 2 手を固定する:
+
+    - ``seed_profile``: TOPAS は装置ファイルのプロファイルを読まないので、汎用初期値から
+      遠い放射光では**桁で効く** (11BM 43.9% → 8.7%)。**CW 中性子では悪化する**ので既定 OFF。
+    - 背景 20 項: 11BM は 6 項では背景を表せない (M9 CaTeO3 で 24 項が要った前例と同型)。
+      ⚠ 24 項にすると X 線 Lorentzian 段が revert されて総合 67% へ跳ねる — **多ければ
+      良いのではない**。
+
+    ⚠ **物理妥当性は現在落ちる**: CaF2 の Ca が Uiso < 0 になる (少数相の未モデル寄与を
+    吸っている疑い)。`assert not passed` は**既知の状態の記録**であり、直ったらこのテストが
+    落ちて記録の更新を強制する。**Rwp だけで合格にしない**規律のための明示的な赤旗である。
+    """
+    d = _M7 / "tofcw"
+    result = eng.run_topas_rietveld(
+        _t4_histograms(d),
+        [
+            PhaseSpec(structure_path=str(d / "NAC.cif"), phase_name="NAC"),
+            PhaseSpec(structure_path=str(d / "CaF2.cif"), phase_name="CaF2"),
+        ],
+        max_cyc=10,
+        background_coeffs=20,
+        seed_profile=True,
+    )
+    assert result.final_rwp < 21.0, f"Rwp {result.final_rwp:.2f} (実測 19.25, GSAS ~12.8)"
+    assert result.histogram_rwp[0] < 10.0, "放射光の種付けが効いていない (実測 8.67)"
+    assert not result.validity.passed, (
+        "CaF2 の Uiso が負でなくなった — 記録を更新すること (この赤旗は既知の状態の固定)"
+    )

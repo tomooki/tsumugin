@@ -173,3 +173,42 @@ def test_unknown_temperature_does_not_add_the_stage():
     """温度が書かれていないヒストグラムを「差がある」と扱わない (推測で段を足さない)。"""
     stages = build_topas_recipe([_hist(), _cw_neutron(None)], [_phase()])
     assert "hydrostatic_strain" not in _order(stages)
+
+
+# ---------------- TOF の幅を解放する段とその位置 (#179) ----------------
+
+
+def _tof(temperature=None) -> HistogramSpec:
+    return HistogramSpec(
+        data_path="d", instrument_path="i", radiation=Radiation.NEUTRON_TOF,
+        geometry=Geometry.DEBYE_SCHERRER, temperature=temperature,
+    )
+
+
+def _synchrotron() -> HistogramSpec:
+    return _hist(Radiation.XRAY_SYNCHROTRON, Geometry.DEBYE_SCHERRER)
+
+
+def test_tof_histogram_gets_a_width_stage():
+    """**TOPAS は装置ファイルの σ を読まない** — 幅の初期値は粗い当て推量なので解放する。
+
+    GSAS 経路の教訓は「TOF 装置プロファイルは較正済みなので精密化しない」だったが、
+    出発点が違うので同じ教訓が逆向きに効く。
+    """
+    assert "tof_profile" in _order(build_topas_recipe([_tof()], [_phase()]))
+
+
+def test_tof_width_stage_comes_after_the_xray_profile():
+    """**置き場所が判定を通じて結合している** (実測 T4 で 24 ポイントの差)。
+
+    受理判定は**全ヒストグラム込みの総合 Rwp**なので、放射光がまだ大きく外れている段階で
+    TOF の幅を解放すると、後から来る X 線プロファイル段が「総合では悪化」と判定されて
+    revert される (前に置くと総合 67.6% / 後ろに置くと 43.5%)。
+    """
+    order = _order(build_topas_recipe([_synchrotron(), _tof()], [_phase()]))
+    assert order.index("profile_lorentzian") < order.index("tof_profile")
+
+
+def test_no_tof_histogram_means_no_tof_stage():
+    """**呼べない段を出さない** — 段が黙って no-op になるのを避ける。"""
+    assert "tof_profile" not in _order(build_topas_recipe([_hist()], [_phase()]))

@@ -54,6 +54,7 @@ def _build_document(
     *,
     background_coeffs: int,
     max_cyc: int,
+    seed_profile: bool = False,
 ) -> TopasDocument:
     """入力仕様から初期 (何も解放していない) 文書を組む。"""
     from ..autorietveld.cif_normalize import read_structure_cif
@@ -79,18 +80,31 @@ def _build_document(
     topas_hists = []
     for i, hist in enumerate(histograms):
         converted = histogram_to_topas(
-            hist, workdir=workdir, index=i, background_coeffs=background_coeffs
+            hist,
+            workdir=workdir,
+            index=i,
+            background_coeffs=background_coeffs,
+            seed_profile=seed_profile,
         )
         if hist.radiation.is_tof:
             # TOF も**相ごと**にピーク形状を持つ (幅が d 依存なので相の微細構造で変わる)。
             from .instrument import read_instrument, tof_peak_type
 
-            difc = read_instrument(hist.instrument_path).difc or 0.0
+            spec = read_instrument(hist.instrument_path)
+            difc = spec.difc or 0.0
+            # 【α/β は装置ファイルから写す】: 捨てると汎用初期値のピーク形状になり、
+            #   **ピークはどこかに立つので tc.exe は正常終了し Rwp だけが悪い** (#179)。
+            coeffs = spec.profile or {}
             converted = converted.with_updates(
                 phase_terms={
                     phase.phase_name: PhaseHistogramTerms(
                         peak_type=tof_peak_type(
-                            i, difc=difc, phase_key=_slug(phase.phase_name)
+                            i,
+                            difc=difc,
+                            phase_key=_slug(phase.phase_name),
+                            alpha=coeffs.get("alpha"),
+                            beta0=coeffs.get("beta-0"),
+                            beta1=coeffs.get("beta-1"),
                         )
                     )
                     for phase in topas_phases
@@ -176,6 +190,7 @@ def run_topas_rietveld(
     max_cyc: int = 12,
     worsen_eps: float = 1e-6,
     background_coeffs: int = 6,
+    seed_profile: bool = False,
     keep_project: "str | None" = None,
     timeout: float = 1800.0,
     stability: object | None = None,
@@ -212,7 +227,12 @@ def run_topas_rietveld(
     with tempfile.TemporaryDirectory(prefix="tsumugin-topas-") as tmp:
         work = Path(tmp)
         doc = _build_document(
-            histograms, phases, work, background_coeffs=background_coeffs, max_cyc=max_cyc
+            histograms,
+            phases,
+            work,
+            background_coeffs=background_coeffs,
+            max_cyc=max_cyc,
+            seed_profile=seed_profile,
         )
 
         stage_results: list[StageResult] = []

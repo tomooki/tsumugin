@@ -182,3 +182,13 @@ def test_skill_warns_against_mixing_engines_within_an_interval(analyze_text: str
     """判別は Δevidence (BIC 差) の比較なので、区間内でエンジンを混ぜると比較が壊れる。"""
     section = analyze_text.split("`discriminate`")[-1]
     assert "混ぜてはならない" in section or "混ぜない" in section
+
+
+def test_seed_profile_is_documented_with_its_radiation_dependence(analyze_text: str):
+    """**効く/効かないが放射源で逆転する**引数なので、片方だけ書くと誤誘導になる。"""
+    import inspect
+
+    assert "seed_profile" in inspect.signature(MCP_TOOLS["auto_rietveld"]).parameters
+    assert "seed_profile" in analyze_text
+    section = analyze_text.split("seed_profile")[1]
+    assert "放射光" in section and "中性子" in section, "どちらで効くかが書かれていない"

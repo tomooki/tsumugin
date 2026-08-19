@@ -70,6 +70,15 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
     当てないため。透過/Debye-Scherrer で使うこと。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
+- **`seed_profile`** (TOPAS 専用の引数): TOPAS は装置ファイルのプロファイル (Caglioti U,V,W)
+  を読まず汎用初期値から始まる。**放射光では桁で効く** (実測 11BM 43.9% → 8.7%) 一方、
+  **CW 中性子では悪化する** (garnet 5.54 → 9.76% で物理妥当性も落ちる) ので既定 OFF。
+  X 線/放射光で Rwp が「ピーク形状が合っていない」形で頭打ちなら `seed_profile: true` を試す。
+  `backend="gsasii"` に渡すとエラーになる (GSAS は装置ファイルをそのまま読むので概念が無い)。
+- **背景項数は多ければ良いのではない**: 11BM (放射光) は 6 項では背景を表せず 20 項で総合
+  43.5% → 26.3% になるが、24 項にすると X 線 Lorentzian 段が revert されて 67% へ跳ねる。
+  `background_coeffs` を増やしたら**段列の `reverted` を必ず見る** (総合 Rwp だけを見ていると
+  「増やしたら悪くなった」の理由が分からない)。
 
 ## joint (複数ヒストグラム) を読むとき
 
