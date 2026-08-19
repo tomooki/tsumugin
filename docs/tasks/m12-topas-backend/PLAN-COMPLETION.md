@@ -72,20 +72,30 @@ T3-joint のみ) ので、30.9% はアドホック測定の記録でしかない
 
 ### W0 比較条件の是正 + T4 の回帰ガード新設 (前提整備)
 
-- [ ] `tests/topas/test_engine.py` に `test_benchmark_t4_multiphase_tof` を追加。
-      **GSAS T4 と同一の `HistogramSpec`** (リミット / `temperature=298.0` / 同じ instprm) を使う。
-- [ ] 現状値で回して**実測を閾値に固定**する (合格基準 15% はまだ課さない。
-      `pytest.approx` ではなく「これより悪化したら落ちる」形の上限で置き、W2/W3 で締める)。
-- [ ] 同じ条件で再測した値を README に**「条件を揃えた後の T4」**として記録する。
+- [x] `tests/topas/test_engine.py` に `test_benchmark_t4_multiphase_tof_synchrotron` を追加。
+      **GSAS T4 と同一の `HistogramSpec`** (リミット / `temperature=298.0`) を使う。
+- [x] 現状値で回して固定 (合格基準 15% はまだ課さない)。**実測 68.61%** (旧アドホック 30.32%)。
+- [x] README に「条件を揃えた後の T4」として記録。
 
-**判断材料**: この再測値が 30.9% からどれだけ動くか。大きく動けば W2 の重みが下がる。
+**結果 (2026-08-19)**: 同一条件では **68.61%** で、以前の 30.9% は**リミットが違う**測定だった。
+差は「広いレンジでは通った S7/S8 のプロファイル段が、狭いレンジでは箱に張り付いて revert
+される」ことに由来し、**フィット自体はどちらの条件でも S0 から 70% 前後で膠着している**。
+`.gsa` は BANK が ``SLOG … FXYE`` なので TOPAS 経路のローダは `"FXYE"` を指定する
+(`parse_gsas_powder` は CONST 固定ビンしか読めない = Issue #181)。
 
-> ⚠ 恒久ガードは**変異させて fail することを実証**してから受け入れる (CLAUDE.md)。
-> 「リミットを外すと落ちる」ことを 1 回確かめる。
+> ⚠ **Rwp の上限だけを見るガードでは条件の変更を検出できない** (広げると「良く」なる)。
+> 精密化に使った観測点数 `n_obs == 40150` を固定した。アドホック条件は 49709 なので落ちる
+> (**実測で確認**)。
+
+**W2 へ持ち越す 2 件** (W0 で判明):
+
+- `size_strain` 段で tc.exe が異常終了する (両条件とも)。rwp=inf → revert には縮退している。
+- S3 phase_fractions / S5 occupancy が rwp・n_params ともビット同一で `reverted` も立たない
+  = 無言 no-op の疑い。
 
 ### W1 `hydrostatic_strain` の翻訳 (#173) → T3-joint の第一仮説 (#178)
 
-- [ ] **設計**: joint でセルが共有 `prm` の場合、各 xdd の `str` ブロックで
+- [x] **設計**: joint でセルが共有 `prm` の場合、各 xdd の `str` ブロックで
       `a = <shared_a> (1 + eps_a_h<i>);` 形の参照式に差し替える。
       - 基準ヒストグラム (index 0) の `eps` は **0 固定** — 共有セルと完全縮退するため。
         GSAS は SVD 減衰で吸収しているが、TOPAS では明示的に潰す。
@@ -93,23 +103,31 @@ T3-joint のみ) ので、30.9% はアドホック測定の記録でしかない
         直方相当の 3 とし、それ以外は `UnsupportedStageFlagError` を維持する = 黙って近似しない)。
       - 単一ヒストグラムでは**無効** (共有 `prm` が無く、格子そのものと縮退する)。
         指定されたら段を no-op にせず**明示的に失敗させる**。
-- [ ] **単体テスト (numpy/文字列のみ)**: 生成 INP の字面で
+- [x] **単体テスト (numpy/文字列のみ)**: 生成 INP の字面で
       (i) xdd ごとに参照式が 1 本ずつ出る (ii) h0 が固定 (iii) 名前が重複しない
       (既存の不変条件ガード `test_no_parameter_name_is_declared_twice_in_a_joint_document` に載る)
       (iv) 単一ヒストグラムでは `UnsupportedStageFlagError`。
-- [ ] **実 tc.exe が受理すること**を既存の
+- [x] **実 tc.exe が受理すること**を既存の
       `test_new_flags_produce_inp_that_tc_actually_accepts` のパラメータに追加 (★このガードが
       `Cylindrical_I_Correction` の罠を捕まえた実績のある形)。
-- [ ] **`build_topas_recipe` に温度差アダプタ**を足す (GSAS の `_has_temperature_difference` を
+- [x] **`build_topas_recipe` に温度差アダプタ**を足す (GSAS の `_has_temperature_difference` を
       再利用。段の位置は S2 cell+displacement の直後)。
-- [ ] **T3-joint 実測**: 合格基準 ≤8% に届くか。届かなければ W3 へ持ち越し。
-- [ ] **②③ (★不変条件)**:
+- [x] **T3-joint 実測**: **8.29% → 7.19%** (GOF 1.44) で**合格基準 ≤8% を達成**。内訳は X 線 8.26→8.22 / 中性子 **8.37→4.07** で、共有セル 1 本の妥協が中性子側を押し下げていたことが確認できた (仮説どおり)。⇒ **#178 は #173 で解決**。
+- [x] **②③ (★不変条件)**:
       - ② `mcp/_recipe_spec.py` は既に `hydrostatic_strain` を許すので**配線追加は不要**。
         JSON だけで `auto_rietveld(backend="topas", recipe=[...])` に載ることを実測確認する。
       - ③ [`skills/analyze/SKILL.md:53`](../../../plugins/tsumugin/skills/analyze/SKILL.md):53 の
         「`hydrostatic_strain` は未対応」を**同じ PR で**直す。
-      - ガードを文字列一致でなく **`SUPPORTED_FLAGS` との突き合わせ**にする
-        (今は SKILL に手書きしてあるだけなので、次に増えたときまた腐る)。
+      - ガードは既に `tests/test_m12_plugin.py::test_unsupported_flag_list_matches_the_implementation`
+        が `SUPPORTED_FLAGS` と突き合わせている (**変異させて fail することを再確認済**)。
+
+**実装中に判った TOPAS の仕様 (実測)**: ε の箱を ±5% にすると **CW 中性子側で tc.exe が
+``Invalid d spacing encountered`` を出して異常終了する**。セルが式のとき TOPAS は hkl の
+d 範囲を箱の分だけ広げて評価するらしく、λ=1.909 Å に対し観測の d_min が λ/2 の 3% 上に
+しかないため縮み側が ``d < λ/2`` を跨ぐ。**同じ INP でも X 線側に張れば完走する**ので
+「式にすると落ちる」のではない。箱を ±2% にして解消 (温度差 285 K の歪みは 0.3% 程度)。
+併せて `driver._failure_reason` が ``Invalid d spacing`` を**失敗確定後の診断行**として
+拾うようにした (判定は広げない — 警告として出て完走する可能性を排除できないため)。
 
 ### W2 T4 の TOF を詰める (#179)
 

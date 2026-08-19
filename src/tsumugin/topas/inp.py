@@ -148,6 +148,16 @@ class PhaseHistogramTerms:
     TOF は幅パラメータの ``prm`` 宣言を伴うので**複数行**になる
     (`instrument.tof_peak_type`)。レンダリング側が行ごとに字下げする。
     """
+    cell_strain: Mapping[str, Param] = field(default_factory=dict)
+    """**このヒストグラムだけ**に効く格子オフセット ε (軸 → パラメータ, GSAS の HStrain Dij 相当)。
+
+    joint ではヒストグラム間で測定温度が違うことがある (M7 T3 は X 線 295 K / 中性子 10 K)。
+    構造としての格子は 1 つでなければならないので共有 ``prm`` へ持ち上げたまま、各 ``xdd``
+    では ``a = <共有> * (1 + ε);`` の**実効セル**を許す。
+
+    ε は**先頭ヒストグラムには張らない** — 共有セルそのものと完全に縮退するため
+    (両方を解放すると最小二乗が定まらない)。
+    """
     extras: tuple[str, ...] = ()
     """そのまま str ブロックへ差し込む追加行。"""
 
@@ -471,10 +481,25 @@ class TopasDocument:
         # 常に引用する (Tutorial INP の作法。空白や記号を含む相名でも壊れない)。
         lines.append(f'{_INDENT_PHASE}phase_name "{name}"')
         lines.append(f"{_INDENT_PHASE}space_group {phase.space_group}")
+        strain = dict(terms.cell_strain or {})
+        for axis, eps in sorted(strain.items()):
+            # 【共有セルが前提】: ε は「共有した格子からのこの xdd 分のずれ」なので、
+            #   持ち上げていない (単一ヒストグラムの) 格子に張ると格子そのものと縮退する。
+            #   黙って落とすと「段を適用したのに何も変わっていない」= 無言 no-op になる。
+            if not shared.get((name, f"cell.{axis}")) or not eps.name:
+                raise ValueError(
+                    f"格子オフセット {eps.name or axis} は共有セル (joint) にしか張れません: "
+                    f"相 {name} の {axis} 軸は持ち上げられていません"
+                )
+            # 宣言は**使う str ブロックの中**に置く (TOF の幅パラメータと同じ作法)。
+            lines.append(f"{_INDENT_PHASE}prm {render_param(eps)}")
         for axis, param in phase.cell.items():
             prm = shared.get((name, f"cell.{axis}"))
             if prm:
-                value = render_param(Param.reference(prm))
+                eps = strain.get(axis)
+                value = render_param(
+                    Param.reference(f"{prm} * (1 + {eps.name})" if eps else prm)
+                )
             else:
                 # 【名前を付ける】: 名前付きなら `Out(<name>, …)` で**値と esd**を回収できる。
                 #   無名の `@` は Out から参照できず、精密化後セルが取り出せない。

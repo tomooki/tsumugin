@@ -70,7 +70,7 @@ def _apply(flags: dict, doc: TopasDocument | None = None) -> TopasDocument:
 # ---------------- 未対応フラグ (最重要) ----------------
 
 
-@pytest.mark.parametrize("flag", ["hydrostatic_strain"])
+@pytest.mark.parametrize("flag", ["no_such_flag", "anisotropic_adp"])
 def test_unsupported_flags_raise_instead_of_being_ignored(flag):
     """**黙って無視しない**。無視すると解放されていない段が完走する (無言 no-op 病理)。"""
     with pytest.raises(UnsupportedStageFlagError, match=flag):
@@ -79,7 +79,62 @@ def test_unsupported_flags_raise_instead_of_being_ignored(flag):
 
 def test_error_names_the_stage_so_it_can_be_located():
     with pytest.raises(UnsupportedStageFlagError, match="S9"):
-        apply_stage(_doc(), RefinementStage(label="S9", flags={"hydrostatic_strain": True}))
+        apply_stage(_doc(), RefinementStage(label="S9", flags={"no_such_flag": True}))
+
+
+# ---------------- hydrostatic_strain (#173) ----------------
+
+
+def _joint_doc(phase=None) -> TopasDocument:
+    """joint (2 ヒストグラム) の文書。格子は `render()` が共有 prm へ持ち上げる。"""
+    return TopasDocument(
+        histograms=(_hist(), _hist(data_path="n.xye", is_neutron=True)),
+        phases=(phase or _phase(),),
+    )
+
+
+def test_hydrostatic_strain_offsets_every_histogram_but_the_first():
+    """ヒストグラム間の温度差を per-xdd の格子オフセットで吸収する (GSAS の Dij 相当)。
+
+    **先頭は 0 固定**にする — 共有セルそのものと完全に縮退するため、両方を解放すると
+    最小二乗が定まらない (GSAS は SVD 減衰で吸収しているが TOPAS では明示的に潰す)。
+    """
+    out = _apply({"hydrostatic_strain": True}, _joint_doc())
+    first = out.histograms[0].phase_terms.get("P", PhaseHistogramTerms()).cell_strain
+    second = out.histograms[1].phase_terms["P"].cell_strain
+    assert not first, "先頭ヒストグラムには歪みを張らない (共有セルと縮退する)"
+    assert set(second) == {"a", "b", "c"}, "直方晶は 3 軸とも独立"
+    assert all(p.refine for p in second.values())
+
+
+def test_hydrostatic_strain_skips_dependent_axes_and_angles():
+    """従属軸 (=Get(a)) と角度には張らない。
+
+    従属軸は独立軸に追随するので二重に張ると縮退する。角度は熱膨張の等方成分ではない。
+    """
+    phase = _phase(
+        space_group="P121",
+        cell={
+            "a": Param(8.0), "b": Param.reference("Get(a)"), "c": Param(7.0),
+            "be": Param(93.0),
+        },
+        free_cell_keys=("a", "c", "be"),
+    )
+    out = _apply({"hydrostatic_strain": True}, _joint_doc(phase=phase))
+    assert set(out.histograms[1].phase_terms["P"].cell_strain) == {"a", "c"}
+
+
+def test_hydrostatic_strain_is_rejected_for_a_single_histogram():
+    """単一ヒストグラムでは**格子そのものと縮退する**ので、黙って no-op にせず落とす。"""
+    with pytest.raises(UnsupportedStageFlagError, match="hydrostatic_strain"):
+        _apply({"hydrostatic_strain": True})
+
+
+def test_hydrostatic_strain_false_re_freezes():
+    released = _apply({"hydrostatic_strain": True}, _joint_doc())
+    out = apply_stage(released, RefinementStage(label="S", flags={"hydrostatic_strain": False}))
+    strain = out.histograms[1].phase_terms["P"].cell_strain
+    assert strain and not any(p.refine for p in strain.values())
 
 
 def test_supported_flag_set_matches_what_the_recipe_can_emit():

@@ -21,6 +21,10 @@ from typing import Sequence
 
 from ..autorietveld.model import HistogramSpec, PhaseSpec, RefinementStage
 
+# 【GSAS 側の判定をそのまま使う】: 「温度差があるか」は**バックエンドに依らない入力の性質**で、
+#   ここで別実装を持つと 2 つの経路が別々の条件で段を出すようになる。翻訳が違うのは段の**中身**。
+from ..autorietveld.recipe import has_temperature_difference
+
 __all__ = ["build_topas_recipe"]
 
 
@@ -65,6 +69,19 @@ def build_topas_recipe(
             note="ピーク位置 (格子 + ゼロ点)",
         )
     )
+
+    if len(histograms) > 1 and has_temperature_difference(histograms):
+        # 【温度差】: 構造としての格子は 1 つだが、実効セルはヒストグラムごとに違う
+        #   (M7 T3 は X 線 295 K / 中性子 10 K)。共有セルを 1 本で妥協させると**両方が
+        #   同じくらい悪くなる**ので、格子を合わせた直後に per-xdd のずれを許す。
+        #   単一ヒストグラムでは格子と縮退するので出さない (`apply_stage` が落とす段)。
+        stages.append(
+            RefinementStage(
+                label="S2b hydrostatic_strain",
+                flags={"hydrostatic_strain": True},
+                note="ヒストグラム間の温度差を per-xdd の実効セルで吸収する",
+            )
+        )
 
     if multiphase:
         # 多相は相分率を構造より先に分離する (M7 T4 の教訓)。

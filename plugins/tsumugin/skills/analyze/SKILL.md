@@ -50,10 +50,15 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 - `.gpx` が存在しないので **MEM 系ツール (`mem_density` 等) は使えない**。結果の `gpx_path` は
   空文字になり、`project_path` に INP/.out が残る。
-- 段階フラグのうち **`hydrostatic_strain` は未対応**で、指定するとその段が**明示的に失敗して
-  revert される** (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
-  `absorption` は**反射光学系 (Bragg-Brentano) では同じく失敗する** — 円筒吸収の式を平板試料に
-  当てないため。透過/Debye-Scherrer で使うこと。
+- 段階フラグは**全て翻訳できる**が、条件が合わない指定は**明示的に失敗して revert される**
+  (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
+  - `hydrostatic_strain` は **joint (複数ヒストグラム) 専用**。単一ヒストグラムでは格子
+    そのものと縮退するので失敗する。**ヒストグラムごとに測定温度が違うとき**
+    (`histograms[].temperature` を入れたとき) は既定レシピが自動で 1 段入れる — 格子は
+    共有したまま xdd ごとの実効セルを許す量なので、温度差があるのに入れないと**両方の
+    ヒストグラムが同じくらい悪くなる**。
+  - `absorption` は**反射光学系 (Bragg-Brentano) では失敗する** — 円筒吸収の式を平板試料に
+    当てないため。透過/Debye-Scherrer で使うこと。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
 

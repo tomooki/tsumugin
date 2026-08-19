@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Sequence
 
 from ..autorietveld.model import RefinementStage
 from ..errors import TsumuginError
@@ -56,12 +57,30 @@ SUPPORTED_FLAGS: frozenset[str] = frozenset(
         "preferred_orientation",
         "absorption",
         "tof_profile",
+        "hydrostatic_strain",
         "freeze_others",
     }
 )
-"""現在翻訳できるフラグ。残る ``hydrostatic_strain`` (ヒストグラム間の温度差を吸収する
-per-xdd の格子オフセット) は、それを検算できる実データが手元に無いので入れていない —
-実行して確かめられない翻訳表は書かない (言語仕様の正が暗号化 PDF でなく実行結果しかないため)。"""
+"""現在翻訳できるフラグ (17/17)。
+
+``hydrostatic_strain`` は **joint 専用** — ヒストグラム間の温度差を per-xdd の格子オフセットで
+吸収する量なので、単一ヒストグラムでは格子そのものと縮退する
+(:func:`apply_stage` が明示的に失敗させる)。"""
+
+#: 格子オフセットを張る軸。**角度には張らない** — 熱膨張の等方成分ではないうえ、
+#: 90° 近傍では角度方向の微分がほぼ 0 でヘッシアンが特異になる (structure.py と同じ判断)。
+_STRAIN_AXES = ("a", "b", "c")
+
+#: 格子オフセットの箱 (±2%)。実データの温度差 (M7 T3 の 285 K) が生む歪みは 0.3% 程度なので
+#: 物理的には十分広い。
+#:
+#: **±5% は実 tc.exe が異常終了する** (実測): TOPAS はセルが式で書かれていると hkl の d 範囲を
+#: 箱の分だけ広げて評価するらしく、**波長の長い CW 中性子**では縮み側が ``d < λ/2`` を跨いで
+#: ``Invalid d spacing encountered`` で落ちる (PbSO4 joint: λ=1.909 Å に対し観測の d_min は
+#: λ/2 の 3% 上にしかない)。同じ INP でも X 線ヒストグラムに張った場合は完走するので、
+#: 「式にすると落ちる」のではなく**箱が波長に対して広すぎる**のが原因である。
+#: ±1%/±2% は実測で完走する。
+_STRAIN_LIMIT = 0.02
 
 #: TOF のピーク幅パラメータ接頭辞 (`instrument.tof_peak_type` が宣言する名前と対)。
 _TOF_WIDTH_NAMES = ("tofw1", "tofw2")
@@ -117,6 +136,39 @@ def _release_sites(
 
 def _terms_for(hist: TopasHistogram, phase_name: str) -> PhaseHistogramTerms:
     return hist.phase_terms.get(phase_name, PhaseHistogramTerms())
+
+
+def _apply_cell_strain(
+    histograms: list[TopasHistogram], phases: Sequence[TopasPhase], enable: bool
+) -> list[TopasHistogram]:
+    """2 本目以降の各 xdd に格子オフセット ε を張る (先頭は基準として 0 固定)。"""
+    out = list(histograms)
+    for index, hist in enumerate(out):
+        if index == 0:
+            continue
+        for phase in phases:
+            terms = _terms_for(hist, phase.phase_name)
+            stem = _slug(phase.phase_name)
+            strain = dict(terms.cell_strain or {})
+            for axis in _STRAIN_AXES:
+                param = phase.cell.get(axis)
+                # 従属軸 (``=Get(a);``) は独立軸に追随するので張らない (二重に張ると縮退)。
+                if param is None or param.is_reference:
+                    continue
+                existing = strain.get(axis)
+                if existing is not None:
+                    strain[axis] = replace(existing, refine=enable)
+                elif enable:
+                    strain[axis] = Param(
+                        0.0,
+                        refine=True,
+                        name=f"eps_{stem}_{axis}_h{index}",
+                        minimum=-_STRAIN_LIMIT,
+                        maximum=_STRAIN_LIMIT,
+                    )
+            hist = _with_terms(hist, phase.phase_name, terms.with_updates(cell_strain=strain))
+        out[index] = hist
+    return out
 
 
 def _with_terms(
@@ -218,6 +270,7 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
         # (`!` を付ける先が無い — 係数は TOPAS が自動生成する)。
         histograms = [_drop_phase_extras(h, "PO_Spherical_Harmonics") for h in histograms]
         histograms = [_toggle_tof_widths(h, False) for h in histograms]
+        histograms = _apply_cell_strain(histograms, phases, False)
 
     if "background" in flags:
         spec = flags["background"]
@@ -241,6 +294,17 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
     if "cell" in flags:
         enable = flags["cell"] is not False
         phases = [_release_cell(p, enable) for p in phases]
+
+    if "hydrostatic_strain" in flags:
+        enable = flags["hydrostatic_strain"] is not False
+        if enable and len(histograms) < 2:
+            # 【縮退】: 単一ヒストグラムでは ε と格子が同じ方向を向く。黙って no-op に
+            #   すると「段を適用したのに何も解放されていない」段が完走する。
+            raise UnsupportedStageFlagError(
+                f"hydrostatic_strain は joint (複数ヒストグラム) 専用です (段 '{stage.label}')。"
+                "単一ヒストグラムでは格子そのものと縮退するため張れません。"
+            )
+        histograms = _apply_cell_strain(histograms, phases, enable)
 
     if flags.get("coords"):
         phases = [_release_sites(p, coords=True) for p in phases]

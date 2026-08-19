@@ -36,6 +36,13 @@ _FAILURE_MARKERS: tuple[str, ...] = (
 )
 """stdout に現れたら失敗とみなす文字列 (実測)。"""
 
+_DIAGNOSTIC_MARKERS: tuple[str, ...] = ("Invalid d spacing",)
+"""失敗が**すでに確定したとき**にだけ拾う診断行 (実測)。
+
+TOPAS は根本原因を ``Abnormal program termination`` の直前に 1 行で書くことがあるが、
+その文言自体は失敗の判定材料にしない — 警告として出て完走する可能性を排除できないため
+(判定を広げると「動いていたものが落ちる」側の誤りになる)。"""
+
 _DEFAULT_TIMEOUT = 1800.0
 
 
@@ -65,7 +72,16 @@ def _failure_reason(stdout: str) -> "str | None":
             continue
         if any(marker in stripped for marker in _FAILURE_MARKERS):
             hits.append(stripped)
-    return " | ".join(hits) if hits else None
+    if not hits:
+        return None
+    # 失敗が確定してから診断行を足す (原因の文言を落とすと Rwp からは辿れない)。
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if stripped and stripped not in hits and any(
+            marker in stripped for marker in _DIAGNOSTIC_MARKERS
+        ):
+            hits.append(stripped)
+    return " | ".join(hits)
 
 
 def run_tc(

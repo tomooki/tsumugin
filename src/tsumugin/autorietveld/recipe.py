@@ -242,8 +242,13 @@ def _displacement_map(histograms: Sequence[HistogramSpec]) -> dict[int, list[str
     }
 
 
-def _has_temperature_difference(histograms: Sequence[HistogramSpec]) -> bool:
-    """測定温度が複数ヒストグラム間で異なるか (REQ-103)。"""
+def has_temperature_difference(histograms: Sequence[HistogramSpec]) -> bool:
+    """測定温度が複数ヒストグラム間で異なるか (REQ-103)。
+
+    **バックエンドに依らない入力の性質**なので TOPAS 側のレシピ (`topas.recipe`) も
+    これを使う — 別実装を持つと「GSAS は温度差の段を張るのに TOPAS は張らない」が
+    実データでしか見えない形で起きる。
+    """
     temps = [h.temperature for h in histograms if h.temperature is not None]
     return len(temps) >= 2 and (max(temps) - min(temps) > 1e-9)
 
@@ -313,7 +318,7 @@ def build_recipe(
         or p.occupancy_equiv_groups or p.occupancy_sum_groups
         for p in phases
     )
-    temp_diff = _has_temperature_difference(histograms)
+    temp_diff = has_temperature_difference(histograms)
     has_xray = any(not h.radiation.is_neutron for h in histograms)
     disp = _displacement_map(histograms)
 

@@ -14,9 +14,12 @@ from tsumugin.autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radi
 from tsumugin.topas.recipe import build_topas_recipe
 
 
-def _hist(radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO) -> HistogramSpec:
+def _hist(
+    radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, temperature=None
+) -> HistogramSpec:
     return HistogramSpec(
-        data_path="d", instrument_path="i", radiation=radiation, geometry=geometry
+        data_path="d", instrument_path="i", radiation=radiation, geometry=geometry,
+        temperature=temperature,
     )
 
 
@@ -129,3 +132,44 @@ def test_recipe_length_grows_only_with_the_phase_fraction_stage(n_phases):
     # 単相 X 線: scale+bg / profile / cell+disp / coords / occ / uiso / lorentz / asym / size = 9
     expected = 10 if n_phases > 1 else 9
     assert len(stages) == expected
+
+
+# ---------------- 温度差の吸収 (#173) ----------------
+
+
+def _cw_neutron(temperature):
+    return _hist(Radiation.NEUTRON_CW, Geometry.DEBYE_SCHERRER, temperature=temperature)
+
+
+def test_temperature_difference_adds_a_hydrostatic_strain_stage():
+    """joint のヒストグラムが別温度なら、格子は共有したまま per-xdd のずれを許す。
+
+    M7 T3 (PbSO4) は X 線 295 K / 中性子 10 K で、GSAS 経路は per-histogram Dij を張って
+    6.66% を出している。共有セル 1 本で両方を説明しようとすると**両方が同じくらい悪くなる**。
+    """
+    stages = build_topas_recipe(
+        [_hist(temperature=295.0), _cw_neutron(10.0)], [_phase()]
+    )
+    assert "hydrostatic_strain" in _order(stages)
+    order = _order(stages)
+    # 格子を合わせてからずれを許す (先に張ると格子が決まらない)
+    assert order.index("cell") <= order.index("hydrostatic_strain")
+
+
+def test_same_temperature_does_not_add_the_stage():
+    stages = build_topas_recipe(
+        [_hist(temperature=295.0), _cw_neutron(295.0)], [_phase()]
+    )
+    assert "hydrostatic_strain" not in _order(stages)
+
+
+def test_single_histogram_never_gets_the_stage():
+    """単一ヒストグラムでは格子そのものと縮退する (`apply_stage` が落とす段を出さない)。"""
+    stages = build_topas_recipe([_hist(temperature=295.0)], [_phase()])
+    assert "hydrostatic_strain" not in _order(stages)
+
+
+def test_unknown_temperature_does_not_add_the_stage():
+    """温度が書かれていないヒストグラムを「差がある」と扱わない (推測で段を足さない)。"""
+    stages = build_topas_recipe([_hist(), _cw_neutron(None)], [_phase()])
+    assert "hydrostatic_strain" not in _order(stages)

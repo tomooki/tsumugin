@@ -195,3 +195,29 @@ def test_real_tc_runs_a_minimal_refinement(tmp_path):
 
     assert "r_wp" in parse_records(run.results_text).scalars
     assert run.out_text  # .out が書き戻されている
+
+
+def test_failure_reason_keeps_the_diagnostic_line_that_explains_the_abort():
+    """``Abnormal program termination`` だけでは原因に辿り着けない。
+
+    実測: 格子を式で書いた CW 中性子の joint は ``Invalid d spacing encountered`` を出して
+    落ちる。この 1 行が無いと「段が revert された」以上のことが分からない (#173)。
+    """
+    stdout = (
+        "  0  Time   0.05  Rwp   82.396\n"
+        " Invalid d spacing encountered\n"
+        " \n"
+        "Abnormal program termination.\n"
+    )
+    reason = drv._failure_reason(stdout)
+    assert reason is not None
+    assert "Invalid d spacing" in reason
+    assert "Abnormal program termination" in reason
+
+
+def test_diagnostic_line_alone_is_not_treated_as_a_failure():
+    """診断行は**判定材料にしない** — 警告として出て完走する可能性を排除できない。
+
+    判定を広げると「動いていたものが落ちる」側の誤りになる。
+    """
+    assert drv._failure_reason(" Invalid d spacing encountered\nrefine done\n") is None
