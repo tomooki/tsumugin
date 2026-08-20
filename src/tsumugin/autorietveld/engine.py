@@ -2088,6 +2088,9 @@ def _save_gpx_artifact(
     ``gpx_path`` を「保存しない設定」と区別できない。
     """
     if not plan.path:
+        if plan.fallback_reason:
+            # 保存を計画できなかった (書けなくなった) — 「保存しない設定」と区別できるよう残す。
+            ledger.append("m7_gpx_error", {"path": "", "error": plan.fallback_reason[:200]})
         return ""
     explicit = not plan.run_dir
     try:

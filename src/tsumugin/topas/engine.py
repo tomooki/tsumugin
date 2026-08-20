@@ -199,6 +199,8 @@ def _save_project_artifact(
     既定保存の失敗は ledger に残して "" (精密化結果は捨てない)。
     """
     if not plan.path:
+        if plan.fallback_reason and ledger is not None:
+            ledger.append("m12_project_error", {"path": "", "error": plan.fallback_reason[:200]})
         return ""
     explicit = not plan.run_dir
     destination = Path(plan.path)

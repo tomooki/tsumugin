@@ -335,3 +335,21 @@ def test_empty_series_creates_no_run_dir(tmp_path, monkeypatch):
 
     assert ctx.enabled is False and reason == ""
     assert list(tmp_path.iterdir()) == []
+
+
+def test_unwritable_run_dir_midflight_degrades_with_a_reason(tmp_path, monkeypatch):
+    """実行中に run ディレクトリが書けなくなっても例外にせず、理由を返す。
+
+    入口で作った run ディレクトリが消される/権限が変わることはある。754 フレームの系列を
+    そこで落とすのは受け入れられないが、黙って保存しないのも規定の裏切りなので理由を返す。
+    """
+    ctx = GpxContext(run_dir=str(tmp_path / "gone"))
+
+    def _boom(*_a, **_k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(os, "makedirs", _boom)
+    plan = plan_artifact(["/data/a.xye"], ctx)
+
+    assert plan.path is None
+    assert "PermissionError" in plan.fallback_reason

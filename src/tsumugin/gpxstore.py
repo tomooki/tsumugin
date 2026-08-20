@@ -269,7 +269,17 @@ def plan_artifact(
         if run_dir is None:
             return ArtifactPlan(path=None, run_dir="")
     else:
-        os.makedirs(run_dir, exist_ok=True)
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+        except OSError as exc:
+            # 【途中で書けなくなっても解析を落とさない】: 系列の run ディレクトリは入口で作って
+            #   あるが、実行中に消される/権限が変わることはある。保存を諦めた**理由**を返し、
+            #   呼び出し側が ledger に残せるようにする (黙って保存しないのは規定の裏切り)。
+            return ArtifactPlan(
+                path=None,
+                run_dir="",
+                fallback_reason=f"{type(exc).__name__}: {exc} ({run_dir} へ書けません)",
+            )
 
     stem_source = os.path.splitext(os.path.basename(first))[0] if first else "refined"
     ctx = ctx if ctx is not None else GpxContext()
