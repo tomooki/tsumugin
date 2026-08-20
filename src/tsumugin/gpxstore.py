@@ -252,7 +252,12 @@ def plan_artifact(
     :param context: 文脈。None なら ambient (`gpx_context`) を見て、それも無ければ既定で
         新しい run ディレクトリを作る
     :param ext: 拡張子。TOPAS のプロジェクト**ディレクトリ**は ``""``
-    :param explicit_dir: 呼び出し側の明示 run 根 (env より強い)
+    :param explicit_dir: 呼び出し側の明示 run **根** (env より強い)。⚠ **文脈が既に run
+        ディレクトリを持っているときはそちらを使う** — `explicit_dir` は「根をどこにするか」の
+        指定であり、実行中の run ディレクトリはその実行の入口で 1 度だけ決まる。探索/収束確認は
+        `group_context(gpx_dir=…)` で根から run を解決した上で同じ ``gpx_dir`` を
+        `run_auto_rietveld` へも透過するので、ここで後者を優先すると**候補ごとに run が割れて**
+        1 実行の成果物が散らばる。
     :param now: 日時文字列の注入 (テスト用)
     """
     ctx = context if context is not None else active_context()

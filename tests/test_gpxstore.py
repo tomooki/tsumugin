@@ -353,3 +353,20 @@ def test_unwritable_run_dir_midflight_degrades_with_a_reason(tmp_path, monkeypat
 
     assert plan.path is None
     assert "PermissionError" in plan.fallback_reason
+
+
+def test_context_run_dir_wins_over_a_later_root(tmp_path):
+    """文脈が run ディレクトリを持つなら、後から渡された根では割らない。
+
+    探索/収束確認は根から run を解決した上で同じ ``gpx_dir`` を下流へも透過する。ここで
+    後者を優先すると**候補ごとに run が割れて** 1 実行の成果物が散らばる (実装上の要請)。
+    """
+    run = tmp_path / "series-run"
+    run.mkdir()
+    plan = plan_artifact(
+        ["/data/a.xye"], GpxContext(run_dir=str(run), role="candidate", label="polish"),
+        explicit_dir=str(tmp_path / "other-root"),
+    )
+
+    assert Path(plan.path).parent == run
+    assert not (tmp_path / "other-root").exists()
