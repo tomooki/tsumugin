@@ -2080,6 +2080,9 @@ def _save_gpx_artifact(
 
     :returns: 保存したパス。**保存しない/既定保存に失敗したときは ""**
 
+    既定保存の失敗は ``OSError`` に限らない (``G2Project.save()`` はシリアライズ失敗で
+    ``TypeError`` 等も投げる) ため広く捕まえる。
+
     【既定保存の失敗で精密化結果を捨てない】: 既定保存は便宜であって結果ではない。ディスクが
     一杯・権限が無いといった理由で 8 段階回した精密化を丸ごと失うのは受け入れられない。一方、
     黙って無かったことにもしないので ledger に ``m7_gpx_error`` を残す。
@@ -2096,7 +2099,12 @@ def _save_gpx_artifact(
     try:
         gpx.save()
         shutil.copyfile(src_path, plan.path)
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 — 下記の理由で**あえて広く捕まえる**
+        # 【OSError だけでは足りない】: `G2Project.save()` は gpx をシリアライズするので、
+        #   ディスク由来でない失敗 (pickle 不能なオブジェクト → TypeError 等) を投げうる。
+        #   保存は便宜であって結果ではないのに、そこで例外を通すと**全段回し終えた精密化が
+        #   丸ごと失われる** (バックエンドの失敗は結果へ縮退させるという不変条件と同じ規律)。
+        #   明示 keep_gpx だけは従来どおり送出する (頼まれた保存の失敗を握り潰さない)。
         if explicit:
             raise
         ledger.append(

@@ -37,7 +37,7 @@ from typing import Mapping, Sequence
 from ..autorietveld.model import AutoRietveldResult, CellEsd, PhaseSpec
 from ..store.ledger import Ledger
 from ._warmstart import call_runner, seed_fractions
-from ..gpxstore import child_context, gpx_context
+from ..gpxstore import gpx_context, group_context
 from .engine import Runner, _publication_of
 from .model import Cell, FrameRietveldResult, FrameSpec, SequentialRietveldResult
 
@@ -379,6 +379,11 @@ def repair_isolated(
 
     repairs: list[FrameRepair] = []
     needs_model_revision: list[int] = []
+    # 【修復 1 実行 = run ディレクトリ 1 つ】: 試行ごとに ambient が無いと `child_context` が
+    #   None を返し、各試行が別々の run ディレクトリを作って散らばる (設計 §3 の
+    #   「1 実行 = 1 run ディレクトリ」に反し、索引も 1 行ずつに割れる)。系列の内側から
+    #   呼ばれたときは既存 ambient をそのまま使う (`group_context` の契約)。
+    group, _gpx_reason = group_context(frames[0].data_path if frames else "")
 
     # 【全フラグフレームを試す】: 連続長でゲートしない (run-length プロキシは実データで反証済)。
     #   外向きの歩行が run の外側の良好フレームを見つけるため、連続ブロックも修復機会を得る。
@@ -407,7 +412,7 @@ def repair_isolated(
             )
             # 【修復試行も残す (規定 2026-08-20)】: 採用は「Rwp が改善したときのみ」なので、
             #   棄却された修復の fit は ledger の数字にしか残らない — 開けないと原因を見られない。
-            with gpx_context(child_context(role="repair", index=i, label=str(source))):
+            with gpx_context(group.child(role="repair", index=i, label=str(source))):
                 trial = call_runner(
                     runner, frames[i], neighbour_phases, initial_cells, initial_fractions
                 )

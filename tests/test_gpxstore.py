@@ -370,3 +370,18 @@ def test_context_run_dir_wins_over_a_later_root(tmp_path):
 
     assert Path(plan.path).parent == run
     assert not (tmp_path / "other-root").exists()
+
+
+def test_group_context_honours_save_false_even_under_an_ambient(tmp_path):
+    """★``save=False`` は ambient 文脈より強い (セルフレビュー #2)。
+
+    ambient をそのまま返すと、呼び出し側が「保存しない」と言ったのに文脈が enabled のままに
+    なり、文脈を読む下流 (注入 runner 等) が保存してしまう = 容量制御の opt-out が静かに破れる。
+    """
+    from tsumugin.gpxstore import gpx_context, group_context
+
+    with gpx_context(GpxContext(run_dir=str(tmp_path), role="frame", index=3)):
+        group, reason = group_context("/data/a.xye", save=False)
+
+    assert group.enabled is False and reason == ""
+    assert plan_artifact(["/data/a.xye"], group).path is None

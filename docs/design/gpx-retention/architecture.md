@@ -117,7 +117,12 @@ M10 双方向はフレームあたり 2 回以上精密化するのでその 2 �
   最強だが、既定にする費用対効果が合わない。必要なら診断モードとして opt-in で足す (M-later)。
 - **成果物の自動削除/世代管理**: P2 非破壊性と衝突する。掃除はユーザーの判断
   (run ディレクトリが日時で並ぶので手で消せる)。
-- **`backends.gsasii.GSASIIBackend.refine` (多仮説探索・判別 FR-313 の実精密化) — 今回は対象外**:
+- **`backends.gsasii.GSASIIBackend.refine` (簡約モデルの多仮説探索・判別 FR-313) — 今回は対象外**:
+  ⚠ **`autorietveld.backend_adapter.AutoRietveldBackend` (実構造の多仮説) とは別物**で、
+  そちらは `run_auto_rietveld` を通るため**既定で保存される** (仮説ごとに 1 成果物。
+  `RefinementResult` にパス欄が無いので戻り値からは辿れないが、run ディレクトリの
+  `manifest.jsonl` の `phases` 列でどの仮説の fit かを識別できる)。対象外なのは
+  簡約モデル側の `GSASIIBackend` だけである。
   この経路は `RefinementModel` (2θ/強度**配列**) を受け取り一時 gpx を組むため、
   (a) **隣接データファイルが存在しない**ので既定の置き場所が決まらず (CWD に落ちる)、
   (b) 返り値 `RefinementResult` に**成果物パスを載せるフィールドが無い** — 保存しても

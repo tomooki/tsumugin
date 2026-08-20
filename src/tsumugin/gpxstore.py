@@ -361,6 +361,11 @@ def group_context(
 
     :returns: ``(親文脈, 退避理由)``
     """
+    if not save:
+        # 【明示 opt-out は ambient より強い】: ambient をそのまま返すと、呼び出し側が
+        #   「保存しない」と言ったのに文脈が enabled のままになり、文脈を読む下流
+        #   (注入 runner 等) が保存してしまう。
+        return GpxContext(enabled=False), ""
     current = active_context()
     if current is not None:
         return current, ""

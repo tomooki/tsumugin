@@ -209,7 +209,7 @@ def _save_project_artifact(
         for item in work.iterdir():
             if item.is_file():
                 shutil.copyfile(item, destination / item.name)
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 — 既定保存の失敗で精密化結果を捨てない (GSAS と同規律)
         if explicit:
             raise
         if ledger is not None:

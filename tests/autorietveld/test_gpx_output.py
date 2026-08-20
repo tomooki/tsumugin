@@ -179,3 +179,45 @@ def test_run_auto_rietveld_saves_by_default():
     sig = inspect.signature(run_auto_rietveld)
     assert sig.parameters["save_gpx"].default is True
     assert sig.parameters["gpx_dir"].default is None
+
+
+def test_default_save_survives_a_non_oserror_from_gpx_save(tmp_path):
+    """★``gpx.save()`` が **OSError 以外**を投げても精密化結果を捨てない (セルフレビュー #1)。
+
+    `G2Project.save()` は gpx をシリアライズするので、ディスク由来でない失敗
+    (pickle 不能なオブジェクト → ``TypeError`` 等) を投げうる。保存は便宜であって結果では
+    ないのに、そこで例外を通すと**全段回し終えた精密化が丸ごと失われる**。
+    """
+
+    class _ExplodingGpx:
+        def save(self) -> None:
+            raise TypeError("cannot pickle 'module' object")
+
+    ledger = Ledger()
+    plan = plan_output(["/data/a.xye"], gpx_dir=str(tmp_path / "out"))
+
+    out = _save_gpx_artifact(
+        _ExplodingGpx(), str(tmp_path / "src.gpx"), plan,
+        histograms=[_hist("/data/a.xye")], phases=[_phase("a")],
+        rwp=9.0, gof=1.0, ledger=ledger, context=None,
+    )
+
+    assert out == ""
+    assert "m7_gpx_error" in [e.kind for e in ledger.entries]
+
+
+def test_explicit_keep_still_raises_a_non_oserror(tmp_path):
+    """明示 ``keep_gpx`` は OSError 以外でも送出したまま (頼まれた保存の失敗を握り潰さない)。"""
+
+    class _ExplodingGpx:
+        def save(self) -> None:
+            raise TypeError("cannot pickle 'module' object")
+
+    plan = plan_output(["/data/a.xye"], keep=str(tmp_path / "explicit.gpx"))
+
+    with pytest.raises(TypeError):
+        _save_gpx_artifact(
+            _ExplodingGpx(), str(tmp_path / "src.gpx"), plan,
+            histograms=[_hist("/data/a.xye")], phases=[_phase("a")],
+            rwp=9.0, gof=1.0, ledger=Ledger(), context=None,
+        )
