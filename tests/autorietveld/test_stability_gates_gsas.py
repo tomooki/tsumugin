@@ -316,10 +316,31 @@ def test_default_run_emits_no_stability_entries(monkeypatch):
     result = run_auto_rietveld(hists, phases, recipe=recipe, ledger=ledger, max_cyc=3)
 
     kinds = {e.kind for e in ledger.entries}
-    assert kinds <= {"m7_stage", "m7_stage_error"}, kinds
+    # 【許すのは段の記録と成果物の記録だけ】: 診断層 (`m7_stage_weak_vars` /
+    #   `m7_stage_correlation` / `m7_undetermined` …) は既定では 1 つも出ないこと。
+    #   ``m7_gpx_*`` は 2026-08-20 規定 (NFR-108) で既定経路が**成果物を保存するようになった**
+    #   ため増えた行で、診断ではなく**実際に起きた状態変化の記録** (P2/NFR-105 の追記対象)。
+    #   保存を止めれば消える (`save_gpx=False`) — 下の姉妹テストで確認している。
+    assert kinds <= {"m7_stage", "m7_stage_error", "m7_gpx_saved", "m7_gpx_error"}, kinds
+    assert "m7_gpx_saved" in kinds, "既定経路で成果物が保存されていない (NFR-108)"
     assert all(
         "unconverged" not in s.note and "noop" not in s.note for s in result.stage_results
     )
+
+
+@pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
+def test_save_gpx_false_leaves_only_stage_entries():
+    """``save_gpx=False`` なら ledger は段の記録だけに戻る (成果物行は保存したときだけ出る)。
+
+    上のテストが `m7_gpx_saved` を許すようになったので、「常に出る行だから素通しした」のか
+    「実際に保存したから出た行なのか」を分ける対の確認を置く。
+    """
+    hists, phases, recipe = _t1_inputs()
+    ledger = Ledger()
+    run_auto_rietveld(hists, phases, recipe=recipe, ledger=ledger, max_cyc=3, save_gpx=False)
+
+    kinds = {e.kind for e in ledger.entries}
+    assert kinds <= {"m7_stage", "m7_stage_error"}, kinds
 
 
 @pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
