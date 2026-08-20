@@ -167,3 +167,28 @@ def test_repair_frames_returns_the_repaired_fit_path(monkeypatch, tmp_path):
     )
 
     assert out["repairs"][0]["gpx_path"] == "/out/run/f0001_repair_L.gpx"
+
+
+def test_topas_backend_receives_the_same_gpx_arguments(monkeypatch):
+    """★ ``backend="topas"`` でも**同じ引数名**で保存指示が届く (バックエンド中立の契約)。
+
+    ② は保存の指定をバックエンドで呼び分けない。TOPAS では ``.gpx`` ではなく
+    プロジェクト**ディレクトリ**が残り、返り値は ``project_path`` に出る。
+    """
+    captured: dict[str, object] = {}
+
+    def fake_topas(histograms, phases, **kwargs):
+        captured.update(kwargs)
+        return AutoRietveldResult(
+            stage_results=(), final_rwp=8.1, final_gof=1.2, refined_cells={},
+            validity=ValidityReport(passed=True), backend="topas",
+            project_path="/out/run/PBSO4",
+        )
+
+    monkeypatch.setattr("tsumugin.topas.engine.run_topas_rietveld", fake_topas)
+    out = auto_rietveld([_H], [_P], backend="topas", gpx_dir="/chosen")
+
+    assert captured["gpx_dir"] == "/chosen"
+    assert captured["save_gpx"] is True
+    assert out["project_path"] == "/out/run/PBSO4"
+    assert out["gpx_path"] == ""  # TOPAS に .gpx は無い

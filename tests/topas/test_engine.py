@@ -226,6 +226,72 @@ def test_real_pbso4_refines_end_to_end(tmp_path):
     assert (tmp_path / "proj").is_dir()  # 成果物が残る
 
 
+@pytest.mark.topas
+@_real_data
+def test_real_pbso4_saves_the_project_by_default(tmp_path, monkeypatch):
+    """★規定「全解析で成果物を保存する」(NFR-108) が **TOPAS でも** 実 tc.exe で成立する。
+
+    GSAS の ``.gpx`` に対応するのは TOPAS では**プロジェクトディレクトリ** (INP/.out/
+    results.txt)。``keep_project`` を渡さなくても既定で残り、``project_path`` がそれを指し、
+    索引に ``backend="topas"`` の行が入ることを見る。
+
+    データは tmp へコピーして使う — 既定の置き場所が**データ隣接**なので、追跡済みの
+    ``docs/benchmark/testdata/`` を汚さないため。
+    """
+    import shutil
+
+    from tsumugin.gpxstore import DEFAULT_DIR_NAME, ENV_VAR, read_manifest
+
+    monkeypatch.delenv(ENV_VAR, raising=False)  # 隔離を外して**本番の既定**を見る
+    for src in (_PBSO4_CIF, _PBSO4_XRA, _PBSO4_PRM):
+        shutil.copyfile(src, tmp_path / src.name)
+    hist = HistogramSpec(
+        data_path=str(tmp_path / _PBSO4_XRA.name),
+        instrument_path=str(tmp_path / _PBSO4_PRM.name),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="GSAS",
+    )
+    phase = PhaseSpec(structure_path=str(tmp_path / _PBSO4_CIF.name), phase_name="PbSO4")
+
+    result = eng.run_topas_rietveld([hist], [phase])
+
+    saved = Path(result.project_path)
+    assert saved.is_dir(), result.project_path
+    assert saved.parent.parent == tmp_path / DEFAULT_DIR_NAME
+    assert saved.name == "PBSO4"  # データ名から決まる (どのデータの精密化か分かる)
+    assert any(saved.iterdir()), "空のディレクトリしか残っていない"
+    assert result.gpx_path == "", "TOPAS に .gpx は無い (project_path が成果物)"
+
+    entries = read_manifest(str(saved.parent))
+    assert len(entries) == 1
+    assert entries[0]["backend"] == "topas"
+    assert entries[0]["path"] == str(saved)
+    assert entries[0]["rwp"] == pytest.approx(result.final_rwp)
+
+
+@pytest.mark.topas
+@_real_data
+def test_real_pbso4_save_gpx_false_writes_nothing(tmp_path, monkeypatch):
+    """TOPAS 経路でも opt-out (``save_gpx=False``) は 1 バイトも書かない。"""
+    import shutil
+
+    from tsumugin.gpxstore import DEFAULT_DIR_NAME, ENV_VAR
+
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    for src in (_PBSO4_CIF, _PBSO4_XRA, _PBSO4_PRM):
+        shutil.copyfile(src, tmp_path / src.name)
+    hist = HistogramSpec(
+        data_path=str(tmp_path / _PBSO4_XRA.name),
+        instrument_path=str(tmp_path / _PBSO4_PRM.name),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="GSAS",
+    )
+    phase = PhaseSpec(structure_path=str(tmp_path / _PBSO4_CIF.name), phase_name="PbSO4")
+
+    result = eng.run_topas_rietveld([hist], [phase], save_gpx=False)
+
+    assert result.project_path == ""
+    assert not (tmp_path / DEFAULT_DIR_NAME).exists()
+
+
 def test_validity_gate_rejects_non_physical_uiso(stub_driver, monkeypatch):
     """**Rwp が下がっても Uiso が負なら不合格**にする (中立層の `check_validity` を共用)。
 

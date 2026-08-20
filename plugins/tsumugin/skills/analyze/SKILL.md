@@ -77,7 +77,11 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
 **TOPAS 経路の制約** (知らないと詰まる):
 
 - `.gpx` が存在しないので **MEM 系ツール (`mem_density` 等) は使えない**。結果の `gpx_path` は
-  空文字になり、`project_path` に INP/.out が残る。
+  空文字になり、成果物は **`project_path`** (INP/.out/results.txt を入れたディレクトリ) に出る。
+  **保存の既定・引数は GSAS と同じ** — `gpx_dir` / `save_gpx` がそのまま効き、既定で
+  `<data_dir>/tsumugin_gpx/run-<日時>/<データ名>/` に残って `manifest.jsonl` にも
+  `backend: "topas"` の行が入る (2026-08-20 規定)。**見るキーだけが `gpx_path` → `project_path`
+  に変わる**ので、報告や引き継ぎで取り違えないこと。
 - 段階フラグは**全て翻訳できる**が、条件が合わない指定は**明示的に失敗して revert される**
   (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
   - `hydrostatic_strain` は **joint (複数ヒストグラム) 専用**。単一ヒストグラムでは格子
