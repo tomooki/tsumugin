@@ -1,0 +1,184 @@
+name: Claude Issue Loop (gate:fast only)
+
+# 【このワークフローが守る範囲】
+#   クラウドで回してよいのは **gate:fast だけ**である。runner には GSAS-II も TOPAS も実データも
+#   無いため、gate:gsas / gate:bench をここへ流すと「fast tier が green だから完了」と報告する
+#   周回になる — 設計 docs/design/issue-auto-loop/architecture.md §4 の「無言成功」そのもの。
+#   **ゲート検査は pick ジョブで機械的に行い、LLM の判断に委ねない。**
+#
+# 【GITHUB_TOKEN を Claude のステップへ漏らさない (重要)】
+#   既定の GITHUB_TOKEN で作られたコミット/PR に対して GitHub は workflow を**トリガーしない**。
+#   したがって claude-code-action に `github_token:` を渡さないだけでは不十分で、
+#   **`GH_TOKEN` を job レベルの env に置くのも駄目**である (job env は `uses:` ステップにも
+#   継承されるため、skill の `gh pr create` がそのトークンを拾う)。同じ理由で
+#   `actions/checkout` の `persist-credentials` も切る (`git push` が .git/config に
+#   永続化された GITHUB_TOKEN を使ってしまう)。
+#   → GH_TOKEN は**ラベル遷移の 2 ステップにだけ**与え、Claude には
+#     claude-code-action 自身の GitHub App 認証を使わせる。
+#   ⚠ 初回実行時はここを必ず確認すること: 出来た PR で `ci.yml` が回っているか。
+#     回っていなければ「受け入れ条件を誰も検証していない緑の PR」が量産される。
+#
+# 【周回の中身】
+#   .claude/skills/issue-work/SKILL.md。actions/checkout で runner に置かれるので
+#   prompt に "/issue-work <N>" を渡せば起動する (automation mode)。使えるツールは
+#   その SKILL.md の allowed-tools frontmatter が決める。
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue 番号 (空なら loop:queued + gate:fast の先頭 1 件を拾う)"
+        required: false
+        type: string
+
+  # 夜間の無人実行は**別判断** (設計 §7 の段階解放)。有効化するときは以下 2 行を外す。
+  # ⚠ public リポジトリの schedule は **60 日無活動で自動停止**し、実行者は「cron を最後に
+  #    触った人」に帰属する (bot 名義になると action の bot actor チェックで弾かれる)。
+  #    schedule は既定ブランチからしか走らない。
+  # schedule:
+  #   - cron: "0 0 * * *" # 09:00 JST
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write # claude-code-action の既定 GitHub App 認証に必要
+  actions: read # PR の CI 結果を読ませる
+
+# 同時に 2 周回させない (同じ Issue の二重着手と API 競合を避ける)。
+concurrency:
+  group: claude-issue-loop
+  cancel-in-progress: false
+
+jobs:
+  pick:
+    name: 対象を決める (ゲート検査)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: read
+    outputs:
+      issue: ${{ steps.pick.outputs.issue }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REQUESTED: ${{ inputs.issue }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${REQUESTED}" ]; then
+            n="${REQUESTED}"
+
+            # 入力形式をここで弾く。数値以外を渡すと gh の解釈エラーとしてしか現れず、
+            # 「何が悪かったのか」がログから読み取れない。
+            case "$n" in
+              ''|*[!0-9]*)
+                echo "::error::issue には Issue 番号 (数字のみ) を渡すこと。受け取った値: '${n}'"
+                exit 1 ;;
+            esac
+
+            labels=$(gh issue view "$n" --json labels --jq '[.labels[].name] | join(",")')
+            echo "指定: #$n / labels = ${labels}"
+            # ゲート検査は**ここで機械的に**行う。gate:fast 以外はクラウドで受け入れ判定が
+            # できないため、着手させずに失敗させる (黙って fast tier だけ回して完了と言わない)。
+            case ",${labels}," in
+              *,gate:fast,*) ;;
+              *) echo "::error::#$n は gate:fast ではない (labels: ${labels})。runner では受け入れ条件を証明できないので着手しない。" ; exit 1 ;;
+            esac
+          else
+            # ⚠ loop:blocked を**必ず除外する**。除外しないと、ラベル遷移ステップより前で
+            #    落ちた Issue が queued と blocked を同時に持ったまま残り、毎回同じ地点で
+            #    失敗し続ける (失敗が伝わらないまま回り続ける = 最悪の形)。
+            n=$(gh issue list --state open \
+                  --label loop:queued --label gate:fast \
+                  --json number,labels \
+                  --jq '[ .[] | select([.labels[].name] | index("loop:blocked") | not) | .number ] | first // ""')
+            if [ -z "$n" ]; then
+              echo "loop:queued かつ gate:fast (loop:blocked を除く) の Issue は無い。"
+            else
+              echo "キューから拾った: #$n"
+            fi
+          fi
+
+          echo "issue=$n" >> "$GITHUB_OUTPUT"
+
+  work:
+    name: 1 周回 (/issue-work)
+    needs: pick
+    if: needs.pick.outputs.issue != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # ⚠ GH_TOKEN はここに置かない (冒頭の理由)。必要なステップにだけ与える。
+      GH_REPO: ${{ github.repository }}
+      N: ${{ needs.pick.outputs.issue }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # S4 のゼロ差分検出が `git diff main...HEAD` を見るため、浅い clone では足りない。
+          fetch-depth: 0
+          # GITHUB_TOKEN を .git/config に残さない — 残すと skill の `git push` がそれを使い、
+          # 押し込まれたコミットが workflow をトリガーしなくなる。
+          persist-credentials: false
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # `--all-extras --frozen` は ci.yml と同条件。extras が欠けた環境の大量 fail を
+      # 「本体の回帰」と誤読する事故が実際にあったため、条件を CI と揃える。
+      - run: uv sync --all-extras --frozen
+
+      # Node は用意するが frontend の依存は**入れない** — gate:fast の大半は Python 側で、
+      # 毎回 npm install するのは無駄。frontend/ を触る周回だけ skill 側で install させる。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: ラベルを in-progress へ (状態遷移は機械的に)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 付いていないラベルの --remove-label は no-op (exit 0) であることを実測済みなので、
+          # 条件分岐は不要。人が番号を直接指定した場合も同じ経路で通る。
+          gh issue edit "$N" --add-label loop:in-progress --remove-label loop:queued
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "/issue-work ${{ needs.pick.outputs.issue }}"
+          claude_args: |
+            --max-turns 40
+            --model claude-opus-5
+          # ⚠ github_token: を足さないこと (冒頭の理由)。
+
+      - name: 失敗したら blocked にして理由を残す (沈黙して終わらない)
+        if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # loop:queued も必ず外す。ラベル遷移ステップより前で落ちた場合はまだ付いており、
+          # 残すと blocked と同居して次の周回が同じ Issue を拾い続ける。
+          gh issue edit "$N" \
+            --add-label loop:blocked \
+            --remove-label loop:in-progress \
+            --remove-label loop:queued
+          # 本文は printf で組む。heredoc は終端行を行頭に置く必要があり **YAML の
+          # ブロックスカラーを終端させてしまう** (実測でここが壊れた)。素の複数行文字列も不可 —
+          # 4 空白以上で始まる行を Markdown がコードブロックとして描画する。
+          body=$(printf '%s\n' \
+            "自動周回が完走しませんでした (**このコメントは自動投稿です**)。" \
+            "" \
+            "実行ログ: ${run_url}" \
+            "" \
+            "\`loop:blocked\` にしました。原因を確認し、再開する場合は \`loop:blocked\` を外して \`loop:queued\` を付け直してください。")
+          gh issue comment "$N" --body "$body"
