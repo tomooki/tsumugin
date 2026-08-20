@@ -1,6 +1,14 @@
 """GSAS-II (GSASIIscriptable) バックエンド (仕様 §3.1)。
 
 RefinementModel を一時 .gpx プロジェクトへ変換して GSAS-II の Rietveld 精密化を実行する。
+
+⚠ **本経路は「全解析で成果物を保存する」規定 (NFR-108, 2026-08-20) の対象外**である。
+理由: (a) 入力が 2θ/強度**配列** (`RefinementModel`) で隣接データファイルが無いため既定の
+置き場所が決まらない、(b) 返り値 `RefinementResult` に成果物パスを載せるフィールドが無く、
+保存しても ③ から到達できない「黙って増えるファイル」になる。規定を満たすには
+`RefinementResult` へのハンドル追加と evidence/selection/② 仮説ツール群への波及が要る。
+判別 (FR-313) は本来この規定の対象なので、負債として
+`docs/design/gpx-retention/architecture.md` §8 に明示している。
 GSAS-II 2.x のパッケージ構成 (`GSASII.GSASIIscriptable`) を前提とし、未導入環境では
 明示的に無効化する。import は関数内で遅延させ、未導入環境でモジュール収集が失敗しない。
 
