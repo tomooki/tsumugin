@@ -30,6 +30,13 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
 ## 手順
 
 1. **収束モデルを用意する**: `analyze` (または `auto_rietveld`) で得た `gpx_path` と相の CIF パスを持つ。
+   **`gpx_path` は精密化のたびに必ず返る** (2026-08-20 規定「全解析で gpx を保存する」) —
+   `auto_rietveld`/`refine_with_revisions` の `gpx_path`、系列なら
+   `sequential_rietveld`/`anchored_sequential` の `frames[].gpx_path` (**任意のフレームに
+   MEM を掛けられる**)。置き場所は既定で観測データ隣接 `<data_dir>/tsumugin_gpx/run-<日時>/` で、
+   `manifest.jsonl` (役割・相・Rwp の索引) から目的の fit を引ける。
+   ⚠ 空文字が返るのは `save_gpx=false` で保存を止めたときと TOPAS 経路
+   (`.gpx` が存在しない — `project_path` に INP/.out が残る) の 2 つだけ。
 2. **`mem_density` を呼ぶ**: **欠損原子探索には `map_type="delt-F"` (差フーリエ Fo-Fc) を使う**
    (既定の `"Fobs"` は Dysnomia MEM 密度で既知密度の可視化向け・骨格ピークが支配し欠損を隠す)。
    delt-F は Dysnomia 不要。**位置特定は高分解能・低重なりデータが必須**なので、joint なら

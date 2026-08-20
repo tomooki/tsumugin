@@ -105,6 +105,16 @@ sequential_rietveld(
 > `check_phase_set` / `repair_frames` の分率系の閾値 (`min_amplitude` / `frac_delta`) も同じく
 > Scale 基準である (各ツールの出力 `fraction_basis` がそれを明示する)。
 
+> ### 各フレームの fit は**全部保存されている** (2026-08-20 規定) — 疑うときの一次資料
+>
+> 系列を回すと、フレーム 1 枚ごと (+ 棄却された相追加トライアル・M10 の採られなかった方向)
+> の `.gpx` が run ディレクトリに残る。場所は返り値の **`gpx_dir`**、フレーム別は
+> **`frames[].gpx_path`**、索引は `manifest.jsonl` (役割・相・Rwp)。
+>
+> **本 skill が疑う対象の多くは Rwp に現れない**ので、数値の表だけを見ていても切り分けられない。
+> 疑わしいフレームは fit そのものを開く/`mem_density` を掛ける — その入力がこれである。
+> `save_gpx=false` にすると**この一次資料が残らない**ので、診断目的の系列では止めないこと。
+
 ### 3. 疑う — **ここからが本 skill の主眼**
 
 **実行順 ≠ J 番号順**。J ラベルは識別子であり付番順ではない — 本節の**記載順が実行順**である:
@@ -252,6 +262,7 @@ align_echem("K-10.mpr", offset_s=22.1, interval_s=283.0, n_frames=247)
 ### 6. 報告
 
 **Rwp と併せて、相集合の完全性をどう確認したかを必ず書く**。未確定は未確定と書く。
+**成果物の置き場所 (`gpx_dir`) を書く** — 疑った根拠を人間が開いて確かめられるようにする。
 
 > ⚠ **`phase_fractions` は Scale であって重量分率 (wt%) ではない** — 出版値・定量相分析には
 > **`phase_weight_fractions` ± `phase_weight_fraction_esd`** を使う (手順 7)。

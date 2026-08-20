@@ -173,6 +173,13 @@ result = run_auto_rietveld([hx, ht1, ht2], phases)
 - `result.validity.checks`: 項目別 (項目名, 合否, 詳細) — 不合格項目の特定に使う。
 - `result.refined_cells`: 相ごとの精密化格子。文献値との照合に使う。
 - `result.stage_results[*].reverted`: revert が起きた段階 (その段階のパラメータは寄与せず)。
+- `result.gpx_path`: **この精密化の成果物** (2026-08-20 規定「全解析で gpx を全部保存する」)。
+  引数を渡さなくても既定で保存される — 置き場所は観測データ隣接
+  `<data_dir>/tsumugin_gpx/run-<日時>/`、索引は同ディレクトリの `manifest.jsonl`
+  (役割・相・Rwp)。`gpx_dir` で置き場所を指定でき、`save_gpx=False` で止められる。
+  探索 (`search`) は候補ごと・収束確認 (`multistart`) は開始点ごとに 1 つ残るので、
+  **「負けた候補/別ベイスンへ落ちた開始点がどんな解だったか」を後から開いて確認できる**。
+  MEM (`mem_density` / `mem_rietveld_iterate`) の入力もこのパスである。
 
 ### 5.1 ⚠ 合否は単発の Rwp では決まらない — **収束確認** (規定の標準経路)
 
