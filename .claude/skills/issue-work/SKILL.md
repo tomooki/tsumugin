@@ -1,7 +1,7 @@
 ---
 name: issue-work
 description: トリアージ済の GitHub Issue を 1 件受け取り、実地確認 → TDD → 自己レビュー → PR まで進める自動処理ループの 1 周回。ゲート級 (gate:fast / gate:gsas / gate:bench / gate:human) で受け入れ条件と実行系を切り替え、「テストが green なので完了」型の無言成功を 3 つの検出器 (ゼロ差分 / red→green 実測 / 変異証明) で殺す。マージ・close・main への push・外部への発信はしない。設計は docs/design/issue-auto-loop/architecture.md。
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Skill
 ---
 
 # issue-work — Issue 自動処理ループの 1 周回 (③ 実行層)

@@ -11,6 +11,9 @@
     scratchpad/issue-loop/ に書くだけで GitHub へは 1 バイトも書かない。
     実際に着手させるには -Apply を明示する。
 
+    ⚠ このファイルは **UTF-8 BOM 付き**で保存すること。Windows PowerShell 5.1 は
+      BOM の無い .ps1 を cp932 として読むため、日本語コメントで文字列終端が壊れる。
+
 .PARAMETER Gate
     対象ゲート級。fast / gsas / bench / human。
     ⚠ gsas / bench は **このローカル機でしか受け入れ判定ができない** (GSAS-II / TOPAS / 実データ)。
@@ -22,13 +25,17 @@
 .PARAMETER Apply
     dry-run を解除し、worktree を切って実際に着手させる。
 
+.PARAMETER ListOnly
+    何が拾われるかだけを表示して終わる (ワーカーを起動しない)。
+
+.EXAMPLE
+    .\tools\issue_loop.ps1 -Gate fast -Max 4 -ListOnly
+
 .EXAMPLE
     .\tools\issue_loop.ps1 -Gate fast
-    # dry-run。計画レポートだけを書く。
 
 .EXAMPLE
     .\tools\issue_loop.ps1 -Gate gsas -Max 2 -Apply
-    # ローカルワーカーを 2 本、worktree 隔離で起動する。
 #>
 [CmdletBinding()]
 param(
@@ -40,7 +47,6 @@ param(
 
     [switch]$Apply,
 
-    # 何が拾われるかだけを表示して終わる (ワーカーを起動しない)。
     [switch]$ListOnly
 )
 
@@ -56,10 +62,12 @@ if (-not (Test-Path $reportDir)) {
 if ($Gate -eq 'human') {
     Write-Host "gate:human は人間の判断・外部への働きかけが本体であり、ループの着手対象ではない。" -ForegroundColor Yellow
     Write-Host "調査だけさせたい場合は Issue に @claude で個別に頼むこと。"
-    return
+    exit 0
 }
 
 # --- キュー取得 ----------------------------------------------------------------
+# loop:blocked は除外する。除外しないと、一度失敗した Issue を毎回拾って同じ地点で
+# 失敗し続ける (失敗が伝わらないまま回り続けるのが最悪の形)。
 $ghArgs = @('issue', 'list', '--state', 'open', '--label', 'loop:queued',
     '--label', "gate:$Gate", '--json', 'number,title,labels', '--limit', '100')
 $raw = & gh @ghArgs
@@ -71,42 +79,53 @@ if ($LASTEXITCODE -ne 0) { throw "gh issue list が失敗した (exit $LASTEXITC
 #      いったん変数へ代入すると展開されて 0 件になる。加えて number を持つ要素だけ数え、
 #      「空を正常と答える」経路を構造的に塞ぐ。
 $parsed = $raw | ConvertFrom-Json
-$queued = @($parsed | Where-Object { $null -ne $_ -and $null -ne $_.number })
+$queued = @($parsed | Where-Object {
+        $null -ne $_ -and $null -ne $_.number -and ($_.labels.name -notcontains 'loop:blocked')
+    })
 if ($queued.Count -eq 0) {
-    Write-Host "loop:queued かつ gate:$Gate の Issue は無い。"
-    return
+    Write-Host "loop:queued かつ gate:$Gate (loop:blocked を除く) の Issue は無い。"
+    exit 0
 }
 
-Write-Host "gate:$Gate のキュー: $($queued.Count) 件 (拾うのは最大 $Max 件)"
+# --- 着手済み (ブランチが既にある) を **先に**落とす ---------------------------
+# 後段の foreach で continue すると、先頭が着手済みのときに -Max 1 が 1 件も拾わず
+# 「周回終了」と表示して何もしない。キューに未着手が残っているのに永久に進まなくなる。
+$available = @()
+foreach ($issue in $queued) {
+    $n = $issue.number
+    # `git show-ref --quiet` は ref が無いと 1 を返す。これは正常な問い合わせ結果であって
+    # 失敗ではないが、$LASTEXITCODE に残るとスクリプト全体の終了コードを 1 に汚染する
+    # (実測: 成功した -ListOnly 実行が exit 1 を返し、タスクスケジューラでは失敗に見えた)。
+    & git -C $repoRoot show-ref --verify --quiet "refs/heads/auto/issue-$n"
+    $branchExists = ($LASTEXITCODE -eq 0)
+    $global:LASTEXITCODE = 0
+    if ($branchExists) {
+        Write-Host "  #$n : ブランチ auto/issue-$n が既にある → 着手済とみなして飛ばす" -ForegroundColor DarkGray
+        continue
+    }
+    $available += $issue
+}
 
-$picked = @($queued | Select-Object -First $Max)
+if ($available.Count -eq 0) {
+    Write-Host "gate:$Gate のキューは $($queued.Count) 件あるが、すべて着手済み (ブランチ有り)。"
+    exit 0
+}
+
+Write-Host "gate:$Gate の未着手キュー: $($available.Count) 件 (拾うのは最大 $Max 件)"
+
+$picked = @($available | Select-Object -First $Max)
 
 if ($ListOnly) {
     foreach ($issue in $picked) {
         Write-Host ("  #{0}  {1}" -f $issue.number, $issue.title)
     }
     Write-Host "(-ListOnly のため着手しない)"
-    return
+    exit 0
 }
 
 foreach ($issue in $picked) {
     $n = $issue.number
-
-    # --- 防御: 番号の無い要素で仕事を始めない (空入力を「正常」と答えない) ---------
-    if (-not $n) {
-        Write-Host "  WARN 番号を持たない要素がキューに混じった。着手せず飛ばす。" -ForegroundColor Yellow
-        continue
-    }
-
     $branch = "auto/issue-$n"
-
-    # --- 冪等: 既にブランチがあるなら着手済とみなして飛ばす ---------------------
-    & git -C $repoRoot show-ref --verify --quiet "refs/heads/$branch"
-    $branchExists = ($LASTEXITCODE -eq 0)
-    if ($branchExists) {
-        Write-Host "  #$n : ブランチ $branch が既にある → 着手済とみなして飛ばす" -ForegroundColor DarkGray
-        continue
-    }
 
     Write-Host ""
     Write-Host "=== #$n $($issue.title)" -ForegroundColor Cyan
@@ -127,7 +146,7 @@ foreach ($issue in $picked) {
 
         Set-Content -Path $report -Value $out -Encoding utf8
         if ($code -ne 0) {
-            Write-Host "  ⚠ claude が exit $code で終了した。レポートは途中までの可能性がある。" -ForegroundColor Yellow
+            Write-Host "  WARN claude が exit $code で終了した。レポートは途中までの可能性がある。" -ForegroundColor Yellow
         }
         else {
             Write-Host "  完了 (GitHub への書き込みなし)"
@@ -141,7 +160,7 @@ foreach ($issue in $picked) {
     #    これを忘れると全周回が静かに別ソースを検証する。
     & gh issue edit $n --add-label "loop:in-progress" --remove-label "loop:queued"
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ⚠ ラベル遷移に失敗した。着手しない。" -ForegroundColor Yellow
+        Write-Host "  WARN ラベル遷移に失敗した。着手しない。" -ForegroundColor Yellow
         continue
     }
 
@@ -151,7 +170,13 @@ foreach ($issue in $picked) {
         '-p', "/issue-work $n")
     & claude @workerArgs
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ⚠ ワーカー起動に失敗した (exit $LASTEXITCODE)。ラベルを戻すこと。" -ForegroundColor Yellow
+        # ラベルを**実際に戻す**。戻さないとキューからも外れ loop:review にも進まないため、
+        # 誰も着手していない Issue が in-progress のまま宙吊りになり人の目にも留まらない。
+        Write-Host "  WARN ワーカー起動に失敗した (exit $LASTEXITCODE)。ラベルを戻す。" -ForegroundColor Yellow
+        & gh issue edit $n --add-label "loop:queued" --remove-label "loop:in-progress"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  WARN ラベルの復旧にも失敗した。#$n を手で確認すること。" -ForegroundColor Red
+        }
     }
     else {
         Write-Host "  ワーカーを起動した (claude agents で状況を見る)"
@@ -164,3 +189,6 @@ if (-not $Apply) {
     Write-Host "レポート: $reportDir"
     Write-Host "実着手させるには -Apply を付ける。"
 }
+
+# 明示的に 0 を返す。外部コマンドの $LASTEXITCODE を素通しさせない。
+exit 0

@@ -6,11 +6,17 @@ name: Claude Issue Loop (gate:fast only)
 #   周回になる — 設計 docs/design/issue-auto-loop/architecture.md §4 の「無言成功」そのもの。
 #   **ゲート検査は pick ジョブで機械的に行い、LLM の判断に委ねない。**
 #
-# 【github_token を渡さない理由 (重要)】
-#   既定の GITHUB_TOKEN で作られたコミットに対して GitHub は workflow を**トリガーしない**。
-#   claude-code-action に github_token を渡すと、Claude が作った PR で ci.yml が回らず、
-#   **gate:fast の受け入れ条件 (ruff + fast tier + frontend が green) がそもそも証明できなくなる**。
-#   省略して Claude GitHub App として認証させること。
+# 【GITHUB_TOKEN を Claude のステップへ漏らさない (重要)】
+#   既定の GITHUB_TOKEN で作られたコミット/PR に対して GitHub は workflow を**トリガーしない**。
+#   したがって claude-code-action に `github_token:` を渡さないだけでは不十分で、
+#   **`GH_TOKEN` を job レベルの env に置くのも駄目**である (job env は `uses:` ステップにも
+#   継承されるため、skill の `gh pr create` がそのトークンを拾う)。同じ理由で
+#   `actions/checkout` の `persist-credentials` も切る (`git push` が .git/config に
+#   永続化された GITHUB_TOKEN を使ってしまう)。
+#   → GH_TOKEN は**ラベル遷移の 2 ステップにだけ**与え、Claude には
+#     claude-code-action 自身の GitHub App 認証を使わせる。
+#   ⚠ 初回実行時はここを必ず確認すること: 出来た PR で `ci.yml` が回っているか。
+#     回っていなければ「受け入れ条件を誰も検証していない緑の PR」が量産される。
 #
 # 【周回の中身】
 #   .claude/skills/issue-work/SKILL.md。actions/checkout で runner に置かれるので
@@ -64,6 +70,15 @@ jobs:
 
           if [ -n "${REQUESTED}" ]; then
             n="${REQUESTED}"
+
+            # 入力形式をここで弾く。数値以外を渡すと gh の解釈エラーとしてしか現れず、
+            # 「何が悪かったのか」がログから読み取れない。
+            case "$n" in
+              ''|*[!0-9]*)
+                echo "::error::issue には Issue 番号 (数字のみ) を渡すこと。受け取った値: '${n}'"
+                exit 1 ;;
+            esac
+
             labels=$(gh issue view "$n" --json labels --jq '[.labels[].name] | join(",")')
             echo "指定: #$n / labels = ${labels}"
             # ゲート検査は**ここで機械的に**行う。gate:fast 以外はクラウドで受け入れ判定が
@@ -73,11 +88,15 @@ jobs:
               *) echo "::error::#$n は gate:fast ではない (labels: ${labels})。runner では受け入れ条件を証明できないので着手しない。" ; exit 1 ;;
             esac
           else
+            # ⚠ loop:blocked を**必ず除外する**。除外しないと、ラベル遷移ステップより前で
+            #    落ちた Issue が queued と blocked を同時に持ったまま残り、毎回同じ地点で
+            #    失敗し続ける (失敗が伝わらないまま回り続ける = 最悪の形)。
             n=$(gh issue list --state open \
                   --label loop:queued --label gate:fast \
-                  --json number --jq 'map(.number) | first // ""')
+                  --json number,labels \
+                  --jq '[ .[] | select([.labels[].name] | index("loop:blocked") | not) | .number ] | first // ""')
             if [ -z "$n" ]; then
-              echo "loop:queued かつ gate:fast の Issue は無い。"
+              echo "loop:queued かつ gate:fast (loop:blocked を除く) の Issue は無い。"
             else
               echo "キューから拾った: #$n"
             fi
@@ -92,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ⚠ GH_TOKEN はここに置かない (冒頭の理由)。必要なステップにだけ与える。
       GH_REPO: ${{ github.repository }}
       N: ${{ needs.pick.outputs.issue }}
     steps:
@@ -100,6 +119,9 @@ jobs:
         with:
           # S4 のゼロ差分検出が `git diff main...HEAD` を見るため、浅い clone では足りない。
           fetch-depth: 0
+          # GITHUB_TOKEN を .git/config に残さない — 残すと skill の `git push` がそれを使い、
+          # 押し込まれたコミットが workflow をトリガーしなくなる。
+          persist-credentials: false
 
       - name: Set up uv + Python
         uses: astral-sh/setup-uv@v5
@@ -120,15 +142,13 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: ラベルを in-progress へ (状態遷移は機械的に)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          labels=$(gh issue view "$N" --json labels --jq '[.labels[].name] | join(",")')
-          args=(--add-label loop:in-progress)
-          # loop:queued が付いていない (人が番号を指定した) 場合に remove で落とさない。
-          case ",${labels}," in
-            *,loop:queued,*) args+=(--remove-label loop:queued) ;;
-          esac
-          gh issue edit "$N" "${args[@]}"
+          # 付いていないラベルの --remove-label は no-op (exit 0) であることを実測済みなので、
+          # 条件分岐は不要。人が番号を直接指定した場合も同じ経路で通る。
+          gh issue edit "$N" --add-label loop:in-progress --remove-label loop:queued
 
       - uses: anthropics/claude-code-action@v1
         with:
@@ -141,10 +161,17 @@ jobs:
 
       - name: 失敗したら blocked にして理由を残す (沈黙して終わらない)
         if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh issue edit "$N" --add-label loop:blocked --remove-label loop:in-progress
+          # loop:queued も必ず外す。ラベル遷移ステップより前で落ちた場合はまだ付いており、
+          # 残すと blocked と同居して次の周回が同じ Issue を拾い続ける。
+          gh issue edit "$N" \
+            --add-label loop:blocked \
+            --remove-label loop:in-progress \
+            --remove-label loop:queued
           # 本文は printf で組む。heredoc は終端行を行頭に置く必要があり **YAML の
           # ブロックスカラーを終端させてしまう** (実測でここが壊れた)。素の複数行文字列も不可 —
           # 4 空白以上で始まる行を Markdown がコードブロックとして描画する。
