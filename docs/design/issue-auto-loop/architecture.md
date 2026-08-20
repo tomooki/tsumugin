@@ -182,38 +182,36 @@ runner で再現できない。TOPAS (`tc.exe`) と実測データも同様。
 
 ### 5.2 クラウド (従) — `gate:fast` のみ
 
-```yaml
-# 設計案: .github/workflows/claude-issue-loop.yml (未実装)
-name: Claude Issue Loop (fast gate only)
-on:
-  schedule: [{ cron: "0 0 * * *" }]     # 09:00 JST
-  workflow_dispatch:
-jobs:
-  work:
-    runs-on: ubuntu-latest
-    permissions: { contents: write, issues: write, pull-requests: write, id-token: write, actions: read }
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras --frozen       # extras 欠けは「本体の回帰」に誤読される
-      - uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: "/issue-work --gate fast --pick-one"
-          claude_args: |
-            --max-turns 40
-            --model claude-opus-5
+実装: **`.github/workflows/claude-issue-loop.yml`**。`pick` (対象決定 + ゲート検査) →
+`work` (1 周回) の 2 ジョブ。**ゲート検査は shell で機械的に行い LLM に委ねない。**
+
+```
+workflow_dispatch (issue 番号は任意)
+  └ pick : gate:fast かつ loop:queued (loop:blocked を除く) から 1 件。番号指定時は
+           gate:fast でなければ ::error:: で着手前に落とす
+  └ work : checkout → uv sync → ラベルを in-progress → claude-code-action → (失敗なら blocked)
 ```
 
-注意点 (公式ドキュメント由来):
+**実装して初めて判った注意点** (公式ドキュメントに書かれていない):
 
-- `prompt` を渡すと **automation mode** = `@claude` 不要で走る。既定では結果が
-  **workflow ログにしか出ない**ので、Issue/PR へ書くツールを `--allowedTools` で明示的に渡すこと。
-- `schedule` は**既定ブランチからしか走らず**、public リポジトリでは
-  **60 日無活動で自動停止**する。
-- scheduled run の実行者は「cron を最後に触った人」に帰属する。bot 名義になると
-  **bot actor チェックで弾かれる** (`allowed_bots` が必要)。
+- **`GH_TOKEN` を job レベルの env に置いてはいけない。** job env は `uses:` ステップにも
+  継承されるため、skill の `gh pr create` が GITHUB_TOKEN を拾い、**出来た PR で `ci.yml` が
+  トリガーされない** (GITHUB_TOKEN 起因のイベントは新しい workflow run を作らない仕様)。
+  `github_token:` を action へ渡さないだけでは足りない。同じ理由で `actions/checkout` の
+  **`persist-credentials: false`** が要る (`git push` が `.git/config` に残ったトークンを使う)。
+  → `GH_TOKEN` はラベル遷移の 2 ステップにだけ与える。
+  **初回実行時の確認事項: 出来た PR で `ci.yml` が回っているか。**
+- ツールの許可は `--allowedTools` ではなく **skill の `allowed-tools` frontmatter** で与える
+  (skill を `prompt` に渡す場合はそちらが正)。`Skill` を含めないと `/code-review` を回す
+  段が実行できない。
+- **失敗時は `loop:queued` も外す。** 外さないと blocked と同居し、次の周回が同じ Issue を
+  拾って同じ地点で落ち続ける。
+- `schedule` は**既定ブランチからしか走らず**、public リポジトリでは **60 日無活動で自動停止**する。
+  実行者は「cron を最後に触った人」に帰属し、bot 名義になると **bot actor チェックで弾かれる**
+  (`allowed_bots` が必要)。→ 段階解放のため**既定ではコメントアウト**してある。
 - fork PR には secret が渡らない (単独メンテなら実害なし)。
+- `--max-turns` は `claude --help` に**出ないが有効**なフラグ (対照実験で確認: 存在しない
+  フラグは `error: unknown option` で落ちる)。help に無いことを根拠に消さないこと。
 
 **クラウドに `gate:gsas` を渡さないこと。** runner に GSAS-II が無いので
 「fast tier が green だから完了」と報告する周回になる = §4 の無言成功そのもの。
@@ -243,8 +241,8 @@ interactive mode は残しておき、**着手ではなく調査**に使う。
 
 | 段 | 開けるもの | 撤退条件 |
 |---|---|---|
-| **0. dry-run** | Issue に**計画コメントを書くだけ**。PR も branch も作らない。`gate:fast` の 3–5 件で回す | 計画が S1 (実地確認) を素通りする / 既に直っている件に着手しようとする |
-| **1. fast 自動 PR** | `gate:fast` で PR 作成まで。マージは人間 | S4 変異証明を省く周回が出る |
+| **0. dry-run** ✅完了 | Issue に**計画コメントを書くだけ**。PR も branch も作らない。`gate:fast` の 3–5 件で回す | 計画が S1 (実地確認) を素通りする / 既に直っている件に着手しようとする |
+| **1. fast 自動 PR** ⏳実装済・実走待ち | `gate:fast` で PR 作成まで。マージは人間 | S4 変異証明を省く周回が出る |
 | **2. gsas ローカル** | `gate:gsas` をローカルワーカーへ。同時 2 | worktree の PYTHONPATH 罠を踏んだ形跡がある |
 | **3. bench** | `gate:bench` は**測定レポートのみ** (PR を作らせない) | — |
 
@@ -256,7 +254,7 @@ interactive mode は残しておき、**着手ではなく調査**に使う。
 ## 8. コスト
 
 - `--max-turns` / `--max-budget-usd` をワーカー既定に入れる。
-- クラウドは 1 日 1 件だけ拾う (`--pick-one`)。GitHub Actions 分も消費する。
+- クラウドは 1 回の実行で 1 件だけ拾う (`pick` ジョブの jq `first`)。GitHub Actions 分も消費する。
 - ローカルは `-m gsas` の実時間 (~50 分/フル) が支配的。**サブセット指定を必須**にし、
   フル実行は PR 直前の 1 回だけ。
 
