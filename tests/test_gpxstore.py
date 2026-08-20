@@ -385,3 +385,34 @@ def test_group_context_honours_save_false_even_under_an_ambient(tmp_path):
 
     assert group.enabled is False and reason == ""
     assert plan_artifact(["/data/a.xye"], group).path is None
+
+
+def test_empty_data_path_does_not_write_outside_the_cwd(tmp_path, monkeypatch):
+    """★空のデータパスで **CWD の親**へ書かない (セルフレビュー round 2)。
+
+    `os.path.dirname(os.path.abspath(""))` は CWD の**親**を返す。そのまま根にすると
+    プロジェクトの外側に成果物ディレクトリを作る = 誰も見に行かない場所へ黙って書くことになる。
+    """
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    work = tmp_path / "proj"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    run_dir = resolve_run_dir("")
+
+    assert Path(run_dir).parent == work / "tsumugin_gpx"
+    assert not (tmp_path / "tsumugin_gpx").exists(), "CWD の親に撒いている"
+
+
+def test_explicit_dir_saves_even_without_a_data_path(tmp_path):
+    """★データパスが無くても**明示 gpx_dir があるなら保存する** (セルフレビュー round 2)。
+
+    置き場所が決まっている以上、データパスの欠落を理由に頼まれた保存を捨てない
+    (「明示指定は黙って無効化しない」の一貫性)。
+    """
+    from tsumugin.gpxstore import series_context
+
+    ctx, reason = series_context("", gpx_dir=str(tmp_path / "explicit"))
+
+    assert ctx.enabled and Path(ctx.run_dir).parent == tmp_path / "explicit"
+    assert reason == ""

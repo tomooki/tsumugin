@@ -176,8 +176,13 @@ def _root_dir(data_path: str, explicit_dir: str | None) -> str | None:
         if env.lower() == DISABLED:
             return None
         return os.path.abspath(env)
-    parent = os.path.dirname(os.path.abspath(str(data_path))) or os.getcwd()
-    return os.path.join(parent, DEFAULT_DIR_NAME)
+    text = str(data_path).strip()
+    if not text:
+        # 【空パスは CWD 直下】: `os.path.dirname(os.path.abspath(""))` は **CWD の親**を返すので、
+        #   そのまま使うとプロジェクトの外側に成果物ディレクトリを作ってしまう (誰も見に行かない
+        #   場所へ黙って書く)。データが分からないときはせめて CWD 直下に置く。
+        return os.path.join(os.getcwd(), DEFAULT_DIR_NAME)
+    return os.path.join(os.path.dirname(os.path.abspath(text)), DEFAULT_DIR_NAME)
 
 
 def resolve_run_dir(
@@ -339,9 +344,13 @@ def series_context(
 
     :returns: ``(文脈, 退避理由)``。退避理由が非空なら呼び出し側が ledger/警告に載せること
     """
-    if not save or not str(data_path).strip():
+    if not save:
+        return GpxContext(enabled=False), ""
+    if not str(data_path).strip() and not gpx_dir:
         # 【空入力で run ディレクトリを作らない】: フレーム 0 個の系列 (退化入力) で CWD に
         #   空ディレクトリを撒くのは、保存規定の趣旨 (後から探せる) に対してノイズにしかならない。
+        #   ただし**明示 ``gpx_dir`` があるなら置き場所は決まっている**ので保存する
+        #   (頼まれた保存をデータパスの欠落で黙って捨てない)。
         return GpxContext(enabled=False), ""
     run_dir, reason = resolve_run_dir(
         data_path, explicit_dir=gpx_dir, now=now, report_fallback=True

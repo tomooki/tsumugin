@@ -700,7 +700,7 @@ def test_repair_trials_share_one_run_dir(tmp_path):
     設計 §3 の「1 実行 = 1 run ディレクトリ」に反し索引も 1 行ずつに分散する
     (「どの修復がどれか」を辿るのに全 run を開く羽目になる)。
     """
-    from tsumugin.gpxstore import ENV_VAR, active_context
+    from tsumugin.gpxstore import active_context
 
     seen: list[tuple[str, int | None, str]] = []
 
