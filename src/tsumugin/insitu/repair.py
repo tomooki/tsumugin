@@ -37,6 +37,7 @@ from typing import Mapping, Sequence
 from ..autorietveld.model import AutoRietveldResult, CellEsd, PhaseSpec
 from ..store.ledger import Ledger
 from ._warmstart import call_runner, seed_fractions
+from ..gpxstore import gpx_context, group_context
 from .engine import Runner, _publication_of
 from .model import Cell, FrameRietveldResult, FrameSpec, SequentialRietveldResult
 
@@ -82,6 +83,9 @@ class FrameRepair:
         この精密化から決まっていない (レビュー第6巡)・単相は ``0.0`` (自明)。既定空 dict
     :param cell_esd: 相名→格子 esd (a,b,c,α,β,γ)。要素 ``None`` = 格子を解放していない
         (凍結セル/未精密化) ので値が決まっていない。``0.0`` は対称拘束で厳密に固定。既定空 dict
+    :param gpx_path: 採用した修復 fit の成果物パス ("" = 未保存)。修復は**元の系列結果を
+        置き換える**ので、③ が修復後のフレームを MEM/再プロットに掛けるにはこちらを見る
+        (2026-08-20 規定「全解析で保存する」)
     """
 
     frame_index: int
@@ -92,6 +96,7 @@ class FrameRepair:
     phase_weight_fractions: Mapping[str, float] = field(default_factory=dict)
     phase_weight_fraction_esd: Mapping[str, float | None] = field(default_factory=dict)
     cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
+    gpx_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -374,6 +379,11 @@ def repair_isolated(
 
     repairs: list[FrameRepair] = []
     needs_model_revision: list[int] = []
+    # 【修復 1 実行 = run ディレクトリ 1 つ】: 試行ごとに ambient が無いと `child_context` が
+    #   None を返し、各試行が別々の run ディレクトリを作って散らばる (設計 §3 の
+    #   「1 実行 = 1 run ディレクトリ」に反し、索引も 1 行ずつに割れる)。系列の内側から
+    #   呼ばれたときは既存 ambient をそのまま使う (`group_context` の契約)。
+    group, _gpx_reason = group_context(frames[0].data_path if frames else "")
 
     # 【全フラグフレームを試す】: 連続長でゲートしない (run-length プロキシは実データで反証済)。
     #   外向きの歩行が run の外側の良好フレームを見つけるため、連続ブロックも修復機会を得る。
@@ -400,9 +410,12 @@ def repair_isolated(
             initial_fractions = seed_fractions(
                 neighbour.phase_fractions, [p.phase_name for p in neighbour_phases]
             )
-            trial = call_runner(
-                runner, frames[i], neighbour_phases, initial_cells, initial_fractions
-            )
+            # 【修復試行も残す (規定 2026-08-20)】: 採用は「Rwp が改善したときのみ」なので、
+            #   棄却された修復の fit は ledger の数字にしか残らない — 開けないと原因を見られない。
+            with gpx_context(group.child(role="repair", index=i, label=str(source))):
+                trial = call_runner(
+                    runner, frames[i], neighbour_phases, initial_cells, initial_fractions
+                )
             if math.isfinite(float(trial.final_rwp)) and (
                 best is None or float(trial.final_rwp) < float(best[1].final_rwp)
             ):
@@ -436,6 +449,7 @@ def repair_isolated(
                     #   相名フィルタも 0.0 埋めもしない: 部分集合の重量分率は和=1 にならず、0.0 埋めは
                     #   「その相は 0 wt%」という測定していない主張になる)。
                     **_publication_of(trial),  # type: ignore[arg-type]
+                    gpx_path=str(getattr(trial, "gpx_path", "") or ""),
                 )
             )
             if ledger is not None:

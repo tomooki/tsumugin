@@ -23,6 +23,25 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 閉ループ丸ごと (agentic_analyze) は MCP に**無い**。回すのはあなた。
 
+## 精密化成果物 (.gpx) は**既定で全部保存される** (2026-08-20 規定)
+
+**何もしなくても保存される。** `auto_rietveld` / `refine_with_revisions` を呼ぶたびに、
+その精密化の `.gpx` が 1 つ残る (改訂を 5 回回せば 5 つ)。
+
+- **どこに**: 既定は**観測データ隣接** `<data_dir>/tsumugin_gpx/run-<日時>/`。
+  `gpx_dir="..."` で**根**を指定できる (環境変数 `TSUMUGIN_GPX_DIR` より強い)。
+  ⚠ 単発ツールは**呼び出しごとに独立した `run-<日時>/`** を作る (同じ `gpx_dir` を渡し続けると
+  改訂の履歴が同じ根の下に時刻順で並ぶ)。1 つの run ディレクトリにまとまるのは
+  系列解析 (`sequential_rietveld` / `anchored_sequential`) と、その中の探索/収束確認である。
+- **どこを見る**: 返り値の **`gpx_path`** (TOPAS は `project_path`)。run ディレクトリの
+  `manifest.jsonl` が「役割・相・Rwp」の索引 (1 行 1 成果物)。
+- **何に使う**: **MEM 系ツール (`mem_density` / `mem_rietveld_iterate`) の入力はこれ**。
+  以前は ② から精密化済み gpx を作る経路が無く、`mem-model-fix` skill は呼び出せなかった。
+- **止めたいとき**: `save_gpx=false`。⚠ **既定で止めない** — 保存しなかった精密化は
+  検算できない (段の無言 no-op も、後からの再プロットも、MEM も、fit そのものを要求する)。
+
+**報告するときは `gpx_path` を添える** — 数字だけ渡されても人間は確認できない。
+
 ## どの精密化エンジンで回すか (`backend`)
 
 既定は **`"gsasii"`** (GSAS-II)。M12 から **`"topas"`** (Bruker TOPAS) も選べる。
@@ -58,7 +77,11 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
 **TOPAS 経路の制約** (知らないと詰まる):
 
 - `.gpx` が存在しないので **MEM 系ツール (`mem_density` 等) は使えない**。結果の `gpx_path` は
-  空文字になり、`project_path` に INP/.out が残る。
+  空文字になり、成果物は **`project_path`** (INP/.out/results.txt を入れたディレクトリ) に出る。
+  **保存の既定・引数は GSAS と同じ** — `gpx_dir` / `save_gpx` がそのまま効き、既定で
+  `<data_dir>/tsumugin_gpx/run-<日時>/<データ名>/` に残って `manifest.jsonl` にも
+  `backend: "topas"` の行が入る (2026-08-20 規定)。**見るキーだけが `gpx_path` → `project_path`
+  に変わる**ので、報告や引き継ぎで取り違えないこと。
 - 段階フラグは**全て翻訳できる**が、条件が合わない指定は**明示的に失敗して revert される**
   (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
   - `hydrostatic_strain` は **joint (複数ヒストグラム) 専用**。単一ヒストグラムでは格子
@@ -138,7 +161,9 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
    - **`safe=False` (ModelAction)** — 下表の判断を要する手。**あなたが結晶学・化学の文脈で決め**、
      **構造改訂 (`ReviseStructure`)・相追加 (`AddPhase`) は必ずユーザー承認を挟む**。
 6. **`refine_with_revisions`** に採った Action を渡して再実行。`specs` を持ち回り 3 へ戻る。
-7. 目標 Rwp 到達 / 改善停滞 / 反復上限で終了し、最良結果と申し送り (未適用 ModelAction) を報告する。
+7. 目標 Rwp 到達 / 改善停滞 / 反復上限で終了し、最良結果と申し送り (未適用 ModelAction) を
+   報告する。**最良結果の `gpx_path` を必ず添える** (上記「精密化成果物」) — 反復の各回が
+   1 つずつ保存されているので、採用した fit がどれかを名指ししないと人間は開けない。
 
 ## 権限境界 (architecture.md §4.5 — 厳守)
 

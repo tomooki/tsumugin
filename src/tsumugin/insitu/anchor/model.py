@@ -121,6 +121,9 @@ class Anchor:
         (校正提案は x_refined のときのみ出る)。x_XRD が算出不能なフレームでは x キー自体が
         欠落する。None = 未実施 (機能無効/多相/echem 範囲外/B の fix 計画が組めない)。
         ΔRwp 大 = 不可逆容量の疑い (提案≠適用)。
+    :param gpx_path: 段階 B (アンカー確定) の精密化成果物パス ("" = 未保存)。アンカーフレームの
+        成果物は Anchor 経由でしか出力フレームへ届かないための貫通フィールド
+        (2026-08-20 規定「全解析で保存する」)。
     """
 
     frame_index: int
@@ -139,6 +142,7 @@ class Anchor:
     cell_esd: Mapping[str, CellEsd] = field(default_factory=dict)
     alkali: Mapping[str, object] = field(default_factory=dict)
     ab_check: Mapping[str, float] | None = None
+    gpx_path: str = ""
 
     @property
     def phase_names(self) -> tuple[str, ...]:

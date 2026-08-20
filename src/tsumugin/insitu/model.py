@@ -467,6 +467,14 @@ class FrameRietveldResult:
         "soft"/"fix"/"lock_fractions")。
     :param alkali_feasibility: 多相拘束の実行可能性 ("" = 未評価,
         "feasible"/"infeasible"/"degenerate")。infeasible = 不可逆容量の疑い (REQ-318-004)。
+    :param gpx_path: **このフレームの精密化成果物** (.gpx / TOPAS プロジェクト) のパス
+        (2026-08-20 規定「全解析で保存する」)。"" = 未保存 (``save_gpx=False`` / 保存無効 /
+        文脈を読まないスタブ runner)。
+
+        **なぜフレームが持つのか**: 系列の報告は数値に畳まれるが、後から「このフレームだけ
+        MEM を掛ける」「段が無言 no-op でないか見る」「再プロットする」には fit そのものが
+        要る。系列結果からフレーム→成果物を引けないと、754 枚の中から目的の fit を探す術が
+        ファイル名の推測しかなくなる。
     """
 
     frame_index: int
@@ -493,6 +501,7 @@ class FrameRietveldResult:
     alkali_residual: float | None = None
     alkali_constraint_applied: str = ""
     alkali_feasibility: str = ""
+    gpx_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -528,6 +537,11 @@ class SequentialRietveldResult:
     :param phase_names: 系列で観測された全相名の和 (安定順)
     :param warnings: 非致命の警告
     :param ledger: 追記された台帳 (None なら未使用)
+    :param gpx_dir: 系列**全体**が成果物を書いた run ディレクトリ ("" = 保存無効)。
+        フレームの成果物・棄却トライアル・整合の再精密化がすべてこの下に並び、
+        ``manifest.jsonl`` が役割/Rwp 付きの索引になる (2026-08-20 規定)。
+        全フレームが失敗しても**どこに書こうとしたか**は分かるよう、フレームからの
+        導出でなく系列が直接持つ。
     """
 
     frames: tuple[FrameRietveldResult, ...]
@@ -535,6 +549,7 @@ class SequentialRietveldResult:
     phase_names: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     ledger: object | None = None
+    gpx_dir: str = ""
 
     def axis_values(self) -> tuple[float | None, ...]:
         """全フレームの軸値。"""

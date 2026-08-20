@@ -691,3 +691,39 @@ def test_repair_targeted_frames_are_not_warm_start_sources():
     for _path, fracs in sources:
         assert fracs != pinned, f"張り付きフレームから warm-start している: {fracs}"
         assert fracs in (healthy_l, healthy_r), f"想定外の warm-start 元: {fracs}"
+
+
+def test_repair_trials_share_one_run_dir(tmp_path):
+    """★修復試行の成果物が **1 つの run ディレクトリ**に集まる (セルフレビュー #3)。
+
+    ambient が無い実運用経路 (② `repair_frames`) で試行ごとに run が割れると、
+    設計 §3 の「1 実行 = 1 run ディレクトリ」に反し索引も 1 行ずつに分散する
+    (「どの修復がどれか」を辿るのに全 run を開く羽目になる)。
+    """
+    from tsumugin.gpxstore import active_context
+
+    seen: list[tuple[str, int | None, str]] = []
+
+    def runner(frame, phases, initial_cells):
+        ctx = active_context()
+        seen.append((ctx.role, ctx.index, ctx.run_dir) if ctx else ("", None, ""))
+        return _result(
+            rwp=5.0, cells={"alpha": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)},
+            fractions={"alpha": 1.0},
+        )
+
+    # 中央 2 フレームだけ Rwp が跳ねた系列 (両隣は良好 → 近傍 warm-start が使える)
+    rwps = [8.0, 8.0, 20.0, 21.0, 8.0, 8.0]
+    result = SequentialRietveldResult(
+        frames=tuple(_frame(i, r, {"alpha": 1.0}) for i, r in enumerate(rwps))
+    )
+    frames = [FrameSpec(data_path=f"f{i}.xye", axis_value=float(i)) for i in range(len(rwps))]
+    phases = [PhaseSpec(structure_path="alpha.cif", phase_name="alpha")]
+    discs = detect_discontinuities(result, rwp_abs=15.0)
+    assert discs, "テストの前提: 不連続が検出されること"
+
+    repair_isolated(frames, result, phases, runner, discs)
+
+    assert seen, "修復試行が 1 回も走っていない"
+    assert {r for r, _, _ in seen} == {"repair"}
+    assert len({d for _, _, d in seen}) == 1, f"run ディレクトリが割れている: {seen}"

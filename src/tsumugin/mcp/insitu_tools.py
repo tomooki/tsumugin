@@ -61,6 +61,10 @@ _SEQ_CSV_COMMON_COLUMNS = [
     "changepoint",
     "changepoint_reasons",
     "refine_failed",
+    # 【そのフレームの fit を開く手掛かり】: CSV は人間/他ツールへ渡す成果物なので、
+    #   数字の隣に**その数字を出した精密化そのもの**への参照を置く (2026-08-20 規定)。
+    #   "" = 未保存 (save_gpx=false / 保存無効)。
+    "gpx_path",
 ]
 #: 相ごと列の接尾辞。``refined_cells``/``cell_esd`` は (a,b,c,α,β,γ) の先頭 3 (a,b,c) のみを
 #: CSV へ出す (M2 Trajectory と同じ設計裁量 — 角度 σ は CSV 列を肥大させないため JSON 側で見る)。
@@ -125,6 +129,7 @@ def _seq_csv_row(fd: Mapping[str, object], phase_refs: Sequence[str]) -> list[st
         str(bool(fd.get("changepoint", False))),
         _SEQ_CSV_REASONS_DELIMITER.join(str(r) for r in fd.get("changepoint_reasons", ())),  # type: ignore[union-attr]
         str(bool(fd.get("refine_failed", False))),
+        str(fd.get("gpx_path", "") or ""),
     ]
     refined_cells = fd.get("refined_cells") or {}
     cell_esd = fd.get("cell_esd") or {}
@@ -232,6 +237,10 @@ def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
                 if f.alkali_residual is not None else None,
                 "alkali_constraint_applied": str(f.alkali_constraint_applied),
                 "alkali_feasibility": str(f.alkali_feasibility),
+                # 【このフレームの精密化成果物 (規定 2026-08-20)】: "" = 未保存。
+                #   ③ が任意のフレームへ `mem_density` / `mem_rietveld_iterate` を掛ける、
+                #   あるいは後から fit を開き直すための**唯一の**ハンドル (§4.5 到達可能性)。
+                "gpx_path": str(f.gpx_path),
             }
             for f in result.frames
         ],
@@ -249,6 +258,8 @@ def seq_result_to_dict(result: SequentialRietveldResult) -> dict[str, object]:
             for a in result.appearances
         ],
         "warnings": list(result.warnings),
+        # 系列全体の成果物置き場 (索引 manifest.jsonl がここにある)。"" = 保存無効。
+        "gpx_dir": str(result.gpx_dir),
     }
 
 
@@ -687,6 +698,8 @@ def sequential_rietveld(
     two_theta_limits: Sequence[float] | None = None,
     max_frames: int | None = None,
     workdir: str = ".",
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
     instrument: Mapping[str, object] | None = None,
     charge_constraint: Mapping[str, object] | None = None,
     runner: Callable | None = None,
@@ -740,6 +753,17 @@ def sequential_rietveld(
         導くものではない (受理の厳しさ・探索の広さをどう置くかは判断層の権限)
     :param warm_start_fractions: 直前フレームの精密化相分率も次フレームの初期値に引き継ぐか
         (Issue #82; 分率が seed に張り付くフレームの是正。``warm_start`` 有効時のみ効く)
+    :param gpx_dir: **系列の精密化成果物の保存先の根** (2026-08-20 規定「全解析で保存する」)。
+        系列全体で run ディレクトリを 1 つ共有し、``f0000_frame.gpx`` /
+        ``f0180_trial_<候補相>.gpx`` (**棄却されたトライアルも**) / ``f0032_consolidate_<相>.gpx``
+        と ``manifest.jsonl`` (役割/相/Rwp の索引) が並ぶ。省略時は ``TSUMUGIN_GPX_DIR`` →
+        **先頭フレームのデータ隣接** ``<data_dir>/tsumugin_gpx/run-<日時>/``。
+        返り値の ``gpx_dir`` と ``frames[].gpx_path`` が実際の保存先で、
+        **これが任意フレームへ MEM (`mem_density`) を掛けるための入力の出所**。
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。容量の目安は **0.5-1.5 MB/フレーム**
+        (754 フレームで ~1 GB) なので、長い系列で容量が問題になるときだけ False にする。
+        ⚠ **系列こそ保存が要る** — どのフレームで段が無言 no-op だったか、棄却トライアルが
+        なぜ棄却されたかは、残った fit そのものからしか追えない (最終 Rwp には現れない)
     :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
         なら、この spec からサーバ側で ``make_gsas_runner`` を組み立てる。指定なし (None) は従来通り
         engine 既定の ``_default_gsas_runner`` (実験室 X 線 Bragg-Brentano・背景 6 項・装置は data_path
@@ -819,6 +843,7 @@ def sequential_rietveld(
     result = run_sequential_rietveld(
         frame_specs, phase_specs, config=config, runner=runner,
         phase_finder=phase_finder, workdir=workdir,
+        gpx_dir=gpx_dir, save_gpx=save_gpx,
     )
     out = seq_result_to_dict(result)
     out["reason"] = reason
@@ -1077,7 +1102,8 @@ def write_sequential_csv(result: Mapping[str, object], path: str, *, reason: str
     :param path: 出力 CSV パス
 
     列は M9 ``SequentialRietveldResult`` が実際に持つ値のみで構成する: フレーム共通列
-    (frame_index/data_path/axis_value/rwp/gof/changepoint/changepoint_reasons/refine_failed) +
+    (frame_index/data_path/axis_value/rwp/gof/changepoint/changepoint_reasons/refine_failed/
+    **gpx_path** = そのフレームの精密化成果物, 2026-08-20 規定) +
     相ごと 9 列 (a/b/c/a_esd/b_esd/c_esd/scale/wt_frac/wt_frac_esd)。M2 Trajectory の
     ``sigma_source``/lifecycle 3 列 (birth_frame/death_frame/confidence) は**含めない** — M9 の
     フレーム行にはこれらに対応する列が無い (birth は ``appearances`` に別スキーマで出るが

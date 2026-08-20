@@ -103,6 +103,12 @@ axes, bc = pseudo_variable_series(result, "phase", lambda c: c[1] / c[2])
 - `result.appearances`: 自動同定・採用された新相 (`formula`/`source`/`rwp_before→after`/`evidence`)。
 - `result.frames[*].phase_fractions`: 相分率トラジェクトリ (転移の定量)。
 - `result.frames[*].refine_failed`: 失敗フレーム (直前成功フレームから warm start 継続)。
+- `result.gpx_dir` / `result.frames[*].gpx_path`: **フレーム 1 枚ごとの精密化成果物**
+  (2026-08-20 規定「全解析で gpx を全部保存する」)。棄却された相追加トライアル
+  (`f0180_trial_<候補相>.gpx`) と整合の再精密化も同じ run ディレクトリに残り、
+  `manifest.jsonl` が役割・相・Rwp の索引になる。**Rwp の表では切れない疑い**
+  (段の無言 no-op・相分率 ~0 の棄却理由・偽相) は、この fit を開いて確かめる。
+  `gpx_dir` を渡せば置き場所を指定でき、`save_gpx=false` で止められる (診断目的では止めない)。
 
 ## 6. 失敗時の対処
 

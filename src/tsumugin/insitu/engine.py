@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
+from ..gpxstore import GpxContext, gpx_context, series_context
 
 if TYPE_CHECKING:
     from ..autorietveld.model import RefinementStage
@@ -52,6 +53,13 @@ PhaseFinder = Callable[
     [FrameSpec, Sequence[str], Sequence[str], str, Sequence[ReferencePhase]],
     "Sequence[tuple[PhaseSpec, dict]]",
 ]
+
+
+def _child(
+    ctx: "GpxContext | None", role: str, index: int | None, label: str = ""
+) -> "GpxContext | None":
+    """成果物文脈の子を作る (文脈が無ければ None = 命名しないだけで保存は既定どおり)。"""
+    return None if ctx is None else ctx.child(role=role, index=index, label=label)
 
 
 def _cell6(cell: Sequence[float]) -> Cell:
@@ -195,6 +203,8 @@ def run_sequential_rietveld(
     phase_finder: PhaseFinder | None = None,
     ledger: Ledger | None = None,
     workdir: str | None = None,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
 ) -> SequentialRietveldResult:
     """温度/時間系列を逐次に実構造 Rietveld 精密化する (ウォームスタート + 自動相追加)。
 
@@ -207,12 +217,65 @@ def run_sequential_rietveld(
     :param workdir: 相同定で物質化する CIF の書き出し先。None なら永続 tempdir を作る
         (CWD を汚さず、採用相の structure_path がセッション中生存する)。相同定を行うフレームで
         初めて必要になった時点で遅延生成する
+    :param gpx_dir: **精密化成果物の保存先の根** (2026-08-20 規定「全解析で保存する」)。
+        系列全体で run ディレクトリを**1 つ**共有し、その下に
+        ``f0000_frame.gpx`` / ``f0180_trial_<候補相>.gpx`` / ``f0032_consolidate_<相>.gpx``
+        が並ぶ (フレームごとにディレクトリを分けると 754 個できて探せない)。
+        None なら ``TSUMUGIN_GPX_DIR`` → 先頭フレームのデータ隣接
+        ``<data_dir>/tsumugin_gpx/`` の順で決まる
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。⚠ **系列こそ保存が要る** —
+        フレーム 754 枚のうちどれが無言 no-op だったか、棄却トライアルがなぜ棄却されたかは、
+        残った fit そのものからしか追えない。容量の目安は 0.5-1.5 MB/フレーム
     :returns: SequentialRietveldResult
     """
-    import tempfile
 
     config = config or SequentialConfig()
     ledger = ledger if ledger is not None else Ledger()
+    # 【系列で run ディレクトリを 1 つ共有する】: 文脈は「置き場所と名前」だけを運ぶ側路で、
+    #   物理には影響しない (`gpxstore` の説明を参照)。無効化時も文脈は張る (enabled=False) —
+    #   下流の `run_auto_rietveld` が「保存しない」を一貫して読めるようにするため。
+    series_ctx = _series_context(frames, gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger)
+    with gpx_context(series_ctx):
+        return _run_sequential_rietveld(
+            frames, initial_phases, config=config, runner=runner, phase_finder=phase_finder,
+            ledger=ledger, workdir=workdir, series_ctx=series_ctx,
+        )
+
+
+def _series_context(
+    frames: Sequence[FrameSpec], *, gpx_dir: str | None, save_gpx: bool, ledger: Ledger,
+    kind: str = "m9",
+) -> GpxContext:
+    """系列全体で共有する成果物文脈を作る (run ディレクトリは 1 つ) + ledger に残す。
+
+    M9 逐次 / M10 アンカーの**両方**がこれを使う (経路ごとの実装は取り残される — Issue #96 の
+    ウォームスタートで実際に起きた病理)。``kind`` は ledger の接頭辞だけを分ける。
+    """
+    ctx, reason = series_context(
+        frames[0].data_path if frames else "", gpx_dir=gpx_dir, save=save_gpx
+    )
+    if not ctx.enabled:
+        return ctx
+    if reason:
+        ledger.append(f"{kind}_gpx_fallback", {"run_dir": ctx.run_dir, "reason": reason})
+    ledger.append(f"{kind}_gpx_run_dir", {"run_dir": ctx.run_dir})
+    return ctx
+
+
+def _run_sequential_rietveld(
+    frames: Sequence[FrameSpec],
+    initial_phases: Sequence[PhaseSpec],
+    *,
+    config: SequentialConfig,
+    runner: Runner | None,
+    phase_finder: PhaseFinder | None,
+    ledger: Ledger,
+    workdir: str | None,
+    series_ctx: GpxContext,
+) -> SequentialRietveldResult:
+    """`run_sequential_rietveld` の本体 (成果物文脈を張った内側)。"""
+    import tempfile
+
     # 物質化 CIF の出力先: 指定なしなら永続 tempdir を遅延生成 (CWD 汚染回避, M2)。
     _workdir_holder: dict[str, str] = {}
 
@@ -270,7 +333,9 @@ def run_sequential_rietveld(
             and prev_fractions is not None and prev_active_names == cur_names_before
         ):
             init_fractions = prev_fractions
-        result = _call_runner(runner, frame, tuple(phases), init_cells, init_fractions)
+        # 【成果物の名前だけを差し替える】: 保存そのものは下流 (`run_auto_rietveld`) が行う。
+        with gpx_context(series_ctx.child(role="frame", index=i)):
+            result = _call_runner(runner, frame, tuple(phases), init_cells, init_fractions)
         rwp = float(result.final_rwp)
         cells = {name: _cell6(c) for name, c in result.refined_cells.items()}
         rep = phases[0].phase_name  # 代表相 (格子ジャンプ監視)
@@ -310,7 +375,7 @@ def run_sequential_rietveld(
                 last_search_rwp = rwp
                 result, appended_this_frame, warn = _try_add_phase(
                     frame, phases, known_formulas, result, rwp, pid, phase_finder,
-                    runner, _resolve_workdir(), i, ledger,
+                    runner, _resolve_workdir(), i, ledger, series_ctx,
                 )
                 if warn:
                     warnings.append(warn)
@@ -351,6 +416,8 @@ def run_sequential_rietveld(
                 # 【電気化学制約の診断 (FR-318)】: x_XRD vs x_echem・適用拘束・実行可能性。
                 #   機能無効なら空 dict = 既定値のまま (後方互換)。
                 **_alkali_of(frame, config.charge_constraint, active_names, result, warnings),  # type: ignore[arg-type]
+                # 【このフレームの成果物】: 保存は下流が済ませている (規定 2026-08-20)。
+                gpx_path=str(result.gpx_path or ""),
             )
         )
         ledger.append(
@@ -379,6 +446,7 @@ def run_sequential_rietveld(
         frame_results, appearances = _consolidate_phase_cells(
             frames, n, frame_results, appearances, phases, pid, runner, ledger,
             charge_constraint=config.charge_constraint, warn_sink=warnings,
+            series_ctx=series_ctx,
         )
 
     all_phase_names = tuple(p.phase_name for p in phases)
@@ -390,6 +458,7 @@ def run_sequential_rietveld(
         phase_names=all_phase_names,
         warnings=tuple(warnings),
         ledger=ledger,
+        gpx_dir=series_ctx.run_dir if series_ctx.enabled else "",
     )
 
 
@@ -445,6 +514,9 @@ def _rebuild_frame(
         # 差し替えた fit に対して陳腐化した定量値を報告させる) 🔵 Issue #96 レビュー
         **_publication_of(res),  # type: ignore[arg-type]
         **alkali,  # type: ignore[arg-type]
+        # 再精密化で置き換わったフレームは**その fit** の成果物を指す (古い方を指すと、
+        # 報告している数値と開ける gpx が食い違う)。
+        gpx_path=str(getattr(res, "gpx_path", "") or ""),
     )
 
 
@@ -452,6 +524,7 @@ def _consolidate_phase_cells(
     frames, n, frame_results, appearances, all_phases, pid, runner, ledger,
     charge_constraint: "ChargeConstraintConfig | None" = None,
     warn_sink: "list[str] | None" = None,
+    series_ctx: "GpxContext | None" = None,
 ):
     """確立した新相の**globally-best セル**で全フレームを再精密化し、onset を逆伝播で捕捉する。
 
@@ -492,7 +565,8 @@ def _consolidate_phase_cells(
             phases_j = tuple(name_to_spec[nm] for nm in fr.phase_names if nm in name_to_spec)
             warm = {nm: fr.refined_cells[nm] for nm in fr.phase_names if nm in fr.refined_cells}
             warm[ap.phase_name] = est_cell
-            res = runner(frames[j], phases_j, warm)
+            with gpx_context(_child(series_ctx, "consolidate", j, ap.phase_name)):
+                res = runner(frames[j], phases_j, warm)
             if res.final_rwp < float("inf") and float(res.final_rwp) < fr.rwp - 1e-9:
                 updated[j] = _rebuild_frame(
                     res, fr, fr.phase_names, frames[j], charge_constraint, warn_sink
@@ -518,7 +592,8 @@ def _consolidate_phase_cells(
                 nm: fr.refined_cells[nm] for nm in fr.phase_names if nm in fr.refined_cells
             }
             warm[ap.phase_name] = est_cell
-            res = runner(frames[j], trial_phases, warm)
+            with gpx_context(_child(series_ctx, "backward", j, ap.phase_name)):
+                res = runner(frames[j], trial_phases, warm)
             new_frac = float(res.phase_fractions.get(ap.phase_name, 0.0))
             base_rwp = fr.rwp
             accepted = (
@@ -595,7 +670,7 @@ def _accept_new_phase(trial, new_name, base_rwp, trial_rwp, new_frac, pid, base_
 
 def _try_add_phase(
     frame, phases, known_formulas, base_result, base_rwp, pid, phase_finder, runner,
-    workdir, frame_idx, ledger,
+    workdir, frame_idx, ledger, series_ctx: "GpxContext | None" = None,
 ) -> "tuple[AutoRietveldResult, PhaseAppearance | None, str | None]":
     """新相候補を同定・追加して再精密化し、受理基準を満たす**最良候補**を採用する (可逆・提案≠適用)。
 
@@ -660,7 +735,16 @@ def _try_add_phase(
                 )
                 continue
         trial_phases = tuple(list(phases) + [cand_spec])
-        trial = runner(frame, trial_phases, base_cells)
+        # 【棄却トライアルも 1 成果物として残す】: 相分率 ~0 の棄却が「残差を説明できない相」
+        #   なのか「セルがずれて説明**できなかった**相」なのかは rwp/fraction だけでは切れない。
+        #   ledger の行 (下) にパスを載せ、fit そのものを後から開けるようにする。
+        trial_ctx = (
+            series_ctx.child(role="trial", index=frame_idx, label=cand_spec.phase_name)
+            if series_ctx is not None
+            else None
+        )
+        with gpx_context(trial_ctx):
+            trial = runner(frame, trial_phases, base_cells)
         trial_rwp = float(trial.final_rwp)
         new_frac = float(trial.phase_fractions.get(cand_spec.phase_name, 0.0))
         accepted = _accept_new_phase(trial, cand_spec.phase_name, base_rwp, trial_rwp,
@@ -679,6 +763,8 @@ def _try_add_phase(
                 "strain": finite_or_none(meta.get("strain")),
                 "prealign_basis": str(meta.get("prealign_basis", "")),
                 "refined_cell": meta.get("refined_cell"),
+                # 棄却されたトライアルの fit そのもの (規定「全解析で保存」)。"" = 未保存。
+                "gpx_path": str(trial.gpx_path or ""),
             },
         )
         # 受理基準を満たす中で最小 Rwp の候補を保持する (Dara 順でなく Rietveld フィットで選ぶ)。

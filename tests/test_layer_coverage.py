@@ -114,6 +114,18 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "勝ったので `sizestrain_last` 候補として `search` から到達可能。再挑戦するときは "
         "名前付き候補にして `CANDIDATE_NAMES` へ足す (kwarg を ② へ生で出すのではなく)",
     ),
+    "gpx artifact retention (規定 2026-08-20)": (
+        "auto_rietveld",
+        "**全解析で精密化成果物 (.gpx / TOPAS プロジェクト) を保存する**規定 "
+        "(`tsumugin.gpxstore`)。既定の置き場所は観測データ隣接 "
+        "`<data_dir>/tsumugin_gpx/run-<日時>/`、粒度は精密化 1 回 = 1 成果物 (フレーム・"
+        "棄却トライアル・前方/後方パス・マルチスタートの各開始点)。② へは "
+        "`auto_rietveld(gpx_dir=, save_gpx=)` と返り値 `gpx_path`/`project_path` で到達する。"
+        "**これが MEM 系ツール (`mem_density`/`mem_rietveld_iterate`) の入力の出所** — "
+        "以前は ② から gpx を作れず、③ は MEM を呼べなかった (§4.5 到達可能性)。"
+        "系列は `sequential_rietveld`/`anchored_sequential` の `gpx_dir` と "
+        "`frames[].gpx_path`/`gpx_dir` で到達する",
+    ),
     "convergence confirmation (規定の標準経路)": (
         "auto_rietveld",
         "**手順最適化 → 初期値摂動による収束確認** (`autorietveld.confirm.optimize_then_confirm`, "
@@ -280,6 +292,7 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "nested": "nested (M5/FR-500)",
     "interop": "interop (XND)",
     "instprm": "instprm (FR-502)",
+    "gpxstore": "gpx artifact retention (規定 2026-08-20)",
     "operando": "echem sync (M3/FR-311)",  # ← Issue #99: これまで宣言リストに 1 行も無かった
     # --- 基盤 (③ に露出する独立能力ではない — 露出済みツールが内部で使うインフラ) ---
     "model": (FOUNDATIONAL, "不変 dataclass 群 (§4)。全層が共有する型であり単独能力ではない"),
@@ -672,6 +685,12 @@ FRAME_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "alkali_residual": ("alkali_residual", "x_XRD − x_echem (不可逆容量/副反応の診断量)"),
     "alkali_constraint_applied": ("alkali_constraint_applied", "適用拘束 (''/soft/fix/lock_fractions)"),
     "alkali_feasibility": ("alkali_feasibility", "多相拘束の実行可能性 (infeasible=不可逆容量疑い)"),
+    "gpx_path": (
+        "gpx_path",
+        "**このフレームの精密化成果物** (2026-08-20 規定「全解析で保存する」)。③ が任意の"
+        "フレームへ `mem_density`/`mem_rietveld_iterate` を掛ける・後から fit を開き直すための"
+        "唯一のハンドル。系列全体の置き場は結果直下の `gpx_dir` (索引 manifest.jsonl)",
+    ),
     # --- 未露出 (宣言することで「忘れた」ではなく「既知の穴」であることを示す) ---
     "n_obs": (
         UNEXPOSED,

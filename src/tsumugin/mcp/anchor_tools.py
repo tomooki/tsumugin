@@ -153,6 +153,8 @@ def anchored_sequential(
     anchor_confidence: float = 1.0,
     anchor_config: Mapping[str, object] | None = None,
     two_theta_limits: Sequence[float] | None = None,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
     instrument: Mapping[str, object] | None = None,
     charge_constraint: Mapping[str, object] | None = None,
     runner: Callable | None = None,
@@ -184,6 +186,15 @@ def anchored_sequential(
         (1) 単相アンカーで制約有無 A/B → ΔRwp 超過で不可逆容量疑いの警告 + **x₀ 校正の提案**
         (提案≠適用; ledger ``fr318_x0_calibration_proposal``)、(2) per-frame の alkali_* 診断。
         出力に ``anchors[].ab_check`` が付く。None で従来動作
+    :param gpx_dir: **系列の精密化成果物の保存先の根** (2026-08-20 規定「全解析で保存する」)。
+        本経路は**同じフレームを 2 回以上精密化する** — アンカー確定 (``f0000_anchor.gpx``)・
+        FR-318 の A/B 検証 (``anchor_ab``)・前方パス (``f0005_forward_a0000.gpx``)・
+        後方パス (``f0005_backward_a0012.gpx``) が別々に残る。**採られなかった側が残っていないと
+        bic crossover の判断 (相集合が違う経路の比較) を後から検算できない**。
+        省略時は ``TSUMUGIN_GPX_DIR`` → 先頭フレームのデータ隣接。実際の保存先は返り値の
+        ``gpx_dir`` / ``frames[].gpx_path``
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。⚠ 双方向は 1 フレームあたり
+        2 回以上精密化するため容量は逐次の 2 倍前後 (0.5-1.5 MB × パス数)
     :param runner: **注入/テスト用** callable ((frame, phases, initial_cells)→AutoRietveldResult)。
         JSON 越しには渡せない。明示指定時は instrument より優先
     :returns: M9 と同型の系列結果 dict (frames/phase_names/appearances/warnings; per-frame に出版値
@@ -240,7 +251,7 @@ def anchored_sequential(
     ledger = Ledger()
     result = run_anchored_sequential(
         frame_specs, base, runner=runner, identifier=identifier, cfg=cfg, ledger=ledger,
-        charge_constraint=cc_cfg,
+        charge_constraint=cc_cfg, gpx_dir=gpx_dir, save_gpx=save_gpx,
     )
     out = seq_result_to_dict(result)
     anchors, crossovers = _anchor_summary(ledger)

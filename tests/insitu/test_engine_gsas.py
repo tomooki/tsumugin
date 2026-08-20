@@ -85,6 +85,19 @@ def test_cateo3_two_frame_sequential_converges():
     # Rwp 収束帯: frame0 は調整済み設定で ~13% (LeBail 12.7% 近傍)。回帰上限 18%。
     assert res.frames[0].rwp < 18.0, f"frame0 Rwp={res.frames[0].rwp}"
 
+    # ★規定「全解析で gpx を全部保存する」(2026-08-20) が**実 GSAS で**成立していること。
+    # 決定論テスト (tests/insitu/test_gpx_series.py) はスタブ runner で文脈の配線しか見ない —
+    # 実際にファイルが出来ることはここでしか確かめられない。
+    from tsumugin.gpxstore import read_manifest
+
+    assert res.gpx_dir and Path(res.gpx_dir).is_dir(), res.gpx_dir
+    saved = [Path(f.gpx_path) for f in res.frames]
+    assert all(p.is_file() and p.stat().st_size > 0 for p in saved), [str(p) for p in saved]
+    assert [p.name for p in saved] == ["f0000_frame.gpx", "f0001_frame.gpx"]
+    entries = read_manifest(res.gpx_dir)
+    assert len(entries) == 2 and {e["role"] for e in entries} == {"frame"}
+    assert entries[0]["rwp"] == pytest.approx(res.frames[0].rwp)
+
 
 @pytest.mark.skipif(
     not (

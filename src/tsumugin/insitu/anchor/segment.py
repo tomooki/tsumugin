@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from ...autorietveld.model import PhaseSpec, coerce_cell_esd
+from ...gpxstore import child_context, gpx_context
 from .._warmstart import call_runner, seed_fractions
 from ..charge import alkali_fields
 from ..model import Cell, ChargeConstraintConfig, FrameRietveldResult, FrameSpec
@@ -90,13 +91,20 @@ def _frame_result(
         phase_weight_fractions=weight_fracs, phase_weight_fraction_esd=weight_frac_esd,
         cell_esd=cell_esd,
         **alkali,  # type: ignore[arg-type]
+        gpx_path=str(getattr(res, "gpx_path", "") or ""),
     )
+
+
+def _seg_label(anchor: Anchor) -> str:
+    """成果物名に入れる区間ラベル (どのアンカーから伸ばしたパスか)。"""
+    return f"a{int(anchor.frame_index):04d}"
 
 
 def _run_directional(
     anchor: Anchor, order: "list[int]", frames: "list[FrameSpec]", runner: AnchorRunner,
     charge_constraint: "ChargeConstraintConfig | None" = None,
     warn_sink: "list[str] | None" = None,
+    direction: str = "pass",
 ) -> dict[int, FrameRietveldResult]:
     """アンカーの相集合/セル/**相分率**を初期値に order 順で warm-start 逐次精密化する。
 
@@ -112,7 +120,10 @@ def _run_directional(
     warm_fracs = seed_fractions(anchor.phase_fractions, names)
     out: dict[int, FrameRietveldResult] = {}
     for j in order:
-        res = call_runner(runner, frames[j], phases, dict(warm), warm_fracs)
+        # 【採られなかった方向の fit も残す (規定 2026-08-20)】: 前方/後方は**相集合が違う**
+        #   経路であり、bic crossover はその比較で決まる。片方しか残っていないと判断を検算できない。
+        with gpx_context(child_context(role=direction, index=j, label=_seg_label(anchor))):
+            res = call_runner(runner, frames[j], phases, dict(warm), warm_fracs)
         fr = _frame_result(res, frames[j], j, names, charge_constraint, warn_sink)
         out[j] = fr
         if not fr.refine_failed:
@@ -138,7 +149,10 @@ def refine_segment_forward(
     order = sorted(seg.frame_indices)
     return SegmentPass(
         direction="forward",
-        results=_run_directional(seg.left, order, frames, runner, charge_constraint, warn_sink),
+        results=_run_directional(
+            seg.left, order, frames, runner, charge_constraint, warn_sink,
+            direction="forward",
+        ),
     )
 
 
@@ -157,5 +171,8 @@ def refine_segment_backward(
     order = sorted(seg.frame_indices, reverse=True)
     return SegmentPass(
         direction="backward",
-        results=_run_directional(seg.right, order, frames, runner, charge_constraint, warn_sink),
+        results=_run_directional(
+            seg.right, order, frames, runner, charge_constraint, warn_sink,
+            direction="backward",
+        ),
     )
