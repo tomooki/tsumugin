@@ -914,6 +914,7 @@ def _seq_dict_two_frames():
                 "tetra": (0.004, 0.004, 0.005, 0.0, 0.0, 0.0),
             },
             changepoint=True, changepoint_reasons=("lattice_jump", "new_peaks"),
+            gpx_path="/out/run-1/f0001_frame.gpx",
         ),
     )
     return seq_result_to_dict(
@@ -954,6 +955,10 @@ def test_write_sequential_csv_writes_expected_header_and_values(tmp_path):
     assert row1[idx["cubic.wt_frac"]] == "0.7"
     assert row1[idx["tetra.wt_frac"]] == "0.3"
     assert row1[idx["cubic.a_esd"]] == "0.003"
+    # 【成果物列 (2026-08-20 規定)】: CSV は人間/他ツールへ渡す成果物なので、数字の隣に
+    #   その数字を出した fit への参照を置く。持っていないフレームは空欄 (捏造しない)。
+    assert "gpx_path" in header
+    assert row1[idx["gpx_path"]] == seq["frames"][1].get("gpx_path", "")
 
 
 def test_write_sequential_csv_does_not_fabricate_m2_only_columns(tmp_path):

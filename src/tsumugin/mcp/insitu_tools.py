@@ -61,6 +61,10 @@ _SEQ_CSV_COMMON_COLUMNS = [
     "changepoint",
     "changepoint_reasons",
     "refine_failed",
+    # 【そのフレームの fit を開く手掛かり】: CSV は人間/他ツールへ渡す成果物なので、
+    #   数字の隣に**その数字を出した精密化そのもの**への参照を置く (2026-08-20 規定)。
+    #   "" = 未保存 (save_gpx=false / 保存無効)。
+    "gpx_path",
 ]
 #: 相ごと列の接尾辞。``refined_cells``/``cell_esd`` は (a,b,c,α,β,γ) の先頭 3 (a,b,c) のみを
 #: CSV へ出す (M2 Trajectory と同じ設計裁量 — 角度 σ は CSV 列を肥大させないため JSON 側で見る)。
@@ -125,6 +129,7 @@ def _seq_csv_row(fd: Mapping[str, object], phase_refs: Sequence[str]) -> list[st
         str(bool(fd.get("changepoint", False))),
         _SEQ_CSV_REASONS_DELIMITER.join(str(r) for r in fd.get("changepoint_reasons", ())),  # type: ignore[union-attr]
         str(bool(fd.get("refine_failed", False))),
+        str(fd.get("gpx_path", "") or ""),
     ]
     refined_cells = fd.get("refined_cells") or {}
     cell_esd = fd.get("cell_esd") or {}
@@ -1097,7 +1102,8 @@ def write_sequential_csv(result: Mapping[str, object], path: str, *, reason: str
     :param path: 出力 CSV パス
 
     列は M9 ``SequentialRietveldResult`` が実際に持つ値のみで構成する: フレーム共通列
-    (frame_index/data_path/axis_value/rwp/gof/changepoint/changepoint_reasons/refine_failed) +
+    (frame_index/data_path/axis_value/rwp/gof/changepoint/changepoint_reasons/refine_failed/
+    **gpx_path** = そのフレームの精密化成果物, 2026-08-20 規定) +
     相ごと 9 列 (a/b/c/a_esd/b_esd/c_esd/scale/wt_frac/wt_frac_esd)。M2 Trajectory の
     ``sigma_source``/lifecycle 3 列 (birth_frame/death_frame/confidence) は**含めない** — M9 の
     フレーム行にはこれらに対応する列が無い (birth は ``appearances`` に別スキーマで出るが

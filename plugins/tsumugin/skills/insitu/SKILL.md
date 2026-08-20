@@ -433,7 +433,9 @@ y 軸が Scale か wt% かで交差位置そのものが動く。**`phase_fracti
 CSV で成果物を残す/他ツールへ渡すときは `write_sequential_csv(result, path)` を使う
 (FR-504)。`result` は `sequential_rietveld`/`anchored_sequential` の戻り値をそのまま渡す。
 出す列は M9 が実際に持つ値のみ (フレーム共通列 + 相ごとの a/b/c/a_esd/b_esd/c_esd/
-scale/wt_frac/wt_frac_esd) — `scale` は Scale であって重量分率ではない (上表と同じ注意)。
+scale/wt_frac/wt_frac_esd) + **`gpx_path`** (そのフレームの fit) — `scale` は Scale であって
+重量分率ではない (上表と同じ注意)。CSV を渡された人が数字を疑ったときに**その数字を出した
+精密化そのもの**へ辿れるようにするため、成果物パスを列に入れてある。
 `get_trajectory` は使わない: M2 逐次 simulate 系の出力アクセサで、`session.trajectory` を
 設定する ② ツールが無く実データ経路からは到達不能 (Issue #116)。
 
