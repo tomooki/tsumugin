@@ -115,6 +115,10 @@ Write-Host "gate:$Gate の未着手キュー: $($available.Count) 件 (拾うの
 
 $picked = @($available | Select-Object -First $Max)
 
+# 着手に失敗した件数。1 件でもあれば非 0 で返す — 呼び出し側 (タスクスケジューラ等) から
+# 見て毎回「成功」に見えると、一度も周回していないことに気づけない。
+$failures = 0
+
 if ($ListOnly) {
     foreach ($issue in $picked) {
         Write-Host ("  #{0}  {1}" -f $issue.number, $issue.title)
@@ -147,6 +151,7 @@ foreach ($issue in $picked) {
         Set-Content -Path $report -Value $out -Encoding utf8
         if ($code -ne 0) {
             Write-Host "  WARN claude が exit $code で終了した。レポートは途中までの可能性がある。" -ForegroundColor Yellow
+            $failures++
         }
         else {
             Write-Host "  完了 (GitHub への書き込みなし)"
@@ -161,6 +166,7 @@ foreach ($issue in $picked) {
     & gh issue edit $n --add-label "loop:in-progress" --remove-label "loop:queued"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARN ラベル遷移に失敗した。着手しない。" -ForegroundColor Yellow
+        $failures++
         continue
     }
 
@@ -173,6 +179,7 @@ foreach ($issue in $picked) {
         # ラベルを**実際に戻す**。戻さないとキューからも外れ loop:review にも進まないため、
         # 誰も着手していない Issue が in-progress のまま宙吊りになり人の目にも留まらない。
         Write-Host "  WARN ワーカー起動に失敗した (exit $LASTEXITCODE)。ラベルを戻す。" -ForegroundColor Yellow
+        $failures++
         & gh issue edit $n --add-label "loop:queued" --remove-label "loop:in-progress"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  WARN ラベルの復旧にも失敗した。#$n を手で確認すること。" -ForegroundColor Red
@@ -190,5 +197,9 @@ if (-not $Apply) {
     Write-Host "実着手させるには -Apply を付ける。"
 }
 
-# 明示的に 0 を返す。外部コマンドの $LASTEXITCODE を素通しさせない。
+# 終了コードは**着手の成否**を表す。外部コマンドの $LASTEXITCODE は素通しさせない。
+if ($failures -gt 0) {
+    Write-Host "$failures 件が着手に失敗した。" -ForegroundColor Yellow
+    exit 1
+}
 exit 0
