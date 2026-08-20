@@ -507,7 +507,9 @@ def run_multistart_rietveld(
     :param coord_jitter_ang: 座標摂動の振幅 (Å)。0 で格子軸のみ
     :param seed: 座標摂動の種 (開始点 index を混ぜる)
     :param jobs: 並列度 (None で ``min(n_starts, cpu_count)``)。**1 で直列** (デバッグ用)
-    :param run_kwargs: `run_auto_rietveld` へ透過 (recipe / stability / max_cyc 等)
+    :param run_kwargs: `run_auto_rietveld` へ透過 (recipe / stability / max_cyc /
+        gpx_dir / save_gpx 等)。⚠ ``gpx_context`` は**開始点ごとに本関数が上書きする**
+        (成果物の名前は開始点番号で決まるため。別プロセスへ ambient が届かないので明示的に運ぶ)
 
     ⚠ 決定論のため、結果は**完了順ではなく開始点 index 順**に並べ、**ledger も join 後に
     列挙順で再発行**する (`Ledger` はハッシュ鎖 / NFR-102。完了順の追記はビット同一性を壊す)。

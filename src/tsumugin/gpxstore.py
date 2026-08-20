@@ -450,6 +450,11 @@ def gpx_context(context: GpxContext | None) -> Iterator[GpxContext | None]:
     足すと、素の 3 引数 runner が黙って壊れる (FR-318 で同じ罠を避けた経緯: 目標組成は
     ``FrameSpec`` に載せた)。名前は**物理でない**ので入力仕様には載せず、ambient 文脈で運ぶ。
     文脈を読まない runner (テスト用スタブ・カスタム実装) は素通りするだけで壊れない。
+
+    ⚠ **ContextVar はスレッドを越えない** (新しいスレッドは空の文脈で始まる) — 精密化を
+    別スレッドへ投げる経路 (`workbench.jobs`) では ambient が届かず、名前がデータ名に
+    縮退する (**保存自体は行われる**)。別プロセスも同様なので、マルチスタートは明示
+    ``gpx_context`` 引数で運んでいる。名前まで運びたい新経路は同じく明示的に渡すこと。
     """
     token = _ACTIVE.set(context)
     try:
