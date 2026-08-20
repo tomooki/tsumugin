@@ -536,7 +536,8 @@ def repair_frames(
     :returns: ``fraction_basis`` (常に ``"scale"`` = **検出**に使った基準)/``repairs``/
         ``needs_model_revision``/``systematic_hint``/``discontinuities``/
         ``ledger_entries``。``repairs[]`` は ``{frame, rwp_before, rwp_after, source,
-        phase_fractions, phase_weight_fractions, phase_weight_fraction_esd, cell_esd}`` —
+        phase_fractions, phase_weight_fractions, phase_weight_fraction_esd, cell_esd,
+        gpx_path}`` —
         ⚠ ``phase_fractions`` は **Scale** であって wt% ではない。**修復後の出版値は
         ``phase_weight_fractions`` ± ``phase_weight_fraction_esd``**。
         (``fraction_basis`` は検出基準のラベルであって ``repairs[]`` の出版値に掛かるものではない:
@@ -678,6 +679,10 @@ def repair_frames(
                 "cell_esd": {
                     k: [finite_or_none(x) for x in esd] for k, esd in r.cell_esd.items()
                 },
+                # 【修復後の fit の成果物 (規定 2026-08-20)】: 修復は元の系列結果を**置き換える**
+                #   ので、③ が修復後のフレームに MEM を掛ける/開き直すときは
+                #   `result["frames"][i]["gpx_path"]` (修復前) ではなくこちらを見る。"" = 未保存。
+                "gpx_path": str(r.gpx_path),
             }
             for r in report.repairs
         ],

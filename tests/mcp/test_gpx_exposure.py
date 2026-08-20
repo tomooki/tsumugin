@@ -126,3 +126,44 @@ def test_anchored_sequential_forwards_and_returns_gpx(monkeypatch):
     assert captured == {"gpx_dir": "/anchored", "save_gpx": False}
     assert out["gpx_dir"] == "/anchored/run-1"
     assert out["frames"][0]["gpx_path"] == "/anchored/run-1/f0000_frame.gpx"
+
+
+def test_repair_frames_returns_the_repaired_fit_path(monkeypatch, tmp_path):
+    """修復した fit の成果物パスが ② に出る (修復は元フレームを置き換えるため別ハンドル)。
+
+    `frames[i].gpx_path` は**修復前**の fit を指す。取り違えると ③ は「直したつもりの
+    フレーム」に対して直す前の fit を開く/MEM を掛けることになる。
+    """
+    from tsumugin.insitu.repair import FrameRepair, RepairReport
+    from tsumugin.mcp.operando_diag_tools import repair_frames
+
+    def fake_repair(frames, seq, phases, runner, discontinuities, **kwargs):
+        return RepairReport(
+            repairs=(
+                FrameRepair(
+                    frame_index=1, rwp_before=12.0, rwp_after=8.0, source="L",
+                    phase_fractions={"ph": 1.0}, gpx_path="/out/run/f0001_repair_L.gpx",
+                ),
+            ),
+            needs_model_revision=(),
+            systematic_hint=(),
+        )
+
+    monkeypatch.setattr("tsumugin.insitu.repair.repair_isolated", fake_repair)
+    series = {
+        "frames": [
+            {
+                "frame_index": i, "axis_value": 300.0 + 10 * i, "data_path": f"f{i}.xye",
+                "rwp": 9.0, "gof": 1.1, "refined_cells": {}, "phase_fractions": {"ph": 1.0},
+                "phase_names": ["ph"], "gpx_path": f"/out/run/f000{i}_frame.gpx",
+            }
+            for i in range(2)
+        ],
+        "phase_names": ["ph"],
+    }
+    out = repair_frames(
+        series, _FRAMES, [_P], target_frames=[1], two_theta_limits=[10.0, 70.0],
+        runner=lambda *a, **k: None,
+    )
+
+    assert out["repairs"][0]["gpx_path"] == "/out/run/f0001_repair_L.gpx"
