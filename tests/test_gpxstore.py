@@ -322,3 +322,16 @@ def test_plan_output_uses_the_ambient_context_for_naming(tmp_path, monkeypatch):
 
     assert Path(plan.path).name == "f0007_frame.gpx"
     assert Path(plan.path).parent == run
+
+
+def test_empty_series_creates_no_run_dir(tmp_path, monkeypatch):
+    """フレーム 0 個の退化入力で run ディレクトリを作らない (CWD/データ隣接を汚さない)。"""
+    from tsumugin.gpxstore import series_context
+
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    ctx, reason = series_context("")
+
+    assert ctx.enabled is False and reason == ""
+    assert list(tmp_path.iterdir()) == []

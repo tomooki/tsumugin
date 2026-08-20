@@ -324,7 +324,9 @@ def series_context(
 
     :returns: ``(文脈, 退避理由)``。退避理由が非空なら呼び出し側が ledger/警告に載せること
     """
-    if not save:
+    if not save or not str(data_path).strip():
+        # 【空入力で run ディレクトリを作らない】: フレーム 0 個の系列 (退化入力) で CWD に
+        #   空ディレクトリを撒くのは、保存規定の趣旨 (後から探せる) に対してノイズにしかならない。
         return GpxContext(enabled=False), ""
     run_dir, reason = resolve_run_dir(
         data_path, explicit_dir=gpx_dir, now=now, report_fallback=True
@@ -360,6 +362,10 @@ def record_artifact(run_dir: str, entry: ManifestEntry) -> None:
 
     索引は**便宜**であり真実の源ではない (真実は ledger と結果オブジェクト)。書けなくても
     精密化そのものは成立しているので、ここで例外を飛ばして解析を落とさない。
+
+    ⚠ マルチスタートの並列実行では**複数プロセスが同じ索引に追記する**。1 行を 1 回の
+    ``write`` で書くので実務上は壊れないが、行が混ざった場合も `read_manifest` が
+    その行だけ飛ばす (索引が欠けても成果物そのものは残っている)。
     """
     if not run_dir:
         return
