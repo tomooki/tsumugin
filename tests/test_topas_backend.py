@@ -10,6 +10,9 @@ TOPAS で塞がっていた (#175)。
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -345,38 +348,230 @@ def test_scale_is_also_per_phase():
     assert "scale !P1_scale" in text or "scale !phase1_scale" in text
 
 
-# ---------------- 実 CIF (structure_ref) 非対応を黙らせない ----------------
+# ---------------- 実 CIF (structure_ref) — 捏造構造で代替しない (#180) ----------------
+
+_CUBIC_CIF = """data_caf2
+_cell_length_a    5.46300
+_cell_length_b    5.46300
+_cell_length_c    5.46300
+_cell_angle_alpha 90.0000
+_cell_angle_beta  90.0000
+_cell_angle_gamma 90.0000
+_symmetry_space_group_name_H-M   'F m -3 m'
+_symmetry_Int_Tables_number      225
+loop_
+ _symmetry_equiv_pos_as_xyz
+ 'x,y,z'
+ '-x,-y,z'
+ '-x,y,-z'
+ 'x,-y,-z'
+ 'y,z,x'
+ 'z,x,y'
+loop_
+ _atom_site_label
+ _atom_site_type_symbol
+ _atom_site_fract_x
+ _atom_site_fract_y
+ _atom_site_fract_z
+ _atom_site_occupancy
+ _atom_site_U_iso_or_equiv
+ Ca1   Ca   0.00000   0.00000   0.00000  1.000  0.01000
+ F1    F    0.25000   0.25000   0.25000  1.000  0.01000
+"""
 
 
-def test_structure_ref_is_refused_rather_than_silently_replaced():
-    """**実 CIF を渡されたら黙って簡約構造で代替しない**。
-
-    `GSASIIBackend` は `structure_ref` があれば実 CIF を読む (`gsasii.py` の実 CIF 分岐)。
-    TOPAS 版は簡約モデル (P m m m・Ni 1 原子) しか持たないので、同じ入力を受けて黙って
-    代替すると **③ から見て「実構造で判別した」ことになる**。実構造判別 (`discriminate`)
-    はまさにこの経路なので、捏造構造で走った結果が実データの結論として返る。
-
-    これが `TopasBackend` を ② に露出していない理由でもある (下の非露出宣言を参照)。
-    """
-    backend = TopasBackend.__new__(TopasBackend)  # tc.exe 不要 (入力検証だけを見る)
-    backend.wavelength = 1.5406
-    phase = PhaseInstance(
-        phase_ref="P", lattice=LatticeParams(4.0, 4.0, 4.0), scale=1.0,
-        structure_ref="some.cif",
-    )
-    with pytest.raises(NotImplementedError, match="structure_ref"):
-        backend.refine(
-            RefinementModel(
-                phases=(phase,), free_params=frozenset(),
-                two_theta=_grid(), intensity=np.ones_like(_grid()),
-            )
-        )
-    with pytest.raises(NotImplementedError, match="structure_ref"):
-        backend.simulate((phase,), _grid())
+@pytest.fixture()
+def cubic_cif(tmp_path) -> str:
+    path = tmp_path / "caf2.cif"
+    path.write_text(_CUBIC_CIF, encoding="ascii")
+    return str(path)
 
 
-def test_phases_without_structure_ref_are_accepted():
-    """回帰: 簡約モデルの相 (structure_ref なし) は従来どおり通ること。"""
+def _structure_document(cif: str, *, cell_free=frozenset({0}), a: float = 5.5):
+    """実 CIF 相 1 つの文書を組む (tc.exe 不要)。"""
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+
+    from tsumugin.topas.instrument import write_xye
+
     backend = TopasBackend.__new__(TopasBackend)
     backend.wavelength = 1.5406
-    backend._require_simplified_phases((_phase(),))  # 例外を出さない
+    phase = PhaseInstance(
+        phase_ref="CaF2", lattice=LatticeParams(a, a, a), scale=1.0, structure_ref=cif
+    )
+    with _tempfile.TemporaryDirectory() as tmp:
+        work = _Path(tmp)
+        grid = np.arange(20.0, 60.0, 0.05)
+        write_xye(work / "obs.xye", grid, np.ones_like(grid))
+        doc = backend._document(
+            (phase,), work, cell_free=set(cell_free), scale_free=(), max_cyc=5
+        )
+        return doc
+
+
+def test_structure_ref_builds_the_real_structure_not_the_simplified_one(cubic_cif):
+    """**実 CIF を渡されたら実構造で組む**。
+
+    黙って簡約モデル (P m m m・Ni 1 原子) で代替すると、③ から見て「実構造で判別した」
+    ことになる — 判別 (`discriminate`) はまさにこの経路なので、捏造構造で走った結果が
+    実データの結論として返ってしまう (これが #180 まで ② 非露出だった理由)。
+    """
+    text = _structure_document(cubic_cif).render()
+    assert "Pmmm" not in text, "簡約モデルの空間群が残っている"
+    assert "site Ni1" not in text, "簡約モデルの原子が残っている"
+    assert "space_group Fm-3m" in text or "space_group F_m_-3_m" in text, text[:400]
+    assert "site Ca1" in text and "site F1" in text
+
+
+def test_structure_ref_cell_takes_the_warm_start_lengths_and_the_cif_angles(cubic_cif):
+    """格子長は warm-start (判別が動かした値)、角度は CIF 由来を保つ。
+
+    GSAS 側 `_apply_cell` と同じ規律 — 判別は a/b/c しか解放しないので、角度を
+    `LatticeParams` の既定 90° で上書きすると単斜/三斜 CIF の正しい角を潰す。
+    """
+    doc = _structure_document(cubic_cif, a=5.5)
+    cell = doc.phases[0].cell
+    assert cell["a"].value == pytest.approx(5.5), "warm-start の格子長が入っていない"
+    # 立方晶なので b/c は a への参照 (独立変数ではない)
+    assert cell["b"].is_reference and cell["c"].is_reference
+
+
+def test_symmetry_constrained_axes_are_not_released_independently(cubic_cif):
+    """立方晶で 3 軸を独立に解放すると対称性が壊れる (しかも Rwp は下がりうる)。"""
+    doc = _structure_document(cubic_cif, cell_free=frozenset({0}))
+    refined = [k for k, v in doc.phases[0].cell.items() if v.refine]
+    assert refined == ["a"], f"解放された軸: {refined}"
+
+
+def test_free_parameter_count_follows_the_symmetry_not_a_fixed_three(cubic_cif):
+    """`n_params` は **BIC の母数**なので、対称拘束で減った分を数え落とさない。
+
+    簡約モデル (P m m m) は常に 3 軸独立だったので `3 * len(cell_free)` で正しかったが、
+    実 CIF では結晶系で変わる (立方晶は 1)。過大申告すると仮説比較が歪む。
+    """
+    from tsumugin.backends.topas import count_free_params
+
+    doc = _structure_document(cubic_cif)
+    assert count_free_params(doc, scale_free=()) == 1
+
+
+def test_phases_without_structure_ref_still_use_the_simplified_model():
+    """回帰: 簡約モデルの相 (structure_ref なし) は従来どおり P m m m で組む。"""
+    text, _, _ = _document_for(set(), n_phases=1)
+    assert "Pmmm" in text and "site Ni1" in text
+
+
+@pytest.mark.topas
+def test_real_cif_refinement_runs_and_reads_the_cell_back(cubic_cif):
+    """実 tc.exe で実 CIF 相を精密化し、格子が読み戻ること (従属軸込み)。
+
+    従属軸 (``b =Get(a);``) は `Out()` に出ないので、参照式を解かないと**格子が
+    「動かなかった」ように見える** (実際には TOPAS が動かしている)。
+    """
+    backend = TopasBackend()
+    tt = _grid()
+    phase = PhaseInstance(
+        phase_ref="CaF2", lattice=LatticeParams(5.463, 5.463, 5.463), scale=1.0,
+        structure_ref=cubic_cif,
+    )
+    observed = backend.simulate((phase,), tt)
+    assert np.all(np.isfinite(observed)) and observed.max() > 0.0
+
+    # 【摂動は収束半径の中に置く】: ピーク幅より大きくずらすと最小二乗は原理的に戻れない
+    #   (0.7% ずらすと 5.5018 で止まることを実測)。ここで見たいのは収束半径ではなく
+    #   「実 CIF 相が精密化されて格子が読み戻るか」なので 0.13% にする。
+    warm = phase.with_updates(lattice=LatticeParams(5.470, 5.470, 5.470))
+    result = backend.refine(
+        RefinementModel(
+            phases=(warm,), free_params=frozenset({param_name(0, "lattice.a")}),
+            two_theta=tt, intensity=observed,
+        )
+    )
+    assert math.isfinite(result.chi2)
+    assert result.n_params == 1, "立方晶なのに 3 と数えている (BIC の母数が過大)"
+    refined = result.phases[0].lattice
+    assert refined.a == pytest.approx(refined.b) == pytest.approx(refined.c), (
+        "従属軸が読み戻せていない (Get(a) の参照式を解いていない)"
+    )
+    assert abs(refined.a - 5.463) < abs(5.470 - 5.463), "真値へ寄っていない"
+
+
+# ---------------- 既定重みの共有 (chi2 セマンティクスの統一) ----------------
+
+
+def test_default_weights_are_shared_with_the_other_backends():
+    """``weights`` 未指定時の統計重みは**バックエンド横断で 1 つの定義**であること。
+
+    TopasBackend だけ ``w=1`` だったため、同じ実データ・同じ実 CIF で chi2 が
+    1.4e9 (TOPAS) 対 6.8e5 (GSAS-II) と数桁ずれていた (**格子は 0.07% 以内で一致**)。
+    判別 (`discriminate`) は ``close_threshold`` という**絶対 ΔBIC の閾値**を両エンジンに
+    同じ値で使うので、重みがずれると「僅差かどうか」がエンジン依存になる。
+    """
+    import inspect
+
+    from tsumugin.backends import simulated
+    from tsumugin.backends.base import default_weights
+    from tsumugin.backends.topas import default_weights as topas_default
+
+    assert topas_default is default_weights, "TOPAS 側が別定義を持っている"
+    assert "default_weights" in inspect.getsource(simulated.SimulatedBackend.refine), (
+        "SimulatedBackend が共有定義を使っていない"
+    )
+    y = np.array([0.0, 0.5, 1.0, 100.0])
+    assert np.allclose(default_weights(y), 1.0 / np.maximum(y, 1.0))
+
+
+# ---------------- 2 エンジンが同じ構造へ収束するか (#180 の前提, M12 最重要の観測点) ----
+
+
+_PBSO4_CIF = Path("docs/benchmark/testdata/PbSO4-Wyckoff.cif")
+_PBSO4_XRA = Path("docs/benchmark/testdata/m7/cwcombined/PBSO4.XRA")
+
+
+@pytest.mark.gsas
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not (_PBSO4_CIF.is_file() and _PBSO4_XRA.is_file()),
+    reason="実データが無い (gitignore 対象で CI には存在しない)",
+)
+def test_both_backends_recover_the_same_cell_from_the_same_real_cif():
+    """**同じ実 CIF・同じ実データ・同じ摂動**から両エンジンが同じ格子へ収束すること。
+
+    `discriminate(backend=)` を許した前提はここにある — TOPAS 側が簡約モデルへ戻ると、
+    ③ から見て「実構造で判別した」結果が捏造構造で走り、**その嘘は結果からは見えない**。
+    格子が一致することは、両者が本当に同じ構造を読んでいることの検算になる。
+
+    実測 (2026-08-19, 真値 8.482/5.398/6.959 から 0.4% 摂動した 8.45/5.38/6.94 を出発点):
+    TOPAS 8.47648/5.40376/6.95684 と GSAS-II 8.48207/5.40312/6.96325 で最大 0.066% 差。
+    """
+    from tsumugin.backends.gsasii import GSASIIBackend
+    from tsumugin.reference.io import load_pattern
+
+    x, y = load_pattern(str(_PBSO4_XRA), "GSAS")
+    window = (x >= 20.0) & (x <= 90.0)
+    warm = PhaseInstance(
+        phase_ref="PbSO4",
+        lattice=LatticeParams(8.45, 5.38, 6.94),
+        scale=1.0,
+        structure_ref=str(_PBSO4_CIF),
+    )
+    model = RefinementModel(
+        phases=(warm,),
+        free_params=frozenset({param_name(0, "scale"), param_name(0, "lattice.a")}),
+        two_theta=x[window],
+        intensity=y[window],
+    )
+    cells = {}
+    for name, backend in (("topas", TopasBackend()), ("gsasii", GSASIIBackend())):
+        lattice = backend.refine(model, max_cycles=20).phases[0].lattice
+        cells[name] = (lattice.a, lattice.b, lattice.c)
+
+    reference = (8.482, 5.398, 6.959)
+    for name, cell in cells.items():
+        for axis, (got, want) in enumerate(zip(cell, reference)):
+            assert abs(got - want) / want < 0.003, f"{name} の軸 {axis} が真値から遠い: {got}"
+    for axis, (t_val, g_val) in enumerate(zip(cells["topas"], cells["gsasii"])):
+        assert abs(t_val - g_val) / g_val < 0.002, (
+            f"2 エンジンの軸 {axis} が食い違う: TOPAS {t_val} / GSAS {g_val}。"
+            "どちらかが違う構造を読んでいる"
+        )

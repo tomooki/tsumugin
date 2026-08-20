@@ -64,6 +64,7 @@ from .model import (
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
+from .stagepolicy import StageMetrics, decide_stage
 from .validity import (
     check_initial_uiso,
     check_profile_physicality,
@@ -284,18 +285,13 @@ def _is_noop_stage(
 ) -> bool:
     """その段が「何もしていない」か — no-op 段の検出 (REQ-SAR-102)。
 
-    条件は **``n_params`` が増えず、rwp と gof が直前段とビット同一**であること。GSAS-II の
-    無言失敗 (`_capture_refine_status` 参照) や、実元素数を超えた固定ランクの段 (T1 実測)、
-    プロファイル段が全ヒストグラムで除外される多相 TOF (T4 実測: S5/S6 が rwp ビット同一) が
-    このクラスに落ちる。**Rwp が動かないことを「改善しなかった」と読むと無言失敗と区別が
-    付かない** (P-SAR-2) ので、区別できる事実として検出する。
-
-    非有限は判定しない (inf → revert 経路が既に扱う別クラスの失敗であり、``inf == inf`` を
-    「ビット同一」と読むと初段の失敗を全部 no-op と誤報する)。
+    **判定の本体は `autorietveld.stagepolicy` に一本化した** (M12 T7): 同じ方針を GSAS 経路と
+    TOPAS 経路が別実装で持つと、片方で学んだ検出がもう片方に効かない (実際 TOPAS の T4 では
+    S3/S5 がこのクラスのまま完走していた)。本関数は既存の呼び出し形を保つ薄い委譲である。
     """
-    if not (math.isfinite(rwp) and math.isfinite(prev_rwp)):
-        return False
-    return nvar <= prev_nvar and rwp == prev_rwp and gof == prev_gof
+    return decide_stage(
+        StageMetrics(prev_rwp, prev_gof, prev_nvar), StageMetrics(rwp, gof, nvar)
+    ).is_noop
 
 
 def _prune_candidates(
@@ -2559,7 +2555,14 @@ def run_auto_rietveld(
             #   なる。拘束は「引く力」であって適合の悪化ではないので、penalty の増減で段を
             #   revert するのは誤りである (実測: bond weight 1e5 で Rwp 3558 → 全段 revert)。
             #   `rwp` は `_data_rwp` が分離済みで、拘束無効時は GSAS 値とビット同一。
-            if unconverged or not math.isfinite(rwp) or rwp > prev_rwp + worsen_eps:
+            decision = decide_stage(
+                StageMetrics(before[0], before[1], before[2]),
+                StageMetrics(rwp, gof, nvar),
+                worsen_eps=worsen_eps,
+                unconverged=unconverged,
+                detect_noop=stab.detect_noop_stages,
+            )
+            if decision.reverted:
                 shutil.copyfile(snap, gpx_path)
                 gpx = g2sc.G2Project(gpxfile=str(gpx_path))
                 g2hists = gpx.histograms()
@@ -2589,11 +2592,7 @@ def run_auto_rietveld(
             #   (検出のみ) — 段が効かない理由 (実元素数を超えた固定ランク段 / 全ヒストグラムが
             #   除外されるプロファイル段 / GSAS の無言失敗) は Rwp からは区別できないので、
             #   区別できる事実として台帳に残す。
-            is_noop = (
-                stab.detect_noop_stages
-                and not reverted
-                and _is_noop_stage(before[0], before[1], before[2], rwp, gof, nvar)
-            )
+            is_noop = decision.is_noop
             if is_noop:
                 ledger.append(
                     "m7_stage_noop",

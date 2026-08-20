@@ -165,3 +165,58 @@ def test_unsupported_flag_list_matches_the_implementation(analyze_text: str):
         assert f"`{flag}` は未対応" not in analyze_text, (
             f"{flag} は対応済みなのに手順書が未対応と書いている"
         )
+
+
+# ---------------- 判別の backend 露出 (#180) ----------------
+
+
+def test_discriminate_is_documented_as_backend_aware(analyze_text: str):
+    """① に入った機能が ③ の手順書にあること (★不変条件: 手順書に無ければ ③ は使わない)。"""
+    import inspect
+
+    assert "`discriminate`" in analyze_text, "判別で backend を選べることが書かれていない"
+    assert "backend" in inspect.signature(MCP_TOOLS["discriminate"]).parameters
+
+
+def test_skill_warns_against_mixing_engines_within_an_interval(analyze_text: str):
+    """判別は Δevidence (BIC 差) の比較なので、区間内でエンジンを混ぜると比較が壊れる。"""
+    section = analyze_text.split("`discriminate`")[-1]
+    assert "混ぜてはならない" in section or "混ぜない" in section
+
+
+def test_seed_profile_is_documented_with_its_radiation_dependence(analyze_text: str):
+    """**効く/効かないが放射源で逆転する**引数なので、片方だけ書くと誤誘導になる。"""
+    import inspect
+
+    assert "seed_profile" in inspect.signature(MCP_TOOLS["auto_rietveld"]).parameters
+    assert "seed_profile" in analyze_text
+    section = analyze_text.split("seed_profile")[1]
+    assert "放射光" in section and "中性子" in section, "どちらで効くかが書かれていない"
+
+
+def test_seed_profile_round_trip_caveat_is_documented(analyze_text: str):
+    """`specs` に載らない引数は**渡し忘れが結果の解釈を壊す** — 手順書に警告があること。"""
+    import inspect
+
+    assert "seed_profile" in inspect.signature(MCP_TOOLS["refine_with_revisions"]).parameters
+    # 最初の言及以降**すべて**を見る (注意書きは 2 度目の言及の後ろにある)。
+    section = analyze_text.split("seed_profile", 1)[1]
+    assert "refine_with_revisions" in section and "specs" in section
+
+
+def test_thread_default_is_visible_from_layer_two(analyze_text: str):
+    """再現性のための 1 スレッド既定は ③ から見えること (速度の理由が分からなくなる)。"""
+    from tsumugin.autorietveld.backends import describe_backends
+
+    assert "threads" in describe_backends()["topas"]
+    assert "TSUMUGIN_TOPAS_THREADS" in analyze_text
+
+
+def test_cell_strain_output_is_documented(analyze_text: str):
+    """段が効いた理由を読む先 (`cell_strain`) が手順書にあること。
+
+    ② に出ていても手順書に無ければ ③ は見ない (★不変条件)。
+    """
+    assert "cell_strain" in analyze_text
+    section = analyze_text.split("cell_strain", 1)[1]
+    assert "refined_cells" in section, "共有セルとの違いが書かれていない"

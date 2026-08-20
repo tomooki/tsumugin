@@ -12,6 +12,7 @@ import math
 import numpy as np
 import pytest
 
+from tsumugin.topas import instrument as inst
 from tsumugin.autorietveld.model import Geometry, HistogramSpec, Radiation
 from tsumugin.topas.instrument import (
     histogram_to_topas,
@@ -524,3 +525,80 @@ def test_zero_point_derivative_step_matches_the_ze_macro(tmp_path):
     joined = "\n".join(histogram_to_topas(spec, workdir=tmp_path).preamble)
     assert "del = .01 Yobs_dx_at(X1);" in joined
     assert "Yobs_dx_at(Xo)" not in joined
+
+
+# ---------------- TOF の立ち上がり/減衰 (#179) ----------------
+
+
+def test_instprm_keeps_the_tof_profile_coefficients(tmp_path):
+    """GSAS の TOF プロファイル係数 (alpha / beta) を捨てない。
+
+    捨てると TOPAS 側は汎用初期値からピーク形状を作ることになり、**ピークはどこかに
+    立つので tc.exe は正常終了し Rwp だけが悪い** (T4 の TOF 側 49% の主因候補)。
+
+    **装置ファイルは自分で書く**: `docs/benchmark/testdata` は gitignore 対象で CI に
+    存在しないため、実データを読むと CI だけで落ちる (この網は実際にそれを捕まえた)。
+    """
+    path = tmp_path / "powgen.instprm"
+    path.write_text(
+        "#GSAS-II instrument parameter file; do not add/delete items!\n"
+        "Type:PNT\n"
+        "difC:22600.2479192\n"
+        "difA:-0.900917699636\n"
+        "Zero:-8.51764244829\n"
+        "alpha:0.132504624416\n"
+        "beta-0:0.111601941165\n"
+        "beta-1:0.00272732086125\n"
+        "sig-1:-167.421847539\n"
+        "sig-2:281.385521422\n",
+        encoding="ascii",
+    )
+    spec = inst.read_instrument(path)
+    assert spec.is_tof and spec.profile
+    assert spec.profile["alpha"] == pytest.approx(0.132504624416)
+    assert spec.profile["beta-0"] == pytest.approx(0.111601941165)
+    assert spec.profile["beta-1"] == pytest.approx(0.00272732086125)
+    assert spec.profile["sig-2"] == pytest.approx(281.385521422)
+
+
+def test_tof_peak_type_maps_gsas_alpha_beta_to_exponential_convolutions():
+    """GSAS の α/β を TOPAS の ``TOF_Exponential`` へ写す。
+
+    ``topas.inc`` の実体は ``exp_conv_const = lr Constant(t1) / (a0 + a1 / d^wexp)`` で、
+    GSAS の速度定数 (1/µs) の逆数が時間定数になる:
+
+    - 減衰 β = β₀ + β₁/d⁴  →  a0 = difC·β₀, a1 = difC·β₁, wexp = 4
+    - 立ち上がり α = α₁/d  →  a0 = 0, a1 = difC·α₁, wexp = 1
+
+    (sig-1/sig-2 → FWHM のような「素直な写像が無い」関数形とは別物で、こちらは解ける。)
+    """
+    line = inst.tof_peak_type(
+        0, difc=22600.0, phase_key="NAC",
+        alpha=0.1325, beta0=0.1116, beta1=0.002727,
+    )
+    assert "TOF_Exponential(" in line
+    # 減衰側: difC·β₀ = 2522.16 / difC·β₁ = 61.63 / d⁴
+    assert "2522.16" in line and "61.63" in line and ", 4, difc_h0, +)" in line
+    # 立ち上がり側: a0 = 0 / difC·α = 2994.5 / d
+    assert "2994.5" in line and ", 1, difc_h0, -)" in line
+
+
+def test_tof_peak_type_without_coefficients_keeps_the_previous_shape():
+    """係数が読めない装置ファイルでは**でっち上げない** (従来どおり幅だけ置く)。"""
+    line = inst.tof_peak_type(0, difc=22600.0, phase_key="NAC")
+    assert "TOF_Exponential" not in line
+    assert "pv_fwhm" in line
+
+
+def test_tof_peak_type_skips_alpha_beta_when_difc_is_missing():
+    """difC が読めない装置ファイルで α/β を出すと **0 除算**になる (`a0 = difC*β₀ = 0`)。
+
+    係数は difC 倍で時間定数へ写すので、difC=0 だと
+    ``exp_conv_const = Constant(0)/(0 + 0/d^4)`` になり tc.exe が落ちる。壊れた装置ファイルでは
+    **幅だけ置いて先へ進む** (でっち上げない)。
+    """
+    line = inst.tof_peak_type(
+        0, difc=0.0, phase_key="NAC", alpha=0.1325, beta0=0.1116, beta1=0.002727
+    )
+    assert "TOF_Exponential" not in line
+    assert "pv_fwhm" in line

@@ -122,6 +122,7 @@ def discriminate(
     config: Mapping[str, object] | None = None,
     wavelength: float | None = None,
     data_format: str = "XYE",
+    backend: str = "gsasii",
     reason: str = "",
 ) -> dict:
     """operando 1 区間の固溶体 vs 二相判別を実データ GSAS で実行する (FR-313)。
@@ -136,20 +137,25 @@ def discriminate(
     :param config: 判別設定 (close_threshold / high_r_threshold / seq_max_cycles /
         multistart{n_starts} / physical_problem{...}|null / nested_arbitration{...}|null)。
         ``nested_arbitration`` を与えると僅差競合を nested 物理尤度で再裁定する (#76)。
-    :param wavelength: GSASIIBackend の波長 (省略時は既定)。
+    :param wavelength: 精密化バックエンドの波長 (省略時は既定)。
     :param data_format: data_paths 経路のファイル形式 ("XYE"/"XY"/"GSAS"/"FXYE"/"XRDML")。
+    :param backend: 精密化エンジン。``"gsasii"`` (既定) / ``"topas"`` (M12)。
+        **先に ``list_refinement_backends`` で可用性を確認すること**。未知の名前は
+        ``{"error","error_type"}`` へ縮退する (既定へ黙って落とすと意図と違うエンジンで
+        回った結果に気づけない)。**区間や仮説を跨いで切り替えないこと** — 判別は
+        Δevidence (BIC 差) の比較なので、エンジンが混ざると比較が成り立たない。
+        2 エンジンで**同じ判定が出るか**を見るなら、区間全体をそれぞれで通して結果を比べる。
     :returns: ``{verdict, delta_evidence, adjudicated_by, nested_delta_evidence, escalations,
         warnings, hypothesis_single, hypothesis_two_phase}``。GSAS 未導入・不正入力・判別失敗は
         ``{"error","error_type"}`` へ縮退 (例外を送出しない)。
     """
     try:
-        # 【GSAS backend 構築】: 未導入は GSASUnavailableError → error dict へ縮退
-        from ..backends.gsasii import GSASIIBackend
+        # 【backend 構築】: 未導入は GSASUnavailableError / TopasUnavailableError、
+        #   未知の名前は UnknownBackendError → いずれも下の except で error dict へ縮退する。
+        from ..autorietveld.backends import normalize_backend, resolve_protocol_backend
 
-        backend = (
-            GSASIIBackend(wavelength=float(wavelength))
-            if wavelength is not None
-            else GSASIIBackend()
+        engine = resolve_protocol_backend(
+            backend, wavelength=float(wavelength) if wavelength is not None else None
         )
 
         loader = partial(load_pattern, data_format=data_format)
@@ -168,7 +174,7 @@ def discriminate(
         nested_backend = NestedBackend() if cfg.nested_arbitration is not None else None
 
         result = discriminate_interval(
-            backend,
+            engine,
             frames,
             rng,
             phases,
@@ -176,7 +182,9 @@ def discriminate(
             fixed_phases=fixed,
             nested_backend=nested_backend,
         )
-        return _result_to_dict(result)
+        # 【どのエンジンで判別したか】: Δevidence を跨いで比較する前提条件なので結果に残す
+        #   (`auto_rietveld` の `backend` キーと同じ規律 — ③ が出所を検算できる)。
+        return {**_result_to_dict(result), "backend": normalize_backend(backend)}
     except Exception as exc:  # noqa: BLE001 — ② は例外を送出せず error dict へ縮退する
         return {"error": str(exc), "error_type": type(exc).__name__}
 

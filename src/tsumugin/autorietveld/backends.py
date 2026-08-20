@@ -20,6 +20,7 @@ __all__ = [
     "normalize_backend",
     "describe_backends",
     "resolve_backend",
+    "resolve_protocol_backend",
     "resolve_recipe_builder",
 ]
 
@@ -67,6 +68,44 @@ def resolve_backend(name: "str | None") -> Callable[..., object]:
     )
 
 
+def resolve_protocol_backend(
+    name: "str | None", *, wavelength: "float | None" = None
+) -> object:
+    """バックエンド名から **`RefinementBackend` Protocol の実装インスタンス**を返す。
+
+    `resolve_backend` が返すのは実構造エンジン (`run_*_rietveld`) で、こちらは仮説探索/判別が
+    使う境界 (``simulate`` / ``refine``) である。**名前の語彙は 1 か所に持つ** — ツールごとに
+    文字列比較を書くと、``"topas"`` を受けるツールと受けないツールが混ざって ③ から見た
+    振舞いが食い違う。
+
+    :raises UnknownBackendError: 未知の名前 (既定へフォールバックしない)
+    :raises GSASUnavailableError / TopasUnavailableError: エンジン未導入 (呼び出し側が
+        ``{"error","error_type"}`` へ縮退させる)
+    """
+    key = normalize_backend(name)
+    if key == "gsasii":
+        from ..backends.gsasii import GSASIIBackend
+
+        return GSASIIBackend(wavelength=wavelength) if wavelength is not None else GSASIIBackend()
+    if key == "topas":
+        from ..backends.topas import TopasBackend
+
+        return TopasBackend(wavelength=wavelength) if wavelength is not None else TopasBackend()
+    raise UnknownBackendError(
+        f"未知の精密化バックエンドです: {name!r}。利用可能: {', '.join(BACKEND_NAMES)}。"
+        f"綴り間違いを既定へ黙って落とすと、意図と違うエンジンで回った結果に気づけません。"
+    )
+
+
+def _topas_threads() -> int:
+    """tc.exe を何スレッドで起動するか (`topas.driver` の既定と**同じ解決**を使う)。"""
+    import os
+
+    from ..topas.driver import thread_count
+
+    return int(thread_count(os.environ.get("TSUMUGIN_TOPAS_THREADS")))
+
+
 def describe_backends() -> dict[str, dict[str, object]]:
     """② 向けの可用性一覧 (素の dict・**例外を出さない**)。
 
@@ -83,7 +122,19 @@ def describe_backends() -> dict[str, dict[str, object]]:
                 "`from GSASII import GSASIIscriptable` が通る状態にする。"
             ),
         },
-        "topas": dict(topas_describe()),
+        "topas": {
+            **dict(topas_describe()),
+            # 【再現性の既定を ③ から見えるようにする】: tc.exe はスレッド数で結果が変わる
+            #   ので既定は 1 スレッド (NFR-102)。速度が要る場面のための逃げ道も含めて
+            #   ここに出さないと、③ からは「なぜ遅いのか」も「外せるのか」も分からない。
+            "threads": _topas_threads(),
+            "threads_note": (
+                "tc.exe はスレッド数で結果が変わる (同一入力の T4 が 43.49/67.62/29.29% に "
+                "散らばった実測) ため既定は 1 スレッド。環境変数 TSUMUGIN_TOPAS_THREADS で "
+                "増やせるが、**再現性を捨てる選択**であり Rwp の比較・段の受理判定・"
+                "ベンチマークが実行ごとに変わりうる。"
+            ),
+        },
     }
 
 

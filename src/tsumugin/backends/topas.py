@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import math
 import tempfile
+from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
@@ -40,7 +42,7 @@ from ..topas.inp import (
 )
 from ..topas.instrument import tchz_line, write_xye
 from ..topas.parse import parse_records
-from .base import RefinementModel, RefinementResult, parse_param
+from .base import RefinementModel, RefinementResult, default_weights, parse_param
 
 __all__ = ["TopasBackend"]
 
@@ -73,6 +75,86 @@ def _simplified_phase(index: int, phase: PhaseInstance, *, cell_free: bool) -> T
     )
 
 
+#: 判別が解放する軸 (角度は解放しない — GSAS 経路 `_apply_cell` と同じ規律)。
+_LENGTH_AXES = ("a", "b", "c")
+
+
+@lru_cache(maxsize=64)
+def _parse_structure(path: str, mtime_ns: int, size: int) -> "tuple[object, tuple[str, ...]]":
+    """実 CIF を読んで (構造, 対称操作) を返す — **同じ内容なら 1 回だけ**。
+
+    探索層 (`search.tree` / `sequential.engine`) は同じ ``structure_ref`` を持つ仮説を
+    何百回も `simulate()`/`refine()` に掛ける。毎回読み直すと CIF パースに加え、対称操作が
+    CIF に無い場合は ``ensure_symops`` が **tc.exe を子プロセスで起動**して ``Sg/*.sg`` を
+    作りに行く。GSAS 側は相を gpx へ 1 度追加するだけなので、ここも 1 回で済ませる。
+
+    **キーに mtime とサイズを混ぜる**のが要点。パスだけで引くと、構造改訂 (`edit_cif` /
+    物質化 / セル研磨) が**同じパスへ書き戻した**とき古い構造が黙って勝ち、改訂が
+    「効かなかった」ように見える (差分は結果のどこにも出ない)。
+    """
+    from ..autorietveld.cif_normalize import read_structure_cif
+    from ..topas.structure import to_topas_spacegroup
+    from ..topas.symmetry import ensure_symops
+
+    structure = read_structure_cif(path)
+    spacegroup = to_topas_spacegroup(structure.spacegroup_hm, structure.it_number)
+    return structure, ensure_symops(spacegroup, structure.symops)
+
+
+def _read_structure(path: str) -> "tuple[object, tuple[str, ...]]":
+    """`_parse_structure` を**ファイルの版**で引く (書き換えはキャッシュミスになる)。"""
+    stat = Path(path).stat()
+    return _parse_structure(path, stat.st_mtime_ns, stat.st_size)
+
+
+def _structure_phase(index: int, phase: PhaseInstance, *, cell_free: bool) -> TopasPhase:
+    """実 CIF (``structure_ref``) から `TopasPhase` を組み、格子長だけ warm-start へ上書きする。
+
+    `GSASIIBackend._add_phases` の実 CIF 分岐 (Issue #130) と対の実装。**簡約モデルで黙って
+    代替しない** — ③ から見て「実構造で判別した」ことになってしまうため (#180)。
+
+    - **角度は CIF 由来を保つ**: 判別は a/b/c しか解放しないので、`LatticeParams` の
+      既定 90° で上書きすると単斜/三斜 CIF の正しい角を潰す (GSAS 側 `_apply_cell` と同じ)。
+    - **解放は結晶系の独立軸だけ**: 立方晶で 3 軸を独立に動かすと対称性が壊れる
+      (しかも Rwp は下がりうる)。従属軸は ``=Get(a);`` の参照式のまま触らない。
+    """
+    from ..topas.structure import structure_to_topas_phase
+
+    structure, symops = _read_structure(str(phase.structure_ref))
+    name = f"phase{index}"
+    built = structure_to_topas_phase(structure, name, symops=symops)
+
+    lengths = {"a": phase.lattice.a, "b": phase.lattice.b, "c": phase.lattice.c}
+    cell: dict[str, Param] = {}
+    for axis, param in built.cell.items():
+        if param.is_reference:
+            cell[axis] = param  # 従属軸 (=Get(a);) は独立軸に追随する
+            continue
+        free = cell_free and axis in _LENGTH_AXES and axis in built.free_cell_keys
+        cell[axis] = replace(
+            param,
+            value=lengths.get(axis, param.value),
+            refine=free,
+            name=param.name or f"{name}_{axis}",
+            minimum=param.minimum if axis not in _LENGTH_AXES else 0.5,
+        )
+    return built.with_updates(cell=cell)
+
+
+def count_free_params(doc: TopasDocument, *, scale_free: Sequence[int]) -> int:
+    """文書中で実際に解放されているパラメータ数 (**BIC の母数**)。
+
+    簡約モデル (P m m m) は常に 3 軸独立なので ``3 * len(cell_free)`` で正しかったが、
+    実 CIF では結晶系で変わる (立方晶は 1)。**過大申告すると仮説比較が歪む**ので、
+    「何軸解放したつもりか」ではなく**文書が実際に解放している数**を数える。
+    """
+    cell = sum(
+        1 for phase in doc.phases for param in phase.cell.values()
+        if param.refine and not param.is_reference
+    )
+    return cell + len(set(scale_free))
+
+
 class TopasBackend:
     """`RefinementBackend` の TOPAS 実装。
 
@@ -82,27 +164,6 @@ class TopasBackend:
     """
 
     name = "topas"
-
-    @staticmethod
-    def _require_simplified_phases(phases: Sequence[PhaseInstance]) -> None:
-        """実 CIF (``structure_ref``) を渡されたら**黙って簡約構造で代替しない**。
-
-        `GSASIIBackend` は ``structure_ref`` があれば実 CIF を読む。TOPAS 版は簡約モデル
-        (P m m m・Ni 1 原子) しか持たないので、同じ入力を黙って代替すると **③ から見て
-        「実構造で判別した」ことになる**。実構造判別 (`discriminate`) はまさにこの経路なので、
-        捏造構造で走った結果が実データの結論として返ってしまう。
-
-        :raises NotImplementedError: いずれかの相が ``structure_ref`` を持つとき。
-        """
-        offenders = [p.phase_ref for p in phases if getattr(p, "structure_ref", None)]
-        if offenders:
-            raise NotImplementedError(
-                f"TopasBackend は実 CIF (structure_ref) に未対応です: {offenders}。"
-                f"簡約モデル (P m m m・Ni 1 原子) で黙って代替すると、実構造で判別したことに"
-                f"なってしまうため停止します。実構造の精密化には "
-                f"`topas.engine.run_topas_rietveld` (auto_rietveld の backend=\"topas\") を"
-                f"使ってください。"
-            )
 
     def __init__(self, *, wavelength: float = _DEFAULT_WAVELENGTH) -> None:
         if not topas_available():
@@ -123,7 +184,6 @@ class TopasBackend:
         **観測ノイズを混ぜない** (NFR-102 再現性) — TOPAS には「観測データ無しで計算だけ」の
         入口が無いので、ダミーの平坦な観測を与えて ``iters 0`` で回し ``Ycalc`` を読む。
         """
-        self._require_simplified_phases(phases)
         grid = np.asarray(two_theta, dtype=float)
         with tempfile.TemporaryDirectory(prefix="tsumugin-topas-sim-") as tmp:
             work = Path(tmp)
@@ -141,11 +201,12 @@ class TopasBackend:
     def refine(
         self, model: RefinementModel, *, max_cycles: int = 20
     ) -> RefinementResult:
-        self._require_simplified_phases(model.phases)
         grid = np.asarray(model.two_theta, dtype=float)
         observed = np.asarray(model.intensity, dtype=float)
+        # 【既定重みは共有定義】: ここだけ w=1 にしていたため chi2 が GSAS/Simulated と
+        #   数桁ずれ、絶対 ΔBIC の閾値 (判別の close_threshold) がエンジン依存になっていた。
         weights = (
-            np.ones_like(observed)
+            default_weights(observed)
             if model.weights is None
             else np.asarray(model.weights, dtype=float)
         )
@@ -188,11 +249,13 @@ class TopasBackend:
         rwp = 100.0 * math.sqrt(chi2 / denominator) if denominator > 0.0 else 0.0
 
         return RefinementResult(
-            phases=self._read_back(model.phases, records, scale_free, cell_free),
+            phases=self._read_back(model.phases, records, doc, scale_free, cell_free),
             chi2=chi2,
             rwp=rwp,
             n_obs=int(observed.size),
-            n_params=len(scale_free) + 3 * len(cell_free),
+            # 【母数は文書から数える】: 実 CIF は結晶系で独立軸の数が変わる (立方晶は 1)。
+            #   ``3 * len(cell_free)`` は簡約モデル (P m m m) 専用の数え方だった。
+            n_params=count_free_params(doc, scale_free=tuple(scale_free)),
             converged=any_free is False or math.isfinite(chi2),
             n_cycles=max_cycles if any_free else 1,
             free_params=model.free_params,
@@ -214,8 +277,13 @@ class TopasBackend:
         #   要求した相のフィットと相関する。しかも `_read_back` は要求分しか読み戻さないので
         #   **TOPAS が実際に動かした値と結果が食い違い**、`n_params` も過少申告になって
         #   BIC 比較が意味を失う (GSAS 側は `if i in cell_free` と相ごとに判定している)。
+        free = set(cell_free)
         topas_phases = tuple(
-            _simplified_phase(i, phase, cell_free=i in set(cell_free))
+            (
+                _structure_phase(i, phase, cell_free=i in free)
+                if phase.structure_ref is not None
+                else _simplified_phase(i, phase, cell_free=i in free)
+            )
             for i, phase in enumerate(phases)
         )
         terms = {
@@ -283,6 +351,7 @@ class TopasBackend:
     def _read_back(
         phases: Sequence[PhaseInstance],
         records: "object",
+        doc: TopasDocument,
         scale_free: "set[int]",
         cell_free: "set[int]",
     ) -> "tuple[PhaseInstance, ...]":
@@ -290,32 +359,42 @@ class TopasBackend:
 
         **解放していない相には σ を付けない** — 「精密化した」と「初期値のまま」を
         結果から区別できなくなるため。
+
+        **従属軸は参照式から解く**: 実 CIF の立方/正方/六方晶では ``b =Get(a);`` が
+        ``Out()`` に出ないので、素直に読むと 3 軸揃わず**格子が「動かなかった」ように
+        見える** (実際には TOPAS が動かしている)。解決はエンジンと同じ
+        `refined_cells_from_records` を使う — 別実装にすると片方だけが嘘をつく。
         """
+        from ..topas.engine import refined_cells_from_records
+
         keyed = getattr(records, "keyed", {})
         cells = keyed.get("cell", {})
         scales = keyed.get("scale_val", {})
+        resolved = refined_cells_from_records(records, doc)
         updated: list[PhaseInstance] = []
         for index, phase in enumerate(phases):
             name = f"phase{index}"
             lattice = phase.lattice
             if index in cell_free:
-                values = {
-                    axis: cells.get(f"{name}/{axis}") for axis in ("a", "b", "c")
-                }
-                if all(v is not None for v in values.values()):
+                found = resolved.get(name)
+                if found is not None:
                     # 【σ は当該 refine で推定したものだけ】: esd が取れた軸のみ載せる。
                     #   0/非有限は「取得不能」であって「誤差 0」ではない。
-                    sigma = {
-                        axis: values[axis][1]
-                        for axis in ("a", "b", "c")
-                        if values[axis][1] is not None
-                        and math.isfinite(values[axis][1])
-                        and values[axis][1] > 0.0
-                    }
+                    #   従属軸は独立軸の esd を継がせない (推定していないため)。
+                    sigma = {}
+                    for axis in ("a", "b", "c"):
+                        record = cells.get(f"{name}/{axis}")
+                        if (
+                            record is not None
+                            and record[1] is not None
+                            and math.isfinite(record[1])
+                            and record[1] > 0.0
+                        ):
+                            sigma[axis] = record[1]
                     lattice = LatticeParams(
-                        a=values["a"][0],
-                        b=values["b"][0],
-                        c=values["c"][0],
+                        a=found[0],
+                        b=found[1],
+                        c=found[2],
                         alpha=lattice.alpha,
                         beta=lattice.beta,
                         gamma=lattice.gamma,

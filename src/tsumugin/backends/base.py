@@ -97,6 +97,22 @@ class RefinementBackend(Protocol):
         ...
 
 
+def default_weights(intensity: np.ndarray) -> np.ndarray:
+    """``RefinementModel.weights`` が未指定のときの統計重み ``w = 1/max(y, 1)``。
+
+    **バックエンド横断で 1 つの定義に揃えるためにここに置く** (不変条件「chi2/rwp の
+    セマンティクスはバックエンド間で統一 — BIC 比較の一貫性」)。重みが揃っていないと
+    ``chi2`` の絶対値がエンジンごとに数桁ずれ、``close_threshold`` のような**絶対 ΔBIC の
+    閾値がエンジン依存になる** (判別 `discriminate(backend=)` は同じ閾値を両エンジンに使う)。
+
+    実測: 同じ実データ・同じ実 CIF で ``w=1`` の TOPAS 版は chi2 1.4e9、Poisson 重みの
+    GSAS-II 版は 6.8e5 だった。**格子は 0.07% 以内で一致していたのに** chi2 だけが
+    比較できない状態だった。
+    """
+    values = np.asarray(intensity, dtype=float)
+    return 1.0 / np.maximum(values, 1.0)
+
+
 def param_name(phase_index: int, key: str) -> str:
     """(相インデックス, キー) を正準パラメータ名へ。"""
     return f"phase{phase_index}.{key}"

@@ -29,6 +29,8 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 **手順**: `list_refinement_backends` → 目的のエンジンの `available` が `true` であることを確認 →
 `auto_rietveld(..., backend="topas")`。返り値の `backend` キーで**実際にどちらで回ったか**を検算する。
+`backend` を取るのは `auto_rietveld` / `refine_with_revisions` / **`discriminate`** の 3 つで、
+operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固定である。
 
 **TOPAS を選ぶのはこういうとき**:
 
@@ -42,6 +44,13 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 - ⛔ **仮説やフレームを跨いで `backend` を切り替える**。Rwp/BIC の比較が成り立たなくなる。
   比較するなら全部を同じエンジンで回し直す。
+
+**判別 (`discriminate`) を TOPAS で回すとき**: 固溶体 vs 二相の判別は Δevidence (BIC 差) の
+比較なので、**区間の中でエンジンを混ぜてはならない**。使いどころは「GSAS で出た判定が
+エンジン依存でないことを確かめる」— 区間全体を `backend="topas"` でもう一度通し、`verdict` が
+一致するかを見る。**食い違ったらどちらかが間違っている**ので、Δevidence が大きい方を黙って
+採らずに原因を追うこと。各相の `structure_ref` (実 CIF) は両エンジンとも同じものを読む
+(TOPAS 側も実構造で判別する。簡約モデルでの代替はしない)。
 - ⛔ `available` を確認せずに `backend` を渡す。未導入なら `{"error","error_type"}` が返る。
 - ⛔ 綴りを推測して渡す。未知の名前は**既定へ落とさずエラーになる** (意図と違うエンジンで
   回った結果に気づけなくなるのを防ぐため)。
@@ -50,12 +59,44 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 - `.gpx` が存在しないので **MEM 系ツール (`mem_density` 等) は使えない**。結果の `gpx_path` は
   空文字になり、`project_path` に INP/.out が残る。
-- 段階フラグのうち **`hydrostatic_strain` は未対応**で、指定するとその段が**明示的に失敗して
-  revert される** (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
-  `absorption` は**反射光学系 (Bragg-Brentano) では同じく失敗する** — 円筒吸収の式を平板試料に
-  当てないため。透過/Debye-Scherrer で使うこと。
+- 段階フラグは**全て翻訳できる**が、条件が合わない指定は**明示的に失敗して revert される**
+  (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
+  - `hydrostatic_strain` は **joint (複数ヒストグラム) 専用**。単一ヒストグラムでは格子
+    そのものと縮退するので失敗する。**ヒストグラムごとに測定温度が違うとき**
+    (`histograms[].temperature` を入れたとき) は既定レシピが自動で 1 段入れる — 格子は
+    共有したまま xdd ごとの実効セルを許す量なので、温度差があるのに入れないと**両方の
+    ヒストグラムが同じくらい悪くなる**。**張った ε は結果の `cell_strain`**
+    (相名 → `"<軸>_h<索引>"` → 値) に出る — `refined_cells` は構造としての 1 本のセルなので
+    そこからは読めない。ε が箱 (±2%) に張り付いていたら物理的に怪しい (温度差 285 K でも
+    0.3% 程度) ので、段が「効いた」ことと合わせて必ず値を見ること。
+  - `absorption` は**反射光学系 (Bragg-Brentano) では失敗する** — 円筒吸収の式を平板試料に
+    当てないため。透過/Debye-Scherrer で使うこと。
+  - `size_strain` は **TOF ヒストグラムには張らない** (角度分散のモデルなので TOF には
+    対応物が無い)。混在 joint では非 TOF にだけ張り、全 TOF なら失敗する。TOF の粒径/
+    微小歪みは `tof_profile` (幅の d/d² 項) が担う。
+- **`phase_fraction_sum` は未対応** — GSAS には要るが **TOPAS には概念が無い**。相ごとの
+  `scale` が相分率そのもので、`MVW` が重量分率を正規化して返すため和=1 の拘束が存在しない。
+  相分率を動かしたいなら `scale` を解放する (既定レシピは S0 で解放済み)。指定すると
+  段が明示的に失敗する。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
+- **`seed_profile`** (TOPAS 専用の引数): TOPAS は装置ファイルのプロファイル (Caglioti U,V,W)
+  を読まず汎用初期値から始まる。**放射光では桁で効く** (実測 11BM 43.9% → 8.7%) 一方、
+  **CW 中性子では悪化する** (garnet 5.54 → 9.76% で物理妥当性も落ちる) ので既定 OFF。
+  X 線/放射光で Rwp が「ピーク形状が合っていない」形で頭打ちなら `seed_profile: true` を試す。
+  `backend="gsasii"` に渡すとエラーになる (GSAS は装置ファイルをそのまま読むので概念が無い)。
+  ⚠ **`specs` ハンドルには載らない**。`refine_with_revisions` へ改訂を回すときは
+  **そちらにも同じ値を渡すこと** — 渡し忘れると種付けなしのフィットになり、Rwp の変化が
+  改訂の効果に見えてしまう。
+- **TOPAS は既定で 1 スレッドで走る** (`list_refinement_backends` の `topas.threads`)。
+  tc.exe はスレッド数で結果が変わる — 同一入力の T4 が 43.49 / 67.62 / 29.29% に散らばった
+  実測があり、**Rwp が実行ごとに変わると段の受理判定も BIC 比較も意味を失う**ため再現性を
+  取っている。環境変数 `TSUMUGIN_TOPAS_THREADS` で増やせるが、それは**再現性を捨てる選択**
+  である (③ からは設定できない — ユーザー環境の話)。
+- **背景項数は多ければ良いのではない**: 11BM (放射光) は 6 項では背景を表せず 20 項で総合
+  43.5% → 26.3% になるが、24 項にすると X 線 Lorentzian 段が revert されて 67% へ跳ねる。
+  `background_coeffs` を増やしたら**段列の `reverted` を必ず見る** (総合 Rwp だけを見ていると
+  「増やしたら悪くなった」の理由が分からない)。
 
 ## joint (複数ヒストグラム) を読むとき
 

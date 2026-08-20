@@ -140,6 +140,15 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
             }
             for s in result.stage_results
         ],
+        # 【ε は出版値】: 温度差をどれだけ吸収したかは ``refined_cells`` からは読めない
+        #   (あちらは構造としての 1 本のセル)。空 dict = 張っていない/未対応経路。
+        "cell_strain": {
+            phase: dict(axes) for phase, axes in (result.cell_strain or {}).items()
+        },
+        # esd を伴わない精密化値は出版できない (±0.002% と ±0.4% で意味が反転する)。
+        "cell_strain_esd": {
+            phase: dict(axes) for phase, axes in (result.cell_strain_esd or {}).items()
+        },
         "refined_cells": {
             # 発散/崩壊した精密化で GSAS が NaN/Inf セルを返しうるため finite_or_none で None 化
             # (allow_nan=False の json.dumps クラッシュを防ぐ; 他フィールドと同一規律)。
@@ -460,6 +469,7 @@ def auto_rietveld(
     multistart: Mapping[str, object] | None = None,
     seed: int = 0,
     backend: str = "gsasii",
+    seed_profile: bool = False,
     runner: Runner | None = None,
     search_runner: SearchRunner | None = None,
 ) -> dict:
@@ -479,6 +489,15 @@ def auto_rietveld(
         ``{"error","error_type"}`` へ縮退する (綴り間違いを既定へ黙って落とすと、意図と違う
         エンジンで回った結果に気づけない)。**仮説やフレームを跨いで切り替えないこと** —
         Rwp/BIC の比較が成り立たなくなる。返り値の ``backend`` キーで出所を確認できる。
+    :param seed_profile: **``backend="topas"`` 専用**。装置ファイルの Caglioti 係数を TCHZ の
+        初期値へ換算して渡す (TOPAS は装置ファイルのプロファイルを読まないため)。
+        **放射光では効果が大きく** (実測 T4 の 11BM 43.9% → 8.7%)、**CW 中性子では悪化する**
+        (T2 garnet 5.54 → 9.76% で物理妥当性も落ちる) ので既定 False。``backend="gsasii"``
+        に渡すと黙って無視せず ``{"error","error_type"}`` を返す (GSAS は装置ファイルの
+        U,V,W をそのまま読むので種付けの概念が無い)。
+        ⚠ **``specs`` ハンドルには載らない** (`AnalysisInput` の項目ではないため)。
+        ``refine_with_revisions`` へ改訂を回すときは**そちらにも同じ値を渡すこと** —
+        渡し忘れると種付けなしのフィットになり、Rwp の変化が改訂の効果に見えてしまう。
     :param max_cyc: 各段階の最大精密化サイクル (エンジンへ転送。既定 12 は非回帰)。
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
@@ -562,13 +581,24 @@ def auto_rietveld(
         # 【比較は正規化を通す】: 解決系が `(name or DEFAULT).strip().lower()` している以上、
         #   ここで生文字列比較すると `None` (JSON の null) や "GSASII" が既定でないと判定され、
         #   既定のまま探索したいだけの呼び出しが誤って拒否される。
-        if normalize_backend(backend) != DEFAULT_BACKEND and (
-            search not in (None, False) or multistart is not None
-        ):
+        searching = search not in (None, False) or multistart is not None
+        if normalize_backend(backend) != DEFAULT_BACKEND and searching:
             return {
                 "error": (
                     f"backend={backend!r} と search/multistart の併用は未対応です "
                     f"(レシピ探索・収束確認は現状 GSAS-II 経路のみ)。どちらか一方にしてください。"
+                ),
+                "error_type": "UnsupportedBackendCombination",
+            }
+        # 【探索経路は seed_profile も運べない】: 探索は候補ごとに runner を組むので、ここで
+        #   黙って落とすと**種付けなしで探索した結果**が返る。単独経路では同じ引数が
+        #   ValueError になるのに探索経路だけ沈黙する、という非対称を作らない。
+        if seed_profile and searching:
+            return {
+                "error": (
+                    "seed_profile と search/multistart の併用は未対応です "
+                    "(探索は候補ごとに runner を組むため種付けを運べません)。"
+                    "どちらか一方にしてください。"
                 ),
                 "error_type": "UnsupportedBackendCombination",
             }
@@ -592,9 +622,12 @@ def auto_rietveld(
         return {"error": str(exc), "error_type": type(exc).__name__}
     try:
         run = runner or _default_gsas_runner(
-            seed, max_cyc=max_cyc, stability=opts, backend=backend
+            seed, max_cyc=max_cyc, stability=opts, backend=backend,
+            seed_profile=seed_profile,
         )
-    except TsumuginError as exc:  # 未知バックエンド名 / エンジン未導入
+    except (TsumuginError, ValueError) as exc:
+        # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
+        # **② は例外を送出しない** (③ は LLM なので例外は回復不能なハード失敗になる)。
         return {"error": str(exc), "error_type": type(exc).__name__}
     return _result_to_dict(run(inp), inp)
 
@@ -625,9 +658,15 @@ def refine_with_revisions(
     stability: Mapping[str, object] | None = None,
     seed: int = 0,
     backend: str = "gsasii",
+    seed_profile: bool = False,
     runner: Runner | None = None,
 ) -> dict:
     """③ が決めた AnalysisAction[] を spec に適用して再実行する (アクチュエータ)。
+
+    ⚠ ``seed_profile`` は ``auto_rietveld`` と**同じ意味**で、``specs`` ハンドルには
+    載らない (`AnalysisInput` の項目ではないため)。種付きで得た結果へ改訂を掛けるときは
+    **ここでも明示的に渡すこと** — 渡し忘れると種付けなしのフィットになり、Rwp の変化が
+    改訂の効果に見えてしまう。
 
     SafeAction (背景/パラメータ) も ModelAction (リミット/相追加/構造改訂) も適用できる。
     採否の判断は ③ が済ませた前提 (このツールは適用+再実行のみ)。
@@ -651,9 +690,11 @@ def refine_with_revisions(
         return {"error": str(exc), "error_type": type(exc).__name__}
     try:
         run = runner or _default_gsas_runner(
-            seed, max_cyc=max_cyc, stability=opts, backend=backend
+            seed, max_cyc=max_cyc, stability=opts, backend=backend,
+            seed_profile=seed_profile,
         )
-    except TsumuginError as exc:  # 未知バックエンド名 / エンジン未導入
+    except (TsumuginError, ValueError) as exc:
+        # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
         return {"error": str(exc), "error_type": type(exc).__name__}
     return _result_to_dict(run(inp), inp)
 
@@ -856,7 +897,8 @@ def list_refinement_backends() -> dict:
     """利用可能な精密化エンジンとその可用性を返す (計器・**副作用なし**)。
 
     ③ が「今この環境でどのエンジンを ``backend`` 引数に渡せるか」を問える唯一の窓口。
-    ``auto_rietveld`` / ``refine_with_revisions`` に ``backend`` を渡す**前に**呼ぶこと。
+    ``auto_rietveld`` / ``refine_with_revisions`` / ``discriminate`` に ``backend`` を渡す
+    **前に**呼ぶこと。
     (``sequential_rietveld`` / ``anchored_sequential`` は**まだ ``backend`` を受け取らない** —
     operando 経路は GSAS-II 固定である。)
 

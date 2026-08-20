@@ -121,6 +121,27 @@ def test_worsening_stage_is_reverted(stub_driver):
     assert result.final_rwp == pytest.approx(12.0)
 
 
+def test_silent_noop_stage_is_detected_not_swallowed(stub_driver):
+    """**指標がビット同一で `reverted` も立たない段**を、区別できる事実として残す (M12 T7)。
+
+    GSAS 経路にしか無かった検出 (REQ-SAR-102) を共有の段方針から受け取る。T4 実測で
+    S3 phase_fractions / S5 occupancy がこの状態のまま完走していた — 最終 Rwp からは
+    「効かなかった」のか「無言で失敗した」のかを区別できない。
+    """
+    ledger = Ledger()
+    stub_driver([30.0, 30.0])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=_stages(("S0", 30.0), ("S1", 30.0)), ledger=ledger,
+    )
+    second = result.stage_results[1]
+    assert not second.reverted, "no-op は revert しない (検出のみ)"
+    assert "no-op" in second.note, f"note に出ていない: {second.note!r}"
+    entries = [e for e in ledger.entries if e.kind == "m12_topas_stage"]
+    assert entries[1].payload["noop"] is True
+    assert entries[0].payload["noop"] is False, "初段まで no-op と誤報している"
+
+
 def test_backend_failure_degrades_to_infinite_rwp_not_an_exception(stub_driver):
     """**不変条件**: バックエンドの失敗は例外でなく rwp=inf に変換しガードレールへ。"""
     stub_driver([30.0, TopasRunError("Abnormal program termination"), 25.0])
@@ -286,6 +307,30 @@ def test_new_flags_produce_inp_that_tc_actually_accepts(label, flags):
     assert math.isfinite(stage.rwp), f"{label}: tc.exe が INP を受理していない (rwp=inf)"
 
 
+@pytest.mark.topas
+def test_hydrostatic_strain_produces_inp_that_tc_actually_accepts():
+    """`hydrostatic_strain` は **joint 専用**なので上のパラメータ表には載せられない。
+
+    同じ観測を 2 本にした最小の joint で、``a = <共有> * (1 + ε);`` を実 tc.exe が
+    受理する (= 段が rwp=inf に落ちない) ことを確かめる。
+    """
+    hist = _histogram()
+    result = eng.run_topas_rietveld(
+        [replace(hist, temperature=295.0), replace(hist, temperature=10.0)],
+        [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"background": {"coeffs": 6}, "scale": True}),
+            RefinementStage(label="S1 cell", flags={"cell": True}),
+            RefinementStage(label="S2 strain", flags={"hydrostatic_strain": True}),
+        ),
+    )
+    stage = result.stage_results[-1]
+    assert math.isfinite(stage.rwp), "tc.exe が INP を受理していない (rwp=inf)"
+    assert stage.n_params > result.stage_results[-2].n_params, (
+        "ε が 1 つも増えていない — 段が無言 no-op になっている"
+    )
+
+
 # ---------------- joint の総合指標 (#174) ----------------
 
 #: 実測: joint (X 線 + CW 中性子 PbSO4) の ``.out`` 先頭行は**全ヒストグラム込み**の r_wp、
@@ -346,6 +391,22 @@ def test_validity_receives_phase_fractions_as_a_sequence():
 # ---------------- ベンチマーク回帰ガード (#172-#174) ----------------
 
 _M7 = Path("docs/benchmark/testdata/m7")
+
+#: T4 の実測 Rwp (**GSAS T4 と同一のデータリミット**で測った値, 2026-08-19)。
+#: **合格基準ではない** — 合格基準は ≤15% (GSAS ~12.8%) で、W2 で TOF のピーク形状を
+#: 詰めてから課す。
+#:
+#: ⚠ 以前記録されていた 30.9% は**リミットが違う**測定 (11BM 2-40° / PG3 7000-100000・
+#: 26500-200000 µs) の値で、GSAS の 12.8% とは比較できない。同一条件での初回測定は 68.61% で、
+#: **既定設定 (背景 6 項・種付けなし) の決定論値**である。調整済み設定 (背景 20 項 + 放射光の
+#: profile 種付け) は下の `test_benchmark_t4_tuned_configuration` で 19.25% — そちらが到達点。
+#: ⚠ 一時 43.49% と記録したが、それは **tc.exe のスレッド依存の非決定性**を引いた値だった
+#: (同一入力が 43.49/67.62/43.49/29.29% に散らばる)。`driver` が 1 スレッドに固定してからは
+#: この値でビット同一に再現する。
+_T4_RWP_MEASURED = 67.62
+_T4_RWP_CEILING = 69.0
+#: 同条件での観測点数 (11BM 2.5-32° + PG3-1066 11750-103794 µs + PG3-2665 全域)。
+_T4_N_OBS = 40150
 
 
 def _benchmark_available(*paths: Path) -> bool:
@@ -422,13 +483,18 @@ def test_benchmark_t3_joint_reports_the_global_rwp():
     d = _M7 / "cwcombined"
     result = eng.run_topas_rietveld(
         [
+            # 【温度は測定条件】: GSAS T3 は X 線 295 K / 中性子 10 K で、その差を
+            #   per-histogram Dij で吸収して 6.66% を出している。温度を与えないと
+            #   TOPAS 側は共有セル 1 本で両方を説明しようとする (#173/#178)。
             HistogramSpec(
                 data_path=str(d / "PBSO4.XRA"), instrument_path=str(d / "INST_XRY.PRM"),
                 radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+                temperature=295.0,
             ),
             HistogramSpec(
                 data_path=str(d / "PBSO4.CWN"), instrument_path=str(d / "inst_d1a.prm"),
                 radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
+                temperature=10.0,
             ),
         ],
         [PhaseSpec(
@@ -437,5 +503,157 @@ def test_benchmark_t3_joint_reports_the_global_rwp():
     )
     assert len(result.histogram_rwp) == 2, "内訳が取れていない"
     assert result.final_rwp >= min(result.histogram_rwp) - 1e-9
-    assert result.final_rwp < 9.0, f"Rwp {result.final_rwp:.2f} (実測 8.29, GSAS 6.66)"
+    assert result.final_rwp < 8.0, f"Rwp {result.final_rwp:.2f} (実測 7.19, GSAS 6.66)"
     assert result.validity.passed
+    # 【段が実際に走ったことを見る】: 温度差の段が落ちて revert されても総合 Rwp は
+    #   8.29% で「基準の近く」に見えてしまう (実測: ε の箱が広すぎると tc.exe が
+    #   `Invalid d spacing` で異常終了する)。**Rwp だけを見るガードでは検出できない**。
+    strain = [s for s in result.stage_results if "hydrostatic_strain" in s.label]
+    assert strain, "温度差があるのに歪み段がレシピに出ていない"
+    assert not strain[0].reverted, f"歪み段が revert された: {strain[0].note}"
+    # 【ε が実 tc.exe から返ること】: 単体テストは自作の results.txt を読ませているだけ
+    #   なので、`Out(eps…)` を TOPAS が実際に受理して書くかは実データでしか分からない
+    #   (tc.exe は構文エラーでも終了コード 0 を返す)。値は 10 K 側の収縮 (実測 -0.115%) で、
+    #   熱膨張 α≈4e-6/K × 285 K ≈ 0.11% と一致し、箱 (±2%) からは 1 桁離れている。
+    eps = result.cell_strain.get("PbSO4", {})
+    assert set(eps) == {"a_h1", "b_h1", "c_h1"}, f"ε が返っていない: {result.cell_strain}"
+    for axis, value in eps.items():
+        assert -0.005 < value < 0.0, f"{axis}: {value} (10 K 側は縮むはず)"
+
+
+def _t4_histograms(d: Path) -> list[HistogramSpec]:
+    """GSAS T4 と**同一の測定条件** (リミット / 温度) のヒストグラム 3 本。
+
+    ``data_format`` は測定条件ではなく「どのローダで読むか」である。GSAS 経路は GSAS-II の
+    importer が形式を自分で判別するので ``"GSAS"`` で通るが、TOPAS 経路は
+    `reference.io.load_pattern` が読む。PG3 の ``.gsa`` は BANK レコードが ``SLOG … FXYE``
+    = **自由形式 X Y E の対数ビン**なので FXYE ローダが正しい (``parse_gsas_powder`` は
+    CONST 固定ビンしか読めず SLOG を拒否する = Issue #181)。
+    """
+    return [
+        HistogramSpec(
+            data_path=str(d / "11BM_NAC.fxye"), instrument_path=str(d / "11bm_gsas.prm"),
+            radiation=Radiation.XRAY_SYNCHROTRON, geometry=Geometry.DEBYE_SCHERRER,
+            data_format="FXYE", two_theta_limits=(2.5, 32.0), temperature=298.0,
+        ),
+        HistogramSpec(
+            data_path=str(d / "PG3_22048.gsa"), instrument_path=str(d / "POWGEN_1066.instprm"),
+            radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
+            data_format="FXYE", two_theta_limits=(11750.0, 103794.0), temperature=298.0,
+        ),
+        HistogramSpec(
+            data_path=str(d / "PG3_22049.gsa"), instrument_path=str(d / "POWGEN_2665.instprm"),
+            radiation=Radiation.NEUTRON_TOF, geometry=Geometry.DEBYE_SCHERRER,
+            data_format="FXYE", temperature=298.0,
+        ),
+    ]
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(
+        _M7 / "tofcw" / "11BM_NAC.fxye",
+        _M7 / "tofcw" / "PG3_22048.gsa",
+        _M7 / "tofcw" / "PG3_22049.gsa",
+        _M7 / "tofcw" / "NAC.cif",
+    ),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t4_multiphase_tof_synchrotron():
+    """T4 (NAC+CaF2 / TOF×2 + 放射光 多相) を **GSAS T4 と同一条件**で測る (#179)。
+
+    仕様は `tests/autorietveld/test_engine_t4.py` と**同じ `HistogramSpec`** にする。
+    データリミットが違うまま両者の Rwp を並べても比較にならない — M7 で「T4 非収束の主因は
+    データリミット未設定」と実測で結論づけている以上、**リミットは測定条件そのもの**である。
+
+    閾値は現時点の実測を固定した**悪化検出**であり、合格基準 (≤15%) はまだ課していない
+    (W2 で TOF のピーク形状を詰めてから締める)。
+    """
+    d = _M7 / "tofcw"
+    histograms = _t4_histograms(d)
+    phases = [
+        PhaseSpec(structure_path=str(d / "NAC.cif"), phase_name="NAC"),
+        PhaseSpec(structure_path=str(d / "CaF2.cif"), phase_name="CaF2"),
+    ]
+    result = eng.run_topas_rietveld(histograms, phases, max_cyc=10)
+
+    assert len(result.histogram_rwp) == 3, "内訳が取れていない (3 ヒストグラム)"
+    # 【条件そのものを固定する】: Rwp の上限だけを見るガードは、**リミットを広げて
+    #   都合のよい値を出す**変更を検出できない (実測: 11BM 2-40° へ広げると 30.3% と
+    #   「良く」なるが GSAS の 12.8% とは比較できない値になる)。精密化に使った観測点数を
+    #   固定して、測定条件が動いたら落ちるようにする。
+    assert result.n_obs == _T4_N_OBS, (
+        f"観測点数が {result.n_obs} (期待 {_T4_N_OBS}) — データリミットが動いている。"
+        "条件が変われば Rwp は比較できない"
+    )
+    assert result.final_rwp < _T4_RWP_CEILING, (
+        f"Rwp {result.final_rwp:.2f} が実測 {_T4_RWP_MEASURED} から悪化 "
+        f"(内訳 {[round(v, 2) for v in result.histogram_rwp]})"
+    )
+    # 格子は Rwp が未達でも妥当な位置に留まること (NAC 立方 a~10.25 / CaF2 蛍石 a~5.46)。
+    assert 10.20 < result.refined_cells["NAC"][0] < 10.30
+    assert 5.42 < result.refined_cells["CaF2"][0] < 5.50
+
+
+@pytest.mark.topas
+@pytest.mark.skipif(
+    not _benchmark_available(
+        _M7 / "tofcw" / "11BM_NAC.fxye",
+        _M7 / "tofcw" / "PG3_22048.gsa",
+        _M7 / "tofcw" / "PG3_22049.gsa",
+        _M7 / "tofcw" / "NAC.cif",
+    ),
+    reason="M7 実データが無い (gitignore 対象)",
+)
+def test_benchmark_t4_tuned_configuration():
+    """T4 の**到達点** — 放射光のプロファイル種付け + 背景 20 項 (#179)。
+
+    既定 (43.5%) から効いた 2 手を固定する:
+
+    - ``seed_profile``: TOPAS は装置ファイルのプロファイルを読まないので、汎用初期値から
+      遠い放射光では**桁で効く** (11BM 43.9% → 8.7%)。**CW 中性子では悪化する**ので既定 OFF。
+    - 背景 20 項: 11BM は 6 項では背景を表せない (M9 CaTeO3 で 24 項が要った前例と同型)。
+      ⚠ 24 項にすると X 線 Lorentzian 段が revert されて総合 67% へ跳ねる — **多ければ
+      良いのではない**。
+
+    ⚠ **物理妥当性は現在落ちる**: CaF2 の Ca が Uiso < 0 になる (少数相の未モデル寄与を
+    吸っている疑い)。`assert not passed` は**既知の状態の記録**であり、直ったらこのテストが
+    落ちて記録の更新を強制する。**Rwp だけで合格にしない**規律のための明示的な赤旗である。
+    """
+    d = _M7 / "tofcw"
+    result = eng.run_topas_rietveld(
+        _t4_histograms(d),
+        [
+            PhaseSpec(structure_path=str(d / "NAC.cif"), phase_name="NAC"),
+            PhaseSpec(structure_path=str(d / "CaF2.cif"), phase_name="CaF2"),
+        ],
+        max_cyc=10,
+        background_coeffs=20,
+        seed_profile=True,
+    )
+    assert result.final_rwp < 21.0, f"Rwp {result.final_rwp:.2f} (実測 19.25, GSAS ~12.8)"
+    assert result.histogram_rwp[0] < 10.0, "放射光の種付けが効いていない (実測 8.67)"
+    assert not result.validity.passed, (
+        "CaF2 の Uiso が負でなくなった — 記録を更新すること (この赤旗は既知の状態の固定)"
+    )
+
+def test_cell_strain_is_reported_from_the_records(stub_driver, monkeypatch):
+    """段が効いた理由 (ε がいくつだったか) を結果から読めること。
+
+    ``refined_cells`` は**構造としての 1 本のセル**なので、温度差をどれだけ吸収したかは
+    そこからは読めない。出さないと「段が効いた」も「ε が箱に張り付いた (非物理)」も
+    結果に現れない。
+    """
+    class _Run:
+        out_text = "r_p 1.0 r_wp 12.0 r_exp 5.0 gof 2.4\n"
+        results_text = (
+            "r_wp\t12.0\ngof\t2.4\n"
+            "cell_strain\tPbSO4\ta\th1\t0.0031\t0.0002\n"
+        )
+        stdout = ""
+
+    monkeypatch.setattr(eng, "run_tc", lambda *a, **k: _Run())
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 12.0)),
+    )
+    assert result.cell_strain == {"PbSO4": {"a_h1": 0.0031}}

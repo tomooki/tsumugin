@@ -26,7 +26,7 @@ from pathlib import Path
 from ..errors import TopasRunError
 from .availability import require_tc_exe, topas_home
 
-__all__ = ["TopasRun", "run_tc"]
+__all__ = ["TopasRun", "run_tc", "thread_count"]
 
 _FAILURE_MARKERS: tuple[str, ...] = (
     "Abnormal program termination",
@@ -35,6 +35,13 @@ _FAILURE_MARKERS: tuple[str, ...] = (
     "Cannot locate",
 )
 """stdout に現れたら失敗とみなす文字列 (実測)。"""
+
+_DIAGNOSTIC_MARKERS: tuple[str, ...] = ("Invalid d spacing", "Negative FWHM")
+"""失敗が**すでに確定したとき**にだけ拾う診断行 (実測)。
+
+TOPAS は根本原因を ``Abnormal program termination`` の直前に 1 行で書くことがあるが、
+その文言自体は失敗の判定材料にしない — 警告として出て完走する可能性を排除できないため
+(判定を広げると「動いていたものが落ちる」側の誤りになる)。"""
 
 _DEFAULT_TIMEOUT = 1800.0
 
@@ -65,7 +72,35 @@ def _failure_reason(stdout: str) -> "str | None":
             continue
         if any(marker in stripped for marker in _FAILURE_MARKERS):
             hits.append(stripped)
-    return " | ".join(hits) if hits else None
+    if not hits:
+        return None
+    # 失敗が確定してから診断行を足す (原因の文言を落とすと Rwp からは辿れない)。
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if stripped and stripped not in hits and any(
+            marker in stripped for marker in _DIAGNOSTIC_MARKERS
+        ):
+            hits.append(stripped)
+    return " | ".join(hits)
+
+
+def thread_count(raw: "str | None") -> str:
+    """``TSUMUGIN_TOPAS_THREADS`` を検証して ``OMP_NUM_THREADS`` の値へ (既定 "1")。
+
+    **``autorietveld.backends.describe_backends`` と共有する** — ② が報告するスレッド数と
+    実際に tc.exe を起動する値が別実装だと、報告が嘘になる。
+
+    **空/非数値/0 以下は既定へ戻す** — 素通しすると OpenMP の実装依存挙動になり、
+    「再現性を取っているつもりで取れていない」が結果に現れない (② の「空/不正入力を
+    正常と答えない」と同じ規律)。
+    """
+    if raw is None or not raw.strip():
+        return "1"
+    try:
+        count = int(raw.strip())
+    except ValueError:
+        return "1"
+    return str(count) if count >= 1 else "1"
 
 
 def run_tc(
@@ -103,6 +138,13 @@ def run_tc(
     if home is not None:
         # 【sgcom6 対策】: 空間群生成の子プロセスは PATH からしか引かれない。
         env["PATH"] = f"{home}{os.pathsep}{env.get('PATH', '')}"
+    # 【再現性 (NFR-102)】: **tc.exe はスレッド数で結果が変わる**。悪条件な最小二乗では
+    #   総和順序がスレッド割り当てで変わり、同じ入力の T4 が 43.49 / 67.62 / 43.49 /
+    #   29.29% に散らばった (分岐点は X 線 Lorentzian 段の受理/revert)。1 スレッドなら
+    #   ビット同一になる (実測)。**Rwp が実行ごとに変わると段の受理判定も BIC 比較も
+    #   ベンチマークも意味を失う**ので既定は再現性を取る。速度が要る場面のために
+    #   ``TSUMUGIN_TOPAS_THREADS`` で外せる (再現性を捨てる、という明示的な選択)。
+    env["OMP_NUM_THREADS"] = thread_count(env.get("TSUMUGIN_TOPAS_THREADS"))
 
     try:
         proc = subprocess.run(

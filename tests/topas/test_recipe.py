@@ -14,9 +14,12 @@ from tsumugin.autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radi
 from tsumugin.topas.recipe import build_topas_recipe
 
 
-def _hist(radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO) -> HistogramSpec:
+def _hist(
+    radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, temperature=None
+) -> HistogramSpec:
     return HistogramSpec(
-        data_path="d", instrument_path="i", radiation=radiation, geometry=geometry
+        data_path="d", instrument_path="i", radiation=radiation, geometry=geometry,
+        temperature=temperature,
     )
 
 
@@ -46,7 +49,8 @@ def test_background_coefficient_count_is_threaded_through():
 
 def test_structure_comes_after_peak_position():
     """座標/占有率/Uiso はピーク位置 (格子+ゼロ点) が合ってから。"""
-    order = _order(build_topas_recipe([_hist()], [_phase()]))
+    phase = PhaseSpec(structure_path="P.cif", phase_name="P", free_occupancy_labels=("O1",))
+    order = _order(build_topas_recipe([_hist()], [phase]))
     for structural in ("coords", "occupancy", "uiso"):
         assert order.index("cell") < order.index(structural)
 
@@ -63,15 +67,30 @@ def test_displacement_covers_every_histogram():
     assert set(disp) == {0, 1}
 
 
-def test_multiphase_separates_phase_fractions_before_structure():
-    """多相は相分率を構造より先に分離する (M7 T4 の教訓)。"""
+def test_no_phase_fraction_stage_because_scale_already_is_the_phase_fraction():
+    """GSAS の「相分率を構造より先に分離する」は **TOPAS では S0 で済んでいる**。
+
+    相ごとの ``scale`` が相分率そのもので S0 が解放しており、和=1 の拘束も ``MVW`` の
+    正規化があるので存在しない。段を置いても**何も変わらない段が「相分率を分離した」という
+    顔で段列に残る**だけだった (実測 T4 で rwp・gof・n_params がビット同一の no-op)。
+    """
     order = _order(build_topas_recipe([_hist()], [_phase("A"), _phase("B")]))
-    assert "phase_fraction_sum" in order
-    assert order.index("phase_fraction_sum") < order.index("coords")
+    assert "phase_fraction_sum" not in order
+    assert "scale" in _order(build_topas_recipe([_hist()], [_phase()]))[:2]
 
 
-def test_single_phase_has_no_phase_fraction_stage():
-    assert "phase_fraction_sum" not in _order(build_topas_recipe([_hist()], [_phase()]))
+def test_occupancy_stage_only_when_some_phase_declares_it():
+    """`apply_stage` は**宣言されたサイトだけ**解放する — 宣言が無ければ段は構造的に空振り。"""
+    plain = _order(build_topas_recipe([_hist()], [_phase()]))
+    assert "occupancy" not in plain
+
+    declared = PhaseSpec(structure_path="P.cif", phase_name="P", free_occupancy_labels=("O1",))
+    assert "occupancy" in _order(build_topas_recipe([_hist()], [declared]))
+
+    mixed = PhaseSpec(
+        structure_path="P.cif", phase_name="P", mixed_occupancy_groups=(("Fe1", "Al1"),)
+    )
+    assert "occupancy" in _order(build_topas_recipe([_hist()], [mixed]))
 
 
 def test_lorentzian_stage_only_for_xray():
@@ -124,8 +143,113 @@ def test_empty_histograms_still_produces_the_opening_stage():
 
 
 @pytest.mark.parametrize("n_phases", [1, 2, 3])
-def test_recipe_length_grows_only_with_the_phase_fraction_stage(n_phases):
+def test_recipe_length_does_not_depend_on_the_phase_count(n_phases):
+    """**相数で段は増えない** — 相分率は S0 の ``scale`` で既に自由だから。
+
+    X 線単相/多相: scale+bg / profile / cell+disp / coords / uiso / lorentz / asym / size = 8。
+    占有率段は宣言があるときだけ増える (別テスト)。
+    """
     stages = build_topas_recipe([_hist()], [_phase(f"P{i}") for i in range(n_phases)])
-    # 単相 X 線: scale+bg / profile / cell+disp / coords / occ / uiso / lorentz / asym / size = 9
-    expected = 10 if n_phases > 1 else 9
-    assert len(stages) == expected
+    assert len(stages) == 8, [s.label for s in stages]
+
+
+# ---------------- 温度差の吸収 (#173) ----------------
+
+
+def _cw_neutron(temperature):
+    return _hist(Radiation.NEUTRON_CW, Geometry.DEBYE_SCHERRER, temperature=temperature)
+
+
+def test_temperature_difference_adds_a_hydrostatic_strain_stage():
+    """joint のヒストグラムが別温度なら、格子は共有したまま per-xdd のずれを許す。
+
+    M7 T3 (PbSO4) は X 線 295 K / 中性子 10 K で、GSAS 経路は per-histogram Dij を張って
+    6.66% を出している。共有セル 1 本で両方を説明しようとすると**両方が同じくらい悪くなる**。
+    """
+    stages = build_topas_recipe(
+        [_hist(temperature=295.0), _cw_neutron(10.0)], [_phase()]
+    )
+    assert "hydrostatic_strain" in _order(stages)
+    order = _order(stages)
+    # 格子を合わせてからずれを許す (先に張ると格子が決まらない)
+    assert order.index("cell") <= order.index("hydrostatic_strain")
+
+
+def test_same_temperature_does_not_add_the_stage():
+    stages = build_topas_recipe(
+        [_hist(temperature=295.0), _cw_neutron(295.0)], [_phase()]
+    )
+    assert "hydrostatic_strain" not in _order(stages)
+
+
+def test_single_histogram_never_gets_the_stage():
+    """単一ヒストグラムでは格子そのものと縮退する (`apply_stage` が落とす段を出さない)。"""
+    stages = build_topas_recipe([_hist(temperature=295.0)], [_phase()])
+    assert "hydrostatic_strain" not in _order(stages)
+
+
+def test_unknown_temperature_does_not_add_the_stage():
+    """温度が書かれていないヒストグラムを「差がある」と扱わない (推測で段を足さない)。"""
+    stages = build_topas_recipe([_hist(), _cw_neutron(None)], [_phase()])
+    assert "hydrostatic_strain" not in _order(stages)
+
+
+# ---------------- TOF の幅を解放する段とその位置 (#179) ----------------
+
+
+def _tof(temperature=None) -> HistogramSpec:
+    return HistogramSpec(
+        data_path="d", instrument_path="i", radiation=Radiation.NEUTRON_TOF,
+        geometry=Geometry.DEBYE_SCHERRER, temperature=temperature,
+    )
+
+
+def _synchrotron() -> HistogramSpec:
+    return _hist(Radiation.XRAY_SYNCHROTRON, Geometry.DEBYE_SCHERRER)
+
+
+def test_tof_histogram_gets_a_width_stage():
+    """**TOPAS は装置ファイルの σ を読まない** — 幅の初期値は粗い当て推量なので解放する。
+
+    GSAS 経路の教訓は「TOF 装置プロファイルは較正済みなので精密化しない」だったが、
+    出発点が違うので同じ教訓が逆向きに効く。
+    """
+    assert "tof_profile" in _order(build_topas_recipe([_tof()], [_phase()]))
+
+
+def test_tof_width_stage_comes_after_the_xray_profile():
+    """段列の**規約**を固定する (順序が偶然変わっても気づけるように)。
+
+    ⚠ **これは物理的な要請ではない**: 決定論実行 (1 スレッド) では前に置いても後ろに置いても
+    T4 は 19.2525% でビット同一だった。当初 24 ポイントの差を観測したが、それは
+    **tc.exe のスレッド依存の非決定性**であって順序の効果ではない — 同一入力の同一設定が
+    43.49 / 67.62 / 43.49 / 29.29% に散らばっていた。段の効果そのものは別テストで見る。
+    """
+    order = _order(build_topas_recipe([_synchrotron(), _tof()], [_phase()]))
+    assert order.index("profile_lorentzian") < order.index("tof_profile")
+
+
+def test_no_tof_histogram_means_no_tof_stage():
+    """**呼べない段を出さない** — 段が黙って no-op になるのを避ける。"""
+    assert "tof_profile" not in _order(build_topas_recipe([_hist()], [_phase()]))
+
+
+def test_all_tof_recipe_omits_the_size_strain_stage():
+    """全 TOF では ``CS_L``/``Strain_L`` を張れない — **落ちる段を出さない**。"""
+    assert "size_strain" not in _order(build_topas_recipe([_tof()], [_phase()]))
+
+
+def test_mixed_recipe_marks_the_size_strain_stage_as_non_tof_only():
+    """混在 joint では非 TOF にだけ張る。**段列を見た人に分かる**ようラベルへ出す。"""
+    stages = build_topas_recipe([_synchrotron(), _tof()], [_phase()])
+    labels = [s.label for s in stages if "size_strain" in s.flags]
+    assert labels and "非 TOF" in labels[0], labels
+
+
+def test_empty_histograms_do_not_get_a_stage_that_always_fails():
+    """ヒストグラムが空のとき `size_strain` を出すと、適用時に必ず例外になる。
+
+    `all_tof` は空リストでは False なので、条件を「非 TOF が 1 本でもある」にしないと
+    **適用すると必ず `UnsupportedStageFlagError` で落ちる段**をレシピが抱えることになる。
+    """
+    assert "size_strain" not in _order(build_topas_recipe([], [_phase()]))

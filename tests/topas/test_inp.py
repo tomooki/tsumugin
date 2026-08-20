@@ -644,3 +644,93 @@ def test_tof_block_only_declares_neutron_data_for_neutron_histograms():
     text = TopasDocument(histograms=(hist,), phases=()).render()
     assert "neutron_data" not in text
     assert 'xdd "t.xye" xye_format' in text  # TOF ブロック自体は出る
+
+
+# ---------------- 温度差の per-xdd 格子オフセット (#173) ----------------
+
+
+def _strained_joint(**strain_kw) -> str:
+    """2 本目の xdd にだけ格子オフセットを張った joint 文書。"""
+    phase = _pbso4_phase()
+    strain = {
+        axis: Param(0.0, refine=True, name=f"eps_PbSO4_{axis}_h1", minimum=-0.05, maximum=0.05)
+        for axis in strain_kw.get("axes", ("a", "b", "c"))
+    }
+    xray = _histogram()
+    neutron = TopasHistogram(
+        data_path="n.xye", is_neutron=True, background=Param(0.0, refine=True),
+        phase_terms={"PbSO4": PhaseHistogramTerms(cell_strain=strain)},
+    )
+    return TopasDocument(histograms=(xray, neutron), phases=(phase,)).render()
+
+
+def test_cell_strain_renders_as_a_scaled_reference_to_the_shared_cell():
+    """格子は共有したまま、xdd ごとに ``(1 + ε)`` 倍の実効セルを許す (GSAS の HStrain 相当)。"""
+    text = _strained_joint()
+    assert "      a =PbSO4_a * (1 + eps_PbSO4_a_h1);\n" in text
+    # 1 本目は素の参照のまま (先頭は基準)
+    assert "      a =PbSO4_a;\n" in text
+    # ε は使う str ブロックの中で宣言する (TOF の幅パラメータと同じ作法)
+    assert "      prm eps_PbSO4_a_h1 0.0 min -0.05 max 0.05\n" in text
+
+
+def test_cell_strain_declares_each_epsilon_once():
+    """**TOPAS のパラメータ名は大域** — 宣言が 2 度出ると衝突する。"""
+    text = _strained_joint()
+    for axis in ("a", "b", "c"):
+        assert text.count(f"prm eps_PbSO4_{axis}_h1 ") == 1
+
+
+def test_cell_strain_without_a_shared_cell_is_an_error_not_a_silent_drop():
+    """単一ヒストグラムでは共有 prm が無く、ε は格子そのものと縮退する。
+
+    黙って落とすと「段を適用したのに何も変わっていない」= 無言 no-op になる。
+    """
+    hist = _histogram(
+        phase_terms={
+            "PbSO4": PhaseHistogramTerms(
+                cell_strain={"a": Param(0.0, refine=True, name="eps_PbSO4_a_h0")}
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="eps_PbSO4_a_h0"):
+        TopasDocument(histograms=(hist,), phases=(_pbso4_phase(),)).render()
+
+
+def test_cell_strain_is_published_per_histogram():
+    """**ε は出版値** — 温度差をどれだけ吸収したかは共有セルからは読めない。
+
+    キーに ``h<索引>`` を混ぜるのは、ε が**ヒストグラムごと**の量だから (相名+軸だけだと
+    joint で後勝ちになり、どの xdd の値か分からなくなる)。
+    """
+    phase = _pbso4_phase()
+    strain = {"a": Param(0.0, refine=True, name="eps_PbSO4_a_h1", minimum=-0.02, maximum=0.02)}
+    xray = _histogram()
+    neutron = TopasHistogram(
+        data_path="n.xye", is_neutron=True, background=Param(0.0, refine=True),
+        phase_terms={"PbSO4": PhaseHistogramTerms(cell_strain=strain)},
+    )
+    text = TopasDocument(
+        histograms=(xray, neutron), phases=(phase,), results_path="results.txt"
+    ).render()
+    assert 'Out(eps_PbSO4_a_h1, "cell_strain\tPbSO4\ta\th1\t%.8f"' in text
+    assert text.count("cell_strain") == 1, "張っていない xdd にまで出している"
+
+
+def test_frozen_cell_strain_is_not_published():
+    """**解放していない ε は出さない** (原子の出版値と同じ規律)。
+
+    revert された段や `freeze_others` の後に固定値まで出すと、③ からは
+    「精密化した ε が 0 だった」と読めてしまう。
+    """
+    phase = _pbso4_phase()
+    strain = {"a": Param(0.0, refine=False, name="eps_PbSO4_a_h1")}
+    neutron = TopasHistogram(
+        data_path="n.xye", is_neutron=True, background=Param(0.0, refine=True),
+        phase_terms={"PbSO4": PhaseHistogramTerms(cell_strain=strain)},
+    )
+    text = TopasDocument(
+        histograms=(_histogram(), neutron), phases=(phase,), results_path="results.txt"
+    ).render()
+    assert "prm !eps_PbSO4_a_h1" in text, "宣言そのものは残る (参照式が壊れる)"
+    assert "cell_strain" not in text, "固定値を出版値として出している"

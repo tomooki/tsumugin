@@ -32,6 +32,7 @@ from ..autorietveld.model import (
     StageResult,
     ValidityReport,
 )
+from ..autorietveld.stagepolicy import StageMetrics, decide_stage
 from ..errors import TopasRunError
 from ..store import Ledger
 from .driver import run_tc
@@ -53,6 +54,7 @@ def _build_document(
     *,
     background_coeffs: int,
     max_cyc: int,
+    seed_profile: bool = False,
 ) -> TopasDocument:
     """入力仕様から初期 (何も解放していない) 文書を組む。"""
     from ..autorietveld.cif_normalize import read_structure_cif
@@ -78,18 +80,31 @@ def _build_document(
     topas_hists = []
     for i, hist in enumerate(histograms):
         converted = histogram_to_topas(
-            hist, workdir=workdir, index=i, background_coeffs=background_coeffs
+            hist,
+            workdir=workdir,
+            index=i,
+            background_coeffs=background_coeffs,
+            seed_profile=seed_profile,
         )
         if hist.radiation.is_tof:
             # TOF も**相ごと**にピーク形状を持つ (幅が d 依存なので相の微細構造で変わる)。
             from .instrument import read_instrument, tof_peak_type
 
-            difc = read_instrument(hist.instrument_path).difc or 0.0
+            spec = read_instrument(hist.instrument_path)
+            difc = spec.difc or 0.0
+            # 【α/β は装置ファイルから写す】: 捨てると汎用初期値のピーク形状になり、
+            #   **ピークはどこかに立つので tc.exe は正常終了し Rwp だけが悪い** (#179)。
+            coeffs = spec.profile or {}
             converted = converted.with_updates(
                 phase_terms={
                     phase.phase_name: PhaseHistogramTerms(
                         peak_type=tof_peak_type(
-                            i, difc=difc, phase_key=_slug(phase.phase_name)
+                            i,
+                            difc=difc,
+                            phase_key=_slug(phase.phase_name),
+                            alpha=coeffs.get("alpha"),
+                            beta0=coeffs.get("beta-0"),
+                            beta1=coeffs.get("beta-1"),
                         )
                     )
                     for phase in topas_phases
@@ -175,6 +190,7 @@ def run_topas_rietveld(
     max_cyc: int = 12,
     worsen_eps: float = 1e-6,
     background_coeffs: int = 6,
+    seed_profile: bool = False,
     keep_project: "str | None" = None,
     timeout: float = 1800.0,
     stability: object | None = None,
@@ -211,11 +227,18 @@ def run_topas_rietveld(
     with tempfile.TemporaryDirectory(prefix="tsumugin-topas-") as tmp:
         work = Path(tmp)
         doc = _build_document(
-            histograms, phases, work, background_coeffs=background_coeffs, max_cyc=max_cyc
+            histograms,
+            phases,
+            work,
+            background_coeffs=background_coeffs,
+            max_cyc=max_cyc,
+            seed_profile=seed_profile,
         )
 
         stage_results: list[StageResult] = []
-        prev_rwp = float("inf")
+        # 【直前の**受理済み**状態】: 段方針 (`autorietveld.stagepolicy`) は gof/母数も見る —
+        #   「rwp・gof・n_params がビット同一で revert も立たない」段 = 無言 no-op の検出に要る。
+        prev_rwp, prev_gof, prev_nvar = float("inf"), float("inf"), 0
 
         best_results = ""
         for index, stage in enumerate(stages):
@@ -236,13 +259,26 @@ def run_topas_rietveld(
                 note = f"{type(exc).__name__}: {exc}"[:200]
                 run = None  # type: ignore[assignment]
 
-            worsened = not math.isfinite(rwp) or rwp > prev_rwp + worsen_eps
+            decision = decide_stage(
+                StageMetrics(prev_rwp, prev_gof, prev_nvar),
+                StageMetrics(rwp, gof, n_params),
+                worsen_eps=worsen_eps,
+            )
+            worsened = decision.reverted
             if worsened:
                 doc = before  # revert = 段を適用する前の文書に戻すだけ
             else:
-                prev_rwp = rwp
+                prev_rwp, prev_gof, prev_nvar = rwp, gof, n_params
                 if run is not None:
                     best_results = run.results_text
+            if decision.is_noop:
+                # 【無言 no-op】: 段を適用したのに rwp/gof/母数がビット同一 = 何も精密化して
+                #   いない。**revert はしない** (検出のみ) — 効かない理由 (解放先が無い /
+                #   バックエンドの無言失敗) は Rwp からは区別できないので、区別できる事実
+                #   として note と ledger に残す。T4 実測で S3/S5 がこの状態だった。
+                note = f"{note}; 無言 no-op (指標がビット同一)" if note else (
+                    "無言 no-op (指標がビット同一)"
+                )
 
             stage_results.append(
                 StageResult(
@@ -264,6 +300,8 @@ def run_topas_rietveld(
                         "gof": gof if math.isfinite(gof) else None,
                         "n_params": n_params,
                         "reverted": worsened,
+                        "revert_reason": decision.reason,
+                        "noop": decision.is_noop,
                         "note": note,
                         "backend": _BACKEND,
                     },
@@ -311,7 +349,8 @@ def run_topas_rietveld(
                 if item.is_file():
                     shutil.copyfile(item, destination / item.name)
 
-        refined_cells = _refined_cells(records, doc, reference_cells)
+        refined_cells = refined_cells_from_records(records, doc, reference_cells)
+        cell_strain, cell_strain_esd = _cell_strain_from_records(records)
 
         return AutoRietveldResult(
             stage_results=tuple(stage_results),
@@ -338,6 +377,8 @@ def run_topas_rietveld(
             atom_occupancy_esd=atom_occupancy_esd,
             atom_uiso=atom_uiso,
             atom_uiso_esd=atom_uiso_esd,
+            cell_strain=cell_strain,
+            cell_strain_esd=cell_strain_esd,
             backend=_BACKEND,
             project_path=str(keep_project) if keep_project else "",
             histogram_rwp=_histogram_rwp_tuple(best_results, len(histograms)),
@@ -348,12 +389,39 @@ _CELL_ORDER = ("a", "b", "c", "al", "be", "ga")
 _DEFAULT_ANGLES = {"al": 90.0, "be": 90.0, "ga": 90.0}
 
 
-def _refined_cells(
+def _cell_strain_from_records(
+    records: TopasRecords,
+) -> "tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]":
+    """``cell_strain`` レコードを (値, esd) の 相→``"<軸>_h<索引>"`` マップ 2 本へ畳む。
+
+    **ε は per-histogram の量**なので索引をキーに残す (相名+軸だけだと joint で後勝ちになる)。
+    **esd も運ぶ** — ε が ±0.002% なのか ±0.4% (未決定) なのかで意味が反転する。
+
+    キーは ``<相名>/<軸>/h<索引>`` だが、**相名に ``/`` が入りうる**ので後ろ 2 つを軸と索引と
+    見なし、残りを相名へ戻す (末尾から数える)。3 つ未満だけを壊れたレコードとして落とす。
+    """
+    values: dict[str, dict[str, float]] = {}
+    esds: dict[str, dict[str, float]] = {}
+    for key, (value, esd) in records.keyed.get("cell_strain", {}).items():
+        parts = key.split("/")
+        if len(parts) < 3:
+            continue
+        phase, axis, hist = "/".join(parts[:-2]), parts[-2], parts[-1]
+        values.setdefault(phase, {})[f"{axis}_{hist}"] = value
+        if esd is not None and math.isfinite(esd) and esd > 0.0:
+            esds.setdefault(phase, {})[f"{axis}_{hist}"] = esd
+    return values, esds
+
+
+def refined_cells_from_records(
     records: TopasRecords,
     doc: TopasDocument,
-    reference_cells: "Mapping[str, tuple[float, ...]] | None",
+    reference_cells: "Mapping[str, tuple[float, ...]] | None" = None,
 ) -> "dict[str, tuple[float, float, float, float, float, float]]":
     """``Out()`` が吐いたセルレコードから精密化後セルを組む。
+
+    **`backends.topas.TopasBackend` も使う** (#180): 従属軸の解決を別実装で持つと、
+    片方だけが「格子が動かなかった」ように見える結果を返すようになる。
 
     従属軸 (``b =Get(a);``) は Out に出していないので、参照式から独立変数を引いて復元する。
     回収できなかった相は参照セルへフォールバックする (**空にしない** — validity ゲートが

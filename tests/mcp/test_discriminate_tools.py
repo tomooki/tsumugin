@@ -170,3 +170,47 @@ def test_build_config_nested_opt_in():
 def test_build_config_bad_multistart_raises():
     with pytest.raises(ValueError):
         _build_config({"multistart": [1, 2]})
+
+
+# --- backend 選択 (#180) ---
+
+
+def _patch_happy_path(monkeypatch) -> None:
+    """GSAS/TOPAS 非依存で `discriminate` を通す (判別本体は差し替える)。"""
+    monkeypatch.setattr("tsumugin.backends.gsasii.GSASIIBackend", lambda **k: object())
+    monkeypatch.setattr(
+        discriminate_tools,
+        "discriminate_interval",
+        lambda backend, frames, rng, phases, **kw: _FakeResult(),
+    )
+
+
+def test_backend_defaults_to_gsasii_and_is_reported(monkeypatch):
+    """**どのエンジンで判別したか**は Δevidence を跨いで比較する前提条件なので結果に出す。"""
+    _patch_happy_path(monkeypatch)
+    out = discriminate(_series(), [_phase()], [0, 1])
+    assert out["backend"] == "gsasii"
+
+
+def test_backend_topas_constructs_the_topas_backend(monkeypatch):
+    """JSON の `backend` だけで TOPAS 経路へ到達できること (③ は callable を送れない)。"""
+    seen: dict[str, object] = {}
+
+    class _Topas:
+        name = "topas"
+
+        def __init__(self, **kw):
+            seen["built"] = kw
+
+    monkeypatch.setattr("tsumugin.backends.topas.TopasBackend", _Topas)
+    _patch_happy_path(monkeypatch)
+    out = discriminate(_series(), [_phase()], [0, 1], backend="topas")
+    assert "built" in seen, "TopasBackend が構築されていない (黙って GSAS で回った)"
+    assert out["backend"] == "topas"
+
+
+def test_unknown_backend_is_an_error_not_a_silent_default(monkeypatch):
+    """綴り間違いを既定へ落とすと、意図と違うエンジンで回った結果に気づけない。"""
+    _patch_happy_path(monkeypatch)
+    out = discriminate(_series(), [_phase()], [0, 1], backend="topaz")
+    assert "error" in out and out["error_type"] == "UnknownBackendError"
