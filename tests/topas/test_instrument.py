@@ -530,17 +530,35 @@ def test_zero_point_derivative_step_matches_the_ze_macro(tmp_path):
 # ---------------- TOF の立ち上がり/減衰 (#179) ----------------
 
 
-def test_instprm_keeps_the_tof_profile_coefficients():
+def test_instprm_keeps_the_tof_profile_coefficients(tmp_path):
     """GSAS の TOF プロファイル係数 (alpha / beta) を捨てない。
 
     捨てると TOPAS 側は汎用初期値からピーク形状を作ることになり、**ピークはどこかに
     立つので tc.exe は正常終了し Rwp だけが悪い** (T4 の TOF 側 49% の主因候補)。
+
+    **装置ファイルは自分で書く**: `docs/benchmark/testdata` は gitignore 対象で CI に
+    存在しないため、実データを読むと CI だけで落ちる (この網は実際にそれを捕まえた)。
     """
-    spec = inst.read_instrument("docs/benchmark/testdata/m7/tofcw/POWGEN_1066.instprm")
+    path = tmp_path / "powgen.instprm"
+    path.write_text(
+        "#GSAS-II instrument parameter file; do not add/delete items!\n"
+        "Type:PNT\n"
+        "difC:22600.2479192\n"
+        "difA:-0.900917699636\n"
+        "Zero:-8.51764244829\n"
+        "alpha:0.132504624416\n"
+        "beta-0:0.111601941165\n"
+        "beta-1:0.00272732086125\n"
+        "sig-1:-167.421847539\n"
+        "sig-2:281.385521422\n",
+        encoding="ascii",
+    )
+    spec = inst.read_instrument(path)
     assert spec.is_tof and spec.profile
     assert spec.profile["alpha"] == pytest.approx(0.132504624416)
     assert spec.profile["beta-0"] == pytest.approx(0.111601941165)
     assert spec.profile["beta-1"] == pytest.approx(0.00272732086125)
+    assert spec.profile["sig-2"] == pytest.approx(281.385521422)
 
 
 def test_tof_peak_type_maps_gsas_alpha_beta_to_exponential_convolutions():
