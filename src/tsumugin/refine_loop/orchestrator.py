@@ -161,6 +161,8 @@ def _default_gsas_runner(
     stability: object | None = None,
     backend: str = "gsasii",
     seed_profile: bool = False,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
 ) -> Runner:
     """AnalysisInput を精密化エンジンで実行する既定 runner (エンジンは遅延 import)。
 
@@ -180,6 +182,10 @@ def _default_gsas_runner(
         悪化する** (T2 garnet 5.54 → 9.76% で validity も落ちる) ので既定は False。
         GSAS 経路は装置ファイルの U,V,W をそのまま読むので概念が無く、指定すると
         **黙って無視せずエラー**にする。
+    :param gpx_dir: 精密化成果物 (.gpx / TOPAS プロジェクト) の保存先の根。None なら
+        ``TSUMUGIN_GPX_DIR`` → 観測データ隣接 ``<data_dir>/tsumugin_gpx/`` の順で決まる
+        (2026-08-20 規定「全解析で保存する」)。両エンジンで**同じ引数名**
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)
     """
     from tsumugin.autorietveld.backends import normalize_backend, resolve_backend
 
@@ -209,6 +215,10 @@ def _default_gsas_runner(
         return engine(
             list(inp.histograms), list(inp.phases), recipe=recipe, max_cyc=max_cyc,
             stability=stability,  # type: ignore[arg-type]
+            # 【成果物の保存は両エンジン共通の引数名】: `run_auto_rietveld` も
+            #   `run_topas_rietveld` も同じ 2 つを受ける (② がバックエンドで呼び分けない)。
+            gpx_dir=gpx_dir,
+            save_gpx=save_gpx,
             **extra,
         )
 

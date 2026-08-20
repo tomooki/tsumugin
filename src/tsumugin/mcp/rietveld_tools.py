@@ -470,6 +470,8 @@ def auto_rietveld(
     seed: int = 0,
     backend: str = "gsasii",
     seed_profile: bool = False,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
     runner: Runner | None = None,
     search_runner: SearchRunner | None = None,
 ) -> dict:
@@ -500,6 +502,16 @@ def auto_rietveld(
         渡し忘れると種付けなしのフィットになり、Rwp の変化が改訂の効果に見えてしまう。
     :param max_cyc: 各段階の最大精密化サイクル (エンジンへ転送。既定 12 は非回帰)。
         ``runner`` を明示注入した場合はそちらの責務になり本引数は無視される。
+    :param gpx_dir: **精密化成果物の保存先の根** (2026-08-20 規定「全解析で保存する」)。
+        省略すると環境変数 ``TSUMUGIN_GPX_DIR`` → **観測データ隣接**
+        ``<data_dir>/tsumugin_gpx/run-<日時>/`` の順で決まり、その run ディレクトリに
+        ``manifest.jsonl`` (役割/相/Rwp の索引) と成果物が並ぶ。返り値の ``gpx_path``
+        (GSAS) / ``project_path`` (TOPAS) が実際の保存先。
+        **これが MEM 系ツール (`mem_density` / `mem_rietveld_iterate`) の入力の出所**
+        — 以前は ② から gpx を作る経路が無く、③ は MEM を呼べなかった (§4.5 到達可能性)。
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。フレーム数が多く容量が問題に
+        なるときだけ False にする。⚠ **保存しなかった精密化は検算できない** — 段の無言
+        no-op も、MEM も、再プロットも、精密化済みの成果物そのものを要求する。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
         診断 (WS-1): ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
         "detect_noop_stages": true, "record_weak_vars": true, "report_undetermined": true,
@@ -623,7 +635,7 @@ def auto_rietveld(
     try:
         run = runner or _default_gsas_runner(
             seed, max_cyc=max_cyc, stability=opts, backend=backend,
-            seed_profile=seed_profile,
+            seed_profile=seed_profile, gpx_dir=gpx_dir, save_gpx=save_gpx,
         )
     except (TsumuginError, ValueError) as exc:
         # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
@@ -659,6 +671,8 @@ def refine_with_revisions(
     seed: int = 0,
     backend: str = "gsasii",
     seed_profile: bool = False,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
     runner: Runner | None = None,
 ) -> dict:
     """③ が決めた AnalysisAction[] を spec に適用して再実行する (アクチュエータ)。
@@ -680,6 +694,10 @@ def refine_with_revisions(
     :param stability: `auto_rietveld` と同じ安定性診断ゲート + 箱拘束 spec (既定 None = 非回帰)。
         箱拘束 (``bound_cell``/``bound_displacement``/``bound_size_strain``) と restraint 有効化
         (``enable_restraints``, 要 ``report_undetermined``) も同じキーで到達できる。
+    :param gpx_dir: `auto_rietveld` と同じ成果物の保存先の根 (2026-08-20 規定「全解析で保存」)。
+        **改訂ごとに 1 成果物が残る** ので、同じ ``gpx_dir`` を渡し続ければ改訂の履歴が
+        1 つの run ディレクトリに並ぶ (索引 ``manifest.jsonl`` に Rwp 付きで追記される)。
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。
     """
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)
@@ -691,7 +709,7 @@ def refine_with_revisions(
     try:
         run = runner or _default_gsas_runner(
             seed, max_cyc=max_cyc, stability=opts, backend=backend,
-            seed_profile=seed_profile,
+            seed_profile=seed_profile, gpx_dir=gpx_dir, save_gpx=save_gpx,
         )
     except (TsumuginError, ValueError) as exc:
         # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。

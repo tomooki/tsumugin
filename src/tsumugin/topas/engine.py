@@ -34,6 +34,8 @@ from ..autorietveld.model import (
 )
 from ..autorietveld.stagepolicy import StageMetrics, decide_stage
 from ..errors import TopasRunError
+from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
+from ..gpxstore import record_artifact as _record_artifact
 from ..store import Ledger
 from .driver import run_tc
 from .flags import apply_stage
@@ -180,6 +182,66 @@ def _metrics(run_out: str, results_text: str) -> "tuple[float, float, int]":
     return float(rwp), float(gof), int(n_params)
 
 
+def _save_project_artifact(
+    work: Path,
+    plan: ArtifactPlan,
+    *,
+    histograms: Sequence[HistogramSpec],
+    phases: Sequence[PhaseSpec],
+    rwp: float,
+    gof: float,
+    ledger: "Ledger | None",
+    context: "GpxContext | None",
+) -> str:
+    """作業ディレクトリの中身を計画した保存先へ複製し、索引と ledger に残す。
+
+    GSAS の `_save_gpx_artifact` と同じ規律: 明示指定 (``keep_project``) の失敗は例外のまま、
+    既定保存の失敗は ledger に残して "" (精密化結果は捨てない)。
+    """
+    if not plan.path:
+        return ""
+    explicit = not plan.run_dir
+    destination = Path(plan.path)
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        for item in work.iterdir():
+            if item.is_file():
+                shutil.copyfile(item, destination / item.name)
+    except OSError as exc:
+        if explicit:
+            raise
+        if ledger is not None:
+            ledger.append(
+                "m12_project_error",
+                {"path": str(destination), "error": f"{type(exc).__name__}: {exc}"[:200]},
+            )
+        return ""
+    if plan.fallback_reason and ledger is not None:
+        ledger.append(
+            "m12_project_fallback", {"run_dir": plan.run_dir, "reason": plan.fallback_reason}
+        )
+    if plan.run_dir:
+        _record_artifact(
+            plan.run_dir,
+            ManifestEntry(
+                path=str(destination),
+                role=context.role if context is not None else "single",
+                label=context.label if context is not None else "",
+                index=context.index if context is not None else None,
+                data_paths=tuple(h.data_path for h in histograms),
+                phases=tuple(p.phase_name for p in phases),
+                rwp=rwp,
+                gof=gof,
+                backend=_BACKEND,
+            ),
+        )
+    if ledger is not None:
+        ledger.append(
+            "m12_project_saved", {"path": str(destination), "run_dir": plan.run_dir}
+        )
+    return str(destination)
+
+
 def run_topas_rietveld(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
@@ -192,6 +254,8 @@ def run_topas_rietveld(
     background_coeffs: int = 6,
     seed_profile: bool = False,
     keep_project: "str | None" = None,
+    gpx_dir: "str | None" = None,
+    save_gpx: bool = True,
     timeout: float = 1800.0,
     stability: object | None = None,
 ) -> AutoRietveldResult:
@@ -199,7 +263,14 @@ def run_topas_rietveld(
 
     `run_auto_rietveld` と同じ入出力契約 (段階解放 + 悪化段の revert + ledger)。
 
-    :param keep_project: 指定すると作業ディレクトリ (INP/.out/results.txt) をここへ残す
+    :param keep_project: 作業ディレクトリ (INP/.out/results.txt) を**このパスへ**残す明示指定
+        (最優先)。⚠ **「None なら破棄」ではなくなった** (2026-08-20 規定「全解析で成果物を
+        保存する」) — None なら既定の置き場所へ残す
+    :param gpx_dir: 既定の置き場所の**根**を上書きする (env ``TSUMUGIN_GPX_DIR`` より強い)。
+        GSAS 経路と**同じ引数名**にしてある — 消費側 (② `auto_rietveld(backend=)`) が
+        バックエンドで呼び分けずに済むため。TOPAS は .gpx ではなくプロジェクト
+        **ディレクトリ**が残る (`project_path`)
+    :param save_gpx: **規定は True = 保存する**。False で完全に無効化する opt-out
     :param stability: 安定性診断ゲート (`StabilityOptions`)。**TOPAS 経路は未実装**なので、
         非 None を渡されたら黙って捨てず ``ValidityReport.warnings`` と ledger に残す。
         黙って無視すると「ゲートを頼んだのに何も見ていない」が Rwp にも note にも現れない
@@ -342,12 +413,25 @@ def run_topas_rietveld(
             (s.gof for s in reversed(stage_results) if not s.reverted), float("inf")
         )
 
-        if keep_project:
-            destination = Path(keep_project)
-            destination.mkdir(parents=True, exist_ok=True)
-            for item in work.iterdir():
-                if item.is_file():
-                    shutil.copyfile(item, destination / item.name)
+        # 【規定: 全解析で成果物を保存する】: GSAS の .gpx に対応するのがこの作業ディレクトリ
+        #   (INP/.out/results.txt)。明示 keep_project > save_gpx=False > 既定保存。
+        out_project = _save_project_artifact(
+            work,
+            plan_output(
+                [h.data_path for h in histograms],
+                keep=keep_project,
+                gpx_dir=gpx_dir,
+                save=save_gpx,
+                ext="",
+                context=active_context(),
+            ),
+            histograms=histograms,
+            phases=phases,
+            rwp=final_rwp,
+            gof=final_gof,
+            ledger=ledger,
+            context=active_context(),
+        )
 
         refined_cells = refined_cells_from_records(records, doc, reference_cells)
         cell_strain, cell_strain_esd = _cell_strain_from_records(records)
@@ -380,7 +464,7 @@ def run_topas_rietveld(
             cell_strain=cell_strain,
             cell_strain_esd=cell_strain_esd,
             backend=_BACKEND,
-            project_path=str(keep_project) if keep_project else "",
+            project_path=out_project,
             histogram_rwp=_histogram_rwp_tuple(best_results, len(histograms)),
         )
 

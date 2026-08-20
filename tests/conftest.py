@@ -26,6 +26,30 @@ def _restore_numpy_errstate():
         np.seterr(**saved)
 
 
+@pytest.fixture(scope="session")
+def _gpx_test_root(tmp_path_factory):
+    """テスト実行中の成果物 (.gpx) の集約先 (セッション 1 つ)。"""
+    return tmp_path_factory.mktemp("tsumugin-gpx")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gpx_output(_gpx_test_root, monkeypatch):
+    """★成果物の既定保存先をテスト用 tmp へ隔離する (2026-08-20 の「全解析で保存」規定)。
+
+    既定は**観測データ隣接**なので、隔離しないと gated テストが
+    ``docs/benchmark/testdata/**`` (追跡済み) の隣に .gpx を撒く — 公開リポジトリ規約
+    (未公開データ由来の測定値を追跡しない) にも作業ツリーの清潔さにも反する。
+    ``TSUMUGIN_GPX_DIR`` を差すことで**保存経路自体は本番と同じまま**置き場所だけを変える
+    (保存を止める ``none`` にはしない — 止めると「保存されている」ことをテストできない)。
+
+    既定の解決 (データ隣接) そのものを見るテストは ``monkeypatch.delenv`` して、
+    ``tmp_path`` にコピーしたデータで確かめること。
+    """
+    from tsumugin.gpxstore import ENV_VAR
+
+    monkeypatch.setenv(ENV_VAR, str(_gpx_test_root))
+
+
 def _mcp_available() -> bool:
     """mcp SDK (optional extra ``mcp``) が import 可能かを判定する (gsas と同型)。"""
     return importlib.util.find_spec("mcp") is not None

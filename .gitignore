@@ -42,6 +42,12 @@ scratchpad/
 docs/benchmark/*/results/
 docs/benchmark/joint/results/
 
+# 精密化成果物の既定保存先 (2026-08-20 規定「全解析で gpx を保存する」)。
+# 既定は**観測データ隣接** <data_dir>/tsumugin_gpx/run-<日時>/ なので、testdata の隣にも
+# 出うる。上と同じ理由で**ディレクトリごと**無視する (拡張子で切らない — .gpx だけ守っても
+# 同じ run の manifest.jsonl/ログが漏れる)。公開したいものは `git add -f`。
+tsumugin_gpx/
+
 # GUI workbench frontend (Vite + React)
 frontend/node_modules/
 frontend/dist/

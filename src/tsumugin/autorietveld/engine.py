@@ -24,6 +24,8 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 
 from .._json import finite_or_none
+from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
+from ..gpxstore import record_artifact as _record_artifact
 from ..store import Ledger
 from .absorption import apply_absorption_correction
 from .atomrows import (
@@ -2062,6 +2064,69 @@ def _apply_initial_fractions(g2phases, g2hists, fractions: Mapping[str, float]) 
             ph.setHAPvalues({"Scale": [float(frac), refine_flag]}, targethistlist=[hist])
 
 
+def _save_gpx_artifact(
+    gpx,
+    src_path: str,
+    plan: ArtifactPlan,
+    *,
+    histograms: Sequence[HistogramSpec],
+    phases: Sequence[PhaseSpec],
+    rwp: float,
+    gof: float,
+    ledger: Ledger,
+    context: "GpxContext | None",
+) -> str:
+    """計画した保存先へ最終 gpx を複製し、索引 (manifest) と ledger に残す。
+
+    :returns: 保存したパス。**保存しない/既定保存に失敗したときは ""**
+
+    【既定保存の失敗で精密化結果を捨てない】: 既定保存は便宜であって結果ではない。ディスクが
+    一杯・権限が無いといった理由で 8 段階回した精密化を丸ごと失うのは受け入れられない。一方、
+    黙って無かったことにもしないので ledger に ``m7_gpx_error`` を残す。
+    **明示 ``keep_gpx`` は別扱いで例外をそのまま投げる** (``plan.run_dir`` が空 = 呼び出し側が
+    置き場所を指定した経路)。頼まれた保存が失敗したことを握り潰すと、呼び出し側は空の
+    ``gpx_path`` を「保存しない設定」と区別できない。
+    """
+    if not plan.path:
+        return ""
+    explicit = not plan.run_dir
+    try:
+        gpx.save()
+        shutil.copyfile(src_path, plan.path)
+    except OSError as exc:
+        if explicit:
+            raise
+        ledger.append(
+            "m7_gpx_error",
+            {"path": plan.path, "error": f"{type(exc).__name__}: {exc}"[:200]},
+        )
+        return ""
+    if plan.fallback_reason:
+        # データ隣接に書けず退避した — 黙って別の場所に置かない (探せなくなる)。
+        ledger.append("m7_gpx_fallback", {"run_dir": plan.run_dir, "reason": plan.fallback_reason})
+    if plan.run_dir:
+        # 明示 keep_gpx は呼び出し側の取り決めなので索引を作らない (run_dir が空)。
+        _record_artifact(
+            plan.run_dir,
+            ManifestEntry(
+                path=plan.path,
+                role=context.role if context is not None else "single",
+                label=context.label if context is not None else "",
+                index=context.index if context is not None else None,
+                data_paths=tuple(h.data_path for h in histograms),
+                phases=tuple(p.phase_name for p in phases),
+                rwp=rwp,
+                gof=gof,
+                backend="gsasii",
+            ),
+        )
+    ledger.append(
+        "m7_gpx_saved",
+        {"path": plan.path, "run_dir": plan.run_dir, "rwp": finite_or_none(rwp)},
+    )
+    return plan.path
+
+
 def run_auto_rietveld(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
@@ -2072,6 +2137,8 @@ def run_auto_rietveld(
     max_cyc: int = 12,
     worsen_eps: float = 1e-6,
     keep_gpx: str | None = None,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
     initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
     initial_cells: dict[str, tuple[float, ...]] | None = None,
     initial_fractions: Mapping[str, float] | None = None,
@@ -2094,7 +2161,16 @@ def run_auto_rietveld(
     :param ledger: 遷移を追記する Ledger (None なら内部生成)
     :param max_cyc: 各段階の最大精密化サイクル
     :param worsen_eps: Rwp 悪化とみなす閾値
-    :param keep_gpx: 最終 .gpx をこのパスへ保存 (None なら破棄)
+    :param keep_gpx: 最終 .gpx を**このパスへ**保存する明示指定 (最優先)。None なら既定の
+        置き場所 (下記) に保存する。⚠ **「None なら破棄」ではなくなった** (2026-08-20 規定変更)
+    :param gpx_dir: 既定の置き場所の**根**を上書きする (env ``TSUMUGIN_GPX_DIR`` より強い)。
+        None なら ``TSUMUGIN_GPX_DIR`` → 観測データ隣接 ``<data_dir>/tsumugin_gpx/`` の順で決まり、
+        その下に ``run-<日時>/`` を作る。ambient 文脈 (`gpxstore.gpx_context`) がある系列解析では
+        系列全体で 1 つの run ディレクトリを共有し、フレーム/トライアルごとに 1 ファイル残る
+    :param save_gpx: **規定は True = 保存する**。False で完全に無効化する opt-out
+        (ディスクを使わせたくないとき。``TSUMUGIN_GPX_DIR=none`` でも同じ)。
+        保存しなかった精密化は検算できない — 無言失敗 (段が no-op) の追跡も、MEM
+        (`mem_density`/`mem_rietveld_iterate`) も、精密化済み gpx そのものを要求する
     :param bond_restraints: 相名→結合距離ソフト拘束の列 (GSAS-II Bond restraint)。各拘束は
         ``{"origin": (ラベル…), "target": (ラベル…), "distance": Å, "esd": Å, "factor": 探索係数,
         "weight": wtFactor}`` の dict (origin/target/distance 必須, 他は既定 esd0.02/factor1.5/weight1000)。
@@ -2905,11 +2981,27 @@ def run_auto_rietveld(
         micro = _microstructure_maps(g2phases, g2hists)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
-        out_gpx = ""
-        if keep_gpx is not None:
-            gpx.save()
-            shutil.copyfile(gpx_path, keep_gpx)
-            out_gpx = keep_gpx
+        # 【規定: 全解析で gpx を保存する】: 明示 keep_gpx > save_gpx=False の opt-out >
+        #   既定保存 (ambient 文脈の run ディレクトリ、無ければデータ隣接)。
+        gpx_ctx = active_context()
+        plan = plan_output(
+            [h.data_path for h in histograms],
+            keep=keep_gpx,
+            gpx_dir=gpx_dir,
+            save=save_gpx,
+            context=gpx_ctx,
+        )
+        out_gpx = _save_gpx_artifact(
+            gpx,
+            str(gpx_path),
+            plan,
+            histograms=histograms,
+            phases=phases,
+            rwp=final_rwp,
+            gof=final_gof,
+            ledger=ledger,
+            context=gpx_ctx,
+        )
 
     return AutoRietveldResult(
         stage_results=tuple(stage_results),
