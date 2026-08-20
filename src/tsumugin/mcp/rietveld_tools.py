@@ -694,9 +694,11 @@ def refine_with_revisions(
     :param stability: `auto_rietveld` と同じ安定性診断ゲート + 箱拘束 spec (既定 None = 非回帰)。
         箱拘束 (``bound_cell``/``bound_displacement``/``bound_size_strain``) と restraint 有効化
         (``enable_restraints``, 要 ``report_undetermined``) も同じキーで到達できる。
-    :param gpx_dir: `auto_rietveld` と同じ成果物の保存先の根 (2026-08-20 規定「全解析で保存」)。
-        **改訂ごとに 1 成果物が残る** ので、同じ ``gpx_dir`` を渡し続ければ改訂の履歴が
-        1 つの run ディレクトリに並ぶ (索引 ``manifest.jsonl`` に Rwp 付きで追記される)。
+    :param gpx_dir: `auto_rietveld` と同じ成果物の保存先の**根** (2026-08-20 規定「全解析で保存」)。
+        **改訂 1 回 = 成果物 1 つ**。② の呼び出しは 1 回ごとに独立した ``run-<日時>/`` を作るので、
+        同じ ``gpx_dir`` を渡し続けると**同じ根の下に改訂ごとの run ディレクトリが時刻順に並ぶ**
+        (1 つの run ディレクトリにまとまるのは系列解析 `sequential_rietveld` の方)。
+        どの改訂がどれかは各 run の ``manifest.jsonl`` (Rwp・相) と返り値の ``gpx_path`` で辿る。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。
     """
     try:

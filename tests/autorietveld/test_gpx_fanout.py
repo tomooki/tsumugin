@@ -111,3 +111,27 @@ def test_compare_models_labels_each_variant(tmp_path, monkeypatch):
     )
 
     assert seen == [("model", "model5"), ("model", "model6")]
+
+
+def test_refinement_loop_labels_each_iteration(tmp_path):
+    """M8 閉ループ: 1 ループ = run ディレクトリ 1 つ、反復ごとに ``iteration`` 役割で残す。
+
+    棄却された反復も残る — 「その手を採らなかった理由」は Rwp の数字だけでは追えない。
+    """
+    from tsumugin.refine_loop.orchestrator import run_refinement_loop
+
+    seen: list[tuple[str, int | None, str]] = []
+
+    def runner(inp):
+        ctx = active_context()
+        seen.append((ctx.role, ctx.index, ctx.run_dir) if ctx else ("", None, ""))
+        # 反復のたびに悪化させ、1 手で停止させる (ループ制御はここの主眼ではない)
+        return _result(rwp=9.0 + len(seen))
+
+    run_refinement_loop(
+        [_HIST], [_PHASE], runner=runner, background_coeffs=6, gpx_dir=str(tmp_path)
+    )
+
+    assert [r for r, _, _ in seen] == ["iteration"] * len(seen)
+    assert [i for _, i, _ in seen] == list(range(len(seen)))
+    assert len({d for _, _, d in seen}) == 1, "反復ごとに run ディレクトリが分かれている"

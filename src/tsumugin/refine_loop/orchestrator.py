@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from tsumugin.autorietveld import AutoRietveldResult, HistogramSpec, PhaseSpec
+from tsumugin.gpxstore import gpx_context, group_context
+
 from .action import AnalysisInput, Stop
 from .diagnose_residual import diagnose_residual
 from .diagnostics import ActionProposal, ResidualFeatures, propose_next_actions
@@ -72,6 +74,8 @@ def run_refinement_loop(
     ledger: object | None = None,
     accept_eps: float = 1e-6,
     seed: int = 0,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
 ) -> RefinementLoopResult:
     """観測→規則判断→適用→再実行の決定論ループを回す (§3.3)。
 
@@ -85,18 +89,28 @@ def run_refinement_loop(
     :param ledger: 追記台帳 (None なら未使用)
     :param accept_eps: Rwp 改善判定の下限
     :param seed: GSAS runner 用の乱数種 (再現性)
+    :param gpx_dir: 成果物の保存先の根 (2026-08-20 規定「全解析で保存する」)。**ループ 1 回で
+        run ディレクトリ 1 つ**を共有し、反復ごとに ``f0000_iteration.gpx`` … が並ぶ
+        (棄却された反復も残る — 「その手を採らなかった理由」は Rwp だけでは追えない)
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)
     """
     policy = policy or RuleBasedPolicy()
     budget = budget or PolicyBudget()
     if runner is None:
-        runner = _default_gsas_runner(seed)
+        runner = _default_gsas_runner(seed, gpx_dir=gpx_dir, save_gpx=save_gpx)
+    # 【ループ 1 回 = run ディレクトリ 1 つ】: 反復ごとに別ディレクトリだと「何回目の手が
+    #   どれか」を探せない。注入 runner でも文脈は張る (読まない runner は素通りする)。
+    group, _reason = group_context(
+        histograms[0].data_path if histograms else "", gpx_dir=gpx_dir, save=save_gpx
+    )
     if diagnose is None:
         # 既定は残差解析診断 (REQ-002/TASK-0009)。背景のみの粗診断 _default_diagnose は
         # 後方互換の代替として残置 (明示注入で選択可)。
         diagnose = diagnose_residual
 
     inp = AnalysisInput(tuple(histograms), tuple(phases), background_coeffs)
-    result = runner(inp)  # ベースライン (反復 0)
+    with gpx_context(group.child(role="iteration", index=0)):
+        result = runner(inp)  # ベースライン (反復 0)
     best = result
     steps: list[AnalysisStep] = []
     open_proposals: tuple[ActionProposal, ...] = ()
@@ -121,7 +135,8 @@ def run_refinement_loop(
             break
 
         candidate_inp = action.apply(inp)
-        candidate = runner(candidate_inp)
+        with gpx_context(group.child(role="iteration", index=iteration + 1)):
+            candidate = runner(candidate_inp)
         accepted = _accept(result, candidate, accept_eps)
         steps.append(AnalysisStep(iteration, action, candidate.final_rwp, accepted))
         if ledger is not None:
