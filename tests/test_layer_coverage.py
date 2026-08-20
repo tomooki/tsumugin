@@ -685,6 +685,12 @@ FRAME_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "alkali_residual": ("alkali_residual", "x_XRD − x_echem (不可逆容量/副反応の診断量)"),
     "alkali_constraint_applied": ("alkali_constraint_applied", "適用拘束 (''/soft/fix/lock_fractions)"),
     "alkali_feasibility": ("alkali_feasibility", "多相拘束の実行可能性 (infeasible=不可逆容量疑い)"),
+    "gpx_path": (
+        "gpx_path",
+        "**このフレームの精密化成果物** (2026-08-20 規定「全解析で保存する」)。③ が任意の"
+        "フレームへ `mem_density`/`mem_rietveld_iterate` を掛ける・後から fit を開き直すための"
+        "唯一のハンドル。系列全体の置き場は結果直下の `gpx_dir` (索引 manifest.jsonl)",
+    ),
     # --- 未露出 (宣言することで「忘れた」ではなく「既知の穴」であることを示す) ---
     "n_obs": (
         UNEXPOSED,

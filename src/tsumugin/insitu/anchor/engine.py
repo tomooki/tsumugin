@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from ...autorietveld.model import PhaseSpec
+from ...gpxstore import GpxContext, gpx_context
 from ...store.ledger import Ledger
 from ..model import (
     ChargeConstraintConfig,
@@ -43,6 +44,7 @@ def _anchor_frame_result(anchor: Anchor) -> FrameRietveldResult:
         cell_esd={k: tuple(v) for k, v in anchor.cell_esd.items()},
         # FR-318: 段階 B で事前計算した alkali 診断を展開 (機能無効なら空 = 既定値)。
         **dict(anchor.alkali),  # type: ignore[arg-type]
+        gpx_path=anchor.gpx_path,
     )
 
 
@@ -72,6 +74,37 @@ def run_anchored_sequential(
     cfg: AnchorConfig = AnchorConfig(),
     ledger: Ledger | None = None,
     charge_constraint: "ChargeConstraintConfig | None" = None,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
+) -> SequentialRietveldResult:
+    """アンカー基準双方向解析 (成果物文脈を張る公開入口)。詳細は `_run_anchored_sequential`。
+
+    ここで系列 1 つ分の run ディレクトリを決め、内側の全精密化 (アンカー確定・A/B 検証・
+    前方/後方パス) がその下に成果物を残す (2026-08-20 規定「全解析で保存する」)。
+    """
+    from ..engine import _series_context  # 遅延 import (重い engine を import 時に引かない)
+
+    ledger = ledger if ledger is not None else Ledger()
+    series_ctx = _series_context(
+        list(frames), gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger, kind="m10"
+    )
+    with gpx_context(series_ctx):
+        return _run_anchored_sequential(
+            frames, base_phases, runner=runner, identifier=identifier, cfg=cfg,
+            ledger=ledger, charge_constraint=charge_constraint, series_ctx=series_ctx,
+        )
+
+
+def _run_anchored_sequential(
+    frames: "list[FrameSpec] | tuple[FrameSpec, ...]",
+    base_phases: "list[PhaseSpec] | tuple[PhaseSpec, ...]",
+    *,
+    runner: AnchorRunner,
+    identifier: Identifier | None = None,
+    cfg: AnchorConfig = AnchorConfig(),
+    ledger: Ledger | None = None,
+    charge_constraint: "ChargeConstraintConfig | None" = None,
+    series_ctx: GpxContext = GpxContext(enabled=False),
 ) -> SequentialRietveldResult:
     """アンカー基準双方向解析を実行し `SequentialRietveldResult` を返す。
 
@@ -83,6 +116,12 @@ def run_anchored_sequential(
     ``charge_constraint`` (FR-318): 有効なら (1) アンカーで制約有無 A/B を実施し ΔRwp が
     ``anchor_ab_threshold`` 超のアンカーに**不可逆容量疑いの警告 + x₀ 校正の提案** (提案≠適用,
     ledger 追記のみ — 採用判断は第3層)、(2) 内側フレームに alkali 診断を付す。
+
+    ``gpx_dir`` / ``save_gpx`` (2026-08-20 規定「全解析で保存する」): 系列全体で run
+    ディレクトリを 1 つ共有し、**アンカー確定 (`anchor`) / A-B 検証 (`anchor_ab`) /
+    前方パス (`forward`) / 後方パス (`backward`) を別々の成果物**として残す。
+    同じフレームを 2 回以上精密化する経路なので、採られなかった側が残っていないと
+    bic crossover の判断 (相集合が違う経路の比較) を後から検算できない。
     """
     frames = list(frames)
     base = tuple(base_phases)
@@ -210,6 +249,7 @@ def run_anchored_sequential(
     return SequentialRietveldResult(
         frames=frame_results, appearances=tuple(appearances),
         phase_names=tuple(all_names), warnings=tuple(warnings), ledger=ledger,
+        gpx_dir=series_ctx.run_dir if series_ctx.enabled else "",
     )
 
 

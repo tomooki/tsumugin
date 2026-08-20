@@ -101,12 +101,17 @@ def _capture_seq(monkeypatch):
     """run_sequential_rietveld を捕捉スタブに差し替え、captured dict を返す。"""
     captured: dict[str, object] = {}
 
-    def fake_run(frames, phases, *, config=None, runner=None, phase_finder=None, workdir=None):
+    def fake_run(
+        frames, phases, *, config=None, runner=None, phase_finder=None, workdir=None,
+        gpx_dir=None, save_gpx=True,
+    ):
         captured["frames"] = list(frames)
         captured["phases"] = list(phases)
         captured["config"] = config
         captured["runner"] = runner
         captured["workdir"] = workdir
+        captured["gpx_dir"] = gpx_dir
+        captured["save_gpx"] = save_gpx
         from tsumugin.insitu.model import SequentialRietveldResult
 
         return SequentialRietveldResult(frames=(), phase_names=("alpha",))

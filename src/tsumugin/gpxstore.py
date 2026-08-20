@@ -313,6 +313,27 @@ def plan_output(
     return plan_artifact(data_paths, context, ext=ext, explicit_dir=gpx_dir, now=now)
 
 
+def series_context(
+    data_path: str, *, gpx_dir: str | None = None, save: bool = True, now: str | None = None
+) -> "tuple[GpxContext, str]":
+    """**系列解析**が全フレームで共有する文脈を作る (run ディレクトリは 1 つ)。
+
+    フレームごとに run ディレクトリが分かれると 754 個できて探せないので、系列の入口で
+    1 度だけ解決する。``save=False`` / ``TSUMUGIN_GPX_DIR=none`` では ``enabled=False`` の
+    文脈を返す (None ではなく) — 下流が「保存しない」を一貫して読めるようにするため。
+
+    :returns: ``(文脈, 退避理由)``。退避理由が非空なら呼び出し側が ledger/警告に載せること
+    """
+    if not save:
+        return GpxContext(enabled=False), ""
+    run_dir, reason = resolve_run_dir(
+        data_path, explicit_dir=gpx_dir, now=now, report_fallback=True
+    )
+    if run_dir is None:
+        return GpxContext(enabled=False), ""
+    return GpxContext(run_dir=run_dir), reason
+
+
 # ---------------------------------------------------------------------------
 # 索引 (manifest.jsonl) — 追記専用 (P2)
 # ---------------------------------------------------------------------------
@@ -411,4 +432,5 @@ __all__ = [
     "record_artifact",
     "resolve_run_dir",
     "sanitize_label",
+    "series_context",
 ]

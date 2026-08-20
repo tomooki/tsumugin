@@ -228,7 +228,10 @@ def _capture_config(monkeypatch) -> dict:
     """
     captured: dict[str, object] = {}
 
-    def fake_run(frames, phases, *, config=None, runner=None, phase_finder=None, workdir=None):
+    def fake_run(
+        frames, phases, *, config=None, runner=None, phase_finder=None, workdir=None,
+        gpx_dir=None, save_gpx=True,
+    ):
         captured["config"] = config
         return SequentialRietveldResult(frames=(), phase_names=())
 

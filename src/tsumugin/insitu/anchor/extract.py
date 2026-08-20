@@ -13,6 +13,7 @@ import dataclasses
 from typing import TYPE_CHECKING, Callable
 
 from ...autorietveld.model import AutoRietveldResult, PhaseSpec, coerce_cell_esd
+from ...gpxstore import child_context, gpx_context
 from ..model import Cell, ChargeConstraintConfig, FrameSpec
 from .model import Anchor, AnchorConfig
 
@@ -77,7 +78,10 @@ def _refine_anchor(
     )
     # A (本アンカー): 制約なし — 目標を剥がして精密化する (アンカーの占有率を echem で汚さない)。
     frame_free = dataclasses.replace(frame, target_composition=None) if use_charge else frame
-    res = runner(frame_free, specs, None)
+    # 【アンカー確定の fit も残す (規定 2026-08-20)】: アンカーは区間の warm-start 種であり、
+    #   ここが間違っていると区間ごと汚染される — 後から開けないと切り分けられない。
+    with gpx_context(child_context(role="anchor", index=i)):
+        res = runner(frame_free, specs, None)
     cells: dict[str, Cell] = {k: tuple(v) for k, v in res.refined_cells.items()}  # type: ignore[misc]
     fracs = {k: float(v) for k, v in res.phase_fractions.items()}
     # 出版値 (重量分率 + esd) は段階 B の AutoRietveldResult から Anchor へ貫通させる
@@ -113,7 +117,10 @@ def _refine_anchor(
             plan_b = plan_frame_constraint(tc_fix, charge_constraint, names)
             if plan_b.applied == "fix":
                 frame_fixed = dataclasses.replace(frame, target_composition=tc_fix)
-                res_b = runner(frame_fixed, specs, None)
+                # A/B 検証の B (占有率を echem 目標に凍結) も別成果物として残す —
+                # ΔRwp だけでは「どちらの fit がどう違ったか」を後から見られない。
+                with gpx_context(child_context(role="anchor_ab", index=i)):
+                    res_b = runner(frame_fixed, specs, None)
                 if float(res_b.final_rwp) < float("inf"):
                     ab_check = {
                         "rwp_free": float(res.final_rwp),
@@ -140,7 +147,7 @@ def _refine_anchor(
         phase_fractions=fracs, confidence=float(confidence), validity_passed=res.validity.passed,
         n_obs=int(getattr(res, "n_obs", 0)), fallback=fallback,
         phase_weight_fractions=wfracs, phase_weight_fraction_esd=wfrac_esd, cell_esd=cesd,
-        alkali=alkali, ab_check=ab_check,
+        alkali=alkali, ab_check=ab_check, gpx_path=str(getattr(res, "gpx_path", "") or ""),
     )
 
 
