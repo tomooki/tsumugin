@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
+from ..gpxstore import group_context
 from ..multistart.perturb import MultistartConfig
 from ..store import Ledger
 from .agreement import (
@@ -524,8 +525,23 @@ def run_multistart_rietveld(
     n_jobs = jobs if jobs is not None else min(len(perturbations), os.cpu_count() or 1)
     n_jobs = max(1, int(n_jobs))
 
+    # 【別ベイスンへ落ちた開始点の fit も残す (規定 2026-08-20)】: 収束確認の結論
+    #   (単一ベイスン=大域最適の傍証) は「落ちなかった解がどんな構造だったか」を見て初めて
+    #   意味を持つ。**並列実行は別プロセス**なので ambient 文脈は届かない — 明示文脈
+    #   (frozen dataclass = pickle 可) を payload に載せて運ぶ。
+    group, _reason = group_context(
+        histograms[0].data_path if histograms else "",
+        gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
+        save=bool(run_kwargs.get("save_gpx", True)),
+    )
     payloads = [
-        (i, tuple(histograms), tuple(phases), pert, dict(run_kwargs))
+        (
+            i,
+            tuple(histograms),
+            tuple(phases),
+            pert,
+            {**run_kwargs, "gpx_context": group.child(role="multistart", index=i)},
+        )
         for i, pert in enumerate(perturbations)
     ]
     raw: dict[int, tuple] = {}

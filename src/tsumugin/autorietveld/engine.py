@@ -2139,6 +2139,7 @@ def run_auto_rietveld(
     keep_gpx: str | None = None,
     gpx_dir: str | None = None,
     save_gpx: bool = True,
+    gpx_context: "GpxContext | None" = None,
     initial_cell_scale: dict[str, tuple[float, float, float]] | None = None,
     initial_cells: dict[str, tuple[float, ...]] | None = None,
     initial_fractions: Mapping[str, float] | None = None,
@@ -2167,6 +2168,10 @@ def run_auto_rietveld(
         None なら ``TSUMUGIN_GPX_DIR`` → 観測データ隣接 ``<data_dir>/tsumugin_gpx/`` の順で決まり、
         その下に ``run-<日時>/`` を作る。ambient 文脈 (`gpxstore.gpx_context`) がある系列解析では
         系列全体で 1 つの run ディレクトリを共有し、フレーム/トライアルごとに 1 ファイル残る
+    :param gpx_context: 成果物の**名前と run ディレクトリ**を明示指定する文脈
+        (`gpxstore.GpxContext`)。通常は ambient (`gpxstore.gpx_context`) が運ぶので指定不要 —
+        **別プロセスへ渡る経路 (マルチスタートの並列実行) は ambient が届かない**ため、
+        そこだけ明示的に渡す (frozen dataclass なので pickle 可能)。明示指定が ambient に優先。
     :param save_gpx: **規定は True = 保存する**。False で完全に無効化する opt-out
         (ディスクを使わせたくないとき。``TSUMUGIN_GPX_DIR=none`` でも同じ)。
         保存しなかった精密化は検算できない — 無言失敗 (段が no-op) の追跡も、MEM
@@ -2983,7 +2988,7 @@ def run_auto_rietveld(
 
         # 【規定: 全解析で gpx を保存する】: 明示 keep_gpx > save_gpx=False の opt-out >
         #   既定保存 (ambient 文脈の run ディレクトリ、無ければデータ隣接)。
-        gpx_ctx = active_context()
+        gpx_ctx = gpx_context if gpx_context is not None else active_context()
         plan = plan_output(
             [h.data_path for h in histograms],
             keep=keep_gpx,

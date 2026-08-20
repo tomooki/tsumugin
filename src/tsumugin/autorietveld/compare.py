@@ -18,6 +18,7 @@ from typing import Callable, Mapping, Sequence
 from tsumugin.autorietveld.engine import run_auto_rietveld
 from tsumugin.autorietveld.model import AutoRietveldResult, HistogramSpec, PhaseSpec
 from tsumugin.evidence import AICBackend, BICBackend
+from tsumugin.gpxstore import gpx_context, group_context
 from tsumugin.model import RefinementMetrics
 
 __all__ = [
@@ -132,9 +133,18 @@ def compare_models(
     bic_backend = BICBackend()
     aic_backend = AICBackend()
 
+    # 【棄却モデルの fit も残す (規定 2026-08-20)】: ΔBIC の根拠は「棄却された方がどう
+    #   壊れていたか」(実測 NaCuHCF model5 は Na>1 / O<0 に発散) にある。数値だけでは検算できない。
+    group, _reason = group_context(
+        histograms[0].data_path if histograms else "",
+        gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
+        save=bool(run_kwargs.get("save_gpx", True)),
+    )
+
     raw: list[ModelScore] = []
     for v in variants:
-        result = runner(list(histograms), list(v.phases), **run_kwargs)
+        with gpx_context(group.child(role="model", label=v.name)):
+            result = runner(list(histograms), list(v.phases), **run_kwargs)
         metrics = metrics_from_result(result)
         raw.append(
             ModelScore(

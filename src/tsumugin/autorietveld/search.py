@@ -82,6 +82,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
+from ..gpxstore import gpx_context, group_context
 from ..store import Ledger
 from .model import (
     AutoRietveldResult,
@@ -1004,11 +1005,20 @@ def run_recipe_search(
     else:
         cands = tuple(candidates)
     run = runner or _default_candidate_runner(phases, run_kwargs)
+    # 【負けた候補の fit も残す (規定 2026-08-20)】: 「なぜその手順が勝ったか」は順位表の
+    #   Rwp だけでは追えない (どこで発散したか・どの段が revert されたか)。候補ごとに
+    #   ``f…_candidate_<候補名>.gpx`` として同じ run ディレクトリに並べる。
+    group, _reason = group_context(
+        histograms[0].data_path if histograms else "",
+        gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
+        save=bool(run_kwargs.get("save_gpx", True)),
+    )
 
     outcomes: list[CandidateOutcome] = []
     for i, cand in enumerate(cands):
         try:
-            result: "AutoRietveldResult | None" = run(cand)
+            with gpx_context(group.child(role="candidate", label=cand.name)):
+                result: "AutoRietveldResult | None" = run(cand)
             error = ""
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]

@@ -334,6 +334,22 @@ def series_context(
     return GpxContext(run_dir=run_dir), reason
 
 
+def group_context(
+    data_path: str, *, gpx_dir: str | None = None, save: bool = True
+) -> "tuple[GpxContext, str]":
+    """**1 回の解析の中で N 回精密化する経路** (探索/マルチスタート/モデル比較) の親文脈。
+
+    ambient 文脈が既にあれば**それを使う** (系列の中で探索を回したときに run ディレクトリが
+    増殖しないため)。無ければ `series_context` で新しく 1 つ作る。
+
+    :returns: ``(親文脈, 退避理由)``
+    """
+    current = active_context()
+    if current is not None:
+        return current, ""
+    return series_context(data_path, gpx_dir=gpx_dir, save=save)
+
+
 # ---------------------------------------------------------------------------
 # 索引 (manifest.jsonl) — 追記専用 (P2)
 # ---------------------------------------------------------------------------
@@ -426,6 +442,7 @@ __all__ = [
     "active_context",
     "child_context",
     "gpx_context",
+    "group_context",
     "plan_artifact",
     "plan_output",
     "read_manifest",
