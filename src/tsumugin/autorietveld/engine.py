@@ -727,7 +727,11 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
     return {
         "labels": labels, "coord_atoms": coord_atoms,
         "mixed": mixed, "free_occ": free_occ, "equiv_occ": equiv_occ | sum_occ,
-        "uiso_labels": list(spec.free_uiso_labels),
+        # None (未指定 = 全原子解放) と [] (明示的に凍結) を型で区別して運ぶ (#189)。
+        "uiso_labels": (
+            None if spec.free_uiso_labels is None else list(spec.free_uiso_labels)
+        ),
+        "frozen_uiso": set(spec.frozen_uiso_labels),
         "refine_cell": spec.refine_cell,
         # 原子ラベル→元素記号 (重原子から順に解放する "本気フィット" 手順で使う)
         "element_of": element_of,
@@ -829,8 +833,9 @@ def _freeze_all(hists, phases, atom_flag_maps, radiations, keep: "set[str]") -> 
 def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
     """段階フラグに応じて per-atom フラグ (X/U/F) の集合を更新する。変化があれば True。
 
-    - coords: 一般位置原子に "X"
-    - uiso: 全原子に "U"
+    - coords: 一般位置原子に "X" (frozen_coord_labels は除外済)
+    - uiso: `free_uiso_labels` が `None` (未指定) なら全原子、`()` なら 0 原子、非空ならその原子に
+      "U"。`frozen_uiso_labels` はそこから差し引く (#189/#211)
     - occupancy: 混合占有原子 + 単独解放原子 (free_occ) に "F"
     """
     changed = False
@@ -846,9 +851,14 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
         for lab in _element_rank_labels(info, info["coord_atoms"], stage_flags["coords"]):
             add(lab, "X")
     if "uiso" in stage_flags:
-        # free_uiso_labels 指定時はその原子のみ、未指定なら全原子の Uiso を解放。
-        uiso_targets = info.get("uiso_labels") or info["labels"]
-        for lab in _element_rank_labels(info, list(uiso_targets), stage_flags["uiso"]):
+        # `None` = 未指定 → 全原子、`[]` = 明示的に凍結 → 0 原子、非空 → その原子のみ (#189)。
+        # ⚠ `or` で書くと空リストが「未指定」に化け、**凍結したつもりで全原子が解放**される。
+        declared = info.get("uiso_labels")
+        uiso_targets = list(info["labels"]) if declared is None else list(declared)
+        frozen_uiso = info.get("frozen_uiso") or set()
+        if frozen_uiso:  # frozen_coord_labels と同じ規約: 凍結が解放指定に勝つ (#211)
+            uiso_targets = [lab for lab in uiso_targets if lab not in frozen_uiso]
+        for lab in _element_rank_labels(info, uiso_targets, stage_flags["uiso"]):
             add(lab, "U")
     if "occupancy" in stage_flags:
         occ_labels = (

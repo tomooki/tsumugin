@@ -144,6 +144,10 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
      `create_instrument_params` で作り (観測データ・プリセット・波長のいずれからでも)、
      **`inspect_instrument_params` で精密化前に検査する** — 放射源の取り違えと Kα2 の不整合は
      Rwp を見ても原因に辿り着けない類の誤りで、後段の全段階を壊す。
+   - **多相なら少数相の ADP を凍結する** (#189/#211)。`PhaseSpec` の `free_uiso_labels` は
+     **書かない (null) = 全原子解放 / `[]` = その相を丸ごと凍結 / 列挙 = その原子だけ**の 3 値で、
+     一部だけ凍結するなら `frozen_uiso_labels`。少数相の Uiso を自由にすると発散して
+     **散乱しないのに重量分率だけ大きい「幽霊相」**になる (#209)。⚠ `[]` と null は別の意味。
    - **相数が事前に分からない未知試料**は `identify_pattern` (M11 統一同定) を使う。1 相受理する
      ごとに残差からその寄与を減算し、**残差 S/N < 5σ になるまで**積み上げる (単相なら 1 相で停止、
      多相なら複数相)。`accepted[]` の各相の CIF/formula を `PhaseSpec` に配線して精密化へ進む
