@@ -294,14 +294,6 @@ class PhaseSpec:
     """座標を**解放しない**原子ラベル (coords 段で除外)。剛体的に理想幾何へ固定したい原子
     (例: 無秩序水の D/H を O–D=0.96Å の初期幾何に据置き orientation のみを別途評価する) に用いる。
     占有率/Uiso の解放とは独立 (座標だけ凍結)。既定 () (従来どおり一般位置は全解放)。"""
-    frozen_uiso_labels: tuple[str, ...] = ()
-    """Uiso を**解放しない**原子ラベル (uiso 段で除外)。`frozen_coord_labels` の ADP 版で、
-    `free_uiso_labels` が解決した集合から差し引く (**両方に現れたら凍結が勝つ**)。
-
-    用途は多相の少数相 — 少数相の Uiso を自由にすると発散し (10^8–10^9 Å² を実測)、
-    Debye-Waller 因子が実質 0 になって **Bragg 強度を出さないのに重量分率だけ大きい「幽霊相」**
-    になる (Issue #209)。相まるごと凍結したいなら `free_uiso_labels=()`、相の一部だけ
-    (例 無秩序水の D/H) 凍結したいなら本フィールドを使う。既定 () (凍結なし)。"""
     refine_cell: bool = True
     """当該相の格子 (単位胞) を精密化するか (Issue #47)。``False`` なら engine の "cell" 段で
     Cell 解放をスキップし、格子を初期値に固定する。副相/不純物相の相分率が 0 近傍に落ちると
@@ -309,6 +301,18 @@ class PhaseSpec:
     巻き添えにする問題を回避する。格子が既知参照と一致する副相 (例 hollandite 不純物) に用いる。
     既定 True (全相解放; 後方互換)。"""
     temperature: float | None = None
+    frozen_uiso_labels: tuple[str, ...] = ()
+    """Uiso を**解放しない**原子ラベル (uiso 段で除外)。`frozen_coord_labels` (上) の ADP 版で、
+    `free_uiso_labels` が解決した集合から差し引く (**両方に現れたら凍結が勝つ**)。
+
+    用途は多相の少数相 — 少数相の Uiso を自由にすると発散し (10^8–10^9 Å² を実測)、
+    Debye-Waller 因子が実質 0 になって **Bragg 強度を出さないのに重量分率だけ大きい「幽霊相」**
+    になる (Issue #209)。相まるごと凍結したいなら `free_uiso_labels=()`、相の一部だけ
+    (例 無秩序水の D/H) 凍結したいなら本フィールドを使う。既定 () (凍結なし)。
+
+    ⚠ **位置は末尾**である — 対になる `frozen_coord_labels` の隣に置きたくなるが、本 dataclass は
+    v0.1 として公開済みで、途中に挿入すると外部の位置引数呼び出しが**黙って別フィールドへ**入る
+    (`tests/autorietveld/test_frozen_uiso.py::test_phase_spec_field_order_is_append_only` が強制)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (tuple 組→list of list)。"""

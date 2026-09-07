@@ -830,6 +830,38 @@ def _freeze_all(hists, phases, atom_flag_maps, radiations, keep: "set[str]") -> 
                 pass
             fmap.clear()
 
+def _resolve_uiso_targets(info: dict) -> "list[str]":
+    """uiso 段で Uiso を解放する原子ラベルを解決する (#189/#211)。
+
+    `None` = 未指定 → 全原子、`[]` = 明示的に凍結 → 0 原子、非空 → その原子のみ。
+    `frozen_uiso` はそこから差し引く (`frozen_coord_labels` と同じ規約 = 凍結が解放指定に勝つ)。
+
+    ⚠ `info.get("uiso_labels") or info["labels"]` と書くと**空リストが「未指定」に化け、
+    凍結したつもりで全原子が解放される** (#189 の本体)。
+    """
+    declared = info.get("uiso_labels")
+    targets = list(info["labels"]) if declared is None else list(declared)
+    frozen_uiso = info.get("frozen_uiso") or set()
+    if frozen_uiso:
+        targets = [lab for lab in targets if lab not in frozen_uiso]
+    return targets
+
+
+def _uiso_all_frozen(phase_infos: "list[dict]", stage_flags) -> bool:
+    """その段が「**全相で Uiso を凍結した結果**の no-op」かを判定する (#211)。
+
+    全相凍結の uiso 段は `set_refinements` を一度も呼ばずに完走するので、rwp/n_params が
+    前段とビット同一・`reverted` も立たない — **CLAUDE.md が「無言失敗を疑え」と定めた
+    シグネチャそのもの**になる (GSAS の `Refine` が失敗戻り値を捨てていた件と同じ像)。
+    意図的な凍結ならその事実を段の note と ledger に残し、真の無言失敗と区別できるようにする。
+
+    相が 1 つも無いときは False (**空を「正常」と答えない** — ② の規律と同じ)。
+    """
+    if "uiso" not in stage_flags or not phase_infos:
+        return False
+    return all(not _resolve_uiso_targets(info) for info in phase_infos)
+
+
 def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> bool:
     """段階フラグに応じて per-atom フラグ (X/U/F) の集合を更新する。変化があれば True。
 
@@ -851,14 +883,7 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
         for lab in _element_rank_labels(info, info["coord_atoms"], stage_flags["coords"]):
             add(lab, "X")
     if "uiso" in stage_flags:
-        # `None` = 未指定 → 全原子、`[]` = 明示的に凍結 → 0 原子、非空 → その原子のみ (#189)。
-        # ⚠ `or` で書くと空リストが「未指定」に化け、**凍結したつもりで全原子が解放**される。
-        declared = info.get("uiso_labels")
-        uiso_targets = list(info["labels"]) if declared is None else list(declared)
-        frozen_uiso = info.get("frozen_uiso") or set()
-        if frozen_uiso:  # frozen_coord_labels と同じ規約: 凍結が解放指定に勝つ (#211)
-            uiso_targets = [lab for lab in uiso_targets if lab not in frozen_uiso]
-        for lab in _element_rank_labels(info, uiso_targets, stage_flags["uiso"]):
+        for lab in _element_rank_labels(info, _resolve_uiso_targets(info), stage_flags["uiso"]):
             add(lab, "U")
     if "occupancy" in stage_flags:
         occ_labels = (
@@ -2695,6 +2720,9 @@ def run_auto_rietveld(
             #   除外されるプロファイル段 / GSAS の無言失敗) は Rwp からは区別できないので、
             #   区別できる事実として台帳に残す。
             is_noop = decision.is_noop
+            # 全相で Uiso を凍結した段は**原理的に** no-op になる (#211)。「無言失敗を疑う」
+            # 規律を壊さないよう、意図的な凍結であることを台帳にも残して区別可能にする。
+            uiso_frozen_all = _uiso_all_frozen(phase_infos, stage.flags)
             if is_noop:
                 ledger.append(
                     "m7_stage_noop",
@@ -2704,6 +2732,7 @@ def run_auto_rietveld(
                         "gof": gof,
                         "n_params": nvar,
                         "prev_n_params": before[2],
+                        "uiso_frozen_all": uiso_frozen_all,
                     },
                 )
 
@@ -2823,6 +2852,10 @@ def run_auto_rietveld(
                 note_extras.append("unconverged")
             if is_noop:
                 note_extras.append("noop")
+            # 【意図的な凍結を無言失敗と区別する (#211)】: 全相凍結の uiso 段は原理的に
+            #   ビット同一 no-op になる。事実を残さないと真の無言失敗と見分けが付かない。
+            if uiso_frozen_all:
+                note_extras.append("uiso_frozen_all")
             if rescue_frozen:
                 note_extras.append(f"rescue_frozen={len(rescue_frozen)}")
             if newly_frozen:

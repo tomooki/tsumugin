@@ -104,8 +104,15 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
   | `"frozen_uiso_labels": ["D1","H1"]` | 上で解放された集合から**差し引く** (`frozen_coord_labels` の ADP 版) |
 
   ⚠ **`[]` と null は別の意味である。** 2026-08 以前は `[]` を渡すと**逆に全原子が解放**され、
-  「凍結したつもり」で数時間の系列解析を回す事故が起きた (#189)。凍結したかどうかは
-  `frames[i]["atom_uiso"]` が入力値のままかで確かめる。
+  「凍結したつもり」で数時間の系列解析を回す事故が起きた (#189)。
+
+  **凍結できたかの検算** — 系列結果 (`frames[i]`) からは直接確かめられない。精密化後の
+  Uiso は ① にはあるが ② 未露出で (#200)、`FrameRietveldResult` も運ばない (#193)。当面は:
+  - **代表 1 フレームを `auto_rietveld` で単発実行**し、`stages[]` の uiso 段の `note` に
+    **`uiso_frozen_all`** が出るかを見る (全相凍結なら必ず出る)。
+  - 系列全体は保存された `.gpx` (全フレーム保存が既定) で検算する。
+  - ⚠ **`note` が `noop` だけで `uiso_frozen_all` が無い**なら、それは凍結ではなく
+    **無言失敗**の疑い (段が何も精密化できていない)。両者はここでしか区別できない。
 - **外部ソフト形式は先に変換する** (XND): 生の RIETAN-FP `.int` / Z-Code Igor TOF は
   `convert_pattern(input_path, out_path, input_format=...)` で `.xye`/FXYE にし、その `path` を
   `data_path` に渡す。Z-Code `.zDiffractometer` は `write_instrument_params(zdiff_path, out_instprm)`
