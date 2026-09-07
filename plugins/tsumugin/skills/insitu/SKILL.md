@@ -92,6 +92,27 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 - **`two_theta_limits` を必ず設定する**。ノイズ域は最小二乗を支配して遅く不正確になる
   (**30°→18° で 369s→8s** かつ収束改善)。
 - **`excluded_regions`** に寄生ピーク (セル/装置由来) を入れる。
+- **少数相の ADP (Uiso) は凍結する** (#189/#211)。少数相の Uiso を自由にすると発散し
+  (実測 10^8–10^9 Å²)、Debye-Waller 因子が実質 0 になって **Bragg 強度を出さないのに重量分率だけ
+  大きい「幽霊相」** になる。`PhaseSpec` の語彙は 3 つ:
+
+  | 書き方 | 意味 |
+  |---|---|
+  | `"free_uiso_labels"` を**書かない** (= null) | 未指定 → uiso 段で**全原子**を解放 (既定) |
+  | `"free_uiso_labels": []` | **その相の ADP を丸ごと凍結** (少数相はこれ) |
+  | `"free_uiso_labels": ["Cu","Ow"]` | 列挙した原子だけ解放 (重原子/可動イオン/水など) |
+  | `"frozen_uiso_labels": ["D1","H1"]` | 上で解放された集合から**差し引く** (`frozen_coord_labels` の ADP 版) |
+
+  ⚠ **`[]` と null は別の意味である。** 2026-08 以前は `[]` を渡すと**逆に全原子が解放**され、
+  「凍結したつもり」で数時間の系列解析を回す事故が起きた (#189)。
+
+  **凍結できたかの検算** — 系列結果 (`frames[i]`) からは直接確かめられない。精密化後の
+  Uiso は ① にはあるが ② 未露出で (#200)、`FrameRietveldResult` も運ばない (#193)。当面は:
+  - **代表 1 フレームを `auto_rietveld` で単発実行**し、`stages[]` の uiso 段の `note` に
+    **`uiso_frozen_all`** が出るかを見る (全相凍結なら必ず出る)。
+  - 系列全体は保存された `.gpx` (全フレーム保存が既定) で検算する。
+  - ⚠ **`note` が `noop` だけで `uiso_frozen_all` が無い**なら、それは凍結ではなく
+    **無言失敗**の疑い (段が何も精密化できていない)。両者はここでしか区別できない。
 - **外部ソフト形式は先に変換する** (XND): 生の RIETAN-FP `.int` / Z-Code Igor TOF は
   `convert_pattern(input_path, out_path, input_format=...)` で `.xye`/FXYE にし、その `path` を
   `data_path` に渡す。Z-Code `.zDiffractometer` は `write_instrument_params(zdiff_path, out_instprm)`

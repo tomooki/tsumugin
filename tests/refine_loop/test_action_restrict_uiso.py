@@ -29,8 +29,14 @@ def test_restrict_uiso_sets_free_uiso_labels():
 
 def test_restrict_uiso_phase_specific():
     out = RestrictUiso(("Cu",), phase="P2").apply(_inp("P1", "P2"))
-    assert out.phases[0].free_uiso_labels == ()      # P1 は不変
+    assert out.phases[0].free_uiso_labels is None    # P1 は不変 (未指定のまま = 全原子解放)
     assert out.phases[1].free_uiso_labels == ("Cu",)  # P2 のみ設定
+
+
+def test_restrict_uiso_with_no_labels_freezes_uiso():
+    """空指定は「1 原子も解放しない」= docstring どおり (#189 前は逆に全原子が解放されていた)。"""
+    out = RestrictUiso(()).apply(_inp("P1"))
+    assert out.phases[0].free_uiso_labels == ()
 
 
 def test_restrict_uiso_is_safe():

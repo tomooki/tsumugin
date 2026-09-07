@@ -106,7 +106,9 @@ class RestrictUiso(SafeAction):
     軽元素 framework や占有率 0 のゴースト原子の Uiso が発散/負値化するのを、重原子/可動イオン/
     水など安定な原子のみに Uiso 解放を絞ることで防ぐ (heavy-atom + 無秩序構造の定石)。
 
-    :param labels: Uiso を解放してよい原子ラベル (これ以外は Uiso 固定)
+    :param labels: Uiso を解放してよい原子ラベル (これ以外は Uiso 固定)。**空タプルは
+        「1 原子も解放しない」** = 相ごと ADP 凍結 (#189 の型分離により docstring どおりになった。
+        以前は空を渡すと逆に全原子が解放されていた)
     :param phase: 対象相名 (None なら全相)
     """
 
