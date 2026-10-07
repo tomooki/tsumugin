@@ -107,9 +107,11 @@ def test_update_atom_flags_uiso_restricted_to_free_uiso_labels():
 
 
 def test_update_atom_flags_uiso_all_when_unrestricted():
+    # 未指定は `None` で表す。`[]` は「明示的に凍結」であって未指定ではない (#189。
+    # `[]` 側の挙動は tests/autorietveld/test_frozen_uiso.py が固定する)。
     info = {
         "labels": ["Cu", "C1"], "coord_atoms": [], "mixed": set(),
-        "free_occ": set(), "equiv_occ": set(), "uiso_labels": [],
+        "free_occ": set(), "equiv_occ": set(), "uiso_labels": None,
     }
     flags: dict[str, str] = {}
     _update_atom_flags(flags, info, {"uiso": True})

@@ -270,9 +270,14 @@ class PhaseSpec:
     :param occupancy_equiv_groups: 占有率を等値拘束する原子ラベルの組の列 (add_EquivConstr)。
         例: (("O1","DO11","DO12"),) — D₂O の D 占有率を親水 O に等値し 1 変数として精密化する
         (水フラクションと D 量を連動させる)
-    :param free_uiso_labels: Uiso を解放する原子ラベルを限定する (空なら uiso 段階で全原子を解放)。
+    :param free_uiso_labels: Uiso を解放する原子ラベルを限定する。**「未指定」と「明示的に空」を
+        型で分ける** (Issue #189/#211): ``None`` = 未指定 (uiso 段階で全原子を解放) /
+        ``()`` = 明示的に凍結 (1 原子も解放しない) / 非空 = その原子だけ解放。
         例: ("Cu","Na1","Na2","O1","O3","Ow") — 重原子/可動陽イオン/水のみ Uiso 解放し、軽元素
-        framework (C/N) や占有率 0 のゴースト原子の Uiso 発散/負値を防ぐ (heavy-atom + 無秩序構造の定石)
+        framework (C/N) や占有率 0 のゴースト原子の Uiso 発散/負値を防ぐ (heavy-atom + 無秩序構造の定石)。
+        ⚠ 旧実装は既定が ``()`` で engine が ``or`` フォールバックしていたため、``()`` を渡すと
+        **凍結したつもりで全原子が解放**されていた (#189)。少数相の ADP を凍結したいだけなら
+        ``free_uiso_labels=()`` か `frozen_uiso_labels` を使う
     :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
     """
 
@@ -282,7 +287,7 @@ class PhaseSpec:
     mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
     free_occupancy_labels: tuple[str, ...] = ()
     occupancy_equiv_groups: tuple[tuple[str, ...], ...] = ()
-    free_uiso_labels: tuple[str, ...] = ()
+    free_uiso_labels: tuple[str, ...] | None = None
     position_equiv_groups: tuple[tuple[str, ...], ...] = ()
     occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
     frozen_coord_labels: tuple[str, ...] = ()
@@ -296,6 +301,18 @@ class PhaseSpec:
     巻き添えにする問題を回避する。格子が既知参照と一致する副相 (例 hollandite 不純物) に用いる。
     既定 True (全相解放; 後方互換)。"""
     temperature: float | None = None
+    frozen_uiso_labels: tuple[str, ...] = ()
+    """Uiso を**解放しない**原子ラベル (uiso 段で除外)。`frozen_coord_labels` (上) の ADP 版で、
+    `free_uiso_labels` が解決した集合から差し引く (**両方に現れたら凍結が勝つ**)。
+
+    用途は多相の少数相 — 少数相の Uiso を自由にすると発散し (10^8–10^9 Å² を実測)、
+    Debye-Waller 因子が実質 0 になって **Bragg 強度を出さないのに重量分率だけ大きい「幽霊相」**
+    になる (Issue #209)。相まるごと凍結したいなら `free_uiso_labels=()`、相の一部だけ
+    (例 無秩序水の D/H) 凍結したいなら本フィールドを使う。既定 () (凍結なし)。
+
+    ⚠ **位置は末尾**である — 対になる `frozen_coord_labels` の隣に置きたくなるが、本 dataclass は
+    v0.1 として公開済みで、途中に挿入すると外部の位置引数呼び出しが**黙って別フィールドへ**入る
+    (`tests/autorietveld/test_frozen_uiso.py::test_phase_spec_field_order_is_append_only` が強制)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (tuple 組→list of list)。"""
@@ -306,10 +323,15 @@ class PhaseSpec:
             "mixed_occupancy_groups": [list(g) for g in self.mixed_occupancy_groups],
             "free_occupancy_labels": list(self.free_occupancy_labels),
             "occupancy_equiv_groups": [list(g) for g in self.occupancy_equiv_groups],
-            "free_uiso_labels": list(self.free_uiso_labels),
+            # None (未指定) と [] (明示的に凍結) を潰さない — 潰すと ③ は JSON で凍結を
+            # 表現できなくなる (#189)。
+            "free_uiso_labels": (
+                None if self.free_uiso_labels is None else list(self.free_uiso_labels)
+            ),
             "position_equiv_groups": [list(g) for g in self.position_equiv_groups],
             "occupancy_sum_groups": [list(g) for g in self.occupancy_sum_groups],
             "frozen_coord_labels": list(self.frozen_coord_labels),
+            "frozen_uiso_labels": list(self.frozen_uiso_labels),
             "refine_cell": self.refine_cell,
             "temperature": self.temperature,
         }
@@ -320,7 +342,10 @@ class PhaseSpec:
         groups = d.get("mixed_occupancy_groups") or ()
         free_occ = d.get("free_occupancy_labels") or ()
         equiv = d.get("occupancy_equiv_groups") or ()
-        free_uiso = d.get("free_uiso_labels") or ()
+        # `or ()` は null と [] を同じ () に潰す (#189)。キー欠落/null = 未指定 (None)、
+        # 明示的な [] = 凍結 として区別する。
+        raw_uiso = d.get("free_uiso_labels")
+        free_uiso = None if raw_uiso is None else tuple(str(a) for a in raw_uiso)
         return cls(
             structure_path=str(d["structure_path"]),
             phase_name=str(d["phase_name"]),
@@ -328,7 +353,7 @@ class PhaseSpec:
             mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
             free_occupancy_labels=tuple(str(a) for a in free_occ),
             occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
-            free_uiso_labels=tuple(str(a) for a in free_uiso),
+            free_uiso_labels=free_uiso,
             position_equiv_groups=tuple(
                 tuple(str(a) for a in g) for g in (d.get("position_equiv_groups") or ())
             ),
@@ -336,6 +361,7 @@ class PhaseSpec:
                 tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
             ),
             frozen_coord_labels=tuple(str(a) for a in (d.get("frozen_coord_labels") or ())),
+            frozen_uiso_labels=tuple(str(a) for a in (d.get("frozen_uiso_labels") or ())),
             refine_cell=bool(d.get("refine_cell", True)),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
