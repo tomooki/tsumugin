@@ -120,6 +120,11 @@ sequential_rietveld(
 > `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` — `needs_model_revision` のフレームが
 > なぜ warm-start で直らなかったかは、その fit を開いて見る (良好な近傍が無く**試せなかった**
 > フレームは `insitu_repair_no_neighbour` 行で、fit は無い)。
+>
+> 置き場所に書けないと (読み取り専用の共有ディスク等) run ディレクトリごと**一時領域へ退避**し、
+> 系列の **`warnings` の先頭**に `成果物の保存先: <理由>` の行が出る (`repair_frames` は
+> `ledger_entries` の `m9_gpx_fallback` 行)。この行があったら一次資料は %TEMP% の中で OS の掃除で
+> 消えうる — 疑う作業に入る前に書ける場所へ移し、報告にも退避を書く。
 
 ### 3. 疑う — **ここからが本 skill の主眼**
 

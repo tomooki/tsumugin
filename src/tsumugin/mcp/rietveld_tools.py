@@ -336,11 +336,14 @@ def _run_search(
     )
     selected = summary.selected
     if selected is None or selected.result is None:
-        return {
+        failed: dict = {
             "error": "探索の全候補が失敗しました: " + " / ".join(summary.warnings),
             "error_type": "RecipeSearchFailed",
             "search": summary.to_dict(),
         }
+        # 失敗した候補の成果物もこの run に残る — 置き場所が一時領域なら error でも言う。
+        _lift_fallback_warnings(failed, summary.warnings)
+        return failed
     chosen = _replace(
         inp,
         histograms=selected.candidate.histograms,
@@ -413,12 +416,14 @@ def _run_convergence(
         **kwargs,  # type: ignore[arg-type]
     )
     if report.best is None:
-        return {
+        failed: dict = {
             "error": "手順が 1 つも立たなかったため収束確認へ進めませんでした: "
             + " / ".join(report.warnings),
             "error_type": "ConvergenceNotAttempted",
             "convergence": report.to_dict(),
         }
+        _lift_fallback_warnings(failed, report.warnings)
+        return failed
     selected = report.search.selected if report.search is not None else None
     chosen = inp
     if selected is not None:
@@ -441,10 +446,14 @@ def _lift_fallback_warnings(payload: dict, nested: Sequence[str]) -> None:
     退避は run ディレクトリ単位 (= 入口 1 回で 1 行) なので理由は ``search.warnings`` /
     ``convergence.warnings`` に載る。最上位に無いと、単発経路の読み方 (``warnings`` を見る) を
     した ③ が「警告なし = 頼んだ場所にある」と読む。順序依存などの他の警告は拾わない
-    (それは探索の所見であって、返した fit の成果物の話ではない)。
+    (それは探索の所見であって、返した fit の成果物の話ではない)。全候補が失敗した error dict
+    にも付ける (失敗した候補の成果物も同じ run に残る)。
+
+    ⚠ 拾えるのは `gpxstore.fallback_warning` の形のまま入れ子に載った行だけ — 入れ子の警告に
+    接頭辞を足して積み直す (確認の ``収束確認: …`` のような) 経路を退避の行に使わないこと。
     """
     lifted = [w for w in nested if is_fallback_warning(w)]
-    payload["warnings"] = [*payload["warnings"], *lifted]
+    payload["warnings"] = [*payload.get("warnings", []), *lifted]
 
 
 def _with_extra_stages(inp: AnalysisInput, names: Sequence[str]) -> tuple[RecipeCandidate, ...]:

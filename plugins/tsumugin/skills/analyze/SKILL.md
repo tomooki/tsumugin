@@ -44,7 +44,8 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
   `refine_with_revisions` の返り値 **`warnings`** に `成果物の保存先: <理由>` の行が出る
   (退避が無ければ空リスト)。探索 (`search`) / 収束確認 (`multistart`) でも同じ行が最上位の
   `warnings` に出る (元は `search.warnings` / `convergence.warnings` にあり、候補・開始点の
-  成果物すべてが同じ一時 run ディレクトリにある)。**この行があったら `gpx_path` は %TEMP% の中**であり、
+  成果物すべてが同じ一時 run ディレクトリにある。全候補が失敗した error でも出る)。
+  **この行があったら `gpx_path` (TOPAS は `project_path`) は %TEMP% の中**であり、
   OS の掃除で消えうる — 報告には「指定した場所」ではなく「一時領域へ退避した」と理由ごと書き、
   残すべき成果物は書ける場所へ移す (または書ける `gpx_dir` を渡して回し直す)。
   行が無ければ成果物は頼んだ場所にある。

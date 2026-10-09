@@ -103,8 +103,16 @@ def test_repair_docs_say_where_rejected_repair_fits_are(path: Path):
 
 #: 退避理由を返す ② ツール → それを ③ に説明する手順書。キーは「その手順書が名指しすべき返り値」。
 _FALLBACK_DOCS = {
-    _SKILLS / "analyze" / "SKILL.md": ("warnings", "search.warnings", "convergence.warnings"),
+    _SKILLS / "analyze" / "SKILL.md": (
+        "warnings", "search.warnings", "convergence.warnings", "project_path",
+    ),
     _SKILLS / "insitu" / "SKILL.md": ("warnings", "m9_gpx_fallback"),
+    _SKILLS / "operando-diagnose" / "SKILL.md": ("warnings", "m9_gpx_fallback"),
+    Path("docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md"): ("warnings", "m9_gpx_fallback"),
+    Path("docs/tasks/m9-insitu-sequential/AGENT_PLAYBOOK.md"): ("result.warnings",),
+    Path("docs/tasks/m7-real-data-validation/AGENT_PLAYBOOK.md"): (
+        "result.artifact_fallback_reason", "warnings",
+    ),
 }
 
 

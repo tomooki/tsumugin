@@ -35,6 +35,14 @@ _FRAMES = [
     {"data_path": "f1.xye", "axis_value": 310.0, "data_format": "XYE"},
 ]
 
+#: 退避理由の行の接頭辞は ③ の手順書が名指しする形なので**文字列で固定**する
+#: (`gpxstore.FALLBACK_WARNING_PREFIX` を import して比べると、形が変わっても緑のまま)。
+#: `gpxstore.resolve_run_dir` が返す退避理由の形 (末尾が「一時領域へ退避」)。
+_FALLBACK_REASON = (
+    "PermissionError: [Errno 13] read-only: '/chosen' (/chosen へ書けないため一時領域へ退避)"
+)
+_FALLBACK_PREFIX = "成果物の保存先: "
+
 
 def _seq_result(gpx_dir: str) -> SequentialRietveldResult:
     return SequentialRietveldResult(
@@ -397,6 +405,30 @@ def test_search_routes_say_when_artifacts_fell_back_to_temp(
     assert notes[0] in section["warnings"]
 
 
+def _always_failing(candidate):
+    raise RuntimeError("boom")
+
+
+@pytest.mark.parametrize("route", [_SEARCH, _MULTISTART], ids=["search", "multistart"])
+def test_failed_search_routes_still_say_where_artifacts_went(
+    route, tmp_path, unwritable_gpx_root
+):
+    """全候補が失敗した error dict でも、最上位の ``warnings`` に退避の行を出す。
+
+    失敗した候補も (実 GSAS では chi2=inf の結果として) 成果物を残すので、置き場所が一時領域で
+    あることは error のときこそ要る — ③ は ``search.candidates[].gpx_path`` を開いて失敗の理由を
+    確かめに行く。最上位に無いと、手順書どおり ``warnings`` を見た ③ は退避を知らない。
+    """
+    out = auto_rietveld(
+        [_hist_in(tmp_path)], [_P], gpx_dir=str(tmp_path / "chosen"),
+        search_runner=_always_failing, **route,
+    )
+
+    assert out["error_type"] in {"RecipeSearchFailed", "ConvergenceNotAttempted"}, out
+    notes = [w for w in out.get("warnings", []) if w.startswith(_FALLBACK_PREFIX)]
+    assert len(notes) == 1 and "一時領域へ退避" in notes[0], out.get("warnings")
+
+
 # ---------------------------------------------------------------------------
 # ② 境界での型検査 — 入力スキーマは緩い object なので型は実処理側が守る
 # ---------------------------------------------------------------------------
@@ -479,13 +511,6 @@ def test_save_gpx_null_means_the_default_not_an_opt_out(tool, monkeypatch):
 # この 4 つの ② は台帳を戻り値に含めない。理由を返り値に載せないと、③ に見えるのは
 # %TEMP% を指す ``gpx_path`` だけになる (「指定した場所に保存された」と読んだまま報告する)。
 # 載せる先は兄弟の ② と同じ形 = ``warnings`` の ``成果物の保存先: <理由>`` 行。
-
-#: `gpxstore.resolve_run_dir` が返す退避理由の形 (末尾が「一時領域へ退避」)。
-_FALLBACK_REASON = (
-    "PermissionError: [Errno 13] read-only: '/chosen' (/chosen へ書けないため一時領域へ退避)"
-)
-_FALLBACK_PREFIX = "成果物の保存先: "
-
 
 def _single_run_tool(tool: str, result: AutoRietveldResult) -> dict:
     from tsumugin.mcp.rietveld_tools import refine_with_revisions

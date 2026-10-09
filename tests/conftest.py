@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -51,7 +52,7 @@ def _isolate_gpx_output(_gpx_test_root, monkeypatch):
 
 
 @pytest.fixture()
-def unwritable_gpx_root(tmp_path, monkeypatch):
+def unwritable_gpx_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """頼まれた根に run ディレクトリを作れない状況 (読み取り専用の共有ディスク等) を作る。
 
     `gpxstore` はそのとき一時領域へ退避して理由を返す (gpx-retention 設計 §5)。一時領域は
@@ -61,7 +62,7 @@ def unwritable_gpx_root(tmp_path, monkeypatch):
     """
     import tempfile
 
-    def unwritable(root, base):
+    def unwritable(root: str, base: str) -> str:
         raise PermissionError(13, "read-only", root)
 
     monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
@@ -72,7 +73,9 @@ def unwritable_gpx_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def unsavable_gpx_fallback(unwritable_gpx_root, tmp_path, monkeypatch):
+def unsavable_gpx_fallback(
+    unwritable_gpx_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
     """退避は起きるが**退避先にも保存できない**状況を作る (退避先の親が通常ファイル)。
 
     `gpxstore` の退避先 (``tsumugin-gpx-*``) だけを壊し、エンジン自身の作業 temp は本物の
@@ -86,7 +89,9 @@ def unsavable_gpx_fallback(unwritable_gpx_root, tmp_path, monkeypatch):
     blocker.write_text("not a directory", encoding="utf-8")
     real_mkdtemp = tempfile.mkdtemp
 
-    def mkdtemp(suffix=None, prefix=None, dir=None):
+    def mkdtemp(
+        suffix: str | None = None, prefix: str | None = None, dir: str | None = None
+    ) -> str:
         if prefix == "tsumugin-gpx-":
             return str(blocker / "run")
         return real_mkdtemp(suffix, prefix, dir)
