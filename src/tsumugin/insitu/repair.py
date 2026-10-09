@@ -116,11 +116,16 @@ class RepairReport:
     :param systematic_hint: 連続してフラグが立ったフレーム番号の run (長さ >= min_block)。
         **参考情報のみ** — 修復可否をゲートしない (実測 f160-172 は連続だが修復可能だった)。
         人間/エージェントが「同じモデル欠陥がこの区間に広がっているかも」と当たりを付ける材料。
+    :param gpx_dir: 修復試行の成果物が並ぶ run ディレクトリ ("" = 保存していない/試行が無い)。
+        **左右両方の試行** (``f<番号>_repair_L.gpx`` / ``_R.gpx``) と索引 ``manifest.jsonl`` がここに
+        ある。採用された fit は ``repairs[].gpx_path``、棄却された修復の (比較に使った側の) fit は
+        ledger ``insitu_repair_rejected`` の ``gpx_path`` が直接指す (2026-08-20 規定「全解析で保存」)
     """
 
     repairs: tuple[FrameRepair, ...] = ()
     needs_model_revision: tuple[int, ...] = ()
     systematic_hint: tuple[tuple[int, ...], ...] = ()
+    gpx_dir: str = ""
 
 
 def _local_median(values: Sequence[float], i: int) -> float | None:
@@ -343,6 +348,8 @@ def repair_isolated(
     rwp_tol: float = 0.1,
     min_block: int = 2,
     ledger: Ledger | None = None,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
 ) -> RepairReport:
     """不連続フレームを近傍 warm-start で修復する (非破壊・Rwp 改善時のみ採用・経験的分類)。
 
@@ -369,11 +376,24 @@ def repair_isolated(
     :param rwp_tol: 採用に要する最小 Rwp 改善幅 (%ポイント)
     :param min_block: `systematic_hint` (参考情報) の run 判定の最小連続長。**修復可否には影響しない**
     :param ledger: 追記台帳 (None なら記録しない)
+    :param gpx_dir: 修復試行の成果物の保存先の**根** (env ``TSUMUGIN_GPX_DIR`` より強い)。None なら
+        env → 先頭フレームのデータ隣接。系列の内側から呼ばれた (ambient 文脈がある) ときはその
+        run ディレクトリを使う (`gpxstore.group_context` の契約)
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。False は ambient 文脈より強い。
+        ⚠ runner は 4 引数プロトコルなので保存指定は**引数では運べない** (設計 §4) — ここで作る
+        文脈だけが runner (→ `run_auto_rietveld`) へ届く経路である
     :returns: `RepairReport` (元の `result`/`frames` は変更しない)
     """
     frame_results = result.frames
     n = len(frame_results)
     _, blocks = classify(discontinuities, n, min_block=min_block)
+    if not discontinuities:
+        # 【試行が無いなら run ディレクトリを作らない】: ③ は健全な系列にも診断として修復を呼ぶ。
+        #   そのたびにデータ隣接へ空の run-<日時>/ を撒くのはノイズにしかならない
+        #   (`gpxstore.series_context` が空入力で run を作らないのと同じ規律)。
+        return RepairReport(
+            systematic_hint=tuple(tuple(d.frame_index for d in block) for block in blocks)
+        )
     flagged = {d.frame_index for d in discontinuities}
     name_to_spec = {p.phase_name: p for p in phases}
 
@@ -383,7 +403,14 @@ def repair_isolated(
     #   None を返し、各試行が別々の run ディレクトリを作って散らばる (設計 §3 の
     #   「1 実行 = 1 run ディレクトリ」に反し、索引も 1 行ずつに割れる)。系列の内側から
     #   呼ばれたときは既存 ambient をそのまま使う (`group_context` の契約)。
-    group, _gpx_reason = group_context(frames[0].data_path if frames else "")
+    group, gpx_fallback = group_context(
+        frames[0].data_path if frames else "", gpx_dir=gpx_dir, save=save_gpx
+    )
+    # 【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
+    #   分からない** — runner (エンジン) は解決済みの文脈を受け取るので fallback を書かない。
+    #   系列 (`insitu.engine._series_context`) と同じ ``m9_gpx_fallback`` の行で残す。
+    if gpx_fallback and ledger is not None:
+        ledger.append("m9_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
 
     # 【全フラグフレームを試す】: 連続長でゲートしない (run-length プロキシは実データで反証済)。
     #   外向きの歩行が run の外側の良好フレームを見つけるため、連続ブロックも修復機会を得る。
@@ -433,6 +460,10 @@ def repair_isolated(
 
         source, trial = best
         rwp_after = float(trial.final_rwp)
+        # 比較に使った側の試行の成果物 ("" = 未保存)。採否どちらの台帳行にも同じ行の数字と並べて
+        #   載せる — **棄却された修復**は `repairs[]` に現れないので、ここが唯一の直接ハンドル
+        #   (相追加トライアル `m9_phaseid_trial` と同じ流儀)。
+        trial_gpx = str(getattr(trial, "gpx_path", "") or "")
         if rwp_after < rwp_before - rwp_tol:
             repairs.append(
                 FrameRepair(
@@ -449,7 +480,7 @@ def repair_isolated(
                     #   相名フィルタも 0.0 埋めもしない: 部分集合の重量分率は和=1 にならず、0.0 埋めは
                     #   「その相は 0 wt%」という測定していない主張になる)。
                     **_publication_of(trial),  # type: ignore[arg-type]
-                    gpx_path=str(getattr(trial, "gpx_path", "") or ""),
+                    gpx_path=trial_gpx,
                 )
             )
             if ledger is not None:
@@ -460,6 +491,7 @@ def repair_isolated(
                         "rwp_before": rwp_before,
                         "rwp_after": rwp_after,
                         "source": source,
+                        "gpx_path": trial_gpx,
                     },
                 )
         else:
@@ -473,6 +505,7 @@ def repair_isolated(
                         "rwp_before": rwp_before,
                         "rwp_after": rwp_after,
                         "source": source,
+                        "gpx_path": trial_gpx,
                     },
                 )
 
@@ -480,4 +513,5 @@ def repair_isolated(
         repairs=tuple(repairs),
         needs_model_revision=tuple(sorted(needs_model_revision)),
         systematic_hint=tuple(tuple(d.frame_index for d in block) for block in blocks),
+        gpx_dir=group.run_dir if group.enabled else "",
     )

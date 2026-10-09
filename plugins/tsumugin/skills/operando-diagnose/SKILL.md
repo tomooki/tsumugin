@@ -33,7 +33,7 @@ description: operando/in situ 系列 Rietveld の結果を疑い、モデルの�
 | `assess_data_quality` | データ品質 | `is_subtracted`/`confidence`/`reasons`/`suggested_two_theta_limit` |
 | `sequential_rietveld` | 系列実行 | フレーム別 Rwp/格子/相分率 + **`residual_report`** + **出版値** (`phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd`) をフレーム毎に同梱 |
 | `check_phase_set` | 相集合 | `is_complete`/`union`/`frames_with_missing` + 相ごとの `turning_points`/`flagged` + `seed_pinned`/`seed_pinned_frames` + `fractions_frozen`/`frozen_fraction_frames` |
-| `repair_frames` | 不連続の修復 | `repairs` (採用のみ; **修復後の出版値** `phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd` を修復フレーム毎に同梱)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない) |
+| `repair_frames` | 不連続の修復 | `repairs` (採用のみ; **修復後の出版値** `phase_weight_fractions`±`phase_weight_fraction_esd`/`cell_esd` を修復フレーム毎に同梱)/`needs_model_revision`/`ledger_entries`。`target_frames` で対象を明示指定 (張り付き/凍結フレームはこれでしか到達できない)。修復試行の成果物は `gpx_dir` (`gpx_dir=`/`save_gpx=` を受ける) |
 | `anchored_sequential` | 系統ブロックの解き直し (M10) | アンカー起点の双方向精密化 + `crossovers[].total_bic` で相集合を **bic 選定** (相数を抑制)。前方単一パス由来の系統汚染 (偽相全域・esd 発散・全相 flagged) を根治する → J6 |
 | `align_echem` | 電気化学突合 (J8) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス or 明示 epoch) → per-frame の電位/状態 (rest/charge/discharge)。転移点を充放電イベントと突合 |
 | `alkali_budget` | クーロメトリー整合 (J9, FR-318) | `.mpr` + 活物質質量 + 式量 + x₀ → per-frame 総アルカリ量目標。`charge_constraint` 経由で `alkali_x_xrd` vs `alkali_x_echem` の乖離 = 不可逆容量/相集合誤りの独立検出器 |
@@ -114,6 +114,12 @@ sequential_rietveld(
 > **本 skill が疑う対象の多くは Rwp に現れない**ので、数値の表だけを見ていても切り分けられない。
 > 疑わしいフレームは fit そのものを開く/`mem_density` を掛ける — その入力がこれである。
 > `save_gpx=false` にすると**この一次資料が残らない**ので、診断目的の系列では止めないこと。
+>
+> `repair_frames` の修復試行 (左右両方・**棄却されたものも**) は**別の run ディレクトリ**に残る
+> (返り値の `gpx_dir`。`repair_frames` も `gpx_dir=` / `save_gpx=` を受ける)。棄却された修復の fit は
+> `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` — `needs_model_revision` のフレームが
+> なぜ warm-start で直らなかったかは、その fit を開いて見る (良好な近傍が無く**試せなかった**
+> フレームは `insitu_repair_no_neighbour` 行で、fit は無い)。
 
 ### 3. 疑う — **ここからが本 skill の主眼**
 
@@ -328,6 +334,8 @@ wt% かで交差位置が動く。**Scale から転移温度を出さないこ�
 > **修復前**の値のままである (`repair_frames` は非破壊で元の系列を書き換えない)。
 > **成果物 (`gpx_path`) も同じ** — 修復後の fit は `repairs[j]["gpx_path"]` にある
 > (`frames[i]["gpx_path"]` は修復前の fit)。MEM を掛ける/開き直すときは取り違えないこと。
+> 棄却された修復 (`needs_model_revision`) の fit は `ledger_entries` の `insitu_repair_rejected`
+> 行の `gpx_path` にある (`repairs[]` には現れない)。
 > `target_frames` で名指しするのは `check_phase_set` が「信用するな」と言ったフレームであり、
 > 実測ではそれが**転移ドーム頂点の直前 (125-130) = 報告の主要値そのもの**だった。
 

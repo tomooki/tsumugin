@@ -12,7 +12,7 @@ BIC は情報量規準 ``BIC = χ² + k·ln(n)`` (小さいほど良い)。``Aut
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
 from tsumugin.autorietveld.engine import run_auto_rietveld
@@ -61,6 +61,9 @@ class ModelScore:
     phase_fractions: Mapping[str, float] = field(default_factory=dict)
     delta_bic: float = 0.0  # 最良モデル比 (最良=0, 正=劣る)
     warnings: tuple[str, ...] = ()
+    # このバリアントの精密化成果物 ("" = 未保存)。**棄却されたモデルの fit こそ要る** —
+    # ΔBIC の根拠 (棄却側がどう壊れていたか) は数字だけでは検算できない (規定 2026-08-20)。
+    gpx_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -71,11 +74,14 @@ class ModelComparison:
     :param best: 選定モデル = **物理妥当なモデルのうち最小 BIC** (CLAUDE.md「BIC + 妥当性」)。
         妥当なモデルが 1 つも無いときのみ全体最小 BIC にフォールバックする。
     :param best_is_valid: ``best`` が物理妥当性を満たすか (全モデル不妥当なら False)
+    :param warnings: 比較全体に掛かる警告。成果物の保存先に書けず一時領域へ退避したときの
+        理由がここに出る (退避理由は run ディレクトリを決める入口でしか分からない — 設計 §5)
     """
 
     scores: tuple[ModelScore, ...]
     best: str
     best_is_valid: bool = True
+    warnings: tuple[str, ...] = ()
 
 
 def _final_n_params(result: AutoRietveldResult) -> int:
@@ -135,11 +141,15 @@ def compare_models(
 
     # 【棄却モデルの fit も残す (規定 2026-08-20)】: ΔBIC の根拠は「棄却された方がどう
     #   壊れていたか」(実測 NaCuHCF model5 は Na>1 / O<0 に発散) にある。数値だけでは検算できない。
-    group, _reason = group_context(
+    group, gpx_fallback = group_context(
         histograms[0].data_path if histograms else "",
         gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
         save=bool(run_kwargs.get("save_gpx", True)),
     )
+    # 【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
+    #   分からない** — runner (エンジン) は解決済みの文脈を受け取るので `m7_gpx_fallback` を書かない。
+    #   捨てると、頼まれた ``gpx_dir`` ではなく %TEMP% に置かれたことがどこにも残らない。
+    warnings = (f"成果物の保存先: {gpx_fallback}",) if gpx_fallback else ()
 
     raw: list[ModelScore] = []
     for v in variants:
@@ -159,6 +169,7 @@ def compare_models(
                 validity_passed=result.validity.passed,
                 phase_fractions=dict(result.phase_fractions),
                 warnings=tuple(result.validity.warnings),
+                gpx_path=str(result.gpx_path or ""),
             )
         )
 
@@ -170,21 +181,11 @@ def compare_models(
     best_score = min(pool, key=lambda s: s.bic)
     best = best_score.name
     best_is_valid = bool(valid)
+    # 【`replace` で写す】: 全フィールドを手で書き写すと、足したフィールド (`gpx_path` 等) が
+    #   並べ替えの段で黙って既定値に戻る。変えるのは ``delta_bic`` だけ。
     scored = tuple(
-        ModelScore(
-            name=s.name,
-            rwp=s.rwp,
-            gof=s.gof,
-            n_obs=s.n_obs,
-            n_params=s.n_params,
-            chi2=s.chi2,
-            bic=s.bic,
-            aic=s.aic,
-            validity_passed=s.validity_passed,
-            phase_fractions=s.phase_fractions,
-            delta_bic=s.bic - best_bic,
-            warnings=s.warnings,
-        )
-        for s in sorted(raw, key=lambda s: s.bic)
+        replace(s, delta_bic=s.bic - best_bic) for s in sorted(raw, key=lambda s: s.bic)
     )
-    return ModelComparison(scores=scored, best=best, best_is_valid=best_is_valid)
+    return ModelComparison(
+        scores=scored, best=best, best_is_valid=best_is_valid, warnings=warnings
+    )

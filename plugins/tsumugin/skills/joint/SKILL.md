@@ -24,8 +24,12 @@ description: X線+中性子 (マルチヒストグラム) 同時 Rietveld 精密
 
 **精密化成果物 (.gpx) は既定で全部保存される** (2026-08-20 規定; 詳細は `analyze` skill)。
 joint も 1 精密化 = 1 ファイルで、`compare_structure_models` は**バリアントごとに 1 つ**残す
-(`…_model_<名前>.gpx`) — 棄却モデルがどう壊れていたか (実測 NaCuHCF model5 は Na>1 / O<0 に
-発散) を見ずに ΔBIC だけを報告しないこと。置き場所は既定で観測データ隣接、`gpx_dir` で変更可。
+(1 回の比較が 1 つの run ディレクトリを共有し、`model_<名前>.gpx` が並ぶ)。各バリアントの fit は
+返り値の **`scores[].gpx_path`** (**棄却モデルも**) — 棄却モデルがどう壊れていたか (実測 NaCuHCF
+model5 は Na>1 / O<0 に発散) を開いて見ずに ΔBIC だけを報告しないこと。置き場所は既定で観測データ
+隣接、`compare_structure_models` の `gpx_dir` で根を変更できる。`save_gpx=false` で止まるが、
+**モデル選択では止めない** (棄却の根拠が残らない)。保存先に書けず一時領域へ退避したときは返り値の
+`warnings` に理由が出る。
 
 ## 手順
 
@@ -71,6 +75,7 @@ Rwp 単独でなく `compare_structure_models` で BIC 比較する。Rwp は母
 
 `delta_bic` と `best_is_valid` を読む (実測 NaCuHCF: model6[+Ow] は model5 に **ΔBIC≈2.6e5** で
 支持され、かつ model6 のみ物理妥当 [model5 は占有率が [0,1] 逸脱] → **Ow は必要**と結論)。
+報告には各バリアントの `scores[].gpx_path` を添える (棄却したモデルの fit を人間が開いて確かめられる)。
 
 ### 5. 報告する
 
