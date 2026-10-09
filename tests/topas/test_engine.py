@@ -738,3 +738,15 @@ def test_stage_results_carry_the_noop_and_revert_decisions(stub_driver):
     assert noop.is_noop is True and noop.revert_reason is None
     assert failed.reverted and failed.revert_reason == "error"
     assert worse.reverted and worse.revert_reason == "worse"
+
+
+def test_ledger_uses_the_same_revert_reason_vocabulary_as_the_result(stub_driver):
+    """ledger (`m12_topas_stage`) と結果で revert 理由の語彙を揃える (受理 None・失敗 "error")。"""
+    ledger = Ledger()
+    stub_driver([30.0, TopasRunError("Abnormal program termination")])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 30.0), ("S1", 0)), ledger=ledger
+    )
+    entries = [e.payload for e in ledger.entries if e.kind == "m12_topas_stage"]
+    assert [e["revert_reason"] for e in entries] == [s.revert_reason for s in result.stage_results]
+    assert [e["revert_reason"] for e in entries] == [None, "error"]

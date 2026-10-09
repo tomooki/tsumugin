@@ -116,3 +116,15 @@
 | D LOW ReleaseParams の検証が ② のこのツールにしか無い | **見送り**: `action_from_dict` の呼び手は ② の `refine_with_revisions` だけ (確認済み)。① の serialization から ② の検証を呼ぶと層が逆転する。呼び手が増えたら検証を ① へ移す |
 | E LOW 摂動幅に None が来ると TypeError | None を 0 と扱う |
 | N2 への反論 | 上記のとおり修正 (TOPAS の段の結果に `is_noop` と revert 理由を渡す) |
+
+## セルフレビュー 4 巡目 (HIGH 0 / MEDIUM 0 / LOW 5。レビュアーの判定: **PR に出してよい状態**)
+
+| 指摘 | 対応 |
+|---|---|
+| L-a ガードの部品トークンが狭すぎ (テストの外から import した部品の関数を見ない) かつ広すぎ (`constraint_groups` を名前に含む無関係なテストに当たる) | 関数名のトークンを戻し、テストの外から import した名前は import 元のモジュール名 (`autorietveld.constraint_groups`) でも照合 |
+| L-b 定数の理由文に「CaTeO3」と書くだけで hold-out 違反になる | hold-out の照合をパスらしい文字列 (区切り文字・拡張子を含む / `/` で連結される) に限定 |
+| L-c ガードの速度 | 部品の名前に届き得ないファイルを閉包を作る前に除外 + メモ化 (12.5 秒 → 2.3 秒) |
+| L-d confirm が engine の私有関数を import している | 2 つの入力検査を `constraint_groups` の公開関数 (`refuse_polar_origin_with_*`) へ移した |
+| L-e TOPAS の ledger と結果で revert 理由の語彙が違う | ledger も `stagepolicy.revert_reason` に揃えた |
+
+ガードの変異 3 個 (パスらしい文字列への限定・外からの import・クラスのメソッド) をすべて検出。

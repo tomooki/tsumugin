@@ -199,32 +199,32 @@ def test_polar_origin_is_held_on_a_real_gsas_refinement(tmp_path, monkeypatch):
 
 def test_polar_origin_with_element_ranked_coords_stages_is_refused():
     """元素ランクの座標段では原点は既に決まっている — 静的な固定と組み合わせない (M6)。"""
-    from tsumugin.autorietveld.engine import _refuse_polar_origin_with_ranked_coords
+    from tsumugin.autorietveld.constraint_groups import refuse_polar_origin_with_ranked_coords
     from tsumugin.autorietveld.model import RefinementStage
     from tsumugin.errors import InvalidPhaseSpecError
 
     ranked = [RefinementStage("z0", {"coords": 0}), RefinementStage("all", {"coords": True})]
     with pytest.raises(InvalidPhaseSpecError, match="元素ランク"):
-        _refuse_polar_origin_with_ranked_coords([_spec(fix_polar_origin=True)], ranked)
+        refuse_polar_origin_with_ranked_coords([_spec(fix_polar_origin=True)], ranked)
     # 全原子を解放する段だけなら可・相が opt-in していなければ検査しない
-    _refuse_polar_origin_with_ranked_coords(
+    refuse_polar_origin_with_ranked_coords(
         [_spec(fix_polar_origin=True)], [RefinementStage("all", {"coords": True})]
     )
-    _refuse_polar_origin_with_ranked_coords([_spec()], ranked)
+    refuse_polar_origin_with_ranked_coords([_spec()], ranked)
 
 
 def test_polar_origin_with_coordinate_jitter_is_refused():
     """摂動が原点固定より先に掛かり、極性方向へずれた解になる — P1-1B まで組み合わせない (L9)。"""
-    from tsumugin.autorietveld.engine import _refuse_polar_origin_with_coord_jitter
+    from tsumugin.autorietveld.constraint_groups import refuse_polar_origin_with_coord_jitter
     from tsumugin.errors import InvalidPhaseSpecError
 
     with pytest.raises(InvalidPhaseSpecError, match="摂動"):
-        _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": 0.05})
+        refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": 0.05})
     # 摂動幅 0・別の相への摂動・原点固定なしは可
-    _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": 0.0})
-    _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"other": 0.05})
-    _refuse_polar_origin_with_coord_jitter([_spec()], {"w": 0.05})
-    _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], None)
+    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": 0.0})
+    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"other": 0.05})
+    refuse_polar_origin_with_coord_jitter([_spec()], {"w": 0.05})
+    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], None)
 
 
 def test_standard_route_refuses_polar_origin_with_jitter_before_phase_a():
@@ -242,6 +242,6 @@ def test_standard_route_refuses_polar_origin_with_jitter_before_phase_a():
 
 
 def test_jitter_mapping_with_none_values_is_not_a_type_error():
-    from tsumugin.autorietveld.engine import _refuse_polar_origin_with_coord_jitter
+    from tsumugin.autorietveld.constraint_groups import refuse_polar_origin_with_coord_jitter
 
-    _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": None})
+    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": None})

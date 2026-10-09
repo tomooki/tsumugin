@@ -380,7 +380,8 @@ def run_topas_rietveld(
                         "gof": gof if math.isfinite(gof) else None,
                         "n_params": n_params,
                         "reverted": worsened,
-                        "revert_reason": decision.reason,
+                        # 結果 (`StageResult.revert_reason`) と同じ語彙 (受理は None・失敗は "error")
+                        "revert_reason": revert_reason(decision, cause=stage_cause),
                         "noop": decision.is_noop,
                         "note": note,
                         "backend": _BACKEND,
