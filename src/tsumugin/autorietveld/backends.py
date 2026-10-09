@@ -59,13 +59,38 @@ def resolve_backend(name: "str | None") -> Callable[..., object]:
 
         return run_auto_rietveld
     if key == "topas":
-        from ..topas.engine import run_topas_rietveld
-
-        return run_topas_rietveld
+        return _run_topas_refusing_gsas_only_features
     raise UnknownBackendError(
         f"未知の精密化バックエンドです: {name!r}。利用可能: {', '.join(BACKEND_NAMES)}。"
         f"綴り間違いを既定へ黙って落とすと、意図と違うエンジンで回った結果に気づけません。"
     )
+
+
+#: GSAS-II 経路だけが実装している `PhaseSpec` の機能 (fit-then-judge P1a)。TOPAS に渡すと
+#: 何もせずに完走する (= 指定したつもりの拘束が無い精密化になる) ので入口で拒否する。
+_GSAS_ONLY_PHASE_FEATURES: tuple[str, ...] = ("uiso_equiv_groups", "fix_polar_origin")
+
+
+def _run_topas_refusing_gsas_only_features(histograms, phases, *args, **kwargs):
+    """`run_topas_rietveld` の前に、GSAS 経路にしか無い相の機能を拒否する。
+
+    :raises InvalidPhaseSpecError: その機能を使った相があるとき (② が error dict へ縮退)
+    """
+    from ..errors import InvalidPhaseSpecError
+
+    for phase in phases:
+        used = [name for name in _GSAS_ONLY_PHASE_FEATURES if getattr(phase, name, None)]
+        if used:
+            raise InvalidPhaseSpecError(
+                f"相 {getattr(phase, 'phase_name', '?')!r} の {used} は GSAS-II 経路だけの機能で、"
+                "TOPAS バックエンドは実装していません (渡すと何もせずに完走するため拒否します)。"
+                "backend='gsasii' を使うか、これらを外してください"
+            )
+    # 解決は呼び出し時 (`monkeypatch.setattr("tsumugin.topas.engine.run_topas_rietveld", …)`
+    # の注入経路を素通りしない)。
+    from ..topas import engine as topas_engine
+
+    return topas_engine.run_topas_rietveld(histograms, phases, *args, **kwargs)
 
 
 def resolve_protocol_backend(

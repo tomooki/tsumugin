@@ -116,3 +116,38 @@ def test_uiso_equiv_groups_reach_engine_from_layer_two_json():
         6, None,
     )
     assert inp.phases[0].uiso_equiv_groups == (("O1", "O2"),)
+
+
+# ---------------- engine のドメインエラーを ② の境界で縮退する (fit-then-judge P1a) ----------------
+
+
+def _raising_runner(exc):
+    def run(inp):
+        raise exc
+
+    return run
+
+
+@pytest.mark.parametrize("tool", ["auto_rietveld", "refine_with_revisions"])
+def test_engine_domain_error_is_degraded_not_raised(tool):
+    """`run(inp)` から出る Tsumugin のドメインエラー (相仕様の誤り・エンジン未導入等) は
+    error dict にする。③ は LLM なので例外は回復不能なハード失敗になる (CLAUDE.md 不変条件)。
+
+    P1a で engine に足した入力仕様の検査 (`uiso_equiv_groups` の未知ラベル・極性原点の
+    site symmetry) は精密化の前に送出されるので、ここで縮退しないと境界を越える。
+    """
+    from tsumugin.errors import InvalidPhaseSpecError
+    from tsumugin.mcp import rietveld_tools
+
+    fn = getattr(rietveld_tools, tool)
+    args = ([], []) if tool == "auto_rietveld" else ([], [], [])  # refine_with_revisions は actions 必須
+    out = fn(*args, runner=_raising_runner(InvalidPhaseSpecError("相 x に原子 Ox がありません")))
+    assert out == {"error": "相 x に原子 Ox がありません", "error_type": "InvalidPhaseSpecError"}
+
+
+def test_logic_bugs_are_not_swallowed_at_the_boundary():
+    """ドメインエラー以外 (論理バグ) は握り潰さない — 縮退対象を広げすぎない対照。"""
+    from tsumugin.mcp.rietveld_tools import auto_rietveld
+
+    with pytest.raises(ZeroDivisionError):
+        auto_rietveld([], [], runner=_raising_runner(ZeroDivisionError("bug")))

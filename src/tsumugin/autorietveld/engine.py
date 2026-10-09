@@ -73,6 +73,7 @@ from .constraint_groups import (
     polar_origin_constraints,
     unknown_labels,
 )
+from ..errors import InvalidPhaseSpecError
 from .stagepolicy import StageMetrics, decide_stage, revert_reason
 from .validity import (
     check_initial_uiso,
@@ -906,7 +907,7 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
             {lab for lab, f in flag_map.items() if "U" in f},
         )
         if partial:
-            raise ValueError(
+            raise InvalidPhaseSpecError(
                 f"Uiso の等値の組の一部だけが解放される段です: {partial}。"
                 "組の原子は全員解放か全員凍結にしてください (free/frozen_uiso_labels・元素ランク)"
             )
@@ -1368,7 +1369,7 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
         if spec.uiso_equiv_groups:
             missing = unknown_labels(spec.uiso_equiv_groups, label_to_idx)
             if missing:
-                raise ValueError(
+                raise InvalidPhaseSpecError(
                     f"相 {spec.phase_name!r} の uiso_equiv_groups に原子が無いラベルがあります: "
                     f"{missing}"
                 )
@@ -1463,7 +1464,7 @@ def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
                 xid, xcoef = getcsxinel(row[cs])[:2]
             except Exception as exc:  # noqa: BLE001
                 if sym != "1":
-                    raise ValueError(
+                    raise InvalidPhaseSpecError(
                         f"相 {spec.phase_name!r} の原子 {label!r} の site symmetry {sym!r} を"
                         f"解釈できず、原点固定を判断できません: {exc!r}"
                     ) from exc
@@ -1478,7 +1479,12 @@ def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
                     refined=has_free and label not in frozen,
                 )
             )
-        constraints = polar_origin_constraints(polax, sites)
+        try:
+            constraints = polar_origin_constraints(polax, sites)
+        except ValueError as exc:
+            raise InvalidPhaseSpecError(
+                f"相 {spec.phase_name!r} の極性原点を固定できません: {exc}"
+            ) from exc
         for label, terms in constraints:
             idx = index_of[label]
             names = [f"{ph.id}::dA{axis}:{idx}" for axis, _ in terms]
