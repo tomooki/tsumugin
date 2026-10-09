@@ -6,6 +6,7 @@ GSAS を一切使わない — `run_recipe_search` の runner を注入して候
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 
@@ -503,6 +504,28 @@ def test_reported_tier_uses_the_same_rule_that_ranked_the_candidates():
         assert tiers == sorted(tiers), f"報告 tier が順位と食い違う: {tiers}"
     # 収束判定そのもの (converged) は規則に依らず報告される (tier は降格規則・converged は事実)
     assert lenient_rows[0]["converged"] is False and strict_rows[0]["converged"] is False
+
+
+def test_search_config_require_convergence_null_keeps_the_default_on():
+    # 【目的】: 既定 True のノブを ③ が「未指定」の null で送ったとき、旧 `bool(None)` が
+    #   False へ潰して**収束していない best を選び得る**設定に黙って切り替えていた。
+    assert SearchConfig.from_dict({"require_convergence": None}).require_convergence is True
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1])
+def test_search_config_require_convergence_rejects_non_booleans(value):
+    with pytest.raises(ValueError, match="require_convergence は真偽値"):
+        SearchConfig.from_dict({"require_convergence": value})
+
+
+@pytest.mark.parametrize("key", [f.name for f in dataclasses.fields(SearchConfig)])
+def test_every_search_config_field_null_is_default_and_wrong_type_is_refused(key):
+    # 【目的】: フィールド全数 (後から足したフィールドも対象)。閾値に True を渡すと
+    #   旧 float(True) == 1.0 で「Rwp 差 1% 以内は同点」等の別の規則になっていた。
+    default = getattr(SearchConfig(), key)
+    assert getattr(SearchConfig.from_dict({key: None}), key) == default
+    with pytest.raises(ValueError, match=f"search_config.{key}"):
+        SearchConfig.from_dict({key: "false" if isinstance(default, bool) else True})
 
 
 def test_ledger_candidate_rows_use_the_configured_tier_rule():

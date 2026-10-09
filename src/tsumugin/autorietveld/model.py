@@ -9,13 +9,115 @@ GSAS-II 非依存の純データ層。実 CIF/相ファイル + 実データ + �
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Mapping
+from typing import Callable, Mapping, TypeVar
 
+from .._config_spec import (
+    check_bool,
+    check_float,
+    check_int,
+    check_str,
+    check_str_tuple,
+    spec_required,
+    spec_value,
+)
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
 from .diagnostics import WeakVariable
+
+T = TypeVar("T")
+
+
+# ---------------------------------------------------------------------------
+# JSON spec の値の検査 (`from_dict` 共通)
+# ---------------------------------------------------------------------------
+#
+# 規則は `_config_spec` (型の検査 ``check_*`` と、往復 spec の null 規則 ``spec_value``) に
+# 1 箇所で置く: **キー欠落と null は既定値 (= 未指定)、値があれば型が合うものだけ**。
+# ここには本モジュール固有の形 (原子ラベル・2θ 区間・入れ子 spec) だけを足す。
+
+
+def _path(name: str, value: object) -> str:
+    """パス文字列 (Python 呼び出しの ``Path`` も受ける)。"""
+    return check_str(name, os.fspath(value) if isinstance(value, os.PathLike) else value)
+
+
+def _labels(name: str, value: object) -> tuple[str, ...]:
+    return check_str_tuple(
+        name, value, item="原子ラベル",
+        why=" (存在しないラベルは engine が fail-open で黙って無視します)",
+    )
+
+
+def _list_of(
+    name: str, value: object, what: str, item: "Callable[[str, object], T]"
+) -> tuple[T, ...]:
+    """``what`` のリスト。要素は ``item(f"{name}[i]", 要素)`` で検査する (JSON の配列 = list/tuple)。"""
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{name} は{what}のリストである必要があります: {value!r} ({type(value).__name__})"
+        )
+    return tuple(item(f"{name}[{i}]", v) for i, v in enumerate(value))
+
+
+def _label_group(name: str, value: object) -> tuple[str, ...]:
+    # 平坦な ``["Fe1","Al1"]`` は旧実装で (("F","e","1"), ("A","l","1")) になり拘束が 1 本も
+    # 張られなかったので、組の位置に来た文字列は拒む。
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{name} は原子ラベルの組 (リスト) である必要があります: {value!r}。"
+            "1 組だけなら [[\"Fe1\", \"Al1\"]] のように入れ子にしてください"
+        )
+    return _labels(name, value)
+
+
+def _label_groups(name: str, value: object) -> tuple[tuple[str, ...], ...]:
+    return _list_of(name, value, "原子ラベルの組 (リスト)", _label_group)
+
+
+def _pair(name: str, value: object) -> tuple[float, float]:
+    """``[下限, 上限]`` の 2 数値 (3 要素目を黙って捨てない・bool を 1.0 にしない)。"""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{name} は [下限, 上限] の 2 要素である必要があります: {value!r}")
+    return (check_float(f"{name}[0]", value[0]), check_float(f"{name}[1]", value[1]))
+
+
+def _pairs(name: str, value: object) -> tuple[tuple[float, float], ...]:
+    return _list_of(name, value, " [下限, 上限] の組", _pair)
+
+
+def _mapping(name: str, value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"{name} はオブジェクト (dict) である必要があります: {value!r} ({type(value).__name__})"
+        )
+    return value
+
+
+def _profile_bounds(
+    name: str, value: object
+) -> "dict[str, tuple[float | None, float | None]]":
+    """``{GSAS キー: [min, max]}`` (片側 null = その側は自由)。"""
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for k, v in _mapping(name, value).items():
+        if not isinstance(v, (list, tuple)) or len(v) != 2:
+            raise ValueError(f"{name}.{k} は [min, max] の 2 要素である必要があります: {v!r}")
+        out[str(k)] = tuple(  # type: ignore[assignment]
+            None if b is None else check_float(f"{name}.{k}[{i}]", b) for i, b in enumerate(v)
+        )
+    return out
+
+
+def _instrument_profile(name: str, value: object) -> "InstrumentProfile":
+    return InstrumentProfile.from_dict(_mapping(name, value))
+
+
+def _absorber_layers(name: str, value: object) -> "tuple[AbsorberLayer, ...]":
+    return _list_of(
+        name, value, "吸収体レイヤー (dict)", lambda n, x: AbsorberLayer.from_dict(_mapping(n, x))
+    )
 
 
 class Radiation(Enum):
@@ -63,19 +165,24 @@ class InstrumentProfile:
     wavelength: float | None = None
 
     def to_dict(self) -> dict[str, object]:
+        # 非有限の source_rwp (既定 NaN) / wavelength は null で出す — NaN のままだと
+        # `HistogramSpec` を ``specs`` として返す ② の応答全体が ``json.dumps(allow_nan=False)`` で
+        # 落ちる (精密化を回した後に)。from_dict は null を既定 (NaN / None) へ戻す (inf の
+        # source_rwp も NaN に戻る — どちらも「出典の質は不明」)。
         return {
             "values": {str(k): float(v) for k, v in self.values.items()},
-            "source_rwp": self.source_rwp,
-            "wavelength": self.wavelength,
+            "source_rwp": finite_or_none(self.source_rwp),
+            "wavelength": finite_or_none(self.wavelength),
         }
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "InstrumentProfile":
-        raw = d.get("values", {}) or {}
+        s = "InstrumentProfile"
+        raw = spec_value(d, "values", s, {}, _mapping)
         return cls(
-            values={str(k): float(v) for k, v in dict(raw).items()},  # type: ignore[union-attr]
-            source_rwp=float(d.get("source_rwp", float("nan"))),  # type: ignore[arg-type]
-            wavelength=(float(d["wavelength"]) if d.get("wavelength") is not None else None),
+            values={str(k): check_float(f"{s}.values.{k}", v) for k, v in raw.items()},
+            source_rwp=spec_value(d, "source_rwp", s, float("nan"), check_float),
+            wavelength=spec_value(d, "wavelength", s, None, check_float),
         )
 
 
@@ -218,41 +325,26 @@ class HistogramSpec:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "HistogramSpec":
-        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
-        limits = d.get("two_theta_limits")
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。
+
+        キー欠落/null は既定値、型違いは ValueError (`_config_spec.spec_value` の規則)。
+        """
+        s = "HistogramSpec"
         return cls(
-            data_path=str(d["data_path"]),
-            instrument_path=str(d["instrument_path"]),
+            data_path=spec_required(d, "data_path", s, _path),
+            instrument_path=spec_required(d, "instrument_path", s, _path),
             radiation=Radiation(d["radiation"]),
             geometry=Geometry(d["geometry"]),
-            data_format=str(d.get("data_format", "GSAS")),
-            bank=d.get("bank"),  # type: ignore[arg-type]
-            two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
-            excluded_regions=tuple(
-                (float(r[0]), float(r[1])) for r in (d.get("excluded_regions") or ())
-            ),
-            temperature=d.get("temperature"),  # type: ignore[arg-type]
-            weight=float(d.get("weight", 1.0)),
-            absorption=float(d.get("absorption", 0.0)),
-            instrument_profile=(
-                InstrumentProfile.from_dict(d["instrument_profile"])  # type: ignore[arg-type]
-                if d.get("instrument_profile") is not None
-                else None
-            ),
-            profile_bounds=(
-                {
-                    str(k): (
-                        (None if v[0] is None else float(v[0])),
-                        (None if v[1] is None else float(v[1])),
-                    )
-                    for k, v in dict(d["profile_bounds"]).items()  # type: ignore[arg-type]
-                }
-                if d.get("profile_bounds") is not None
-                else None
-            ),
-            absorber_layers=tuple(
-                AbsorberLayer.from_dict(x) for x in (d.get("absorber_layers") or ())  # type: ignore[arg-type]
-            ),
+            data_format=spec_value(d, "data_format", s, "GSAS", check_str),
+            bank=spec_value(d, "bank", s, None, check_int),
+            two_theta_limits=spec_value(d, "two_theta_limits", s, None, _pair),
+            excluded_regions=spec_value(d, "excluded_regions", s, (), _pairs),
+            temperature=spec_value(d, "temperature", s, None, check_float),
+            weight=spec_value(d, "weight", s, 1.0, check_float),
+            absorption=spec_value(d, "absorption", s, 0.0, check_float),
+            instrument_profile=spec_value(d, "instrument_profile", s, None, _instrument_profile),
+            profile_bounds=spec_value(d, "profile_bounds", s, None, _profile_bounds),
+            absorber_layers=spec_value(d, "absorber_layers", s, (), _absorber_layers),
         )
 
 
@@ -338,32 +430,27 @@ class PhaseSpec:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "PhaseSpec":
-        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
-        groups = d.get("mixed_occupancy_groups") or ()
-        free_occ = d.get("free_occupancy_labels") or ()
-        equiv = d.get("occupancy_equiv_groups") or ()
-        # `or ()` は null と [] を同じ () に潰す (#189)。キー欠落/null = 未指定 (None)、
-        # 明示的な [] = 凍結 として区別する。
-        raw_uiso = d.get("free_uiso_labels")
-        free_uiso = None if raw_uiso is None else tuple(str(a) for a in raw_uiso)
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。
+
+        キー欠落/null は既定値、型違いは ValueError (`_config_spec.spec_value` の規則)。とりわけ
+        ``refine_cell: null`` は既定の True (格子を精密化) であって凍結ではない。
+        """
+        s = "PhaseSpec"
         return cls(
-            structure_path=str(d["structure_path"]),
-            phase_name=str(d["phase_name"]),
-            format_hint=str(d.get("format_hint", "CIF")),
-            mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
-            free_occupancy_labels=tuple(str(a) for a in free_occ),
-            occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
-            free_uiso_labels=free_uiso,
-            position_equiv_groups=tuple(
-                tuple(str(a) for a in g) for g in (d.get("position_equiv_groups") or ())
-            ),
-            occupancy_sum_groups=tuple(
-                tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
-            ),
-            frozen_coord_labels=tuple(str(a) for a in (d.get("frozen_coord_labels") or ())),
-            frozen_uiso_labels=tuple(str(a) for a in (d.get("frozen_uiso_labels") or ())),
-            refine_cell=bool(d.get("refine_cell", True)),
-            temperature=d.get("temperature"),  # type: ignore[arg-type]
+            structure_path=spec_required(d, "structure_path", s, _path),
+            phase_name=spec_required(d, "phase_name", s, check_str),
+            format_hint=spec_value(d, "format_hint", s, "CIF", check_str),
+            mixed_occupancy_groups=spec_value(d, "mixed_occupancy_groups", s, (), _label_groups),
+            free_occupancy_labels=spec_value(d, "free_occupancy_labels", s, (), _labels),
+            occupancy_equiv_groups=spec_value(d, "occupancy_equiv_groups", s, (), _label_groups),
+            # null/欠落 = 未指定 (None, 全原子解放) と [] = 凍結 を潰さない (#189)。
+            free_uiso_labels=spec_value(d, "free_uiso_labels", s, None, _labels),
+            position_equiv_groups=spec_value(d, "position_equiv_groups", s, (), _label_groups),
+            occupancy_sum_groups=spec_value(d, "occupancy_sum_groups", s, (), _label_groups),
+            frozen_coord_labels=spec_value(d, "frozen_coord_labels", s, (), _labels),
+            frozen_uiso_labels=spec_value(d, "frozen_uiso_labels", s, (), _labels),
+            refine_cell=spec_value(d, "refine_cell", s, True, check_bool),
+            temperature=spec_value(d, "temperature", s, None, check_float),
         )
 
 
@@ -379,11 +466,6 @@ class RefinementStage:
     label: str
     flags: Mapping[str, object] = field(default_factory=dict)
     note: str = ""
-
-
-def _opt_float(value: object) -> "float | None":
-    """``None`` を保ったまま float 化する (JSON spec の「無効」と「0」を潰さない)。"""
-    return None if value is None else float(value)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -628,38 +710,41 @@ class StabilityOptions:
             raise ValueError(
                 f"stability に未知のキーがあります: {unknown} (既知: {sorted(known)})"
             )
-        tokens = d.get("esd_ratio_exempt_tokens")
-        return cls(
-            require_convergence=bool(d.get("require_convergence", False)),
-            max_shift_esd=float(d.get("max_shift_esd", 1.0)),  # type: ignore[arg-type]
-            extra_cycles=int(d.get("extra_cycles", 1)),  # type: ignore[arg-type]
-            detect_noop_stages=bool(d.get("detect_noop_stages", False)),
-            record_weak_vars=bool(d.get("record_weak_vars", False)),
-            report_undetermined=bool(d.get("report_undetermined", False)),
-            polish_frozen_undetermined=bool(d.get("polish_frozen_undetermined", False)),
-            prune_weak_vars_each_stage=bool(d.get("prune_weak_vars_each_stage", False)),
-            rescue_freeze_on_failure=bool(d.get("rescue_freeze_on_failure", False)),
-            rescue_max_freeze=int(d.get("rescue_max_freeze", 1)),  # type: ignore[arg-type]
-            rescue_max_rounds=int(d.get("rescue_max_rounds", 2)),  # type: ignore[arg-type]
-            esd_ratio_exempt_tokens=(
-                cls.esd_ratio_exempt_tokens  # type: ignore[union-attr]
-                if tokens is None
-                else tuple(str(t) for t in tokens)  # type: ignore[union-attr]
-            ),
-            record_correlations=bool(d.get("record_correlations", False)),
-            corr_threshold=float(d.get("corr_threshold", 0.9)),  # type: ignore[arg-type]
-            max_recorded_pairs=int(d.get("max_recorded_pairs", 10)),  # type: ignore[arg-type]
-            # WS-2: None (無効) と 0.0 (「幅ゼロの箱」= 誤設定) を潰さないため float() は
-            # 値がある場合のみ通す。
-            bound_cell=_opt_float(d.get("bound_cell")),
-            bound_displacement=_opt_float(d.get("bound_displacement")),
-            bound_size_strain=bool(d.get("bound_size_strain", False)),
-            min_size=float(d.get("min_size", 1.0e-3)),  # type: ignore[arg-type]
-            max_size=float(d.get("max_size", 1.0e4)),  # type: ignore[arg-type]
-            min_mustrain=float(d.get("min_mustrain", 1.0e-3)),  # type: ignore[arg-type]
-            max_mustrain=float(d.get("max_mustrain", 1.0e5)),  # type: ignore[arg-type]
-            enable_restraints=bool(d.get("enable_restraints", False)),
-        )
+        # 全フィールドを既定値の型で検査する (欠落/null は既定 — `spec_value`)。``bool("false")``
+        # はゲートを**有効に**し、裸の文字列 "dAx" の exempt トークンは ("d","A","x") の部分一致で
+        # ほぼ全変数を「決まらなかった」報告から外す。``int(2.5)`` は黙って 2 になる。
+        # WS-2: ``bound_*`` は None (無効) と 0.0 (「幅ゼロの箱」= 誤設定) を潰さない (0.0 は
+        # null ではないので `spec_value` が既定へ戻さない)。
+        defaults = cls()
+        kwargs: dict[str, object] = {}
+        for f in fields(cls):
+            default = getattr(defaults, f.name)
+            check = _stability_check(f.name, f.type, default)
+            kwargs[f.name] = spec_value(d, f.name, "stability", default, check)
+        return cls(**kwargs)  # type: ignore[arg-type]
+
+
+def _stability_check(
+    name: str, annotation: object, default: object
+) -> "Callable[[str, object], object]":
+    """`StabilityOptions` の 1 フィールドを検査する ``check_*`` を既定値の型から選ぶ。
+
+    既定 None のフィールドは現状 ``float | None`` (bound_*) だけ。対応表に無い型を足したら
+    **そのフィールド名で** ValueError にする (黙って float として読まない・KeyError で
+    `<class 'NoneType'>` とだけ言わない)。
+    """
+    if isinstance(default, bool):  # bool は int のサブクラスなので先に
+        return check_bool
+    if isinstance(default, int):
+        return check_int
+    if isinstance(default, float) or (default is None and "float" in str(annotation)):
+        return check_float
+    if isinstance(default, tuple) and "str" in str(annotation):
+        return lambda n, v: check_str_tuple(n, v, item="変数名トークン")
+    raise ValueError(
+        f"stability.{name}: 型 {annotation} は from_dict が未対応です "
+        "(_stability_check に検査を足してください)"
+    )
 
 
 @dataclass(frozen=True)

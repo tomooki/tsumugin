@@ -160,3 +160,18 @@ def test_mu_from_composition_electrolyte_sanity_check():
     }
     mu = mu_from_composition(elements_mol, volume_cm3=1090.0, energy_kev=24.73)
     assert mu == pytest.approx(0.394, abs=0.03)
+
+
+def test_absorber_layer_geometry_null_is_the_default():
+    # 旧 str(d.get(...)) は null を "None" にし、補正の適用時 (精密化の途中) に落ちていた。
+    layer = AbsorberLayer.from_dict({"thickness_cm": 0.1, "mu_cm": 2.0, "geometry": None})
+    assert layer.geometry == "transmission"
+
+
+@pytest.mark.parametrize("key", ["thickness_cm", "mu_cm"])
+def test_absorber_layer_required_numbers_reject_null_and_bools(key):
+    base = {"thickness_cm": 0.1, "mu_cm": 2.0}
+    with pytest.raises(ValueError, match=f"AbsorberLayer.{key} に null"):
+        AbsorberLayer.from_dict({**base, key: None})
+    with pytest.raises(ValueError, match=f"AbsorberLayer.{key} は数値"):
+        AbsorberLayer.from_dict({**base, key: True})

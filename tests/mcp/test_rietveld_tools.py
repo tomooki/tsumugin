@@ -80,3 +80,79 @@ def test_seed_profile_with_search_is_refused_not_silently_dropped():
     out = auto_rietveld([], [], seed_profile=True, search=["polish"])
     assert "error" in out and out["error_type"] == "UnsupportedBackendCombination"
     assert "seed_profile" in out["error"]
+
+
+# ---------------- 相 spec の null / 型取り違え ----------------
+
+_HIST = {
+    "data_path": "d.xye",
+    "instrument_path": "i.instprm",
+    "radiation": "xray_lab",
+    "geometry": "bragg_brentano",
+}
+
+
+def _capturing_runner(seen: list):
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+
+    def run(inp):
+        seen.append(inp)
+        return AutoRietveldResult(
+            stage_results=(), final_rwp=10.0, final_gof=1.0, refined_cells={},
+            validity=ValidityReport(passed=True, checks=(), warnings=()),
+        )
+
+    return run
+
+
+def _call(tool: str, phases, seen: list) -> dict:
+    from tsumugin.mcp.rietveld_tools import refine_with_revisions
+
+    runner = _capturing_runner(seen)
+    if tool == "auto_rietveld":
+        return auto_rietveld([_HIST], phases, runner=runner)
+    return refine_with_revisions([_HIST], phases, [], runner=runner)
+
+
+@pytest.mark.parametrize("tool", ["auto_rietveld", "refine_with_revisions"])
+def test_refine_cell_null_reaches_the_engine_as_refined(tool):
+    """③ が「未指定」の null を送っても、相の格子が黙って凍結されないこと。
+
+    旧実装は ``bool(None) == False`` で engine に ``refine_cell=False`` を渡していた
+    (GSAS は Cell 解放を飛ばす — 例外も警告も無く、格子は初期値のまま出版される)。
+    """
+    seen: list = []
+    out = _call(
+        tool, [{"structure_path": "a.cif", "phase_name": "A", "refine_cell": None}], seen
+    )
+    assert "error" not in out
+    assert [p.refine_cell for p in seen[0].phases] == [True]
+
+
+@pytest.mark.parametrize("tool", ["auto_rietveld", "refine_with_revisions"])
+def test_refine_cell_string_is_an_error_dict_not_a_silent_flip(tool):
+    seen: list = []
+    out = _call(
+        tool, [{"structure_path": "a.cif", "phase_name": "A", "refine_cell": "false"}], seen
+    )
+    assert out["error_type"] == "ValueError" and "refine_cell は真偽値" in out["error"]
+    assert seen == []  # 精密化を回してから失敗しない
+
+
+def test_result_with_an_instrument_profile_survives_the_mcp_json_boundary():
+    """source_rwp 省略の instrument_profile でも、応答 (specs 同梱) が JSON に乗ること。
+
+    旧実装は specs に NaN を載せ、server の ``json.dumps(allow_nan=False)`` が**精密化を回した後に**
+    応答全体を error dict へ置き換えていた。
+    """
+    import json
+
+    seen: list = []
+    hist = {**_HIST, "instrument_profile": {"values": {"U": 1.0}}}
+    out = auto_rietveld(
+        [hist], [{"structure_path": "a.cif", "phase_name": "A"}],
+        runner=_capturing_runner(seen),
+    )
+    assert "error" not in out
+    json.dumps(out, allow_nan=False)
+    assert out["specs"]["histograms"][0]["instrument_profile"]["source_rwp"] is None
