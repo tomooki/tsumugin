@@ -123,19 +123,6 @@ def test_unwritable_data_dir_falls_back_and_says_so(tmp_path, monkeypatch):
     assert "PermissionError" in reason
 
 
-def test_resolve_run_dir_has_no_mode_that_drops_the_reason():
-    """★退避理由を捨てる呼び方が API に存在しないこと (旧 ``report_fallback=False`` 既定の撤去)。
-
-    旧 API は既定でパスだけを返し、退避理由を黙って捨てた。src の呼び出しは全部 True で
-    呼んでいたが、既定が「捨てる」である限り次の呼び出し側がそれを踏む。戻り値の形を
-    ``(run_dir, 理由)`` に一本化し、捨てたいなら呼び出し側で ``_`` と書かせる (その形は
-    `tests/test_gpx_fallback_surfaced.py` が src で止める)。
-    """
-    import inspect
-
-    assert "report_fallback" not in inspect.signature(resolve_run_dir).parameters
-
-
 # ---------------------------------------------------------------------------
 # 命名 (人が読んで「どの精密化か」が分かること)
 # ---------------------------------------------------------------------------

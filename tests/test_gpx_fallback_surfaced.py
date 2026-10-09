@@ -20,8 +20,11 @@
    同じ名前を自分で束縛する入れ子の関数・内包表記の中は別の変数なので数えない)。代入しただけ /
    ``del`` しただけ / 分解より前にしか現れない / 読む前に上書き、はどれも違反
 4. 理由を**呼び出し側へ転送するだけ**の形 (``return group_context(...)`` / ``return ctx, reason`` /
-   ``return reason``) は `gpxstore` 自身の解決関数の中だけ。外で許すと、その関数が新しい解決関数に
-   なり、その呼び出し側が網から外れる
+   ``return reason`` / ``yield ctx, reason`` / 条件式の枝に詰めた ``return``) は `gpxstore` 自身の
+   解決関数の中だけ。外で許すと、その関数が新しい解決関数になり、その呼び出し側が網から外れる
+
+解決関数は**どの module からの import でも名前で**追う (``from ..autorietveld.search import
+group_context`` のような再輸出経由も。同名の別関数が src に無いことは別テストが固定する)。
 
 **網の限界 (正直に言う)**: 「読んだ」は「ledger/警告に載せた」ではない — ``if reason: pass`` は
 通る。網が止めるのは**うっかり捨てる形**であり、載せる先が正しいか (台帳の種別・② の
@@ -76,17 +79,21 @@ _KNOWN_CALLERS = frozenset({
 })
 
 _Scope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
-_Comprehension = ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 
 def _resolver_names(tree: ast.AST, *, defines_resolvers: bool) -> dict[str, str]:
     """この module で解決関数を指すローカル名 → 解決関数名。
 
     ``as`` 別名・関数内 import・``import *`` も拾う (どれも名前呼び出しで網を抜けうる)。
+    **どの module からの import でも名前で拾う** — 解決関数は gpxstore 以外の module にも
+    import 済みの名前として居るので、IDE の自動 import が ``from ..autorietveld.search import
+    group_context`` のような再輸出経由を選ぶことがある。src に同名の別関数は無い
+    (`test_resolver_names_are_unique_in_src` が保証する) ので、名前で拾っても誤検出しない。
     """
     names = {r: r for r in _RESOLVERS} if defines_resolvers else {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "gpxstore":
+        if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name == "*":
                     names.update({r: r for r in _RESOLVERS})
@@ -105,9 +112,25 @@ def _called_resolver(call: ast.Call, names: dict[str, str]) -> str | None:
     return None
 
 
+def _own_scope(fn: ast.AST) -> list[ast.AST]:
+    """関数本体のうち**その関数自身のスコープ**に属するノード (入れ子の関数・クラス・内包表記の
+    中へは降りない — そこでの代入はそれぞれの変数であって、この関数の束縛ではない)。"""
+    out: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, *_COMPREHENSIONS)
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
 def _rebinds(node: ast.AST, name: str) -> bool:
     """入れ子の関数/内包表記が ``name`` を**自分の変数として**束縛するか (= 外の理由とは別物)。"""
-    if isinstance(node, _Comprehension):
+    if isinstance(node, _COMPREHENSIONS):
         return any(
             isinstance(t, ast.Name) and t.id == name
             for gen in node.generators
@@ -121,13 +144,11 @@ def _rebinds(node: ast.AST, name: str) -> bool:
         return True
     if isinstance(node, ast.Lambda):
         return False
-    if any(
-        isinstance(n, (ast.Nonlocal, ast.Global)) and name in n.names for n in ast.walk(node)
-    ):
+    own = _own_scope(node)
+    if any(isinstance(n, (ast.Nonlocal, ast.Global)) and name in n.names for n in own):
         return False
     return any(
-        isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
-        for n in ast.walk(node)
+        isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store) for n in own
     )
 
 
@@ -165,15 +186,20 @@ def _scan(source: str, *, defines_resolvers: bool = False) -> tuple[list[int], l
         return cur if cur is not None else tree  # type: ignore[return-value]
 
     def forwarded(load: ast.Name, scope: _Scope) -> bool:
-        """``return reason`` / ``return ctx, reason`` — 読まずに呼び出し側へ渡すだけの形。
+        """``return reason`` / ``return ctx, reason`` / ``yield ctx, reason`` — 読まずに呼び出し側へ
+        渡すだけの形。条件式の枝に詰めた形 (``return (ctx, reason) if … else …``) も同じ。
 
-        **解決した関数自身の** ``return`` だけを数える。入れ子の関数 (閉包) が理由を返すのは
-        その関数を呼んだ側が読むという意味なので、転送ではなく読みである。
+        **解決した関数自身の** ``return``/``yield`` だけを数える。入れ子の関数 (閉包) が理由を
+        返すのはその関数を呼んだ側が読むという意味なので、転送ではなく読みである。条件式の
+        **条件**に使うのも読みである (理由で分岐している)。
         """
+        child: ast.AST = load
         up = parent.get(load)
-        if isinstance(up, ast.Tuple):
-            up = parent.get(up)
-        return isinstance(up, ast.Return) and enclosing_scope(up) is scope
+        while isinstance(up, ast.Tuple) or (isinstance(up, ast.IfExp) and child is not up.test):
+            child, up = up, parent.get(up)
+        return isinstance(up, (ast.Return, ast.Yield, ast.YieldFrom)) and (
+            enclosing_scope(up) is scope
+        )
 
     sites: list[int] = []
     violations: list[str] = []
@@ -238,8 +264,8 @@ def _scan_src() -> tuple[dict[str, list[int]], tuple[str, ...]]:
     violations: list[str] = []
     for path in sorted(_SRC.rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        if "gpxstore" not in text and path != _GPXSTORE:
-            continue  # 解決関数は gpxstore からしか来ない (import か属性呼び出しに名前が出る)
+        if not any(r in text for r in _RESOLVERS):
+            continue  # 呼び出しにも import にも解決関数の名前が出ない module は見るまでもない
         rel = path.relative_to(_SRC).as_posix()
         found, bad = _scan(text, defines_resolvers=path == _GPXSTORE)
         if found:
@@ -256,6 +282,26 @@ def test_no_src_caller_discards_the_fallback_reason():
         "しか分からない情報なので、台帳 (m7/m9/m10_gpx_fallback) か結果の警告に載せてください "
         "(gpx-retention 設計 §5):\n" + "\n".join(violations)
     )
+
+
+def test_resolver_names_are_unique_in_src():
+    """解決関数の名前を持つ関数/代入は src で gpxstore だけにあること。
+
+    網はどの module からの import でも**名前で**解決関数とみなす (再輸出経由の import を
+    逃さないため)。同名の別関数ができるとそれが誤って網に掛かるので、その前提をここで固定する。
+    """
+    owners: list[str] = []
+    for path in sorted(_SRC.rglob("*.py")):
+        rel = path.relative_to(_SRC).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                named = [node.name]
+            elif isinstance(node, ast.Assign):
+                named = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            else:
+                continue
+            owners += [f"{rel}:{n}" for n in named if n in _RESOLVERS]
+    assert sorted(owners) == sorted(f"gpxstore.py:{r}" for r in _RESOLVERS), owners
 
 
 def test_the_net_sees_the_known_callers():
@@ -322,6 +368,17 @@ _DISCARDS = {
     "returned_alone": (
         _HEAD + "def make():\n    g, reason = group_context('d')\n    return reason\n"
     ),
+    "yielded": (
+        _HEAD + "def make():\n    g, reason = group_context('d')\n    yield g, reason\n"
+    ),
+    "conditionally_repacked": (
+        _HEAD + "def make(x):\n    g, reason = group_context('d')\n"
+        "    return (g, reason) if x else (g, '')\n"
+    ),
+    "reexported_import": (
+        "from ..autorietveld.search import group_context\n"
+        "def f():\n    g, _ = group_context('d')\n    return g\n"
+    ),
 }
 
 
@@ -349,6 +406,16 @@ _SURFACED = {
     "read_then_overwritten": (
         _HEAD + "def f(log):\n    g, reason = group_context('d')\n    log(reason)\n"
         "    reason = ''\n    return g\n"
+    ),
+    "closure_with_a_grand_nested_rebinding": (
+        _HEAD + "def f(log):\n    g, reason = group_context('d')\n"
+        "    def note():\n        log(reason)\n"
+        "        def inner():\n            reason = 'x'\n            return reason\n"
+        "        return inner\n    return g, note\n"
+    ),
+    "branches_on_the_reason": (
+        _HEAD + "def f():\n    g, reason = group_context('d')\n"
+        "    return (g, 'redirected') if reason else (g, '')\n"
     ),
     "carried_into_a_constructor": (
         _HEAD + "def f(Plan):\n    run_dir, reason = resolve_run_dir('d')\n"
