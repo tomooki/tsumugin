@@ -66,6 +66,7 @@ from .model import (
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
+from .constraint_groups import merge_equiv_groups, partially_released_groups, unknown_labels
 from .stagepolicy import StageMetrics, decide_stage, revert_reason
 from .validity import (
     check_initial_uiso,
@@ -732,6 +733,13 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
             None if spec.free_uiso_labels is None else list(spec.free_uiso_labels)
         ),
         "frozen_uiso": set(spec.frozen_uiso_labels),
+        # Uiso の等値の組 (混合占有の組と合併済み)。`uiso_equiv_groups` を指定したときだけ
+        # 張り・検査する — 混合占有だけの既存経路の挙動は変えない (fit-then-judge P1a)。
+        "uiso_groups": (
+            merge_equiv_groups(spec.mixed_occupancy_groups, spec.uiso_equiv_groups)
+            if spec.uiso_equiv_groups
+            else ()
+        ),
         "refine_cell": spec.refine_cell,
         # 原子ラベル→元素記号 (重原子から順に解放する "本気フィット" 手順で使う)
         "element_of": element_of,
@@ -885,6 +893,17 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
     if "uiso" in stage_flags:
         for lab in _element_rank_labels(info, _resolve_uiso_targets(info), stage_flags["uiso"]):
             add(lab, "U")
+        # 等値の組の一部だけに U が立つと、拘束が「動く変数」と「動かない変数」を結ぶ。
+        #   黙って別の手順に化けさせず、例外 → 既存の inf→revert→ledger 経路に載せる。
+        partial = partially_released_groups(
+            info.get("uiso_groups", ()),
+            {lab for lab, f in flag_map.items() if "U" in f},
+        )
+        if partial:
+            raise ValueError(
+                f"Uiso の等値の組の一部だけが解放される段です: {partial}。"
+                "組の原子は全員解放か全員凍結にしてください (free/frozen_uiso_labels・元素ランク)"
+            )
     if "occupancy" in stage_flags:
         occ_labels = (
             list(info["mixed"]) + list(info.get("free_occ", set()))
@@ -1321,6 +1340,20 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
         ct = ph.data["General"]["AtomPtrs"][1]
         label_to_idx = {row[ct - 1]: i for i, row in enumerate(atoms)}
         pid = ph.id
+        # Uiso の等値の組 (fit-then-judge P1a): 指定があれば混合占有の Uiso 等価と**合併して
+        #   1 回だけ**張る (同じ変数を 2 つの組に入れない)。指定が無ければ従来どおり混合占有の
+        #   組ごとに張る (既存経路はビット同一)。
+        uiso_groups: tuple[tuple[str, ...], ...] = ()
+        if spec.uiso_equiv_groups:
+            missing = unknown_labels(spec.uiso_equiv_groups, label_to_idx)
+            if missing:
+                raise ValueError(
+                    f"相 {spec.phase_name!r} の uiso_equiv_groups に原子が無いラベルがあります: "
+                    f"{missing}"
+                )
+            uiso_groups = merge_equiv_groups(
+                spec.mixed_occupancy_groups, spec.uiso_equiv_groups
+            )
         for group in spec.mixed_occupancy_groups:
             idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
             if len(idxs) < 2:
@@ -1328,11 +1361,16 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             fracs = [f"{pid}::Afrac:{i}" for i in idxs]
             uisos = [f"{pid}::AUiso:{i}" for i in idxs]
             gpx.add_EqnConstr(1.0, fracs, [1.0] * len(fracs))
-            gpx.add_EquivConstr(uisos)
+            if not spec.uiso_equiv_groups:
+                gpx.add_EquivConstr(uisos)
             for frac in fracs:
                 _bound_occupancy(gpx, frac)
             # 共有サイトは共位置: 座標 (dAx/dAy/dAz) も等値拘束する。
             _equiv_positions(gpx, pid, idxs)
+        for group in uiso_groups:
+            idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
+            if len(idxs) >= 2:
+                gpx.add_EquivConstr([f"{pid}::AUiso:{i}" for i in idxs])
         # 明示的な座標等値グループ (共位置 H/D 対など)。
         for group in spec.position_equiv_groups:
             pidx = [label_to_idx[lab] for lab in group if lab in label_to_idx]

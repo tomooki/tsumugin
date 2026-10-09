@@ -105,3 +105,14 @@ def test_stage_revert_reason_and_noop_reach_layer_two_output():
     stages = payload["stages"]
     assert [s["revert_reason"] for s in stages] == [None, "gate:cell", None]
     assert [s["noop"] for s in stages] == [False, False, True]
+
+
+def test_uiso_equiv_groups_reach_engine_from_layer_two_json():
+    """fit-then-judge P1a タスク 2: ③ は JSON しか送れない — phases の dict で届くこと。"""
+    from tsumugin.mcp.rietveld_tools import _build_input
+
+    inp = _build_input(
+        [], [{"structure_path": "x.cif", "phase_name": "x", "uiso_equiv_groups": [["O1", "O2"]]}],
+        6, None,
+    )
+    assert inp.phases[0].uiso_equiv_groups == (("O1", "O2"),)

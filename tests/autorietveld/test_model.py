@@ -104,3 +104,17 @@ def test_stage_result_revert_reason_defaults_keep_old_constructors_valid():
     s = StageResult(label="cell", rwp=10.0, gof=1.0, n_params=3, converged=True)
     assert s.revert_reason is None
     assert s.is_noop is False
+
+
+def test_phase_spec_uiso_equiv_groups_round_trip_and_default():
+    """fit-then-judge P1a タスク 2: Uiso の等値の組。既定は空 (= 張らない) で後方互換。"""
+    from tsumugin.autorietveld.model import PhaseSpec
+
+    assert PhaseSpec("x.cif", "x").uiso_equiv_groups == ()
+    spec = PhaseSpec("x.cif", "x", uiso_equiv_groups=(("O1", "O2"), ("Y1", "Y2")))
+    d = spec.to_dict()
+    assert d["uiso_equiv_groups"] == [["O1", "O2"], ["Y1", "Y2"]]
+    assert PhaseSpec.from_dict(d) == spec
+    # キーが無い古い JSON も読める
+    legacy = {k: v for k, v in d.items() if k != "uiso_equiv_groups"}
+    assert PhaseSpec.from_dict(legacy).uiso_equiv_groups == ()

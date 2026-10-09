@@ -313,6 +313,16 @@ class PhaseSpec:
     ⚠ **位置は末尾**である — 対になる `frozen_coord_labels` の隣に置きたくなるが、本 dataclass は
     v0.1 として公開済みで、途中に挿入すると外部の位置引数呼び出しが**黙って別フィールドへ**入る
     (`tests/autorietveld/test_frozen_uiso.py::test_phase_spec_field_order_is_append_only` が強制)。"""
+    uiso_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    """Uiso を等値拘束する原子ラベルの組の列 (`add_EquivConstr`, fit-then-judge P1a)。
+    例: (("O1","O2","O3"),) — 同じ元素・配位環境の原子の Uiso を 1 変数にまとめ、少ない情報から
+    個別の Uiso を無理に決めない (fit-then-judge のテンプレートが組を決めて渡す)。
+
+    混合占有の Uiso 等価 (`mixed_occupancy_groups`) と同じ原子を含む組は**推移的に合併して
+    1 回だけ張る** (二重拘束を避ける, `constraint_groups.merge_equiv_groups`)。組の原子は
+    **全員が解放されているか全員が凍結されているか**でなければならず、一部だけに Uiso の
+    フラグが立つ段は例外 → 既存の revert 経路に載る。相に無いラベルは例外。既定 () (張らない)。
+    ⚠ 末尾追加のみ (上の `frozen_uiso_labels` と同じ理由)。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (tuple 組→list of list)。"""
@@ -334,6 +344,7 @@ class PhaseSpec:
             "frozen_uiso_labels": list(self.frozen_uiso_labels),
             "refine_cell": self.refine_cell,
             "temperature": self.temperature,
+            "uiso_equiv_groups": [list(g) for g in self.uiso_equiv_groups],
         }
 
     @classmethod
@@ -364,6 +375,9 @@ class PhaseSpec:
             frozen_uiso_labels=tuple(str(a) for a in (d.get("frozen_uiso_labels") or ())),
             refine_cell=bool(d.get("refine_cell", True)),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
+            uiso_equiv_groups=tuple(
+                tuple(str(a) for a in g) for g in (d.get("uiso_equiv_groups") or ())
+            ),
         )
 
 
