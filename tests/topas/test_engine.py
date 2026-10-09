@@ -393,24 +393,31 @@ def test_occupancy_is_released_only_for_declared_sites(synthetic_cif):
 
 
 def _topas_like_out(inp_text: str, rwp: float, refined: "dict[str, float]",
-                    background: "tuple[float, ...]" = ()) -> str:
+                    background: "tuple[float, ...] | list[tuple[float, ...]]" = ()) -> str:
     """tc.exe の ``.out`` 書き戻しを模す: **INP そのもの**に精密化値を ``value`_esd`` で埋める。
 
     ``refined`` の名前は INP 中で ``!`` 無しに宣言されているもの (= 解放されたもの) だけ
-    書き換える (``!`` 付きは TOPAS も値を動かさない)。``background`` は ``bkg @`` 行の係数。
+    書き換える (``!`` 付きは TOPAS も値を動かさない)。``background`` は ``bkg @`` 行の係数
+    (タプルなら全行に同じ値、リストなら行ごと)。
     """
     import re
 
     text = inp_text
     for name, value in refined.items():
         text = re.sub(
-            rf"(?<![\w!])({re.escape(name)})(\s*,\s*|\s+)([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
+            rf"(?<![\w!])({re.escape(name)})([ \t]*,[ \t]*|[ \t]+)"
+            r"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
             lambda m, v=value: f"{m.group(1)}{m.group(2)}{v!r}`_0.001",
             text,
         )
     if background:
-        coeffs = "  ".join(f"{v!r}`_0.5" for v in background)
-        text = re.sub(r"(?m)^(\s*bkg @).*$", lambda m: f"{m.group(1)}  {coeffs}", text)
+        rows = iter(background if isinstance(background, list) else [])
+
+        def coeffs(match):
+            row = next(rows, None) if isinstance(background, list) else background
+            return f"{match.group(1)}  " + "  ".join(f"{v!r}`_0.5" for v in row)
+
+        text = re.sub(r"(?m)^(\s*bkg @).*$", coeffs, text)
     header = f"r_p 1.0 r_wp {rwp} r_exp 5.0 gof 1.5\n"
     return header + text
 
@@ -513,6 +520,43 @@ def test_value_refined_earlier_survives_freezing(topas_like_driver):
     )
     assert "site Pb x !PbSO4_Pb_x 0.18779 " in seen[1]
     assert " z !PbSO4_Pb_z 0.16743 " in seen[1]
+
+
+def test_joint_carries_shared_structure_and_per_histogram_terms(topas_like_driver):
+    """joint: 共有 ``prm`` (構造) は 1 本・scale/背景/ε は**ヒストグラムごと**に持ち越す。
+
+    背景係数は名前を持たないので bkg 行の**順番**で xdd に対応させる。取り違えると
+    X 線の背景が中性子側に入る (どちらも Rwp を見ただけでは分からない)。
+    """
+    bkg_x = (111.4, 13.5, -5.9, -1.9, 5.8, -0.98)
+    bkg_n = (52.0, -3.1, 0.7, 0.2, -0.4, 0.1)
+    seen = topas_like_driver([
+        (30.0, {"PbSO4_scale_h0": 0.00025, "PbSO4_scale_h1": 0.0031}, [bkg_x, bkg_n]),
+        (20.0, {"PbSO4_a": 8.4821}, [bkg_x, bkg_n]),
+        (15.0, {"eps_PbSO4_a_h1": -0.00126}, [bkg_x, bkg_n]),
+        (14.0, {}, ()),
+    ])
+    hist = _histogram()
+    eng.run_topas_rietveld(
+        [replace(hist, temperature=295.0), replace(hist, temperature=10.0)], [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"background": {"coeffs": 6}, "scale": True}),
+            RefinementStage(label="S1", flags={"cell": True}),
+            RefinementStage(label="S2", flags={"hydrostatic_strain": True}),
+            RefinementStage(label="S3", flags={"coords": True}),
+        ),
+    )
+    stage1, stage3 = seen[1], seen[3]
+    bkg_lines = [line.strip() for line in stage1.splitlines() if line.strip().startswith("bkg")]
+    assert bkg_lines == [
+        "bkg @ " + " ".join(repr(v) for v in bkg_x),
+        "bkg @ " + " ".join(repr(v) for v in bkg_n),
+    ], "背景係数がヒストグラムの順に持ち越されていない"
+    assert "scale PbSO4_scale_h0 0.00025\n" in stage1
+    assert "scale PbSO4_scale_h1 0.0031\n" in stage1
+    assert "prm PbSO4_a 8.4821\n" in stage3, "共有 prm に格子が持ち越されていない"
+    assert stage3.count("a =PbSO4_a;") == 1, "先頭 xdd の参照式が書き換わった"
+    assert "prm eps_PbSO4_a_h1 -0.00126 min" in stage3, "ε が持ち越されていない"
 
 
 # ---------------- 対称操作の補完失敗 (#219) ----------------

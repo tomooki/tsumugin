@@ -40,6 +40,7 @@ __all__ = [
     "SUPPORTED_FLAGS",
     "UnsupportedStageFlagError",
     "apply_stage",
+    "po_line_key",
 ]
 
 
@@ -460,6 +461,20 @@ def _drop_phase_extras(hist: TopasHistogram, marker: str) -> TopasHistogram:
     )
 
 
+_PO_LINE = re.compile(r"PO_Spherical_Harmonics\(\s*(\w+)\s*,\s*(\d+)")
+
+
+def po_line_key(line: str) -> "tuple[str, int] | None":
+    """str ブロックの選択配向行の ``(名前, 次数)``。該当しなければ ``None``。
+
+    短い形 ``PO_Spherical_Harmonics(name, 4)`` と、精密化後の係数展開形
+    ``PO_Spherical_Harmonics(name, 4 load sh_Cij_prm { … } )`` (`topas.carry`) の両方を読む。
+    再適用の判定と持ち越しの置換が**同じ読み方**をするための 1 箇所。
+    """
+    match = _PO_LINE.match(line)
+    return (match.group(1), int(match.group(2))) if match else None
+
+
 def _apply_preferred_orientation(
     histograms: "list[TopasHistogram]", phases: "list[TopasPhase]", value: object
 ) -> "list[TopasHistogram]":
@@ -482,10 +497,7 @@ def _apply_preferred_orientation(
             #   (``… load sh_Cij_prm { … }``) に置き換わっている (`topas.carry`, #218)。
             #   短い形で上書きすると係数が 0 から解き直しになる。
             current = _terms_for(hist, phase.phase_name).extras
-            if any(
-                re.match(rf"PO_Spherical_Harmonics\(\s*{name}\s*,\s*{order}(?!\d)", line)
-                for line in current
-            ):
+            if any(po_line_key(line) == (name, order) for line in current):
                 continue
             hist = _phase_extras(
                 hist,

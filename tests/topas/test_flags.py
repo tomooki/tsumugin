@@ -500,3 +500,15 @@ def test_reapplying_preferred_orientation_keeps_the_refined_block():
     assert _extras(_apply({"preferred_orientation": 6}, doc)) == (
         "PO_Spherical_Harmonics(po_P_h0, 6)",
     )
+
+
+def test_po_line_key_reads_both_the_short_and_the_refined_form():
+    """再適用の判定と持ち越しの置換が同じ読み方をする (次数 4 と 40 を取り違えない)。"""
+    from tsumugin.topas.flags import po_line_key
+
+    assert po_line_key("PO_Spherical_Harmonics(po_P_h0, 4)") == ("po_P_h0", 4)
+    assert po_line_key(
+        "PO_Spherical_Harmonics(po_P_h0, 4 load sh_Cij_prm { y00 !po_P_h0_c00 1.0 } )"
+    ) == ("po_P_h0", 4)
+    assert po_line_key("PO_Spherical_Harmonics(po_P_h0, 40)") == ("po_P_h0", 40)
+    assert po_line_key("scale_pks = AL_Cyl_Corr(mur_h0) Cos(Th)^2;") is None

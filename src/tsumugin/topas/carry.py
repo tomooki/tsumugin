@@ -27,8 +27,7 @@ TOPAS は精密化後、**INP そのものに精密化値を埋め込んだも�
 
 from __future__ import annotations
 
-import re
-
+from .flags import po_line_key
 from .inp import TopasDocument, TopasHistogram
 from .parse import (
     background_values_from_out,
@@ -37,8 +36,6 @@ from .parse import (
 )
 
 __all__ = ["carry_refined_values"]
-
-_PO_NAME = re.compile(r"PO_Spherical_Harmonics\(\s*(\w+)\s*,")
 
 
 def carry_refined_values(
@@ -88,7 +85,7 @@ def _with_expanded_harmonics(hist: TopasHistogram, blocks: "dict[str, str]") -> 
     for phase_name, term in terms.items():
         extras = []
         for line in term.extras:
-            match = _PO_NAME.match(line)
-            extras.append(blocks.get(match.group(1), line) if match else line)
+            key = po_line_key(line)
+            extras.append(blocks.get(key[0], line) if key else line)
         terms[phase_name] = term.with_updates(extras=tuple(extras))
     return hist.with_updates(phase_terms=terms)

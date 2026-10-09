@@ -509,9 +509,13 @@ class TopasDocument:
         return out
 
     def _site_line(
-        self, phase: TopasPhase, site: TopasSite, shared: Mapping[tuple[str, str], str]
+        self,
+        phase: TopasPhase,
+        site: TopasSite,
+        shared: Mapping[tuple[str, str], str],
+        site_slug: str,
     ) -> str:
-        stem = f"{_slug(phase.phase_name)}_{_site_slugs(phase)[site.label]}"
+        stem = f"{_slug(phase.phase_name)}_{site_slug}"
 
         def named(param: Param, suffix: str) -> Param:
             """結果出力を要求しているときは名前を付ける (`Out()` から参照するため)。
@@ -614,8 +618,9 @@ class TopasDocument:
                 )
                 value = render_param(named)
             lines.append(f"{_INDENT_PHASE}{axis} {value}")
+        site_slugs = _site_slugs(phase)
         for site in phase.sites:
-            lines.append(self._site_line(phase, site, shared))
+            lines.append(self._site_line(phase, site, shared, site_slugs[site.label]))
         if terms.peak_type:
             # ピーク形状は str ブロック内でなければ TOPAS が解決できない (実測)。
             # TOF は幅パラメータの宣言を伴う複数行になるので改行を許す。
