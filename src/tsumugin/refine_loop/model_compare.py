@@ -24,7 +24,7 @@ __all__ = ["ModelCompareResult", "run_model_comparison"]
 class ModelCompareResult:
     """モデル比較の結果。
 
-    :param comparison: `compare.ModelComparison` (scores/best/best_is_valid)
+    :param comparison: `compare.ModelComparison` (scores/best/best_is_valid/warnings。各 score の ``gpx_path`` がそのバリアントの成果物、``warnings`` に保存先の退避理由)
     :param best_phases: best 変種の相仕様 (継続精密化に用いる)
     :param ledger: 追記された台帳 (None なら未使用)
     """
