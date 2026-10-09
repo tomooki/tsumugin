@@ -144,7 +144,9 @@ run_sequential_rietveld
 | ③ | `skills/analyze`「精密化成果物」節 / `skills/insitu` の成果物表 / `skills/operando-diagnose`「疑うときの一次資料」/ `skills/mem-model-fix` の入力の出所 / `skills/joint` / AGENT_PLAYBOOK 3 本 |
 
 恒久ガード: `tests/test_plugin_gpx_retention.py` (手順書が規定とハンドル名を書いているか・
-② に無い ① 専用引数 `keep_gpx` を宣伝していないか) / `tests/test_layer_coverage.py`
+② に無い ① 専用引数 `keep_gpx` を宣伝していないか・**退避理由の行の形と在処のキーを退避の段落の
+中で名指ししているか** [analyze / insitu / operando-diagnose / AGENT_PLAYBOOK 3 本]) /
+`tests/test_layer_coverage.py`
 (`gpxstore` パッケージ宣言 + `FrameRietveldResult.gpx_path` の露出宣言 + **`runner` 注入シームを
 持つ = 精密化を回す ② ツールは全部 `gpx_dir` / `save_gpx` を受ける** — モデル比較と修復が ① では
 保存しているのに ② から止められず置き場所も選べなかった穴の再発防止) /
