@@ -34,7 +34,7 @@ def test_cell_scale_skips_phases_whose_cell_is_frozen():
         PhaseSpec(structure_path="a.cif", phase_name="main"),
         PhaseSpec(structure_path="b.cif", phase_name="minor", refine_cell=False),
     ]
-    done = _apply_initial_cell_scale(
+    applied, skipped = _apply_initial_cell_scale(
         [_NamedPhase("main"), _NamedPhase("minor")],
         phases,
         {"main": (1.01, 1.01, 1.01), "minor": (1.01, 1.01, 1.01)},
@@ -42,19 +42,20 @@ def test_cell_scale_skips_phases_whose_cell_is_frozen():
     )
 
     assert calls == [("main", (1.01, 1.01, 1.01))], "凍結相の格子を摂動している"
-    assert done == ("main",)
+    assert applied == ("main",)
+    assert skipped == ("minor",), "飛ばした相を報告する (ledger の監査記録はこれを書く)"
 
 
 def test_cell_scale_ignores_phases_it_was_not_asked_to_scale():
     """【対照】倍率が無い相は触らない (従来動作)。"""
     calls: list[str] = []
-    done = _apply_initial_cell_scale(
+    applied, skipped = _apply_initial_cell_scale(
         [_NamedPhase("main")],
         [PhaseSpec(structure_path="a.cif", phase_name="main")],
         {"other": (1.01, 1.01, 1.01)},
         perturb=lambda ph, scale: calls.append(ph.name),
     )
-    assert calls == [] and done == ()
+    assert calls == [] and applied == () and skipped == ()
 
 
 # ---------------------------------------------------------------------------

@@ -2078,7 +2078,7 @@ def _apply_initial_cell_scale(
     phases: Sequence[PhaseSpec],
     scales: Mapping[str, tuple[float, float, float]],
     perturb: "Callable[[object, tuple[float, float, float]], None] | None" = None,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """初期格子摂動 (マルチスタート) を**格子を精密化する相だけ**に掛ける。
 
     ``PhaseSpec.refine_cell=False`` (Issue #47 の副相格子固定・`resolution` の認証値固定) の相は
@@ -2090,18 +2090,24 @@ def _apply_initial_cell_scale(
     ここでは判定できない (その相は従来どおり摂動される)。
 
     :param perturb: 1 相に倍率を掛ける関数 (既定 `_perturb_initial_cell`; テスト注入用のシーム)
-    :returns: 実際に摂動した相名 (g2phases の順)
+    :returns: ``(摂動した相名, 倍率を頼まれたが格子凍結で飛ばした相名)`` (どちらも g2phases の順)。
+        飛ばした側は ledger の監査記録に載せる — 規則をここ 1 箇所に置くため呼び出し側で
+        数え直さない
     """
     perturb = perturb if perturb is not None else _perturb_initial_cell
     frozen = {p.phase_name for p in phases if not p.refine_cell}
-    done: list[str] = []
+    applied: list[str] = []
+    skipped: list[str] = []
     for ph in g2phases:
         scale = scales.get(ph.name)
-        if scale is None or ph.name in frozen:
+        if scale is None:
+            continue
+        if ph.name in frozen:
+            skipped.append(ph.name)
             continue
         perturb(ph, scale)
-        done.append(ph.name)
-    return tuple(done)
+        applied.append(ph.name)
+    return tuple(applied), tuple(skipped)
 
 
 def _apply_initial_fractions(g2phases, g2hists, fractions: Mapping[str, float]) -> None:
@@ -2446,16 +2452,10 @@ def run_auto_rietveld(
         #     格子を精密化しない相 (refine_cell=False) は摂動しない — 戻る道が無いので
         #     摂動値がそのまま最終格子になる (`_apply_initial_cell_scale`)。
         if initial_cell_scale:
-            applied = _apply_initial_cell_scale(g2phases, phases, initial_cell_scale)
+            applied, skipped = _apply_initial_cell_scale(g2phases, phases, initial_cell_scale)
             ledger.append(
                 "m7_cell_perturbation",
-                {
-                    "applied": list(applied),
-                    "skipped_refine_cell_false": sorted(
-                        p.phase_name for p in phases
-                        if not p.refine_cell and p.phase_name in initial_cell_scale
-                    ),
-                },
+                {"applied": list(applied), "skipped_refine_cell_false": list(skipped)},
             )
 
         # --- 初期相分率ウォームスタート (逐次精密化, 任意, Issue #82) ---
