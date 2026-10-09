@@ -65,6 +65,41 @@ def test_mem_skill_says_where_the_gpx_handle_comes_from():
     )
 
 
+def test_joint_skill_says_where_each_model_variant_fit_is():
+    """`joint`: モデル比較の**各バリアント** (棄却モデルも) のハンドルと保存指定を言う。
+
+    `compare_structure_models` の目的は「サイトは要るか」の判定であり、その根拠は棄却された
+    モデルがどう壊れていたか (実測 NaCuHCF model5 は Na>1 / O<0 に発散) にある。ハンドル名を
+    書かなければ ③ は ΔBIC だけを報告し、棄却側の fit を誰も開かない。
+    """
+    body = _text(_SKILLS / "joint" / "SKILL.md")
+
+    assert "scores[].gpx_path" in body, "バリアント別ハンドルが書かれていない"
+    assert "gpx_dir" in body and "save_gpx" in body, "モデル比較の保存指定が書かれていない"
+
+
+_REPAIR_DOCS = (
+    _SKILLS / "insitu" / "SKILL.md",
+    _SKILLS / "operando-diagnose" / "SKILL.md",
+    Path("docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md"),
+)
+
+
+@pytest.mark.parametrize("path", _REPAIR_DOCS, ids=lambda p: f"{p.parent.name}/{p.name}")
+def test_repair_docs_say_where_rejected_repair_fits_are(path: Path):
+    """修復を扱う手順書: **棄却された修復**の fit の在処 (台帳行) と修復の run ディレクトリを言う。
+
+    棄却された修復 (`needs_model_revision`) は `repairs[]` に現れない。「warm-start でなぜ
+    直らなかったか」を見るために保存しているのに、在処 (`insitu_repair_rejected` 行の
+    `gpx_path`) を書かなければ ③ からは存在しないのと同じ。修復は系列とは別の呼び出しなので
+    成果物も**別の run ディレクトリ**にある (系列の `gpx_dir` を探しても見つからない)。
+    """
+    body = _text(path)
+
+    assert "insitu_repair_rejected" in body, f"{path}: 棄却された修復の fit の在処が書かれていない"
+    assert "別の run ディレクトリ" in body, f"{path}: 修復試行が系列と別の run にあることが書かれていない"
+
+
 @pytest.mark.parametrize("path", _PLAYBOOKS, ids=lambda p: p.parent.name)
 def test_playbooks_mention_the_retention_rule(path: Path):
     """非 Claude 実行者向け PLAYBOOK にも規定が書かれていること (skill と同じ内容)。"""

@@ -28,7 +28,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `sequential_rietveld` | 計器+アクチュエータ (前方単一パス) | frames + initial_phases spec (JSON) → フレーム別 Rwp/格子/相分率/残差レポート/**出版値 (重量分率±esd・格子 esd)**・変化点・自動出現相 |
 | `anchored_sequential` | 計器+アクチュエータ (M10 双方向) | frames + phases catalog + `anchor_table` {frame_index: [phase]} + instrument → アンカー起点の双方向精密化。`crossovers[].total_bic` で相集合を **Rwp でなく bic** で選定 (相数を抑制し偽相を全域に広げない)。**転移を含む operando の既定**。出力は sequential_rietveld と同型 + `anchors`/`crossovers` |
 | `check_phase_set` | 計器 (相集合) | 系列結果 → 相集合の完全性 + 相分率の非単調 (zigzag) フラグ + seed 張り付き + 分率凍結 |
-| `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復。`repairs[]` に**修復後の出版値** (重量分率 ± esd・`cell_esd`) を同梱 |
+| `repair_frames` | 計器+アクチュエータ | 系列結果 + frames + phases (+ `target_frames` で対象明示) → 不連続/張り付きフレームの近傍 warm-start 修復。`repairs[]` に**修復後の出版値** (重量分率 ± esd・`cell_esd`) を同梱。修復試行の成果物は返り値の `gpx_dir` (`gpx_dir=`/`save_gpx=` を受ける) |
 | `identify_and_add_phase` | 計器 (相同定) | 残差/生パターン + elements + workdir (+ **`known_phases`** = そのフレームの現行相 [`initial_phases` の dict + `refined_cell`] + `wavelength`) → 物質化した PhaseSpec 候補 (CIF パス) + 根拠 + `prealign_basis`。**`known_phases` を渡して初めて**既知相を引いた残差から少数相を探し、返る CIF に異方セル補正 (#20) が入る |
 | `parametric_fit` | 計器 (解析) | 系列結果 + parameter/axis → 熱膨張多項式係数・転移 onset/midpoint±σ |
 | `align_echem` | 計器 (電気化学突合) | BioLogic `.mpr` + フレーム時刻 (一定ケイデンス `offset_s`/`interval_s`/`n_frames` or 明示 `frame_epoch_s`) → per-frame の電位/状態 (rest/charge/discharge)。`alkali_budget` の `offset_s`/`interval_s` はここで XRD フレーム時刻と echem を同期して得る |
@@ -49,7 +49,7 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 | `f0032_consolidate_<相>.gpx` / `f0031_backward_<相>.gpx` | セル整合・onset 逆伝播の再精密化 |
 | `f0005_anchor.gpx` / `f0005_anchor_ab.gpx` | M10 アンカー確定 / FR-318 の制約有無 A/B |
 | `f0007_forward_a0005.gpx` / `f0007_backward_a0012.gpx` | M10 の前方/後方パス (**採られなかった側も**) |
-| `f0042_repair_L.gpx` | `repair_frames` の修復試行 |
+| `f0042_repair_L.gpx` / `f0042_repair_R.gpx` | `repair_frames` の修復試行 (左右両方・**棄却されたものも**)。⚠ 系列とは別の呼び出しなので**別の run ディレクトリ** = `repair_frames` の返り値 `gpx_dir` |
 | `manifest.jsonl` | 索引 (1 行 1 成果物: 役割・番号・相・Rwp・GOF) |
 
 - **どこに**: 既定は**先頭フレームのデータ隣接** `<data_dir>/tsumugin_gpx/run-<日時>/`。
@@ -348,6 +348,11 @@ repair_frames(result, frames, phases,
   言われたフレームに対して、である。
 - **疑わしいフレームは 1 回の呼び出しで全て渡す**。指定フレームは互いに warm-start 元から
   除外されるため、1 つずつ呼ぶと**両隣も張り付いた区間で欠陥を持つ隣から種を貰う**。
+- **修復試行の fit も全部残る** (左右両方・採否を問わず)。1 回の呼び出しで 1 つの run ディレクトリ
+  (返り値 `gpx_dir`; `gpx_dir=` で根を指定、`save_gpx=false` で止まる)。採用された修復は
+  `repairs[].gpx_path`、**棄却された修復** (`needs_model_revision`) の fit は `ledger_entries` の
+  `insitu_repair_rejected` 行の `gpx_path` — 「warm-start でなぜ直らなかったか」はそこを開いて見る
+  (良好な近傍が無く**試せなかった**フレームは `insitu_repair_no_neighbour` 行で、fit は無い)。
 
 - `repairs` は Rwp 改善時のみ採用済 (自己検証可能な規則なので自律)。
 - **`needs_model_revision` はモデルの欠陥**であり、近傍 warm-start では直らない
