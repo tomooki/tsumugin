@@ -55,7 +55,12 @@ from .parse import (
     parse_records,
     refined_values_from_out,
 )
-from .structure import BEQ_PER_UISO, structure_to_topas_phase, to_topas_spacegroup
+from .structure import (
+    BEQ_PER_UISO,
+    check_phase_spec_supported,
+    structure_to_topas_phase,
+    to_topas_spacegroup,
+)
 
 __all__ = ["run_topas_rietveld"]
 
@@ -292,6 +297,11 @@ def run_topas_rietveld(
         (本モジュールが `flags.UnsupportedStageFlagError` で避けているのと同じ病理)。
     :returns: `AutoRietveldResult` (``backend="topas"``, ``gpx_path=""``)
     """
+    # 【相の指定は構造を読む前に検める】: TOPAS が実装していない指定 (`PHASE_SPEC_FIELDS` の
+    #   ``refused``) は精密化の前に `InvalidPhaseSpecError` で止める (② は error dict へ縮退)。
+    #   段のループの中で投げると「段の失敗 = rwp=inf → revert」に吸われて完走してしまう。
+    for spec in phases:
+        check_phase_spec_supported(spec)
     unsupported_warnings: list[str] = []
     if stability is not None:
         unsupported_warnings.append(
@@ -374,6 +384,12 @@ def run_topas_rietveld(
                 note = f"{note}; 無言 no-op (指標がビット同一)" if note else (
                     "無言 no-op (指標がビット同一)"
                 )
+            # 【意図的な凍結を無言失敗と区別する (#211)】: 全相で Uiso を凍結した uiso 段は
+            #   原理的に何も解放しない。GSAS 経路と同じ印 ``uiso_frozen_all`` を note と ledger に
+            #   残す (③ の手順書は「凍結できたかはこの印で確かめる」と指示している)。
+            uiso_frozen_all = _uiso_all_frozen(doc, stage)
+            if uiso_frozen_all:
+                note = f"{note}; uiso_frozen_all" if note else "uiso_frozen_all"
 
             stage_results.append(
                 StageResult(
@@ -397,6 +413,7 @@ def run_topas_rietveld(
                         "reverted": worsened,
                         "revert_reason": decision.reason,
                         "noop": decision.is_noop,
+                        "uiso_frozen_all": uiso_frozen_all,
                         "note": note,
                         "backend": _BACKEND,
                         "carried": len(doc.carried_values),
@@ -494,6 +511,20 @@ def run_topas_rietveld(
             project_path=out_project,
             histogram_rwp=_histogram_rwp_tuple(best_results, len(histograms)),
         )
+
+
+def _uiso_all_frozen(doc: TopasDocument, stage: RefinementStage) -> bool:
+    """その段が「**全相で Uiso を凍結した結果**、何も解放しない uiso 段」か (#211)。
+
+    GSAS 経路の `_uiso_all_frozen` と同じ判定。相が 1 つも無いときは False
+    (**空を「正常」と答えない**)。
+    """
+    if not stage.flags.get("uiso") or not doc.phases:
+        return False
+    return all(
+        phase.beq_release_labels is not None and not phase.beq_release_labels
+        for phase in doc.phases
+    )
 
 
 _CELL_ORDER = ("a", "b", "c", "al", "be", "ga")
@@ -647,6 +678,14 @@ def _cell_esd_map(
     out: dict[str, tuple] = {}
     for phase in doc.phases:
         name = phase.phase_name
+        if not any(p.refine for p in phase.cell.values() if not p.is_reference):
+            # 【精密化していない格子の esd を捏造しない】: 固定した ``prm`` にも TOPAS は ``Out``
+            #   で esd 0 を書くが、それは「精密化して 0 に決まった」ではない。GSAS 経路と同じく
+            #   **None × 6** (`refine_cell=False` / 格子段が revert された / ``freeze_others``)。
+            #   ``doc`` は最後に受理した段の文書なので、revert も自然に反映される。
+            if any(f"{name}/{axis}" in cells for axis in phase.cell):
+                out[name] = (None,) * len(_CELL_ORDER)
+            continue
         per_axis: dict[str, "float | None"] = {}
         for axis, param in phase.cell.items():
             record = cells.get(f"{name}/{axis}")

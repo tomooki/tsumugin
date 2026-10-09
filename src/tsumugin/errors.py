@@ -15,6 +15,17 @@ class EscalationRequired(TsumuginError):
     """自動リトライ上限(FR-212, 既定3回)に達し人間/Triage へのエスカレーションが必要。"""
 
 
+class InvalidPhaseSpecError(TsumuginError, ValueError):
+    """相仕様 (`PhaseSpec`) がそのエンジンで実行できないとき。
+
+    例 (TOPAS 経路): 相に無い原子ラベルを凍結・拘束に書いた / 3 原子以上の混合占有 /
+    1 変数に束ねた組の一部だけを凍結した / TOPAS が実装していない指定を渡した
+    (`topas.structure.PHASE_SPEC_FIELDS` の ``refused``)。精密化の**前**に送出されるので、
+    ② はこれを ``{"error","error_type"}`` へ縮退させる (③ は LLM なので例外は回復不能)。
+    ``ValueError`` も継ぐので、入力検証を ``ValueError`` で捕まえる既存の呼び手と互換。
+    """
+
+
 class GSASUnavailableError(TsumuginError):
     """GSAS-II (GSASIIscriptable) が未導入の環境で GSASIIBackend を要求したとき。"""
 

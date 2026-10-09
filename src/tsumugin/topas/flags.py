@@ -129,6 +129,9 @@ def _release_cell(phase: TopasPhase, enable: bool) -> TopasPhase:
     free = set(phase.free_cell_keys) if phase.free_cell_keys else {
         k for k, v in phase.cell.items() if not v.is_reference
     }
+    # 【`refine_cell=False` の相は格子段でも解放しない】 (#47): 相分率が 0 近傍の副相の格子は
+    #   無拘束だと発散する。GSAS 経路の `_should_refine_cell` と同じく手動凍結が常に勝つ。
+    enable = enable and phase.refine_cell
     cell = {
         key: _set_refine(param, enable and key in free) for key, param in phase.cell.items()
     }
@@ -146,11 +149,19 @@ def _release_sites(
             # 【サイト対称】: 特殊位置の成分 (鏡面上の y=1/4 など) や他軸と結束する成分を
             #   解放すると対称性が壊れる。`topas.symmetry` が対称操作から求めた自由軸だけを
             #   解放する (GSAS の GetCSxinel 相当)。判定できていない (空) なら触らない。
+            #   `frozen_coord_labels` の原子も触らない (GSAS の coords 段と同じく除外)。
             for axis in ("x", "y", "z"):
-                allowed = coords and axis in site.free_coord_axes
+                allowed = (
+                    coords
+                    and axis in site.free_coord_axes
+                    and site.label not in phase.frozen_coord_labels
+                )
                 updates[axis] = _set_refine(getattr(site, axis), allowed)
         if beq is not None:
-            updates["beq"] = _set_refine(site.beq, beq)
+            # 【解放するのは解決済みの対象だけ】 (#189/#211): `beq_release_labels` が None なら
+            #   全原子、() なら 0 原子。少数相の Uiso を凍結しないと発散して「幽霊相」に
+            #   なる (#209)。
+            updates["beq"] = _set_refine(site.beq, beq and phase.beq_released(site.label))
         if occupancy is not None:
             # 【全サイト一斉解放をしない】: 占有率はスケール因子と大域的に縮退するので、
             #   全部解放すると Rwp は下がるのに占有率が 1 を超える非物理解へ行ける

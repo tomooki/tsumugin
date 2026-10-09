@@ -208,7 +208,7 @@ def test_occupancy_with_no_declaration_releases_nothing():
 
 
 def test_shared_group_prms_are_released_by_their_stage():
-    phase = _phase(occupancy_sum_groups=(("Pb", "O"),), beq_equiv_groups=(("Pb", "O"),))
+    phase = _phase(mixed_occupancy_groups=(("Pb", "O"),), beq_equiv_groups=(("Pb", "O"),))
     assert phase.release_occupancy_groups is False
     occ = _apply({"occupancy": True}, _doc(phase=phase))
     assert occ.phases[0].release_occupancy_groups is True
