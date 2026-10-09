@@ -10,7 +10,8 @@
 置き場所の既定は**観測データ隣接** ``<data_dir>/tsumugin_gpx/<run_id>/``。上書きは環境変数
 ``TSUMUGIN_GPX_DIR`` (``none`` で保存無効化)、さらに強い上書きは呼び出し側の明示指定
 (``gpx_dir`` 引数)。**明示指定は env の ``none`` にも勝つ** — 頼まれた保存を環境変数で黙って
-捨てない。
+捨てない。成果物のパスそのものを名指しする ``keep`` (`plan_output`) は ``save=False`` を含む
+**すべての opt-out に勝つ** (opt-out が止めるのは既定保存だけ)。
 
 本モジュールは**置き場所と名前だけ**を決める。精密化の物理には一切影響しない
 (NFR-102: 保存先が変わっても結果はビット同一)。文脈 (`GpxContext`) は成果物に人が読める名前を
@@ -312,24 +313,37 @@ def plan_output(
 ) -> ArtifactPlan:
     """**両エンジン共通の保存方針** — 明示パス > 無効化 > 既定保存。
 
-    優先順位 (上が強い):
+    優先順位 (上が強い)。**この関数が正本** — エンジン側の docstring/コメントはこれに従う:
 
-    1. ``save=False`` … 保存しない (呼び出し側の明示 opt-out)
-    2. ``keep`` … そのパスへ保存する (既存呼び出しの非回帰。索引は書かない —
-       置き場所の取り決めが呼び出し側にあるため ``run_dir`` を名乗らない)
+    1. ``keep`` … そのパスへ保存する。**どの opt-out にも勝つ** (``save=False`` /
+       ``TSUMUGIN_GPX_DIR=none`` / 無効文脈)。索引は書かない — 置き場所の取り決めが
+       呼び出し側にあるため ``run_dir`` を名乗らない
+    2. ``save=False`` (と env ``none``・無効文脈) … **既定保存**をしない (明示 opt-out)
     3. ``gpx_dir`` / ambient 文脈 / ``TSUMUGIN_GPX_DIR`` / データ隣接 … 既定で保存する
 
+    【なぜ keep が opt-out に勝つか (2026-10-09 決定)】: opt-out が止めるのは**既定保存**
+    (置き場所を tsumugin が決める保存; NFR-108 の「opt-out を要するが既定は保存」の opt-out)
+    であって、呼び出し側がパスを名指しした保存ではない。以前は ``save=False`` を先に見て
+    いたため ``keep_project=<dir>, save_gpx=False`` が <dir> に何も残さず例外も出さなかった
+    (= 頼まれた保存を黙って捨てた; 明示 ``gpx_dir`` が env ``none`` に勝つのと同じ原則に反する)。
+    ``keep`` は単独でも既定保存を**置き換える** (2 つ目の成果物は作らない) ので、併用は矛盾
+    ではなく「このパスにだけ残す」の一意な意味を持つ — ValueError で拒む利点は無く、しかも
+    本関数は精密化を回し終えた**後**に呼ばれるので、ここで投げると結果ごと失う。
+    ⚠ 一方 ``gpx_dir`` は保存の依頼ではなく**既定保存の置き場所の指定**なので、
+    ``save=False`` と併用すると使われない (既定保存そのものが無いため)。
+
     :param data_paths: 観測データのパス列 (先頭が既定の置き場所と名前の元)
-    :param keep: 明示パス (``run_auto_rietveld(keep_gpx=)`` / ``run_topas_rietveld(keep_project=)``)
-    :param gpx_dir: run ディレクトリの根の明示指定 (env より強い)
-    :param save: False で保存無効
+    :param keep: 明示パス (``run_auto_rietveld(keep_gpx=)`` / ``run_topas_rietveld(keep_project=)``)。
+        ``save`` の値に関わらず保存する
+    :param gpx_dir: 既定保存の run ディレクトリの根 (env より強い。``save=False`` では使われない)
+    :param save: False で既定保存を無効化 (``keep`` は止めない)
     :param ext: ``.gpx`` / TOPAS プロジェクトディレクトリは ``""``
     :param context: 文脈 (None なら ambient を見る)
     """
-    if not save:
-        return ArtifactPlan(path=None, run_dir="")
     if keep:
         return ArtifactPlan(path=str(keep), run_dir="")
+    if not save:
+        return ArtifactPlan(path=None, run_dir="")
     return plan_artifact(data_paths, context, ext=ext, explicit_dir=gpx_dir, now=now)
 
 

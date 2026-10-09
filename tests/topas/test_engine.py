@@ -342,6 +342,28 @@ def test_real_pbso4_save_gpx_false_writes_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / DEFAULT_DIR_NAME).exists()
 
 
+def test_explicit_keep_project_survives_save_gpx_false(stub_driver, tmp_path):
+    """★明示 ``keep_project`` は ``save_gpx=False`` でもそのパスへ残る (2026-10-09 実測)。
+
+    ``run_topas_rietveld(keep_project=<dir>, save_gpx=False)`` が <dir> に何も残さず、例外も
+    出さなかった。opt-out が止めるのは既定保存であって名指しされた保存ではない (優先順位の
+    正本は `gpxstore.plan_output`)。ここは **engine の配線**を縛る — 方針関数だけ直しても
+    engine が ``save_gpx`` で先に分岐すれば、方針関数のテストは緑のまま同じ欠落が戻るため。
+    """
+    stub_driver([30.0])
+    keep = tmp_path / "kept-project"
+    ledger = Ledger()
+
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0)), ledger=ledger,
+        keep_project=str(keep), save_gpx=False,
+    )
+
+    assert result.project_path == str(keep)
+    assert keep.is_dir()
+    assert "m12_project_saved" in [e.kind for e in ledger.entries]
+
+
 def test_validity_gate_rejects_non_physical_uiso(stub_driver, monkeypatch):
     """**Rwp が下がっても Uiso が負なら不合格**にする (中立層の `check_validity` を共用)。
 

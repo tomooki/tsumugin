@@ -18,6 +18,11 @@
 **opt-out**: `save_gpx=False` (呼び出し単位) / `TSUMUGIN_GPX_DIR=none` (環境単位)。
 **上書き**: 明示 `gpx_dir` > `TSUMUGIN_GPX_DIR` > データ隣接。**明示指定は `none` にも勝つ**
 (頼まれた保存を環境変数で黙って捨てない)。
+**明示パス** (`keep_gpx` / `keep_project`) は opt-out (`save_gpx=False` / `none`) **にも勝つ**
+(2026-10-09 決定、順位の正本は `gpxstore.plan_output`)。opt-out が止めるのは**既定保存**
+(置き場所を tsumugin が決める保存) であり、名指しされた保存ではない。明示パスは単独でも既定保存を
+置き換えるので、併用は「そのパスにだけ残す」と一意に読める。`gpx_dir` は保存の依頼ではなく
+既定保存の置き場所なので、`save_gpx=False` と併用すると使われない。
 
 ## 2. なぜ「棄却された fit」まで残すのか
 

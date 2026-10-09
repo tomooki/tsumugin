@@ -302,12 +302,39 @@ def test_plan_output_saves_by_default(tmp_path, monkeypatch):
 
 
 def test_plan_output_save_false_is_the_opt_out(tmp_path):
-    """``save=False`` で完全に無効化できる (ディスクを使わせない明示の逃げ道)。"""
+    """``save=False`` で**既定保存**を完全に無効化できる (ディスクを使わせない明示の逃げ道)。"""
     from tsumugin.gpxstore import plan_output
 
     plan = plan_output([str(tmp_path / "a.xye")], save=False)
 
     assert plan.path is None
+
+
+@pytest.mark.parametrize("opt_out", ["save_false", "env_none", "disabled_context"])
+def test_plan_output_explicit_keep_beats_every_opt_out(tmp_path, monkeypatch, opt_out):
+    """★明示 ``keep`` はどの opt-out (``save=False`` / env ``none`` / 無効文脈) にも勝つ。
+
+    opt-out が止めるのは**既定保存** (置き場所を tsumugin が決める保存) であって、呼び出し側が
+    パスを名指しした保存ではない。2026-10-09 に ``run_topas_rietveld(keep_project=<dir>,
+    save_gpx=False)`` が <dir> に何も残さず、例外も ledger も出さなかった = 頼まれた保存を
+    黙って捨てた (「明示指定は黙って無効化しない」違反)。``keep`` は単独でも既定保存を
+    置き換える (索引も書かない) ので、併用は矛盾ではなく「このパスにだけ残す」と読める。
+    """
+    from tsumugin.gpxstore import plan_output
+
+    target = tmp_path / "explicit" / "refined.gpx"
+    kwargs: dict[str, object] = {"keep": str(target)}
+    if opt_out == "save_false":
+        kwargs["save"] = False
+    elif opt_out == "env_none":
+        monkeypatch.setenv(ENV_VAR, DISABLED)
+    else:
+        kwargs["context"] = GpxContext(enabled=False)
+
+    plan = plan_output([str(tmp_path / "a.xye")], **kwargs)
+
+    assert plan.path == str(target)
+    assert plan.run_dir == ""  # 明示パスは索引を書かない (keep 単独と同じ扱い)
 
 
 def test_plan_output_uses_the_ambient_context_for_naming(tmp_path, monkeypatch):
