@@ -258,3 +258,16 @@ def test_topas_phase_spec_refusal_is_documented(analyze_text: str):
     assert "place_hd_mix" in section and "GSAS で回す" in section
     assert "uiso_frozen_all" in section, "凍結できたかの確かめ方が書かれていない"
     assert "回し直す" in section, "以前の TOPAS 結果が凍結を無視していたことの扱いが無い"
+
+
+def test_label_refusal_is_documented_for_both_engines(analyze_text: str):
+    """相の指定のラベル検査は**両エンジン共通** (`autorietveld.model.check_phase_spec_labels`)。
+
+    以前の手順書は「綴り違いのラベルは GSAS でも黙って飛ばされるだけ」と書いていた (当時は事実)。
+    GSAS も精密化の前に止めるようになったので、③ が JSON を組む手順 1 に「ラベルは CIF と完全一致・
+    誤りは InvalidPhaseSpecError で返る」が書かれ、古い記述が残っていないこと。
+    """
+    assert "GSAS でも黙って飛ばされる" not in analyze_text
+    step1 = analyze_text.split("1. **入力を組み立てる**", 1)[1].split("\n2. ", 1)[0]
+    assert "InvalidPhaseSpecError" in step1, "手順 1 にラベルの誤りの返り方が無い"
+    assert "_atom_site_label" in step1, "何と一致させるかが書かれていない"

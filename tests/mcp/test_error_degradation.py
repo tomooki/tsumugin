@@ -93,7 +93,7 @@ def test_degrade_oserror_converts_oserror_to_dict():
 
 
 def test_degrade_oserror_does_not_swallow_non_oserror():
-    """OSError 以外 (論理バグ) は透過させる — 握り潰さない。"""
+    """OSError とドメインエラー (TsumuginError) 以外 = 論理バグは透過させる — 握り潰さない。"""
 
     @degrade_oserror
     def logic_bug():
@@ -114,3 +114,68 @@ def test_degrade_oserror_preserves_signature():
     assert params == ["session", "x", "y"]
     # unwrap で元関数へ到達できる (layer_coverage の AST 網が依存)
     assert inspect.unwrap(tool).__name__ == "tool"
+
+
+# --- 相の指定の誤り (InvalidPhaseSpecError) — 精密化の前の入力の誤り ---
+
+
+def _refuse(*args, **kwargs):
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    raise InvalidPhaseSpecError(
+        "相 'a': 相に無い原子ラベルがあります: {'frozen_uiso_labels': ['Ox']}"
+    )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda: auto_rietveld([_H], [_P], runner=_refuse), id="auto_rietveld"),
+        pytest.param(
+            lambda: auto_rietveld([_H], [_P], search=["default"], search_runner=_refuse),
+            id="auto_rietveld-search",
+        ),
+        pytest.param(
+            lambda: auto_rietveld([_H], [_P], multistart={"n_starts": 2}, search_runner=_refuse),
+            id="auto_rietveld-multistart",
+        ),
+        pytest.param(lambda: sequential_rietveld([_F], [_P], runner=_refuse), id="sequential"),
+        pytest.param(
+            lambda: anchored_sequential([_F], [_P], anchor_table={"0": ["a"]}, runner=_refuse),
+            id="anchored_sequential",
+        ),
+        pytest.param(
+            lambda: compare_structure_models([_H], [{"name": "m", "phases": [_P]}], runner=_refuse),
+            id="compare_structure_models",
+        ),
+    ],
+)
+def test_tools_degrade_a_phase_spec_error(call):
+    """GSAS 経路は相を読んで原子ラベルが分かった時点で相の指定を検査する (`check_phase_spec_labels`)。
+    逐次系ではそれが最初のフレームを回す中なので、入力の解析を囲む try では捕まらない。
+    探索・収束確認は**候補の失敗・発散に畳まずに** InvalidPhaseSpecError として返す
+    (畳むと ③ は綴りではなく手順や構造を疑う)。"""
+    out = call()
+    assert isinstance(out, dict)
+    assert out.get("error_type") == "InvalidPhaseSpecError", out
+    assert "Ox" in out["error"]
+
+
+def test_sequential_rietveld_degrades_other_domain_errors():
+    """逐次系は GSAS を入力解析の try の外で回すので、GSAS 未導入などのドメインエラーも
+    ここで縮退しないと ② を越える (`_run_degrading_domain_errors` と同じ線引き)。"""
+    from tsumugin.errors import GSASUnavailableError
+
+    def _no_gsas(*a, **k):
+        raise GSASUnavailableError("GSAS-II が見つかりません")
+
+    out = sequential_rietveld([_F], [_P], runner=_no_gsas)
+    assert out.get("error_type") == "GSASUnavailableError", out
+
+
+def test_degrade_oserror_converts_a_phase_spec_error_to_dict():
+    @degrade_oserror
+    def bad():
+        _refuse()
+
+    assert bad()["error_type"] == "InvalidPhaseSpecError"

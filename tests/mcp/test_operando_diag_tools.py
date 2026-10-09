@@ -1171,3 +1171,23 @@ def test_check_phase_set_returns_the_series_it_judged():
     lowered = check_phase_set(_oscillating_seq(scales), min_amplitude=0.05)
     assert next(p for p in lowered["phases"] if p["phase"] == "cubic")["flagged"] is True
     json.dumps(out, allow_nan=False)
+
+
+def test_repair_frames_degrades_a_phase_spec_error():
+    """修復の再精密化で engine が相の指定を拒否しても、例外で ② を越えない。"""
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    frame_specs = _base_frames(5)
+    fr_results = tuple(
+        _frame(i, r, {"alpha": 1.0}, cells=GOOD_CELL) for i, r in enumerate([8.0, 8.0, 15.0, 8.0, 8.0])
+    )
+    result = seq_result_to_dict(SequentialRietveldResult(frames=fr_results))
+
+    def runner(frame, phases, initial_cells):
+        raise InvalidPhaseSpecError("相 'alpha': 相に無い原子ラベルがあります: ['Ox']")
+
+    out = repair_frames(
+        result, [f.to_dict() for f in frame_specs], [ALPHA.to_dict()], runner=runner,
+    )
+    assert out.get("error_type") == "InvalidPhaseSpecError", out
+    assert "Ox" in out["error"]
