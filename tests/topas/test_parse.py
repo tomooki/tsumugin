@@ -130,9 +130,18 @@ def test_no_limit_hits_when_clean():
     assert limit_hits_from_out("a @ 8.48`_0.0001\n") == ()
 
 
-def test_missing_esd_is_none():
+def test_value_without_backtick_is_not_refined():
     vals = refined_values_from_out("a @ 8.48\n")
-    assert vals == []  # esd 記法が無い = 精密化されていない値は拾わない
+    assert vals == []  # バッククォートが無い = 精密化されていない値は拾わない
+
+
+def test_backticked_value_without_esd_has_none_esd():
+    """``do_errors`` 無しの精密化値 (``8.482776```) は拾い、esd は ``None`` (0 にしない)。
+
+    0 にすると「完全に決まった値」と読める。esd が無いのは計算しなかったからである。
+    """
+    vals = refined_values_from_out("      a PbSO4_a  8.482776`\n")
+    assert vals == [(pytest.approx(8.482776), None)]
 
 
 def test_refined_values_skip_what_mvw_reports():
