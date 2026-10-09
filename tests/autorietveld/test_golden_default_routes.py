@@ -160,9 +160,15 @@ def test_default_route_matches_golden_bit_for_bit(
                 f"採取時 {golden[route]['environment']} / 現在 {env}"
             )
 
-    fp = fingerprint(run())
+    result = run()
+    fp = fingerprint(result)
     # 非トートロジー: 指紋が空のまま一致するのを防ぐ (抽出が壊れても「一致」してしまう)。
     assert fp["stages"] and fp["cells"] and fp["coords"], f"指紋が空: {fp}"
+    # P1a タスク 1 の観測の整合: GSAS 経路は revert 理由を必ず記録する (受理なら None)。
+    for s in result.stage_results:
+        assert (s.revert_reason is not None) == bool(s.reverted), (
+            f"段 {s.label!r}: reverted={s.reverted} なのに revert_reason={s.revert_reason!r}"
+        )
 
     if capture:
         golden[route] = {"environment": env, "fingerprint": _jsonable(fp)}

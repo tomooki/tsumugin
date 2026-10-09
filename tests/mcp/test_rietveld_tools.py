@@ -80,3 +80,28 @@ def test_seed_profile_with_search_is_refused_not_silently_dropped():
     out = auto_rietveld([], [], seed_profile=True, search=["polish"])
     assert "error" in out and out["error_type"] == "UnsupportedBackendCombination"
     assert "seed_profile" in out["error"]
+
+
+def test_stage_revert_reason_and_noop_reach_layer_two_output():
+    """fit-then-judge P1a タスク 1: 段の revert 理由と no-op は ③ が読める形で出す。
+
+    note の文言に頼らせない (文言は変わってよい) — 理由は語彙の決まった独立キーにする。
+    """
+    from tsumugin.autorietveld.model import AutoRietveldResult, StageResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(
+            StageResult("scale", 30.0, 3.0, 2, True),
+            StageResult("cell", 30.0, 3.0, 2, False, reverted=True, revert_reason="gate:cell"),
+            StageResult("profile", 30.0, 3.0, 2, True, is_noop=True),
+        ),
+        final_rwp=30.0, final_gof=3.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    stages = payload["stages"]
+    assert [s["revert_reason"] for s in stages] == [None, "gate:cell", None]
+    assert [s["noop"] for s in stages] == [False, False, True]

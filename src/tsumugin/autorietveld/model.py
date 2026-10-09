@@ -674,6 +674,12 @@ class StageResult:
         (``None`` = penalty なし = ``rwp`` と同義)。**出版値ではない** — 拘束の重みに依存する
         目的関数の値であって、データへの合わなさではない。拘束がどれだけ引いているかを
         ``rwp_penalized`` と ``rwp`` の差として読むための診断値として残す。
+    :param revert_reason: revert した理由 (`stagepolicy.revert_reason`: ``worse`` /
+        ``unconverged`` / ``non_finite`` / ``error`` / ``gate:cell`` / ``gate:profile``)。
+        ``None`` は「受理」か「理由を記録しない経路」— 必ず ``reverted`` と組で読む。
+        **観測のみ** (判定には使わない)。
+    :param is_noop: 受理されたが何も動いていない段 (REQ-SAR-102 の検出。ledger
+        ``m7_stage_noop`` と同じ判定を結果にも載せる)。**観測のみ**。
     """
 
     label: str
@@ -684,6 +690,8 @@ class StageResult:
     reverted: bool = False
     note: str = ""
     rwp_penalized: "float | None" = None
+    revert_reason: "str | None" = None
+    is_noop: bool = False
 
 
 @dataclass(frozen=True)

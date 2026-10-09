@@ -66,7 +66,7 @@ from .model import (
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
-from .stagepolicy import StageMetrics, decide_stage
+from .stagepolicy import StageMetrics, decide_stage, revert_reason
 from .validity import (
     check_initial_uiso,
     check_profile_physicality,
@@ -2537,6 +2537,9 @@ def run_auto_rietveld(
             # 同じ parmFrozen へ書く esd プルーニング/救済との取り違えは、窓を狭めるのではなく
             # **凍らせた名前を基準側へ足す** ことで切り分ける (`_bound_hit_baseline`)。
             frozen_before = _frozen_variables(gpx) if box_bounds else set()
+            # rwp を inf にした直接の原因 (`stagepolicy.REVERT_CAUSES`)。revert 理由の記録専用で
+            # 判定には使わない (fit-then-judge P1a タスク 1)。
+            inf_cause: str | None = None
             try:
                 auto_frozen = _apply_stage(
                     gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage,
@@ -2630,13 +2633,17 @@ def run_auto_rietveld(
                 # 格子崩壊 (0 近傍/非有限) またはプロファイル非物理化 (幅関数がレンジ内で負・散乱/立上り
                 # 係数が非物理) は発散とみなし inf 化 → 既存 revert 経路 (物理妥当性ガード)。
                 # プロファイルガードは解放済パラメータのみ hard 判定するため T1〜T4 は非回帰。
-                if not _cells_physical(g2phases) or not _profiles_physical(
-                    g2hists, radiations, histograms
-                ).passed:
+                # 短絡評価の順序 (格子 → プロファイル) は従来の ``or`` と同じに保つ。
+                if not _cells_physical(g2phases):
+                    inf_cause = "gate:cell"
+                elif not _profiles_physical(g2hists, radiations, histograms).passed:
+                    inf_cause = "gate:profile"
+                if inf_cause is not None:
                     rwp, gof, converged, rwp_penalized = (
                         float("inf"), float("inf"), False, None
                     )
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
+                inf_cause = "error"
                 rwp, gof, nvar, converged = float("inf"), float("inf"), 0, False
                 rwp_penalized = None
                 # 失敗した精密化の penalty は**測れていない**。前段の値を残すと「この段の試行で
@@ -2875,6 +2882,8 @@ def run_auto_rietveld(
                     reverted=reverted,
                     note=note,
                     rwp_penalized=rwp_penalized,
+                    revert_reason=revert_reason(decision, cause=inf_cause),
+                    is_noop=decision.is_noop,
                 )
             )
             # 【penalty 分離の記録】: 拘束を χ² に入れた段だけ、分離の**材料ごと**残す。

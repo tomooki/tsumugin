@@ -132,6 +132,10 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
                 "n_params": s.n_params,
                 "converged": bool(s.converged),
                 "reverted": bool(s.reverted),
+                # revert の理由と no-op は語彙の決まった独立キーで出す (note の文言に頼らせない)。
+                #   ``revert_reason=None`` は受理か理由を記録しない経路 — ``reverted`` と組で読む。
+                "revert_reason": s.revert_reason,
+                "noop": bool(s.is_noop),
                 # 【note を落とさない (★ ②到達可能性)】: 段の所見 (``unconverged`` /
                 #   ``noop`` / ``pruned=N`` / ``bound_hits=N`` / ``auto_frozen_cells=…``) は
                 #   **ここにしか出ない**。ledger は ② の戻り値に含まれないので、note を落とすと
