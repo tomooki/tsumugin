@@ -505,6 +505,18 @@ def test_reported_tier_uses_the_same_rule_that_ranked_the_candidates():
     assert lenient_rows[0]["converged"] is False and strict_rows[0]["converged"] is False
 
 
+def test_search_config_require_convergence_null_keeps_the_default_on():
+    # 【目的】: 既定 True のノブを ③ が「未指定」の null で送ったとき、旧 `bool(None)` が
+    #   False へ潰して**収束していない best を選び得る**設定に黙って切り替えていた。
+    assert SearchConfig.from_dict({"require_convergence": None}).require_convergence is True
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1])
+def test_search_config_require_convergence_rejects_non_booleans(value):
+    with pytest.raises(ValueError, match="require_convergence は真偽値"):
+        SearchConfig.from_dict({"require_convergence": value})
+
+
 def test_ledger_candidate_rows_use_the_configured_tier_rule():
     # 【目的】: ledger `m7_search_candidate` も同じ規則で書かれること (ledger と応答の食い違い禁止)。
     from tsumugin.store import Ledger

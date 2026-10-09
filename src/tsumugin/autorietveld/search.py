@@ -91,6 +91,7 @@ from .model import (
     RefinementStage,
     StabilityOptions,
     StageResult,
+    _spec_bool,
 )
 from .agreement import (
     CorroborationReport,
@@ -220,7 +221,7 @@ class SearchConfig:
             disagreement_rwp_eps=float(d.get("disagreement_rwp_eps", 0.5)),  # type: ignore[arg-type]
             cell_rel_tol=float(d.get("cell_rel_tol", 1.0e-3)),  # type: ignore[arg-type]
             fraction_abs_tol=float(d.get("fraction_abs_tol", 0.02)),  # type: ignore[arg-type]
-            require_convergence=bool(d.get("require_convergence", True)),
+            require_convergence=_spec_bool(d, "require_convergence", True, "search_config"),
         )
 
 

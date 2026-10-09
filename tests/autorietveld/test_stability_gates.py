@@ -174,6 +174,33 @@ def test_unknown_box_key_is_rejected_not_ignored():
         StabilityOptions.from_dict({"bound_cel": 0.05})
 
 
+_STABILITY_BOOLS = (
+    "require_convergence",
+    "detect_noop_stages",
+    "record_weak_vars",
+    "report_undetermined",
+    "polish_frozen_undetermined",
+    "prune_weak_vars_each_stage",
+    "rescue_freeze_on_failure",
+    "record_correlations",
+    "bound_size_strain",
+    "enable_restraints",
+)
+
+
+@pytest.mark.parametrize("key", _STABILITY_BOOLS)
+def test_bool_gate_rejects_the_string_false(key):
+    # 【目的】: ``bool("false") is True`` — ③ が JSON 文字列で送った "false" が**ゲートを有効に**
+    #   しないこと (旧 `bool(d.get(...))` の縮退)。
+    with pytest.raises(ValueError, match=f"{key} は真偽値"):
+        StabilityOptions.from_dict({key: "false"})
+
+
+@pytest.mark.parametrize("key", _STABILITY_BOOLS)
+def test_bool_gate_null_is_the_default(key):
+    assert getattr(StabilityOptions.from_dict({key: None}), key) is False
+
+
 # ---------------------------------------------------------------------------
 # REQ-SAR-101 収束判定 + 追加サイクル
 # ---------------------------------------------------------------------------

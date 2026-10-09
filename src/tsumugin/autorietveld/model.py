@@ -9,6 +9,8 @@ GSAS-II 非依存の純データ層。実 CIF/相ファイル + 実データ + �
 
 from __future__ import annotations
 
+import numbers
+import os
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Mapping
@@ -16,6 +18,154 @@ from typing import Mapping
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
 from .diagnostics import WeakVariable
+
+
+# ---------------------------------------------------------------------------
+# JSON spec の値の読み取り (`from_dict` 共通)
+# ---------------------------------------------------------------------------
+#
+# ③ (LLM) は JSON しか送れず、「未指定」のつもりで null を送ってくる。規則は 2 つ:
+#
+# 1. **キー欠落と null は既定値** (= 未指定)。``to_dict`` 自身が Optional フィールドを null で
+#    出し (`free_uiso_labels` の None = 未指定, #189)、② はそれを ``specs`` として ③ へ返すので、
+#    ③ が学ぶ null の意味は「未指定」である。旧実装は ``bool(d.get("refine_cell", True))`` で
+#    null を ``bool(None) == False`` = **格子凍結**に読み替えていた (例外も警告も出ず、格子が
+#    初期値のまま出版される)。既定の無い必須キーの null は ValueError。
+# 2. **値があるなら型が合うものだけ受ける**。``bool("false") is True``、裸の文字列 "O7" は
+#    ``tuple()`` で ("O", "7") に分解され、engine はラベルを fail-open で照合するので
+#    **何も凍結しない**。どれも ③ の意図と別の解析を黙って走らせるので ValueError にする
+#    (② は error dict へ縮退させる)。
+#
+# ⚠ `_config_spec` (PhaseIdConfig/AnchorConfig) は非 Optional の null を ValueError にしており
+# 規則 1 と異なる。あちらは往復 spec ではなく policy 定数で、「null で無効化したつもり」を
+# 既定値で走らせないための選択である。
+
+
+def _spec_bool(d: Mapping[str, object], key: str, default: bool, spec: str) -> bool:
+    """真の bool のみ受ける (null/欠落は ``default``)。0/1 も拒む — JSON の真偽値は数値と別物。"""
+    value = d.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{spec}.{key} は真偽値 (true/false) である必要があります: {value!r} "
+            f"({type(value).__name__})。文字列 \"false\" は Python では真になるため、"
+            "黙って逆の意味になるのを防いでいます。既定 ({default}) にするならキーを省略するか null"
+        )
+    return value
+
+
+def _spec_required_str(d: Mapping[str, object], key: str, spec: str) -> str:
+    """既定の無い文字列 (パス/相名)。欠落は従来どおり KeyError (呼び出し側が言い換える)。"""
+    value = d[key]
+    if value is None:
+        raise ValueError(
+            f"{spec}.{key} に null は指定できません (必須・既定値なし)。"
+            "str(None) の \"None\" を名前やパスとして黙って使わないために拒否します"
+        )
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{spec}.{key} は文字列である必要があります: {value!r} ({type(value).__name__})"
+        )
+    return value
+
+
+def _spec_str(d: Mapping[str, object], key: str, default: str, spec: str) -> str:
+    value = d.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{spec}.{key} は文字列である必要があります: {value!r} ({type(value).__name__})"
+        )
+    return value
+
+
+def _spec_float(
+    d: Mapping[str, object], key: str, default: "float | None", spec: str
+) -> "float | None":
+    """数値のみ受ける。bool は拒む (``float(True) == 1.0`` で「重み 1」を黙って作らない)。"""
+    value = d.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(
+            f"{spec}.{key} は数値である必要があります: {value!r} ({type(value).__name__})"
+        )
+    return float(value)
+
+
+def _spec_opt_int(d: Mapping[str, object], key: str, spec: str) -> "int | None":
+    """整数のみ受ける (``2.0`` は許し ``2.5`` は拒む — 黙って切り捨てない)。null/欠落は None。"""
+    value = d.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(
+            f"{spec}.{key} は整数である必要があります: {value!r} ({type(value).__name__})"
+        )
+    if not isinstance(value, numbers.Integral) and not float(value).is_integer():
+        raise ValueError(
+            f"{spec}.{key} は整数である必要があります: {value!r} "
+            "(切り捨てると黙って別の値になるため拒否します)"
+        )
+    return int(value)
+
+
+def _label_tuple(value: object, name: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{name} は原子ラベル文字列のリストである必要があります: {value!r} "
+            f"({type(value).__name__})。裸の文字列は 1 文字ずつに分解され、存在しないラベルとして"
+            "黙って無視されます (1 個なら [\"O7\"] と書く)"
+        )
+    bad = [v for v in value if not isinstance(v, str)]
+    if bad:
+        raise ValueError(
+            f"{name} の要素は原子ラベル文字列である必要があります: {bad!r}"
+        )
+    return tuple(value)
+
+
+def _spec_labels(
+    d: Mapping[str, object], key: str, spec: str, *, default: "tuple[str, ...] | None" = ()
+) -> "tuple[str, ...] | None":
+    """原子ラベル列。null/欠落は ``default`` (`free_uiso_labels` だけ None = 未指定)。
+
+    ``[]`` は null と別物として ``()`` を返す (#189: ``free_uiso_labels=[]`` は「凍結」)。
+    """
+    value = d.get(key)
+    if value is None:
+        return default
+    return _label_tuple(value, f"{spec}.{key}")
+
+
+def _spec_label_groups(
+    d: Mapping[str, object], key: str, spec: str
+) -> tuple[tuple[str, ...], ...]:
+    """原子ラベルの組の列。null/欠落は ``()``。
+
+    平坦な ``["Fe1", "Al1"]`` は旧実装で (("F","e","1"), ("A","l","1")) になり拘束が 1 本も
+    張られなかったので、組でない要素は拒む。
+    """
+    value = d.get(key)
+    if value is None:
+        return ()
+    name = f"{spec}.{key}"
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{name} は原子ラベルの組 (リスト) のリストである必要があります: {value!r} "
+            f"({type(value).__name__})"
+        )
+    bad = [g for g in value if not isinstance(g, (list, tuple))]
+    if bad:
+        raise ValueError(
+            f"{name} の要素は原子ラベルの組 (リスト) である必要があります: {bad!r}。"
+            "1 組だけなら [[\"Fe1\", \"Al1\"]] のように入れ子にしてください"
+        )
+    return tuple(_label_tuple(g, f"{name}[{i}]") for i, g in enumerate(value))
 
 
 class Radiation(Enum):
@@ -218,22 +368,25 @@ class HistogramSpec:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "HistogramSpec":
-        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。
+
+        キー欠落/null は既定値、型違いは ValueError (冒頭「JSON spec の値の読み取り」の規則)。
+        """
         limits = d.get("two_theta_limits")
         return cls(
-            data_path=str(d["data_path"]),
-            instrument_path=str(d["instrument_path"]),
+            data_path=_spec_required_str(d, "data_path", "HistogramSpec"),
+            instrument_path=_spec_required_str(d, "instrument_path", "HistogramSpec"),
             radiation=Radiation(d["radiation"]),
             geometry=Geometry(d["geometry"]),
-            data_format=str(d.get("data_format", "GSAS")),
-            bank=d.get("bank"),  # type: ignore[arg-type]
+            data_format=_spec_str(d, "data_format", "GSAS", "HistogramSpec"),
+            bank=_spec_opt_int(d, "bank", "HistogramSpec"),
             two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
             excluded_regions=tuple(
                 (float(r[0]), float(r[1])) for r in (d.get("excluded_regions") or ())
             ),
-            temperature=d.get("temperature"),  # type: ignore[arg-type]
-            weight=float(d.get("weight", 1.0)),
-            absorption=float(d.get("absorption", 0.0)),
+            temperature=_spec_float(d, "temperature", None, "HistogramSpec"),
+            weight=_spec_float(d, "weight", 1.0, "HistogramSpec"),  # type: ignore[arg-type]
+            absorption=_spec_float(d, "absorption", 0.0, "HistogramSpec"),  # type: ignore[arg-type]
             instrument_profile=(
                 InstrumentProfile.from_dict(d["instrument_profile"])  # type: ignore[arg-type]
                 if d.get("instrument_profile") is not None
@@ -338,32 +491,27 @@ class PhaseSpec:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "PhaseSpec":
-        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
-        groups = d.get("mixed_occupancy_groups") or ()
-        free_occ = d.get("free_occupancy_labels") or ()
-        equiv = d.get("occupancy_equiv_groups") or ()
-        # `or ()` は null と [] を同じ () に潰す (#189)。キー欠落/null = 未指定 (None)、
-        # 明示的な [] = 凍結 として区別する。
-        raw_uiso = d.get("free_uiso_labels")
-        free_uiso = None if raw_uiso is None else tuple(str(a) for a in raw_uiso)
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。
+
+        キー欠落/null は既定値、型違いは ValueError (冒頭「JSON spec の値の読み取り」の規則)。とりわけ
+        ``refine_cell: null`` は既定の True (格子を精密化) であって凍結ではない。
+        """
+        s = "PhaseSpec"
         return cls(
-            structure_path=str(d["structure_path"]),
-            phase_name=str(d["phase_name"]),
-            format_hint=str(d.get("format_hint", "CIF")),
-            mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
-            free_occupancy_labels=tuple(str(a) for a in free_occ),
-            occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
-            free_uiso_labels=free_uiso,
-            position_equiv_groups=tuple(
-                tuple(str(a) for a in g) for g in (d.get("position_equiv_groups") or ())
-            ),
-            occupancy_sum_groups=tuple(
-                tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
-            ),
-            frozen_coord_labels=tuple(str(a) for a in (d.get("frozen_coord_labels") or ())),
-            frozen_uiso_labels=tuple(str(a) for a in (d.get("frozen_uiso_labels") or ())),
-            refine_cell=bool(d.get("refine_cell", True)),
-            temperature=d.get("temperature"),  # type: ignore[arg-type]
+            structure_path=_spec_required_str(d, "structure_path", s),
+            phase_name=_spec_required_str(d, "phase_name", s),
+            format_hint=_spec_str(d, "format_hint", "CIF", s),
+            mixed_occupancy_groups=_spec_label_groups(d, "mixed_occupancy_groups", s),
+            free_occupancy_labels=_spec_labels(d, "free_occupancy_labels", s),  # type: ignore[arg-type]
+            occupancy_equiv_groups=_spec_label_groups(d, "occupancy_equiv_groups", s),
+            # null/欠落 = 未指定 (None, 全原子解放) と [] = 凍結 を潰さない (#189)。
+            free_uiso_labels=_spec_labels(d, "free_uiso_labels", s, default=None),
+            position_equiv_groups=_spec_label_groups(d, "position_equiv_groups", s),
+            occupancy_sum_groups=_spec_label_groups(d, "occupancy_sum_groups", s),
+            frozen_coord_labels=_spec_labels(d, "frozen_coord_labels", s),  # type: ignore[arg-type]
+            frozen_uiso_labels=_spec_labels(d, "frozen_uiso_labels", s),  # type: ignore[arg-type]
+            refine_cell=_spec_bool(d, "refine_cell", True, s),
+            temperature=_spec_float(d, "temperature", None, s),
         )
 
 
@@ -630,15 +778,15 @@ class StabilityOptions:
             )
         tokens = d.get("esd_ratio_exempt_tokens")
         return cls(
-            require_convergence=bool(d.get("require_convergence", False)),
+            require_convergence=_spec_bool(d, "require_convergence", False, "stability"),
             max_shift_esd=float(d.get("max_shift_esd", 1.0)),  # type: ignore[arg-type]
             extra_cycles=int(d.get("extra_cycles", 1)),  # type: ignore[arg-type]
-            detect_noop_stages=bool(d.get("detect_noop_stages", False)),
-            record_weak_vars=bool(d.get("record_weak_vars", False)),
-            report_undetermined=bool(d.get("report_undetermined", False)),
-            polish_frozen_undetermined=bool(d.get("polish_frozen_undetermined", False)),
-            prune_weak_vars_each_stage=bool(d.get("prune_weak_vars_each_stage", False)),
-            rescue_freeze_on_failure=bool(d.get("rescue_freeze_on_failure", False)),
+            detect_noop_stages=_spec_bool(d, "detect_noop_stages", False, "stability"),
+            record_weak_vars=_spec_bool(d, "record_weak_vars", False, "stability"),
+            report_undetermined=_spec_bool(d, "report_undetermined", False, "stability"),
+            polish_frozen_undetermined=_spec_bool(d, "polish_frozen_undetermined", False, "stability"),
+            prune_weak_vars_each_stage=_spec_bool(d, "prune_weak_vars_each_stage", False, "stability"),
+            rescue_freeze_on_failure=_spec_bool(d, "rescue_freeze_on_failure", False, "stability"),
             rescue_max_freeze=int(d.get("rescue_max_freeze", 1)),  # type: ignore[arg-type]
             rescue_max_rounds=int(d.get("rescue_max_rounds", 2)),  # type: ignore[arg-type]
             esd_ratio_exempt_tokens=(
@@ -646,19 +794,19 @@ class StabilityOptions:
                 if tokens is None
                 else tuple(str(t) for t in tokens)  # type: ignore[union-attr]
             ),
-            record_correlations=bool(d.get("record_correlations", False)),
+            record_correlations=_spec_bool(d, "record_correlations", False, "stability"),
             corr_threshold=float(d.get("corr_threshold", 0.9)),  # type: ignore[arg-type]
             max_recorded_pairs=int(d.get("max_recorded_pairs", 10)),  # type: ignore[arg-type]
             # WS-2: None (無効) と 0.0 (「幅ゼロの箱」= 誤設定) を潰さないため float() は
             # 値がある場合のみ通す。
             bound_cell=_opt_float(d.get("bound_cell")),
             bound_displacement=_opt_float(d.get("bound_displacement")),
-            bound_size_strain=bool(d.get("bound_size_strain", False)),
+            bound_size_strain=_spec_bool(d, "bound_size_strain", False, "stability"),
             min_size=float(d.get("min_size", 1.0e-3)),  # type: ignore[arg-type]
             max_size=float(d.get("max_size", 1.0e4)),  # type: ignore[arg-type]
             min_mustrain=float(d.get("min_mustrain", 1.0e-3)),  # type: ignore[arg-type]
             max_mustrain=float(d.get("max_mustrain", 1.0e5)),  # type: ignore[arg-type]
-            enable_restraints=bool(d.get("enable_restraints", False)),
+            enable_restraints=_spec_bool(d, "enable_restraints", False, "stability"),
         )
 
 
