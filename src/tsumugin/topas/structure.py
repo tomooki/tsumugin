@@ -386,10 +386,16 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
         for group in groups[name]:
             for label in group:
                 if label in owner:
+                    # 【GSAS では正しい入力でありうる】: D/H 混合 (`deuterium.place_hd_mix`) は
+                    #   親水 O を 2 つの和の組 (O = D1 + H1, O = D2 + H2) に入れ、GSAS は両方を
+                    #   同時に満たす。TOPAS 経路の写し方 (1 原子 = 1 つの式) では表せないので、
+                    #   「まとめろ」ではなく GSAS で回すよう案内する。
                     refuse(
                         f"原子 {label} の占有率が 2 つの拘束 (`{owner[label]}` と `{name}`) に"
-                        "入っています。INP では後に書いた方だけが効くため止めます "
-                        "(1 つの拘束にまとめてください)"
+                        "入っています。TOPAS 経路は 1 原子の占有率を 1 つの式でしか書けず、"
+                        "INP では後に書いた方だけが効くため止めます。GSAS は両方の拘束を同時に"
+                        "満たすので backend='gsasii' を使ってください (D/H 混合 `place_hd_mix` の"
+                        "「親水 O が 2 つの和の組に入る」形もこれ)"
                     )
                 owner[label] = name
 

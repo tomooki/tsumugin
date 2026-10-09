@@ -360,6 +360,25 @@ def test_atom_in_two_occupancy_constraints_is_refused():
                 "occupancy_sum_groups": (("S", "O1"),)})
 
 
+def test_hd_mix_parent_in_two_sum_groups_points_to_gsas():
+    """D/H 混合 (`deuterium.place_hd_mix`) は親水 O を 2 つの和の組に入れる — **GSAS では正しい
+    入力**で、GSAS は両方の拘束を同時に満たす。TOPAS では表せないので止めるが、案内は
+    「まとめろ」ではなく「GSAS で回せ」でなければならない (まとめると別のモデルになる)。"""
+    structure = _structure(
+        Atom("Ow", "O", 0.30, 0.10, 0.20, 0.8, 0.010),
+        Atom("DOw1", "H", 0.35, 0.12, 0.25, 0.6, 0.020),
+        Atom("HOw1", "H", 0.35, 0.12, 0.25, 0.2, 0.020),
+        Atom("DOw2", "H", 0.25, 0.12, 0.25, 0.6, 0.020),
+        Atom("HOw2", "H", 0.25, 0.12, 0.25, 0.2, 0.020),
+    )
+    with pytest.raises(InvalidPhaseSpecError, match="gsasii") as info:
+        _phase({"occupancy_sum_groups": (("Ow", "DOw1", "HOw1"), ("Ow", "DOw2", "HOw2")),
+                "position_equiv_groups": (("DOw1", "HOw1"), ("DOw2", "HOw2"))},
+               structure=structure)
+    assert "Ow" in str(info.value)
+    assert "まとめ" not in str(info.value), "GSAS では正しいモデルを「まとめろ」と案内している"
+
+
 # ---------------- 単一の真実源: 全フィールドを分類する ----------------
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
@@ -370,7 +370,7 @@ class PhaseSpec:
 def resolve_uiso_targets(
     labels: "Sequence[str]",
     free_uiso_labels: "Sequence[str] | None",
-    frozen_uiso_labels: "Sequence[str]" = (),
+    frozen_uiso_labels: "Iterable[str]" = (),
 ) -> "list[str]":
     """uiso 段で Uiso を解放する原子ラベルを解決する (#189/#211) — **両エンジン共通の 1 箇所**。
 

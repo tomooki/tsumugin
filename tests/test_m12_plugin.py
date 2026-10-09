@@ -254,5 +254,7 @@ def test_topas_phase_spec_refusal_is_documented(analyze_text: str):
     section = _topas_constraints_section(analyze_text)
     assert "InvalidPhaseSpecError" in section
     assert "TopasInputError" in section, "INP を組めない入力の error_type が書かれていない"
+    # D/H 混合 (`place_hd_mix`) の形は GSAS では正しい入力 — 「直せ」ではなく「GSAS で回せ」。
+    assert "place_hd_mix" in section and "GSAS で回す" in section
     assert "uiso_frozen_all" in section, "凍結できたかの確かめ方が書かれていない"
     assert "回し直す" in section, "以前の TOPAS 結果が凍結を無視していたことの扱いが無い"
