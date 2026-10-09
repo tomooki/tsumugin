@@ -194,6 +194,23 @@ def test_unknown_temperature_does_not_add_the_stage():
     assert "hydrostatic_strain" not in _order(stages)
 
 
+def test_phase_temperature_is_not_read_by_the_recipe():
+    """★相の `temperature` は TOPAS 経路でも温度差の判定に効かない (GSAS 側の同名テストと対)。
+
+    判定は両エンジン共通の `has_temperature_difference` (ヒストグラムの温度だけを見る)。
+    温度の無いヒストグラムに相の側で 295 K / 10 K を入れても段は立たず、レシピは同一。
+    """
+    hists = [_hist(), _cw_neutron(None)]
+    plain = [_phase("hot"), _phase("cold")]
+    tempered = [
+        PhaseSpec(structure_path="hot.cif", phase_name="hot", temperature=295.0),
+        PhaseSpec(structure_path="cold.cif", phase_name="cold", temperature=10.0),
+    ]
+    stages = build_topas_recipe(hists, tempered)
+    assert "hydrostatic_strain" not in _order(stages), "相の温度差で静水圧歪みの段が立った"
+    assert stages == build_topas_recipe(hists, plain), "相の temperature でレシピが変わった"
+
+
 # ---------------- TOF の幅を解放する段とその位置 (#179) ----------------
 
 

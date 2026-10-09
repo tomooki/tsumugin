@@ -81,6 +81,25 @@ def test_refine_with_revisions_applies_actions_and_reruns():
     assert out["specs"]["background_coeffs"] == 9
 
 
+def test_refine_with_revisions_refuses_a_phase_temperature_revision_before_running():
+    """★③ が相の temperature を「構造改訂」しても、精密化を回さず error dict で返す。
+
+    相の `temperature` はどのエンジンも読まないので、通すと再精密化がビット同一のまま
+    「改訂を適用した」結果が返る。精密化の前に止め、エラー文で置き場所を名指す。
+    """
+    called: list[AnalysisInput] = []
+
+    def runner(inp: AnalysisInput) -> AutoRietveldResult:
+        called.append(inp)
+        return _stub_runner(inp)
+
+    actions = [{"type": "ReviseStructure", "phase": "ph", "edits": {"temperature": 10.0}}]
+    out = refine_with_revisions([_H], [_P], actions, runner=runner)
+    assert out["error_type"] == "ValueError"
+    assert "histograms[].temperature" in out["error"]
+    assert not called, "拒否すべき改訂で精密化が回った"
+
+
 def test_closed_loop_e2e_with_stub_judge():
     # ③ (スタブ判断者) が auto_rietveld → propose → refine_with_revisions を反復駆動する
     result = auto_rietveld([_H], [_P], background_coeffs=6, runner=_stub_runner)
