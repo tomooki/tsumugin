@@ -23,8 +23,13 @@
 (置き場所を tsumugin が決める保存) であり、名指しされた保存ではない。明示パスは単独でも既定保存を
 置き換えるので、併用は「そのパスにだけ残す」と一意に読める。`gpx_dir` は保存の依頼ではなく
 既定保存の置き場所なので、`save_gpx=False` と併用すると使われない。
-**N 回精密化する入口** (探索/マルチスタート/モデル比較) は明示パスを**精密化前に ValueError で拒む**
-(`gpxstore.reject_single_keep`)。透過すると全候補が 1 パスへ上書きされ、候補ごとの成果物が残らない。
+**N 回精密化する入口** (`run_recipe_search` / `run_multistart_rietveld` / `compare_models` と、
+標準経路 `optimize_then_confirm`。`run_model_comparison` は `compare_models` 経由) は明示パスを
+**何も回す前・ディスクに触る前に ValueError で拒み** `gpx_dir` を案内する (`gpxstore.reject_single_keep`)。
+透過すると全候補が 1 パスへ上書きされ (マルチスタートは並列で競合)、候補ごとの成果物も残らない。
+剥がして警告する手は「頼まれたパスに何も置かない」点で黙った無効化と変わらず、各回のパスを派生する手は
+「このパス」を「この接頭辞」に読み替える (頼まれていない解釈) ので採らなかった。`None` / `""` は
+`plan_output` と同じく「指定なし」として通す。
 
 ## 2. なぜ「棄却された fit」まで残すのか
 

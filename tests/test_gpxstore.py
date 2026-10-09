@@ -352,6 +352,28 @@ def test_plan_output_explicit_keep_beats_every_opt_out(tmp_path, monkeypatch, op
     assert plan.run_dir == ""  # 明示パスは索引を書かない (keep 単独と同じ扱い)
 
 
+def test_reject_single_keep_lets_an_absent_keep_through():
+    """``keep_*=None`` / ``""`` は「指定なし」— ファンアウト入口はこれを拒まない。
+
+    引数を素通しで組み立てる呼び出し側は ``keep_gpx=None`` を明示的に渡しうる。「鍵がある」
+    だけで拒むと、そうした呼び出しが全部 ValueError になる (`plan_output` の ``if keep:``
+    と同じく**値**で判定する)。
+    """
+    from tsumugin.gpxstore import reject_single_keep
+
+    reject_single_keep(
+        {"keep_gpx": None, "keep_project": "", "gpx_dir": "/x", "save_gpx": False}, entry="e"
+    )
+
+
+def test_reject_single_keep_names_the_entry_and_the_key():
+    """拒否の理由に**どの入口**で**どの引数**かを出す (直し方が分かるように)。"""
+    from tsumugin.gpxstore import reject_single_keep
+
+    with pytest.raises(ValueError, match=r"run_x.*keep_project.*gpx_dir"):
+        reject_single_keep({"keep_project": "/out/p"}, entry="run_x")
+
+
 def test_plan_output_uses_the_ambient_context_for_naming(tmp_path, monkeypatch):
     """ambient 文脈があれば run ディレクトリと名前をそこから採る (系列の全成果物が 1 か所に集まる)。"""
     from tsumugin.gpxstore import gpx_context, plan_output
