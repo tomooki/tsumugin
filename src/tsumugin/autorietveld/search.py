@@ -82,6 +82,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
+from ..errors import DuplicateAtomLabelError
 from ..gpxstore import gpx_context, group_context, reject_single_keep
 from ..store import Ledger
 from .model import (
@@ -1021,6 +1022,10 @@ def run_recipe_search(
             with gpx_context(group.child(role="candidate", label=cand.name)):
                 result: "AutoRietveldResult | None" = run(cand)
             error = ""
+        except DuplicateAtomLabelError:
+            # 【構造の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
+            #   どの候補でも同じになる。候補の失敗に畳むと「立つ手順が無い」と読まれる。
+            raise
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]
         outcome = CandidateOutcome(index=i, candidate=cand, result=result, error=error)

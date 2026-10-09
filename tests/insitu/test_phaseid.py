@@ -534,6 +534,55 @@ def test_structure_to_cif_symmetry_lowering_cell_still_writes(tmp_path):
     assert len(written) == 2  # 原子は失われない
 
 
+def _cif_atom_labels(path: str) -> list[str]:
+    from pymatgen.io.cif import CifParser
+
+    block = next(iter(CifParser(path).as_dict().values()))
+    return list(block["_atom_site_label"])
+
+
+@pytest.mark.mp
+def test_structure_to_cif_p1_fallback_writes_unique_atom_labels(tmp_path, monkeypatch):
+    """★対称性検出に失敗して P1 で書くときも、原子ラベルは一意にする。
+
+    pymatgen の ``CifWriter`` は site のラベルが元素記号と違えばそのまま書く。CIF から読んだ
+    (= ラベル付きの) 構造を P1 展開すると等価原子が全員同じラベル (``Na1`` ×4) を持つ。GSAS は
+    原子ごとのフラグを先頭の一致にしか付けないので 2 番目以降が黙って凍結され、engine は
+    これを `DuplicateAtomLabelError` で拒否する — 物質化 CIF がそれを作ると、逐次解析の
+    相追加トライアルが系列ごと止まる。
+    """
+    import pymatgen.io.cif as pmcif
+    from pymatgen.core import Lattice, Structure
+
+    real_writer = pmcif.CifWriter
+
+    class _SymmetryDetectionFails(real_writer):
+        def __init__(self, struct, *args, symprec=None, **kwargs):
+            if symprec is not None:
+                raise ValueError("symmetry detection failed")
+            super().__init__(struct, *args, **kwargs)
+
+    labelled = Structure.from_spacegroup(
+        "Fm-3m", Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]],
+        labels=["Na1", "Cl1"],
+    )
+    precondition = tmp_path / "plain_p1.cif"
+    real_writer(labelled).write_file(str(precondition))
+    assert len(set(_cif_atom_labels(str(precondition)))) < len(labelled), (
+        "pymatgen が P1 でもラベルを一意にするようになった — このテストの前提が変わった"
+    )
+
+    monkeypatch.setattr(pmcif, "CifWriter", _SymmetryDetectionFails)
+    for kwargs in ({}, {"strain": 0.01}):
+        out = structure_to_cif(labelled, str(tmp_path / f"fallback{len(kwargs)}.cif"), **kwargs)
+        labels = _cif_atom_labels(out)
+        assert len(labels) == len(labelled), "P1 で全原子が書かれている (フォールバックを通った)"
+        assert len(set(labels)) == len(labels), f"ラベルが重複: {labels}"
+        assert sorted(site.species_string for site in Structure.from_file(out)) == sorted(
+            site.species_string for site in labelled
+        ), "元素が失われていない"
+
+
 def test_cell_refiner_honours_subtract_bg_on_residual_path(tmp_path):
     """subtract_bg=False は残差計算側へ伝わる (背景減算済データの二重減算を避ける)。"""
     tt, inten = _pattern([20.0, 30.0], heights=[10.0, 1.0])

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
+from ..errors import DuplicateAtomLabelError
 from ..gpxstore import group_context, reject_single_keep
 from ..multistart.perturb import MultistartConfig
 from ..store import Ledger
@@ -459,6 +460,10 @@ def _run_one_start(payload: tuple) -> tuple:
             jitter_seed=perturbation.jitter_seed,
             **run_kwargs,
         )
+    except DuplicateAtomLabelError:
+        # 【構造の誤りは発散ではない】: 精密化の前に engine が止めた入力の誤りで、どの開始点でも
+        #   同じになる。発散に畳むと「初期値で解が割れた」と読まれ、③ はラベルでなく構造を疑う。
+        raise
     except Exception as exc:  # noqa: BLE001 — 実行失敗は発散扱いで継続 (pickle 可能な文字列へ)
         return (index, None, 0, repr(exc)[:200])
     # 摂動を要求していないときは 0 (自由軸の本数ではなく**動かした軸数**である)。

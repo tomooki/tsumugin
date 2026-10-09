@@ -104,6 +104,13 @@ def structure_to_cif(
 
     対称性検出に失敗する構造 (結晶系を壊すセル置換等) は P1 で書き出して**物質化自体は
     落とさない** (提案≠適用の安全側; 下がった対称性でも精密化は成立する)。
+
+    **P1 で書くときは site のラベルを捨てる**: ``CifWriter`` はラベルが元素記号と違えばそのまま
+    書くので、CIF 由来 (ラベル付き) の構造を P1 展開すると等価原子が全員同じラベルになる
+    (``Na1`` ×4)。GSAS は原子ごとのフラグを先頭の一致にしか付けず 2 番目以降を黙って凍結する
+    ため、engine はこれを ``DuplicateAtomLabelError`` で拒否する — 物質化 CIF が作ると逐次解析の
+    相追加トライアルが系列ごと止まる。ラベルを捨てると ``CifWriter`` は元素+通し番号で書く
+    (対称化経路の書き方と同じ)。
     """
     from pymatgen.io.cif import CifWriter
 
@@ -121,7 +128,14 @@ def structure_to_cif(
     try:
         CifWriter(structure, symprec=float(symprec)).write_file(str(path))
     except Exception:  # noqa: BLE001 — 対称性検出不能は P1 へフォールバック (物質化を落とさない)
-        CifWriter(structure).write_file(str(path))
+        from pymatgen.core import Structure
+
+        unlabelled = Structure(
+            structure.lattice,  # type: ignore[attr-defined]
+            [site.species for site in structure],  # type: ignore[attr-defined]
+            structure.frac_coords,  # type: ignore[attr-defined]
+        )
+        CifWriter(unlabelled).write_file(str(path))
     return str(path)
 
 
