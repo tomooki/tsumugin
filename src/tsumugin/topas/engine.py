@@ -39,7 +39,7 @@ from ..autorietveld.model import (
     ValidityReport,
 )
 from ..autorietveld.stagepolicy import StageMetrics, decide_stage
-from ..errors import TopasRunError
+from ..errors import TopasInputError, TopasRunError, TsumuginError
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
 from ..gpxstore import record_artifact as _record_artifact
 from ..store import Ledger
@@ -322,14 +322,23 @@ def run_topas_rietveld(
 
     with tempfile.TemporaryDirectory(prefix="tsumugin-topas-") as tmp:
         work = Path(tmp)
-        doc = _build_document(
-            histograms,
-            phases,
-            work,
-            background_coeffs=background_coeffs,
-            max_cyc=max_cyc,
-            seed_profile=seed_profile,
-        )
+        try:
+            doc = _build_document(
+                histograms,
+                phases,
+                work,
+                background_coeffs=background_coeffs,
+                max_cyc=max_cyc,
+                seed_profile=seed_profile,
+            )
+        except TsumuginError:
+            raise  # 相仕様の拒否・対称操作の補完失敗などは既にドメインエラー
+        except ValueError as exc:
+            # 【入力の誤りを ② のドメインエラーにする】: 波長の無い装置ファイル・空間群の無い
+            #   CIF などは組み立て側が ValueError で知らせる。② はドメインエラーだけを
+            #   error dict へ縮退する (論理バグを握り潰さない) ので、包まないと例外が ② の
+            #   境界を越える。段のループの外 (精密化の前) なので段の revert には吸われない。
+            raise TopasInputError(f"TOPAS の入力から INP を組めません: {exc}") from exc
 
         stage_results: list[StageResult] = []
         # 【直前の**受理済み**状態】: 段方針 (`autorietveld.stagepolicy`) は gof/母数も見る —
@@ -516,10 +525,11 @@ def run_topas_rietveld(
 def _uiso_all_frozen(doc: TopasDocument, stage: RefinementStage) -> bool:
     """その段が「**全相で Uiso を凍結した結果**、何も解放しない uiso 段」か (#211)。
 
-    GSAS 経路の `_uiso_all_frozen` と同じ判定。相が 1 つも無いときは False
-    (**空を「正常」と答えない**)。
+    GSAS 経路の `_uiso_all_frozen` と同じ判定 (段に ``uiso`` の**キーがあるか**で見る —
+    値の真偽で見ると ``{"uiso": 0}`` のような値付きの段で GSAS と印が食い違う)。相が 1 つも
+    無いときは False (**空を「正常」と答えない**)。
     """
-    if not stage.flags.get("uiso") or not doc.phases:
+    if "uiso" not in stage.flags or not doc.phases:
         return False
     return all(
         phase.beq_release_labels is not None and not phase.beq_release_labels

@@ -162,12 +162,15 @@ def test_freezing_only_part_of_a_mixed_site_beq_is_refused():
 
 
 def test_occupancy_equiv_group_is_one_shared_occupancy():
+    """組の全員が 1 変数。**[0,1] を張らない** — GSAS は等値・和の組に範囲拘束を張らない
+    (`_update_atom_flags`) ので、張ると最適が 1 を超えるとき (= モデルの誤りの信号) に
+    TOPAS だけが 1 に張り付き、エンジン間の照合が食い違う。"""
     phase = _phase({"occupancy_equiv_groups": (("O1", "O2"),)})
     text = _doc(phase).render()
-    assert "prm !P_occeq_g0 1.0 min 0 max 1\n" in text
+    assert "prm !P_occeq_g0 1.0\n" in text
     assert text.count("occ O =P_occeq_g0;") == 2
     released = _stage(_doc(phase), occupancy=True).render()
-    assert "prm P_occeq_g0 1.0 min 0 max 1\n" in released
+    assert "prm P_occeq_g0 1.0\n" in released
 
 
 # ---------------- occupancy_sum_groups: 親 = Σ子 (GSAS と同じ意味) ----------------
@@ -184,8 +187,8 @@ def test_occupancy_sum_group_makes_the_parent_the_sum_of_its_children():
     )
     phase = _phase({"occupancy_sum_groups": (("Ow", "D1", "H1"),)}, structure=structure)
     text = _doc(phase).render()
-    assert "prm !P_occsum_g0_1 0.5 min 0 max 1\n" in text
-    assert "prm !P_occsum_g0_2 0.3 min 0 max 1\n" in text
+    assert "prm !P_occsum_g0_1 0.5\n" in text  # [0,1] は張らない (GSAS と同じ)
+    assert "prm !P_occsum_g0_2 0.3\n" in text
     assert "site Ow " in text and "occ O =P_occsum_g0_1 + P_occsum_g0_2;" in text
     assert "1-" not in text, "混合占有の「和 = 1」で張っている"
     released = _stage(_doc(phase), occupancy=True).render()
@@ -281,6 +284,38 @@ def test_freezing_a_whole_tie_group_keeps_its_shared_coordinates_fixed():
                     "frozen_coord_labels": ("D1", "H1")}, structure=_co_located())
     text = _stage(_doc(phase), coords=True).render()
     assert "prm !P_pos_g0_x " in text
+
+
+def test_small_tie_offsets_are_written_in_fixed_point():
+    """``repr`` は小さな値を ``5e-05`` と指数表記にする。TOPAS の式で通ると実測した形
+    (固定小数) に揃える。"""
+    structure = _structure(
+        Atom("O1", "O", 0.10, 0.03, 0.80, 1.0, 0.010),
+        Atom("O3", "O", 0.10005, 0.03, 0.80, 1.0, 0.010),
+    )
+    phase = _phase({"position_equiv_groups": (("O1", "O3"),)}, structure=structure)
+    text = _doc(phase).render()
+    assert "x =P_pos_g0_x + 0.00005;" in text
+    site_line = next(line for line in text.splitlines() if "site O3 " in line)
+    assert "e-" not in site_line, f"式に指数表記が出た: {site_line}"
+
+
+def test_joint_tied_members_reference_the_group_prm_in_every_histogram():
+    """joint では各 xdd の str ブロックが同じ共有 prm を参照し、出版値は先頭の xdd で 1 回だけ。"""
+    structure = _structure(
+        Atom("O1", "O", 0.10, 0.03, 0.80, 1.0, 0.010),
+        Atom("O3", "O", 0.20, 0.05, 0.70, 1.0, 0.010),
+    )
+    phase = _phase({"position_equiv_groups": (("O1", "O3"),)}, structure=structure)
+    text = _stage(_doc(phase, histograms=2), coords=True).render()
+    assert text.count("prm P_pos_g0_x ") == 1, "共有 prm の宣言は 1 回"
+    blocks = text.split("xdd ")[1:]
+    assert len(blocks) == 2
+    for block in blocks:
+        assert "site O1 x =P_pos_g0_x;" in block
+        assert "site O3 x =P_pos_g0_x + 0.1;" in block
+    assert text.count('"coord\\tP\\tO3\\tx') == 1, "出版値は先頭の xdd で 1 回だけ"
+    assert "Out(P_pos_g0_x + 0.1," in blocks[0]
 
 
 # ---------------- 意味を決められない指定は精密化の前に止める ----------------
@@ -455,6 +490,28 @@ def test_uiso_stage_with_every_phase_frozen_is_marked_as_intentional(
     assert "uiso_frozen_all" not in result.stage_results[0].note
 
 
+def test_uiso_marker_follows_the_key_like_gsas(monkeypatch, synthetic_cif, synthetic_data):
+    """GSAS は段に ``uiso`` の**キーがあるか**で印を付ける。値の真偽で見ると ``{"uiso": 0}``
+    (ランク付きの段) で両エンジンの印が食い違う。"""
+    from tsumugin.topas import engine as eng
+
+    class _Run:
+        out_text = "r_wp 10.0 gof 1.5\np0 1.0`_0.01\n"
+        results_text = "r_wp\t10.0\ngof\t1.5\nwt_frac\tP\t100.0\t0.0\n"
+        stdout = ""
+
+    monkeypatch.setattr(eng, "run_tc", lambda *a, **k: _Run())
+    hist = HistogramSpec(
+        data_path=str(synthetic_data[0]), instrument_path=str(synthetic_data[1]),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XYE",
+    )
+    result = eng.run_topas_rietveld(
+        [hist], [PhaseSpec(str(synthetic_cif), "P", free_uiso_labels=())],
+        recipe=(RefinementStage("S6 uiso", {"uiso": 0}),), save_gpx=False,
+    )
+    assert "uiso_frozen_all" in result.stage_results[0].note
+
+
 # ---------------- ②: 精密化の前の拒否は error dict に縮退する ----------------
 
 
@@ -481,6 +538,26 @@ def test_layer_two_degrades_the_refusal_to_an_error_dict(monkeypatch, synthetic_
         out = tool(*args, backend="topas", save_gpx=False)
         assert out.get("error_type") == "InvalidPhaseSpecError", (tool.__name__, out)
         assert "Ox" in out["error"]
+
+
+def test_layer_two_degrades_unreadable_topas_input(monkeypatch, synthetic_cif, synthetic_data):
+    """INP を組めない入力 (ここでは波長の無い装置ファイル) も error dict で返る。組み立て側は
+    ``ValueError`` で知らせるが、② はドメインエラーしか縮退しないので包まないと境界を越える
+    (CLAUDE.md「② ツールは例外を送出しない」)。"""
+    from tsumugin.mcp import rietveld_tools
+    from tsumugin.topas import engine as eng
+
+    monkeypatch.setattr(eng, "run_tc", lambda *a, **k: pytest.fail("tc.exe を起動した"))
+    hist = HistogramSpec(
+        data_path=str(synthetic_data[0]), instrument_path=str(synthetic_data[0]),  # 波長が無い
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XYE",
+    ).to_dict()
+    out = rietveld_tools.auto_rietveld(
+        [hist], [PhaseSpec(str(synthetic_cif), "PbSO4").to_dict()], backend="topas",
+        save_gpx=False,
+    )
+    assert out.get("error_type") == "TopasInputError", out
+    assert "波長" in out["error"]
 
 
 def test_layer_two_does_not_swallow_logic_bugs():

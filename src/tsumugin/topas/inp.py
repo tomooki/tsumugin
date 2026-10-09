@@ -458,7 +458,10 @@ def _offset_expression(name: str, offset: float) -> str:
     if rounded == 0.0:
         return name
     sign = "+" if rounded > 0 else "-"
-    return f"{name} {sign} {_fmt(abs(rounded))}"
+    # 【固定小数で書く】: ``repr`` は小さな値を ``5e-05`` と指数表記にする。TOPAS の式で指数表記が
+    #   通るかは実測していないので、検証済みの形 (``0.1``) と同じ固定小数に揃える。
+    magnitude = f"{abs(rounded):.10f}".rstrip("0").rstrip(".")
+    return f"{name} {sign} {magnitude}"
 
 
 def _occupancy_seed(sites: "Mapping[str, TopasSite]", label: str, fallback: float) -> float:
@@ -470,7 +473,8 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
     """占有率・beq・座標の拘束の共有 ``prm`` を計画する (単一ヒストグラムでも必要)。
 
     【`!` の有無が段階解放】: 名前付き prm は TOPAS では**既定で精密化対象**なので、解放前は `!`。
-    【[0,1] 拘束】: 占有率は物理的に区間内。境界外への逸走を TOPAS 側で止める。
+    【[0,1] 拘束】: 混合占有は物理的に区間内なので境界外への逸走を TOPAS 側で止める (GSAS も
+    `_bound_occupancy` で張る)。等値・和の組は GSAS が張らないので張らない。
     """
     lines: list[str] = []
     mapping: dict[tuple[str, str], str] = {}
@@ -487,20 +491,24 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
                 mapping[(phase.phase_name, f"occ.{label}")] = expr
         for gi, group in enumerate(phase.occupancy_equiv_groups):
             # GSAS の add_EquivConstr: 組の全員が 1 変数。初期値は先頭の原子から。
+            # 【[0,1] を張らない】: GSAS は等値・和の組に範囲拘束を張らない (`_update_atom_flags`
+            #   「[0,1] 拘束は張らない」)。TOPAS だけ張ると、最適が 1 を超える (= モデルの誤りの
+            #   信号) ときに TOPAS だけが 1 に張り付き、エンジン間の照合が食い違う。範囲外は
+            #   validity が拾う。
             name = f"{stem}_occeq_g{gi}"
             seed = _occupancy_seed(sites, group[0], 1.0)
-            lines.append(f"prm {occ_prefix}{name} {_fmt(seed)} min 0 max 1")
+            lines.append(f"prm {occ_prefix}{name} {_fmt(seed)}")
             for label in group:
                 mapping[(phase.phase_name, f"occ.{label}")] = name
         for gi, group in enumerate(phase.occupancy_parent_sum_groups):
             # GSAS の Σ子 − 親 = 0: 子を独立変数にし、親をその和の式にする (自由度は同じ)。
-            # 親には [0,1] を張らない (GSAS も張らない) — 和が 1 を超えたら validity が拾う。
+            # 子にも親にも [0,1] を張らない (GSAS も張らない; 上の等値の組と同じ理由)。
             parent, children = group[0], group[1:]
             names = []
             for k, child in enumerate(children, start=1):
                 name = f"{stem}_occsum_g{gi}_{k}"
                 seed = _occupancy_seed(sites, child, 0.0)
-                lines.append(f"prm {occ_prefix}{name} {_fmt(seed)} min 0 max 1")
+                lines.append(f"prm {occ_prefix}{name} {_fmt(seed)}")
                 mapping[(phase.phase_name, f"occ.{child}")] = name
                 names.append(name)
             mapping[(phase.phase_name, f"occ.{parent}")] = " + ".join(names)
@@ -812,6 +820,7 @@ class TopasDocument:
         #   出版できない**うえ、「Rwp は下がったが占有率が非物理」を検出する唯一の手段でもある。
         #   解放していないものは出さない (固定値を「精密化した」と読ませない)。
         site_slugs = _site_slugs(phase)
+        grouped = _grouped_labels(phase)  # 相ごとに 1 回 (サイトごとに組み直さない)
         for site in phase.sites:
             stem = f"{_slug(name)}_{site_slugs[site.label]}"
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
@@ -826,7 +835,7 @@ class TopasDocument:
             # 【グループサイトの解放フラグは相側にある】: 混合占有/等値サイトの `Param.refine`
             #   は常に False で、解放は共有 prm 側 (`release_*_groups`) が持つ。site 側だけを
             #   見ると**グループ化した占有率の出版値が静かに欠落する** (実 garnet で実測)。
-            in_occ_group = (site.label, "occ") in _grouped_labels(phase)
+            in_occ_group = (site.label, "occ") in grouped
             if site.occupancy.refine or (in_occ_group and phase.release_occupancy_groups):
                 prm = prm_for(f"occ.{site.label}", site.occupancy, f"{stem}_occ")
                 if prm:
@@ -834,7 +843,7 @@ class TopasDocument:
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"occ\\t{name}\\t{site.label}\\t%.8f", "\\t%.8f\\n")'
                     )
-            in_beq_group = (site.label, "beq") in _grouped_labels(phase)
+            in_beq_group = (site.label, "beq") in grouped
             beq_group_released = (
                 in_beq_group and phase.release_beq_groups and phase.beq_released(site.label)
             )

@@ -253,5 +253,6 @@ def test_topas_phase_spec_refusal_is_documented(analyze_text: str):
     """精密化の前の拒否は ② が error dict で返す — ③ がそれを読めるように error_type を書く。"""
     section = _topas_constraints_section(analyze_text)
     assert "InvalidPhaseSpecError" in section
+    assert "TopasInputError" in section, "INP を組めない入力の error_type が書かれていない"
     assert "uiso_frozen_all" in section, "凍結できたかの確かめ方が書かれていない"
     assert "回し直す" in section, "以前の TOPAS 結果が凍結を無視していたことの扱いが無い"

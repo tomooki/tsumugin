@@ -69,6 +69,18 @@ class TopasSymmetryError(TsumuginError):
     """
 
 
+class TopasInputError(TsumuginError, ValueError):
+    """TOPAS 経路の入力 (CIF・装置ファイル・観測データ) から INP を組めないとき。
+
+    例: 装置ファイルから波長を読めない / CIF に空間群もセルも原子ループも無い / 対称操作の
+    書式が読めない。組み立て側は ``ValueError`` で知らせるが、② の縮退
+    (`mcp.rietveld_tools._run_degrading_domain_errors`) は**ドメインエラーだけ**を捕まえる
+    (論理バグを「入力の誤り」に見せないため) ので、そのままでは例外が ② の境界を越える。
+    `topas.engine.run_topas_rietveld` が INP を組む区間で入力の誤りをこれに包む。
+    ``ValueError`` も継ぐので、従来の捕まえ方とも互換。
+    """
+
+
 class LedgerIntegrityError(TsumuginError):
     """永続 ledger (JSONL) の破損を検出したときに送出 (EDGE-003 / NFR-105)。
 

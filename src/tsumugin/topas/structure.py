@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from .inp import Param, TopasPhase, TopasSite
 from .symmetry import free_coord_axes, snap_to_special_position
@@ -271,10 +271,10 @@ PHASE_SPEC_FIELDS: "dict[str, tuple[str, str]]" = {
         "honored", "2 原子の組だけ (x と 1-x)。beq の等値と座標の結束も張る (GSAS と同じ)",
     ),
     "free_occupancy_labels": ("honored", "占有率段で単独に解放する ([0,1])"),
-    "occupancy_equiv_groups": ("honored", "組で 1 つの占有率 ([0,1])"),
+    "occupancy_equiv_groups": ("honored", "組で 1 つの占有率 (GSAS と同じく [0,1] は張らない)"),
     "free_uiso_labels": ("honored", "None = 全原子 / () = 0 原子 / 列挙 = その原子だけ"),
     "position_equiv_groups": ("honored", "座標のシフトを等値にする (初期の相対位置を保つ)"),
-    "occupancy_sum_groups": ("honored", "(親, 子1, …) で 親 = Σ子"),
+    "occupancy_sum_groups": ("honored", "(親, 子1, …) で 親 = Σ子 ([0,1] は張らない)"),
     "frozen_coord_labels": ("honored", "座標段で解放しない"),
     "refine_cell": ("honored", "False なら格子段でも格子を固定する (#47)"),
     "temperature": (
@@ -333,12 +333,13 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
 
     :raises InvalidPhaseSpecError: 上記のとき
     """
+    from ..autorietveld.model import resolve_uiso_targets
     from ..errors import InvalidPhaseSpecError
 
     order = [site.label for site in sites]
     known = set(order)
 
-    def refuse(message: str) -> None:
+    def refuse(message: str) -> NoReturn:
         raise InvalidPhaseSpecError(f"相 {spec.phase_name!r}: {message}")
 
     singles = {
@@ -432,15 +433,15 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
             )
         position_groups.append(tuple(members))
 
-    # 【Uiso の対象】: GSAS `_resolve_uiso_targets` と同じ規約 — None = 全原子 / () = 0 原子 /
-    #   列挙 = その原子、凍結が解放指定に勝つ。何も指定が無いときは None のまま (従来の INP)。
+    # 【Uiso の対象】: GSAS 経路と**同じ関数**で解決する (`model.resolve_uiso_targets`:
+    #   None = 全原子 / () = 0 原子 / 列挙 = その原子、凍結が解放指定に勝つ)。何も指定が無いときは
+    #   None のまま (従来の INP)。
     beq_release: "tuple[str, ...] | None" = None
     if spec.free_uiso_labels is not None or spec.frozen_uiso_labels:
-        declared_uiso = set(order if spec.free_uiso_labels is None else spec.free_uiso_labels)
-        frozen_uiso = set(spec.frozen_uiso_labels)
-        beq_release = tuple(
-            label for label in order if label in declared_uiso and label not in frozen_uiso
+        targets = set(
+            resolve_uiso_targets(order, spec.free_uiso_labels, spec.frozen_uiso_labels)
         )
+        beq_release = tuple(label for label in order if label in targets)
         for group in groups["mixed_occupancy_groups"]:
             inside = [label for label in group if label in beq_release]
             if inside and len(inside) != len(group):
@@ -490,6 +491,9 @@ def structure_to_topas_phase(
     from ..errors import InvalidPhaseSpecError
 
     if spec is not None:
+        # engine は構造を読む前に同じ検査をする (読めない形式で読みに行かないため)。ここでも
+        # 呼ぶのは engine を経ずに本関数を使う呼び手のため — 拒否したフィールドが黙って
+        # 素通りする入口を作らない。
         check_phase_spec_supported(spec)
     labels = [atom.label for atom in structure.atoms]
     duplicates = sorted({label for label in labels if labels.count(label) > 1})
