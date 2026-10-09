@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .._json import finite_or_none
+from ..gpxstore import reject_single_keep
 from ..multistart.perturb import MultistartConfig, PerturbationSpec
 from ..store import Ledger
 from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
@@ -152,7 +153,13 @@ def optimize_then_confirm(
     :param search_runner: Phase A の候補実行 callable (**テスト注入専用のシーム**)。
         実運用経路は JSON spec であり ③ はここへ callable を送れない (CLAUDE.md §4.5)
     :param multistart_runner: Phase B の実行 callable (同上)
+    :param run_kwargs: Phase A / B の各精密化へ透過する追加引数。⚠ ``keep_gpx`` /
+        ``keep_project`` は不可 — 何も回す前に ValueError (`gpxstore.reject_single_keep`)。
+        置き場所は ``gpx_dir``
     """
+    # 【入口で拒む】: Phase A (`run_recipe_search`) も拒むが、そこに頼ると本関数が Phase A より
+    #   前にディスクへ触る変更 (run ディレクトリの解決など) をしたとき空の痕跡が残る。
+    reject_single_keep(run_kwargs, entry="optimize_then_confirm")
     ledger = ledger if ledger is not None else Ledger()
     warnings: list[str] = []
 
