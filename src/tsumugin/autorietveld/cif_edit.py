@@ -111,7 +111,18 @@ def apply_edits_to_structure(
     """編集列を順に Structure へ適用した新 Structure を返す (純関数・元不変)。🔵 M8-③
 
     編集は与えられた順に適用する (add してから同じ原子を move する等が可能)。各編集は fail-loud。
+
+    :raises DuplicateAtomLabelError: 入力の原子ラベルが重複しているとき。ラベル→原子の引き当てが
+        決まらない (以前は末尾の原子へ黙って当たり、GSAS は先頭へ当たっていた)。一意な入力からは
+        編集で重複は生まれない (``add`` は既存ラベルを拒否する)。
     """
+    from .model import check_unique_atom_labels
+
+    check_unique_atom_labels(
+        "編集する構造",
+        [atom.label for atom in structure.atoms],
+        consequence="move/set_*/remove がどちらの原子に当たるか決められません",
+    )
     result = structure
     for edit in edits:
         result = _apply_one(result, edit)

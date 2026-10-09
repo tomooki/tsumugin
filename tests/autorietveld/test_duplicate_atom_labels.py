@@ -94,8 +94,7 @@ def test_refusal_names_phase_and_the_rows_that_collide(monkeypatch):
         _run_engine_with_fake_gsas(monkeypatch, {"PbSO4": ("Pb", "S", "O1", "O1", "O3")})
     message = str(excinfo.value)
     assert "'PbSO4'" in message
-    assert "'O1'" in message
-    assert "3" in message and "4" in message, message
+    assert "{'O1': [3, 4]}" in message, message
 
 
 def test_every_duplicated_label_is_reported_at_once(monkeypatch):
@@ -208,6 +207,7 @@ def test_multistart_reraises_instead_of_counting_divergence(monkeypatch):
     "doc",
     [
         "plugins/tsumugin/skills/analyze/SKILL.md",
+        "plugins/tsumugin/skills/mem-model-fix/SKILL.md",
         "docs/tasks/m7-real-data-validation/AGENT_PLAYBOOK.md",
     ],
 )

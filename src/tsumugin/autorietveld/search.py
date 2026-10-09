@@ -995,6 +995,8 @@ def run_recipe_search(
 
     候補の実行で例外が出ても**送出しない** — `CandidateOutcome.error` に落として順位表へ残す
     (「バックエンドの失敗は例外でなく結果に縮退させ、ガードレールに処理させる」不変条件)。
+    **例外は `errors.DuplicateAtomLabelError` だけ**で、これは再送出する — 精密化の前に engine が
+    止める入力 (構造) の誤りで、どの候補でも同じになる (② は error dict へ縮退する)。
     """
     reject_single_keep(run_kwargs, entry="run_recipe_search")
     config = config or SearchConfig()

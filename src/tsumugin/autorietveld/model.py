@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
@@ -364,6 +364,39 @@ class PhaseSpec:
             frozen_uiso_labels=tuple(str(a) for a in (d.get("frozen_uiso_labels") or ())),
             refine_cell=bool(d.get("refine_cell", True)),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
+        )
+
+
+def check_unique_atom_labels(subject: str, labels: Sequence[str], *, consequence: str) -> None:
+    """相の原子ラベルが一意であることを確かめる — **両エンジン共通** (精密化の前に呼ぶ)。
+
+    どちらのエンジンも原子をラベルで引き当てる (GSAS は原子ごとのフラグを ``G2Phase.atom`` の
+    **先頭**の一致に付け、TOPAS は共有 ``prm`` 名をラベルから作る)。結果 (`AutoRietveldResult`
+    の ``atom_*``)・相の指定・初期占有率・拘束もすべてラベルキーなので、一意性はその契約全体の
+    前提である。比較は完全一致 — 空白・大小違いは別原子として正しく引き当たるので読み替えない。
+
+    エンジンの入口に加え、構造を**書き出す側** (`cif_normalize.write_gsas_cif` — 正規化・重水素
+    配置・原子編集の共通の書き手) と**編集する側** (`cif_edit`) でも呼び、重複を作った場所で止める。
+
+    :param subject: エラー文の主語 (例 ``"相 'PbSO4'"`` / ``"書き出す CIF 'x.cif'"``)
+    :param labels: エンジンが原子を引き当てるのと同じ並び (GSAS は読んだ原子行、TOPAS は CIF の
+        原子ループ)。エラー文の番号はこの並びの 1 始まり
+    :param consequence: そのエンジンで重複が何を起こすか (エラー文に添える)
+    :raises DuplicateAtomLabelError: 重複があるとき。重複ラベルを全部、番号付きで並べる
+        (② は ``{"error","error_type"}`` へ縮退する)
+    """
+    from ..errors import DuplicateAtomLabelError
+
+    numbers_of: dict[str, list[int]] = {}
+    for number, label in enumerate(labels, start=1):
+        numbers_of.setdefault(label, []).append(number)
+    duplicated = {label: nums for label, nums in numbers_of.items() if len(nums) > 1}
+    if duplicated:
+        raise DuplicateAtomLabelError(
+            f"{subject}: 原子ラベルが重複しています {duplicated} (値は原子の並びの番号, "
+            f"1 始まり)。{consequence}。構造ファイル (CIF の _atom_site_label) でラベルを一意に"
+            "してください (例 O1 → O1a/O1b)。対称等価な原子の P1 展開なら、改名せず非対称単位の"
+            " CIF (空間群付き) を取り直してください"
         )
 
 

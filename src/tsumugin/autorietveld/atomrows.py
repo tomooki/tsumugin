@@ -27,6 +27,7 @@ from .._json import finite_or_none
 
 __all__ = [
     "AtomRow",
+    "atom_labels",
     "atom_row",
     "coord_esd_states",
     "free_index_from_site_symmetry",
@@ -60,6 +61,16 @@ class AtomRow:
     site_symmetry: str
     multiplicity: float
     uiso: "float | None"
+
+
+def atom_labels(rows: Sequence[Sequence[object]], ptrs: Sequence[int]) -> list[str]:
+    """原子行の並び → ラベルの並び (``row[ct-1]``)。
+
+    ラベルだけを読む経路 (重複ラベルの検査など) 用。`atom_row` は座標・占有率まで float に
+    するので、ラベルしか要らない検査を数値列の形に依存させない。
+    """
+    ct = int(ptrs[1])
+    return [str(row[ct - 1]) for row in rows]
 
 
 def atom_row(row: Sequence[object], ptrs: Sequence[int]) -> AtomRow:

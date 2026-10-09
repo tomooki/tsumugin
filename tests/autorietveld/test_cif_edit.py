@@ -209,3 +209,34 @@ def test_apply_edits_to_structure_pure(tmp_path):
     s0 = read_structure_cif(_cif(tmp_path))
     s1 = apply_edits_to_structure(s0, [AtomEdit(op="remove", label="Fe1")])
     assert len(s0.atoms) == 2 and len(s1.atoms) == 1
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        AtomEdit(op="move", label="Fe1", frac=(0.1, 0.1, 0.1)),
+        AtomEdit(op="remove", label="Fe1"),
+        AtomEdit(op="set_uiso", label="Cu1", uiso=0.02),
+    ],
+)
+def test_input_with_duplicate_labels_is_refused(tmp_path, edit):
+    """★入力に同名の原子があると、どれに当たるか決まらない (以前は末尾へ黙って当たり、GSAS は
+    先頭へ当たっていた)。``remove`` で 1 つ消すと出力は一意になり書き手の検査も抜けるので、
+    入力の時点で止める。重複していないラベルの編集も止める (出力が精密化できない)。"""
+    from tsumugin.errors import DuplicateAtomLabelError
+
+    src = tmp_path / "dup.cif"
+    src.write_text(_CIF + "Fe1 Fe 0.25000 0.25000 0.25000 1.0000 0.00400\n", encoding="utf-8")
+    out = tmp_path / "o.cif"
+    with pytest.raises(DuplicateAtomLabelError, match=r"\{'Fe1': \[2, 3\]\}"):
+        apply_atom_edits(str(src), [edit], str(out))
+    assert not out.exists()
+
+
+def test_layer_two_edit_cif_returns_an_error_dict(tmp_path):
+    from tsumugin.mcp.mem_tools import edit_cif
+
+    src = tmp_path / "dup.cif"
+    src.write_text(_CIF + "Fe1 Fe 0.25000 0.25000 0.25000 1.0000 0.00400\n", encoding="utf-8")
+    out = edit_cif(str(src), [{"op": "remove", "label": "Fe1"}], str(tmp_path / "o.cif"))
+    assert out.get("error_type") == "DuplicateAtomLabelError", out

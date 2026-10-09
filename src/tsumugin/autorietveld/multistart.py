@@ -569,7 +569,8 @@ def run_multistart_rietveld(
                     for got in pool.map(_run_one_start, payloads):
                         raw[got[0]] = got
             except BrokenProcessPool as exc:
-                # 【子の即死は例外にしない】: `_run_one_start` は自分の中の例外を捕まえるが、
+                # 【子の即死は例外にしない】: `_run_one_start` は自分の中の例外を捕まえるが
+                #   (構造の誤り `DuplicateAtomLabelError` だけは再送出され、ここを素通りする)、
                 #   worker が OOM/segfault で落ちると `pool.map` 自身が投げる。これを通すと
                 #   ② の境界を例外が越える (③ は LLM なので回復不能)。「全開始点が失敗」に
                 #   畳んで既存の warnings/`no_valid_start` 経路へ載せる — バックエンドの失敗を

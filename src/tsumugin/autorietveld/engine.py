@@ -29,6 +29,7 @@ from ..gpxstore import record_artifact as _record_artifact
 from ..store import Ledger
 from .absorption import apply_absorption_correction
 from .atomrows import (
+    atom_labels,
     atom_row,
     coord_esd_states,
     free_index_from_site_symmetry,
@@ -63,6 +64,7 @@ from .model import (
     StabilityOptions,
     StageResult,
     ValidityReport,
+    check_unique_atom_labels,
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
@@ -706,22 +708,14 @@ def _refuse_duplicate_atom_labels(ph, phase_name: str) -> None:
 
     :raises DuplicateAtomLabelError: 重複があるとき (② は error dict へ縮退する)
     """
-    from ..errors import DuplicateAtomLabelError
-
-    ct = ph.data["General"]["AtomPtrs"][1]
-    rows_of: dict[str, list[int]] = {}
-    for number, row in enumerate(ph.data["Atoms"], start=1):
-        rows_of.setdefault(str(row[ct - 1]), []).append(number)
-    duplicated = {label: rows for label, rows in rows_of.items() if len(rows) > 1}
-    if duplicated:
-        raise DuplicateAtomLabelError(
-            f"相 {phase_name!r}: 原子ラベルが重複しています {duplicated} (値は原子行の番号, "
-            "1 始まり)。GSAS は原子ごとの精密化フラグをラベルの先頭の一致にしか付けないため、"
-            "2 番目以降の原子は座標・Uiso・占有率が出発値のまま黙って凍結され、結果もラベルで"
-            "潰れます。構造ファイル (CIF の _atom_site_label) でラベルを一意にしてください"
-            " (例 O1 → O1a/O1b)。pymatgen が P1 展開して書いた CIF なら、symprec を付けて"
-            "書き直すと非対称単位に戻ります"
-        )
+    check_unique_atom_labels(
+        f"相 {phase_name!r}",
+        atom_labels(ph.data["Atoms"], ph.data["General"]["AtomPtrs"]),
+        consequence=(
+            "GSAS は原子ごとの精密化フラグをラベルの先頭の一致にしか付けないため、2 番目以降の"
+            "原子は座標・Uiso・占有率が出発値のまま黙って凍結され、結果もラベルで潰れます"
+        ),
+    )
 
 
 def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
