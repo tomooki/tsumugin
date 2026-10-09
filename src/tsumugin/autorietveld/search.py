@@ -82,6 +82,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
+from ..errors import DuplicateAtomLabelError
 from ..gpxstore import gpx_context, group_context, reject_single_keep
 from ..store import Ledger
 from .model import (
@@ -994,6 +995,8 @@ def run_recipe_search(
 
     候補の実行で例外が出ても**送出しない** — `CandidateOutcome.error` に落として順位表へ残す
     (「バックエンドの失敗は例外でなく結果に縮退させ、ガードレールに処理させる」不変条件)。
+    **例外は `errors.DuplicateAtomLabelError` だけ**で、これは再送出する — 精密化の前に engine が
+    止める入力 (構造) の誤りで、どの候補でも同じになる (② は error dict へ縮退する)。
     """
     reject_single_keep(run_kwargs, entry="run_recipe_search")
     config = config or SearchConfig()
@@ -1021,6 +1024,10 @@ def run_recipe_search(
             with gpx_context(group.child(role="candidate", label=cand.name)):
                 result: "AutoRietveldResult | None" = run(cand)
             error = ""
+        except DuplicateAtomLabelError:
+            # 【構造の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
+            #   どの候補でも同じになる。候補の失敗に畳むと「立つ手順が無い」と読まれる。
+            raise
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]
         outcome = CandidateOutcome(index=i, candidate=cand, result=result, error=error)

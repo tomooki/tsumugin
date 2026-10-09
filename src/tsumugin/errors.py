@@ -139,3 +139,20 @@ class MPUnavailableError(TsumuginError):
     呼び出し時にのみ本例外を送出して extra 導入手順を案内する。相同定コア (``identify_phases``) と
     ``ReferenceProvider`` Protocol はコア (numpy) のみで動作する。
     """
+
+
+class DuplicateAtomLabelError(TsumuginError, ValueError):
+    """相の構造で 2 つ以上の原子が同じラベルを持つとき (精密化の前に送出)。
+
+    送出元は `autorietveld.model.check_unique_atom_labels` の 1 つで、呼ぶのは両エンジンの入口
+    (GSAS は ``add_phase`` 直後、TOPAS は `topas.structure.structure_to_topas_phase`)・共通の
+    CIF 書き手 `cif_normalize.write_gsas_cif` (正規化・重水素配置)・`cif_edit` の入力検査。
+    逐次解析の相追加トライアルはこれを**その候補の棄却**として捕まえ、系列は止めない。
+
+    GSAS-II の CIF インポータは重複ラベルを別原子として残すが、原子ごとの精密化フラグは
+    ``G2Phase.atom(label)`` = **先頭**の一致にしか付かない。2 番目以降の原子は座標・Uiso・
+    占有率が出発値のまま**黙って凍結され**、Rwp にも validity にも現れない (PbSO4 実測)。
+    結果・相の指定・拘束もすべてラベルキーなので、ラベルの一意性はその契約全体の前提である。
+    ② はこれを ``{"error","error_type"}`` へ縮退させる (③ は LLM なので例外は回復不能)。
+    ``ValueError`` も継ぐので、入力検証を ``ValueError`` で捕まえる既存の呼び手と互換。
+    """

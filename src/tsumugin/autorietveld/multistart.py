@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
+from ..errors import DuplicateAtomLabelError
 from ..gpxstore import group_context, reject_single_keep
 from ..multistart.perturb import MultistartConfig
 from ..store import Ledger
@@ -459,6 +460,10 @@ def _run_one_start(payload: tuple) -> tuple:
             jitter_seed=perturbation.jitter_seed,
             **run_kwargs,
         )
+    except DuplicateAtomLabelError:
+        # 【構造の誤りは発散ではない】: 精密化の前に engine が止めた入力の誤りで、どの開始点でも
+        #   同じになる。発散に畳むと「初期値で解が割れた」と読まれ、③ はラベルでなく構造を疑う。
+        raise
     except Exception as exc:  # noqa: BLE001 — 実行失敗は発散扱いで継続 (pickle 可能な文字列へ)
         return (index, None, 0, repr(exc)[:200])
     # 摂動を要求していないときは 0 (自由軸の本数ではなく**動かした軸数**である)。
@@ -564,7 +569,8 @@ def run_multistart_rietveld(
                     for got in pool.map(_run_one_start, payloads):
                         raw[got[0]] = got
             except BrokenProcessPool as exc:
-                # 【子の即死は例外にしない】: `_run_one_start` は自分の中の例外を捕まえるが、
+                # 【子の即死は例外にしない】: `_run_one_start` は自分の中の例外を捕まえるが
+                #   (構造の誤り `DuplicateAtomLabelError` だけは再送出され、ここを素通りする)、
                 #   worker が OOM/segfault で落ちると `pool.map` 自身が投げる。これを通すと
                 #   ② の境界を例外が越える (③ は LLM なので回復不能)。「全開始点が失敗」に
                 #   畳んで既存の warnings/`no_valid_start` 経路へ載せる — バックエンドの失敗を

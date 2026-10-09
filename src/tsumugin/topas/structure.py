@@ -261,16 +261,17 @@ def structure_to_topas_phase(
     :param symops: 対称操作の上書き。CIF が対称操作を持たないとき、呼び出し側 (engine) が
         TOPAS の ``Sg/`` から補完したものを渡す。**本関数自体は純粋なまま**にするため、
         tc.exe を起動する補完はここでは行わない (`topas.symmetry.ensure_symops` の責務)。
-    :raises ValueError: 原子ラベルが重複しているとき。共有 ``prm`` 名が衝突して
-        **別サイトが黙って結合される**ため、ここで弾く。
+    :raises DuplicateAtomLabelError: 原子ラベルが重複しているとき。共有 ``prm`` 名が衝突して
+        **別サイトが黙って結合される**ため、ここで弾く。GSAS 経路と同じ検査・同じ例外
+        (`autorietveld.model.check_unique_atom_labels`; ``ValueError`` も継ぐ)。
     """
-    labels = [atom.label for atom in structure.atoms]
-    duplicates = sorted({label for label in labels if labels.count(label) > 1})
-    if duplicates:
-        raise ValueError(
-            f"原子ラベルが重複しています: {duplicates}。TOPAS の共有パラメータ名が衝突し "
-            f"別サイトが黙って結合されるため、CIF 側でラベルを一意にしてください。"
-        )
+    from ..autorietveld.model import check_unique_atom_labels
+
+    check_unique_atom_labels(
+        f"相 {phase_name!r}",
+        [atom.label for atom in structure.atoms],
+        consequence="TOPAS の共有パラメータ名が衝突し、別サイトが黙って結合されます",
+    )
 
     system = crystal_system(structure.it_number, structure.spacegroup_hm)
     cell, free_cell_keys = _cell_block(structure, system)

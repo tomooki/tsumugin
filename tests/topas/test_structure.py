@@ -268,15 +268,19 @@ def test_phase_spec_constraint_groups_are_carried_through():
 
 
 def test_duplicate_labels_are_rejected():
-    """同名サイトは共有 prm 名が衝突して**黙って別サイトを結合する**ので弾く。"""
+    """同名サイトは共有 prm 名が衝突して**黙って別サイトを結合する**ので弾く。GSAS 経路と同じ
+    例外 (`DuplicateAtomLabelError`) で — ② の縮退と ③ の手順書が両エンジンで同じ型を見る。"""
+    from tsumugin.errors import DuplicateAtomLabelError
+
     struct = _structure(
         atoms=(
             Atom(label="O", type_symbol="O", x=0.1, y=0.2, z=0.3, occ=1.0, uiso=0.01),
             Atom(label="O", type_symbol="O", x=0.4, y=0.5, z=0.6, occ=1.0, uiso=0.01),
         )
     )
-    with pytest.raises(ValueError, match="重複"):
+    with pytest.raises(DuplicateAtomLabelError, match=r"相 'x'.*\{'O': \[1, 2\]\}"):
         structure_to_topas_phase(struct, "x")
+    assert issubclass(DuplicateAtomLabelError, ValueError), "従来の ValueError の捕まえ方と互換"
 
 
 # ---------------- 特殊位置の精度 (#172) ----------------

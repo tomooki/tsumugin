@@ -29,6 +29,7 @@ from ..gpxstore import record_artifact as _record_artifact
 from ..store import Ledger
 from .absorption import apply_absorption_correction
 from .atomrows import (
+    atom_labels,
     atom_row,
     coord_esd_states,
     free_index_from_site_symmetry,
@@ -63,6 +64,7 @@ from .model import (
     StabilityOptions,
     StageResult,
     ValidityReport,
+    check_unique_atom_labels,
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
@@ -686,6 +688,34 @@ def _tof_profile_keys() -> list[str]:
     opt-in 段階 (既定レシピには含めない, T4 非回帰)。実測で幅較正が Rwp を改善する (17.3→16.2%)。
     """
     return ["sig-1", "sig-2"]
+
+
+def _refuse_duplicate_atom_labels(ph, phase_name: str) -> None:
+    """GSAS が読んだ相の原子行に同じラベルが 2 つ以上あれば、精密化の前に止める。
+
+    GSAS-II の CIF インポータは重複した ``_atom_site_label`` を別原子として残す (警告を出す
+    だけ)。原子ごとのフラグは ``set_refinements({"Atoms": {label: …}})`` で付き、GSAS はラベルを
+    ``G2Phase.atom(label)`` = **先頭**の一致で引き当てるので、2 番目以降の原子は座標・Uiso・
+    占有率が出発値のまま黙って凍結される。一方 `_setup_constraints` の ``label_to_idx`` と結果の
+    写像 (`_atom_result_maps`) は**末尾**が勝つ。PbSO4 (O2 を ``O1`` に改名) の実測では既定
+    レシピが完走し validity も合格、Rwp は 11.0191% (正しいラベルで 11.0181%)、報告の
+    ``atom_uiso["O1"]`` は精密化されていない方の 0.01 だった — Rwp では検出できない。
+
+    添字で引き当て直さないのは、結果・相の指定・初期占有率・拘束がすべてラベルキーで、
+    精密化だけ直しても報告が潰れる (誤りが fit から報告へ移るだけ) から。TOPAS 経路
+    (`topas.structure.structure_to_topas_phase`) も重複ラベルを拒否する。比較は完全一致
+    (``G2Phase.atom`` と同じ) — 空白・大小違いは GSAS が別原子として正しく引き当てる。
+
+    :raises DuplicateAtomLabelError: 重複があるとき (② は error dict へ縮退する)
+    """
+    check_unique_atom_labels(
+        f"相 {phase_name!r}",
+        atom_labels(ph.data["Atoms"], ph.data["General"]["AtomPtrs"]),
+        consequence=(
+            "GSAS は原子ごとの精密化フラグをラベルの先頭の一致にしか付けないため、2 番目以降の"
+            "原子は座標・Uiso・占有率が出発値のまま黙って凍結され、結果もラベルで潰れます"
+        ),
+    )
 
 
 def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
@@ -2363,6 +2393,10 @@ def run_auto_rietveld(
                 histograms=g2hists,
                 fmthint=p.format_hint,
             )
+            # 【ラベルは GSAS が読んだ原子行と突き合わせる】: 以降のフラグ・拘束・結果はすべて
+            #   ラベルで原子を引き当てる。重複すると先頭以外が黙って凍結される (CIF 以外の形式も
+            #   GSAS の行が正なので、ここで見る)。
+            _refuse_duplicate_atom_labels(ph, p.phase_name)
             g2phases.append(ph)
 
         # --- 参照格子 (妥当性判定の基準) を先に確保 ---

@@ -226,7 +226,20 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
 
 
 def write_gsas_cif(structure: Structure, out_path: str | Path, *, phase_name: str = "phase") -> Path:
-    """:class:`Structure` を GSAS-II が確実に読む単一ブロック最小 CIF へ書き出す。🔵"""
+    """:class:`Structure` を GSAS-II が確実に読む単一ブロック最小 CIF へ書き出す。🔵
+
+    :raises DuplicateAtomLabelError: 原子ラベルが重複しているとき (**書き出す前に**止める)。
+        正規化・重水素配置 (`deuterium`)・原子編集 (`cif_edit`) の共通の書き手なので、重複を
+        作った/持ち込んだ場所で止まる。そのまま書くと GSAS・TOPAS とも精密化の前に拒否する
+        (`model.check_unique_atom_labels`)。
+    """
+    from .model import check_unique_atom_labels
+
+    check_unique_atom_labels(
+        f"書き出す CIF {str(out_path)!r}",
+        [at.label for at in structure.atoms],
+        consequence="同名の原子はどちらの精密化エンジンでも区別できず、精密化の前に拒否されます",
+    )
     sg = structure.spacegroup_hm
     lines = [
         f"data_{re.sub(r'[^A-Za-z0-9_]', '_', phase_name)}",

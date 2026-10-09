@@ -178,3 +178,15 @@ def test_non_positive_or_non_finite_lookup_values_become_none(bad):
     「決まっていない」であって「厳密に 0」ではない。"""
     lookup = {"0::dAx:0": bad}.get
     assert coord_esd_states((1, 2, 3), pid=0, index=0, esd_lookup=lookup)[0] is None
+
+
+def test_atom_labels_reads_only_the_label_cell_in_row_order():
+    """ラベルだけの読み取り (重複ラベル検査用)。並びは原子行の順・重複も潰さない。数値列が
+    読めない行でも止まらない (ラベルの検査を座標の形に依存させない)。"""
+    from tsumugin.autorietveld.atomrows import atom_labels
+
+    rows = [_row("O1"), _row("S"), _row("O1")]
+    rows[1][3] = "not-a-number"
+    assert atom_labels(rows, _PTRS) == ["O1", "S", "O1"]
+    shifted = [["ignored", "Ca1", "Ca"], ["ignored", "Ca2", "Ca"]]
+    assert atom_labels(shifted, (3, 2, 7, 9)) == ["Ca1", "Ca2"]
