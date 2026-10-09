@@ -48,7 +48,13 @@ from .driver import run_tc
 from .flags import apply_stage
 from .inp import TopasDocument, _slug
 from .instrument import histogram_to_topas
-from .parse import TopasRecords, limit_hits_from_out, parse_out_metrics, parse_records
+from .parse import (
+    TopasRecords,
+    limit_hits_from_out,
+    parse_out_metrics,
+    parse_records,
+    refined_values_from_out,
+)
 from .structure import BEQ_PER_UISO, structure_to_topas_phase, to_topas_spacegroup
 
 __all__ = ["run_topas_rietveld"]
@@ -182,10 +188,8 @@ def _metrics(run_out: str, results_text: str) -> "tuple[float, float, int]":
     metrics = dict(parse_out_metrics(run_out))
     rwp = metrics.get("r_wp", records.scalars.get("r_wp", float("inf")))
     gof = metrics.get("gof", records.scalars.get("gof", float("inf")))
-    # 解放パラメータ数は .out の ``value`_esd`` 記法の個数で数える (esd が付くのは精密化した値。
+    # 解放パラメータ数は .out の ``value`_esd`` 記法の個数で数える (印が付くのは精密化した値。
     #   同じ記法を持つ MVW の報告値と末尾の相関行列は `refined_values_from_out` が除く)。
-    from .parse import refined_values_from_out
-
     n_params = len(refined_values_from_out(run_out))
     return float(rwp), float(gof), int(n_params)
 

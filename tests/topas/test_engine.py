@@ -225,6 +225,7 @@ def test_real_pbso4_refines_end_to_end(tmp_path):
     assert result.final_rwp < 20.0, f"Rwp {result.final_rwp} が高すぎる"
     assert any(not s.reverted for s in result.stage_results)
     assert (tmp_path / "proj").is_dir()  # 成果物が残る
+    _assert_n_params_is_topas_own_count(result)
 
 
 @pytest.mark.topas
@@ -235,8 +236,6 @@ def test_real_pbso4_each_stage_starts_from_the_last_accepted_out(tmp_path):
     Issue の再現そのもの: 以前は 8 段すべて受理されても、どの段の INP も CIF の出発値
     (a=8.48, Pb x=0.1882) から始まっていた。格子・Pb の x/z・scale・背景・TCHZ を確かめる。
     """
-    import re
-
     from tsumugin.topas.parse import background_values_from_out, named_refined_values_from_out
 
     project = tmp_path / "proj"
@@ -275,38 +274,6 @@ def test_real_pbso4_each_stage_starts_from_the_last_accepted_out(tmp_path):
         assert name in checked, f"{name} の持ち越しを一度も検算していない"
     assert background, "背景係数の持ち越しを一度も検算していない"
     assert math.isfinite(result.final_rwp)
-
-
-@pytest.mark.topas
-@_real_data
-def test_real_pbso4_n_params_matches_the_correlation_matrix_of_every_stage(tmp_path):
-    """**実 tc.exe の全段で ``n_params`` = TOPAS 自身の相関行列の行数**。
-
-    ``value`_esd`` 記法は精密化値だけでなく**報告値** (``MVW`` の体積・重量分率) にも付く。
-    相関行列は TOPAS が実際に動かしたパラメータだけを並べるので、これと一致しない計数は
-    報告値を数えているか、精密化値を落としている。macro が増えても同じ網で捕まえる。
-    """
-    project = tmp_path / "proj"
-    result = eng.run_topas_rietveld(
-        [HistogramSpec(
-            data_path=str(_PBSO4_XRA), instrument_path=str(_PBSO4_PRM),
-            radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="GSAS",
-        )],
-        [PhaseSpec(structure_path=str(_PBSO4_CIF), phase_name="PbSO4")],
-        keep_project=str(project),
-    )
-    checked = 0
-    for index, stage in enumerate(result.stage_results):
-        if not math.isfinite(stage.rwp):
-            continue  # tc.exe が失敗した段には相関行列が無い
-        out = (project / f"stage{index}.out").read_text(encoding="utf-8")
-        expected = _correlation_matrix_size(out)
-        assert expected > 0, f"stage{index}: 相関行列が無い (do_errors が外れた?)"
-        assert stage.n_params == expected, (
-            f"{stage.label}: n_params={stage.n_params} だが TOPAS が精密化したのは {expected}"
-        )
-        checked += 1
-    assert checked >= 2, "比べた段が少なすぎる (精密化が回っていない)"
 
 
 @pytest.mark.topas
@@ -433,8 +400,6 @@ def _topas_like_out(inp_text: str, rwp: float, refined: "dict[str, float]",
     書き換える (``!`` 付きは TOPAS も値を動かさない)。``background`` は ``bkg @`` 行の係数
     (タプルなら全行に同じ値、リストなら行ごと)。
     """
-    import re
-
     text = inp_text
     for name, value in refined.items():
         text = re.sub(
@@ -664,6 +629,7 @@ def test_new_flags_produce_inp_that_tc_actually_accepts(label, flags):
     )
     stage = result.stage_results[-1]
     assert math.isfinite(stage.rwp), f"{label}: tc.exe が INP を受理していない (rwp=inf)"
+    _assert_n_params_is_topas_own_count(result)
 
 
 @pytest.mark.topas
@@ -688,6 +654,7 @@ def test_hydrostatic_strain_produces_inp_that_tc_actually_accepts():
     assert stage.n_params > result.stage_results[-2].n_params, (
         "ε が 1 つも増えていない — 段が無言 no-op になっている"
     )
+    _assert_n_params_is_topas_own_count(result)
 
 
 # ---------------- joint の総合指標 (#174) ----------------
@@ -778,20 +745,78 @@ pkw0_PbSO4            14:    4  -3  -2  -3   1   5  -5   3   6   1   5  78 -94 1
 
 
 def _correlation_matrix_size(out_text: str) -> int:
-    """TOPAS 自身が数えた精密化パラメータ数 (``C_matrix_normalized`` の行数)。"""
+    """TOPAS 自身が数えた精密化パラメータ数 (``C_matrix_normalized`` の行数)。
+
+    行は ``名前  番号:  相関…`` (列見出しは空白始まり、``{``/``}`` に ``:`` は無い)。名前が
+    列幅を超えて番号と接しても数えられるよう、名前と番号の間の空白は要求しない。
+    """
     _, _, matrix = out_text.partition("C_matrix_normalized")
-    return len(re.findall(r"(?m)^\S+\s+\d+:", matrix))
+    return len(re.findall(r"(?m)^\S[^\n:]*\d:", matrix))
+
+
+def _assert_n_params_is_topas_own_count(result) -> None:
+    """**実 tc.exe の全段で ``n_params`` = TOPAS 自身の相関行列の行数**。
+
+    数える側は既知の報告値 (``MVW``) を除いているだけなので、報告値を書き戻す macro が INP に
+    増えると黙って過大計数に戻る。実 tc.exe を回すテストの成果物で毎回これを検算する
+    (追加の精密化はしない — 段の ``.out`` は成果物として既に残っている)。
+    """
+    project = Path(result.project_path)
+    assert project.is_dir(), f"成果物が無い: {result.project_path!r}"
+    checked = 0
+    for index, stage in enumerate(result.stage_results):
+        if not math.isfinite(stage.rwp):
+            continue  # tc.exe が失敗した段には相関行列が無い
+        out = (project / f"stage{index}.out").read_text(encoding="utf-8")
+        expected = _correlation_matrix_size(out)
+        assert expected > 0, f"stage{index}: 相関行列が無い (do_errors が外れた?)"
+        assert stage.n_params == expected, (
+            f"{stage.label}: n_params={stage.n_params} だが TOPAS が精密化したのは {expected}"
+        )
+        checked += 1
+    assert checked, "比べた段が無い (精密化が回っていない)"
 
 
 def test_n_params_does_not_count_the_values_mvw_reports():
-    """**``MVW`` の体積・重量分率は解放パラメータではない** — 数えると相ごとに 1–2 個の過大計数。
+    """**``MVW`` の体積・重量分率は解放パラメータではない**。
 
-    ``n_params`` は無言 no-op 検出と BIC (``χ² + n_params·ln n_obs``) に入るので、相数の違う
-    モデルの比較が相の数だけ偏る。実 PbSO4 の S0 (背景 6 + scale 1) が 8 と報告されていた。
+    数えると相 × ヒストグラムごとに 1–2 個の過大計数になる。``n_params`` は無言 no-op 検出と
+    BIC (``χ² + n_params·ln n_obs``) に入るので、相数の違うモデルの比較が相の数だけ偏る。
+    実 PbSO4 の S0 (背景 6 + scale 1) が 8 と報告されていた。
     """
     _, _, n_params = eng._metrics(_S2_OUT, "")
     assert _correlation_matrix_size(_S2_OUT) == 14  # fixture の前提 (TOPAS 自身の計数)
     assert n_params == 14, f"n_params={n_params}: MVW の報告値を精密化パラメータと数えている"
+
+
+#: 同じ S2 の INP から ``do_errors`` だけを外して実 tc.exe で回した ``.out`` (Rwp は同一)。
+#: esd は付かず**バッククォートだけ**が精密化値 (と MVW の報告値) に残り、相関行列も出ない。
+_S2_OUT_WITHOUT_ERRORS = r"""r_p  11.2402923 r_wp  14.4391214 r_exp  4.93892969 gof  2.9235325
+iters 1200
+xdd "hist0.xye"
+   prm ze0 -0.046862591` min -0.5 max 0.5 del = .01 Yobs_dx_at(X1);
+   bkg @  141.563014`  39.9097028`  15.4348254`  14.44522` -8.02849886` -9.40639641`
+   str
+      a PbSO4_a  8.479139`
+      b PbSO4_b  5.398019`
+      c PbSO4_c  6.959088`
+      site Pb x !PbSO4_Pb_x 0.1882 y !PbSO4_Pb_y 0.25 z !PbSO4_Pb_z 0.167 occ Pb !PbSO4_Pb_occ 1.0 beq !PbSO4_Pb_beq 0.7895683520871487
+      TCHZ_Peak_Type(pku0_PbSO4, 0.0435481457`, pkv0_PbSO4,-0.0357996052`, pkw0_PbSO4, 0.0183637685`, !pkz0_PbSO4, 0.0, !pkx0_PbSO4, 0.0, !pky0_PbSO4, 0.03)
+      scale PbSO4_scale_h0  0.000197388971`
+      MVW( 1213.050, 318.521`, mvw_wt_PbSO4_h0  100.000`)
+      Out(mvw_wt_PbSO4_h0, "wt_frac\tPbSO4\t%.8f", "\t%.8f\n")
+"""
+
+
+def test_n_params_without_do_errors_counts_the_backticked_values():
+    """**印はバッククォート** — esd を要求すると ``do_errors`` 無しで全段 ``n_params=0`` になる。
+
+    0 が続くと無言 no-op 検出の「母数が増えない」が常に成立し、BIC から母数の項が消える。
+    持ち越し (`named_refined_values_from_out`) は同じ ``.out`` をバッククォートで正しく読むので、
+    2 つのパーサが「何が精密化されたか」で食い違うことにもなる。
+    """
+    _, _, n_params = eng._metrics(_S2_OUT_WITHOUT_ERRORS, "")
+    assert n_params == 14, f"n_params={n_params} (do_errors 付きの同じ段は 14)"
 
 
 def test_validity_receives_phase_fractions_as_a_sequence():
@@ -864,6 +889,7 @@ def test_benchmark_t1_fluoroapatite():
     )
     assert result.final_rwp < 12.0, f"Rwp {result.final_rwp:.2f} (実測 10.45, GSAS 9.83)"
     assert result.validity.passed, "Uiso/占有率が非物理 (Rwp だけで合格にしない)"
+    _assert_n_params_is_topas_own_count(result)
 
 
 @pytest.mark.topas
@@ -894,6 +920,7 @@ def test_benchmark_t2_garnet_cw_neutron():
     assert result.final_rwp < 6.5, f"Rwp {result.final_rwp:.2f} (実測 5.56, GSAS 4.33)"
     assert result.validity.passed
     assert result.atom_occupancy["garnet"]["Fe1"] == pytest.approx(0.58, abs=0.05)
+    _assert_n_params_is_topas_own_count(result)
 
 
 @pytest.mark.topas
@@ -949,6 +976,7 @@ def test_benchmark_t3_joint_reports_the_global_rwp():
     assert set(eps) == {"a_h1", "b_h1", "c_h1"}, f"ε が返っていない: {result.cell_strain}"
     for axis, value in eps.items():
         assert -0.005 < value < 0.0, f"{axis}: {value} (10 K 側は縮むはず)"
+    _assert_n_params_is_topas_own_count(result)
 
 
 def _t4_histograms(d: Path) -> list[HistogramSpec]:
@@ -1028,6 +1056,7 @@ def test_benchmark_t4_multiphase_tof_synchrotron():
     assert not result.validity.passed, (
         "CaF2 の Uiso が負でなくなった — 記録を更新すること (この赤旗は既知の状態の固定)"
     )
+    _assert_n_params_is_topas_own_count(result)
 
 
 @pytest.mark.topas
@@ -1073,6 +1102,7 @@ def test_benchmark_t4_tuned_configuration():
     assert not result.validity.passed, (
         "CaF2 の Uiso が負でなくなった — 記録を更新すること (この赤旗は既知の状態の固定)"
     )
+    _assert_n_params_is_topas_own_count(result)
 
 def test_cell_strain_is_reported_from_the_records(stub_driver, monkeypatch):
     """段が効いた理由 (ε がいくつだったか) を結果から読めること。
