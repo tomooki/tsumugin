@@ -102,6 +102,17 @@
 | L2 の残り (項目が dict でない・RefList がスカラー) | 項目の扱い全体を try の中へ |
 | L8 への意見 (CIF は P1-1A の外へも持ち出される) | `export_cif_dir` の docstring に従属パラメータの esd を保証しない旨を明記 |
 | L9 への反論 | 上記のとおり撤回し、原点固定の相への座標の摂動を拒否 |
-| N2 TOPAS の `StageResult` が既に持っている判定 (`is_noop`/`reason`) を渡していない | **見送り**: TOPAS 本体は PR #229 が変更中。#229 のマージ後に main を取り込むとき直す |
+| N2 TOPAS の `StageResult` が既に持っている判定 (`is_noop`/`reason`) を渡していない | 2 巡目は見送ったが、3 巡目の反論 (2 行の修正で #229 との衝突は小さい・見送ると ② が事実と違う null を返す) を受けて修正 |
 
 変異 3 個 (L9・N4・ガードの推移的な辿り) をすべて検出。
+
+## セルフレビュー 3 巡目 (HIGH 0 / MEDIUM 2 / LOW 3。2 巡目の 8 件は 6 解消・2 部分的)
+
+| 指摘 | 対応 |
+|---|---|
+| A MEDIUM 強化したガードの新しい抜け道 (クラス内のテストを見なくなった後退・関数の中の import・conftest の fixture・絶対 import・モジュール属性) と、docstring の「CaTeO3」を誤検出する罠 | 全階層の関数/メソッドを集め、関数の中を含む import・conftest・モジュール属性を辿る形に書き直し。照合は docstring とコメントを除いたコードの字面。自己テストで抜け道 12 種の検出と、誤検出 3 種の非検出を固定 |
+| B MEDIUM 規定の収束確認では、原点固定と座標の摂動の拒否が Phase B の失敗警告に埋もれ、黙って Phase A だけに縮む | `optimize_then_confirm` の入口 (Phase A の前) で拒否。② は error dict |
+| C LOW 部品の関数名のトークン漏れ | 部品のモジュール名 `constraint_groups` と関数名を追加 |
+| D LOW ReleaseParams の検証が ② のこのツールにしか無い | **見送り**: `action_from_dict` の呼び手は ② の `refine_with_revisions` だけ (確認済み)。① の serialization から ② の検証を呼ぶと層が逆転する。呼び手が増えたら検証を ① へ移す |
+| E LOW 摂動幅に None が来ると TypeError | None を 0 と扱う |
+| N2 への反論 | 上記のとおり修正 (TOPAS の段の結果に `is_noop` と revert 理由を渡す) |

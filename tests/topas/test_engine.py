@@ -723,3 +723,18 @@ def test_cell_strain_is_reported_from_the_records(stub_driver, monkeypatch):
         [_histogram()], [_phase()], recipe=_stages(("S0", 12.0)),
     )
     assert result.cell_strain == {"PbSO4": {"a_h1": 0.0031}}
+
+
+def test_stage_results_carry_the_noop_and_revert_decisions(stub_driver):
+    """TOPAS も段の判定 (no-op・revert 理由) を結果に載せる — ② が "unrecorded"/null に縮退しない
+    (fit-then-judge P1a セルフレビュー N2)。"""
+    stub_driver([30.0, 30.0, TopasRunError("Abnormal program termination"), 40.0])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=_stages(("S0", 30.0), ("S1", 30.0), ("S2", 0), ("S3", 0)),
+    )
+    first, noop, failed, worse = result.stage_results
+    assert first.is_noop is False and first.revert_reason is None
+    assert noop.is_noop is True and noop.revert_reason is None
+    assert failed.reverted and failed.revert_reason == "error"
+    assert worse.reverted and worse.revert_reason == "worse"

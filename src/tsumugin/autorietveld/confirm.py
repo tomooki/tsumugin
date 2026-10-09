@@ -153,6 +153,15 @@ def optimize_then_confirm(
         実運用経路は JSON spec であり ③ はここへ callable を送れない (CLAUDE.md §4.5)
     :param multistart_runner: Phase B の実行 callable (同上)
     """
+    # 【入力の誤りは Phase A の前に止める】: 極性原点を固定した相への座標の摂動は engine が拒否する
+    #   (`engine._refuse_polar_origin_with_coord_jitter`) が、ここで止めないと高価な Phase A が完走
+    #   した後に Phase B の全開始点が失敗し、「収束確認が失敗した」警告に埋もれて黙って Phase A
+    #   だけの結果に縮む (セルフレビュー 3 巡目)。
+    from .engine import _refuse_polar_origin_with_coord_jitter
+
+    _refuse_polar_origin_with_coord_jitter(
+        phases, {p.phase_name: coord_jitter_ang for p in phases} if coord_jitter_ang > 0 else None
+    )
     ledger = ledger if ledger is not None else Ledger()
     warnings: list[str] = []
 

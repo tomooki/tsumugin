@@ -225,3 +225,23 @@ def test_polar_origin_with_coordinate_jitter_is_refused():
     _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"other": 0.05})
     _refuse_polar_origin_with_coord_jitter([_spec()], {"w": 0.05})
     _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], None)
+
+
+def test_standard_route_refuses_polar_origin_with_jitter_before_phase_a():
+    """規定の収束確認は Phase A の前に止める — 後で Phase B が全滅して警告に埋もれない (3 巡目 B)。"""
+    from tsumugin.autorietveld.confirm import optimize_then_confirm
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def search_must_not_run(*args, **kwargs):
+        raise AssertionError("Phase A が走った")
+
+    with pytest.raises(InvalidPhaseSpecError, match="摂動"):
+        optimize_then_confirm(
+            [], [_spec(fix_polar_origin=True)], search_runner=search_must_not_run,
+        )
+
+
+def test_jitter_mapping_with_none_values_is_not_a_type_error():
+    from tsumugin.autorietveld.engine import _refuse_polar_origin_with_coord_jitter
+
+    _refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": None})

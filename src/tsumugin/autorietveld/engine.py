@@ -1512,7 +1512,7 @@ def _refuse_polar_origin_with_coord_jitter(phases, jitter) -> None:
     bad = [
         p.phase_name
         for p in phases
-        if getattr(p, "fix_polar_origin", False) and float(jitter.get(p.phase_name, 0.0)) > 0.0
+        if getattr(p, "fix_polar_origin", False) and float(jitter.get(p.phase_name) or 0.0) > 0.0
     ]
     if bad:
         raise InvalidPhaseSpecError(
