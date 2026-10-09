@@ -22,6 +22,8 @@ numpy-only (GSAS 非依存)。
 from __future__ import annotations
 
 import dataclasses
+import types
+import typing
 
 import pytest
 
@@ -76,6 +78,22 @@ def test_refusal_names_the_phase_and_its_atoms():
     assert "'PbSO4'" in message
     for label in _LABELS:
         assert label in message
+
+
+def test_refusal_suggests_the_nearest_label():
+    """``"Pb "`` の直し方 (``"Pb"``) を ③ が一覧から探さなくて済むように添える。"""
+    with pytest.raises(InvalidPhaseSpecError, match=r"近いラベル: \{'Pb ': \['Pb'\]\}"):
+        check_phase_spec_labels(_spec(frozen_uiso_labels=("Pb ",)), _LABELS)
+
+
+def test_refusal_for_a_large_phase_does_not_dump_every_atom():
+    """P1 展開の相は数百原子。エラー文に全部載せると肝心のフィールドとラベルが埋もれる。"""
+    labels = tuple(f"O{i}" for i in range(300))
+    with pytest.raises(InvalidPhaseSpecError) as excinfo:
+        check_phase_spec_labels(_spec(frozen_coord_labels=("Ox",)), labels)
+    message = str(excinfo.value)
+    assert "Ox" in message and "+260" in message
+    assert "O299" not in message
 
 
 def test_every_unknown_label_is_reported_at_once():
@@ -167,17 +185,45 @@ def test_an_atom_in_two_occupancy_constraints_passes_the_shared_check():
 # ---------------- 単一の真実源: ラベルを運ぶフィールドを漏らさない ----------------
 
 
+def _label_kind(tp) -> "str | None":
+    """型が「ラベルの列」(``tuple[str, ...]``、None 可) か「ラベルの組の列」かを**構造で**判定する。
+
+    注釈の文字列で照合すると ``Tuple[str, ...]`` や ``tuple[str,...]`` と書いたフィールドが
+    素通りする (ガードが黙って緩む)。
+    """
+    if typing.get_origin(tp) in (typing.Union, types.UnionType):
+        args = [a for a in typing.get_args(tp) if a is not type(None)]
+        if len(args) != 1:
+            return None
+        tp = args[0]
+    if typing.get_origin(tp) is not tuple:
+        return None
+    inner = typing.get_args(tp)
+    if inner == (str, ...):
+        return "label"
+    if len(inner) == 2 and inner[1] is ... and _label_kind(inner[0]) == "label":
+        return "group"
+    return None
+
+
+def test_label_kind_reads_the_type_not_its_spelling():
+    assert _label_kind(typing.Tuple[str, ...]) == "label"
+    assert _label_kind(typing.Optional[tuple[str, ...]]) == "label"
+    assert _label_kind(typing.Tuple[typing.Tuple[str, ...], ...]) == "group"
+    assert _label_kind(tuple[float, float]) is None
+    assert _label_kind(str) is None
+
+
 def test_every_label_bearing_field_is_checked():
     """`PhaseSpec` に原子ラベル (の組) のフィールドを足したら、検査の対象に入れない限り落ちる。
 
     今回の欠陥は「エンジンが相に無いラベルを黙って飛ばす」型で、フィールドを足すたびに
-    同じ穴が開く。型 (注釈) から引くので、手書きの一覧と照合するより先に古くならない。
+    同じ穴が開く。型から引くので、手書きの一覧と照合するより先に古くならない。
     """
-    by_annotation = {"tuple[str, ...]": "label", "tuple[str, ...] | None": "label",
-                     "tuple[tuple[str, ...], ...]": "group"}
+    hints = typing.get_type_hints(PhaseSpec)
     expected: dict[str, set[str]] = {"label": set(), "group": set()}
     for f in dataclasses.fields(PhaseSpec):
-        kind = by_annotation.get(str(f.type))  # model.py は postponed annotations (文字列)
+        kind = _label_kind(hints[f.name])
         if kind is not None:
             expected[kind].add(f.name)
     assert expected["label"] == set(PHASE_SPEC_LABEL_FIELDS)

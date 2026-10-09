@@ -323,8 +323,10 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
 
     意味を決められない指定は推測で埋めずに止める。**エンジンを問わない規則** (相に無いラベル /
     2 原子以上を指すラベル / 異なる 2 原子に満たない組) は GSAS 経路と同じ関数
-    (`autorietveld.model.check_phase_spec_labels`) で検査する。ここに残るのは **TOPAS の INP
-    だから張れない**指定 — GSAS はどれも意味を決めて張れる:
+    (`autorietveld.model.check_phase_spec_labels`) で検査する。ここに残るのは **TOPAS の INP の
+    書き方 (1 原子 = 1 つの式・組 = 1 変数) に起因する**制約で、GSAS 経路には同じ規則を課さない
+    (GSAS が意味を決めて張れることを実測したのは占有率拘束の重なりだけ。残りの GSAS での扱いは
+    未検証):
 
     - 3 原子以上の混合占有 (``x, 1-x, 1-x`` は和が 1 にならない)
     - 1 原子が 2 つの占有率拘束に入っている (INP では後に書いた方だけが効く。GSAS は
@@ -343,10 +345,6 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
     def refuse(message: str) -> NoReturn:
         raise InvalidPhaseSpecError(f"相 {spec.phase_name!r}: {message}")
 
-    singles = {
-        "free_occupancy_labels": tuple(spec.free_occupancy_labels),
-        "frozen_coord_labels": tuple(spec.frozen_coord_labels),
-    }
     groups = {
         "mixed_occupancy_groups": tuple(tuple(g) for g in spec.mixed_occupancy_groups),
         "occupancy_equiv_groups": tuple(tuple(g) for g in spec.occupancy_equiv_groups),
@@ -442,12 +440,12 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
         # 【混合占有には Uiso 等価も張る】: 同一サイトを分け合う原子は同じ熱振動をする。
         #   GSAS 経路が add_EqnConstr と add_EquivConstr を対で張るのと同じ (M7 T2 の教訓)。
         "beq_equiv_groups": groups["mixed_occupancy_groups"],
-        "free_occupancy_labels": singles["free_occupancy_labels"],
+        "free_occupancy_labels": tuple(spec.free_occupancy_labels),
         "occupancy_equiv_groups": groups["occupancy_equiv_groups"],
         "occupancy_parent_sum_groups": groups["occupancy_sum_groups"],
         "position_groups": tuple(position_groups),
         "refine_cell": bool(spec.refine_cell),
-        "frozen_coord_labels": singles["frozen_coord_labels"],
+        "frozen_coord_labels": tuple(spec.frozen_coord_labels),
         "beq_release_labels": beq_release,
     }
 

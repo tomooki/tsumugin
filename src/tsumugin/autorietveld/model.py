@@ -404,6 +404,10 @@ PHASE_SPEC_GROUP_FIELDS: "tuple[str, ...]" = (
 )
 
 
+#: 相に無いラベルのエラー文に載せる相の原子ラベルの上限 (それより多ければ件数で畳む)。
+_MAX_LABELS_IN_MESSAGE = 40
+
+
 def check_phase_spec_labels(spec: PhaseSpec, labels: "Sequence[str]") -> None:
     """相の指定が名指す原子ラベルを、相の実際の原子ラベルと突き合わせる — **両エンジン共通**。
 
@@ -426,6 +430,8 @@ def check_phase_spec_labels(spec: PhaseSpec, labels: "Sequence[str]") -> None:
 
     :raises InvalidPhaseSpecError: 上記のとき (② は ``{"error","error_type"}`` へ縮退する)
     """
+    import difflib
+
     from ..errors import InvalidPhaseSpecError
 
     order = list(labels)
@@ -443,9 +449,18 @@ def check_phase_spec_labels(spec: PhaseSpec, labels: "Sequence[str]") -> None:
     unknown = {name: missing for name, refs in named.items()
                if (missing := [label for label in refs if label not in known])}
     if unknown:
+        # 近いラベルを添え、相の原子一覧は長ければ切る (P1 展開の相は数百原子になり、② の
+        # エラー文に全部載せると肝心の「どのフィールドのどのラベルか」が埋もれる)。
+        near = {label: hits for refs in unknown.values() for label in refs
+                if (hits := difflib.get_close_matches(label, order, n=3))}
+        shown = order if len(order) <= _MAX_LABELS_IN_MESSAGE else [
+            *order[:_MAX_LABELS_IN_MESSAGE], f"... (+{len(order) - _MAX_LABELS_IN_MESSAGE})"
+        ]
         refuse(
-            f"相に無い原子ラベルがあります: {unknown} (相の原子: {order})。綴り違い (前後の空白・"
-            "大小を含む) は「凍結・拘束したつもりで何も効かない」精密化になるため止めます"
+            f"相に無い原子ラベルがあります: {unknown}"
+            + (f" (近いラベル: {near})" if near else "")
+            + f" (相の原子: {shown})。綴り違い (前後の空白・大小を含む) は「凍結・拘束したつもりで"
+            "何も効かない」精密化になるため止めます"
         )
 
     referenced = {label for refs in named.values() for label in refs}
@@ -458,7 +473,7 @@ def check_phase_spec_labels(spec: PhaseSpec, labels: "Sequence[str]") -> None:
 
     for name in PHASE_SPEC_GROUP_FIELDS:
         for group in getattr(spec, name):
-            if len(set(group)) < 2 or len(set(group)) != len(group):
+            if len(group) < 2 or len(set(group)) != len(group):
                 refuse(
                     f"`{name}` の組 {list(group)} は異なる 2 原子以上で書いてください "
                     "(1 原子の組は何も拘束しません)"

@@ -1,4 +1,4 @@
-"""② 実行系ツールの I/O 例外縮退デコレータ (Issue #94)。
+"""② 実行系ツールの I/O 例外・ドメインエラー縮退デコレータ (Issue #94)。
 
 ③ は LLM なので、GSAS/ローダーが投げる ``FileNotFoundError`` 等の I/O 例外が MCP 境界を越えると
 **回復不能なハード失敗**になる (CLAUDE.md ② 不変条件: 例外を送出せず ``{"error","error_type"}``
@@ -20,29 +20,31 @@ from __future__ import annotations
 import functools
 from typing import Callable, TypeVar
 
-from ..errors import InvalidPhaseSpecError
+from ..errors import TsumuginError
 
 _F = TypeVar("_F", bound=Callable[..., dict])
 
 
 def degrade_oserror(fn: _F) -> _F:
-    """``OSError`` (ファイル不在等の I/O 失敗) を ``{"error","error_type"}`` dict へ縮退する。
+    """``OSError`` (ファイル不在等の I/O 失敗) と**ドメインエラー** (``TsumuginError``) を
+    ``{"error","error_type"}`` dict へ縮退する。
 
-    ``error_type`` に実際の例外クラス名 (``FileNotFoundError``/``PermissionError`` 等) を入れるので、
-    ③ は「入力ファイルが無い」と「別の失敗」を区別できる。``OSError`` と下記の相仕様の誤り**以外**の
-    例外は透過させる (論理バグを握り潰さない — 縮退対象は入力の誤りに限る)。
+    ``error_type`` に実際の例外クラス名 (``FileNotFoundError``/``InvalidPhaseSpecError`` 等) を入れるので、
+    ③ は「入力ファイルが無い」「相の指定が誤っている」と「別の失敗」を区別できる。それ以外の例外は
+    透過させる (論理バグを握り潰さない — `rietveld_tools._run_degrading_domain_errors` と同じ線引き)。
 
-    **相の指定の誤り** (`errors.InvalidPhaseSpecError`) も縮退する。I/O 失敗と同じく**精密化の前に**
-    分かる入力の誤りで、engine が相を読んで原子ラベルが分かった時点 (= 逐次系では最初のフレームを
-    回す中) に送出されるので、入力の解析を囲む ``try`` では捕まらない (縮退しないと、相に無い
-    ラベルを名指した `sequential_rietveld` 等が例外で ② を越える)。
+    ドメインエラーを含めるのは、逐次系 (`sequential_rietveld` 等) が GSAS を**入力解析の ``try`` の外**で
+    回すから。engine が相を読んでから送出する `InvalidPhaseSpecError` (相に無いラベル等) や
+    `GSASUnavailableError` は、ここで縮退しないと例外のまま ② を越える。
+
+    名前が ``oserror`` のままなのは歴史的理由 (11 ツールが使っており、改名は並行ブランチと衝突する)。
     """
 
     @functools.wraps(fn)
     def wrapper(*args: object, **kwargs: object) -> dict:
         try:
             return fn(*args, **kwargs)
-        except (OSError, InvalidPhaseSpecError) as exc:
+        except (OSError, TsumuginError) as exc:
             return {"error": str(exc), "error_type": type(exc).__name__}
 
     return wrapper  # type: ignore[return-value]

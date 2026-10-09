@@ -161,6 +161,18 @@ def test_tools_degrade_a_phase_spec_error(call):
     assert "Ox" in out["error"]
 
 
+def test_sequential_rietveld_degrades_other_domain_errors():
+    """逐次系は GSAS を入力解析の try の外で回すので、GSAS 未導入などのドメインエラーも
+    ここで縮退しないと ② を越える (`_run_degrading_domain_errors` と同じ線引き)。"""
+    from tsumugin.errors import GSASUnavailableError
+
+    def _no_gsas(*a, **k):
+        raise GSASUnavailableError("GSAS-II が見つかりません")
+
+    out = sequential_rietveld([_F], [_P], runner=_no_gsas)
+    assert out.get("error_type") == "GSASUnavailableError", out
+
+
 def test_degrade_oserror_converts_a_phase_spec_error_to_dict():
     @degrade_oserror
     def bad():
