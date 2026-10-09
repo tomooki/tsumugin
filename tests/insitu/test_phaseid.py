@@ -549,7 +549,7 @@ def test_structure_to_cif_p1_fallback_writes_unique_atom_labels(tmp_path, monkey
     (= ラベル付きの) 構造を P1 展開すると等価原子が全員同じラベル (``Na1`` ×4) を持つ。GSAS は
     原子ごとのフラグを先頭の一致にしか付けないので 2 番目以降が黙って凍結され、engine は
     これを `DuplicateAtomLabelError` で拒否する — 物質化 CIF がそれを作ると、逐次解析の
-    相追加トライアルが系列ごと止まる。
+    相追加トライアルはその候補を棄却する (正しい相でも採用されない)。
     """
     import pymatgen.io.cif as pmcif
     from pymatgen.core import Lattice, Structure

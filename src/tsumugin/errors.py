@@ -142,7 +142,12 @@ class MPUnavailableError(TsumuginError):
 
 
 class DuplicateAtomLabelError(TsumuginError, ValueError):
-    """相の構造で 2 つ以上の原子が同じラベルを持つとき (GSAS 経路, 精密化の前に送出)。
+    """相の構造で 2 つ以上の原子が同じラベルを持つとき (精密化の前に送出)。
+
+    送出元は `autorietveld.model.check_unique_atom_labels` の 1 つで、呼ぶのは両エンジンの入口
+    (GSAS は ``add_phase`` 直後、TOPAS は `topas.structure.structure_to_topas_phase`)・共通の
+    CIF 書き手 `cif_normalize.write_gsas_cif` (正規化・重水素配置)・`cif_edit` の入力検査。
+    逐次解析の相追加トライアルはこれを**その候補の棄却**として捕まえ、系列は止めない。
 
     GSAS-II の CIF インポータは重複ラベルを別原子として残すが、原子ごとの精密化フラグは
     ``G2Phase.atom(label)`` = **先頭**の一致にしか付かない。2 番目以降の原子は座標・Uiso・
