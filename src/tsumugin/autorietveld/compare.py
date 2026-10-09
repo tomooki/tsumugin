@@ -18,7 +18,7 @@ from typing import Callable, Mapping, Sequence
 from tsumugin.autorietveld.engine import run_auto_rietveld
 from tsumugin.autorietveld.model import AutoRietveldResult, HistogramSpec, PhaseSpec
 from tsumugin.evidence import AICBackend, BICBackend
-from tsumugin.gpxstore import gpx_context, group_context
+from tsumugin.gpxstore import gpx_context, group_context, reject_single_keep
 from tsumugin.model import RefinementMetrics
 
 __all__ = [
@@ -127,14 +127,17 @@ def compare_models(
     :param histograms: 観測ヒストグラム集合 (同時精密化なら複数)
     :param variants: 比較する構造モデル群
     :param runner: 精密化関数 (既定 ``run_auto_rietveld``; テストでスタブ注入可)
-    :param run_kwargs: runner へ渡す追加引数 (recipe / max_cyc / keep_gpx 等)
+    :param run_kwargs: runner へ渡す追加引数 (recipe / max_cyc / gpx_dir / save_gpx 等)。
+        ⚠ ``keep_gpx`` / ``keep_project`` は不可 — 全バリアントが 1 パスへ上書きされる
+        (`gpxstore.reject_single_keep`)
     :returns: :class:`ModelComparison` (BIC 昇順, best=最小 BIC)
 
     Raises:
-        ValueError: variants が空のとき。
+        ValueError: variants が空のとき / ``run_kwargs`` に ``keep_*`` があるとき。
     """
     if not variants:
         raise ValueError("compare_models には 1 つ以上の ModelVariant が必要です。")
+    reject_single_keep(run_kwargs, entry="compare_models")
 
     bic_backend = BICBackend()
     aic_backend = AICBackend()
