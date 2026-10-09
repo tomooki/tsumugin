@@ -205,6 +205,15 @@ def test_every_stability_field_null_is_the_default(key):
     )
 
 
+def test_unsupported_field_type_is_named_not_a_bare_key_error():
+    # 【目的】: フィールド駆動の検査表に無い型 (例 ``int | None``) を足したとき、全 stability 入力が
+    #   ``KeyError: <class 'NoneType'>`` で落ちるのではなく、フィールド名つきで大声で落ちること。
+    from tsumugin.autorietveld.model import _stability_check
+
+    with pytest.raises(ValueError, match=r"stability\.max_stage_seconds"):
+        _stability_check("max_stage_seconds", "int | None", None)
+
+
 def test_zero_width_box_is_not_collapsed_to_disabled():
     # 【目的】: WS-2 — 0.0 (「幅ゼロの箱」= 誤設定) は null (無効) と別物のまま運ぶ。
     assert StabilityOptions.from_dict({"bound_cell": 0.0}).bound_cell == 0.0

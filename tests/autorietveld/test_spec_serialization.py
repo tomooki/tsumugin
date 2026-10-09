@@ -167,7 +167,7 @@ def test_label_list_rejects_non_list_values(key, value):
 @pytest.mark.parametrize("key", _GROUP_FIELDS)
 def test_group_list_rejects_a_flat_label_list(key):
     # 平坦な ["Fe1", "Al1"] は (("F","e","1"), ("A","l","1")) になり、拘束が 1 本も張られない。
-    with pytest.raises(ValueError, match=f"{key} の要素"):
+    with pytest.raises(ValueError, match=re.escape(f"{key}[0] は原子ラベルの組")):
         _phase(**{key: ["Fe1", "Al1"]})
 
 
@@ -388,6 +388,14 @@ def test_instrument_profile_without_source_rwp_is_json_safe_and_round_trips():
     assert back.instrument_profile is not None
     assert dict(back.instrument_profile.values) == {"U": 1.0, "W": 0.5}
     assert math.isnan(back.instrument_profile.source_rwp)
+
+
+def test_instrument_profile_nan_wavelength_is_json_safe():
+    from tsumugin.autorietveld.model import InstrumentProfile
+
+    prof = InstrumentProfile(values={"U": 1.0}, wavelength=float("nan"))
+    text = json.dumps(prof.to_dict(), allow_nan=False)
+    assert InstrumentProfile.from_dict(json.loads(text)).wavelength is None
 
 
 def test_instrument_profile_values_must_be_numbers():

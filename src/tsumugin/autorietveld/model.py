@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Mapping
+from typing import Callable, Mapping, TypeVar
 
 from .._config_spec import (
     check_bool,
@@ -26,6 +26,8 @@ from .._config_spec import (
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
 from .diagnostics import WeakVariable
+
+T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
@@ -49,21 +51,30 @@ def _labels(name: str, value: object) -> tuple[str, ...]:
     )
 
 
-def _label_groups(name: str, value: object) -> tuple[tuple[str, ...], ...]:
-    """原子ラベルの組の列。平坦な ``["Fe1","Al1"]`` は旧実装で (("F","e","1"), ("A","l","1"))
-    になり拘束が 1 本も張られなかったので、組でない要素は拒む。"""
-    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+def _list_of(
+    name: str, value: object, what: str, item: "Callable[[str, object], T]"
+) -> tuple[T, ...]:
+    """``what`` のリスト。要素は ``item(f"{name}[i]", 要素)`` で検査する (JSON の配列 = list/tuple)。"""
+    if not isinstance(value, (list, tuple)):
         raise ValueError(
-            f"{name} は原子ラベルの組 (リスト) のリストである必要があります: {value!r} "
-            f"({type(value).__name__})"
+            f"{name} は{what}のリストである必要があります: {value!r} ({type(value).__name__})"
         )
-    bad = [g for g in value if not isinstance(g, (list, tuple))]
-    if bad:
+    return tuple(item(f"{name}[{i}]", v) for i, v in enumerate(value))
+
+
+def _label_group(name: str, value: object) -> tuple[str, ...]:
+    # 平坦な ``["Fe1","Al1"]`` は旧実装で (("F","e","1"), ("A","l","1")) になり拘束が 1 本も
+    # 張られなかったので、組の位置に来た文字列は拒む。
+    if not isinstance(value, (list, tuple)):
         raise ValueError(
-            f"{name} の要素は原子ラベルの組 (リスト) である必要があります: {bad!r}。"
+            f"{name} は原子ラベルの組 (リスト) である必要があります: {value!r}。"
             "1 組だけなら [[\"Fe1\", \"Al1\"]] のように入れ子にしてください"
         )
-    return tuple(_labels(f"{name}[{i}]", g) for i, g in enumerate(value))
+    return _labels(name, value)
+
+
+def _label_groups(name: str, value: object) -> tuple[tuple[str, ...], ...]:
+    return _list_of(name, value, "原子ラベルの組 (リスト)", _label_group)
 
 
 def _pair(name: str, value: object) -> tuple[float, float]:
@@ -74,12 +85,7 @@ def _pair(name: str, value: object) -> tuple[float, float]:
 
 
 def _pairs(name: str, value: object) -> tuple[tuple[float, float], ...]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
-        raise ValueError(
-            f"{name} は [下限, 上限] の組のリストである必要があります: {value!r} "
-            f"({type(value).__name__})"
-        )
-    return tuple(_pair(f"{name}[{i}]", r) for i, r in enumerate(value))
+    return _list_of(name, value, " [下限, 上限] の組", _pair)
 
 
 def _mapping(name: str, value: object) -> Mapping[str, object]:
@@ -109,12 +115,9 @@ def _instrument_profile(name: str, value: object) -> "InstrumentProfile":
 
 
 def _absorber_layers(name: str, value: object) -> "tuple[AbsorberLayer, ...]":
-    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
-        raise ValueError(
-            f"{name} は吸収体レイヤー (dict) のリストである必要があります: {value!r} "
-            f"({type(value).__name__})"
-        )
-    return tuple(AbsorberLayer.from_dict(_mapping(f"{name}[{i}]", x)) for i, x in enumerate(value))
+    return _list_of(
+        name, value, "吸収体レイヤー (dict)", lambda n, x: AbsorberLayer.from_dict(_mapping(n, x))
+    )
 
 
 class Radiation(Enum):
@@ -162,13 +165,14 @@ class InstrumentProfile:
     wavelength: float | None = None
 
     def to_dict(self) -> dict[str, object]:
-        # source_rwp の既定 NaN は null で出す — NaN のままだと `HistogramSpec` を ``specs`` として
-        # 返す ② の応答全体が ``json.dumps(allow_nan=False)`` で落ちる (精密化を回した後に)。
-        # from_dict は null を既定 NaN へ戻すので往復は保たれる。
+        # 非有限の source_rwp (既定 NaN) / wavelength は null で出す — NaN のままだと
+        # `HistogramSpec` を ``specs`` として返す ② の応答全体が ``json.dumps(allow_nan=False)`` で
+        # 落ちる (精密化を回した後に)。from_dict は null を既定 (NaN / None) へ戻す (inf の
+        # source_rwp も NaN に戻る — どちらも「出典の質は不明」)。
         return {
             "values": {str(k): float(v) for k, v in self.values.items()},
             "source_rwp": finite_or_none(self.source_rwp),
-            "wavelength": self.wavelength,
+            "wavelength": finite_or_none(self.wavelength),
         }
 
     @classmethod
@@ -712,20 +716,35 @@ class StabilityOptions:
         # WS-2: ``bound_*`` は None (無効) と 0.0 (「幅ゼロの箱」= 誤設定) を潰さない (0.0 は
         # null ではないので `spec_value` が既定へ戻さない)。
         defaults = cls()
-        checks = {
-            bool: check_bool,
-            int: check_int,
-            float: check_float,
-            tuple: lambda n, v: check_str_tuple(n, v, item="変数名トークン"),
-        }
         kwargs: dict[str, object] = {}
         for f in fields(cls):
             default = getattr(defaults, f.name)
-            # 既定 None のフィールドは現状 ``float | None`` (bound_*) だけ。別の型を足したら
-            # ここで大声で落ちる (黙って float として読まない)。
-            kind = float if default is None and "float" in str(f.type) else type(default)
-            kwargs[f.name] = spec_value(d, f.name, "stability", default, checks[kind])
+            check = _stability_check(f.name, f.type, default)
+            kwargs[f.name] = spec_value(d, f.name, "stability", default, check)
         return cls(**kwargs)  # type: ignore[arg-type]
+
+
+def _stability_check(
+    name: str, annotation: object, default: object
+) -> "Callable[[str, object], object]":
+    """`StabilityOptions` の 1 フィールドを検査する ``check_*`` を既定値の型から選ぶ。
+
+    既定 None のフィールドは現状 ``float | None`` (bound_*) だけ。対応表に無い型を足したら
+    **そのフィールド名で** ValueError にする (黙って float として読まない・KeyError で
+    `<class 'NoneType'>` とだけ言わない)。
+    """
+    if isinstance(default, bool):  # bool は int のサブクラスなので先に
+        return check_bool
+    if isinstance(default, int):
+        return check_int
+    if isinstance(default, float) or (default is None and "float" in str(annotation)):
+        return check_float
+    if isinstance(default, tuple) and "str" in str(annotation):
+        return lambda n, v: check_str_tuple(n, v, item="変数名トークン")
+    raise ValueError(
+        f"stability.{name}: 型 {annotation} は from_dict が未対応です "
+        "(_stability_check に検査を足してください)"
+    )
 
 
 @dataclass(frozen=True)
