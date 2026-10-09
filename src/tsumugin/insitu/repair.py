@@ -428,6 +428,7 @@ def repair_isolated(
         rwp_before = base.rwp
 
         best: tuple[str, AutoRietveldResult] | None = None
+        first_trial: tuple[str, AutoRietveldResult] | None = None
         for source, step in (("L", -1), ("R", 1)):
             neighbour = _nearest_good(frame_results, i, step, flagged)
             if neighbour is None:
@@ -453,11 +454,20 @@ def repair_isolated(
                 trial = call_runner(
                     runner, frames[i], neighbour_phases, initial_cells, initial_fractions
                 )
+            if first_trial is None:
+                first_trial = (source, trial)
             if math.isfinite(float(trial.final_rwp)) and (
                 best is None or float(trial.final_rwp) < float(best[1].final_rwp)
             ):
                 best = (source, trial)
 
+        if best is None and first_trial is not None:
+            # 【走ったが発散した試行は「試せなかった」ではない】: 有限の Rwp だけを候補にするので、
+            #   全試行が発散 (Rwp 非有限) すると `best` は空のままになる。それを近傍なしと同じ行で
+            #   残すと、保存済みの発散した fit (修復がなぜ壊れたかの一次資料) に台帳から辿れず、
+            #   手順書の「no_neighbour には fit が無い」とも食い違う。比較に使えた試行が無いので
+            #   最初の試行を代表に棄却行へ回す (非有限は下の採用条件を満たさない)。
+            best = first_trial
         if best is None:
             # 良好な近傍が左右どちらにも無い → 試せない。これも第3層送り (経験的に修復不能)。
             needs_model_revision.append(i)

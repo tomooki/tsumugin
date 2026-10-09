@@ -321,6 +321,34 @@ def test_repair_returns_a_handle_to_rejected_trials(tmp_path, monkeypatch):
     assert os.path.dirname(row["gpx_path"]) == out["gpx_dir"]
 
 
+def test_repair_with_diverged_trials_is_rejected_not_untried(tmp_path, monkeypatch):
+    """★試行が**走ったが発散した** (Rwp 非有限) フレームは「試せなかった」ではなく棄却として残る。
+
+    非トートロジー: 有限の Rwp だけを ``best`` 候補にするので、全試行が発散すると ``best`` が
+    空のまま「良好な近傍が無い」(``insitu_repair_no_neighbour``) と同じ扱いになっていた —
+    試行の fit は保存されているのに、台帳は「試せなかった」と言いパスも載せない。手順書は
+    no_neighbour を「fit は無い」と案内するので、③ は**発散した fit そのもの** (修復が
+    なぜ壊れたかの一次資料) に辿り着けない。
+    """
+    import json
+
+    frames = _frames_in(tmp_path)
+    _, runner = _repair_recorder(rwp_after=float("nan"))
+
+    out = repair_frames(
+        _series(frames, _SPIKE), frames, [_P], target_frames=[1], runner=runner,
+        gpx_dir=str(tmp_path / "chosen"),
+    )
+
+    assert out["repairs"] == [] and out["needs_model_revision"] == [1], out
+    kinds = [e["kind"] for e in out["ledger_entries"]]
+    assert "insitu_repair_no_neighbour" not in kinds, kinds
+    (row,) = [e for e in out["ledger_entries"] if e["kind"] == "insitu_repair_rejected"]
+    assert row["rwp_after"] is None  # 非有限は null (allow_nan=False 安全)
+    assert os.path.basename(row["gpx_path"]) == f"f0001_repair_{row['source']}.gpx", row
+    json.dumps(out, allow_nan=False)
+
+
 def test_repair_adopted_row_matches_the_repair_handle(tmp_path, monkeypatch):
     """採用行の台帳 ``gpx_path`` は ``repairs[].gpx_path`` と同じ fit を指す (数字とパスが同じ行)。"""
     frames = _frames_in(tmp_path)
