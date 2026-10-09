@@ -184,7 +184,9 @@ result = run_auto_rietveld([hx, ht1, ht2], phases)
   `<data_dir>/tsumugin_gpx/run-<日時>/`、索引は同ディレクトリの `manifest.jsonl`
   (役割・相・Rwp)。`gpx_dir` で置き場所を指定でき、`save_gpx=False` で止められる。
   探索 (`search`) は候補ごと・収束確認 (`multistart`) は開始点ごとに 1 つ残るので、
-  **「負けた候補/別ベイスンへ落ちた開始点がどんな解だったか」を後から開いて確認できる**。
+  **「負けた候補/別ベイスンへ落ちた開始点がどんな解だったか」を後から開いて確認できる**
+  (パスは `search.candidates[].gpx_path` / `convergence.multistart.starts[].gpx_path`。
+  1 回の呼び出しの成果物は 1 つの run ディレクトリに並び、`gpx_dir`/`save_gpx` は全部に効く)。
   MEM (`mem_density` / `mem_rietveld_iterate`) の入力もこのパスである。
 
 ### 5.1 ⚠ 合否は単発の Rwp では決まらない — **収束確認** (規定の標準経路)

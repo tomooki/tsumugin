@@ -37,7 +37,7 @@ from typing import Mapping, Sequence
 from ..autorietveld.model import AutoRietveldResult, CellEsd, PhaseSpec
 from ..store.ledger import Ledger
 from ._warmstart import call_runner, seed_fractions
-from ..gpxstore import gpx_context, group_context
+from ..gpxstore import GpxContext, gpx_context, group_context
 from .engine import Runner, _publication_of
 from .model import Cell, FrameRietveldResult, FrameSpec, SequentialRietveldResult
 
@@ -116,11 +116,16 @@ class RepairReport:
     :param systematic_hint: 連続してフラグが立ったフレーム番号の run (長さ >= min_block)。
         **参考情報のみ** — 修復可否をゲートしない (実測 f160-172 は連続だが修復可能だった)。
         人間/エージェントが「同じモデル欠陥がこの区間に広がっているかも」と当たりを付ける材料。
+    :param gpx_dir: 修復試行の成果物が並ぶ run ディレクトリ ("" = 保存していない/試行が無い)。
+        **左右両方の試行** (``f<番号>_repair_L.gpx`` / ``_R.gpx``) と索引 ``manifest.jsonl`` がここに
+        ある。採用された fit は ``repairs[].gpx_path``、棄却された修復の (比較に使った側の) fit は
+        ledger ``insitu_repair_rejected`` の ``gpx_path`` が直接指す (2026-08-20 規定「全解析で保存」)
     """
 
     repairs: tuple[FrameRepair, ...] = ()
     needs_model_revision: tuple[int, ...] = ()
     systematic_hint: tuple[tuple[int, ...], ...] = ()
+    gpx_dir: str = ""
 
 
 def _local_median(values: Sequence[float], i: int) -> float | None:
@@ -333,6 +338,27 @@ def _nearest_good(
     return None
 
 
+def _repair_group(
+    frames: Sequence[FrameSpec], *, gpx_dir: str | None, save_gpx: bool, ledger: Ledger | None
+) -> GpxContext:
+    """修復 1 実行の成果物文脈 (run ディレクトリ 1 つ) を決め、一時領域への退避を台帳に残す。
+
+    【修復 1 実行 = run ディレクトリ 1 つ】: 試行ごとに ambient が無いと各試行が別々の run
+    ディレクトリを作って散らばる (設計 §3 の「1 実行 = 1 run ディレクトリ」に反し、索引も 1 行ずつに
+    割れる)。系列の内側から呼ばれたときは既存 ambient をそのまま使う (`group_context` の契約)。
+
+    【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
+    分からない** — runner (エンジン) は解決済みの文脈を受け取るので fallback を書かない。
+    系列 (`insitu.engine._series_context`) と同じ ``m9_gpx_fallback`` の行で残す。
+    """
+    group, gpx_fallback = group_context(
+        frames[0].data_path if frames else "", gpx_dir=gpx_dir, save=save_gpx
+    )
+    if gpx_fallback and ledger is not None:
+        ledger.append("m9_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
+    return group
+
+
 def repair_isolated(
     frames: Sequence[FrameSpec],
     result: SequentialRietveldResult,
@@ -343,6 +369,8 @@ def repair_isolated(
     rwp_tol: float = 0.1,
     min_block: int = 2,
     ledger: Ledger | None = None,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
 ) -> RepairReport:
     """不連続フレームを近傍 warm-start で修復する (非破壊・Rwp 改善時のみ採用・経験的分類)。
 
@@ -369,6 +397,12 @@ def repair_isolated(
     :param rwp_tol: 採用に要する最小 Rwp 改善幅 (%ポイント)
     :param min_block: `systematic_hint` (参考情報) の run 判定の最小連続長。**修復可否には影響しない**
     :param ledger: 追記台帳 (None なら記録しない)
+    :param gpx_dir: 修復試行の成果物の保存先の**根** (env ``TSUMUGIN_GPX_DIR`` より強い)。None なら
+        env → 先頭フレームのデータ隣接。系列の内側から呼ばれた (ambient 文脈がある) ときはその
+        run ディレクトリを使う (`gpxstore.group_context` の契約)
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。False は ambient 文脈より強い。
+        ⚠ runner は 4 引数プロトコルなので保存指定は**引数では運べない** (設計 §4) — ここで作る
+        文脈だけが runner (→ `run_auto_rietveld`) へ届く経路である
     :returns: `RepairReport` (元の `result`/`frames` は変更しない)
     """
     frame_results = result.frames
@@ -379,11 +413,12 @@ def repair_isolated(
 
     repairs: list[FrameRepair] = []
     needs_model_revision: list[int] = []
-    # 【修復 1 実行 = run ディレクトリ 1 つ】: 試行ごとに ambient が無いと `child_context` が
-    #   None を返し、各試行が別々の run ディレクトリを作って散らばる (設計 §3 の
-    #   「1 実行 = 1 run ディレクトリ」に反し、索引も 1 行ずつに割れる)。系列の内側から
-    #   呼ばれたときは既存 ambient をそのまま使う (`group_context` の契約)。
-    group, _gpx_reason = group_context(frames[0].data_path if frames else "")
+    # 【試行が走るまで run ディレクトリを作らない】: 対象が無い (健全な系列への診断呼び出し) /
+    #   対象はあるが良好な近傍が 1 つも無い、のどちらでも試行は 0 回である。入口で先に作ると
+    #   データ隣接へ空の run-<日時>/ を撒き、それを ``gpx_dir`` として返してしまう
+    #   (`gpxstore.series_context` が空入力で run を作らないのと同じ規律)。最初の試行の直前に
+    #   1 度だけ決め、以降の試行は全部それを共有する (1 実行 = 1 run ディレクトリ)。
+    group: GpxContext | None = None
 
     # 【全フラグフレームを試す】: 連続長でゲートしない (run-length プロキシは実データで反証済)。
     #   外向きの歩行が run の外側の良好フレームを見つけるため、連続ブロックも修復機会を得る。
@@ -393,6 +428,7 @@ def repair_isolated(
         rwp_before = base.rwp
 
         best: tuple[str, AutoRietveldResult] | None = None
+        first_trial: tuple[str, AutoRietveldResult] | None = None
         for source, step in (("L", -1), ("R", 1)):
             neighbour = _nearest_good(frame_results, i, step, flagged)
             if neighbour is None:
@@ -412,15 +448,26 @@ def repair_isolated(
             )
             # 【修復試行も残す (規定 2026-08-20)】: 採用は「Rwp が改善したときのみ」なので、
             #   棄却された修復の fit は ledger の数字にしか残らない — 開けないと原因を見られない。
+            if group is None:
+                group = _repair_group(frames, gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger)
             with gpx_context(group.child(role="repair", index=i, label=str(source))):
                 trial = call_runner(
                     runner, frames[i], neighbour_phases, initial_cells, initial_fractions
                 )
+            if first_trial is None:
+                first_trial = (source, trial)
             if math.isfinite(float(trial.final_rwp)) and (
                 best is None or float(trial.final_rwp) < float(best[1].final_rwp)
             ):
                 best = (source, trial)
 
+        if best is None and first_trial is not None:
+            # 【走ったが発散した試行は「試せなかった」ではない】: 有限の Rwp だけを候補にするので、
+            #   全試行が発散 (Rwp 非有限) すると `best` は空のままになる。それを近傍なしと同じ行で
+            #   残すと、保存済みの発散した fit (修復がなぜ壊れたかの一次資料) に台帳から辿れず、
+            #   手順書の「no_neighbour には fit が無い」とも食い違う。比較に使えた試行が無いので
+            #   最初の試行を代表に棄却行へ回す (非有限は下の採用条件を満たさない)。
+            best = first_trial
         if best is None:
             # 良好な近傍が左右どちらにも無い → 試せない。これも第3層送り (経験的に修復不能)。
             needs_model_revision.append(i)
@@ -433,6 +480,10 @@ def repair_isolated(
 
         source, trial = best
         rwp_after = float(trial.final_rwp)
+        # 比較に使った側の試行の成果物 ("" = 未保存)。採否どちらの台帳行にも同じ行の数字と並べて
+        #   載せる — **棄却された修復**は `repairs[]` に現れないので、ここが唯一の直接ハンドル
+        #   (相追加トライアル `m9_phaseid_trial` と同じ流儀)。
+        trial_gpx = str(getattr(trial, "gpx_path", "") or "")
         if rwp_after < rwp_before - rwp_tol:
             repairs.append(
                 FrameRepair(
@@ -449,7 +500,7 @@ def repair_isolated(
                     #   相名フィルタも 0.0 埋めもしない: 部分集合の重量分率は和=1 にならず、0.0 埋めは
                     #   「その相は 0 wt%」という測定していない主張になる)。
                     **_publication_of(trial),  # type: ignore[arg-type]
-                    gpx_path=str(getattr(trial, "gpx_path", "") or ""),
+                    gpx_path=trial_gpx,
                 )
             )
             if ledger is not None:
@@ -460,6 +511,7 @@ def repair_isolated(
                         "rwp_before": rwp_before,
                         "rwp_after": rwp_after,
                         "source": source,
+                        "gpx_path": trial_gpx,
                     },
                 )
         else:
@@ -473,6 +525,7 @@ def repair_isolated(
                         "rwp_before": rwp_before,
                         "rwp_after": rwp_after,
                         "source": source,
+                        "gpx_path": trial_gpx,
                     },
                 )
 
@@ -480,4 +533,5 @@ def repair_isolated(
         repairs=tuple(repairs),
         needs_model_revision=tuple(sorted(needs_model_revision)),
         systematic_hint=tuple(tuple(d.frame_index for d in block) for block in blocks),
+        gpx_dir=group.run_dir if group is not None and group.enabled else "",
     )
