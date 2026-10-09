@@ -976,3 +976,8 @@ class AutoRietveldResult:
     #   総合値 (`final_rwp`) と混同しないこと — TOPAS 経路では `.out` の総合値を `final_rwp`
     #   に採り、ここには各 `xdd` の値を入れる。空 = 未計測 (バックエンドが出さない)。
     histogram_rwp: tuple[float, ...] = ()
+    # 【座標ジッタで engine が**実際に動かした**軸数】(マルチスタートの構造軸)。摂動を要求して
+    #   いない run は 0。対称固定の軸・結束軸の従属側・``frozen_coord_labels`` の原子は数えない。
+    #   マルチスタートはこれを傍証の条件 (`perturbation_had_no_effect`) に使う — 結果の自由度指標
+    #   から数え直すと、engine が動かさなかった軸を「試験した」と数える余地が残る。
+    coord_jitter_axes_moved: int = 0

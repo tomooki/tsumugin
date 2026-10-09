@@ -19,7 +19,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -32,6 +32,7 @@ from .atomrows import (
     atom_row,
     coord_esd_states,
     free_index_from_site_symmetry,
+    independent_axes,
 )
 from .bounds import (
     BoundHit,
@@ -1394,7 +1395,12 @@ def _apply_content_constraint(gpx, g2phases, g2hists, content_constraint) -> Non
 
 
 def _apply_coord_jitter(
-    g2phases, jitter_ang: "Mapping[str, float]", seed: int, getcsxinel=None
+    g2phases,
+    jitter_ang: "Mapping[str, float]",
+    seed: int,
+    getcsxinel=None,
+    *,
+    frozen: "Mapping[str, Iterable[str]] | None" = None,
 ) -> int:
     """原子座標に**対称性を壊さない**初期摂動を掛ける (マルチスタートの構造軸)。
 
@@ -1407,9 +1413,17 @@ def _apply_coord_jitter(
     - ``0`` (対称拘束で固定) の軸は**触らない**
     - 正値が他軸と一致する (結束) 軸は**代表軸だけ**動かす — 従属軸は GSAS の等値拘束が追随する
 
+    **精密化しない原子も動かさない** (``frozen``)。摂動は「精密化が初期値から同じ解へ戻るか」の
+    試験であり、coords 段が解放しない原子 (`_phase_atom_info` が除外する `frozen_coord_labels`)
+    を動かすと**摂動値がそのまま最終解**になる — 開始点ごとに違う値で固定されるので、
+    `agreement` はそれを偽のベイスン分岐として報告する。
+
     :param jitter_ang: 相名 → 変位の大きさ (**Å**)。分率にしないのは軸ごとに意味が変わるため
         (a=5Å と c=20Å では分率 0.01 の実距離が 4 倍違う)
     :param seed: 乱数種。同じ種なら何度実行してもビット同一 (NFR-102)
+    :param frozen: 相名 → 動かさない原子ラベル (``PhaseSpec.frozen_coord_labels``)。
+        凍結原子は乱数を消費しない。凍結の無い入力は従来とビット同一だが、乱数列は全相で
+        1 本なので、凍結原子を持つ相より**後ろの相**は引く値がずれる (決定論は保たれる)
     :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
         呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
     """
@@ -1431,22 +1445,20 @@ def _apply_coord_jitter(
         try:
             atoms = ph.data["Atoms"]
             ptrs = ph.data["General"]["AtomPtrs"]
-            cx, cs = int(ptrs[0]), int(ptrs[2])
+            cx, ct, cs = int(ptrs[0]), int(ptrs[1]), int(ptrs[2])
             cell = ph.get_cell()
             lengths = (
                 float(cell["length_a"]), float(cell["length_b"]), float(cell["length_c"])
             )
         except Exception:  # noqa: BLE001 — 構造が読めない相はスキップ
             continue
+        skip = {str(lab) for lab in (frozen or {}).get(ph.name, ())}
         for row in atoms:
+            if skip and str(row[ct - 1]) in skip:
+                continue
             free = free_index_from_site_symmetry(getcsxinel, row[cs])
-            seen: set[int] = set()
-            for axis in range(3):
-                fid = free[axis]
-                if fid == 0 or fid in seen:
-                    # 0 = 対称固定 / 既出 = 結束軸の従属側 (代表軸だけ動かす)
-                    continue
-                seen.add(fid)
+            # 0 = 対称固定 / 結束軸の従属側は動かさない (代表軸だけ動かす)
+            for axis in independent_axes(free):
                 length = lengths[axis] if lengths[axis] > 0 else 1.0
                 # Å の変位を当該軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
                 delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
@@ -2061,6 +2073,43 @@ def _perturb_initial_cell(ph, scale: tuple[float, float, float]) -> None:
     ph.data["General"]["Cell"][7] = G2lat.calc_V(G2lat.cell2A(new))
 
 
+def _apply_initial_cell_scale(
+    g2phases,
+    phases: Sequence[PhaseSpec],
+    scales: Mapping[str, tuple[float, float, float]],
+    perturb: "Callable[[object, tuple[float, float, float]], None] | None" = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """初期格子摂動 (マルチスタート) を**格子を精密化する相だけ**に掛ける。
+
+    ``PhaseSpec.refine_cell=False`` (Issue #47 の副相格子固定・`resolution` の認証値固定) の相は
+    cell 段で Cell フラグが立たない (`_should_refine_cell`) ので、摂動した格子が**そのまま
+    最終格子**になる — 開始点ごとに違う倍率で固定され、収束確認は副相の格子差を偽のベイスン
+    分岐として報告し、その相のフィットも摂動値で劣化する。だから摂動しない。
+
+    ⚠ `auto_freeze_minor_cells` (分率連動の自動凍結) は cell 段の時点の分率で決まるので、
+    ここでは判定できない (その相は従来どおり摂動される)。
+
+    :param perturb: 1 相に倍率を掛ける関数 (既定 `_perturb_initial_cell`; テスト注入用のシーム)
+    :returns: ``(摂動した相名, 倍率を頼まれたが格子凍結で飛ばした相名)`` (どちらも g2phases の順)。
+        飛ばした側は ledger の監査記録に載せる — 規則をここ 1 箇所に置くため呼び出し側で
+        数え直さない
+    """
+    perturb = perturb if perturb is not None else _perturb_initial_cell
+    frozen = {p.phase_name for p in phases if not p.refine_cell}
+    applied: list[str] = []
+    skipped: list[str] = []
+    for ph in g2phases:
+        scale = scales.get(ph.name)
+        if scale is None:
+            continue
+        if ph.name in frozen:
+            skipped.append(ph.name)
+            continue
+        perturb(ph, scale)
+        applied.append(ph.name)
+    return tuple(applied), tuple(skipped)
+
+
 def _apply_initial_fractions(g2phases, g2hists, fractions: Mapping[str, float]) -> None:
     """相分率 (HAP Scale) を initial_fractions で初期化する (逐次精密化ウォームスタート用, Issue #82)。
 
@@ -2231,6 +2280,9 @@ def run_auto_rietveld(
         拘束勾配を制約変数へ伝播せず無効**になる (実測)。硬拘束が要るなら `PhaseSpec.frozen_coord_labels`。
     :param initial_cell_scale: 相名→(fa,fb,fc) の初期格子摂動倍率 (マルチスタート用, None で無摂動)。
         **参照格子は摂動前の初期値を採用**する (妥当性判定を摂動でずらさないため)。
+        ``refine_cell=False`` の相には掛けない (精密化しない格子の摂動は最終格子に残るだけ)。
+        座標の摂動 ``initial_coord_jitter`` (相名→Å, 種 ``jitter_seed``) も同じ規則で、
+        ``frozen_coord_labels`` の原子と対称固定の軸は動かさない (`_apply_coord_jitter`)。
     :param initial_cells: 相名→(a,b,c[,α,β,γ]) の絶対初期格子 (逐次精密化のウォームスタート用,
         None で CIF 既定)。直前フレームの精密化格子を次フレームの初期値に引き継ぐのに用いる。
         ``initial_cell_scale`` と併用時は本絶対セルを先に適用し、その上に摂動倍率を掛ける。
@@ -2397,11 +2449,14 @@ def run_auto_rietveld(
                     _set_initial_cell(ph, cell)
 
         # --- 初期格子摂動 (マルチスタート, 任意) ---
+        #     格子を精密化しない相 (refine_cell=False) は摂動しない — 戻る道が無いので
+        #     摂動値がそのまま最終格子になる (`_apply_initial_cell_scale`)。
         if initial_cell_scale:
-            for ph in g2phases:
-                scale = initial_cell_scale.get(ph.name)
-                if scale is not None:
-                    _perturb_initial_cell(ph, scale)
+            applied, skipped = _apply_initial_cell_scale(g2phases, phases, initial_cell_scale)
+            ledger.append(
+                "m7_cell_perturbation",
+                {"applied": list(applied), "skipped_refine_cell_false": list(skipped)},
+            )
 
         # --- 初期相分率ウォームスタート (逐次精密化, 任意, Issue #82) ---
         if initial_fractions:
@@ -2412,12 +2467,14 @@ def run_auto_rietveld(
             _apply_initial_occupancies(g2phases, initial_occupancies)
 
         # --- 初期座標ジッタ (マルチスタートの構造軸, 任意) ---
-        #     対称性が自由な軸だけを動かす。動かせた軸数は ledger に残す — 0 なら
-        #     「この軸では試験していない」であって「摂動しても動かなかった」ではない。
+        #     対称性が自由な軸だけを動かし、凍結原子 (frozen_coord_labels) は動かさない。
+        #     動かせた軸数は ledger に残す — 0 なら「この軸では試験していない」であって
+        #     「摂動しても動かなかった」ではない。
         n_jittered = 0
         if initial_coord_jitter:
             n_jittered = _apply_coord_jitter(
-                g2phases, initial_coord_jitter, jitter_seed
+                g2phases, initial_coord_jitter, jitter_seed,
+                frozen={p.phase_name: p.frozen_coord_labels for p in phases},
             )
             ledger.append(
                 "m7_coord_jitter",
@@ -3099,6 +3156,7 @@ def run_auto_rietveld(
         hap_mustrain=micro[1],
         hap_size_esd=micro[2],
         hap_mustrain_esd=micro[3],
+        coord_jitter_axes_moved=int(n_jittered),
     )
 
 

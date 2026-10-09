@@ -118,3 +118,37 @@ def test_no_jitter_spec_is_a_no_op():
     assert _apply_coord_jitter([_FakePhase("p", atoms)], {"other": 0.05}, 7, _getcsxinel) == 0
     assert _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.0}, 7, _getcsxinel) == 0
     assert (atoms[0][3], atoms[0][4], atoms[0][5]) == (0.25, 0.5, 0.125)
+
+
+# ---------------------------------------------------------------------------
+# 精密化しない原子は摂動しない (frozen_coord_labels)
+# ---------------------------------------------------------------------------
+
+
+def test_frozen_coord_labels_are_never_jittered():
+    """★`frozen_coord_labels` の原子は**動かさない** — coords 段が解放しないので戻る道が無い。
+
+    非トートロジー: ジッタは「精密化が初期値から戻ってくるか」を試すための摂動である。
+    凍結原子は coords 段で X フラグが立たない (`_phase_atom_info` が除外する) ので、
+    摂動した値が**そのまま最終解**になる。開始点ごとに違う種で振るので、凍結原子の座標は
+    開始点ごとに違う値で固定され、`agreement` はそれを**偽のベイスン分岐**
+    (`undetermined_by_initial_values`) として報告する — 実際には何も精密化していないのに。
+    """
+    atoms = [_atom("O1", (0.25, 0.5, 0.125)), _atom("P1", (0.4, 0.1, 0.2))]
+    n = _apply_coord_jitter(
+        [_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel, frozen={"p": {"O1"}}
+    )
+
+    assert tuple(atoms[0][3:6]) == (0.25, 0.5, 0.125), "凍結原子は動かさない"
+    assert tuple(atoms[1][3:6]) != (0.4, 0.1, 0.2), "凍結していない原子は従来どおり動く"
+    assert n == 3, "動かした軸数に凍結原子を数えない (傍証判定の n_axes_jittered になる)"
+
+
+def test_frozen_labels_are_scoped_to_their_own_phase():
+    """【対照】凍結ラベルは**その相の**原子だけに効く (同名ラベルが別相にあり得る)。"""
+    atoms = [_atom("O1", (0.25, 0.5, 0.125))]
+    n = _apply_coord_jitter(
+        [_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel, frozen={"other": {"O1"}}
+    )
+    assert n == 3
+    assert tuple(atoms[0][3:6]) != (0.25, 0.5, 0.125)
