@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
@@ -152,6 +152,8 @@ class RietveldMultistartResult:
                     "rwp": finite_or_none(st.result.final_rwp) if st.result else None,
                     "valid": bool(st.result.validity.passed) if st.result else None,
                     "error": st.error,
+                    # 別ベイスンへ落ちた開始点の fit を開くためのハンドル ("" = 未保存)。
+                    "gpx_path": (st.result.gpx_path or "") if st.result else "",
                 }
                 for st in self.starts
             ],
@@ -531,11 +533,16 @@ def run_multistart_rietveld(
     #   (単一ベイスン=大域最適の傍証) は「落ちなかった解がどんな構造だったか」を見て初めて
     #   意味を持つ。**並列実行は別プロセス**なので ambient 文脈は届かない — 明示文脈
     #   (frozen dataclass = pickle 可) を payload に載せて運ぶ。
-    group, _reason = group_context(
+    group, gpx_fallback = group_context(
         histograms[0].data_path if histograms else "",
         gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
         save=bool(run_kwargs.get("save_gpx", True)),
     )
+    # 【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
+    #   分からない** — エンジンは解決済みの文脈を受け取るので `m7_gpx_fallback` を書かない。
+    #   捨てると、頼まれた ``gpx_dir`` ではなく %TEMP% に置かれたことがどこにも残らない。
+    if gpx_fallback:
+        ledger.append("m7_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
     payloads = [
         (
             i,
@@ -599,6 +606,10 @@ def run_multistart_rietveld(
             },
         )
     summary = summarize_multistart(starts, config)
+    if gpx_fallback:
+        summary = replace(
+            summary, warnings=summary.warnings + (f"成果物の保存先: {gpx_fallback}",)
+        )
     ledger.append(
         "multistart_summary",
         {
