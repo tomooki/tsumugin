@@ -32,6 +32,7 @@ import numpy as np
 
 from ..autorietveld.model import (
     AutoRietveldResult,
+    CoordEsd,
     HistogramSpec,
     PhaseSpec,
     RefinementStage,
@@ -423,7 +424,7 @@ def run_topas_rietveld(
         phase_fractions = (
             {n: v / scale_total for n, v in scale_values.items()} if scale_total > 0 else {}
         )
-        atom_coords, atom_coord_esd = _atom_coord_maps(records)
+        atom_coords, atom_coord_esd = _atom_coord_maps(records, doc)
         atom_occupancy, atom_occupancy_esd = _atom_scalar_maps(records, "occ")
         atom_beq, atom_beq_esd = _atom_scalar_maps(records, "beq")
         # TOPAS は B、結果契約は Uiso。**Uiso = B / 8π²** で戻す (取り違えると 79 倍ずれる)。
@@ -591,33 +592,62 @@ def _count_observations(histograms: Sequence[HistogramSpec], workdir: Path) -> i
     return total
 
 
-def _atom_coord_maps(
-    records: TopasRecords,
-) -> "tuple[dict[str, dict[str, tuple[float, float, float]]], dict[str, dict[str, tuple]]]":
-    """``coord`` レコード (相/ラベル/軸) を相→ラベル→(x,y,z) と同型の esd へ畳む。
+_COORD_AXES = ("x", "y", "z")
 
-    解放していない軸はレコードに現れない。**欠けた軸は 0.0 で埋めず ``None`` の esd を残す** —
-    「対称固定で厳密に決まっている」と「この精密化では決まっていない」を読み分けられるように
-    するため (GSAS 経路の 3 状態 esd と同じ規律)。
+
+def _atom_coord_maps(
+    records: TopasRecords, doc: TopasDocument
+) -> "tuple[dict[str, dict[str, tuple[float, float, float]]], dict[str, dict[str, CoordEsd]]]":
+    """座標レコード (相/ラベル/軸) を相→ラベル→(x,y,z) と同型の esd へ畳む。
+
+    値は ``coord`` (最後に受理した段で解放した軸) と ``coord_unrefined`` (解放しなかった軸) の
+    両方から採る — どちらも TOPAS がその run で使った値である。GSAS 経路が原子行を読むのと
+    同じく、**精密化したかどうかによらず全原子が載る**。esd は GSAS の
+    `atomrows.coord_esd_states` と同じ 3 状態: 正の su / サイト対称で固定 (``0.0``,
+    `TopasSite.fixed_coord_axes`) / それ以外 (``None`` = この精密化では決まっていない)。
+
+    **欠けた軸を 0.0 で埋めない**: 3 軸そろわない原子は載せない (0.0 は実在する座標値なので、
+    埋めると誤った位置を黙って返す)。``doc`` は最後に受理した段の文書 (固定軸の判定に使う)。
     """
-    values: dict[str, dict[str, dict[str, float]]] = {}
-    esds: dict[str, dict[str, dict[str, "float | None"]]] = {}
-    for key, (value, esd) in records.keyed.get("coord", {}).items():
-        parts = key.split("/")
-        if len(parts) != 3:
-            continue
-        phase, label, axis = parts
-        values.setdefault(phase, {}).setdefault(label, {})[axis] = value
-        esds.setdefault(phase, {}).setdefault(label, {})[axis] = esd
+    values: dict[tuple[str, str], dict[str, float]] = {}
+    esds: dict[tuple[str, str], dict[str, "float | None"]] = {}
+    for kind in ("coord_unrefined", "coord"):  # 後に読む ``coord`` (精密化値) が勝つ
+        for key, (value, esd) in records.keyed.get(kind, {}).items():
+            parts = key.split("/")
+            if len(parts) != 3:
+                continue
+            phase, label, axis = parts
+            values.setdefault((phase, label), {})[axis] = value
+            esds.setdefault((phase, label), {})[axis] = esd if kind == "coord" else None
+    fixed = {
+        (phase.phase_name, site.label): site.fixed_coord_axes
+        for phase in doc.phases
+        for site in phase.sites
+    }
     coords: dict[str, dict[str, tuple[float, float, float]]] = {}
-    coord_esd: dict[str, dict[str, tuple]] = {}
-    for phase, labels in values.items():
-        for label, axes in labels.items():
-            triple = tuple(axes.get(a, 0.0) for a in ("x", "y", "z"))
-            coords.setdefault(phase, {})[label] = triple  # type: ignore[assignment]
-            e = esds[phase][label]
-            coord_esd.setdefault(phase, {})[label] = tuple(e.get(a) for a in ("x", "y", "z"))
+    coord_esd: dict[str, dict[str, CoordEsd]] = {}
+    for (phase, label), axes in values.items():
+        if any(axis not in axes for axis in _COORD_AXES):
+            continue
+        coords.setdefault(phase, {})[label] = tuple(  # type: ignore[assignment]
+            axes[axis] for axis in _COORD_AXES
+        )
+        coord_esd.setdefault(phase, {})[label] = tuple(  # type: ignore[assignment]
+            _coord_esd_state(esds[(phase, label)][axis], axis in fixed.get((phase, label), ()))
+            for axis in _COORD_AXES
+        )
     return coords, coord_esd
+
+
+def _coord_esd_state(esd: "float | None", symmetry_fixed: bool) -> "float | None":
+    """1 軸の座標 esd を 3 状態へ (`atomrows.coord_esd_states` と同じ判定順)。
+
+    正で有限な su はそのまま。そうでなければ対称固定なら ``0.0``、それ以外は ``None`` —
+    TOPAS が精密化した軸に 0 を書いても「厳密に固定」とは名乗らせない (0.0 を捏造しない)。
+    """
+    if esd is not None and math.isfinite(esd) and esd > 0.0:
+        return esd
+    return 0.0 if symmetry_fixed else None
 
 
 def _atom_scalar_maps(

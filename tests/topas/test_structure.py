@@ -336,6 +336,25 @@ def test_snapping_does_not_change_which_axes_are_free():
     assert free == {"CA1": ("z",), "F4": (), "O7": ("x", "y", "z")}
 
 
+def test_sites_record_the_axes_site_symmetry_fixes():
+    """サイトは**対称で厳密に固定される軸**も運ぶ (結果の座標 esd ``0.0`` の根拠)。
+
+    結果を組む時点では対称操作が手元に無いので、自由軸と同じく構造の読み込みで決めておく。
+    4f (1/3, 2/3, z) は x/y、2a (0, 0, 1/4) は 3 軸とも、一般位置はどれも固定されない。
+    """
+    struct = _hexagonal(
+        (
+            Atom(label="CA1", type_symbol="Ca", x=0.333333, y=0.666667, z=0.001913,
+                 occ=1.0, uiso=0.006),
+            Atom(label="F4", type_symbol="F", x=0.0, y=0.0, z=0.25, occ=1.0, uiso=0.014),
+            Atom(label="O7", type_symbol="O", x=0.33951, y=0.258126, z=0.070641,
+                 occ=1.0, uiso=0.0067),
+        )
+    )
+    fixed = {s.label: s.fixed_coord_axes for s in structure_to_topas_phase(struct, "FAP").sites}
+    assert fixed == {"CA1": ("x", "y"), "F4": ("x", "y", "z"), "O7": ()}
+
+
 def test_snapping_is_skipped_when_the_cif_has_no_symops():
     """対称操作が無ければ触らない (判定できないものは動かさない)。"""
     struct = Structure(

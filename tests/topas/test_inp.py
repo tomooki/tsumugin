@@ -799,8 +799,42 @@ def test_fixed_sites_are_named_when_results_are_requested():
         "      site Pb x !PbSO4_Pb_x 0.1879 y !PbSO4_Pb_y 0.25 z !PbSO4_Pb_z 0.1667"
         " occ Pb+2 !PbSO4_Pb_occ 1.0 beq !PbSO4_Pb_beq 1.5\n"
     ) in text
-    # 出版値 (Out) は精密化したものだけ — 固定値を「精密化した」と読ませない。
-    assert "Out(PbSO4_Pb_x" not in text
+    # 出版値 (``coord``) は精密化したものだけ — 固定値を「精密化した」と読ませない。
+    assert 'Out(PbSO4_Pb_x, "coord\\t' not in text
+
+
+def test_every_coordinate_axis_is_published_once_refined_or_not():
+    """**全サイトの全軸**が座標レコードを 1 本だけ持つ: 解放した軸は ``coord`` (値 + esd)、
+    解放していない軸は ``coord_unrefined`` (値だけ)。
+
+    以前は解放した軸しか出さず、結果側が欠けた軸を 0.0 で埋めていた (実 PbSO4 の S が
+    ``(0.0633, 0.0, 0.6843)``)。値は**TOPAS 自身に評価させる** — 持ち越し値・joint の共有
+    ``prm``・式で結んだ座標も、TOPAS がその run で使った値がそのまま返る。キーを分けて esd 書式を
+    付けないのは、固定値を「精密化して決まった値」と読ませないため。
+    """
+    phase = _pbso4_phase().with_updates(
+        sites=(
+            TopasSite("Pb", "Pb+2", Param(0.1879, refine=True), Param(0.25), Param(0.1667),
+                      beq=Param(1.5), free_coord_axes=("x", "z")),
+            TopasSite("S", "S", Param(0.4367), Param(0.75), Param(0.1842), beq=Param(0.7)),
+        )
+    )
+    single = TopasDocument(histograms=(_histogram(),), phases=(phase,), results_path="r.txt")
+    joint = TopasDocument(
+        histograms=(_histogram(), TopasHistogram(data_path="n.xye", background=Param(0.0))),
+        phases=(phase,), results_path="r.txt",
+    )
+    for doc in (single, joint):
+        text = doc.render()
+        records = re.findall(
+            r'Out\([^,]+, "(coord(?:_unrefined)?)\\t[^\\"]+\\t(\w+)\\t([xyz])\\t', text
+        )
+        assert sorted((label, axis) for _, label, axis in records) == sorted(
+            (label, axis) for label in ("Pb", "S") for axis in "xyz"
+        ), "座標レコードが軸ごとに 1 本ずつになっていない"
+        refined = {(label, axis) for kind, label, axis in records if kind == "coord"}
+        assert refined == {("Pb", "x")}
+        assert 'Out(PbSO4_Pb_y, "coord_unrefined\\tPbSO4\\tPb\\ty\\t%.8f\\n")' in text
 
 
 def test_named_size_strain_terms_render_with_their_names():

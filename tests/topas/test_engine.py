@@ -230,6 +230,36 @@ def test_real_pbso4_refines_end_to_end(tmp_path):
 
 @pytest.mark.topas
 @_real_data
+def test_real_pbso4_reports_the_mirror_coordinate_it_did_not_refine(tmp_path):
+    """**実 tc.exe で、精密化しない y = 1/4 が 0.0 でなく 0.25 で返る**。
+
+    実測の再現: 以前は S が ``(0.06328548, 0.0, 0.68430616)`` で返り、esd は None だった。
+    Pnma の鏡面上 (Pb/S/O1/O2) の y は対称で厳密に 1/4 — esd は GSAS 経路と同じ ``0.0``。
+    一般位置の O3 は 3 軸とも精密化した esd を持つ。固定値の ``Out()`` を TOPAS が受け付けて
+    値を書くこと (未精密化軸の値の出所) もこの実行で確かめる。
+    """
+    result = eng.run_topas_rietveld(
+        [HistogramSpec(
+            data_path=str(_PBSO4_XRA), instrument_path=str(_PBSO4_PRM),
+            radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="GSAS",
+        )],
+        [PhaseSpec(structure_path=str(_PBSO4_CIF), phase_name="PbSO4")],
+        keep_project=str(tmp_path / "proj"),
+    )
+    assert math.isfinite(result.final_rwp)
+    coords = result.atom_coords["PbSO4"]
+    esd = result.atom_coord_esd["PbSO4"]
+    assert set(coords) == {"Pb", "S", "O1", "O2", "O3"}, "原子が欠けている"
+    assert coords["S"][1] == 0.25
+    for label in ("Pb", "S", "O1", "O2"):
+        assert coords[label][1] == 0.25, f"{label} の y = {coords[label][1]}"
+        assert esd[label][1] == 0.0, f"{label} の y は対称固定なのに esd = {esd[label][1]}"
+        assert esd[label][0] > 0.0 and esd[label][2] > 0.0, f"{label} の x/z が精密化されていない"
+    assert all(e is not None and e > 0.0 for e in esd["O3"]), f"O3 の esd = {esd['O3']}"
+
+
+@pytest.mark.topas
+@_real_data
 def test_real_pbso4_each_stage_starts_from_the_last_accepted_out(tmp_path):
     """**実 tc.exe で、段 N の INP の値 = 直前に受理した段の ``.out`` の精密化値** (#218)。
 
@@ -555,6 +585,187 @@ def test_joint_carries_shared_structure_and_per_histogram_terms(topas_like_drive
     assert "prm PbSO4_a 8.4821\n" in stage3, "共有 prm に格子が持ち越されていない"
     assert stage3.count("a =PbSO4_a;") == 1, "先頭 xdd の参照式が書き換わった"
     assert "prm eps_PbSO4_a_h1 -0.00126 min" in stage3, "ε が持ち越されていない"
+
+
+# ---------------- 精密化しなかった軸の座標 (atom_coords) ----------------
+#
+# 以前は ``coord`` レコード (= 解放した軸だけ) から三つ組を作り、**欠けた軸を 0.0 で埋めて
+# いた**。実 PbSO4 で S (x, 1/4, z) が ``(0.0633, 0.0, 0.6843)`` と返る — CIF 出力・BVS・
+# GSAS との一致判定がどれも黙って誤った座標を読む。GSAS 経路は原子行を読むので、精密化
+# したかどうかによらず全原子の (x,y,z) が載り、esd は 3 状態 (`atomrows.coord_esd_states`)。
+
+_OUT_CALL = re.compile(r'Out\(\s*([A-Za-z_]\w*)\s*,\s*"([^"]*)"\s*(?:,\s*"([^"]*)"\s*)?\)')
+_NUMBER = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+
+
+def _topas_like_results(out_text: str, rwp: float) -> str:
+    """tc.exe の ``Out()`` を模す: 名前を ``.out`` (精密化後の INP) の**宣言の値**で評価する。
+
+    実 TOPAS と同じく、固定値 (``!name 0.25``) でも名前で指せば値を書く。esd は値に
+    ``value`_esd`` の印があればそれ、無ければ 0 (TOPAS は固定値の esd に 0 を書く)。
+    式 (``Get(r_wp)``・``1-x``) と MVW の報告値は評価しない — この偽物が答えるのは
+    「宣言された値」だけで、TOPAS が計算する量は固定のレコードで足す。
+    """
+    lines = [f"r_wp\t{rwp}", "gof\t1.5"]
+    for name, fmt, esd_fmt in _OUT_CALL.findall(out_text):
+        if name.startswith("mvw_"):
+            continue
+        found = re.search(
+            rf"(?<![\w!.])!?{re.escape(name)}(?:[ \t]*,[ \t]*|[ \t]+)({_NUMBER})(?:`_({_NUMBER}))?",
+            out_text,
+        )
+        if found is None:
+            continue
+        value = float(found.group(1))
+        esd = float(found.group(2)) if found.group(2) else 0.0
+        record = fmt.replace("%.8f", f"{value:.8f}", 1)
+        if esd_fmt:
+            record += esd_fmt.replace("%.8f", f"{esd:.8f}", 1)
+        # INP の書式には**リテラルの** ``\t``/``\n`` (バックスラッシュ + 文字) が入っている。
+        lines.append(record.replace("\\t", "\t").replace("\\n", "\n").rstrip("\n"))
+    lines.append("wt_frac\tPbSO4\t100.0\t0.0")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.fixture()
+def topas_out_driver(monkeypatch):
+    """段ごとに (rwp, 精密化値) を仕込み、``Out()`` を INP の値で評価して返す偽 tc.exe。"""
+    seen: list[str] = []
+
+    def make(script):
+        it = iter(script)
+
+        def fake_run_tc(inp_text, **kwargs):
+            rwp, refined = next(it)
+            seen.append(inp_text)
+            out_text = _topas_like_out(inp_text, rwp, refined)
+
+            class R:
+                pass
+
+            run = R()
+            run.out_text = out_text
+            run.results_text = _topas_like_results(out_text, rwp)
+            run.stdout = ""
+            return run
+
+        monkeypatch.setattr(eng, "run_tc", fake_run_tc)
+        return seen
+
+    return make
+
+
+_SCALE_ONLY = RefinementStage(label="S0", flags={"background": {"coeffs": 6}, "scale": True})
+_COORDS = RefinementStage(label="S1", flags={"coords": True})
+#: 合成 CIF (Pnma) の座標段で解放される軸 (Pb/S は鏡面上で y=1/4 固定、O1 は一般位置)。
+_REFINED_COORDS = {
+    "PbSO4_Pb_x": 0.18789637, "PbSO4_Pb_z": 0.1673483,
+    "PbSO4_S_x": 0.06328548, "PbSO4_S_z": 0.68430616,
+    "PbSO4_O1_x": 0.0951, "PbSO4_O1_y": 0.0262, "PbSO4_O1_z": 0.8061,
+}
+
+
+def test_unrefined_mirror_axis_reports_its_value_not_zero(topas_out_driver):
+    """**解放しなかった軸は文書の値 (y=1/4) で返す** — 0.0 で埋めない。
+
+    esd は GSAS 経路と同じ 3 状態: 解放した軸は su、サイト対称で固定される軸は ``0.0``
+    (「厳密に 1/4」= 真の陳述)。None にすると GSAS との一致判定が「片方だけ対称固定 =
+    対称性の仮定が違う」と誤った理由で INCOMPARABLE を出す (`agreement._verdict`)。
+    """
+    topas_out_driver([(30.0, {}), (20.0, _REFINED_COORDS)])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=(_SCALE_ONLY, _COORDS),
+    )
+    coords = result.atom_coords["PbSO4"]
+    esd = result.atom_coord_esd["PbSO4"]
+    assert coords["S"] == (0.06328548, 0.25, 0.68430616)
+    assert esd["S"] == (0.001, 0.0, 0.001)
+    assert coords["Pb"] == (0.18789637, 0.25, 0.1673483)
+    assert coords["O1"] == (0.0951, 0.0262, 0.8061)
+    assert esd["O1"] == (0.001, 0.001, 0.001)
+
+
+def test_atoms_whose_coordinates_were_never_refined_are_still_reported(topas_out_driver):
+    """座標段を一度も受理していなくても**全原子が CIF (吸着後) の値で載る** (GSAS と同じ)。
+
+    GSAS は原子行を読むので精密化の有無によらず全原子を返す。片方のバックエンドだけ原子が
+    欠けると、一致判定はその原子を黙って比較対象から外す。esd は対称固定が ``0.0``、
+    動かせたのに動かさなかった軸は ``None`` (この精密化では決まっていない)。
+    """
+    topas_out_driver([(30.0, {})])
+    result = eng.run_topas_rietveld([_histogram()], [_phase()], recipe=(_SCALE_ONLY,))
+    assert result.atom_coords["PbSO4"] == {
+        "Pb": (0.188, 0.25, 0.167),
+        "S": (0.063, 0.25, 0.686),
+        "O1": (0.095, 0.026, 0.806),
+    }
+    assert result.atom_coord_esd["PbSO4"] == {
+        "Pb": (None, 0.0, None),
+        "S": (None, 0.0, None),
+        "O1": (None, None, None),
+    }
+
+
+def test_coordinates_frozen_after_refinement_keep_the_carried_value(topas_out_driver):
+    """段 1 で精密化し後段で凍結した座標は**持ち越した精密化値**で返す (CIF 値でも 0 でもない)。
+
+    最後に受理した段では解放していないので esd は ``None`` — GSAS も最終の共分散に載らない
+    変数の su は持たない。
+    """
+    topas_out_driver([
+        (30.0, _REFINED_COORDS),
+        (20.0, {}),
+    ])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"coords": True}),
+            RefinementStage(label="S1", flags={"freeze_others": True, "uiso": True}),
+        ),
+    )
+    assert result.atom_coords["PbSO4"]["S"] == (0.06328548, 0.25, 0.68430616)
+    assert result.atom_coord_esd["PbSO4"]["S"] == (None, 0.0, None)
+
+
+def test_joint_reports_unrefined_coordinates_through_the_shared_names(topas_out_driver):
+    """joint では座標が共有 ``prm`` に持ち上がる。**持ち上げ先の名前で**値を回収する。"""
+    topas_out_driver([(30.0, {})])
+    hist = _histogram()
+    result = eng.run_topas_rietveld(
+        [replace(hist, temperature=295.0), replace(hist, temperature=10.0)], [_phase()],
+        recipe=(_SCALE_ONLY,),
+    )
+    assert result.atom_coords["PbSO4"]["S"] == (0.063, 0.25, 0.686)
+    assert result.atom_coord_esd["PbSO4"]["S"] == (None, 0.0, None)
+
+
+def test_coordinate_assembly_never_invents_a_value_or_a_zero_esd():
+    """組み立て側の規律 (レコードが欠けた・壊れた場合):
+
+    - 3 軸そろわない原子は**載せない** — 欠けた軸を 0.0 で埋めると実在しない位置になる。
+    - 精密化した軸の esd が 0 でも、対称固定でなければ ``None`` (0.0 =「厳密に固定」を捏造
+      しない; GSAS の `coord_esd_states` が偽ゼロを落とすのと同じ)。
+    - 同じ軸に両方のレコードがあれば精密化値 (``coord``) が勝つ。
+    """
+    from tsumugin.topas.inp import Param, TopasDocument, TopasHistogram, TopasPhase, TopasSite
+    from tsumugin.topas.parse import parse_records
+
+    site = TopasSite("S", "S", Param(0.06), Param(0.25), Param(0.68),
+                     free_coord_axes=("x", "z"), fixed_coord_axes=("y",))
+    doc = TopasDocument(
+        histograms=(TopasHistogram(data_path="d.xye"),),
+        phases=(TopasPhase(phase_name="P", space_group="Pnma", cell={}, sites=(site,)),),
+    )
+    records = parse_records(
+        "coord\tP\tS\tx\t0.0633\t0.0\n"           # 精密化したが esd が 0
+        "coord_unrefined\tP\tS\tz\t0.5\n"          # ↓ 精密化値に負ける
+        "coord\tP\tS\tz\t0.6843\t0.0005\n"
+        "coord_unrefined\tP\tS\ty\t0.25\n"
+        "coord\tP\tO9\tx\t0.1\t0.001\n"            # y/z のレコードが無い原子
+    )
+    coords, esd = eng._atom_coord_maps(records, doc)
+    assert coords == {"P": {"S": (0.0633, 0.25, 0.6843)}}
+    assert esd == {"P": {"S": (None, 0.0, 0.0005)}}
 
 
 # ---------------- 対称操作の補完失敗 (#219) ----------------

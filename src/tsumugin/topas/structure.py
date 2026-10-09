@@ -20,7 +20,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .inp import Param, TopasPhase, TopasSite
-from .symmetry import free_coord_axes, snap_to_special_position
+from .symmetry import fixed_coord_axes, free_coord_axes, snap_to_special_position
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..autorietveld.cif_normalize import Atom, Structure
@@ -241,6 +241,7 @@ def _site(
         #   なる。1e-4 の許容差で拾えなかったサイトが吸着で拾えるようになる、という
         #   取りこぼしの隠蔽を避ける。
         free_coord_axes=free_coord_axes(symops, raw),
+        fixed_coord_axes=fixed_coord_axes(symops, raw),
     )
 
 

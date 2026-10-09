@@ -187,6 +187,13 @@ class TopasSite:
     行き着く。GSAS 経路の ``GSASIIspc.GetCSxinel`` に相当する情報で、`topas.symmetry` が
     対称操作から求める。空なら座標を解放しない (判定できないときは触らない)。
     """
+    fixed_coord_axes: tuple[str, ...] = ()
+    """サイト対称で**値が厳密に固定される**座標軸 (``GetCSxinel`` の ``0``)。
+
+    結果の座標 esd で ``0.0`` (「厳密にこの値」= 真の陳述) を名乗ってよい軸
+    (`AutoRietveldResult.atom_coord_esd` の 3 状態)。:attr:`free_coord_axes` の補集合では
+    ない — 結束した軸は解放しないが固定でもない。空なら固定とは言わない (判定できないとき)。
+    """
 
     def with_updates(self, **kw: object) -> "TopasSite":
         return replace(self, **kw)  # type: ignore[arg-type]
@@ -714,18 +721,29 @@ class TopasDocument:
                 )
         # 【原子の出版値】: 座標・占有率・beq を esd 付きで回収する。**esd の無い精密化値は
         #   出版できない**うえ、「Rwp は下がったが占有率が非物理」を検出する唯一の手段でもある。
-        #   解放していないものは出さない (固定値を「精密化した」と読ませない)。
+        #   解放していないものは ``coord``/``occ``/``beq`` に出さない (固定値を「精密化した」と
+        #   読ませない)。
         site_slugs = _site_slugs(phase)
         for site in phase.sites:
             stem = f"{_slug(name)}_{site_slugs[site.label]}"
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
-                if not param.refine:
-                    continue
                 prm = prm_for(f"site.{site.label}.{axis}", param, f"{stem}_{axis}")
-                if prm:
+                if not prm:
+                    continue
+                if param.refine:
                     lines.append(
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"coord\\t{name}\\t{site.label}\\t{axis}\\t%.8f", "\\t%.8f\\n")'
+                    )
+                else:
+                    # 【解放していない軸も値は要る】: 座標は三つ組でしか使えない (CIF・BVS・
+                    #   一致判定)。出さないと結果側に欠けた軸ができ、0.0 で埋められていた
+                    #   (実 PbSO4 の S が (0.0633, 0.0, 0.6843))。値は **TOPAS 自身に評価させる**
+                    #   — 持ち越し値・共有 prm・式で結んだ座標を Python 側で解き直さずに済む。
+                    #   別キーにして esd 書式を付けないのは、精密化値と読ませないため。
+                    lines.append(
+                        f'{_INDENT_PHASE}Out({prm}, '
+                        f'"coord_unrefined\\t{name}\\t{site.label}\\t{axis}\\t%.8f\\n")'
                     )
             # 【グループサイトの解放フラグは相側にある】: 混合占有/等値サイトの `Param.refine`
             #   は常に False で、解放は共有 prm 側 (`release_*_groups`) が持つ。site 側だけを

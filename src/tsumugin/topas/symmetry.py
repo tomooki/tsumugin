@@ -28,6 +28,7 @@ import numpy as np
 __all__ = [
     "SITE_MERGE_TOLERANCE",
     "ensure_symops",
+    "fixed_coord_axes",
     "free_coord_axes",
     "parse_symop",
     "read_sg_symops",
@@ -171,6 +172,30 @@ def free_coord_axes(
         if abs(diagonal - 1.0) < 1e-6 and off_row < 1e-6 and off_col < 1e-6:
             free.append(axis)
     return tuple(free)
+
+
+def fixed_coord_axes(
+    symops: "tuple[str, ...]",
+    position: "tuple[float, float, float]",
+    *,
+    tol: float = 1e-4,
+) -> tuple[str, ...]:
+    """サイト対称で**値が厳密に固定される**座標軸を返す (GSAS の ``GetCSxinel`` の ``0``)。
+
+    許される変位はすべて ``P`` の像 ``P·w`` なので、その第 i 成分が常に 0 になる
+    (= ``P`` の第 i 行が 0) とき、かつそのときだけ軸 i の値は動けない。
+    :func:`free_coord_axes` の補集合**ではない** — 三方晶の ``(x, x, 0)`` の x/y のように
+    他軸と結束した軸は独立に解放できないだけで動く。固定と名乗ると座標 esd が ``0.0``
+    (「厳密にこの値」) を主張してしまう。
+
+    対称操作が無ければ空 — 判定できないものを固定とは言わない。
+    """
+    if not symops:
+        return ()
+    projector = site_symmetry_projector(symops, position, tol=tol)
+    return tuple(
+        axis for index, axis in enumerate(_AXES) if np.abs(projector[index, :]).max() < 1e-6
+    )
 
 
 # ---------------------------------------------------------------- Sg/*.sg からの補完
