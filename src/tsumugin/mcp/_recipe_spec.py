@@ -70,6 +70,8 @@ KNOWN_STAGE_FLAGS = frozenset(
         "size_strain",
         "tof_profile",
         "uiso",
+        # ゼロ点だけを解放 (fit-then-judge P1a; `profile_lorentzian` から切り離した位置の項)。
+        "zero_offset",
     }
 )
 
@@ -103,6 +105,29 @@ def _check_flag_value(label: str, name: str, value: object) -> None:
         raise ValueError(
             f"stage.flags[{name!r}] は bool (全解放) か int (重い方から N 番目の元素) "
             f"である必要があります ({label!r}): {value!r}{extra}"
+        )
+    if name == "profile_lorentzian":
+        # True = 従来の X,Y,Zero。キー列 = その部分集合 (fit-then-judge P1a)。engine は列を
+        # そのまま GSAS へ渡すので、語彙外のキー・空列は ② で止める (空列は「何も解放しない」
+        # 段になり、真偽値として読む既存の呼び手と意味が食い違う)。
+        if isinstance(value, bool):
+            return
+        allowed = {"X", "Y", "Zero"}
+        if (
+            isinstance(value, (list, tuple))
+            and value
+            and all(isinstance(v, str) and v in allowed for v in value)
+        ):
+            return
+        raise ValueError(
+            f"stage.flags['profile_lorentzian'] は bool か {sorted(allowed)} の非空部分集合の列"
+            f" である必要があります ({label!r}): {value!r}"
+        )
+    if name == "zero_offset":
+        if isinstance(value, bool):
+            return
+        raise ValueError(
+            f"stage.flags['zero_offset'] は bool である必要があります ({label!r}): {value!r}"
         )
     if name == "freeze_others":
         if isinstance(value, bool):

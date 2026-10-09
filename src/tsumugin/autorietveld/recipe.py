@@ -10,7 +10,10 @@ GSAS-II チュートリアル T1–T4 の手順を一般化した普遍段階列
 - ``cell``: True — 全相の単位胞
 - ``displacement``: {hist_index: [GSAS Sample Parameters キー]} — ジオメトリ別試料変位
 - ``profile``: ["U","V","W"] — Gaussian プロファイル係数
-- ``profile_lorentzian``: True — X 線 Lorentzian X,Y + Zero の追加解放 (別段階, revert ガード)
+- ``profile_lorentzian``: True — X 線 Lorentzian X,Y + Zero の追加解放 (別段階, revert ガード)。
+  キー列 (例 ``["X","Y"]``) ならその部分集合だけ (Zero を束ねない, fit-then-judge P1a)
+- ``zero_offset``: True — ゼロ点 Zero だけを解放 (CW。TOF・装置プロファイル固定は除外。
+  ``freeze_others`` の名前としては ``profile`` に属する)
 - ``size_strain``: True — 結晶子サイズ + 微小歪み (HAP)
 - ``coords``: True — 原子座標 X。int なら「重い方から int 番目の元素だけ」、
   ``"heavy_first"`` なら**engine が実元素数に応じて展開する宣言** (REQ-SAR-303)
@@ -53,8 +56,11 @@ from .model import Geometry, HistogramSpec, PhaseSpec, RefinementStage
 CORRELATION_GROUPS: dict[str, tuple[str, ...]] = {
     # Caglioti ガウス幅: FWHM² = U·tan²θ + V·tanθ + W
     "gaussian_profile": ("W", "U", "V"),
-    # Lorentzian 幅: X/cosθ + Y·tanθ (engine は profile_lorentzian 段で Zero と一緒に解放する)
+    # Lorentzian 幅: X/cosθ + Y·tanθ (engine は profile_lorentzian: True の段で Zero と一緒に解放する)
     "lorentzian_profile": ("X", "Y"),
+    # ゼロ点 (2θ の定数オフセット)。位置を決める項で、幅の群とは別物 (fit-then-judge P1a)。
+    #   `profile_lorentzian: True` が Zero を一緒に解放する既定経路も、この群の解放として数える。
+    "zero_offset": ("Zero",),
     # 結晶子サイズと微小歪みは同じピーク幅を角度依存の違いだけで分け合う (engine は常に同時解放)
     "size_strain": ("Size", "Mustrain"),
     # 格子定数は GSAS が対称性拘束下で一括解放する (a,b,c,α,β,γ を分けられない)
@@ -93,7 +99,8 @@ def released_group_members(flags: Mapping[str, object], group: str) -> frozenset
     engine (`_apply_stage`) の解釈をそのまま写す:
 
     - ``profile`` はキー列ならその集合、それ以外 (True/未指定値) なら CW 既定 U,V,W
-    - ``profile_lorentzian`` は X,Y (+Zero) を一括解放する真偽フラグ
+    - ``profile_lorentzian`` は True なら X,Y (+Zero) を一括解放、キー列ならその部分集合
+    - ``zero_offset`` は Zero だけ (``profile_lorentzian: True`` と ``profile`` のキー列の Zero も数える)
     - ``size_strain`` は Size と Mustrain を常に**同時に**張る (値は mustrain の型)
     - ``cell`` は ``True`` のときだけ解放 (``False`` は凍結なので解放ではない)
     - ``displacement`` はヒストグラム毎のキー列 (完全性は `validate_correlation_groups` が別途検査)
@@ -108,12 +115,17 @@ def released_group_members(flags: Mapping[str, object], group: str) -> frozenset
         if isinstance(value, (list, tuple, set, frozenset)):
             return frozenset(value) & members
         return members  # True/その他 → engine 既定キー (CW: U,V,W)
-    if group == "lorentzian_profile":
+    if group in ("lorentzian_profile", "zero_offset"):
         out: set[str] = set()
         value = flags.get("profile")
         if isinstance(value, (list, tuple, set, frozenset)):
             out |= set(value) & members
-        if flags.get("profile_lorentzian"):
+        lorentz = flags.get("profile_lorentzian")
+        if isinstance(lorentz, (list, tuple, set, frozenset)):
+            out |= set(lorentz) & members
+        elif lorentz:
+            out |= set(members)  # True = X,Y,Zero の一括解放 (既定経路)
+        if group == "zero_offset" and flags.get("zero_offset"):
             out |= set(members)
         return frozenset(out)
     if group == "size_strain":

@@ -1092,11 +1092,26 @@ def _apply_stage(
         # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード)。実験室/放射光 X 線は
         # Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。悪化時は
         # 本段階ごと revert され U,V,W は保持される (T3/T4 非回帰)。TOF/中性子は除外。
+        # キー列なら**その部分集合だけ** (fit-then-judge P1a: Zero を X,Y と束ねない — 位置の項は
+        # `zero_offset` で格子と同じ段に解く)。True は従来どおり X,Y,Zero (既定経路は不変)。
+        lorentz = flags["profile_lorentzian"]
+        lorentz_keys = (
+            list(lorentz) if isinstance(lorentz, (list, tuple)) else ["X", "Y", "Zero"]
+        )
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
             if rad.is_tof or rad.is_neutron or fixed_profile[i]:
                 continue
-            hist.set_refinements({"Instrument Parameters": ["X", "Y", "Zero"]})
+            hist.set_refinements({"Instrument Parameters": lorentz_keys})
+    if "zero_offset" in flags:
+        # ゼロ点だけを解放する (fit-then-judge P1a)。CW なら放射源によらず位置の項なので、
+        # Lorentzian と違い CW 中性子も対象。TOF (Zero の意味が違う) と装置プロファイル固定
+        # (較正済みのゼロ点) は除外。
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if rad.is_tof or fixed_profile[i]:
+                continue
+            hist.set_refinements({"Instrument Parameters": ["Zero"]})
     if "profile_asymmetry" in flags:
         # 軸発散非対称 (SH/L) を X 線に別段階で追加解放する (分割擬フォークト相当の経験的ピーク形状;
         # 物理解釈を要さない)。低角の非対称に効くが常には改善しないため X,Y,Zero とは分け、悪化時は
