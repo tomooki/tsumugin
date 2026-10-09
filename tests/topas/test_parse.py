@@ -130,9 +130,40 @@ def test_no_limit_hits_when_clean():
     assert limit_hits_from_out("a @ 8.48`_0.0001\n") == ()
 
 
-def test_missing_esd_is_none():
+def test_value_without_backtick_is_not_refined():
     vals = refined_values_from_out("a @ 8.48\n")
-    assert vals == []  # esd 記法が無い = 精密化されていない値は拾わない
+    assert vals == []  # バッククォートが無い = 精密化されていない値は拾わない
+
+
+def test_backticked_value_without_esd_has_none_esd():
+    """``do_errors`` 無しの精密化値 (``8.482776```) は拾い、esd は ``None`` (0 にしない)。
+
+    0 にすると「完全に決まった値」と読める。esd が無いのは計算しなかったからである。
+    """
+    vals = refined_values_from_out("      a PbSO4_a  8.482776`\n")
+    assert vals == [(pytest.approx(8.482776), None)]
+
+
+def test_refined_values_skip_what_mvw_reports():
+    """``MVW`` の体積・重量分率は TOPAS が計算して書き戻す**報告値** (同じ esd 記法を持つ)。"""
+    vals = refined_values_from_out(
+        "      a PbSO4_a  8.479139`_0.000126\n"
+        "      MVW( 1213.050, 318.521`_0.008, mvw_wt_PbSO4_h0  100.000`_0.000)\n"
+    )
+    assert vals == [(pytest.approx(8.479139), pytest.approx(0.000126))]
+
+
+def test_refined_values_stop_at_the_correlation_matrix():
+    """末尾の ``C_matrix_normalized`` 以降はパラメータでなく相関行列 — 読むのはその手前まで。
+
+    実 tc.exe の相関行列は整数だけで esd 記法を含まないが、境界は持ち越し
+    (`named_refined_values_from_out`) と同じ所に引く (片方だけが行列を読む非対称を作らない)。
+    """
+    vals = refined_values_from_out(
+        "      a PbSO4_a  8.479139`_0.000126\n"
+        "C_matrix_normalized\n{\n PbSO4_a  1:  100  2.5`_0.1\n}\n"
+    )
+    assert vals == [(pytest.approx(8.479139), pytest.approx(0.000126))]
 
 
 def test_nan_values_are_rejected():
