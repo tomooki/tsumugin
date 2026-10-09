@@ -732,6 +732,8 @@ class TopasDocument:
                     # 【参照式の座標も値は出す】: ``x =式;`` の式を ``Out`` にそのまま渡す
                     #   (``Out`` は式を取る — 混合占有の ``1-x`` と同じ)。格子の従属軸と違い
                     #   結果側に独立変数から復元する手段が無いので、出さないと原子ごと消える。
+                    #   参照は ``refine`` を持たないので ``coord_unrefined`` (su 無し) になる —
+                    #   依存先が精密化されていても su は名乗らない (決まっていない側に倒す)。
                     prm = param.expression
                 if not prm:
                     continue
