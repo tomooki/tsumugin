@@ -18,7 +18,7 @@ from typing import Callable, Mapping, Sequence
 from tsumugin.autorietveld.engine import run_auto_rietveld
 from tsumugin.autorietveld.model import AutoRietveldResult, HistogramSpec, PhaseSpec
 from tsumugin.evidence import AICBackend, BICBackend
-from tsumugin.gpxstore import gpx_context, group_context
+from tsumugin.gpxstore import gpx_context, group_context, reject_single_artifact_paths
 from tsumugin.model import RefinementMetrics
 
 __all__ = [
@@ -121,14 +121,18 @@ def compare_models(
     :param histograms: 観測ヒストグラム集合 (同時精密化なら複数)
     :param variants: 比較する構造モデル群
     :param runner: 精密化関数 (既定 ``run_auto_rietveld``; テストでスタブ注入可)
-    :param run_kwargs: runner へ渡す追加引数 (recipe / max_cyc / keep_gpx 等)
+    :param run_kwargs: runner へ渡す追加引数 (recipe / max_cyc / gpx_dir / save_gpx 等)。
+        各バリアントの成果物の置き場所は ``gpx_dir`` で指定する — ⚠ 単一成果物パス
+        (``keep_gpx`` / ``keep_project``) は全バリアントが同じパスへ上書きするので受けない
     :returns: :class:`ModelComparison` (BIC 昇順, best=最小 BIC)
 
     Raises:
-        ValueError: variants が空のとき。
+        ValueError: variants が空のとき。``run_kwargs`` に単一成果物パスがあるとき
+            (`gpxstore.reject_single_artifact_paths`。精密化の前に送出する)。
     """
     if not variants:
         raise ValueError("compare_models には 1 つ以上の ModelVariant が必要です。")
+    reject_single_artifact_paths(run_kwargs, entry="compare_models")
 
     bic_backend = BICBackend()
     aic_backend = AICBackend()

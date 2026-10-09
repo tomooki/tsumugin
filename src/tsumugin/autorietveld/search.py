@@ -82,7 +82,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
-from ..gpxstore import gpx_context, group_context
+from ..gpxstore import gpx_context, group_context, reject_single_artifact_paths
 from ..store import Ledger
 from .model import (
     AutoRietveldResult,
@@ -989,12 +989,17 @@ def run_recipe_search(
     :param config: 判定閾値 (None で既定)
     :param runner: 候補 1 つの実行関数 (None なら GSAS 駆動)。**注入はテスト/並列化のシーム**
     :param ledger: 追記台帳 (None なら内部生成)。候補ごと + 選択を追記する
-    :param run_kwargs: `run_auto_rietveld` へ透過する追加引数 (``max_cyc``/``stability`` 等)
+    :param run_kwargs: `run_auto_rietveld` へ透過する追加引数 (``max_cyc``/``stability``/
+        ``gpx_dir``/``save_gpx`` 等)。⚠ 単一成果物パス (``keep_gpx`` / ``keep_project``) は
+        全候補が同じパスへ上書きするので受けない — 置き場所は ``gpx_dir``
     :returns: RecipeSearchResult
+    :raises ValueError: ``run_kwargs`` に単一成果物パスがあるとき
+        (`gpxstore.reject_single_artifact_paths`。候補を 1 つも回す前に送出する)
 
     候補の実行で例外が出ても**送出しない** — `CandidateOutcome.error` に落として順位表へ残す
     (「バックエンドの失敗は例外でなく結果に縮退させ、ガードレールに処理させる」不変条件)。
     """
+    reject_single_artifact_paths(run_kwargs, entry="run_recipe_search")
     config = config or SearchConfig()
     ledger = ledger if ledger is not None else Ledger()
     requested = tuple(names) if names is not None else DEFAULT_CANDIDATES

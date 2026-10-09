@@ -10,11 +10,18 @@
 
 **マルチスタートだけは別プロセス**で走るため ambient 文脈が届かない — 明示 ``gpx_context``
 で運ぶ (ここを取り違えると「並列にすると保存されない」という気づきにくい穴になる)。
+
+**単一成果物パス (``keep_gpx`` / ``keep_project``) はファンアウトの入口で拒む** — 透過すると
+N 回の精密化が同じパスへ上書きし、明示パスが既定保存を置き換えるので候補ごとの成果物も
+1 つも残らない (例外も ledger 行も出ない)。置き場所の指定は ``gpx_dir`` で行う。
 """
 
 from __future__ import annotations
 
+import pytest
+
 from tsumugin.autorietveld.compare import ModelVariant, compare_models
+from tsumugin.autorietveld.confirm import optimize_then_confirm
 from tsumugin.autorietveld.model import (
     AutoRietveldResult,
     Geometry,
@@ -26,6 +33,7 @@ from tsumugin.autorietveld.model import (
 from tsumugin.autorietveld.multistart import MultistartConfig, run_multistart_rietveld
 from tsumugin.autorietveld.search import run_recipe_search
 from tsumugin.gpxstore import active_context
+from tsumugin.refine_loop.model_compare import run_model_comparison
 
 _HIST = HistogramSpec(
     data_path="d.xye",
@@ -135,3 +143,88 @@ def test_refinement_loop_labels_each_iteration(tmp_path):
     assert [r for r, _, _ in seen] == ["iteration"] * len(seen)
     assert [i for _, i, _ in seen] == list(range(len(seen)))
     assert len({d for _, _, d in seen}) == 1, "反復ごとに run ディレクトリが分かれている"
+
+
+# ---------------------------------------------------------------------------
+# 単一成果物パスはファンアウトの入口で拒む (明示指定を黙って無効化しない)
+# ---------------------------------------------------------------------------
+
+_VARIANTS = (
+    ModelVariant(name="model5", phases=(_PHASE,)),
+    ModelVariant(name="model6", phases=(_PHASE,)),
+)
+
+#: ファンアウト入口 → 呼び方。精密化は全部 ``fake`` (engine の差し替え) を通る。
+#: 合成入口 (モデル比較の上位 / 標準経路) も並べる — 下位の入口が拒んでも、合成側が
+#: ``run_kwargs`` を剥がしてから渡す実装に変わればここで落ちる。
+_FANOUT_ENTRIES = {
+    "compare_models": lambda fake, **kw: compare_models(
+        [_HIST], _VARIANTS, runner=fake, **kw
+    ),
+    "run_model_comparison": lambda fake, **kw: run_model_comparison(
+        [_HIST], _VARIANTS, runner=fake, **kw
+    ),
+    "run_recipe_search": lambda fake, **kw: run_recipe_search(
+        [_HIST], [_PHASE], names=["default", "polish"], **kw
+    ),
+    "run_multistart_rietveld": lambda fake, **kw: run_multistart_rietveld(
+        [_HIST], [_PHASE], config=MultistartConfig(n_starts=3), jobs=1, **kw
+    ),
+    "optimize_then_confirm": lambda fake, **kw: optimize_then_confirm(
+        [_HIST], [_PHASE], candidates=["default", "polish"], n_starts=3, jobs=1, **kw
+    ),
+}
+
+
+@pytest.fixture
+def engine_calls(monkeypatch):
+    """engine を差し替え、精密化 1 回ごとに受け取った kwargs を記録する。"""
+    calls: list[dict] = []
+
+    def fake_engine(histograms, phases, **kwargs):
+        calls.append(kwargs)
+        return _result()
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_engine)
+    return calls, fake_engine
+
+
+@pytest.mark.parametrize("kwarg", ["keep_gpx", "keep_project"])
+@pytest.mark.parametrize("entry", sorted(_FANOUT_ENTRIES))
+def test_fanout_rejects_a_single_artifact_path_before_refining(
+    entry, kwarg, engine_calls, tmp_path
+):
+    """N 回精密化する入口は単一成果物パスを**精密化の前に** ValueError で拒む。
+
+    透過すると N 回の精密化が同じパスへ上書きし (マルチスタートは並列なので競合)、明示パスが
+    既定保存を置き換えるので候補ごとの成果物も消える — NFR-108 が黙って崩れる。拒むのは
+    **何も回す前** (精密化を回し終えてから投げると計算ごと失う) かつ**ディスクに触る前**
+    (run ディレクトリだけ作って中身が空、という痕跡を残さない)。
+    """
+    calls, fake = engine_calls
+    target = tmp_path / "single.gpx"
+    runs = tmp_path / "runs"
+
+    with pytest.raises(ValueError, match=kwarg) as excinfo:
+        _FANOUT_ENTRIES[entry](fake, **{kwarg: str(target)}, gpx_dir=str(runs))
+
+    # 代わりの指定方法を名指しする (拒むだけでは呼び出し側が次に何をすればよいか分からない)
+    assert "gpx_dir" in str(excinfo.value)
+    assert calls == [], f"拒む前に精密化が {len(calls)} 回走った"
+    assert not runs.exists(), "拒む前に run ディレクトリを作った"
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("unset", [None, ""])
+@pytest.mark.parametrize("entry", sorted(_FANOUT_ENTRIES))
+def test_fanout_lets_an_unset_keep_gpx_through(entry, unset, engine_calls, tmp_path):
+    """``None`` / ``""`` は `plan_output` が「指定なし」と読む値 — 拒まない。
+
+    ``keep_gpx=project.gpx_path or None`` のような素直な転送を壊さないため、拒む範囲は
+    「そのまま透過すると保存先が名指しのパスへ変わる値」に限る。
+    """
+    calls, fake = engine_calls
+
+    _FANOUT_ENTRIES[entry](fake, keep_gpx=unset, gpx_dir=str(tmp_path))
+
+    assert calls, "精密化が 1 回も走っていない"

@@ -152,6 +152,9 @@ def optimize_then_confirm(
     :param search_runner: Phase A の候補実行 callable (**テスト注入専用のシーム**)。
         実運用経路は JSON spec であり ③ はここへ callable を送れない (CLAUDE.md §4.5)
     :param multistart_runner: Phase B の実行 callable (同上)
+    :param run_kwargs: Phase A / B の各精密化へ透過する追加引数。⚠ 単一成果物パス
+        (``keep_gpx`` / ``keep_project``) は Phase A (`run_recipe_search`) が精密化の前に
+        ``ValueError`` で拒む — 置き場所は ``gpx_dir``
     """
     ledger = ledger if ledger is not None else Ledger()
     warnings: list[str] = []

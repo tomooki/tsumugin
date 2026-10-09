@@ -381,6 +381,45 @@ def group_context(
     return series_context(data_path, gpx_dir=gpx_dir, save=save)
 
 
+#: 精密化 1 回の成果物を**名指しのパス 1 つ**へ置く明示指定 (`plan_output` の ``keep`` に届く名前)。
+SINGLE_ARTIFACT_KWARGS = ("keep_gpx", "keep_project")
+
+
+def reject_single_artifact_paths(run_kwargs: Mapping[str, object], *, entry: str) -> None:
+    """**1 回の解析の中で N 回精密化する経路**に単一成果物パスが渡されたら ``ValueError``。
+
+    探索/マルチスタート/モデル比較は ``run_kwargs`` を各回の精密化へそのまま透過する。ここに
+    ``keep_gpx`` (TOPAS は ``keep_project``) が混ざると、
+
+    - N 回の精密化が**同じパスへ上書き**する (最後の 1 つだけ残る。マルチスタートは並列なので
+      どれが残るかも決まらない)
+    - 明示パスは既定保存を**置き換える** (`plan_output`) ので、run ディレクトリには各回の
+      成果物が 1 つも残らない — NFR-108「候補ごとに 1 成果物」が崩れる
+
+    どちらも例外も ledger 行も出さずに起きる。剥がして警告する手は「頼まれたパスに何も置かない」
+    = 明示指定を黙って無効化するのと結果が同じなので採らない。各回のパスを派生する手は
+    「このパス」を「この接頭辞」に読み替える (頼まれていない解釈) ので採らない。ファンアウトの
+    置き場所は ``gpx_dir`` で指定する — 各回の成果物が同じ run ディレクトリに並び
+    ``manifest.jsonl`` で引ける。
+
+    **精密化の前に**呼ぶこと。`plan_output` は精密化を回し終えた後に呼ばれるので、そこで
+    投げると計算ごと失う。値の判定は `plan_output` と同じ (``None`` / ``""`` は「指定なし」) —
+    `plan_output` が無視する値まで拒むと ``keep_gpx=path or None`` のような素直な転送が壊れる。
+
+    :param run_kwargs: 各回の精密化へ透過する追加引数
+    :param entry: エラーに出す入口名 (どの経路が拒んだか)
+    :raises ValueError: 単一成果物パスが指定されているとき
+    """
+    named = [k for k in SINGLE_ARTIFACT_KWARGS if run_kwargs.get(k)]
+    if named:
+        raise ValueError(
+            f"{entry} は 1 回の呼び出しで精密化を複数回行うため、単一の成果物パス "
+            f"({', '.join(named)}) を受けられません — 全回が同じパスへ上書きし、各回の既定保存も"
+            "置き換わって残りません (NFR-108)。置き場所は gpx_dir で指定してください "
+            "(各回の成果物が同じ run ディレクトリに並び、manifest.jsonl で引けます)。"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 索引 (manifest.jsonl) — 追記専用 (P2)
 # ---------------------------------------------------------------------------
@@ -479,6 +518,7 @@ __all__ = [
     "GpxContext",
     "MANIFEST_NAME",
     "ManifestEntry",
+    "SINGLE_ARTIFACT_KWARGS",
     "active_context",
     "child_context",
     "gpx_context",
@@ -487,6 +527,7 @@ __all__ = [
     "plan_output",
     "read_manifest",
     "record_artifact",
+    "reject_single_artifact_paths",
     "resolve_run_dir",
     "sanitize_label",
     "series_context",

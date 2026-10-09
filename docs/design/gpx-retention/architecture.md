@@ -59,6 +59,16 @@
 ディレクトリ**を共有する (フレームごとに分かれると 754 個できて探せない)。単発ツール
 (`auto_rietveld` / `refine_with_revisions`) は**呼び出しごとに独立した run ディレクトリ**を作る。
 
+**ファンアウト入口は単一成果物パスを拒む** (2026-10-09 決定): `compare_models` /
+`run_recipe_search` / `run_multistart_rietveld` (と、それらを呼ぶ `run_model_comparison` /
+`optimize_then_confirm`) は `run_kwargs` を各回の精密化へ透過するので、`keep_gpx` /
+`keep_project` が混ざると N 回が同じパスへ上書きし (マルチスタートは並列で競合)、明示パスが
+既定保存を置き換えるので各回の成果物も残らない。**精密化の前に `ValueError`** で拒み、
+`gpx_dir` を案内する (`gpxstore.reject_single_artifact_paths`)。剥がして警告する手は
+「頼まれたパスに何も置かない」点で黙った無効化と変わらず、各回のパスを派生する手は
+「このパス」を「この接頭辞」に読み替える (頼まれていない解釈) ので採らなかった。
+`None` / `""` は `plan_output` と同じく「指定なし」として通す。
+
 ## 4. 命名をどう運ぶか — ContextVar 側路
 
 系列エンジンは `Runner` プロトコル `(frame, phases, initial_cells[, initial_fractions])` で

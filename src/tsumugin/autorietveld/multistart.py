@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
-from ..gpxstore import group_context
+from ..gpxstore import group_context, reject_single_artifact_paths
 from ..multistart.perturb import MultistartConfig
 from ..store import Ledger
 from .agreement import (
@@ -509,7 +509,11 @@ def run_multistart_rietveld(
     :param jobs: 並列度 (None で ``min(n_starts, cpu_count)``)。**1 で直列** (デバッグ用)
     :param run_kwargs: `run_auto_rietveld` へ透過 (recipe / stability / max_cyc /
         gpx_dir / save_gpx 等)。⚠ ``gpx_context`` は**開始点ごとに本関数が上書きする**
-        (成果物の名前は開始点番号で決まるため。別プロセスへ ambient が届かないので明示的に運ぶ)
+        (成果物の名前は開始点番号で決まるため。別プロセスへ ambient が届かないので明示的に運ぶ)。
+        ⚠ 単一成果物パス (``keep_gpx`` / ``keep_project``) は受けない — 並列の開始点が同じ
+        パスを奪い合い、どれが残るかも決まらない。置き場所は ``gpx_dir``
+    :raises ValueError: ``run_kwargs`` に単一成果物パスがあるとき
+        (`gpxstore.reject_single_artifact_paths`。開始点を 1 つも回す前に送出する)
 
     ⚠ 決定論のため、結果は**完了順ではなく開始点 index 順**に並べ、**ledger も join 後に
     列挙順で再発行**する (`Ledger` はハッシュ鎖 / NFR-102。完了順の追記はビット同一性を壊す)。
@@ -518,6 +522,7 @@ def run_multistart_rietveld(
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
 
+    reject_single_artifact_paths(run_kwargs, entry="run_multistart_rietveld")
     config = config if config is not None else MultistartConfig()
     ledger = ledger if ledger is not None else Ledger()
     phase_names = [p.phase_name for p in phases]
