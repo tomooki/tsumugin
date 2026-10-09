@@ -27,14 +27,19 @@ _UISO_MIN = 0.0
 _UISO_MAX = 0.5
 
 
-def _diverged_uiso(atom_uiso: Mapping[str, Mapping[str, float]]) -> tuple[str, ...]:
-    """全相を通じ Uiso が [0, 0.5] を外れる原子ラベルを昇順で返す (決定論)。"""
-    bad: set[str] = set()
-    for phase in atom_uiso.values():
-        for label, uiso in phase.items():
-            if uiso < _UISO_MIN or uiso > _UISO_MAX:
-                bad.add(label)
-    return tuple(sorted(bad))
+def _diverged_uiso(
+    atom_uiso: Mapping[str, Mapping[str, float]],
+) -> tuple[tuple[str, str], ...]:
+    """Uiso が [0, 0.5] を外れる原子を (相名, ラベル) の昇順で返す (決定論)。
+
+    相を落とさない — 原子ラベルは相の中でしか意味を持たず、同名ラベルが別の相にも居る。
+    """
+    return tuple(sorted(
+        (phase, label)
+        for phase, atoms in atom_uiso.items()
+        for label, uiso in atoms.items()
+        if uiso < _UISO_MIN or uiso > _UISO_MAX
+    ))
 
 
 def _residual_metrics(result: AutoRietveldResult) -> tuple[float | None, float | None]:
@@ -98,7 +103,7 @@ def diagnose_residual(
         # 残差配列・Uiso は先頭ヒストグラムに代表させる (残差は先頭のみ・Uiso は相属性)。
         if i == 0:
             if diverged:
-                kw["diverged_uiso_labels"] = diverged
+                kw["diverged_uiso_atoms"] = diverged  # ラベル列はここから導かれる
             if low_freq is not None:
                 kw["low_freq_bg_residual"] = low_freq
             if unindexed is not None:

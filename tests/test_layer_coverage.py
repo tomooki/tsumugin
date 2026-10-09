@@ -486,7 +486,9 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "Issue #97: ① `refine_loop.diagnostics`/`diagnose_residual` が消費する内省フィールド。"
         "ただし ② `propose_next_actions` は `_result_from_dict` で復元するため**この値は届かず**、"
         "Uiso 発散の診断が MCP 経路では発火しない (既知の穴; 単体で ③ に出す価値は薄いので "
-        "propose_next_actions 側で畳むのが筋)",
+        "propose_next_actions 側で畳むのが筋)。閉じるときは相の指定 (`phases=`) も渡すこと — "
+        "RestrictUiso は相の指定なしでは提案しない (凍結相を解除しないため) — と、"
+        "`action_to_dict` に RestrictUiso の分岐を足すこと (無いと proposal_to_dict が送出する)",
     ),
     "atom_occupancy": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。占有率 [0,1] 逸脱の検出源)"),
     "atom_multiplicity": (

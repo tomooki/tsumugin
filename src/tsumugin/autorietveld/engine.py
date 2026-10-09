@@ -63,6 +63,7 @@ from .model import (
     StabilityOptions,
     StageResult,
     ValidityReport,
+    resolve_uiso_targets,
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
@@ -839,12 +840,10 @@ def _resolve_uiso_targets(info: dict) -> "list[str]":
     ⚠ `info.get("uiso_labels") or info["labels"]` と書くと**空リストが「未指定」に化け、
     凍結したつもりで全原子が解放される** (#189 の本体)。
     """
-    declared = info.get("uiso_labels")
-    targets = list(info["labels"]) if declared is None else list(declared)
-    frozen_uiso = info.get("frozen_uiso") or set()
-    if frozen_uiso:
-        targets = [lab for lab in targets if lab not in frozen_uiso]
-    return targets
+    # 規約の本体は `model.resolve_uiso_targets` (TOPAS 経路と共有する 1 箇所)。
+    return resolve_uiso_targets(
+        info["labels"], info.get("uiso_labels"), info.get("frozen_uiso") or ()
+    )
 
 
 def _uiso_all_frozen(phase_infos: "list[dict]", stage_flags) -> bool:
