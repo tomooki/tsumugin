@@ -7,6 +7,8 @@ GSAS の `GSASIIspc.GetCSxinel` に相当する機能を対称操作から純 nu
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -248,3 +250,150 @@ def test_body_centre_site_keeps_its_free_axes_despite_the_comment_line():
     )
     # 混入した状態では壊れることを明示しておく (だから読み取り側で落とす)。
     assert free_coord_axes(ops, (0.5, 0.5, 0.5)) == ()
+
+
+# ---------------- Sg/*.sg の補完 (#219) ----------------
+
+
+def test_sg_probe_inp_declares_a_wavelength(monkeypatch):
+    """**探査 INP に ``lam`` が無いと tc.exe は空間群を展開する前に必ず異常終了する** (#219)。
+
+    実測: ``Cannot locate lam from riet_app_3 in data structures``。CW の X 線パターンとして
+    解釈できないため。実 tc.exe での検算は下の ``-m topas`` テストが担う。
+    """
+    from tsumugin.topas import driver
+    from tsumugin.topas.symmetry import _generate_sg_file
+
+    seen: list[str] = []
+    monkeypatch.setattr(driver, "run_tc", lambda inp, **kw: seen.append(inp))
+    _generate_sg_file("P121/c1")
+    assert seen, "探査 INP を流していない"
+    assert "lam" in seen[0] and " lo " in seen[0], f"波長の宣言が無い:\n{seen[0]}"
+
+
+def test_symop_generation_failure_is_raised_not_swallowed(monkeypatch):
+    """**補完に失敗したら空タプルを黙って返さない** (#219)。
+
+    空を返すと全サイトの ``free_coord_axes`` が空になり、座標段が何も解放しないまま
+    完走する。特殊位置の吸着 (#172) も効かず、単位胞に存在しない原子が増えうる。
+    原因 (対称操作の欠落) は段の記録からは辿れない。
+    """
+    from tsumugin.errors import TopasRunError, TsumuginError
+    from tsumugin.topas import symmetry
+
+    def boom(space_group):
+        raise TopasRunError("Cannot locate lam from riet_app_3 in data structures")
+
+    monkeypatch.setattr(symmetry, "read_sg_symops", lambda sg, home=None: ())
+    monkeypatch.setattr(symmetry, "_generate_sg_file", boom)
+    with pytest.raises(TsumuginError) as excinfo:
+        symmetry.ensure_symops("P121/c1", ())
+    assert type(excinfo.value).__name__ == "TopasSymmetryError"
+    message = str(excinfo.value)
+    assert "P121/c1" in message and "Cannot locate lam" in message, "原因が伝わらない"
+
+
+def test_symop_generation_that_leaves_no_readable_file_is_raised(monkeypatch):
+    """tc.exe が正常終了しても ``Sg/`` から読めなければ同じく失敗として伝える。
+
+    ファイル名の符号化 (``/`` → ``o``) がずれると「生成は成功・読めない」になる (実測)。
+    """
+    from tsumugin.errors import TsumuginError
+    from tsumugin.topas import symmetry
+
+    monkeypatch.setattr(symmetry, "read_sg_symops", lambda sg, home=None: ())
+    monkeypatch.setattr(symmetry, "_generate_sg_file", lambda sg: None)
+    with pytest.raises(TsumuginError) as excinfo:
+        symmetry.ensure_symops("P121/c1", ())
+    assert type(excinfo.value).__name__ == "TopasSymmetryError"
+
+
+def test_cif_symops_are_used_as_is_without_launching_tc(monkeypatch):
+    """対称操作を持つ CIF の経路は不変 (#219 非回帰): tc.exe を起動しない。"""
+    from tsumugin.topas import symmetry
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("CIF に対称操作があるのに Sg/ を引きに行った")
+
+    monkeypatch.setattr(symmetry, "read_sg_symops", must_not_run)
+    monkeypatch.setattr(symmetry, "_generate_sg_file", must_not_run)
+    assert symmetry.ensure_symops("Pnma", _PNMA) == _PNMA
+
+
+_P21C_WITHOUT_SYMOPS = """\
+data_synthetic
+_cell_length_a 5.0
+_cell_length_b 6.0
+_cell_length_c 7.0
+_cell_angle_alpha 90
+_cell_angle_beta 100
+_cell_angle_gamma 90
+_symmetry_space_group_name_H-M 'P 1 21/c 1'
+_symmetry_Int_Tables_number 14
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_U_iso_or_equiv
+Fe1 Fe 0.1234 0.2345 0.3456 1.0 0.01
+O1 O 0.4321 0.1111 0.2222 1.0 0.01
+"""
+
+
+@pytest.fixture()
+def p21c_sg_absent():
+    """TOPAS ホームの ``Sg/p121oc1.sg`` を**一時的に退避**し、生成経路を必ず通らせる。
+
+    既に生成済みの機械では補完が試されず、テストが何も検証しなくなる (この Issue の
+    環境依存そのもの)。終了時は元に戻し、元々無かったなら生成物を消す (ホームを汚さない)。
+    """
+    from tsumugin.topas.availability import topas_home
+
+    home = topas_home()
+    if home is None:
+        pytest.skip("TOPAS ホームが無い")
+    path = Path(home) / "Sg" / "p121oc1.sg"
+    backup = path.with_name(path.name + ".tsumugin-test-backup")
+    existed = path.is_file()
+    if existed:
+        path.replace(backup)
+    try:
+        yield path
+    finally:
+        if existed:
+            backup.replace(path)
+        elif path.is_file():
+            path.unlink()
+
+
+@pytest.mark.topas
+def test_space_group_missing_from_sg_is_generated_and_frees_general_positions(
+    tmp_path, p21c_sg_absent
+):
+    """**``Sg/`` に無い空間群 + 対称操作の無い CIF** で一般位置の原子が 3 軸とも解放される (#219)。
+
+    以前は探査 INP が必ず異常終了し、例外が握りつぶされて ``{'Fe1': (), 'O1': ()}`` に
+    なっていた。同じ CIF でも、その空間群を過去に TOPAS で回した機械かどうかで結果が
+    変わっていた (NFR-102)。
+    """
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+    from tsumugin.topas.structure import structure_to_topas_phase, to_topas_spacegroup
+    from tsumugin.topas.symmetry import ensure_symops
+
+    cif = tmp_path / "synthetic_p21c_nosymops.cif"
+    cif.write_text(_P21C_WITHOUT_SYMOPS, encoding="ascii")
+    st = read_structure_cif(str(cif))
+    assert not st.symops, "前提: CIF に対称操作が無い"
+    sg = to_topas_spacegroup(st.spacegroup_hm, st.it_number)
+    assert not p21c_sg_absent.is_file(), "前提: Sg/ に未生成"
+
+    ops = ensure_symops(sg, st.symops)
+    assert len(ops) == 4, f"P21/c の一般位置 4 個が引けていない: {ops}"
+    phase = structure_to_topas_phase(st, "syn", symops=ops)
+    assert {s.label: s.free_coord_axes for s in phase.sites} == {
+        "Fe1": ("x", "y", "z"),
+        "O1": ("x", "y", "z"),
+    }

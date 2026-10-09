@@ -339,6 +339,46 @@ def test_occupancy_is_released_only_for_declared_sites(synthetic_cif):
     assert released == {"O1"}
 
 
+# ---------------- 対称操作の補完失敗 (#219) ----------------
+
+
+def test_symop_completion_failure_stops_the_run_instead_of_freezing_coordinates(
+    tmp_path, stub_driver, monkeypatch
+):
+    """CIF に対称操作が無く補完にも失敗したら、**座標を黙って凍結したまま完走しない** (#219)。
+
+    以前は空タプルで続行し、座標段は「無言 no-op」としか ledger に残らなかった。
+    特殊位置の吸着 (#172) も効かないので単位胞の原子数まで変わりうる。
+    """
+    from tsumugin.errors import TopasRunError, TsumuginError
+    from tsumugin.topas import symmetry
+
+    cif = tmp_path / "nosymops.cif"
+    cif.write_text(
+        "\n".join(
+            line
+            for line in Path(_SYNTHETIC.structure_path).read_text(encoding="ascii").splitlines()
+            if "_symmetry_equiv_pos" not in line and not line.strip().startswith("'")
+        )
+        + "\n",
+        encoding="ascii",
+    )
+
+    def boom(space_group):
+        raise TopasRunError("Cannot locate lam from riet_app_3 in data structures")
+
+    monkeypatch.setattr(symmetry, "read_sg_symops", lambda sg, home=None: ())
+    monkeypatch.setattr(symmetry, "_generate_sg_file", boom)
+    stub_driver([30.0, 20.0])
+    with pytest.raises(TsumuginError) as excinfo:
+        eng.run_topas_rietveld(
+            [_histogram()],
+            [PhaseSpec(structure_path=str(cif), phase_name="PbSO4")],
+            recipe=_stages(("S0", 0), ("S1", 0)),
+        )
+    assert type(excinfo.value).__name__ == "TopasSymmetryError"
+
+
 # ---------------- 新フラグの INP が実 tc.exe に受理されるか (#173) ----------------
 
 
