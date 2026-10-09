@@ -91,6 +91,11 @@ def _parse_structure(path: str, mtime_ns: int, size: int) -> "tuple[object, tupl
     **キーに mtime とサイズを混ぜる**のが要点。パスだけで引くと、構造改訂 (`edit_cif` /
     物質化 / セル研磨) が**同じパスへ書き戻した**とき古い構造が黙って勝ち、改訂が
     「効かなかった」ように見える (差分は結果のどこにも出ない)。
+
+    補完できなければ ``TopasSymmetryError`` が**そのまま上がる** (#219) — 不正な CIF と
+    同じ「入力から模型を組めない」失敗であって、精密化の失敗 (chi2=inf へ縮退) ではない。
+    空の対称操作で続けると特殊位置の吸着 (#172) が効かず、**判別したつもりの構造が
+    単位胞に存在しない原子を含む** (#180 で避けた「捏造構造で走る」と同型)。
     """
     from ..autorietveld.cif_normalize import read_structure_cif
     from ..topas.structure import to_topas_spacegroup

@@ -43,6 +43,21 @@ class TopasRunError(TsumuginError):
     """
 
 
+class TopasSymmetryError(TsumuginError):
+    """CIF に対称操作が無く、TOPAS の ``Sg/`` からも補完できなかったとき (#219)。
+
+    **空の対称操作で続行しない**ための専用例外。続行すると全サイトの自由軸が空になり
+    座標段が何も解放しないまま完走する (ledger には「無言 no-op」としか残らない)。加えて
+    特殊位置の吸着 (#172) も効かず、TOPAS が特殊位置を一般位置へ展開して**単位胞に存在
+    しない原子が増える**ことがある。どちらも Rwp からは原因に辿り着けない。
+
+    以前は補完の失敗を握りつぶして空タプルを返していたため、**同じ CIF でも「その空間群を
+    過去に TOPAS で回した機械か」で結果が変わっていた** (NFR-102 違反)。対処は CIF に
+    対称操作ループ (``_symmetry_equiv_pos_as_xyz`` / ``_space_group_symop_operation_xyz``) を
+    足すか、空間群記号が TOPAS の受け付ける形かを確かめること。
+    """
+
+
 class LedgerIntegrityError(TsumuginError):
     """永続 ledger (JSONL) の破損を検出したときに送出 (EDGE-003 / NFR-105)。
 

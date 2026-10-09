@@ -20,10 +20,13 @@ from dataclasses import dataclass, field
 
 __all__ = [
     "TopasRecords",
+    "background_values_from_out",
     "limit_hits_from_out",
+    "named_refined_values_from_out",
     "parse_out_metrics",
     "parse_records",
     "refined_values_from_out",
+    "spherical_harmonics_blocks_from_out",
 ]
 
 _METRIC_KEYS = ("r_p", "r_wp", "r_exp", "gof", "r_wp_dash", "r_exp_dash")
@@ -116,6 +119,83 @@ def refined_values_from_out(out_text: str) -> "list[tuple[float, float]]":
         for value, esd in _REFINED.findall(out_text)
         if math.isfinite(float(value)) and math.isfinite(float(esd))
     ]
+
+
+#: ``.out`` の精密化値: ``name 8.47`_0.0001`` / マクロ引数の ``name,-0.0019`_0.0025`` /
+#: ``do_errors`` が無いときの ``name 8.47``` (esd 無しでもバッククォートは付く, 実測)。
+#: **バッククォートが「精密化された値」の印** — 固定値 (``!name 0.0``) とキーワード
+#: (``lo 1.5405``) には付かないので、名前の取り違えで値を持ち越すことがない。
+#: 名前と値は同じ行にある (行を跨いで組にしない)。
+_NAMED_REFINED = re.compile(rf"(?<![\w!@.])([A-Za-z_]\w*)[ \t]*,?[ \t]*({_NUM})`")
+
+#: 値がパラメータではなく**報告値**のマクロ。``MVW(m, v, name w)`` の ``w`` は TOPAS が
+#: 計算して書き戻す重量分率で、入力値は使われない。持ち越し対象から外す。
+_REPORTED_MACRO = re.compile(r"\bMVW\s*\([^)]*\)")
+
+_BKG_LINE = re.compile(r"(?m)^[ \t]*bkg\b(.*)$")
+_ESD_SUFFIX = re.compile(r"`\S*")
+_PO_BLOCK = re.compile(
+    r"PO_Spherical_Harmonics\(\s*(\w+)\s*,\s*(\d+)\s+load\s+sh_Cij_prm\s*\{(.*?)\}\s*\)",
+    re.DOTALL,
+)
+
+
+def _parameter_text(out_text: str) -> str:
+    """``.out`` のうちパラメータが書かれた部分 (末尾の相関行列 ``C_matrix_normalized`` を除く)。"""
+    head, _, _ = out_text.partition("C_matrix_normalized")
+    return head
+
+
+def named_refined_values_from_out(out_text: str) -> dict[str, float]:
+    """名前付きパラメータの精密化値 (名前 → 値) を返す (#218: 次段への持ち越し用)。
+
+    **精密化されたもの (値にバッククォートが付くもの) だけ**を拾う。固定値は INP に書いた
+    値のままなので持ち越す必要が無い。報告値 (``MVW``) は除く。有限でない値は拾わない
+    (発散した値を次段の出発点にしない)。
+    """
+    text = _REPORTED_MACRO.sub("", _parameter_text(out_text))
+    values: dict[str, float] = {}
+    for name, token in _NAMED_REFINED.findall(text):
+        value = _to_float(token)
+        if value is not None:
+            values[name] = value
+    return values
+
+
+def background_values_from_out(out_text: str) -> "list[tuple[float, ...] | None]":
+    """``bkg`` 行ごとの係数を**出現順**に返す (#218)。
+
+    ``bkg`` の係数は名前を付けられない (実測: ``bkg b0 0 …`` は異常終了) ので、
+    名前でなく行と位置で持ち越す。数値以外の字句を含む行は位置の対応が取れないので
+    ``None`` を返す (取り違えて別の係数へ入れるより、持ち越さない方が安全)。
+    """
+    rows: "list[tuple[float, ...] | None]" = []
+    for match in _BKG_LINE.finditer(_parameter_text(out_text)):
+        tokens = _ESD_SUFFIX.sub("", match.group(1)).replace("@", " ").split()
+        values = [_to_float(token) for token in tokens]
+        if not values or any(value is None for value in values):
+            rows.append(None)
+            continue
+        rows.append(tuple(value for value in values if value is not None))
+    return rows
+
+
+def spherical_harmonics_blocks_from_out(out_text: str) -> dict[str, str]:
+    """球面調和の選択配向を**係数を展開した 1 行**で返す (名前 → INP 行, #218)。
+
+    INP の ``PO_Spherical_Harmonics(name, 4)`` は精密化後
+    ``PO_Spherical_Harmonics(name, 4 load sh_Cij_prm { y00 !name_c00 1 y20 name_c20 -0.066`_0.005 … } )``
+    へ書き戻される (係数は TOPAS が空間群から決める)。短い形のまま次段に描くと係数が 0 から
+    解き直しになるので、この形を次段の行にする。esd は落とし空白を詰める (1 行の形は
+    実 tc.exe が受理することを確認済み)。
+    """
+    blocks: dict[str, str] = {}
+    for name, order, body in _PO_BLOCK.findall(_parameter_text(out_text)):
+        coefficients = " ".join(_ESD_SUFFIX.sub("", body).split())
+        blocks[name] = (
+            f"PO_Spherical_Harmonics({name}, {order} load sh_Cij_prm {{ {coefficients} }} )"
+        )
+    return blocks
 
 
 def limit_hits_from_out(out_text: str) -> tuple[str, ...]:

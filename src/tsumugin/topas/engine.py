@@ -5,9 +5,15 @@
 ``runner: Callable[..., AutoRietveldResult]`` を注入する設計なので、同じ形の関数を用意すれば
 そのまま差し替えられる。
 
+**段の間の値の持ち越し** (#218): 受理した段の ``.out`` (精密化値を埋め込んだ INP) から値を
+読み戻し (`topas.carry`)、次段はその値から始める。GSAS 経路で gpx が値を持ち越すのと同じ
+意味にするためで、以前は毎段 CIF の出発値から描き直していた (段階解放が「累積フラグで
+出発値から解き直す」になっていた)。
+
 **revert の実現**: GSAS 経路は ``.gpx`` をファイルコピーして復元するが、TOPAS では
-**文書がそのまま状態**なので、悪化した段は「その段を適用する前の `TopasDocument` に戻す」
-だけでよい (追記型・上書きなし = P2 と整合)。
+**文書がそのまま状態** (解放フラグ + 持ち越した精密化値) なので、悪化した段は「その段を
+適用する前の `TopasDocument` に戻す」だけでよい — これで**直前に受理した段の値**へ戻る
+(追記型・上書きなし = P2 と整合)。
 
 **失敗の扱い**: ``TopasRunError`` は例外のまま上げず ``rwp=inf`` に縮退させ、既存の
 「悪化した段は revert」経路に載せる (不変条件「バックエンドの失敗は例外でなく chi2=inf に変換」)。
@@ -37,6 +43,7 @@ from ..errors import TopasRunError
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
 from ..gpxstore import record_artifact as _record_artifact
 from ..store import Ledger
+from .carry import carry_refined_values
 from .driver import run_tc
 from .flags import apply_stage
 from .inp import TopasDocument, _slug
@@ -317,11 +324,14 @@ def run_topas_rietveld(
         for index, stage in enumerate(stages):
             before = doc
             note = ""
+            unplaced: tuple[str, ...] = ()
+            carry_warnings: tuple[str, ...] = ()
             try:
                 doc = apply_stage(doc, stage)
-                run = run_tc(
-                    doc.render(), workdir=work, basename=f"stage{index}", timeout=timeout
-                )
+                # 【持ち越し値の行き先】: 名前の付け方が段の間でずれると値が黙って捨てられ、
+                #   出発値から解き直す (#218) が再発する。検出できる事実として ledger に残す。
+                inp_text, unplaced = doc.render_with_report()
+                run = run_tc(inp_text, workdir=work, basename=f"stage{index}", timeout=timeout)
                 rwp, gof, n_params = _metrics(run.out_text, run.results_text)
                 hits = limit_hits_from_out(run.out_text)
                 if hits:
@@ -339,11 +349,17 @@ def run_topas_rietveld(
             )
             worsened = decision.reverted
             if worsened:
-                doc = before  # revert = 段を適用する前の文書に戻すだけ
+                # revert = 段を適用する前の文書 (= 直前に受理した段の値) に戻すだけ。
+                doc = before
             else:
                 prev_rwp, prev_gof, prev_nvar = rwp, gof, n_params
                 if run is not None:
                     best_results = run.results_text
+                    # 【次段はこの段の精密化値から】 (#218)。
+                    doc, carry_warnings = carry_refined_values(doc, run.out_text)
+                    if carry_warnings:
+                        joined = "; ".join(carry_warnings)
+                        note = f"{note}; {joined}" if note else joined
             if decision.is_noop:
                 # 【無言 no-op】: 段を適用したのに rwp/gof/母数がビット同一 = 何も精密化して
                 #   いない。**revert はしない** (検出のみ) — 効かない理由 (解放先が無い /
@@ -377,6 +393,9 @@ def run_topas_rietveld(
                         "noop": decision.is_noop,
                         "note": note,
                         "backend": _BACKEND,
+                        "carried": len(doc.carried_values),
+                        "carry_unplaced": list(unplaced),
+                        "carry_warnings": list(carry_warnings),
                     },
                 )
 
