@@ -66,7 +66,13 @@ from .model import (
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
-from .constraint_groups import merge_equiv_groups, partially_released_groups, unknown_labels
+from .constraint_groups import (
+    AtomSite,
+    merge_equiv_groups,
+    partially_released_groups,
+    polar_origin_constraints,
+    unknown_labels,
+)
 from .stagepolicy import StageMetrics, decide_stage, revert_reason
 from .validity import (
     check_initial_uiso,
@@ -1403,6 +1409,79 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             gpx.add_EqnConstr(1.0, scales, [1.0] * len(scales))
 
 
+def _atomic_number(raw: str) -> int:
+    """GSAS の原子 type (例 "Fe+2") から原子番号を返す (不明は 0)。"""
+    sym = str(raw)[:2].strip().capitalize()
+    return _Z_ORDER.get(sym, _Z_ORDER.get(sym[:1].upper(), 0))
+
+
+def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
+    """`PhaseSpec.fix_polar_origin` の相に、極性方向の原点固定を登録する (fit-then-judge P1a)。
+
+    精密化する原子の判定は `_phase_atom_info` と同じ規則 (自由座標を持つ原子 −
+    `frozen_coord_labels`)。site symmetry を解釈できない原子があれば**例外** — 黙って
+    「固定不要」と判断すると、原点の決まらない精密化が完走する。
+
+    :param getcsxinel: site symmetry → `GetCSxinel` の戻り値 (テスト注入用。None なら GSAS)。
+    :returns: 登録した固定の記録 (ledger 用)。
+    """
+    applied: list[dict] = []
+    targets = [(ph, spec) for ph, spec in zip(g2phases, specs) if spec.fix_polar_origin]
+    if not targets:
+        return applied
+    if getcsxinel is None:
+        from GSASII import GSASIIspc as G2spc
+
+        getcsxinel = G2spc.GetCSxinel
+    for ph, spec in targets:
+        general = ph.data["General"]
+        polax = str(general["SGData"].get("SGPolax", ""))
+        cx, ct, cs, cia = general["AtomPtrs"]
+        frozen = set(spec.frozen_coord_labels)
+        sites: list[AtomSite] = []
+        index_of: dict[str, int] = {}
+        for i, row in enumerate(ph.data["Atoms"]):
+            label = str(row[ct - 1])
+            index_of[label] = i
+            sym = str(row[cs]).strip()
+            try:
+                xid, xcoef = getcsxinel(row[cs])[:2]
+            except Exception as exc:  # noqa: BLE001
+                if sym != "1":
+                    raise ValueError(
+                        f"相 {spec.phase_name!r} の原子 {label!r} の site symmetry {sym!r} を"
+                        f"解釈できず、原点固定を判断できません: {exc!r}"
+                    ) from exc
+                xid, xcoef = (1, 2, 3), (1.0, 1.0, 1.0)
+            has_free = any(xid)
+            sites.append(
+                AtomSite(
+                    label=label,
+                    z=float(_atomic_number(row[ct])),
+                    xid=tuple(int(v) for v in xid),  # type: ignore[arg-type]
+                    xcoef=tuple(float(v) for v in xcoef),  # type: ignore[arg-type]
+                    refined=has_free and label not in frozen,
+                )
+            )
+        constraints = polar_origin_constraints(polax, sites)
+        for label, terms in constraints:
+            idx = index_of[label]
+            names = [f"{ph.id}::dA{axis}:{idx}" for axis, _ in terms]
+            if len(terms) == 1:
+                gpx.add_HoldConstr(names)
+            else:
+                gpx.add_EqnConstr(0.0, names, [c for _, c in terms])
+            applied.append(
+                {
+                    "phase": spec.phase_name,
+                    "polax": polax,
+                    "atom": label,
+                    "terms": [[axis, c] for axis, c in terms],
+                }
+            )
+    return applied
+
+
 def _apply_content_constraint(gpx, g2phases, g2hists, content_constraint) -> None:
     """相間の線形 Scale 拘束 Σ cᵢ·Scaleᵢ = 0 を登録する (FR-318 lock_fractions, T12)。🔵
 
@@ -2484,6 +2563,9 @@ def run_auto_rietveld(
 
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
         _setup_constraints(gpx, g2phases, g2hists, phases)
+        # 極性方向の原点固定 (fit-then-judge P1a; `PhaseSpec.fix_polar_origin` の相だけ)。
+        for entry in _apply_polar_origin(gpx, g2phases, phases):
+            ledger.append("m7_polar_origin", entry)
         # 相間の総量線形拘束 (FR-318 lock_fractions; feasibility ゲートは呼び出し側)。
         _apply_content_constraint(gpx, g2phases, g2hists, content_constraint)
         # 結合距離ソフト拘束 (初期座標が理想幾何のうちに登録; O–H/D の漂流防止)。

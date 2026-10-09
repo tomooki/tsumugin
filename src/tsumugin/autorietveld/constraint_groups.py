@@ -13,8 +13,16 @@ GSAS-II の等値拘束 (`add_EquivConstr`) は、同じ変数を 2 つの組に
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Sequence
+from dataclasses import dataclass
 
-__all__ = ["merge_equiv_groups", "partially_released_groups", "unknown_labels"]
+__all__ = [
+    "AtomSite",
+    "OriginConstraint",
+    "merge_equiv_groups",
+    "partially_released_groups",
+    "polar_origin_constraints",
+    "unknown_labels",
+]
 
 Group = tuple[str, ...]
 
@@ -82,4 +90,107 @@ def partially_released_groups(
         flags = {lab in rel for lab in group}
         if len(flags) > 1:
             out.append(tuple(group))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 極性方向の原点固定 (fit-then-judge P1a タスク 3)
+# ---------------------------------------------------------------------------
+
+_AXES = ("x", "y", "z")
+
+#: GSAS-II `GSASIIspc.SGpolar` の値域 → 原点が決まらない並進方向の列。
+_POLAR_DIRECTIONS: dict[str, tuple[tuple[float, float, float], ...]] = {
+    "": (),
+    "x": ((1.0, 0.0, 0.0),),
+    "y": ((0.0, 1.0, 0.0),),
+    "z": ((0.0, 0.0, 1.0),),
+    "x y": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    "x z": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "y z": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "xyz": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "111": ((1.0, 1.0, 1.0),),
+}
+
+
+@dataclass(frozen=True)
+class AtomSite:
+    """原点固定の判断に要る原子 1 つ分の情報。
+
+    :param label: 原子ラベル。
+    :param z: 散乱能の代理 (X 線では原子番号)。最も散乱の強い原子で固定する。
+    :param xid: 各軸の独立変数の番号 (GSAS `GetCSxinel` の第 1 要素。0 = 対称性で固定、
+        同じ番号 = 結合した座標)。
+    :param xcoef: 各軸の係数 (`GetCSxinel` の第 2 要素)。
+    :param refined: 座標を精密化する原子か (凍結した原子は原点を既に決めている)。
+    """
+
+    label: str
+    z: float
+    xid: tuple[int, int, int]
+    xcoef: tuple[float, float, float]
+    refined: bool
+
+
+#: 原点固定 1 本 = (原子ラベル, ((独立変数の軸名, 係数), ...))。Σ 係数·dA軸 = 0 を意味し、
+#: 項が 1 つなら単なる hold。軸名は GSAS の独立変数 (結合した座標の最初の軸) の名前。
+OriginConstraint = tuple[str, tuple[tuple[str, float], ...]]
+
+
+def _translation_terms(
+    site: AtomSite, direction: tuple[float, float, float]
+) -> tuple[tuple[str, float], ...]:
+    """方向 ``direction`` への並進を、原子の独立変数の一次結合として返す (係数 0 の項は除く)。
+
+    座標 a は ``xcoef[a]·p[xid[a]]`` と書けるので、位置の方向成分 Σ_a d[a]·座標_a を一定に保つ
+    拘束は、独立変数 k について係数 Σ_{a: xid[a]=k} d[a]·xcoef[a] の一次式になる。
+    """
+    coef: dict[int, float] = {}
+    first_axis: dict[int, str] = {}
+    for a, axis in enumerate(_AXES):
+        k = site.xid[a]
+        if k == 0:
+            continue
+        first_axis.setdefault(k, axis)
+        coef[k] = coef.get(k, 0.0) + direction[a] * site.xcoef[a]
+    return tuple(
+        (first_axis[k], c) for k, c in sorted(coef.items()) if abs(c) > 1e-12
+    )
+
+
+def polar_origin_constraints(polax: str, sites: Sequence[AtomSite]) -> list[OriginConstraint]:
+    """極性方向ごとに原点を固定する一次拘束を返す (要らなければ空)。
+
+    方向ごとに: その方向へ動ける原子が**全員**精密化される場合だけ、最も散乱の強い原子
+    (同値なら先頭) でその方向の座標の一次結合を 1 本固定する。1 原子でも凍結されていれば
+    原点は既に決まっているので何もしない (足すと実在の自由度を消す)。
+
+    :param polax: GSAS-II の ``SGData['SGPolax']`` (``''``/``'x'``/…/``'xyz'``/``'111'``)。
+    :param sites: 相の原子。
+    :raises ValueError: 未知の ``polax``、または複数の極性方向の固定が同じ独立変数に重なる
+        (固定どうしが特異になる) とき。
+    """
+    key = polax.strip()
+    if key not in _POLAR_DIRECTIONS:
+        raise ValueError(f"未知の極性軸の値です: {polax!r} (許容: {sorted(_POLAR_DIRECTIONS)})")
+    used: set[tuple[str, str]] = set()  # (原子, 独立変数の軸名) — 固定済み
+    out: list[OriginConstraint] = []
+    for direction in _POLAR_DIRECTIONS[key]:
+        movable = [(s, _translation_terms(s, direction)) for s in sites]
+        movable = [(s, terms) for s, terms in movable if terms]
+        if not movable or any(not s.refined for s, _ in movable):
+            continue
+        candidates = [
+            (s, terms) for s, terms in movable if not any((s.label, ax) in used for ax, _ in terms)
+        ]
+        if not candidates:
+            raise ValueError(
+                f"極性方向 {direction} の原点固定が、既に固定した独立変数と重なります "
+                "(結合した座標しか持たない原子だけが動ける)"
+            )
+        # 最も散乱の強い原子。同値なら入力順で先頭 (決定論)。
+        best_i = max(range(len(candidates)), key=lambda i: (candidates[i][0].z, -i))
+        site, terms = candidates[best_i]
+        used.update((site.label, ax) for ax, _ in terms)
+        out.append((site.label, terms))
     return out

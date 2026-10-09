@@ -323,6 +323,14 @@ class PhaseSpec:
     **全員が解放されているか全員が凍結されているか**でなければならず、一部だけに Uiso の
     フラグが立つ段は例外 → 既存の revert 経路に載る。相に無いラベルは例外。既定 () (張らない)。
     ⚠ 末尾追加のみ (上の `frozen_uiso_labels` と同じ理由)。"""
+    fix_polar_origin: bool = False
+    """極性空間群で原点を固定するか (fit-then-judge P1a)。極性方向へ全原子を一斉に並進しても
+    強度は変わらないので、その方向の座標が自由な原子を**全員**精密化すると原点が決まらない
+    (GSAS-II は警告するだけで固定しない)。True なら、その場合に限り最も散乱の強い原子 (X 線の
+    原子番号) でその方向の座標の一次結合を 1 本固定する (`constraint_groups.polar_origin_constraints`:
+    c 極性 → dAz の hold、菱面体軸の [111] 極性 → 一般位置なら dAx+dAy+dAz=0、(x,x,x) 上なら
+    dAx の hold)。1 原子でも凍結されていれば原点はそれで決まっているので何もしない。
+    固定できない (site symmetry を解釈できない・固定が重なる) ときは例外。既定 False。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (tuple 組→list of list)。"""
@@ -345,6 +353,7 @@ class PhaseSpec:
             "refine_cell": self.refine_cell,
             "temperature": self.temperature,
             "uiso_equiv_groups": [list(g) for g in self.uiso_equiv_groups],
+            "fix_polar_origin": self.fix_polar_origin,
         }
 
     @classmethod
@@ -378,6 +387,7 @@ class PhaseSpec:
             uiso_equiv_groups=tuple(
                 tuple(str(a) for a in g) for g in (d.get("uiso_equiv_groups") or ())
             ),
+            fix_polar_origin=bool(d.get("fix_polar_origin", False)),
         )
 
 
