@@ -319,6 +319,7 @@ def test_search_routes_honor_an_explicit_gpx_dir(route, tmp_path, monkeypatch):
     #   含むが、1 回の ② 呼び出しなので**同じ** run ディレクトリに並ばなければ探せない。
     assert len(run_dirs) == 1, run_dirs
     assert not (tmp_path / "env-root").exists()
+    assert out["warnings"] == []  # 書ける場所なので退避の警告は無い (常に出す実装を弾く)
 
 
 def test_multistart_route_names_every_artifact_by_role(tmp_path, monkeypatch):
@@ -369,7 +370,9 @@ def test_search_routes_return_a_handle_to_every_artifact(route, tmp_path, monkey
 
 
 @pytest.mark.parametrize("route", [_SEARCH, _MULTISTART], ids=["search", "multistart"])
-def test_search_routes_say_when_artifacts_fell_back_to_temp(route, tmp_path, monkeypatch):
+def test_search_routes_say_when_artifacts_fell_back_to_temp(
+    route, tmp_path, monkeypatch, unwritable_gpx_root
+):
     """★頼まれた ``gpx_dir`` に書けず一時領域へ退避したら、それを返り値の警告で言う。
 
     非トートロジー: 退避理由は run ディレクトリを解決した入口でしか分からない — エンジンは
@@ -377,14 +380,6 @@ def test_search_routes_say_when_artifacts_fell_back_to_temp(route, tmp_path, mon
     ③ は「指定した場所に保存された」と読んだまま、成果物は %TEMP% に置かれる
     (設計 §5「temp へ退避し理由を ledger」/「黙って保存を諦めない」)。
     """
-    import tempfile
-
-    def unwritable(root, base):
-        raise PermissionError(13, "read-only", root)
-
-    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
-    (tmp_path / "tmp").mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     _record_engine_calls(monkeypatch)
 
     out = auto_rietveld(
@@ -394,6 +389,12 @@ def test_search_routes_say_when_artifacts_fell_back_to_temp(route, tmp_path, mon
     assert "error" not in out, out.get("error")
     section = out["convergence"] if "multistart" in route else out["search"]
     assert any("一時領域へ退避" in w for w in section["warnings"]), section["warnings"]
+    # ★最上位の ``warnings`` にも同じ行が出る — ③ は経路によらず ``auto_rietveld`` の
+    #   ``warnings`` を見ればよい (単発経路と読み方を揃える。経路ごとに見る場所が違うと、
+    #   単発の読み方をした ③ が探索経路で「警告なし = 頼んだ場所にある」と読む)。
+    notes = [w for w in out["warnings"] if w.startswith(_FALLBACK_PREFIX)]
+    assert len(notes) == 1 and "一時領域へ退避" in notes[0], out["warnings"]
+    assert notes[0] in section["warnings"]
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +552,7 @@ _SERIES_TOOLS = {
 
 
 @pytest.mark.parametrize("tool", sorted(_SERIES_TOOLS))
-def test_series_tools_say_when_artifacts_fell_back_to_temp(tool, tmp_path, monkeypatch):
+def test_series_tools_say_when_artifacts_fell_back_to_temp(tool, tmp_path, unwritable_gpx_root):
     """★逐次/アンカー: 系列の run ディレクトリが一時領域へ退避したら ``warnings`` で理由を言う。
 
     非トートロジー: 退避は系列の入口 (`insitu.engine._series_context`) で 1 度だけ解決され、
@@ -560,23 +561,13 @@ def test_series_tools_say_when_artifacts_fell_back_to_temp(tool, tmp_path, monke
     ここでは ① の系列エンジンを**本物のまま**回し (runner だけ差し替え)、解決から ② の
     戻り値までを通しで見る。
     """
-    import tempfile
-
-    def unwritable(root, base):
-        raise PermissionError(13, "read-only", root)
-
-    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
-    tmp_root = tmp_path / "tmp"
-    tmp_root.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_root))
-
     out = _SERIES_TOOLS[tool](
         _series_frames_in(tmp_path), [_P], runner=_series_frame_runner,
         gpx_dir=str(tmp_path / "chosen"),
     )
 
     assert "error" not in out, out.get("error")
-    assert out["gpx_dir"].startswith(str(tmp_root)), out["gpx_dir"]
+    assert out["gpx_dir"].startswith(str(unwritable_gpx_root)), out["gpx_dir"]
     notes = [w for w in out["warnings"] if w.startswith(_FALLBACK_PREFIX)]
     assert len(notes) == 1, out["warnings"]  # 系列全体で 1 回 (フレームごとに繰り返さない)
     assert "一時領域へ退避" in notes[0]

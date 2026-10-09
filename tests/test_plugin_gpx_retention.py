@@ -12,6 +12,7 @@ skill/PLAYBOOK は **③ (LLM) への実行可能な指示**であり、誤っ�
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -117,12 +118,15 @@ def test_skills_say_where_the_fallback_reason_appears(path: Path):
     読んだまま報告する (退避先は OS の掃除で消えうる)。行の形 (``成果物の保存先:``) も書く —
     `validity.warnings` 等と同じ ``warnings`` 名なので、形が無いと ③ は見分けられない。
     """
-    body = _text(path)
+    # 【退避を説明する段落の中で見る】: ``warnings`` は無関係な行 (探索の順序依存など) にも
+    #   現れるので、文書全体で探すと退避の説明からキーを消しても通ってしまう。
+    segments = re.split(r"\n(?=- )|\n\s*\n", _text(path))
+    about = "\n".join(s for s in segments if "成果物の保存先" in s)
 
-    assert "成果物の保存先" in body, f"{path}: 退避理由の行の形が書かれていない"
-    assert "一時領域" in body, f"{path}: 退避したら一時領域にあることが書かれていない"
+    assert about, f"{path}: 退避理由の行の形 (成果物の保存先: …) が書かれていない"
+    assert "一時領域" in about, f"{path}: 退避したら一時領域にあることが書かれていない"
     for key in _FALLBACK_DOCS[path]:
-        assert f"`{key}`" in body, f"{path}: 退避理由が出るキー {key!r} が書かれていない"
+        assert f"`{key}`" in about, f"{path}: 退避理由が出るキー {key!r} が退避の説明に無い"
 
 
 @pytest.mark.parametrize("path", _PLAYBOOKS, ids=lambda p: p.parent.name)

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .._json import finite_or_none
-from ..gpxstore import gpx_context, group_context, reject_single_keep
+from ..gpxstore import fallback_warning, gpx_context, group_context, reject_single_keep
 from ..multistart.perturb import MultistartConfig, PerturbationSpec
 from ..store import Ledger
 from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
@@ -176,7 +176,7 @@ def optimize_then_confirm(
     # 【退避を黙らない (設計 §5)】: 両 Phase は ambient を使うので理由を返さない — 記録はここだけ。
     if gpx_fallback:
         ledger.append("m7_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
-        warnings.append(f"成果物の保存先: {gpx_fallback}")
+        warnings.append(fallback_warning(gpx_fallback))
     with gpx_context(group):
         search = run_recipe_search(
             list(histograms), list(phases),

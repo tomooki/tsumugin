@@ -192,7 +192,8 @@ result = run_auto_rietveld([hx, ht1, ht2], phases)
   **一時領域へ退避した理由** ("" = 退避していない)。非空なら `gpx_path` は %TEMP% の中で
   OS の掃除で消えうる — 報告に退避と理由を書き、残す成果物は書ける場所へ移す。
   ② `auto_rietveld` / `refine_with_revisions` では `warnings` の `成果物の保存先: <理由>` 行
-  (探索/収束確認は `search.warnings` / `convergence.warnings`)。
+  (探索/収束確認でも同じ行が最上位 `warnings` に出る。① では `search.warnings` /
+  `ConvergenceReport.warnings`)。
 
 ### 5.1 ⚠ 合否は単発の Rwp では決まらない — **収束確認** (規定の標準経路)
 

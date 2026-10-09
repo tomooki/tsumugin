@@ -100,25 +100,13 @@ def test_save_gpx_false_disables_the_anchored_series(tmp_path):
     assert res.gpx_dir == ""
 
 
-def _unwritable_root(tmp_path, monkeypatch) -> Path:
-    """run ディレクトリを作れない状況 (読み取り専用の共有ディスク等) を作り、一時領域の根を返す。"""
-    import tempfile
-
-    def unwritable(root, base):
-        raise PermissionError(13, "read-only", root)
-
-    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
-    tmp_root = tmp_path / "tmp"
-    tmp_root.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_root))
-    return tmp_root
-
-
 def _plain_runner(frame, phases, cells):
     return _res(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0})
 
 
-def test_anchored_series_reports_a_fallback_to_temp_in_its_warnings(tmp_path, monkeypatch):
+def test_anchored_series_reports_a_fallback_to_temp_in_its_warnings(
+    tmp_path, unwritable_gpx_root
+):
     """★M10 でも退避理由を台帳 (``m10_gpx_fallback``) だけでなく結果の警告に載せる。
 
     非トートロジー: ② `anchored_sequential` は台帳を作るが、読んで返すのはアンカー/crossover
@@ -127,7 +115,6 @@ def test_anchored_series_reports_a_fallback_to_temp_in_its_warnings(tmp_path, mo
     """
     from tsumugin.store.ledger import Ledger
 
-    tmp_root = _unwritable_root(tmp_path, monkeypatch)
     ledger = Ledger()
 
     res = run_anchored_sequential(
@@ -135,22 +122,22 @@ def test_anchored_series_reports_a_fallback_to_temp_in_its_warnings(tmp_path, mo
         gpx_dir=str(tmp_path / "chosen"),
     )
 
-    assert res.gpx_dir.startswith(str(tmp_root))
+    assert res.gpx_dir.startswith(str(unwritable_gpx_root))
     notes = [w for w in res.warnings if w.startswith("成果物の保存先: ")]
     assert len(notes) == 1 and "一時領域へ退避" in notes[0], res.warnings
     rows = [e.payload for e in ledger.entries if e.kind == "m10_gpx_fallback"]
     assert len(rows) == 1 and rows[0]["reason"] in notes[0]
 
 
-def test_anchored_series_keeps_the_fallback_warning_without_frames(tmp_path, monkeypatch):
+def test_anchored_series_keeps_the_fallback_warning_without_frames(
+    tmp_path, unwritable_gpx_root
+):
     """フレーム 0 枚でも明示 ``gpx_dir`` なら run は解決される — その退避も黙らない。
 
     `gpxstore.series_context` は明示 ``gpx_dir`` があれば空の系列でも run ディレクトリを作る
     (頼まれた保存をデータパスの欠落で捨てない)。M10 の本体はフレーム 0 枚で早期に返るので、
     警告を本体の中で積む実装はこの経路で理由を落とす。
     """
-    _unwritable_root(tmp_path, monkeypatch)
-
     res = run_anchored_sequential(
         [], [ALPHA], runner=_plain_runner, identifier=None, gpx_dir=str(tmp_path / "chosen")
     )

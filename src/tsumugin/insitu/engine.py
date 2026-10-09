@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
-from ..gpxstore import GpxContext, gpx_context, series_context
+from ..gpxstore import GpxContext, fallback_warning, gpx_context, series_context
 
 if TYPE_CHECKING:
     from ..autorietveld.model import RefinementStage
@@ -268,7 +268,7 @@ def _series_context(
         return ctx
     if reason:
         ledger.append(f"{kind}_gpx_fallback", {"run_dir": ctx.run_dir, "reason": reason})
-        warn_sink.append(f"成果物の保存先: {reason}")
+        warn_sink.append(fallback_warning(reason))
     ledger.append(f"{kind}_gpx_run_dir", {"run_dir": ctx.run_dir})
     return ctx
 
