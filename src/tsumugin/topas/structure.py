@@ -321,32 +321,31 @@ def check_phase_spec_supported(spec: "PhaseSpec") -> None:
 def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> dict:
     """相の指定を検証し、`TopasPhase` のフィールドへ解決する。
 
-    GSAS 経路は相に無いラベルを黙って飛ばし、矛盾する拘束も両方張るが、TOPAS の INP では
-    それが**「効いたつもりで何も効かない」か「後に書いた方だけが効く」**になる。意味を
-    決められない指定は推測で埋めずに止める:
+    意味を決められない指定は推測で埋めずに止める。**エンジンを問わない規則** (相に無いラベル /
+    2 原子以上を指すラベル / 異なる 2 原子に満たない組) は GSAS 経路と同じ関数
+    (`autorietveld.model.check_phase_spec_labels`) で検査する。ここに残るのは **TOPAS の INP
+    だから張れない**指定 — GSAS はどれも意味を決めて張れる:
 
-    - 相に無い原子ラベル (綴り違いの凍結は凍結されない)
     - 3 原子以上の混合占有 (``x, 1-x, 1-x`` は和が 1 にならない)
-    - 1 原子が 2 つの占有率拘束に入っている (INP では後勝ち)
+    - 1 原子が 2 つの占有率拘束に入っている (INP では後に書いた方だけが効く。GSAS は
+      equivalence を constraint に変換して全拘束を同時に満たす)
     - 1 変数に束ねた組 (混合占有の beq / 座標の結束) の**一部だけ**を凍結する
     - サイト対称の違う原子どうしの座標の結束 (特殊位置の原子が特殊位置から外れる)
 
     :raises InvalidPhaseSpecError: 上記のとき
     """
-    from ..autorietveld.model import resolve_uiso_targets
+    from ..autorietveld.model import check_phase_spec_labels, resolve_uiso_targets
     from ..errors import InvalidPhaseSpecError
 
     order = [site.label for site in sites]
-    known = set(order)
+    check_phase_spec_labels(spec, order)
 
     def refuse(message: str) -> NoReturn:
         raise InvalidPhaseSpecError(f"相 {spec.phase_name!r}: {message}")
 
     singles = {
         "free_occupancy_labels": tuple(spec.free_occupancy_labels),
-        "free_uiso_labels": tuple(spec.free_uiso_labels or ()),
         "frozen_coord_labels": tuple(spec.frozen_coord_labels),
-        "frozen_uiso_labels": tuple(spec.frozen_uiso_labels),
     }
     groups = {
         "mixed_occupancy_groups": tuple(tuple(g) for g in spec.mixed_occupancy_groups),
@@ -354,25 +353,6 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
         "occupancy_sum_groups": tuple(tuple(g) for g in spec.occupancy_sum_groups),
         "position_equiv_groups": tuple(tuple(g) for g in spec.position_equiv_groups),
     }
-    unknown: dict[str, list[str]] = {}
-    for name, labels in singles.items():
-        missing = [label for label in labels if label not in known]
-        if missing:
-            unknown[name] = missing
-    for name, declared in groups.items():
-        missing = [label for group in declared for label in group if label not in known]
-        if missing:
-            unknown[name] = missing
-    if unknown:
-        refuse(
-            f"相に無い原子ラベルがあります: {unknown} (相の原子: {order})。綴り違いは"
-            "「凍結・拘束したつもりで何も効かない」精密化になるため止めます"
-        )
-
-    for name, declared in groups.items():
-        for group in declared:
-            if len(group) < 2 or len(set(group)) != len(group):
-                refuse(f"`{name}` の組 {list(group)} は異なる 2 原子以上で書いてください")
     for group in groups["mixed_occupancy_groups"]:
         if len(group) != 2:
             refuse(

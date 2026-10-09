@@ -20,6 +20,8 @@ from __future__ import annotations
 import functools
 from typing import Callable, TypeVar
 
+from ..errors import InvalidPhaseSpecError
+
 _F = TypeVar("_F", bound=Callable[..., dict])
 
 
@@ -27,15 +29,20 @@ def degrade_oserror(fn: _F) -> _F:
     """``OSError`` (ファイル不在等の I/O 失敗) を ``{"error","error_type"}`` dict へ縮退する。
 
     ``error_type`` に実際の例外クラス名 (``FileNotFoundError``/``PermissionError`` 等) を入れるので、
-    ③ は「入力ファイルが無い」と「別の失敗」を区別できる。``OSError`` **以外**の例外は透過させる
-    (論理バグを握り潰さない — 縮退対象は I/O 失敗に限る)。
+    ③ は「入力ファイルが無い」と「別の失敗」を区別できる。``OSError`` と下記の相仕様の誤り**以外**の
+    例外は透過させる (論理バグを握り潰さない — 縮退対象は入力の誤りに限る)。
+
+    **相の指定の誤り** (`errors.InvalidPhaseSpecError`) も縮退する。I/O 失敗と同じく**精密化の前に**
+    分かる入力の誤りで、engine が相を読んで原子ラベルが分かった時点 (= 逐次系では最初のフレームを
+    回す中) に送出されるので、入力の解析を囲む ``try`` では捕まらない (縮退しないと、相に無い
+    ラベルを名指した `sequential_rietveld` 等が例外で ② を越える)。
     """
 
     @functools.wraps(fn)
     def wrapper(*args: object, **kwargs: object) -> dict:
         try:
             return fn(*args, **kwargs)
-        except OSError as exc:
+        except (OSError, InvalidPhaseSpecError) as exc:
             return {"error": str(exc), "error_type": type(exc).__name__}
 
     return wrapper  # type: ignore[return-value]

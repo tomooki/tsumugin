@@ -412,3 +412,48 @@ def test_a_dead_worker_becomes_failed_starts_not_an_exception(monkeypatch):
     assert all(s.result is None for s in got.starts), "全開始点が失敗として記録される"
     joined = " / ".join(got.warnings)
     assert "BrokenProcessPool" in joined, f"死因が落ちている: {joined}"
+
+
+def _single_hist_and_phase():
+    from tsumugin.autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
+
+    hist = HistogramSpec(
+        data_path="d.xra", instrument_path="i.prm",
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+    )
+    return hist, PhaseSpec(structure_path="a.cif", phase_name="ph")
+
+
+def test_a_phase_spec_error_is_raised_not_counted_as_divergence(monkeypatch):
+    """★相の指定の誤りは**発散ではない**。engine が精密化の前に止める入力の誤りで、どの開始点でも
+    同じになる。開始点の失敗に畳むと「初期値で解が割れた / 収束を確かめられない」と読まれる。"""
+    from tsumugin.autorietveld import engine
+    from tsumugin.autorietveld import multistart as ms
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def _refuse(*a, **k):
+        raise InvalidPhaseSpecError("相 'ph': 相に無い原子ラベルがあります: ['Ox']")
+
+    monkeypatch.setattr(engine, "run_auto_rietveld", _refuse)
+    hist, phase = _single_hist_and_phase()
+    with pytest.raises(InvalidPhaseSpecError, match="Ox"):
+        ms.run_multistart_rietveld(
+            [hist], [phase], config=MultistartConfig(n_starts=2), jobs=1,
+        )
+
+
+def test_other_start_failures_are_still_recorded_not_raised(monkeypatch):
+    """対照: それ以外の失敗は従来どおり開始点の失敗として記録する (再送出を広げすぎない)。"""
+    from tsumugin.autorietveld import engine
+    from tsumugin.autorietveld import multistart as ms
+
+    def _boom(*a, **k):
+        raise RuntimeError("Refine failed")
+
+    monkeypatch.setattr(engine, "run_auto_rietveld", _boom)
+    hist, phase = _single_hist_and_phase()
+    got = ms.run_multistart_rietveld(
+        [hist], [phase], config=MultistartConfig(n_starts=2), jobs=1,
+    )
+    assert all(s.result is None for s in got.starts)
+    assert "Refine failed" in " / ".join(got.warnings)
