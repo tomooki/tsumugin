@@ -82,6 +82,25 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
   `<data_dir>/tsumugin_gpx/run-<日時>/<データ名>/` に残って `manifest.jsonl` にも
   `backend: "topas"` の行が入る (2026-08-20 規定)。**見るキーだけが `gpx_path` → `project_path`
   に変わる**ので、報告や引き継ぎで取り違えないこと。
+- **相の指定 (`phases[]`) は GSAS と同じ意味で効く**: `refine_cell` (副相の格子固定) /
+  `frozen_coord_labels` / `free_uiso_labels` / `frozen_uiso_labels` (少数相の ADP 凍結) /
+  `mixed_occupancy_groups` / `free_occupancy_labels` / `occupancy_equiv_groups` /
+  `occupancy_sum_groups` (親 = Σ子) / `position_equiv_groups`。凍結できたかの確かめ方:
+  全相の Uiso を凍結した uiso 段は GSAS と同じく `note` に **`uiso_frozen_all`** が付く。一部の
+  相・原子だけなら、凍結した原子は結果の `atom_uiso` / `atom_coords` に**出ない** (TOPAS は
+  精密化した値だけを出版する)。格子を固定した相の `cell_esd` は **`null` × 6** になる
+  (0 ではない — 「精密化して 0 に決まった」とは読まない)。
+  ⚠ **2026-10-09 より前の TOPAS 経路はこれらを黙って無視していた** (`occupancy_sum_groups` は
+  「親 = Σ子」でなく「和 = 1」で張っていた)。凍結・拘束を指定した**古い TOPAS 結果は回し直す**
+  — 指定したつもりの凍結が効いていない。
+  - TOPAS は意味を決められない指定を**精密化の前に** `error_type: "InvalidPhaseSpecError"` で
+    止める (tc.exe は起動しない): 相に無い原子ラベル / 1 原子を 2 つの占有率拘束に入れた /
+    1 変数に束ねた組 (混合占有の beq・座標の結束) の一部だけを凍結 / サイト対称の違う原子の
+    座標の結束 / `format_hint` が CIF 以外。エラー文が指定を名指しするので**直して回し直す**
+    (綴り違いのラベルは GSAS でも黙って飛ばされるだけ — エンジンを替えても直らない)。
+    **3 原子以上の混合占有は TOPAS では張れない** (x と 1-x の 2 原子形だけ) — GSAS で回す。
+  - 相の `temperature` は**どちらのエンジンも読まない**。ヒストグラム間の温度差は
+    `histograms[].temperature` に入れる。
 - 段階フラグは**全て翻訳できる**が、条件が合わない指定は**明示的に失敗して revert される**
   (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
   - `hydrostatic_strain` は **joint (複数ヒストグラム) 専用**。単一ヒストグラムでは格子
