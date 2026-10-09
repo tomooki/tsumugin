@@ -995,9 +995,10 @@ def run_recipe_search(
 
     候補の実行で例外が出ても**送出しない** — `CandidateOutcome.error` に落として順位表へ残す
     (「バックエンドの失敗は例外でなく結果に縮退させ、ガードレールに処理させる」不変条件)。
-    **例外は相の指定の誤りだけ**: 精密化の前に engine が止める入力の誤りで、どの候補でも同じに
-    なるため、候補の失敗に畳まず送出する。
+    **候補の実行から送出するのは相の指定の誤りだけ**: 精密化の前に engine が止める入力の誤りで、
+    どの候補でも同じになるため、候補の失敗に畳まず送出する。
 
+    :raises ValueError: 未知の候補名 (`build_candidates`、候補を回す前)
     :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル等を名指すとき
         (`model.check_phase_spec_labels`)
     """
