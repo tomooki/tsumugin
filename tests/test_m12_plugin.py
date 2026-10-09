@@ -254,7 +254,75 @@ def test_topas_phase_spec_refusal_is_documented(analyze_text: str):
     section = _topas_constraints_section(analyze_text)
     assert "InvalidPhaseSpecError" in section
     assert "TopasInputError" in section, "INP を組めない入力の error_type が書かれていない"
-    # D/H 混合 (`place_hd_mix`) の形は GSAS では正しい入力 — 「直せ」ではなく「GSAS で回せ」。
-    assert "place_hd_mix" in section and "GSAS で回す" in section
+    # TOPAS で張れない形は GSAS では正しい入力でありうる — 「直せ」ではなく「GSAS で回せ」。
+    # (D/H 混合の親の共有は TOPAS でも張れる —
+    #  `test_shared_parent_sum_groups_are_documented_as_topas_capable`)
+    assert "GSAS で回す" in section
     assert "uiso_frozen_all" in section, "凍結できたかの確かめ方が書かれていない"
     assert "回し直す" in section, "以前の TOPAS 結果が凍結を無視していたことの扱いが無い"
+
+
+def test_label_refusal_is_documented_for_both_engines(analyze_text: str):
+    """相の指定のラベル検査は**両エンジン共通** (`autorietveld.model.check_phase_spec_labels`)。
+
+    以前の手順書は「綴り違いのラベルは GSAS でも黙って飛ばされるだけ」と書いていた (当時は事実)。
+    GSAS も精密化の前に止めるようになったので、③ が JSON を組む手順 1 に「ラベルは CIF と完全一致・
+    誤りは InvalidPhaseSpecError で返る」が書かれ、古い記述が残っていないこと。
+    """
+    assert "GSAS でも黙って飛ばされる" not in analyze_text
+    step1 = analyze_text.split("1. **入力を組み立てる**", 1)[1].split("\n2. ", 1)[0]
+    assert "InvalidPhaseSpecError" in step1, "手順 1 にラベルの誤りの返り方が無い"
+    assert "_atom_site_label" in step1, "何と一致させるかが書かれていない"
+
+
+def test_shared_parent_sum_groups_are_documented_as_topas_capable(analyze_text: str):
+    """**和の組の親を複数の組で共有する形** (H/D ミキシング。① の `deuterium.place_hd_mix` が返す形)
+    は TOPAS でも GSAS と同じ自由度で張れる。
+
+    以前の手順書は「1 原子を 2 つの占有率拘束に入れる形」を**無条件に** GSAS で回す形として
+    書いていた (当時は事実)。③ はそれを読んで H/D ミキシングを GSAS へ回す。TOPAS 節に書いた例が
+    **実装でそのまま受理される**こと (手書きの一覧と照合しない — 実装を戻すとガードも落ちる) と、
+    まだ止まる重なり (2 つの組の子になる原子など) が書かれていることを見る。
+    `place_hd_mix` は ② に無いので手順書には名前を書かない (② に無い機能を手順書に書かない)。
+    """
+    import json
+    import re
+
+    from tsumugin.autorietveld.cif_normalize import Atom, Structure
+    from tsumugin.autorietveld.model import PhaseSpec
+    from tsumugin.mcp.tools import MCP_TOOLS
+    from tsumugin.topas.structure import structure_to_topas_phase
+
+    section = _topas_constraints_section(analyze_text)
+    assert "H/D ミキシング" in section, "H/D ミキシングの形が TOPAS で張れることが書かれていない"
+    assert "place_hd_mix" not in section, "② に無い ① の関数を ③ の手順書に書いている"
+    assert "edit_cif" in MCP_TOOLS, "D/H を CIF に足す手段として書いた ② ツールが無い"
+    match = re.search(r'`"occupancy_sum_groups": (\[\[.*?\]\])`', section)
+    assert match, "親を共有する和の組の JSON 例が TOPAS 節に無い"
+    groups = tuple(tuple(group) for group in json.loads(match.group(1)))
+    parents = [group[0] for group in groups]
+    assert len(set(parents)) < len(parents), f"例 {groups} が親を共有していない"
+    # 共位置の D/H 対の結束 (`place_hd_mix` が和の組と対で返す) も例に書かれ、同じく受理される。
+    tie = re.search(r'`"position_equiv_groups": (\[\[.*?\]\])`', section)
+    assert tie, "D/H 対を共位置に結束する例が TOPAS 節に無い"
+    ties = tuple(tuple(group) for group in json.loads(tie.group(1)))
+    assert {label for pair in ties for label in pair} <= {
+        label for group in groups for label in group[1:]
+    }, f"結束の例 {ties} が和の組の子と対応していない"
+    labels = sorted({label for group in groups for label in group})
+    structure = Structure(
+        a=8.48, b=5.40, c=6.96, alpha=90.0, beta=90.0, gamma=90.0,
+        spacegroup_hm="P n m a", it_number=62,
+        atoms=tuple(
+            Atom(label, label[0], 0.30 + 0.01 * i, 0.10, 0.20, 0.5, 0.01)
+            for i, label in enumerate(labels)
+        ),
+        symops=("x,y,z", "x,1/2-y,z", "-x,-y,-z", "-x,1/2+y,-z"),
+    )
+    # 手順書の例は TOPAS 経路で精密化の前に止まらない (InvalidPhaseSpecError を送出しない)。
+    structure_to_topas_phase(
+        structure, "P",
+        spec=PhaseSpec("x.cif", "P", occupancy_sum_groups=groups, position_equiv_groups=ties),
+    )
+    refusal = section.split("**TOPAS では張れない形は GSAS で回す**", 1)[1]
+    assert "2 つの組の子" in refusal, "TOPAS がまだ止める重なり (子の重なり) が書かれていない"

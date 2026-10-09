@@ -19,7 +19,7 @@ import math
 import re
 from typing import TYPE_CHECKING, NoReturn
 
-from .inp import Param, TopasPhase, TopasSite
+from .inp import Param, TopasPhase, TopasSite, _group_prm_plan
 from .symmetry import free_coord_axes, snap_to_special_position
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -274,7 +274,10 @@ PHASE_SPEC_FIELDS: "dict[str, tuple[str, str]]" = {
     "occupancy_equiv_groups": ("honored", "組で 1 つの占有率 (GSAS と同じく [0,1] は張らない)"),
     "free_uiso_labels": ("honored", "None = 全原子 / () = 0 原子 / 列挙 = その原子だけ"),
     "position_equiv_groups": ("honored", "座標のシフトを等値にする (初期の相対位置を保つ)"),
-    "occupancy_sum_groups": ("honored", "(親, 子1, …) で 親 = Σ子 ([0,1] は張らない)"),
+    "occupancy_sum_groups": (
+        "honored",
+        "(親, 子1, …) で 親 = Σ子 ([0,1] は張らない)。親を共有する複数の組も GSAS と同じ自由度で張る",
+    ),
     "frozen_coord_labels": ("honored", "座標段で解放しない"),
     "refine_cell": ("honored", "False なら格子段でも格子を固定する (#47)"),
     "temperature": (
@@ -321,32 +324,34 @@ def check_phase_spec_supported(spec: "PhaseSpec") -> None:
 def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> dict:
     """相の指定を検証し、`TopasPhase` のフィールドへ解決する。
 
-    GSAS 経路は相に無いラベルを黙って飛ばし、矛盾する拘束も両方張るが、TOPAS の INP では
-    それが**「効いたつもりで何も効かない」か「後に書いた方だけが効く」**になる。意味を
-    決められない指定は推測で埋めずに止める:
+    意味を決められない指定は推測で埋めずに止める。**エンジンを問わない規則** (相に無いラベル /
+    2 原子以上を指すラベル / 異なる 2 原子に満たない組) は GSAS 経路と同じ関数
+    (`autorietveld.model.check_phase_spec_labels`) で検査する。ここに残るのは **TOPAS の INP
+    だから張れない**指定 — GSAS はどれも意味を決めて張れる:
 
-    - 相に無い原子ラベル (綴り違いの凍結は凍結されない)
     - 3 原子以上の混合占有 (``x, 1-x, 1-x`` は和が 1 にならない)
-    - 1 原子が 2 つの占有率拘束に入っている (INP では後勝ち)
+    - 1 原子が 2 つの占有率拘束に入っている (INP では後に書いた方だけが効く。GSAS は
+      equivalence を constraint に変換して全拘束を同時に満たす)。**例外は和の組の親の共有**
+      (``(O, D1, H1), (O, D2, H2)`` — `deuterium.place_hd_mix` の形) で、これは GSAS と同じ
+      自由度 (変数 − 拘束) で張れる。同じ原子が 2 つの組の子になる・ある組の子が別の組の親に
+      なる・混合占有や等値の組と重なる形は止める
     - 1 変数に束ねた組 (混合占有の beq / 座標の結束) の**一部だけ**を凍結する
     - サイト対称の違う原子どうしの座標の結束 (特殊位置の原子が特殊位置から外れる)
 
     :raises InvalidPhaseSpecError: 上記のとき
     """
-    from ..autorietveld.model import resolve_uiso_targets
+    from ..autorietveld.model import check_phase_spec_labels, resolve_uiso_targets
     from ..errors import InvalidPhaseSpecError
 
     order = [site.label for site in sites]
-    known = set(order)
+    check_phase_spec_labels(spec, order)
 
     def refuse(message: str) -> NoReturn:
         raise InvalidPhaseSpecError(f"相 {spec.phase_name!r}: {message}")
 
     singles = {
         "free_occupancy_labels": tuple(spec.free_occupancy_labels),
-        "free_uiso_labels": tuple(spec.free_uiso_labels or ()),
         "frozen_coord_labels": tuple(spec.frozen_coord_labels),
-        "frozen_uiso_labels": tuple(spec.frozen_uiso_labels),
     }
     groups = {
         "mixed_occupancy_groups": tuple(tuple(g) for g in spec.mixed_occupancy_groups),
@@ -354,25 +359,6 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
         "occupancy_sum_groups": tuple(tuple(g) for g in spec.occupancy_sum_groups),
         "position_equiv_groups": tuple(tuple(g) for g in spec.position_equiv_groups),
     }
-    unknown: dict[str, list[str]] = {}
-    for name, labels in singles.items():
-        missing = [label for label in labels if label not in known]
-        if missing:
-            unknown[name] = missing
-    for name, declared in groups.items():
-        missing = [label for group in declared for label in group if label not in known]
-        if missing:
-            unknown[name] = missing
-    if unknown:
-        refuse(
-            f"相に無い原子ラベルがあります: {unknown} (相の原子: {order})。綴り違いは"
-            "「凍結・拘束したつもりで何も効かない」精密化になるため止めます"
-        )
-
-    for name, declared in groups.items():
-        for group in declared:
-            if len(group) < 2 or len(set(group)) != len(group):
-                refuse(f"`{name}` の組 {list(group)} は異なる 2 原子以上で書いてください")
     for group in groups["mixed_occupancy_groups"]:
         if len(group) != 2:
             refuse(
@@ -381,23 +367,34 @@ def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> di
                 "なりません。backend='gsasii' を使ってください"
             )
 
-    owner: dict[str, str] = {}
+    # 【占有率の拘束の重なり】: INP は原子ごとに占有率を **1 つの式**で書くので、2 つ目の拘束で
+    #   同じ原子を書くと後に書いた方だけが効く。張れる重なりは**和の組の親の共有**だけ —
+    #   最初の組で 親 = Σ子 と書き、後の組は親を書き直さずに最後の子を「親の式 − 他の子」に
+    #   する (`inp._group_prm_plan`)。H/D ミキシング (`deuterium.place_hd_mix`) が親水 O を
+    #   (O, D1, H1), (O, D2, H2) の 2 組の親にするのがこの形。
+    #   【止める形は「まとめろ」でなく GSAS へ案内する】: 重なりは GSAS では正しい入力でありうる
+    #   (GSAS は全拘束を同時に満たす)。1 つの拘束にまとめると別のモデルになる。
+    sum_parent = ("occupancy_sum_groups", "親")
+    roles: dict[str, list[tuple[str, str]]] = {}  # 原子 → [(フィールド, 役割)]
     for name in ("mixed_occupancy_groups", "occupancy_equiv_groups", "occupancy_sum_groups"):
         for group in groups[name]:
-            for label in group:
-                if label in owner:
-                    # 【GSAS では正しい入力でありうる】: D/H 混合 (`deuterium.place_hd_mix`) は
-                    #   親水 O を 2 つの和の組 (O = D1 + H1, O = D2 + H2) に入れ、GSAS は両方を
-                    #   同時に満たす。TOPAS 経路の写し方 (1 原子 = 1 つの式) では表せないので、
-                    #   「まとめろ」ではなく GSAS で回すよう案内する。
-                    refuse(
-                        f"原子 {label} の占有率が 2 つの拘束 (`{owner[label]}` と `{name}`) に"
-                        "入っています。TOPAS 経路は 1 原子の占有率を 1 つの式でしか書けず、"
-                        "INP では後に書いた方だけが効くため止めます。GSAS は両方の拘束を同時に"
-                        "満たすので backend='gsasii' を使ってください (D/H 混合 `place_hd_mix` の"
-                        "「親水 O が 2 つの和の組に入る」形もこれ)"
-                    )
-                owner[label] = name
+            for position, label in enumerate(group):
+                if name != "occupancy_sum_groups":
+                    role = ""
+                else:
+                    role = "親" if position == 0 else "子"
+                roles.setdefault(label, []).append((name, role))
+    for label in order:
+        found = roles.get(label, [])
+        if len(found) > 1 and any(role != sum_parent for role in found):
+            described = " と ".join(f"`{name}`" + (f" の{role}" if role else "")
+                                   for name, role in found)
+            refuse(
+                f"原子 {label} の占有率が {len(found)} つの拘束 ({described}) に入っています。"
+                "INP は原子ごとに占有率を 1 つの式で書くので後に書いた方だけが効くため"
+                "止めます (TOPAS で張れる重なりは和の組の親を複数の組で共有する形だけです)。"
+                "GSAS は全拘束を同時に満たすので backend='gsasii' を使ってください"
+            )
 
     # 【座標の結束】: GSAS は混合占有の組にも座標 (dAx/dAy/dAz) の等値を張る。等値は推移的
     #   なので、混合占有と position_equiv_groups を連結成分に合併して 1 組 1 変数にする。
@@ -491,8 +488,10 @@ def structure_to_topas_phase(
         TOPAS の ``Sg/`` から補完したものを渡す。**本関数自体は純粋なまま**にするため、
         tc.exe を起動する補完はここでは行わない (`topas.symmetry.ensure_symops` の責務)。
     :raises InvalidPhaseSpecError: 原子ラベルが重複しているとき (共有 ``prm`` 名が衝突して
-        **別サイトが黙って結合される**)、または相の指定の意味を決められないとき
-        (`_resolve_phase_spec`)。``ValueError`` を継ぐので従来の捕まえ方とも互換。
+        **別サイトが黙って結合される**)、相の指定の意味を決められないとき
+        (`_resolve_phase_spec`)、または受理した拘束を INP に書けないとき (`inp._group_prm_plan`
+        を一度組んで確かめる — 段の中で止まると rwp=inf → revert に吸われる)。``ValueError`` を
+        継ぐので従来の捕まえ方とも互換。
     """
     from ..errors import InvalidPhaseSpecError
 
@@ -526,7 +525,7 @@ def structure_to_topas_phase(
     )
     resolved = _resolve_phase_spec(spec, sites) if spec is not None else {}
 
-    return TopasPhase(
+    phase = TopasPhase(
         phase_name=phase_name,
         space_group=to_topas_spacegroup(structure.spacegroup_hm, structure.it_number),
         cell=cell,
@@ -534,3 +533,13 @@ def structure_to_topas_phase(
         free_cell_keys=free_cell_keys,
         **resolved,
     )
+    if spec is not None:
+        # 【受理した指定は INP に書ける】: 拘束を書くのは `inp._group_prm_plan` で、書けない重なりは
+        #   そこが ``ValueError`` で止める。ここで一度組んでおくと、`_resolve_phase_spec` の
+        #   規則と書き手がずれても**精密化の前に** InvalidPhaseSpecError になる (段の中で
+        #   止まると rwp=inf → revert に吸われ、全段 revert のまま完走する)。
+        try:
+            _group_prm_plan((phase,))
+        except ValueError as exc:
+            raise InvalidPhaseSpecError(str(exc)) from exc  # 書き手のエラー文が相を名指す
+    return phase

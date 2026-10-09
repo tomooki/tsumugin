@@ -63,6 +63,7 @@ from .model import (
     StabilityOptions,
     StageResult,
     ValidityReport,
+    check_phase_spec_labels,
     resolve_uiso_targets,
 )
 from .recipe import build_recipe, validate_correlation_groups
@@ -689,6 +690,12 @@ def _tof_profile_keys() -> list[str]:
     return ["sig-1", "sig-2"]
 
 
+def _atom_labels(ph) -> "list[str]":
+    """相の原子行のラベル列 (行の並び)。相の指定のラベルはこれと突き合わせて引き当てる。"""
+    ct = ph.data["General"]["AtomPtrs"][1]
+    return [row[ct - 1] for row in ph.data["Atoms"]]
+
+
 def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
     """相の原子メタ情報 (座標可変ラベル・全ラベル・混合占有ラベル) を収集する。
 
@@ -700,7 +707,7 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
 
     atoms = ph.data["Atoms"]
     cx, ct, cs, cia = ph.data["General"]["AtomPtrs"]
-    labels = [row[ct - 1] for row in atoms]
+    labels = _atom_labels(ph)
     coord_atoms = []
     for row in atoms:
         try:
@@ -1313,6 +1320,11 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
     占有率和=1 (add_EqnConstr) がないと占有率解放が発散し、Uiso 等価 (add_EquivConstr) が
     ないと少数占有原子の Uiso が発散する (T2 実測)。混合占有・単独解放の占有率は物理範囲 [0,1] に
     拘束する。多相では各ヒストグラムで相分率和=1 を課す。
+
+    相の指定のラベルは `run_auto_rietveld` が ``add_phase`` 直後に `check_phase_spec_labels` で
+    検査済み (相にある・1 原子だけを指す・組は異なる 2 原子以上)。ここで相に無いラベルを
+    **飛ばさない** — 以前の ``if lab in label_to_idx`` / ``len(idxs) < 2: continue`` は綴り違いの
+    拘束を黙って捨てていた。検査を経ずに来たら ``KeyError`` で落ちる方が正しい。
     """
     # 混合占有: 占有率和=1 + Uiso 等価 + [0,1] 拘束。単独解放 (free_occ) も [0,1] 拘束。
     for ph, spec in zip(g2phases, specs):
@@ -1321,9 +1333,7 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
         label_to_idx = {row[ct - 1]: i for i, row in enumerate(atoms)}
         pid = ph.id
         for group in spec.mixed_occupancy_groups:
-            idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
-            if len(idxs) < 2:
-                continue
+            idxs = [label_to_idx[lab] for lab in group]
             fracs = [f"{pid}::Afrac:{i}" for i in idxs]
             uisos = [f"{pid}::AUiso:{i}" for i in idxs]
             gpx.add_EqnConstr(1.0, fracs, [1.0] * len(fracs))
@@ -1334,25 +1344,16 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             _equiv_positions(gpx, pid, idxs)
         # 明示的な座標等値グループ (共位置 H/D 対など)。
         for group in spec.position_equiv_groups:
-            pidx = [label_to_idx[lab] for lab in group if lab in label_to_idx]
-            if len(pidx) >= 2:
-                _equiv_positions(gpx, pid, pidx)
+            _equiv_positions(gpx, pid, [label_to_idx[lab] for lab in group])
         for lab in spec.free_occupancy_labels:
-            if lab in label_to_idx:
-                _bound_occupancy(gpx, f"{pid}::Afrac:{label_to_idx[lab]}")
+            _bound_occupancy(gpx, f"{pid}::Afrac:{label_to_idx[lab]}")
         # 占有率等値 (D₂O の D を親水 O に連動): add_EquivConstr で 1 変数に束ねる。
         for group in spec.occupancy_equiv_groups:
-            idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
-            if len(idxs) >= 2:
-                gpx.add_EquivConstr([f"{pid}::Afrac:{i}" for i in idxs])
+            gpx.add_EquivConstr([f"{pid}::Afrac:{label_to_idx[lab]}" for lab in group])
         # 占有率和 (H/D ミキシング): (親, 子1, 子2, ...) で Σ子 − 親 = 0 を課す。
         for group in spec.occupancy_sum_groups:
-            if len(group) < 2 or group[0] not in label_to_idx:
-                continue
             parent = label_to_idx[group[0]]
-            children = [label_to_idx[lab] for lab in group[1:] if lab in label_to_idx]
-            if not children:
-                continue
+            children = [label_to_idx[lab] for lab in group[1:]]
             variables = [f"{pid}::Afrac:{i}" for i in children] + [f"{pid}::Afrac:{parent}"]
             gpx.add_EqnConstr(0.0, variables, [1.0] * len(children) + [-1.0])
 
@@ -2270,6 +2271,9 @@ def run_auto_rietveld(
         1 度も触らず、``Refine`` の呼び出しも現行のまま)。詳細は `StabilityOptions`。
         ⚠ **箱拘束は装置・幾何だけ** — 占有率/Uiso/座標には張らない (P-SAR-1)。
     :returns: AutoRietveldResult
+    :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル・相の中で 2 原子以上を指すラベル・
+        異なる 2 原子に満たない組を名指すとき (`model.check_phase_spec_labels`)。GSAS が相を読んで
+        ラベルが分かった直後、**精密化の前に**送出する (② は error dict へ縮退する)
     """
     # FR-318: 占有率シーダーの範囲検証は GSAS import 前に行う (物理的に不可能な要求は即時失敗)。
     if initial_occupancies:
@@ -2359,6 +2363,11 @@ def run_auto_rietveld(
                 histograms=g2hists,
                 fmthint=p.format_hint,
             )
+            # 【相の指定のラベルは GSAS が読んだ原子と突き合わせる】: 下流 (`_phase_atom_info` /
+            #   `_setup_constraints`) は相の指定をラベルで引き当てる。以前は相に無いラベル・1 原子の
+            #   組を**黙って飛ばし**、綴り違いの凍結は何も凍結せずに完走していた。TOPAS 経路と同じ
+            #   関数で精密化の前に止める (ラベルはこの原子行の並び — 拘束が引き当てるのと同じもの)。
+            check_phase_spec_labels(p, _atom_labels(ph))
             g2phases.append(ph)
 
         # --- 参照格子 (妥当性判定の基準) を先に確保 ---

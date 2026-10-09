@@ -30,7 +30,7 @@ from tsumugin.autorietveld.model import (
 )
 from tsumugin.errors import InvalidPhaseSpecError
 from tsumugin.topas.flags import apply_stage
-from tsumugin.topas.inp import TopasDocument, TopasHistogram
+from tsumugin.topas.inp import TopasDocument, TopasHistogram, TopasPhase
 from tsumugin.topas.structure import PHASE_SPEC_FIELDS, structure_to_topas_phase
 
 #: Pnma の一般位置の一部 (鏡面 y=1/4 を作るのに足りる)。`free_coord_axes` の判定に要る。
@@ -209,6 +209,264 @@ def test_recipe_has_an_occupancy_stage_for_equiv_and_sum_groups():
         assert any("occupancy" in s.flags for s in stages), kw
 
 
+# ---------------- 和の組の親を共有する (deuterium.place_hd_mix の形) ----------------
+
+#: INP の占有率 prm 宣言 (``prm !P_occsum_g0_1 0.7``)。
+_OCC_PRM = re.compile(r"^prm (!?)(\w+_occsum_\w+) (\S+)$", re.M)
+#: site 行の占有率の式 (``site HO12 … occ H =a + b - c; beq …``)。
+_SITE_OCC_EXPR = re.compile(r"^\s*site (\S+) .* occ \S+ =([^;]+);", re.M)
+
+
+def _occupancy_plan(text: str) -> "tuple[dict[str, tuple[bool, float]], dict[str, str]]":
+    """INP から (占有率の共有 prm → (解放か, 初期値), 原子 → 占有率の式) を読む。"""
+    prms = {name: (bang == "", float(value)) for bang, name, value in _OCC_PRM.findall(text)}
+    return prms, dict(_SITE_OCC_EXPR.findall(text))
+
+
+_EXPR_TOKEN = re.compile(r"\s*(\w+|[-+()])")
+
+
+def _evaluate(expr: str, values: "dict[str, float]") -> float:
+    """占有率の式 (prm 名と ``+ - ( )`` だけ) を評価する。知らない字面は落とす。"""
+    tokens = _EXPR_TOKEN.findall(expr)
+    assert "".join(tokens) == expr.replace(" ", ""), f"読めない字面: {expr!r}"
+    pos = 0
+
+    def operand() -> float:
+        nonlocal pos
+        token = tokens[pos]
+        pos += 1
+        if token != "(":
+            return values[token]
+        inner = chain()
+        assert tokens[pos] == ")", expr
+        pos += 1
+        return inner
+
+    def chain() -> float:
+        nonlocal pos
+        total = operand()
+        while pos < len(tokens) and tokens[pos] in ("+", "-"):
+            sign = tokens[pos]
+            pos += 1
+            total = total + operand() if sign == "+" else total - operand()
+        return total
+
+    result = chain()
+    assert pos == len(tokens), f"読み残し: {expr!r}"
+    return result
+
+
+def _gsas_degrees_of_freedom(groups: "tuple[tuple[str, ...], ...]") -> int:
+    """GSAS の自由度 = 組に現れる変数の数 − 拘束行列の階数。
+
+    `engine._setup_constraints` は組ごとに ``Σ子 − 親 = 0`` を 1 本張る (係数 1…1, −1)。
+    """
+    import numpy as np
+
+    labels = sorted({label for group in groups for label in group})
+    rows = []
+    for group in groups:
+        row = [0.0] * len(labels)
+        for child in group[1:]:
+            row[labels.index(child)] += 1.0
+        row[labels.index(group[0])] -= 1.0
+        rows.append(row)
+    return len(labels) - int(np.linalg.matrix_rank(np.array(rows)))
+
+
+def _shared_parent_structure() -> Structure:
+    """和の組の形を試すための原子 (全員一般位置。値に物理的な意味は無い)。"""
+    atoms = [Atom("Ow", "O", 0.30, 0.10, 0.20, 0.9, 0.010),
+             Atom("Ox", "O", 0.40, 0.05, 0.60, 0.8, 0.010)]
+    for i, label in enumerate(("D1", "H1", "D2", "H2", "D3", "H3", "D4", "H4", "T2")):
+        element = "D" if label.startswith("D") else "H"
+        atoms.append(Atom(label, element, 0.31 + 0.01 * i, 0.11, 0.22, 0.3, 0.010))
+    return _structure(*atoms)
+
+
+_SUM_SHAPES = {
+    # deuterium.place_hd_mix: 親水 O が (O, D1, H1), (O, D2, H2) の 2 組の親になる
+    "place_hd_mix": (("Ow", "D1", "H1"), ("Ow", "D2", "H2")),
+    "three_groups": (("Ow", "D1", "H1"), ("Ow", "D2", "H2"), ("Ow", "D3", "H3")),
+    "later_group_has_one_child": (("Ow", "D1", "H1"), ("Ow", "D2")),
+    "first_group_has_one_child": (("Ow", "D1"), ("Ow", "D2", "H2")),
+    "later_group_has_three_children": (("Ow", "D1", "H1"), ("Ow", "D2", "H2", "T2")),
+    "two_parents_interleaved": (
+        ("Ow", "D1", "H1"), ("Ox", "D3", "H3"), ("Ow", "D2", "H2"), ("Ox", "D4", "H4"),
+    ),
+    "single_group": (("Ow", "D1", "H1"),),
+}
+
+
+@pytest.mark.parametrize("groups", list(_SUM_SHAPES.values()), ids=list(_SUM_SHAPES))
+def test_sum_groups_keep_the_gsas_degrees_of_freedom(groups):
+    """**自由度が GSAS と同じ** (変数 − 拘束) で、**解放した prm がどんな値でも全ての和が成り立つ**。
+
+    INP は原子ごとに占有率を 1 つの式で書くので、親を共有する 2 つ目の組で親をもう一度
+    「Σ子」と書くと**後に書いた方だけが効き、先の組の和が黙って外れる**。最初の組で 親 = Σ子、
+    後の組は最後の子を ``親の式 − 他の子`` にする。自由度を数えるだけだと「拘束を 1 本落とした」
+    ことは見えても「足りない自由度」と「余った自由度」を取り違えうるので、解放した prm の各方向に
+    動かした占有率の階数と、和の恒等的な成立の両方を見る。
+    """
+    import numpy as np
+
+    phase = _phase({"occupancy_sum_groups": groups}, structure=_shared_parent_structure())
+    text = _stage(_doc(phase), occupancy=True).render()
+    prms, exprs = _occupancy_plan(text)
+    members = sorted({label for group in groups for label in group})
+    assert set(members) <= set(exprs), f"式で書かれていない原子: {set(members) - set(exprs)}"
+    free = sorted(name for name, (released, _) in prms.items() if released)
+    assert len(free) == len(prms), "占有率段で解放されていない和の prm がある"
+    assert len(free) == _gsas_degrees_of_freedom(groups)
+
+    # 解放した prm 1 本ずつの方向 → 原子の占有率 (式は線形・定数項なし)。
+    jacobian = np.array([
+        [_evaluate(exprs[m], {n: float(n == name) for n in prms}) for m in members]
+        for name in free
+    ])
+    assert np.linalg.matrix_rank(jacobian) == len(free), "解放した prm が互いに独立でない"
+
+    rng = np.random.default_rng(0)
+    for _ in range(5):
+        values = {name: float(rng.uniform(-1.0, 2.0)) for name in prms}
+        occ = {m: _evaluate(exprs[m], values) for m in members}
+        for group in groups:
+            assert occ[group[0]] == pytest.approx(sum(occ[c] for c in group[1:]), abs=1e-12), (
+                f"{group}: 親 = Σ子 が成り立たない"
+            )
+
+
+def _hd_mix_phase(synthetic_cif: Path, tmp_path: Path, *, name: str = "P") -> "TopasPhase":
+    """合成 CIF の O1 に `place_hd_mix` で D/H 対を 2 組置いた相 (返された組をそのまま渡す)。"""
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+    from tsumugin.autorietveld.deuterium import place_hd_mix
+
+    out, pos_equiv, occ_sum = place_hd_mix(
+        synthetic_cif, ["O1"], tmp_path / "hd.cif", deuteration=0.7, phase_name=name
+    )
+    assert occ_sum == (("O1", "DO11", "HO11"), ("O1", "DO12", "HO12"))
+    spec = PhaseSpec(str(out), name, position_equiv_groups=pos_equiv, occupancy_sum_groups=occ_sum)
+    return structure_to_topas_phase(read_structure_cif(out), name, spec=spec)
+
+
+def _site_line(text: str, label: str) -> str:
+    return next(line for line in text.splitlines() if line.strip().startswith(f"site {label} "))
+
+
+def test_place_hd_mix_groups_render_both_sums(synthetic_cif, tmp_path):
+    """`place_hd_mix` が返す組を**そのまま**渡したときの INP。以前は「1 原子が 2 つの占有率拘束に
+    入っている」として精密化の前に拒否していた (GSAS は両方の和を同時に満たす)。"""
+    phase = _hd_mix_phase(synthetic_cif, tmp_path)
+    text = _doc(phase).render()
+    assert re.search(r"^prm !P_occsum_g0_1 0\.7$", text, re.M)
+    assert re.search(r"^prm !P_occsum_g0_2 0\.3", text, re.M)
+    assert re.search(r"^prm !P_occsum_g1_1 0\.7$", text, re.M)
+    assert "P_occsum_g1_2" not in text, "後の組の最後の子は prm でなく式"
+    assert "occ O =P_occsum_g0_1 + P_occsum_g0_2;" in _site_line(text, "O1")
+    assert "occ D =P_occsum_g0_1;" in _site_line(text, "DO11")
+    assert "occ H =P_occsum_g0_2;" in _site_line(text, "HO11")
+    assert "occ D =P_occsum_g1_1;" in _site_line(text, "DO12")
+    assert "occ H =P_occsum_g0_1 + P_occsum_g0_2 - P_occsum_g1_1;" in _site_line(text, "HO12")
+    # [0,1] は張らない (GSAS も和の組に張らない)。
+    assert not re.search(r"^prm \S*occsum.*\bmin\b", text, re.M)
+
+
+def test_place_hd_mix_groups_publish_every_member_once(synthetic_cif, tmp_path):
+    """占有率段では和の組の**全員**の占有率を出版する — 式で書いた子 (HO12) も esd 付きで出る。"""
+    text = _stage(_doc(_hd_mix_phase(synthetic_cif, tmp_path)), occupancy=True).render()
+    expected = {
+        "O1": "P_occsum_g0_1 + P_occsum_g0_2",
+        "DO11": "P_occsum_g0_1",
+        "HO11": "P_occsum_g0_2",
+        "DO12": "P_occsum_g1_1",
+        "HO12": "P_occsum_g0_1 + P_occsum_g0_2 - P_occsum_g1_1",
+    }
+    for label, expr in expected.items():
+        assert text.count(f'"occ\\tP\\t{label}\\t') == 1, f"{label} の出版値が 1 回でない"
+        assert f'Out({expr}, "occ\\tP\\t{label}\\t' in text
+
+
+def test_joint_place_hd_mix_groups_are_not_hoisted_per_atom(synthetic_cif, tmp_path):
+    """joint は構造を共有 prm へ持ち上げる。和の組の原子を**個別にも**持ち上げると、どこからも
+    参照されない占有率 prm が宣言される (解放されれば結果に効かない精密化対象)。各 xdd は
+    同じ式を参照し、出版値は先頭の xdd で 1 回だけ。"""
+    text = _stage(_doc(_hd_mix_phase(synthetic_cif, tmp_path), histograms=2),
+                  occupancy=True).render()
+    for label in ("O1", "DO11", "HO11", "DO12", "HO12"):
+        assert f"prm P_{label}_occ" not in text and f"prm !P_{label}_occ" not in text, label
+    assert text.count("prm P_occsum_g1_1 ") == 1
+    blocks = text.split("xdd ")[1:]
+    assert len(blocks) == 2
+    for block in blocks:
+        assert "occ H =P_occsum_g0_1 + P_occsum_g0_2 - P_occsum_g1_1;" in _site_line(block, "HO12")
+    assert text.count('"occ\\tP\\tHO12\\t') == 1
+    assert '"occ\\tP\\tHO12\\t' in blocks[0]
+
+
+@pytest.mark.parametrize(
+    ("spec_kw", "label"),
+    [
+        # 同じ原子が 2 つの組の子になる
+        ({"occupancy_sum_groups": (("Ow", "D1", "H1"), ("Ox", "D1", "H2"))}, "D1"),
+        # ある組の子が別の組の親になる (入れ子)
+        ({"occupancy_sum_groups": (("Ow", "D1", "H1"), ("D1", "D2", "H2"))}, "D1"),
+        # 和の組の親が等値の組にも入る
+        ({"occupancy_sum_groups": (("Ow", "D1", "H1"), ("Ow", "D2", "H2")),
+          "occupancy_equiv_groups": (("Ow", "Ox"),)}, "Ow"),
+        # 和の組の親が混合占有の組にも入る
+        ({"occupancy_sum_groups": (("Ow", "D1", "H1"),),
+          "mixed_occupancy_groups": (("Ow", "Ox"),)}, "Ow"),
+    ],
+    ids=["child_twice", "child_is_a_parent", "parent_also_equiv", "parent_also_mixed"],
+)
+def test_other_occupancy_overlaps_are_still_refused(spec_kw, label):
+    """張れるのは**和の組の親を共有する**形だけ。それ以外の重なりは INP で 1 つの式に
+    まとめられない (後に書いた方だけが効く) ので、精密化の前に止める。
+
+    案内は「GSAS で回せ」— 重なりは GSAS では正しい入力でありうる (全拘束を同時に満たす)。
+    「1 つの拘束にまとめろ」と案内すると、別のモデルへ書き換えさせることになる。"""
+    with pytest.raises(InvalidPhaseSpecError, match=label) as info:
+        _phase(spec_kw, structure=_shared_parent_structure())
+    message = str(info.value)
+    assert "親" in message, "張れる形 (和の組の親の共有) をエラー文が案内していない"
+    assert "gsasii" in message, "GSAS では正しいモデルなのに GSAS を案内していない"
+    assert "まとめ" not in message, "GSAS では正しいモデルを「まとめろ」と案内している"
+
+
+def test_inp_builder_refuses_to_write_an_occupancy_twice():
+    """`structure_to_topas_phase` を経ずに `TopasPhase` を組む呼び手にも、**1 原子の占有率を
+    2 つの式で書く** INP (後に書いた方だけが効く) を黙って書かない。"""
+    phase = _phase().with_updates(
+        occupancy_equiv_groups=(("O1", "O2"),), occupancy_parent_sum_groups=(("S", "O1"),)
+    )
+    with pytest.raises(ValueError, match="O1"):
+        _doc(phase).render()
+
+
+def test_inp_builder_refuses_a_sum_group_without_children():
+    """子の無い組は親が空の式 (``=;``) になり、tc.exe が拒否する INP になる。"""
+    phase = _phase().with_updates(occupancy_parent_sum_groups=(("S",),))
+    with pytest.raises(ValueError, match="子"):
+        _doc(phase).render()
+
+
+def test_spec_the_inp_builder_cannot_write_is_refused_before_refinement(monkeypatch):
+    """`_resolve_phase_spec` の規則と INP の書き手 (`_group_prm_plan`) がずれても、精密化の前に
+    `InvalidPhaseSpecError` で止まる。段の中で止まると rwp=inf → revert に吸われ、全段 revert の
+    まま完走する。"""
+    from tsumugin.topas import structure as topas_structure
+
+    def cannot_write(phases):
+        raise ValueError("書けない拘束 (テスト用)")
+
+    monkeypatch.setattr(topas_structure, "_group_prm_plan", cannot_write)
+    with pytest.raises(InvalidPhaseSpecError, match="書けない拘束"):
+        _phase({"occupancy_equiv_groups": (("O1", "O2"),)})
+    # 相の指定が無い (spec=None) 呼び手は従来どおり検めない。
+    structure_to_topas_phase(_structure(), "P")
+
+
 # ---------------- position_equiv_groups / 混合占有サイトの共位置 ----------------
 
 
@@ -354,16 +612,18 @@ def test_three_way_mixed_site_is_refused():
 
 
 def test_atom_in_two_occupancy_constraints_is_refused():
-    """1 原子の占有率を 2 つの拘束で書くと、INP では**後に書いた方だけが効く**。"""
+    """1 原子の占有率を 2 つの拘束で書くと、INP では**後に書いた方だけが効く**
+    (張れる例外は和の組の親の共有だけ — `test_other_occupancy_overlaps_are_still_refused`)。"""
     with pytest.raises(InvalidPhaseSpecError, match="O1"):
         _phase({"occupancy_equiv_groups": (("O1", "O2"),),
                 "occupancy_sum_groups": (("S", "O1"),)})
 
 
-def test_hd_mix_parent_in_two_sum_groups_points_to_gsas():
+def test_hd_mix_parent_in_two_sum_groups_is_written_by_topas():
     """D/H 混合 (`deuterium.place_hd_mix`) は親水 O を 2 つの和の組に入れる — **GSAS では正しい
-    入力**で、GSAS は両方の拘束を同時に満たす。TOPAS では表せないので止めるが、案内は
-    「まとめろ」ではなく「GSAS で回せ」でなければならない (まとめると別のモデルになる)。"""
+    入力**で、GSAS は両方の拘束を同時に満たす。以前の TOPAS 経路はこの形を止めて GSAS へ案内して
+    いたが、今は同じ自由度で張る (親の式は最初の組、後の組は最後の子が「親 − 他の子」)。
+    D/H 対の共位置の結束 (`position_equiv_groups`) と同時に渡しても止まらない。"""
     structure = _structure(
         Atom("Ow", "O", 0.30, 0.10, 0.20, 0.8, 0.010),
         Atom("DOw1", "H", 0.35, 0.12, 0.25, 0.6, 0.020),
@@ -371,12 +631,12 @@ def test_hd_mix_parent_in_two_sum_groups_points_to_gsas():
         Atom("DOw2", "H", 0.25, 0.12, 0.25, 0.6, 0.020),
         Atom("HOw2", "H", 0.25, 0.12, 0.25, 0.2, 0.020),
     )
-    with pytest.raises(InvalidPhaseSpecError, match="gsasii") as info:
-        _phase({"occupancy_sum_groups": (("Ow", "DOw1", "HOw1"), ("Ow", "DOw2", "HOw2")),
-                "position_equiv_groups": (("DOw1", "HOw1"), ("DOw2", "HOw2"))},
-               structure=structure)
-    assert "Ow" in str(info.value)
-    assert "まとめ" not in str(info.value), "GSAS では正しいモデルを「まとめろ」と案内している"
+    phase = _phase({"occupancy_sum_groups": (("Ow", "DOw1", "HOw1"), ("Ow", "DOw2", "HOw2")),
+                    "position_equiv_groups": (("DOw1", "HOw1"), ("DOw2", "HOw2"))},
+                   structure=structure)
+    text = _doc(phase).render()
+    assert "occ O =P_occsum_g0_1 + P_occsum_g0_2;" in _site_line(text, "Ow")
+    assert "occ H =P_occsum_g0_1 + P_occsum_g0_2 - P_occsum_g1_1;" in _site_line(text, "HOw2")
 
 
 # ---------------- 単一の真実源: 全フィールドを分類する ----------------
@@ -579,6 +839,45 @@ def test_layer_two_degrades_unreadable_topas_input(monkeypatch, synthetic_cif, s
     assert "波長" in out["error"]
 
 
+def test_layer_two_accepts_shared_parent_sum_groups_as_json(
+    monkeypatch, synthetic_cif, synthetic_data, tmp_path
+):
+    """③ が実際に通る経路 (② に **JSON 引数だけ**を渡す) で、和の組の親の共有が止まらずに
+    INP まで届く — ① が受理しても ② の変換で落ちれば ③ にとっては「無い」のと同じ。"""
+    import json
+
+    from tsumugin.autorietveld.deuterium import place_hd_mix
+    from tsumugin.mcp import rietveld_tools
+    from tsumugin.topas import engine as eng
+
+    cif, pos_equiv, occ_sum = place_hd_mix(
+        synthetic_cif, ["O1"], tmp_path / "hd.cif", deuteration=0.7, phase_name="P"
+    )
+    inputs: list[str] = []
+
+    class _Run:
+        out_text = "r_wp 10.0 gof 1.5\np0 1.0`_0.01\n"
+        results_text = "r_wp\t10.0\ngof\t1.5\nwt_frac\tP\t100.0\t0.0\n"
+        stdout = ""
+
+    def fake_run(inp_text, **kw):
+        inputs.append(inp_text)
+        return _Run()
+
+    monkeypatch.setattr(eng, "run_tc", fake_run)
+    hist = HistogramSpec(
+        data_path=str(synthetic_data[0]), instrument_path=str(synthetic_data[1]),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="XYE",
+    ).to_dict()
+    phase = PhaseSpec(str(cif), "P", position_equiv_groups=pos_equiv,
+                      occupancy_sum_groups=occ_sum).to_dict()
+    out = rietveld_tools.auto_rietveld(
+        *json.loads(json.dumps([[hist], [phase]])), backend="topas", save_gpx=False
+    )
+    assert "error" not in out, out
+    assert any("occ H =P_occsum_g0_1 + P_occsum_g0_2 - P_occsum_g1_1;" in text for text in inputs)
+
+
 def test_layer_two_does_not_swallow_logic_bugs():
     """縮退するのは Tsumugin の**ドメインエラーだけ**。論理バグまで error dict にすると、
     不具合が「入力の誤り」に見えて握り潰される (縮退対象を広げすぎない対照)。"""
@@ -705,3 +1004,92 @@ def test_real_tc_honours_the_constraint_groups(tmp_path):
     assert occ["O1"] == pytest.approx(occ["O2"], abs=1e-9)
     assert occ["S"] == pytest.approx(occ["O3"], abs=1e-6)
     _assert_n_params_is_topas_own_count(result)
+
+
+_CWCOMBINED = _DATA / "m7" / "cwcombined"
+_real_pbso4_joint = pytest.mark.skipif(
+    not all(p.is_file() for p in (
+        _PBSO4[0], _CWCOMBINED / "PBSO4.XRA", _CWCOMBINED / "INST_XRY.PRM",
+        _CWCOMBINED / "PBSO4.CWN", _CWCOMBINED / "inst_d1a.prm",
+    )),
+    reason="PbSO4 X 線 + CW 中性子の実データが無い (gitignore 対象)",
+)
+
+
+@pytest.mark.topas
+@_real_pbso4_joint
+def test_real_tc_holds_both_sums_of_a_shared_parent(tmp_path):
+    """実 tc.exe で `deuterium.place_hd_mix` の形 (親水 O が 2 つの和の組の親) を精密化し、
+    **両方の和が精密化の後も成り立つ**こと。
+
+    PbSO4 の O1 に D/H 対を 2 組置いた**機構の試験**である (PbSO4 に水素は無く、値の妥当性は
+    見ない)。X 線では D と H の散乱因子が同じで D:H の比が決まらないので、散乱長の符号が逆の
+    CW 中性子と joint で回す — joint の持ち上げ (`_shared_prm_plan`) も実 tc.exe で通る。
+    自由度は GSAS と同じ 5 原子 − 2 拘束 = 3 で、占有率段が足した母数で数える。
+    """
+    from tsumugin.autorietveld.deuterium import place_hd_mix
+
+    from .test_engine import _assert_n_params_is_topas_own_count
+    from tsumugin.topas import engine as eng
+
+    cif, pos_equiv, occ_sum = place_hd_mix(
+        _PBSO4[0], ["O1"], tmp_path / "hd.cif", deuteration=0.7, phase_name="PbSO4"
+    )
+    members = ("O1", "DO11", "HO11", "DO12", "HO12")
+    assert occ_sum == ((members[0], *members[1:3]), (members[0], *members[3:]))
+    project = tmp_path / "proj"
+    result = eng.run_topas_rietveld(
+        [
+            HistogramSpec(
+                data_path=str(_CWCOMBINED / "PBSO4.XRA"),
+                instrument_path=str(_CWCOMBINED / "INST_XRY.PRM"),
+                radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+            ),
+            HistogramSpec(
+                data_path=str(_CWCOMBINED / "PBSO4.CWN"),
+                instrument_path=str(_CWCOMBINED / "inst_d1a.prm"),
+                radiation=Radiation.NEUTRON_CW, geometry=Geometry.DEBYE_SCHERRER,
+            ),
+        ],
+        [PhaseSpec(str(cif), "PbSO4", position_equiv_groups=pos_equiv,
+                   occupancy_sum_groups=occ_sum)],
+        recipe=(
+            RefinementStage("S0", {"scale": True, "background": {"coeffs": 6}}),
+            RefinementStage("S1 occupancy", {"occupancy": True}),
+            # 占有率段の後にもう 1 段 — 後の組の prm (occsum_g1_1) が名前で持ち越され (#218)、
+            # 式で書いた子 (HO12) が持ち越しの置換で壊れないことを実 tc.exe で見る。
+            RefinementStage("S2 cell", {"cell": True}),
+        ),
+        # 機構の試験: O は本来満占有なので H/D を足すと Rwp が悪化しうる — 悪化判定で
+        # revert させず、拘束の解そのものを読む。
+        worsen_eps=1e9,
+        keep_project=str(project),
+    )
+    base, occ_stage, cell_stage = result.stage_results
+    for stage in (occ_stage, cell_stage):
+        assert math.isfinite(stage.rwp) and not stage.reverted, stage.note
+    carried = re.search(
+        r"^prm PbSO4_occsum_g1_1 (\S+)$", (project / "stage2.inp").read_text("utf-8"), re.M
+    )
+    refined = re.search(
+        r"^prm PbSO4_occsum_g1_1 +(\S+?)`", (project / "stage1.out").read_text("utf-8"), re.M
+    )
+    assert carried and refined, "後の組の prm が段の間で見つからない"
+    assert float(carried.group(1)) == pytest.approx(float(refined.group(1)), abs=1e-6), (
+        "後の組の prm が持ち越されていない (出発値から解き直している)"
+    )
+    assert "occ H =PbSO4_occsum_g0_1 + PbSO4_occsum_g0_2 - PbSO4_occsum_g1_1;" in (
+        project / "stage2.inp"
+    ).read_text("utf-8"), "持ち越しの置換が式で書いた子を壊した"
+    occ = result.atom_occupancy["PbSO4"]
+    assert set(members) <= set(occ), f"和の組の出版値が欠けた: {sorted(occ)}"
+    assert occ["DO12"] != pytest.approx(0.7, abs=1e-4), "占有率が動いていない (拘束の試験にならない)"
+    # Out は %.8f なので丸めは 1.5e-8 以内。
+    assert occ["O1"] == pytest.approx(occ["DO11"] + occ["HO11"], abs=1e-6)
+    assert occ["O1"] == pytest.approx(occ["DO12"] + occ["HO12"], abs=1e-6)
+    assert occ_stage.n_params - base.n_params == 3, "占有率の自由度が GSAS (5 − 2) と違う"
+    _assert_n_params_is_topas_own_count(result)
+    inp = (project / "stage1.inp").read_text("utf-8")
+    assert not re.search(r"^prm !?PbSO4_(?:O1|DO1\d|HO1\d)_occ\b", inp, re.M), (
+        "joint で和の組の原子が個別にも持ち上げられた"
+    )
