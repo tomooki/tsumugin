@@ -109,8 +109,10 @@ def test_uiso_restriction_in_a_multiphase_loop_stays_within_each_phase():
 
     res = run_refinement_loop(_H, phases, runner=runner)
 
-    accepted = [s.action for s in res.steps if s.accepted]
-    assert accepted == [RestrictUiso(("Pb", "S"), phase="PbSO4")]
+    # 凍結相 (CaF2) の範囲外初期値に対して no-op の限定を試さない = GSAS 1 回分を無駄にしない。
+    assert [(s.action, s.accepted) for s in res.steps] == [
+        (RestrictUiso(("Pb", "S"), phase="PbSO4"), True)
+    ]
     assert res.best.final_rwp == 10.0
     for inp_phases in seen:
         for p in inp_phases:

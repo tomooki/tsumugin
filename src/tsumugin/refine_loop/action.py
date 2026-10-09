@@ -101,7 +101,7 @@ class Stop(SafeAction):
 
 @dataclass(frozen=True)
 class RestrictUiso(SafeAction):
-    """Uiso 解放対象を限定する (発散防止, REQ-105)。free_uiso_labels を設定する純変換。
+    """Uiso 解放対象を限定する (発散防止, REQ-105)。free_uiso_labels を狭める純変換 (広げない)。
 
     軽元素 framework や占有率 0 のゴースト原子の Uiso が発散/負値化するのを、重原子/可動イオン/
     水など安定な原子のみに Uiso 解放を絞ることで防ぐ (heavy-atom + 無秩序構造の定石)。
@@ -110,7 +110,7 @@ class RestrictUiso(SafeAction):
         「1 原子も解放しない」** = 相ごと ADP 凍結 (#189 の型分離により docstring どおりになった。
         以前は空を渡すと逆に全原子が解放されていた)
     :param phase: 対象相名 (None なら全相)。原子ラベルは相の中でしか意味を持たないので、
-        多相で None を使うと全相に同じラベル列が入る (他相のラベルを抱え、凍結相も上書きする)。
+        多相で None を使うと未指定の相に他相のラベルが入る (GSAS は ``No such atom``)。
         診断 (`propose_next_actions`) は相ごとに名指しで出す
     """
 
@@ -119,12 +119,21 @@ class RestrictUiso(SafeAction):
 
     def apply(self, inp: AnalysisInput) -> AnalysisInput:
         phases = tuple(
-            dataclasses.replace(p, free_uiso_labels=tuple(self.labels))
+            dataclasses.replace(p, free_uiso_labels=self._narrow(p.free_uiso_labels))
             if (self.phase is None or p.phase_name == self.phase)
             else p
             for p in inp.phases
         )
         return dataclasses.replace(inp, phases=phases)
+
+    def _narrow(self, current: tuple[str, ...] | None) -> tuple[str, ...]:
+        """**限定は解放集合を広げない**。明示の解放集合 (凍結 ``()`` を含む) とは積を取る —
+        凍結した相を解除したり、解放されていない原子を足したりしない。未指定 (None = 全原子)
+        の相には labels をそのまま張る。解放を広げたいなら相の指定を直接書く。"""
+        if current is None:
+            return tuple(self.labels)
+        allowed = set(current)
+        return tuple(lab for lab in self.labels if lab in allowed)
 
 
 @dataclass(frozen=True)

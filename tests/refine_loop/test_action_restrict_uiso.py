@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tsumugin.autorietveld.model import (
     AutoRietveldResult,
     Geometry,
@@ -37,6 +39,24 @@ def test_restrict_uiso_with_no_labels_freezes_uiso():
     """空指定は「1 原子も解放しない」= docstring どおり (#189 前は逆に全原子が解放されていた)。"""
     out = RestrictUiso(()).apply(_inp("P1"))
     assert out.phases[0].free_uiso_labels == ()
+
+
+def test_restrict_uiso_never_unfreezes_a_frozen_phase():
+    """限定は解放集合を広げない — ``()`` で凍結した相 (#189/#211 の少数相 ADP 凍結) は、
+    提案を経ずに直接適用されても (③・相を名指ししない呼び出し) 凍結のまま。"""
+    hist = _inp("x").histograms
+    phases = (PhaseSpec("main.cif", "Main"),
+              PhaseSpec("minor.cif", "Minor", free_uiso_labels=()))
+    out = RestrictUiso(("Ca", "F")).apply(AnalysisInput(hist, phases))
+    assert out.phases[0].free_uiso_labels == ("Ca", "F")  # 未指定の相には張る
+    assert out.phases[1].free_uiso_labels == ()
+
+
+def test_restrict_uiso_narrows_an_explicit_release_list():
+    hist = _inp("x").histograms
+    phases = (PhaseSpec("p.cif", "P1", free_uiso_labels=("Pb", "O1")),)
+    out = RestrictUiso(("Pb", "S"), phase="P1").apply(AnalysisInput(hist, phases))
+    assert out.phases[0].free_uiso_labels == ("Pb",)  # S は解放集合に無かったので足さない
 
 
 def test_restrict_uiso_is_safe():
@@ -84,9 +104,21 @@ def _restricts(result, feats, phases) -> list[RestrictUiso]:
 
 
 def _diverged(*pairs: tuple[str, str]) -> list[ResidualFeatures]:
-    labels = tuple(sorted({lab for _, lab in pairs}))
-    return [ResidualFeatures(hist_id=0, diverged_uiso_labels=labels,
-                             diverged_uiso_atoms=tuple(sorted(pairs)))]
+    return [ResidualFeatures(hist_id=0, diverged_uiso_atoms=tuple(sorted(pairs)))]
+
+
+def test_label_view_is_derived_from_phase_qualified_atoms():
+    """相付きの組だけ渡せば、相を畳んだラベル列は同じ事実から導かれる (2 つの正本を持たない)。"""
+    f = ResidualFeatures(hist_id=0, diverged_uiso_atoms=(("A", "O1"), ("B", "O1"), ("B", "O2")))
+    assert f.diverged_uiso_labels == ("O1", "O2")
+
+
+def test_disagreeing_label_view_is_refused():
+    """食い違う 2 つの見え方は構築時に拒む — 提案は相付きを、読み手はラベル列を見るので、
+    黙って受けると「O3 は発散した」と「O3 は限定しない」が同時に成り立つ。"""
+    with pytest.raises(ValueError, match="diverged_uiso"):
+        ResidualFeatures(hist_id=0, diverged_uiso_labels=("O1", "O3"),
+                         diverged_uiso_atoms=(("A", "O1"),))
 
 
 def _apply_all(acts, inp: AnalysisInput) -> AnalysisInput:

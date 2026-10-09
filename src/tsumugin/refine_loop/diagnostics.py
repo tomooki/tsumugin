@@ -18,6 +18,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from tsumugin.autorietveld import AutoRietveldResult, PhaseSpec
+from tsumugin.autorietveld.model import resolve_uiso_release
 from .action import (
     AddPhase,
     AdjustBackground,
@@ -69,6 +70,21 @@ class ResidualFeatures:
     """発散/負値の Uiso 原子の (相名, 原子ラベル) 組 (昇順)。原子ラベルは相の中でしか意味を
     持たないので、RestrictUiso はこれを使って相ごとに提案する。空でラベルだけある場合
     (旧形式・注入 diagnose) の帰属は `propose_next_actions` を参照。"""
+
+    def __post_init__(self) -> None:
+        """発散の 2 つの見え方を 1 つの事実に揃える。相付きの組があればラベル列はそこから
+        導き (省略可)、食い違うラベル列は拒む — 提案は相付きを、読み手はラベル列を見るので、
+        黙って受けると両者が別のことを言う。"""
+        if not self.diverged_uiso_atoms:
+            return
+        derived = tuple(sorted({lab for _, lab in self.diverged_uiso_atoms}))
+        if not self.diverged_uiso_labels:
+            object.__setattr__(self, "diverged_uiso_labels", derived)
+        elif set(self.diverged_uiso_labels) != set(derived):
+            raise ValueError(
+                f"diverged_uiso_labels {self.diverged_uiso_labels} が diverged_uiso_atoms "
+                f"{self.diverged_uiso_atoms} のラベル {derived} と食い違います"
+            )
 
 
 @dataclass(frozen=True)
@@ -350,8 +366,9 @@ def _restrict_uiso_proposals(
     Uiso が 1 つも精密化されない)、同名ラベルは発散していない相でも止まり、凍結した相が
     解除される。
 
-    限定は相の指定の**内側**に張る (広げない): 未指定なら相の全原子・明示の解放集合ならその
-    集合から `frozen_uiso_labels` を引いたものが現在の解放集合で、そこから発散原子を除く。
+    限定は相の指定の**内側**に張る (広げない): 現在の解放集合 (engine と同じ規則
+    `resolve_uiso_release` — 未指定なら相の全原子・明示の解放集合ならその集合、から
+    `frozen_uiso_labels` を引いたもの) から発散原子を除く。
     発散原子が現在解放されていない相 (`free_uiso_labels=()` の凍結相・凍結原子の初期値が
     範囲外なだけ) は限定しても何も変わらないので提案しない。解放中の原子が全て発散した相は
     ``()`` = 相ごと凍結を提案する (#189 以降 ``()`` は「1 原子も解放しない」)。
@@ -364,11 +381,9 @@ def _restrict_uiso_proposals(
         spec = specs.get(name)
         if spec is None:
             continue  # 指定の無い相は凍結状態を知れない
-        released = (
-            _phase_atom_labels(result, name)
-            if spec.free_uiso_labels is None
-            else set(spec.free_uiso_labels)
-        ) - set(spec.frozen_uiso_labels)
+        released = set(resolve_uiso_release(
+            spec.free_uiso_labels, spec.frozen_uiso_labels, _phase_atom_labels(result, name)
+        ))
         hit = tuple(sorted(diverged & released))
         if not hit:
             continue

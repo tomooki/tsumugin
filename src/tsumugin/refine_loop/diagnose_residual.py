@@ -103,8 +103,7 @@ def diagnose_residual(
         # 残差配列・Uiso は先頭ヒストグラムに代表させる (残差は先頭のみ・Uiso は相属性)。
         if i == 0:
             if diverged:
-                kw["diverged_uiso_atoms"] = diverged
-                kw["diverged_uiso_labels"] = tuple(sorted({lab for _, lab in diverged}))
+                kw["diverged_uiso_atoms"] = diverged  # ラベル列はここから導かれる
             if low_freq is not None:
                 kw["low_freq_bg_residual"] = low_freq
             if unindexed is not None:

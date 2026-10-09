@@ -63,6 +63,7 @@ from .model import (
     StabilityOptions,
     StageResult,
     ValidityReport,
+    resolve_uiso_release,
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
@@ -835,16 +836,11 @@ def _resolve_uiso_targets(info: dict) -> "list[str]":
 
     `None` = 未指定 → 全原子、`[]` = 明示的に凍結 → 0 原子、非空 → その原子のみ。
     `frozen_uiso` はそこから差し引く (`frozen_coord_labels` と同じ規約 = 凍結が解放指定に勝つ)。
-
-    ⚠ `info.get("uiso_labels") or info["labels"]` と書くと**空リストが「未指定」に化け、
-    凍結したつもりで全原子が解放される** (#189 の本体)。
+    規則の正本は `model.resolve_uiso_release` (refine_loop の RestrictUiso 提案と共有)。
     """
-    declared = info.get("uiso_labels")
-    targets = list(info["labels"]) if declared is None else list(declared)
-    frozen_uiso = info.get("frozen_uiso") or set()
-    if frozen_uiso:
-        targets = [lab for lab in targets if lab not in frozen_uiso]
-    return targets
+    return resolve_uiso_release(
+        info.get("uiso_labels"), info.get("frozen_uiso") or (), info["labels"]
+    )
 
 
 def _uiso_all_frozen(phase_infos: "list[dict]", stage_flags) -> bool:

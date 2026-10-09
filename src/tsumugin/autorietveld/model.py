@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Mapping
+from typing import Iterable, Mapping, Sequence
 
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
@@ -365,6 +365,24 @@ class PhaseSpec:
             refine_cell=bool(d.get("refine_cell", True)),
             temperature=d.get("temperature"),  # type: ignore[arg-type]
         )
+
+
+def resolve_uiso_release(
+    declared: "Sequence[str] | None", frozen: Iterable[str], all_labels: Iterable[str]
+) -> list[str]:
+    """uiso 段で Uiso を解放する原子ラベルを解決する (#189/#211) — **規則の正本**。
+
+    `PhaseSpec.free_uiso_labels` (``declared``) が `None` = 未指定 → 相の全原子、``()`` = 明示的に
+    凍結 → 0 原子、非空 → その原子のみ。`frozen_uiso_labels` はそこから差し引く (凍結が勝つ)。
+    engine (何を精密化するか) と refine_loop (何を限定できるか) が同じ集合を見るためにここに置く —
+    写しを持つと、規則が変わったとき限定の提案が実際の解放集合とずれる。
+
+    ⚠ ``declared or all_labels`` と書くと**空が「未指定」に化け、凍結したつもりで全原子が
+    解放される** (#189 の本体)。
+    """
+    targets = list(all_labels) if declared is None else list(declared)
+    frozen_set = set(frozen)
+    return [lab for lab in targets if lab not in frozen_set]
 
 
 @dataclass(frozen=True)
