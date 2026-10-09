@@ -182,7 +182,8 @@ def _metrics(run_out: str, results_text: str) -> "tuple[float, float, int]":
     metrics = dict(parse_out_metrics(run_out))
     rwp = metrics.get("r_wp", records.scalars.get("r_wp", float("inf")))
     gof = metrics.get("gof", records.scalars.get("gof", float("inf")))
-    # 解放パラメータ数は .out の ``value`_esd`` 記法の個数で数える (esd が付くのは精密化した値)。
+    # 解放パラメータ数は .out の ``value`_esd`` 記法の個数で数える (esd が付くのは精密化した値。
+    #   同じ記法を持つ MVW の報告値と末尾の相関行列は `refined_values_from_out` が除く)。
     from .parse import refined_values_from_out
 
     n_params = len(refined_values_from_out(run_out))

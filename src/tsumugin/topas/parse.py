@@ -113,10 +113,15 @@ def refined_values_from_out(out_text: str) -> "list[tuple[float, float]]":
     """``value`_esd`` 記法の (値, esd) を出現順に返す。
 
     精密化されなかった値は本記法を持たないため拾わない (= 解放したものだけが並ぶ)。
+    ただし同じ記法は**報告値**にも付く — ``MVW`` の体積・重量分率は TOPAS が計算して書き戻す
+    値で、解放パラメータではない (数えると相 × ヒストグラムごとに 1–2 個の過大計数。実 PbSO4 の
+    S0 = 背景 6 + scale 1 が 8 になっていた)。これと末尾の相関行列を除いて読む。
+    個数は ``engine._metrics`` の ``n_params`` (無言 no-op 検出・BIC) になる。
     """
+    text = _REPORTED_MACRO.sub("", _parameter_text(out_text))
     return [
         (float(value), float(esd))
-        for value, esd in _REFINED.findall(out_text)
+        for value, esd in _REFINED.findall(text)
         if math.isfinite(float(value)) and math.isfinite(float(esd))
     ]
 
@@ -129,7 +134,8 @@ def refined_values_from_out(out_text: str) -> "list[tuple[float, float]]":
 _NAMED_REFINED = re.compile(rf"(?<![\w!@.])([A-Za-z_]\w*)[ \t]*,?[ \t]*({_NUM})`")
 
 #: 値がパラメータではなく**報告値**のマクロ。``MVW(m, v, name w)`` の ``w`` は TOPAS が
-#: 計算して書き戻す重量分率で、入力値は使われない。持ち越し対象から外す。
+#: 計算して書き戻す重量分率で、入力値は使われない (格子を解放すると体積 ``v`` にも esd が付く)。
+#: 持ち越し対象からも解放パラメータ数 (`refined_values_from_out`) からも外す。
 _REPORTED_MACRO = re.compile(r"\bMVW\s*\([^)]*\)")
 
 _BKG_LINE = re.compile(r"(?m)^[ \t]*bkg\b(.*)$")

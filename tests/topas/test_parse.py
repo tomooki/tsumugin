@@ -135,6 +135,28 @@ def test_missing_esd_is_none():
     assert vals == []  # esd 記法が無い = 精密化されていない値は拾わない
 
 
+def test_refined_values_skip_what_mvw_reports():
+    """``MVW`` の体積・重量分率は TOPAS が計算して書き戻す**報告値** (同じ esd 記法を持つ)。"""
+    vals = refined_values_from_out(
+        "      a PbSO4_a  8.479139`_0.000126\n"
+        "      MVW( 1213.050, 318.521`_0.008, mvw_wt_PbSO4_h0  100.000`_0.000)\n"
+    )
+    assert vals == [(pytest.approx(8.479139), pytest.approx(0.000126))]
+
+
+def test_refined_values_stop_at_the_correlation_matrix():
+    """末尾の ``C_matrix_normalized`` 以降はパラメータでなく相関行列 — 読むのはその手前まで。
+
+    実 tc.exe の相関行列は整数だけで esd 記法を含まないが、境界は持ち越し
+    (`named_refined_values_from_out`) と同じ所に引く (片方だけが行列を読む非対称を作らない)。
+    """
+    vals = refined_values_from_out(
+        "      a PbSO4_a  8.479139`_0.000126\n"
+        "C_matrix_normalized\n{\n PbSO4_a  1:  100  2.5`_0.1\n}\n"
+    )
+    assert vals == [(pytest.approx(8.479139), pytest.approx(0.000126))]
+
+
 def test_nan_values_are_rejected():
     """NaN を数値として通さない (発散を「値がある」と誤読しない)。"""
     rec = parse_records("r_wp\tnan\n")
