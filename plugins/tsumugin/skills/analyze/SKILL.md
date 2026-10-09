@@ -165,11 +165,12 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
      精密化できていない) — 両者は rwp/n_params がビット同一なのでここでしか区別できない。
    - **測定温度はヒストグラムに入れる**: ヒストグラムごとに測定温度が違う joint (例 X 線 295 K +
      中性子 10 K) は各 `histograms[].temperature` に K で入れる — 既定レシピが温度差の静水圧歪み
-     Dij を解放する。**効いたかは `stages[]` で確かめる**: GSAS は格子の段の `note` に「温度差」、
-     TOPAS は `S2b hydrostatic_strain` 段が出る。出ていなければ温度が効く場所に入っていない
-     (片方のヒストグラムだけ・相の側)。⛔ 相の `temperature` はどのエンジンも読まない
-     メタデータで、入れても精密化は何も変わらない (`specs` の各相に `"temperature": null` が
-     見えても埋めない)。`ReviseStructure` で改訂しようとするとエラーになる。
+     Dij を解放する。**入ったかは `stages[]` で確かめる**: GSAS は格子の段の `note` に「温度差」、
+     TOPAS は `S2b hydrostatic_strain` 段が出る (その段が `reverted` なら吸収できていない)。
+     出ていなければ温度が効く場所に入っていない (片方のヒストグラムだけ・相の側)。
+     ⛔ 相の `temperature` はどのエンジンも読まないメタデータで、入れても精密化は何も変わらない
+     (`specs` の各相に `"temperature": null` が見えても埋めない)。`ReviseStructure` で改訂
+     しようとするとエラーになる。
    - **相数が事前に分からない未知試料**は `identify_pattern` (M11 統一同定) を使う。1 相受理する
      ごとに残差からその寄与を減算し、**残差 S/N < 5σ になるまで**積み上げる (単相なら 1 相で停止、
      多相なら複数相)。`accepted[]` の各相の CIF/formula を `PhaseSpec` に配線して精密化へ進む

@@ -66,6 +66,24 @@ def _enclosing_object(text: str, pos: int) -> str:
     return text[start:]
 
 
+def _own_level(obj: str) -> str:
+    """``{...}`` から入れ子 (``{}``/``[]``) の中身を除いた、そのオブジェクト自身の階層の文字列。
+
+    相のキーを入れ子の中まで探すと、自前の ``"temperature"`` (例 softmax 温度) を持つ要求
+    オブジェクトが ``phases`` の列を含むだけで「相の例」と誤検出する。
+    """
+    out: list[str] = []
+    depth = 0
+    for ch in obj:
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+        elif depth == 1:
+            out.append(ch)
+    return "".join(out)
+
+
 def _offending(name: str, text: str) -> list[str]:
     """相の temperature を効く設定として読める箇所 (文の言及・JSON の相の例)。"""
     bad = [
@@ -75,7 +93,7 @@ def _offending(name: str, text: str) -> list[str]:
     ]
     for m in _SETS_TEMPERATURE.finditer(text):
         obj = _enclosing_object(text, m.start())
-        if _PHASE_KEY.search(obj):
+        if _PHASE_KEY.search(_own_level(obj)):
             bad.append(f"{name}: JSON の相の例に temperature: {' '.join(obj.split())[:160]}")
     return bad
 
@@ -96,6 +114,8 @@ def test_the_guard_catches_an_instruction_to_set_a_phase_temperature():
     assert not _offending("x", "各 `histograms[].temperature` に入れる")
     assert not _offending("x", '{"phase_name": "A", "temperature": null}')
     assert not _offending("x", '{"data_path": "x.xye", "temperature": 295.0}')  # ヒストグラム
+    # 自前の temperature (softmax 温度等) を持つ要求が phases の列を含むだけなら相の例ではない
+    assert not _offending("x", '{"temperature": 2.0, "phases": [{"structure_path": "a.cif"}]}')
     # 外側に phases があっても、temperature を直接囲むのはヒストグラムなので通す
     assert not _offending(
         "x",
