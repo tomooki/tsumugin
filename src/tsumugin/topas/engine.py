@@ -330,10 +330,8 @@ def run_topas_rietveld(
                 doc = apply_stage(doc, stage)
                 # 【持ち越し値の行き先】: 名前の付け方が段の間でずれると値が黙って捨てられ、
                 #   出発値から解き直す (#218) が再発する。検出できる事実として ledger に残す。
-                unplaced = doc.unplaced_carried_names()
-                run = run_tc(
-                    doc.render(), workdir=work, basename=f"stage{index}", timeout=timeout
-                )
+                inp_text, unplaced = doc.render_with_report()
+                run = run_tc(inp_text, workdir=work, basename=f"stage{index}", timeout=timeout)
                 rwp, gof, n_params = _metrics(run.out_text, run.results_text)
                 hits = limit_hits_from_out(run.out_text)
                 if hits:

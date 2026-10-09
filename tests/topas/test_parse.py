@@ -259,3 +259,10 @@ def test_spherical_harmonics_block_is_flattened_to_one_line_without_esd():
             "y44p po_PbSO4_h0_c44p 0.01267 } )"
         )
     }
+
+
+def test_named_refined_values_do_not_reach_across_line_breaks():
+    """名前と値は同じ行にある。行末の識別子と次行頭の精密化値を組にしない。"""
+    from tsumugin.topas.parse import named_refined_values_from_out
+
+    assert named_refined_values_from_out("   lam\n   -0.5`_0.1\n") == {}

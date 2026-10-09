@@ -238,23 +238,30 @@ def ensure_symops(
         return found
     from ..errors import TopasSymmetryError
 
+    # 【成否は「Sg/ から読めるか」で決める】: 探査の目的はファイルであって精密化ではない。
+    #   TOPAS は空間群を展開して ``.sg`` を書いた**後で**別の理由 (``No hkls`` 等) で異常終了
+    #   しうる (実測: 探査が狭かった頃の Fd-3m / I41/amd / R-3 / P42/mnm)。終了状態で
+    #   判定すると、対称操作が手に入っているのに止めてしまう。探査の失敗は原因として運ぶ。
+    probe_error: "Exception | None" = None
     try:
         _generate_sg_file(space_group)
-    except Exception as exc:  # noqa: BLE001 — 原因ごと上げる (握りつぶさない)
+    except Exception as exc:  # noqa: BLE001 — 下で読めなければ原因として上げる
+        probe_error = exc
+    generated = read_sg_symops(space_group)
+    if generated:
+        return generated
+    if probe_error is not None:
         raise TopasSymmetryError(
             f"CIF に対称操作が無く、空間群 {space_group} の対称操作を TOPAS の Sg/ から"
-            f"生成できませんでした ({type(exc).__name__}: {exc})。CIF に対称操作ループを"
-            f"足すか、空間群記号を確かめてください。"
-        ) from exc
-    generated = read_sg_symops(space_group)
-    if not generated:
-        # 【生成は成功・読めない】: ファイル名の符号化 (``/`` → ``o``) がずれるとここに来る
-        #   (`read_sg_symops`)。空で続けると上と同じ無言 no-op になる。
-        raise TopasSymmetryError(
-            f"空間群 {space_group} の Sg ファイル生成を試みましたが、Sg/ から対称操作を"
-            f"読めませんでした (ファイル名の対応か TOPAS ホームの書き込み権を確かめてください)。"
-        )
-    return generated
+            f"生成できませんでした ({type(probe_error).__name__}: {probe_error})。CIF に"
+            f"対称操作ループを足すか、空間群記号を確かめてください。"
+        ) from probe_error
+    # 【生成は成功・読めない】: ファイル名の符号化 (``/`` → ``o``) がずれるとここに来る
+    #   (`read_sg_symops`)。空で続けると上と同じ無言 no-op になる。
+    raise TopasSymmetryError(
+        f"空間群 {space_group} の Sg ファイル生成を試みましたが、Sg/ から対称操作を"
+        f"読めませんでした (ファイル名の対応か TOPAS ホームの書き込み権を確かめてください)。"
+    )
 
 
 def _generate_sg_file(space_group: str) -> None:
@@ -263,6 +270,10 @@ def _generate_sg_file(space_group: str) -> None:
     **``lam`` を必ず置く** (#219): 波長の無い ``xdd`` は CW のパターンとして解釈できず、
     tc.exe は空間群を展開する前に ``Cannot locate lam from riet_app_3 in data structures`` で
     必ず異常終了する (実測)。値に意味は無い — 生成されるのは空間群の一般位置だけである。
+
+    **反射が範囲に入る広さにする**: 2θ 10–20°・a=5 Å では d が 4.4–8.8 Å しか無く、消滅則の
+    多い群 (Fd-3m の最初の反射 111 は d=2.9 Å) で ``No hkls`` により異常終了した (実測。
+    ``.sg`` はその前に書かれる)。2θ 5–150°・a=10 Å なら d≥0.8 Å まで入り、どの群でも反射が立つ。
     """
     import tempfile
 
@@ -271,7 +282,7 @@ def _generate_sg_file(space_group: str) -> None:
     with tempfile.TemporaryDirectory(prefix="tsumugin-topas-sg-") as tmp:
         work = Path(tmp)
         (work / "sgprobe.xye").write_text(
-            "\n".join(f"{10.0 + 0.05 * i:.4f} 1.0 1.0" for i in range(200)) + "\n",
+            "\n".join(f"{5.0 + 0.05 * i:.4f} 1.0 1.0" for i in range(2901)) + "\n",
             encoding="utf-8",
         )
         inp = (
@@ -282,7 +293,7 @@ def _generate_sg_file(space_group: str) -> None:
             "   lam ymin_on_ymax 0.001 la 1 lo 1.5406 lh 0.1\n"
             "   str\n"
             f"      space_group {space_group}\n"
-            "      a 5 b 5 c 5\n"
+            "      a 10 b 10 c 10\n"
             "      site A x 0 y 0 z 0 occ C 1 beq 1\n"
             "      scale 0.0001\n"
         )

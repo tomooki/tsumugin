@@ -7,6 +7,7 @@ GSAS の `GSASIIspc.GetCSxinel` に相当する機能を対称操作から純 nu
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -343,9 +344,9 @@ O1 O 0.4321 0.1111 0.2222 1.0 0.01
 """
 
 
-@pytest.fixture()
-def p21c_sg_absent():
-    """TOPAS ホームの ``Sg/p121oc1.sg`` を**一時的に退避**し、生成経路を必ず通らせる。
+@contextmanager
+def _sg_file_absent(filename: str):
+    """TOPAS ホームの ``Sg/<filename>`` を**一時的に退避**し、生成経路を必ず通らせる。
 
     既に生成済みの機械では補完が試されず、テストが何も検証しなくなる (この Issue の
     環境依存そのもの)。終了時は元に戻し、元々無かったなら生成物を消す (ホームを汚さない)。
@@ -355,7 +356,7 @@ def p21c_sg_absent():
     home = topas_home()
     if home is None:
         pytest.skip("TOPAS ホームが無い")
-    path = Path(home) / "Sg" / "p121oc1.sg"
+    path = Path(home) / "Sg" / filename
     backup = path.with_name(path.name + ".tsumugin-test-backup")
     existed = path.is_file()
     if existed:
@@ -367,6 +368,60 @@ def p21c_sg_absent():
             backup.replace(path)
         elif path.is_file():
             path.unlink()
+
+
+@pytest.fixture()
+def p21c_sg_absent():
+    with _sg_file_absent("p121oc1.sg") as path:
+        yield path
+
+
+def test_probe_that_aborts_after_writing_the_sg_file_is_not_fatal(monkeypatch):
+    """**成否は探査の終了状態ではなく「Sg/ から読めるか」で決める**。
+
+    実測: Fd-3m / I41/amd / R-3 / P42/mnm では tc.exe が ``.sg`` を書いた**後で**
+    ``No hkls`` により異常終了する。探査の失敗を致命扱いすると、対称操作が手に入って
+    いるのに `TopasSymmetryError` で止めてしまう (対称操作の無い CIF でよくある群)。
+    """
+    from tsumugin.errors import TopasRunError
+    from tsumugin.topas import symmetry
+
+    written: list[str] = []
+
+    def probe_writes_then_aborts(space_group):
+        written.append(space_group)
+        raise TopasRunError("No hkls for sgprobe.xye | Abnormal program termination.")
+
+    monkeypatch.setattr(
+        symmetry, "read_sg_symops", lambda sg, home=None: _PNMA if written else ()
+    )
+    monkeypatch.setattr(symmetry, "_generate_sg_file", probe_writes_then_aborts)
+    assert symmetry.ensure_symops("Fd-3m", ()) == _PNMA
+
+
+@pytest.mark.topas
+@pytest.mark.parametrize(
+    ("space_group", "filename", "count"),
+    [
+        ("Fd-3m", "fd-3m.sg", 192),
+        ("I41/amd", "i41oamd.sg", 32),
+        ("R-3", "r-3.sg", 18),
+        ("P42/mnm", "p42omnm.sg", 16),
+        ("P6/mmm", "p6ommm.sg", 24),
+        ("P-1", "p-1.sg", 2),
+    ],
+)
+def test_sg_generation_covers_every_crystal_system(space_group, filename, count):
+    """消滅則の多い群でも探査が通り、一般位置が揃うこと (実 tc.exe)。
+
+    当初の探査 (2θ 10–20°・a=5 Å) は Fd-3m 等で**反射が 1 本も無く** ``No hkls`` で
+    異常終了していた。生成ファイルは一時退避/掃除する (TOPAS ホームを汚さない)。
+    """
+    from tsumugin.topas.symmetry import _generate_sg_file, read_sg_symops
+
+    with _sg_file_absent(filename):
+        _generate_sg_file(space_group)  # 探査そのものが異常終了しないこと
+        assert len(read_sg_symops(space_group)) == count
 
 
 @pytest.mark.topas

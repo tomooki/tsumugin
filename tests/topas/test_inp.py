@@ -821,4 +821,42 @@ def test_unplaced_carried_names_are_reported():
         histograms=(_histogram(),), phases=(_pbso4_phase(),), results_path="r.txt",
         carried_values={"PbSO4_a": 8.4801, "gone_c20": 0.1},
     )
-    assert doc.unplaced_carried_names() == ("gone_c20",)
+    text, unplaced = doc.render_with_report()
+    assert unplaced == ("gone_c20",)
+    assert text == doc.render(), "報告付きの描画と通常の描画が食い違う"
+    assert "      a !PbSO4_a 8.4801\n" in text
+
+
+def test_labels_that_slug_to_the_same_name_get_distinct_parameters():
+    """``O1`` と ``O1'`` は ``_slug`` で同じ識別子になる。**名前が衝突すると TOPAS は同名を
+    1 つのパラメータとして共有する**ので、別サイトの座標・占有率・beq が黙って結合される。
+
+    固定値にも名前を付けるようになった (#218) ので、精密化しないサイトでも衝突しうる。
+    """
+    phase = TopasPhase(
+        phase_name="P",
+        space_group="Pnma",
+        cell={"a": Param(8.0)},
+        sites=(
+            TopasSite("O1", "O", Param(0.1), Param(0.25), Param(0.2)),
+            TopasSite("O1'", "O", Param(0.3), Param(0.75), Param(0.4)),
+        ),
+    )
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
+    ).render()
+    import re
+
+    declared = re.findall(r"!(P_\w+_y) ", text)
+    assert len(declared) == 2 and len(set(declared)) == 2, f"名前が衝突している: {declared}"
+
+
+def test_carried_values_do_not_reach_across_line_breaks():
+    """宣言は 1 行の中にある。行末の名前と次行頭の数値を宣言と読まない。"""
+    hist = _histogram().with_updates(preamble=("prm !foo_h0 0.5 min 0 max 1", "foo_h0", "2.0"))
+    doc = TopasDocument(
+        histograms=(hist,), phases=(_pbso4_phase(),), carried_values={"foo_h0": 0.7}
+    )
+    text = doc.render()
+    assert "   prm !foo_h0 0.7 min 0 max 1\n" in text
+    assert "   foo_h0\n   2.0\n" in text, "次の行の数値を書き換えた"

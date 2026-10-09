@@ -125,7 +125,8 @@ def refined_values_from_out(out_text: str) -> "list[tuple[float, float]]":
 #: ``do_errors`` が無いときの ``name 8.47``` (esd 無しでもバッククォートは付く, 実測)。
 #: **バッククォートが「精密化された値」の印** — 固定値 (``!name 0.0``) とキーワード
 #: (``lo 1.5405``) には付かないので、名前の取り違えで値を持ち越すことがない。
-_NAMED_REFINED = re.compile(rf"(?<![\w!@.])([A-Za-z_]\w*)\s*,?\s*({_NUM})`")
+#: 名前と値は同じ行にある (行を跨いで組にしない)。
+_NAMED_REFINED = re.compile(rf"(?<![\w!@.])([A-Za-z_]\w*)[ \t]*,?[ \t]*({_NUM})`")
 
 #: 値がパラメータではなく**報告値**のマクロ。``MVW(m, v, name w)`` の ``w`` は TOPAS が
 #: 計算して書き戻す重量分率で、入力値は使われない。持ち越し対象から外す。

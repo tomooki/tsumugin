@@ -101,6 +101,27 @@ def render_param(param: Param) -> str:
     return head
 
 
+def _site_slugs(phase: "TopasPhase") -> dict[str, str]:
+    """原子ラベル → パラメータ名に使う識別子 (**相の中で一意**)。
+
+    `_slug` は単射でない (``O1`` と ``O1'`` が同じ ``O1`` になる)。TOPAS のパラメータ名は
+    大域なので、衝突すると**別サイトの座標・占有率・beq が 1 つのパラメータとして黙って
+    共有される**。固定値にも名前を付けるようになって (#218) 精密化しないサイトでも起きうる
+    ので、2 つ目以降には並び順の添字を足して分ける (衝突しなければ従来どおりの名前)。
+    """
+    taken: set[str] = set()
+    slugs: dict[str, str] = {}
+    for index, site in enumerate(phase.sites):
+        slug = _slug(site.label)
+        if slug in taken:
+            slug = f"{slug}_{index}"
+            while slug in taken:
+                slug = f"{slug}_"
+        taken.add(slug)
+        slugs[site.label] = slug
+    return slugs
+
+
 def _macro_name(param: Param) -> str:
     """``CS_L(c, v)`` 型マクロの第 1 引数 (パラメータ名) を描く。
 
@@ -118,9 +139,10 @@ _NUMBER = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
 #: パラメータの**宣言**: ``name 値`` / ``!name 値`` / マクロ引数の ``name, 値``。
 #: 参照 (``=name;``)・``Out(name, "…")``・式中 (``name D_spacing``) は名前の直後が数値で
 #: ないので当たらない。キーワード (``lo 1.5405`` 等) も当たるが、置換するのは
-#: 持ち越し値を持つ名前だけなので触らない。
+#: 持ち越し値を持つ名前だけなので触らない。**行を跨がない** (``\s`` は改行に当たる —
+#: 行末の名前と次行頭の数値を宣言と読まない)。
 _DECLARATION = re.compile(
-    rf"(?<![\w!@.])(!?)([A-Za-z_]\w*)(\s*,\s*|\s+)({_NUMBER})(?![\w.`])"
+    rf"(?<![\w!@.])(!?)([A-Za-z_]\w*)([ \t]*,[ \t]*|[ \t]+)({_NUMBER})(?![\w.`])"
 )
 
 
@@ -326,6 +348,7 @@ def _shared_prm_plan(
 
     for phase in phases:
         stem = _slug(phase.phase_name)
+        site_slugs = _site_slugs(phase)
         grouped_occ = {label for group in phase.occupancy_sum_groups for label in group}
         grouped_beq = {label for group in phase.beq_equiv_groups for label in group}
         for axis, param in phase.cell.items():
@@ -335,7 +358,7 @@ def _shared_prm_plan(
             mapping[(phase.phase_name, f"cell.{axis}")] = name
             declare(name, param)
         for site in phase.sites:
-            label = _slug(site.label)
+            label = site_slugs[site.label]
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
                 if param.is_reference:
                     continue
@@ -488,7 +511,7 @@ class TopasDocument:
     def _site_line(
         self, phase: TopasPhase, site: TopasSite, shared: Mapping[tuple[str, str], str]
     ) -> str:
-        stem = f"{_slug(phase.phase_name)}_{_slug(site.label)}"
+        stem = f"{_slug(phase.phase_name)}_{_site_slugs(phase)[site.label]}"
 
         def named(param: Param, suffix: str) -> Param:
             """結果出力を要求しているときは名前を付ける (`Out()` から参照するため)。
@@ -687,8 +710,9 @@ class TopasDocument:
         # 【原子の出版値】: 座標・占有率・beq を esd 付きで回収する。**esd の無い精密化値は
         #   出版できない**うえ、「Rwp は下がったが占有率が非物理」を検出する唯一の手段でもある。
         #   解放していないものは出さない (固定値を「精密化した」と読ませない)。
+        site_slugs = _site_slugs(phase)
         for site in phase.sites:
-            stem = f"{_slug(name)}_{_slug(site.label)}"
+            stem = f"{_slug(name)}_{site_slugs[site.label]}"
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
                 if not param.refine:
                     continue
@@ -787,18 +811,18 @@ class TopasDocument:
 
     def render(self) -> str:
         """INP テキストを決定論的に生成する (持ち越した精密化値を宣言へ反映する)。"""
-        text, _ = _apply_carried_values(self._render_unvalued(), self.carried_values)
-        return text
+        return self.render_with_report()[0]
 
-    def unplaced_carried_names(self) -> tuple[str, ...]:
-        """持ち越した値のうち、**この文書に宣言が無く反映されなかった**名前 (昇順)。
+    def render_with_report(self) -> "tuple[str, tuple[str, ...]]":
+        """``(INP テキスト, 反映されなかった持ち越し値の名前 [昇順])`` を返す。
 
-        正常なら空。例外は ``freeze_others`` が球面調和の行を落としたときの係数名で、
-        それ以外が並ぶなら**名前の付け方が段の間でずれて値が黙って捨てられている** (#218 が
-        直した「出発値から解き直す」の再発) ので、engine はこれを ledger に残す。
+        2 つ目は持ち越した値のうち**この文書に宣言が無く反映されなかった**名前で、正常なら
+        空。例外は ``freeze_others`` が球面調和の行を落としたときの係数名で、それ以外が
+        並ぶなら**名前の付け方が段の間でずれて値が黙って捨てられている** (#218 が直した
+        「出発値から解き直す」の再発) ので、engine はこれを ledger に残す。
         """
-        _, placed = _apply_carried_values(self._render_unvalued(), self.carried_values)
-        return tuple(sorted(set(self.carried_values) - placed))
+        text, placed = _apply_carried_values(self._render_unvalued(), self.carried_values)
+        return text, tuple(sorted(set(self.carried_values) - placed))
 
     def _render_unvalued(self) -> str:
         """持ち越し値を反映する前の INP テキスト。"""
