@@ -114,6 +114,15 @@ def test_every_phase_is_checked_not_only_the_first(monkeypatch):
         )
 
 
+def test_same_label_in_different_phases_is_not_a_duplicate(monkeypatch):
+    """陽性対照: 一意性は**相ごと** (``G2Phase.atom`` も結果の写像も相の中で引く)。多相で両相に
+    ``O1`` があるのは普通のことで、相を跨いで集めて検査すると多相の精密化が全部止まる。"""
+    with pytest.raises(_ReachedRefinementSetup):
+        _run_engine_with_fake_gsas(
+            monkeypatch, {"major": ("Pb", "S", "O1"), "minor": ("Ca", "O1")}
+        )
+
+
 def test_whitespace_and_case_variants_are_distinct_labels(monkeypatch):
     """陽性対照: GSAS は ``G2Phase.atom`` で**完全一致**を引くので ``O1``/``o1``/``O1 `` は
     別原子として正しく引き当たる — 推測で同一視して正しい構造を拒否しない。"""
