@@ -334,8 +334,9 @@ wt% かで交差位置が動く。**Scale から転移温度を出さないこ�
 > **修復前**の値のままである (`repair_frames` は非破壊で元の系列を書き換えない)。
 > **成果物 (`gpx_path`) も同じ** — 修復後の fit は `repairs[j]["gpx_path"]` にある
 > (`frames[i]["gpx_path"]` は修復前の fit)。MEM を掛ける/開き直すときは取り違えないこと。
-> 棄却された修復 (`needs_model_revision`) の fit は `ledger_entries` の `insitu_repair_rejected`
-> 行の `gpx_path` にある (`repairs[]` には現れない)。
+> 試したが棄却された修復の fit は `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` に
+> ある (`repairs[]` には現れない。`needs_model_revision` のうち近傍が無く試せなかったフレームには
+> fit が無い)。
 > `target_frames` で名指しするのは `check_phase_set` が「信用するな」と言ったフレームであり、
 > 実測ではそれが**転移ドーム頂点の直前 (125-130) = 報告の主要値そのもの**だった。
 

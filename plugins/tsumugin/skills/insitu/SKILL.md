@@ -351,7 +351,8 @@ repair_frames(result, frames, phases,
 - **修復試行の fit も全部残る** (左右両方・採否を問わず)。1 回の呼び出しで 1 つの run ディレクトリ
   (返り値 `gpx_dir`; `gpx_dir=` で根を指定、`save_gpx=false` で止まる)。採用された修復は
   `repairs[].gpx_path`、**棄却された修復** (`needs_model_revision`) の fit は `ledger_entries` の
-  `insitu_repair_rejected` 行の `gpx_path` — 「warm-start でなぜ直らなかったか」はそこを開いて見る。
+  `insitu_repair_rejected` 行の `gpx_path` — 「warm-start でなぜ直らなかったか」はそこを開いて見る
+  (良好な近傍が無く**試せなかった**フレームは `insitu_repair_no_neighbour` 行で、fit は無い)。
 
 - `repairs` は Rwp 改善時のみ採用済 (自己検証可能な規則なので自律)。
 - **`needs_model_revision` はモデルの欠陥**であり、近傍 warm-start では直らない
