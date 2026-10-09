@@ -24,6 +24,13 @@
 hold-out の定義 (proposal §6 のデータ区分) に合わせ、T3/T4 はヒストグラムのファイル名で照合し
 (中性子単独・TOF は hold-out ではない)、T1 と CaTeO3 はディレクトリ全体が hold-out なので
 ディレクトリ名単体で照合する。
+
+**既知の限界** (経験則のガードなので宣言しておく):
+
+- tests の**外** (src) の関数の中までは辿らない — src の補助関数の中で部品を使い、テストはそれを
+  呼ぶだけ、という形は拾えない
+- 変数に入れてから連結したパス (``name = "labdata"; base / name``) は拾えない (``/`` 演算・
+  ``Path(...)``・``joinpath``・``os.path.join`` の**引数に直接書いた**文字列は拾う)
 """
 
 from __future__ import annotations
@@ -96,30 +103,49 @@ def _code(node: ast.AST) -> str:
     return _CODE_MEMO[key]
 
 
+#: 引数がパスの部品になる呼び出し (``Path("docs", "m7", "labdata")`` などの複数引数を拾う)。
+_PATH_CALLS = frozenset({"Path", "PurePath", "PosixPath", "WindowsPath", "joinpath", "join"})
+
+
+def _is_prose(text: str) -> bool:
+    """説明文らしいか (空白か非 ASCII を含む) — パスの候補から外す (「free/frozen で CaTeO3 の…」)。"""
+    return any(ch.isspace() or ord(ch) > 127 for ch in text)
+
+
 def _path_strings(node: ast.AST) -> list[str]:
-    """パスらしい文字列: 区切り文字か拡張子を含む文字列、``/`` 演算で連結される文字列。"""
+    """パスらしい文字列を集める。
+
+    - ``/`` 演算の項・``Path(...)``/``joinpath``/``os.path.join`` の引数に直接書いた文字列
+    - それ以外は、区切り文字か拡張子を含み、**説明文ではない** (空白・非 ASCII を含まない) 文字列
+    """
     key = id(node)
     if key in _PATHS_MEMO:
         return _PATHS_MEMO[key]
     stripped = _strip_docstrings(node)
     joined: set[int] = set()
     for n in ast.walk(stripped):
+        operands: list[ast.AST] = []
         if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Div):
-            for side in (n.left, n.right):
-                if isinstance(side, ast.Constant) and isinstance(side.value, str):
-                    joined.add(id(side))
-    out = [
-        n.value
-        for n in ast.walk(stripped)
-        if isinstance(n, ast.Constant)
-        and isinstance(n.value, str)
-        and (
-            id(n) in joined
-            or "/" in n.value
-            or "\\" in n.value
-            or _EXTENSION.search(n.value.strip())
-        )
-    ]
+            operands = [n.left, n.right]
+        elif isinstance(n, ast.Call):
+            func = n.func
+            fname = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            if fname in _PATH_CALLS:
+                operands = list(n.args)
+        for side in operands:
+            if isinstance(side, ast.Constant) and isinstance(side.value, str):
+                joined.add(id(side))
+    out = []
+    for n in ast.walk(stripped):
+        if not (isinstance(n, ast.Constant) and isinstance(n.value, str)):
+            continue
+        value = n.value
+        if id(n) in joined and not _is_prose(value):
+            out.append(value)
+        elif not _is_prose(value) and (
+            "/" in value or "\\" in value or _EXTENSION.search(value.strip())
+        ):
+            out.append(value)
     _PATHS_MEMO[key] = out
     return out
 
@@ -281,6 +307,11 @@ def _could_reach_a_feature(mod: _Module, root: Path) -> bool:
         seen.add(m.path)
         if any(tok in m.raw for tok in FEATURE_TOKENS):
             return True
+        # 閉包は tests の外からの import を「import 元のモジュール名」で照合するので、事前除外も
+        #   同じものを見る (``from tsumugin.autorietveld import constraint_groups as cg`` の生の字面には
+        #   ``autorietveld.constraint_groups`` が無い)。
+        if any(tok in v for v in m.external.values() for tok in FEATURE_TOKENS):
+            return True
         stack.extend(_conftests(m.path, root))
         stack.extend(_module(p, root) for p, _ in m.imports.values())
     return False
@@ -402,7 +433,20 @@ def test_the_guard_sees_through_every_known_loophole(tmp_path):
         "def test_reason_text_is_not_a_reference():\n"
         "    return _REASON, 'zero_offset'\n"
         "def test_phase_spec_constraint_groups_are_carried_through():\n"
-        "    return 'FAP.XRA'  # 名前に constraint_groups を含むだけの無関係なテスト\n",
+        "    return 'FAP.XRA'  # 名前に constraint_groups を含むだけの無関係なテスト\n"
+        "def test_multi_argument_path():\n"
+        "    return Path('docs', 'benchmark', 'testdata', 'm7', 'labdata'), 'zero_offset'\n"
+        "def test_joinpath():\n"
+        "    return Path('docs').joinpath('m9', 'cateo3'), 'zero_offset'\n"
+        "def test_prose_with_slash_is_not_a_path():\n"
+        "    return 'free/frozen で CaTeO3 の Rwp/GOF を比べた', 'zero_offset'\n",
+        encoding="utf-8",
+    )
+    # 事前除外の対象: 生の字面に部品の名前が無く、import 元のモジュール名でだけ届くファイル
+    (pkg / "test_module_import.py").write_text(
+        "from tsumugin.autorietveld import constraint_groups as cg\n"
+        "def test_unlisted_member_via_module_alias():\n"
+        "    return cg.unknown_labels([], []), 'docs/benchmark/testdata/m7/labdata'\n",
         encoding="utf-8",
     )
     found = {name for _, name, _ in _offenders(root)}
@@ -422,4 +466,7 @@ def test_the_guard_sees_through_every_known_loophole(tmp_path):
         "test_external_module_alias",
         "test_decorator",
         "test_method",
+        "test_multi_argument_path",
+        "test_joinpath",
+        "test_unlisted_member_via_module_alias",
     }, found
