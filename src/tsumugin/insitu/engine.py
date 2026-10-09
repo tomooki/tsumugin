@@ -16,6 +16,7 @@ GSAS 駆動は既定 runner (`_default_gsas_runner`) 内の `run_auto_rietveld` 
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING, Callable, Sequence
 
 from .._json import finite_or_none
@@ -234,22 +235,31 @@ def run_sequential_rietveld(
     # 【系列で run ディレクトリを 1 つ共有する】: 文脈は「置き場所と名前」だけを運ぶ側路で、
     #   物理には影響しない (`gpxstore` の説明を参照)。無効化時も文脈は張る (enabled=False) —
     #   下流の `run_auto_rietveld` が「保存しない」を一貫して読めるようにするため。
-    series_ctx = _series_context(frames, gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger)
+    series_warnings: list[str] = []
+    series_ctx = _series_context(
+        frames, gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger, warn_sink=series_warnings
+    )
     with gpx_context(series_ctx):
-        return _run_sequential_rietveld(
+        result = _run_sequential_rietveld(
             frames, initial_phases, config=config, runner=runner, phase_finder=phase_finder,
             ledger=ledger, workdir=workdir, series_ctx=series_ctx,
         )
+    return _with_series_warnings(result, series_warnings)
 
 
 def _series_context(
     frames: Sequence[FrameSpec], *, gpx_dir: str | None, save_gpx: bool, ledger: Ledger,
-    kind: str = "m9",
+    warn_sink: list[str], kind: str = "m9",
 ) -> GpxContext:
-    """系列全体で共有する成果物文脈を作る (run ディレクトリは 1 つ) + ledger に残す。
+    """系列全体で共有する成果物文脈を作る (run ディレクトリは 1 つ) + ledger と警告に残す。
 
     M9 逐次 / M10 アンカーの**両方**がこれを使う (経路ごとの実装は取り残される — Issue #96 の
     ウォームスタートで実際に起きた病理)。``kind`` は ledger の接頭辞だけを分ける。
+
+    :param warn_sink: 系列の警告を積むリスト。一時領域へ退避したら ``成果物の保存先: <理由>`` を
+        足す — ② (`sequential_rietveld` / `anchored_sequential`) は台帳を返さないので、
+        台帳だけに書くと ③ には %TEMP% を指す ``gpx_dir`` しか見えない (gpx-retention 設計 §5)。
+        呼び出し側は `_with_series_warnings` で結果の ``warnings`` の先頭に載せる
     """
     ctx, reason = series_context(
         frames[0].data_path if frames else "", gpx_dir=gpx_dir, save=save_gpx
@@ -258,8 +268,22 @@ def _series_context(
         return ctx
     if reason:
         ledger.append(f"{kind}_gpx_fallback", {"run_dir": ctx.run_dir, "reason": reason})
+        warn_sink.append(f"成果物の保存先: {reason}")
     ledger.append(f"{kind}_gpx_run_dir", {"run_dir": ctx.run_dir})
     return ctx
+
+
+def _with_series_warnings(
+    result: SequentialRietveldResult, series_warnings: Sequence[str]
+) -> SequentialRietveldResult:
+    """系列の入口で決まった警告 (成果物の退避) を結果の ``warnings`` の先頭に載せる。
+
+    本体の中で積まないのは、本体が早期に返る経路 (M10 のフレーム 0 枚) でも落とさないため。
+    先頭に置くのは、置き場所の話が系列全体の前提だから (どのフレームの所見でもない)。
+    """
+    if not series_warnings:
+        return result
+    return replace(result, warnings=(*series_warnings, *result.warnings))
 
 
 def _run_sequential_rietveld(

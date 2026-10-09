@@ -3103,6 +3103,9 @@ def run_auto_rietveld(
         hap_mustrain=micro[1],
         hap_size_esd=micro[2],
         hap_mustrain_esd=micro[3],
+        # 退避して**保存できた**ときだけ (= 台帳の `m7_gpx_fallback` と同じ条件)。台帳は呼び出し側に
+        #   返らないことがある (② 単発) ので、理由は結果にも載せる (設計 §5)。
+        artifact_fallback_reason=plan.fallback_reason if out_gpx else "",
     )
 
 

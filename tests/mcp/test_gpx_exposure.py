@@ -467,3 +467,129 @@ def test_save_gpx_null_means_the_default_not_an_opt_out(tool, monkeypatch):
 
     assert "error" not in out, out
     assert captured["save_gpx"] is True
+
+
+# ---------------------------------------------------------------------------
+# 退避理由 — 単発 / 改訂 / 逐次 / アンカー (設計 §5・§6)
+# ---------------------------------------------------------------------------
+#
+# 頼まれた根 (``gpx_dir`` / データ隣接) に run ディレクトリを作れないと `gpxstore` は一時領域へ
+# 退避して理由を返す。① はそれを自前の台帳 (``m7_gpx_fallback`` / ``m9_`` / ``m10_``) に書くが、
+# この 4 つの ② は台帳を戻り値に含めない。理由を返り値に載せないと、③ に見えるのは
+# %TEMP% を指す ``gpx_path`` だけになる (「指定した場所に保存された」と読んだまま報告する)。
+# 載せる先は兄弟の ② と同じ形 = ``warnings`` の ``成果物の保存先: <理由>`` 行。
+
+#: `gpxstore.resolve_run_dir` が返す退避理由の形 (末尾が「一時領域へ退避」)。
+_FALLBACK_REASON = (
+    "PermissionError: [Errno 13] read-only: '/chosen' (/chosen へ書けないため一時領域へ退避)"
+)
+_FALLBACK_PREFIX = "成果物の保存先: "
+
+
+def _single_run_tool(tool: str, result: AutoRietveldResult) -> dict:
+    from tsumugin.mcp.rietveld_tools import refine_with_revisions
+
+    runner = lambda inp: result  # noqa: E731 — エンジンが返した結果をそのまま渡すシーム
+    if tool == "auto_rietveld":
+        return auto_rietveld([_H], [_P], runner=runner)
+    return refine_with_revisions([_H], [_P], [], runner=runner)
+
+
+@pytest.mark.parametrize("tool", ["auto_rietveld", "refine_with_revisions"])
+def test_single_run_tools_say_when_the_artifact_fell_back_to_temp(tool):
+    """★単発/改訂: エンジンが成果物を一時領域へ退避したら、② の ``warnings`` で理由を言う。
+
+    非トートロジー: 退避理由はエンジンの台帳 (``m7_gpx_fallback``) にしか無く、② の単発経路は
+    その台帳を返さない (`run_auto_rietveld` が内部で作る私有の台帳)。結果に載せて ② が写さない
+    限り、③ が受け取るのは一時領域を指す ``gpx_path`` だけになる。
+    """
+    result = dataclasses.replace(
+        _selected_result(),
+        gpx_path="/tmp/tsumugin-gpx-abc/d.gpx",
+        artifact_fallback_reason=_FALLBACK_REASON,
+    )
+
+    out = _single_run_tool(tool, result)
+
+    assert "error" not in out, out.get("error")
+    assert out["warnings"] == [_FALLBACK_PREFIX + _FALLBACK_REASON]
+
+
+@pytest.mark.parametrize("tool", ["auto_rietveld", "refine_with_revisions"])
+def test_single_run_tools_have_no_warning_without_a_fallback(tool):
+    """退避が無ければ ``warnings`` は空 — ただしキーは常に在る (スキーマを安定させる)。
+
+    常に警告を出す実装で上のテストを満たせないように。キーが欠けると ③ は「警告が無い」と
+    「このツールは警告を返さない」を区別できない。
+    """
+    out = _single_run_tool(tool, _selected_result())
+
+    assert out["warnings"] == []
+
+
+def _series_frames_in(tmp_path) -> list[dict]:
+    data = tmp_path / "data"
+    data.mkdir()
+    return [{**f, "data_path": str(data / f["data_path"])} for f in _FRAMES]
+
+
+def _series_frame_runner(frame, phases, initial_cells):
+    """系列の 1 フレームを精密化したことにするスタブ (実 GSAS は回さない)。"""
+    return AutoRietveldResult(
+        stage_results=(), final_rwp=9.0, final_gof=1.0,
+        refined_cells={p.phase_name: (5.0, 5.0, 5.0, 90.0, 90.0, 90.0) for p in phases},
+        validity=ValidityReport(passed=True),
+        phase_fractions={p.phase_name: 1.0 / len(phases) for p in phases},
+        n_obs=2000,
+    )
+
+
+_SERIES_TOOLS = {
+    "sequential_rietveld": sequential_rietveld,
+    "anchored_sequential": anchored_sequential,
+}
+
+
+@pytest.mark.parametrize("tool", sorted(_SERIES_TOOLS))
+def test_series_tools_say_when_artifacts_fell_back_to_temp(tool, tmp_path, monkeypatch):
+    """★逐次/アンカー: 系列の run ディレクトリが一時領域へ退避したら ``warnings`` で理由を言う。
+
+    非トートロジー: 退避は系列の入口 (`insitu.engine._series_context`) で 1 度だけ解決され、
+    理由は ``m9_gpx_fallback`` / ``m10_gpx_fallback`` として ① の台帳に書かれる。② はその台帳を
+    返さない (`anchored_sequential` は台帳を作って読むが、読むのはアンカー/crossover 要約だけ)。
+    ここでは ① の系列エンジンを**本物のまま**回し (runner だけ差し替え)、解決から ② の
+    戻り値までを通しで見る。
+    """
+    import tempfile
+
+    def unwritable(root, base):
+        raise PermissionError(13, "read-only", root)
+
+    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
+    tmp_root = tmp_path / "tmp"
+    tmp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_root))
+
+    out = _SERIES_TOOLS[tool](
+        _series_frames_in(tmp_path), [_P], runner=_series_frame_runner,
+        gpx_dir=str(tmp_path / "chosen"),
+    )
+
+    assert "error" not in out, out.get("error")
+    assert out["gpx_dir"].startswith(str(tmp_root)), out["gpx_dir"]
+    notes = [w for w in out["warnings"] if w.startswith(_FALLBACK_PREFIX)]
+    assert len(notes) == 1, out["warnings"]  # 系列全体で 1 回 (フレームごとに繰り返さない)
+    assert "一時領域へ退避" in notes[0]
+
+
+@pytest.mark.parametrize("tool", sorted(_SERIES_TOOLS))
+def test_series_tools_have_no_fallback_warning_when_the_root_is_writable(tool, tmp_path):
+    """書ける根なら退避の警告は出ない (常に出す実装で上を満たせないように)。"""
+    out = _SERIES_TOOLS[tool](
+        _series_frames_in(tmp_path), [_P], runner=_series_frame_runner,
+        gpx_dir=str(tmp_path / "chosen"),
+    )
+
+    assert "error" not in out, out.get("error")
+    assert out["gpx_dir"].startswith(str(tmp_path / "chosen"))
+    assert not [w for w in out["warnings"] if w.startswith(_FALLBACK_PREFIX)], out["warnings"]

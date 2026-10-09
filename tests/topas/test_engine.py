@@ -372,6 +372,95 @@ def test_explicit_keep_project_survives_save_gpx_false(monkeypatch, tmp_path):
     assert "m12_project_saved" in [e.kind for e in ledger.entries]
 
 
+def _inp_writing_driver(monkeypatch) -> None:
+    """実 tc.exe と同じく INP を作業ディレクトリへ書く代役 (複製される中身を作る)。"""
+
+    def fake_run_tc(inp_text, *, workdir, basename, **kwargs):
+        (Path(workdir) / f"{basename}.inp").write_text(inp_text, encoding="utf-8")
+        return _FakeRun(30.0)
+
+    monkeypatch.setattr(eng, "run_tc", fake_run_tc)
+
+
+@pytest.mark.parametrize("with_ledger", [True, False], ids=["ledger", "no-ledger"])
+def test_fallback_to_temp_is_reported_on_the_result(monkeypatch, tmp_path, with_ledger):
+    """★頼まれた根に書けず一時領域へ退避したら、理由を**結果**に載せる (台帳任意)。
+
+    非トートロジー: 退避理由は ``m12_project_fallback`` として台帳に書かれるが、台帳は任意
+    (``None`` なら何も残らない) で、② の単発 `auto_rietveld(backend="topas")` は台帳を
+    返さない。結果に載らないと ③ に見えるのは一時領域を指す ``project_path`` だけになる。
+    """
+    import tempfile
+
+    def unwritable(root, base):
+        raise PermissionError(13, "read-only", root)
+
+    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    _inp_writing_driver(monkeypatch)
+    ledger = Ledger() if with_ledger else None
+
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0)), ledger=ledger,
+        gpx_dir=str(tmp_path / "chosen"),
+    )
+
+    assert result.project_path.startswith(str(tmp_path / "tmp")), result.project_path
+    assert "一時領域へ退避" in result.artifact_fallback_reason
+    if ledger is not None:  # 台帳を渡したなら従来どおり 1 行 (結果と同じ理由)
+        rows = [e.payload for e in ledger.entries if e.kind == "m12_project_fallback"]
+        assert [r["reason"] for r in rows] == [result.artifact_fallback_reason]
+
+
+def test_no_fallback_reason_when_nothing_was_saved_at_the_fallback(monkeypatch, tmp_path):
+    """退避先にも保存できなかったら理由は載せない — 「一時領域に在る」と言うのは嘘になる。
+
+    その失敗は台帳の ``m12_project_error`` の担当 (``project_path`` は "")。退避先を
+    「ディレクトリを作れない場所」(親が通常ファイル) に向けて、退避は起きたが保存は失敗した
+    状態を作る。
+    """
+    import tempfile
+
+    def unwritable(root, base):
+        raise PermissionError(13, "read-only", root)
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    real_mkdtemp = tempfile.mkdtemp
+
+    def mkdtemp(suffix=None, prefix=None, dir=None):
+        if prefix == "tsumugin-gpx-":  # `gpxstore` の退避先だけを壊す (作業 temp は本物)
+            return str(blocker / "run")
+        return real_mkdtemp(suffix, prefix, dir)
+
+    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    _inp_writing_driver(monkeypatch)
+    ledger = Ledger()
+
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0)), ledger=ledger,
+        gpx_dir=str(tmp_path / "chosen"),
+    )
+
+    assert result.project_path == ""
+    assert result.artifact_fallback_reason == ""
+    assert "m12_project_error" in [e.kind for e in ledger.entries]
+
+
+def test_no_fallback_reason_when_the_root_is_writable(monkeypatch, tmp_path):
+    """書ける根なら理由は空 (常に理由を載せる実装で上を満たせないように)。"""
+    _inp_writing_driver(monkeypatch)
+
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()], recipe=_stages(("S0", 0)), gpx_dir=str(tmp_path / "chosen")
+    )
+
+    assert result.project_path.startswith(str(tmp_path / "chosen"))
+    assert result.artifact_fallback_reason == ""
+
+
 def test_validity_gate_rejects_non_physical_uiso(stub_driver, monkeypatch):
     """**Rwp が下がっても Uiso が負なら不合格**にする (中立層の `check_validity` を共用)。
 

@@ -447,16 +447,17 @@ def run_topas_rietveld(
         # 【規定: 全解析で成果物を保存する】: GSAS の .gpx に対応するのがこの作業ディレクトリ
         #   (INP/.out/results.txt)。keep_project / save_gpx / 既定保存の順位は `plan_output` が
         #   正本 — ここに写さない (写しが実装と食い違っていた: 2026-10-09)。
+        plan = plan_output(
+            [h.data_path for h in histograms],
+            keep=keep_project,
+            gpx_dir=gpx_dir,
+            save=save_gpx,
+            ext="",
+            context=active_context(),
+        )
         out_project = _save_project_artifact(
             work,
-            plan_output(
-                [h.data_path for h in histograms],
-                keep=keep_project,
-                gpx_dir=gpx_dir,
-                save=save_gpx,
-                ext="",
-                context=active_context(),
-            ),
+            plan,
             histograms=histograms,
             phases=phases,
             rwp=final_rwp,
@@ -498,6 +499,9 @@ def run_topas_rietveld(
             backend=_BACKEND,
             project_path=out_project,
             histogram_rwp=_histogram_rwp_tuple(best_results, len(histograms)),
+            # GSAS 経路と同じ条件 (退避して保存できたときだけ)。台帳は任意 (None なら
+            #   `m12_project_fallback` も残らない) なので、理由は結果に載せる (設計 §5)。
+            artifact_fallback_reason=plan.fallback_reason if out_project else "",
         )
 
 

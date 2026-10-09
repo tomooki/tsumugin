@@ -236,6 +236,17 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         #   **どちらのヒストグラムが悪いのか分からない** — 放射源ごとに当てはまりが大きく
         #   違うのが普通なので、③ が次に何を触るか決めるのに要る。空 = 未計測。
         "histogram_rwp": list(result.histogram_rwp),
+        # 【成果物の退避を黙らない (gpx-retention 設計 §5)】: 頼まれた根に書けず一時領域へ
+        #   退避したときの理由。エンジンは台帳 (`m7_gpx_fallback`) にも書くが、② の単発経路は
+        #   台帳を返さないので、ここに無いと ③ に見えるのは %TEMP% を指す `gpx_path` だけになる。
+        #   形は兄弟の ② (`compare_structure_models` の `warnings`・探索の `search.warnings`) と同じ。
+        #   キーは常に在る (空 = 警告なし。欠落と取り違えさせない)。⚠ 探索/収束確認経路の退避は
+        #   run ディレクトリ単位なので `search.warnings` / `convergence.warnings` に出る。
+        "warnings": (
+            [f"成果物の保存先: {result.artifact_fallback_reason}"]
+            if result.artifact_fallback_reason
+            else []
+        ),
     }
 
 
@@ -531,8 +542,10 @@ def auto_rietveld(
         本引数も ``save_gpx`` もそれら全部に効く。``gpx_path`` は返した fit (探索なら採用候補・
         収束確認なら最良の開始点) を指し、各候補/各開始点のパスは
         ``search.candidates[].gpx_path`` / ``convergence.multistart.starts[].gpx_path`` に出る。
-        保存先に書けず一時領域へ退避したときは ``search.warnings`` /
-        ``convergence.warnings`` に理由が出る。
+        保存先に書けず一時領域へ退避したときは ``成果物の保存先: <理由>`` の行が出る —
+        単発経路は返り値の ``warnings`` (退避が無ければ空リスト)、探索/収束確認は
+        ``search.warnings`` / ``convergence.warnings`` (この 2 経路では最上位 ``warnings`` は空)。
+        この行があったら ``gpx_path`` は一時領域の中である (頼んだ場所ではない)。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。フレーム数が多く容量が問題に
         なるときだけ False にする。⚠ **保存しなかった精密化は検算できない** — 段の無言
         no-op も、MEM も、再プロットも、精密化済みの成果物そのものを要求する。
@@ -728,6 +741,8 @@ def refine_with_revisions(
         同じ ``gpx_dir`` を渡し続けると**同じ根の下に改訂ごとの run ディレクトリが時刻順に並ぶ**
         (1 つの run ディレクトリにまとまるのは系列解析 `sequential_rietveld` の方)。
         どの改訂がどれかは各 run の ``manifest.jsonl`` (Rwp・相) と返り値の ``gpx_path`` で辿る。
+        保存先に書けず一時領域へ退避したときは返り値の ``warnings`` に
+        ``成果物の保存先: <理由>`` の行が出る (`auto_rietveld` の単発経路と同じ)。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。
         opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     """
