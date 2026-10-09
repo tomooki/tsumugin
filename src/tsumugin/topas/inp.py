@@ -290,7 +290,12 @@ class TopasPhase:
     """占有率を等値にする組 (`PhaseSpec.occupancy_equiv_groups`)。組ごとに 1 つの共有 ``prm``。"""
     occupancy_parent_sum_groups: tuple[tuple[str, ...], ...] = ()
     """``(親, 子1, 子2, …)`` で **親の占有率 = Σ子** (`PhaseSpec.occupancy_sum_groups` と同じ意味、
-    GSAS の ``Σ子 − 親 = 0``)。子はそれぞれ共有 ``prm``、親はその和の式になる。"""
+    GSAS の ``Σ子 − 親 = 0``)。子はそれぞれ共有 ``prm``、親はその和の式になる。
+
+    **親は複数の組で共有してよい** (`deuterium.place_hd_mix` の ``(O, D1, H1), (O, D2, H2)``)。
+    親の式は最初の組で決め、後の組は最後の子を ``親の式 − 他の子`` にする
+    (`_group_prm_plan`)。それ以外の重なり (2 つの組の子になる原子など) は
+    `structure._resolve_phase_spec` が拒否する。"""
     position_groups: tuple[tuple[str, ...], ...] = ()
     """座標の**シフト**を等値にする組 (GSAS の dAx/dAy/dAz 等値 `_equiv_positions` と同じ意味)。
 
@@ -464,6 +469,18 @@ def _offset_expression(name: str, offset: float) -> str:
     return f"{name} {sign} {magnitude}"
 
 
+def _difference(total: str, others: Sequence[str]) -> str:
+    """``total − Σothers`` の式 (``total`` は ``a + b`` のような和でもよい)。
+
+    ``+``/``-`` は左結合なので ``a + b - c`` は ``(a + b) - c``。引く側が 2 つ以上なら括弧で
+    包む (``a + b - c - d`` と同じ値だが、「親 − 他の子の和」という意味を字面に残す)。
+    """
+    if not others:
+        return total
+    subtrahend = others[0] if len(others) == 1 else f"({' + '.join(others)})"
+    return f"{total} - {subtrahend}"
+
+
 def _occupancy_seed(sites: "Mapping[str, TopasSite]", label: str, fallback: float) -> float:
     site = sites.get(label)
     return site.occupancy.value if site is not None else fallback
@@ -475,9 +492,23 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
     【`!` の有無が段階解放】: 名前付き prm は TOPAS では**既定で精密化対象**なので、解放前は `!`。
     【[0,1] 拘束】: 混合占有は物理的に区間内なので境界外への逸走を TOPAS 側で止める (GSAS も
     `_bound_occupancy` で張る)。等値・和の組は GSAS が張らないので張らない。
+    【1 つの量は 1 つの式】: INP は原子の占有率・beq・座標をそれぞれ 1 つの式で書くので、2 つの
+    拘束が同じ量を書くと**後に書いた方だけが効き、先の拘束が黙って外れる**。張れない重なりは
+    `structure._resolve_phase_spec` が `InvalidPhaseSpecError` で止めるが、そこを経ずに
+    `TopasPhase` を組む呼び手のためにここでも 2 度目の書き込みを ``ValueError`` で止める。
     """
     lines: list[str] = []
     mapping: dict[tuple[str, str], str] = {}
+
+    def assign(phase: TopasPhase, key: str, expr: str) -> None:
+        if (phase.phase_name, key) in mapping:
+            raise ValueError(
+                f"相 {phase.phase_name!r} の {key} を 2 つの拘束で書こうとしました "
+                f"({mapping[(phase.phase_name, key)]!r} と {expr!r})。INP では後に書いた方だけが"
+                "効くため書きません"
+            )
+        mapping[(phase.phase_name, key)] = expr
+
     for phase in phases:
         stem = _slug(phase.phase_name)
         sites = {site.label: site for site in phase.sites}
@@ -488,7 +519,7 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
             lines.append(f"prm {occ_prefix}{name} {_fmt(seed)} min 0 max 1")
             for position, label in enumerate(group):
                 expr = name if position == 0 else f"1-{name}"
-                mapping[(phase.phase_name, f"occ.{label}")] = expr
+                assign(phase, f"occ.{label}", expr)
         for gi, group in enumerate(phase.occupancy_equiv_groups):
             # GSAS の add_EquivConstr: 組の全員が 1 変数。初期値は先頭の原子から。
             # 【[0,1] を張らない】: GSAS は等値・和の組に範囲拘束を張らない (`_update_atom_flags`
@@ -499,19 +530,36 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
             seed = _occupancy_seed(sites, group[0], 1.0)
             lines.append(f"prm {occ_prefix}{name} {_fmt(seed)}")
             for label in group:
-                mapping[(phase.phase_name, f"occ.{label}")] = name
+                assign(phase, f"occ.{label}", name)
+        # 親 → 最初の組で決めた親の式 (= Σ子)。親を共有する後の組はこれを使う。
+        parent_expr: dict[str, str] = {}
         for gi, group in enumerate(phase.occupancy_parent_sum_groups):
             # GSAS の Σ子 − 親 = 0: 子を独立変数にし、親をその和の式にする (自由度は同じ)。
             # 子にも親にも [0,1] を張らない (GSAS も張らない; 上の等値の組と同じ理由)。
+            # 【親を共有する後の組】: 親をもう一度「Σ子」と書くと先の組の和が外れる。親は
+            #   書き直さず、最後の子を「親の式 − 他の子」にする。組ごとに拘束 1 本 = 自由度 1 つ
+            #   減るので、変数 − 拘束 (GSAS の自由度) と一致する。最後の子の初期値は拘束から
+            #   決まる (CIF の値が和を満たさないとき — 親の初期値と同じ扱い)。
             parent, children = group[0], group[1:]
+            if not children:
+                # 子の無い組は親を空の式 (``=;``) にする — tc.exe が拒否する INP を書かない。
+                raise ValueError(
+                    f"相 {phase.phase_name!r} の和の組 {list(group)} に子がありません"
+                )
+            shared = parent_expr.get(parent)
+            free = children if shared is None else children[:-1]
             names = []
-            for k, child in enumerate(children, start=1):
+            for k, child in enumerate(free, start=1):
                 name = f"{stem}_occsum_g{gi}_{k}"
                 seed = _occupancy_seed(sites, child, 0.0)
                 lines.append(f"prm {occ_prefix}{name} {_fmt(seed)}")
-                mapping[(phase.phase_name, f"occ.{child}")] = name
+                assign(phase, f"occ.{child}", name)
                 names.append(name)
-            mapping[(phase.phase_name, f"occ.{parent}")] = " + ".join(names)
+            if shared is None:
+                parent_expr[parent] = " + ".join(names)
+                assign(phase, f"occ.{parent}", parent_expr[parent])
+            else:
+                assign(phase, f"occ.{children[-1]}", _difference(shared, names))
         for gi, group in enumerate(phase.beq_equiv_groups):
             name = f"{stem}_beq_g{gi}"
             seed = sites[group[0]].beq.value if group[0] in sites else 1.0
@@ -520,7 +568,7 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
             released = phase.release_beq_groups and phase.beq_released(group[0])
             lines.append(f"prm {'' if released else '!'}{name} {_fmt(seed)}")
             for label in group:
-                mapping[(phase.phase_name, f"beq.{label}")] = name
+                assign(phase, f"beq.{label}", name)
         for gi, group in enumerate(phase.position_groups):
             lead = sites[group[0]]
             for axis in lead.free_coord_axes:
@@ -531,9 +579,7 @@ def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tupl
                 lines.append(f"prm {'' if param.refine else '!'}{name} {_fmt(param.value)}")
                 for label in group:
                     offset = getattr(sites[label], axis).value - param.value
-                    mapping[(phase.phase_name, f"site.{label}.{axis}")] = _offset_expression(
-                        name, offset
-                    )
+                    assign(phase, f"site.{label}.{axis}", _offset_expression(name, offset))
     return lines, mapping
 
 
