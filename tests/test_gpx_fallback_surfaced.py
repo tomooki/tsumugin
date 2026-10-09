@@ -152,22 +152,49 @@ def _rebinds(node: ast.AST, name: str) -> bool:
     )
 
 
-def _occurrences(scope: ast.AST, name: str) -> list[ast.Name]:
-    """``scope`` の中の ``name`` の出現 (同名を自前で束縛する入れ子の中は除く)。"""
-    out: list[ast.Name] = []
+def _pos(node: ast.AST) -> tuple[int, int]:
+    return (node.lineno, node.col_offset)  # type: ignore[attr-defined]
+
+
+def _uses(scope: ast.AST, name: str) -> tuple[list[ast.Name], list[tuple[int, int]]]:
+    """``scope`` の中の ``name`` の ``(読み, 束縛し直しの位置)`` (同名を自前で束縛する入れ子の中は除く)。
+
+    ``reason += …`` は**読んでから書く**ので読みとして数える (上書きではない)。束縛し直しは
+    ``Name`` の代入/``del`` だけでなく ``except … as reason`` / ``import … as reason`` /
+    ``match`` の捕捉も含める — どれも以降の ``reason`` を別の値にする。
+    """
+    reads: list[ast.Name] = []
+    rebound: list[tuple[int, int]] = []
     stack = list(ast.iter_child_nodes(scope))
     while stack:
         node = stack.pop()
         if _rebinds(node, name):
             continue
+        if (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        ):
+            reads.append(node.target)
+            stack.append(node.value)
+            continue
         if isinstance(node, ast.Name) and node.id == name:
-            out.append(node)
+            if isinstance(node.ctx, ast.Load):
+                reads.append(node)
+            else:
+                rebound.append(_pos(node))
+        elif (
+            (isinstance(node, ast.ExceptHandler) and node.name == name)
+            or (isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name)
+            or (isinstance(node, ast.MatchMapping) and node.rest == name)
+            or (
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                and any((a.asname or a.name.split(".")[0]) == name for a in node.names)
+            )
+        ):
+            rebound.append(_pos(node))
         stack.extend(ast.iter_child_nodes(node))
-    return out
-
-
-def _pos(node: ast.AST) -> tuple[int, int]:
-    return (node.lineno, node.col_offset)  # type: ignore[attr-defined]
+    return reads, rebound
 
 
 def _scan(source: str, *, defines_resolvers: bool = False) -> tuple[list[int], list[str]]:
@@ -244,12 +271,9 @@ def _scan(source: str, *, defines_resolvers: bool = False) -> tuple[list[int], l
         #   位置を見ない網は「読んだ」と誤認する (理由を捨てても緑になる)。
         assert isinstance(holder, ast.Assign)
         start = (holder.end_lineno or holder.lineno, holder.end_col_offset or 0)
-        seen = _occurrences(scope, reason)
-        stop = min(
-            (_pos(n) for n in seen if not isinstance(n.ctx, ast.Load) and _pos(n) > start),
-            default=(10**9, 0),
-        )
-        reads = [n for n in seen if isinstance(n.ctx, ast.Load) and start < _pos(n) < stop]
+        all_reads, rebound = _uses(scope, reason)
+        stop = min((p for p in rebound if p > start), default=(10**9, 0))
+        reads = [n for n in all_reads if start < _pos(n) < stop]
         if not reads:
             bad(f"理由 {reason!r} を分解の後で (上書き前に) 一度も読んでいない")
         elif all(forwarded(n, scope) for n in reads) and not own_resolver:
@@ -285,19 +309,25 @@ def test_no_src_caller_discards_the_fallback_reason():
 
 
 def test_resolver_names_are_unique_in_src():
-    """解決関数の名前を持つ関数/代入は src で gpxstore だけにあること。
+    """解決関数の名前を持つ定義/束縛は src で gpxstore の ``def`` だけにあること。
 
     網はどの module からの import でも**名前で**解決関数とみなす (再輸出経由の import を
-    逃さないため)。同名の別関数ができるとそれが誤って網に掛かるので、その前提をここで固定する。
+    逃さないため)。同名の別物ができるとそれが誤って網に掛かるので、その前提をここで固定する。
+    数える束縛: ``def`` / 代入 / 注釈付き代入 / 別名 import (``import make as group_context``)。
+    解決関数そのものを同じ名前で import するのは束縛し直しではないので数えない。
     """
     owners: list[str] = []
     for path in sorted(_SRC.rglob("*.py")):
         rel = path.relative_to(_SRC).as_posix()
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 named = [node.name]
             elif isinstance(node, ast.Assign):
                 named = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                named = [node.target.id]
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                named = [a.asname for a in node.names if a.asname and a.asname != a.name]
             else:
                 continue
             owners += [f"{rel}:{n}" for n in named if n in _RESOLVERS]
@@ -328,6 +358,10 @@ _DISCARDS = {
     "read_only_before_the_unpack": (
         _HEAD + "def f(log):\n    reason = 'other'\n    log(reason)\n"
         "    g, reason = group_context('d')\n    return g\n"
+    ),
+    "rebound_by_except_as": (
+        _HEAD + "def f(log, work):\n    g, reason = group_context('d')\n    try:\n        work()\n"
+        "    except OSError as reason:\n        log(reason)\n    return g\n"
     ),
     "overwritten_before_read": (
         _HEAD + "def f(log):\n    g, reason = group_context('d')\n    reason = ''\n"
@@ -412,6 +446,10 @@ _SURFACED = {
         "    def note():\n        log(reason)\n"
         "        def inner():\n            reason = 'x'\n            return reason\n"
         "        return inner\n    return g, note\n"
+    ),
+    "augmented_then_logged": (
+        _HEAD + "def f(log):\n    g, reason = group_context('d')\n    reason += ' (temp)'\n"
+        "    log(reason)\n    return g\n"
     ),
     "branches_on_the_reason": (
         _HEAD + "def f():\n    g, reason = group_context('d')\n"
