@@ -15,7 +15,13 @@ import pytest
 
 from .conftest import requires_real_data
 
-from tsumugin.topas.symmetry import free_coord_axes, parse_symop, site_symmetry_projector
+from tsumugin.topas.symmetry import (
+    fixed_coord_axes,
+    free_coord_axes,
+    parse_symop,
+    site_coord_axes,
+    site_symmetry_projector,
+)
 
 # Pnma (#62) の一般位置 8 個 (PbSO4-Wyckoff.cif 由来の書き方)
 _PNMA = (
@@ -104,6 +110,65 @@ def test_coupled_axes_are_not_released():
 def test_no_symops_means_no_release():
     """**判定できないときは触らない**。対称性の破れは Rwp に現れにくく静かに構造を壊す。"""
     assert free_coord_axes((), (0.1, 0.2, 0.3)) == ()
+
+
+# ---------------- サイト対称で固定される軸 (座標 esd の 0.0) ----------------
+
+
+def test_fixed_axes_are_the_ones_site_symmetry_pins():
+    """**値が厳密に決まる軸**。座標 esd の ``0.0`` (「厳密に 1/4」= 真の陳述) の根拠になる。
+
+    Pb (x, 1/4, z) は y だけ、反転中心 (0,0,0) は 3 軸とも、一般位置はどれも固定されない。
+    """
+    assert fixed_coord_axes(_PNMA, (0.1882, 0.25, 0.167)) == ("y",)
+    assert fixed_coord_axes(_PNMA, (0.0, 0.0, 0.0)) == ("x", "y", "z")
+    assert fixed_coord_axes(_PNMA, (0.123, 0.456, 0.789)) == ()
+
+
+def test_coupled_axes_are_not_fixed():
+    """結束した軸 (x = y) は**動く** — 独立に解放できないだけで、固定ではない。
+
+    「解放しない軸 = 固定」と読むと結束軸が esd 0.0 (厳密にこの値) を名乗り、結束軸を
+    精密化する GSAS と比べたとき一致判定が「対称性の仮定が違う」と誤る。
+    """
+    trigonal = ("x,y,z", "-y,x-y,z", "-x+y,-x,z", "y,x,-z", "x-y,-y,-z", "-x,-x+y,-z")
+    assert free_coord_axes(trigonal, (0.3, 0.3, 0.0)) == ()
+    assert fixed_coord_axes(trigonal, (0.3, 0.3, 0.0)) == ("z",)
+
+
+def test_an_axis_that_follows_another_is_not_fixed_even_with_a_zero_diagonal():
+    """六方の鏡面 ``-x+y, y, z`` 上の ``(x, 2x, z)``: ``P = [[0, ½, 0], [0, 1, 0], [0, 0, 1]]``。
+
+    x の対角成分と列は 0 だが、y を動かせば x = y/2 で**動く**。固定かどうかは「許される
+    変位の第 i 成分が常に 0」= **行**で決まる (対角や列で判定すると x を固定と誤る)。
+    """
+    ops = ("x,y,z", "-x+y,y,z")
+    position = (0.2, 0.4, 0.3)
+    assert np.allclose(
+        site_symmetry_projector(ops, position), [[0, 0.5, 0], [0, 1, 0], [0, 0, 1]]
+    )
+    assert fixed_coord_axes(ops, position) == ()
+    assert free_coord_axes(ops, position) == ("z",)
+
+
+def test_no_symops_fixes_nothing():
+    """判定材料が無ければ「固定」とも言わない (座標 esd は ``None`` = 決まっていない に倒れる)。"""
+    assert fixed_coord_axes((), (0.0, 0.0, 0.0)) == ()
+
+
+def test_site_coord_axes_returns_both_classifications_from_one_projector():
+    """構造の読み込みは ``(自由軸, 固定軸)`` を 1 回の射影子計算で得る (サイトごとに 2 回作らない)。"""
+    for ops, position in (
+        (_PNMA, (0.1882, 0.25, 0.167)),
+        (_PNMA, (0.0, 0.0, 0.0)),
+        (_PNMA, (0.123, 0.456, 0.789)),
+        (("x,y,z", "-x+y,y,z"), (0.2, 0.4, 0.3)),
+        ((), (0.1, 0.2, 0.3)),
+    ):
+        assert site_coord_axes(ops, position) == (
+            free_coord_axes(ops, position),
+            fixed_coord_axes(ops, position),
+        )
 
 
 def test_unparsable_symops_are_skipped_not_fatal():

@@ -28,6 +28,7 @@ from .._json import finite_or_none
 __all__ = [
     "AtomRow",
     "atom_row",
+    "coord_esd_state",
     "coord_esd_states",
     "free_index_from_site_symmetry",
     "lock_from_free_index",
@@ -132,16 +133,25 @@ def coord_esd_states(
 
     :param esd_lookup: 変数名 → esd (無ければ ``None``)。``dict.get`` を渡せばよい
     """
-    out: list[float | None] = []
-    for axis_i, axis in enumerate("xyz"):
-        raw = esd_lookup(f"{pid}::dA{axis}:{index}")
-        value = finite_or_none(raw) if raw is not None else None
-        if value is not None and value > 0.0:
-            out.append(value)
-        elif free_index[axis_i] == 0:
-            # 対称拘束で固定。lookup は空 (変数ですらない) のが正常。
-            out.append(0.0)
-        else:
-            # 自由 (または結束) なのに esd が無い/非正 = このデータからは決まっていない。
-            out.append(None)
+    out = [
+        coord_esd_state(
+            esd_lookup(f"{pid}::dA{axis}:{index}"), symmetry_fixed=free_index[axis_i] == 0
+        )
+        for axis_i, axis in enumerate("xyz")
+    ]
     return (out[0], out[1], out[2])
+
+
+def coord_esd_state(raw: "float | None", *, symmetry_fixed: bool) -> "float | None":
+    """1 軸の座標 esd を 3 状態へ (`coord_esd_states` の 1 軸ぶん; **TOPAS 経路も使う**)。
+
+    正で有限な su はそのまま。そうでなければ対称拘束で固定なら ``0.0`` (lookup は空 =
+    変数ですらないのが正常)、それ以外 (自由・結束なのに su が無い/非正) は ``None`` =
+    このデータからは決まっていない。バックエンドが精密化した軸に 0 を返しても「厳密に固定」とは
+    名乗らせない。規則を 1 か所に置くのは、2 つのバックエンドが同じ状況を別の状態で
+    報告しないため (一致判定は esd の状態で判断を変える)。
+    """
+    value = finite_or_none(raw) if raw is not None else None
+    if value is not None and value > 0.0:
+        return value
+    return 0.0 if symmetry_fixed else None

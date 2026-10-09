@@ -30,8 +30,11 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from ..autorietveld.atomrows import coord_esd_state
 from ..autorietveld.model import (
     AutoRietveldResult,
+    CoordEsd,
+    CoordTriple,
     HistogramSpec,
     PhaseSpec,
     RefinementStage,
@@ -427,7 +430,21 @@ def run_topas_rietveld(
         phase_fractions = (
             {n: v / scale_total for n, v in scale_values.items()} if scale_total > 0 else {}
         )
-        atom_coords, atom_coord_esd = _atom_coord_maps(records)
+        # 【受理した run が無ければ出発値】: ``best_results`` が空 = 全段が revert/失敗。
+        atom_coords, atom_coord_esd, coord_gaps = _atom_coord_maps(
+            records if best_results else None, doc
+        )
+        coord_warnings: tuple[str, ...] = ()
+        if coord_gaps:
+            # 【原子を黙って消さない】: 座標は三つ組でしか使えないので欠けた原子は載せないが、
+            #   消えたことは validity と ledger に残す。
+            coord_warnings = (
+                "座標の値が揃わない原子を atom_coords から除外しました: " + "; ".join(coord_gaps),
+            )
+            if ledger is not None:
+                ledger.append(
+                    "m12_topas_coord_gaps", {"atoms": list(coord_gaps), "backend": _BACKEND}
+                )
         atom_occupancy, atom_occupancy_esd = _atom_scalar_maps(records, "occ")
         atom_beq, atom_beq_esd = _atom_scalar_maps(records, "beq")
         # TOPAS は B、結果契約は Uiso。**Uiso = B / 8π²** で戻す (取り違えると 79 倍ずれる)。
@@ -480,7 +497,7 @@ def run_topas_rietveld(
                 atom_occupancy=atom_occupancy,
                 weight_fractions=weight_fractions,
                 converged=math.isfinite(final_rwp),
-                extra_warnings=tuple(unsupported_warnings),
+                extra_warnings=(*unsupported_warnings, *coord_warnings),
             ),
             n_obs=_count_observations(histograms, work),
             phase_fractions=phase_fractions,
@@ -596,33 +613,90 @@ def _count_observations(histograms: Sequence[HistogramSpec], workdir: Path) -> i
     return total
 
 
-def _atom_coord_maps(
-    records: TopasRecords,
-) -> "tuple[dict[str, dict[str, tuple[float, float, float]]], dict[str, dict[str, tuple]]]":
-    """``coord`` レコード (相/ラベル/軸) を相→ラベル→(x,y,z) と同型の esd へ畳む。
+_COORD_AXES = ("x", "y", "z")
+#: ``(相, ラベル)`` → 軸 → 値 / esd (組み立て途中の座標)。
+_AxisValues = dict[tuple[str, str], dict[str, float]]
+_AxisEsds = dict[tuple[str, str], dict[str, "float | None"]]
 
-    解放していない軸はレコードに現れない。**欠けた軸は 0.0 で埋めず ``None`` の esd を残す** —
-    「対称固定で厳密に決まっている」と「この精密化では決まっていない」を読み分けられるように
-    するため (GSAS 経路の 3 状態 esd と同じ規律)。
+
+def _atom_coord_maps(
+    records: "TopasRecords | None", doc: TopasDocument
+) -> "tuple[dict[str, dict[str, CoordTriple]], dict[str, dict[str, CoordEsd]], tuple[str, ...]]":
+    """文書の全サイトについて相→ラベル→(x,y,z) と同型の esd を組む。
+
+    値は ``coord`` (最後に受理した段で解放した軸) と ``coord_unrefined`` (解放しなかった軸) の
+    両方から採る — どちらも TOPAS がその run で使った値である。GSAS 経路が原子行を読むのと
+    同じく、**精密化したかどうかによらず全原子が載る**。esd は GSAS と同じ 3 状態
+    (`atomrows.coord_esd_state`): 正の su / サイト対称で固定 (``0.0``,
+    `TopasSite.fixed_coord_axes`) / それ以外 (``None`` = この精密化では決まっていない)。
+
+    **欠けた軸を 0.0 で埋めない**: 3 軸そろわない原子は載せず、3 つ目の戻り値で名前を返す
+    (呼び出し側が validity の警告と ledger に残す — 0.0 は実在する座標値なので、埋めると誤った
+    位置を黙って返し、黙って落とすと原子が消えたことが見えない)。
+
+    :param records: 最後に受理した run のレコード。**None = 受理した run が無い** (全段が
+        revert/失敗)。そのときは文書の出発値を返す — 受理しなければ持ち越し (#218) も起きない
+        ので、各サイトの `Param` の値がそのまま TOPAS に渡した値である (GSAS も精密化前の
+        原子行を返す; `refined_cells` が参照セルへ戻るのと同じ扱い)。
+    :param doc: 最後に受理した段の文書 (サイトの一覧と固定軸の判定に使う)。
+    :returns: ``(座標, esd, 組めなかった原子 ["相/ラベル (欠けた軸)"])``
     """
-    values: dict[str, dict[str, dict[str, float]]] = {}
-    esds: dict[str, dict[str, dict[str, "float | None"]]] = {}
-    for key, (value, esd) in records.keyed.get("coord", {}).items():
-        parts = key.split("/")
-        if len(parts) != 3:
-            continue
-        phase, label, axis = parts
-        values.setdefault(phase, {}).setdefault(label, {})[axis] = value
-        esds.setdefault(phase, {}).setdefault(label, {})[axis] = esd
-    coords: dict[str, dict[str, tuple[float, float, float]]] = {}
-    coord_esd: dict[str, dict[str, tuple]] = {}
-    for phase, labels in values.items():
-        for label, axes in labels.items():
-            triple = tuple(axes.get(a, 0.0) for a in ("x", "y", "z"))
-            coords.setdefault(phase, {})[label] = triple  # type: ignore[assignment]
-            e = esds[phase][label]
-            coord_esd.setdefault(phase, {})[label] = tuple(e.get(a) for a in ("x", "y", "z"))
-    return coords, coord_esd
+    values, esds = _coord_records(records) if records is not None else _starting_coords(doc)
+    coords: dict[str, dict[str, CoordTriple]] = {}
+    coord_esd: dict[str, dict[str, CoordEsd]] = {}
+    gaps: list[str] = []
+    for phase in doc.phases:
+        name = phase.phase_name
+        for site in phase.sites:
+            axes = values.get((name, site.label), {})
+            missing = [axis for axis in _COORD_AXES if axis not in axes]
+            if missing:
+                gaps.append(f"{name}/{site.label} ({','.join(missing)})")
+                continue
+            site_esds = esds.get((name, site.label), {})
+            x, y, z = (axes[axis] for axis in _COORD_AXES)
+            ex, ey, ez = (
+                coord_esd_state(site_esds.get(axis), symmetry_fixed=axis in site.fixed_coord_axes)
+                for axis in _COORD_AXES
+            )
+            coords.setdefault(name, {})[site.label] = (x, y, z)
+            coord_esd.setdefault(name, {})[site.label] = (ex, ey, ez)
+    return coords, coord_esd, tuple(gaps)
+
+
+def _coord_records(records: TopasRecords) -> "tuple[_AxisValues, _AxisEsds]":
+    """座標レコード → ``(相, ラベル)`` → 軸 → 値 / esd。"""
+    values: _AxisValues = {}
+    esds: _AxisEsds = {}
+    for kind in ("coord_unrefined", "coord"):  # 後に読む ``coord`` (精密化値) が勝つ
+        for key, (value, esd) in records.keyed.get(kind, {}).items():
+            parts = key.split("/")
+            if len(parts) < 3:
+                continue
+            # 【相名に ``/`` が入りうる】: 後ろ 2 つをラベルと軸と見なし、残りを相名へ戻す
+            #   (`_cell_strain_from_records` と同じ)。「3 つでなければ捨てる」にすると、その相の
+            #   座標が丸ごと黙って消える。
+            phase, label, axis = "/".join(parts[:-2]), parts[-2], parts[-1]
+            values.setdefault((phase, label), {})[axis] = value
+            # 未精密化の値は su を持たない (書式に esd を付けていないが、規則として明示する)。
+            esds.setdefault((phase, label), {})[axis] = esd if kind == "coord" else None
+    return values, esds
+
+
+def _starting_coords(doc: TopasDocument) -> "tuple[_AxisValues, _AxisEsds]":
+    """受理した run が無いときの座標 = 各サイトの `Param` の値 (esd は無し)。
+
+    参照式の座標は値を持たないので載せない (呼び出し側が欠落として報告する)。
+    """
+    values: _AxisValues = {}
+    for phase in doc.phases:
+        for site in phase.sites:
+            values[(phase.phase_name, site.label)] = {
+                axis: param.value
+                for axis, param in zip(_COORD_AXES, (site.x, site.y, site.z))
+                if not param.is_reference
+            }
+    return values, {}
 
 
 def _atom_scalar_maps(

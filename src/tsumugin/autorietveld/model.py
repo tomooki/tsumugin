@@ -924,7 +924,11 @@ class AutoRietveldResult:
     #   捨てていたため、③ は構造を報告することも比較することもできなかった。
     # 相名→原子ラベル→(x,y,z) 分率座標。出典は GSAS 原子行 ``row[cx..cx+2]``
     #   (`atomrows.atom_row`)。**``dAx`` の値ではない** — あれは精密化ごとに 0 へ再初期化される
-    #   シフトである (`GSASIIstrIO.py:1732`)。
+    #   シフトである (`GSASIIstrIO.py:1732`)。**精密化したかどうかによらず全原子の 3 軸が載る**
+    #   (解放しなかった軸も 0.0 で埋めず実際の値)。TOPAS 経路は最後に受理した run の ``Out()``
+    #   (``coord`` / ``coord_unrefined``) から採る (`topas.engine._atom_coord_maps`)。例外は
+    #   **3 軸の値が揃わなかった原子**で、0.0 で埋めずに載せない代わりに ``validity.warnings`` と
+    #   ledger ``m12_topas_coord_gaps`` に名前を残す (ラベルの存在を前提に引かないこと)。
     atom_coords: Mapping[str, Mapping[str, CoordTriple]] = field(default_factory=dict)
     # 相名→原子ラベル→座標 esd。**3 状態を区別する** (`cell_esd` と同型):
     #   ``>0.0`` = ``dA{axis}`` の sig (独立軸と、``depSigDict`` 経由の結束軸の双方) /
