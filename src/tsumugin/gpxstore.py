@@ -353,7 +353,7 @@ KEEP_KEYS = ("keep_gpx", "keep_project")
 
 
 def reject_single_keep(run_kwargs: Mapping[str, object], *, entry: str) -> None:
-    """**N 回精密化する入口** (探索/マルチスタート/モデル比較) で単一パスの ``keep_*`` を拒む。
+    """**N 回精密化する入口** (探索/マルチスタート/モデル比較/標準経路) で単一パスの ``keep_*`` を拒む。
 
     ``keep_*`` は成果物 1 つのパスで、`plan_output` では**どの opt-out にも勝つ**。各候補へ
     透過すると N 回の精密化が同じパスへ上書きされ (マルチスタートは別プロセスが同時に書く)、
