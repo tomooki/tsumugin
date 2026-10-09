@@ -101,6 +101,10 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
   `scale` が相分率そのもので、`MVW` が重量分率を正規化して返すため和=1 の拘束が存在しない。
   相分率を動かしたいなら `scale` を解放する (既定レシピは S0 で解放済み)。指定すると
   段が明示的に失敗する。
+- **`zero_offset` は未対応** — ゼロ点だけを解放する GSAS 経路のフラグ (汎用テンプレートの
+  部品として追加)。TOPAS では未翻訳で、指定すると段が明示的に失敗する。TOPAS の
+  `profile_lorentzian` は x,y だけでゼロ点を含まない (GSAS の `profile_lorentzian: true` は
+  X,Y,Zero) ことにも注意。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
 - **`seed_profile`** (TOPAS 専用の引数): TOPAS は装置ファイルのプロファイル (Caglioti U,V,W)
