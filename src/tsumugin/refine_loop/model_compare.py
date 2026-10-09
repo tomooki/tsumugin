@@ -68,8 +68,15 @@ def run_model_comparison(
                     "bic": s.bic,
                     "delta_bic": s.delta_bic,
                     "validity": s.validity_passed,
+                    # そのバリアントの fit (棄却モデルも; "" = 未保存)。数字と同じ行に在処を残す。
+                    "gpx_path": s.gpx_path,
                 },
             )
+        # 【退避理由を捨てない (gpx-retention 設計 §5)】: 保存先に書けず一時領域へ退避した理由は
+        #   `compare_models` の入口でしか分からず `warnings` で返る。台帳に写さないと、頼んだ
+        #   置き場所ではなく %TEMP% に置かれたことが監査記録のどこにも残らない。
+        for w in comparison.warnings:
+            ledger.append("model_compare_warning", {"message": w})
         ledger.append(
             "model_compare_best",
             {"best": comparison.best, "best_is_valid": comparison.best_is_valid},

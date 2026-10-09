@@ -37,7 +37,7 @@ from typing import Mapping, Sequence
 from ..autorietveld.model import AutoRietveldResult, CellEsd, PhaseSpec
 from ..store.ledger import Ledger
 from ._warmstart import call_runner, seed_fractions
-from ..gpxstore import gpx_context, group_context
+from ..gpxstore import GpxContext, gpx_context, group_context
 from .engine import Runner, _publication_of
 from .model import Cell, FrameRietveldResult, FrameSpec, SequentialRietveldResult
 
@@ -338,6 +338,27 @@ def _nearest_good(
     return None
 
 
+def _repair_group(
+    frames: Sequence[FrameSpec], *, gpx_dir: str | None, save_gpx: bool, ledger: Ledger | None
+) -> GpxContext:
+    """修復 1 実行の成果物文脈 (run ディレクトリ 1 つ) を決め、一時領域への退避を台帳に残す。
+
+    【修復 1 実行 = run ディレクトリ 1 つ】: 試行ごとに ambient が無いと各試行が別々の run
+    ディレクトリを作って散らばる (設計 §3 の「1 実行 = 1 run ディレクトリ」に反し、索引も 1 行ずつに
+    割れる)。系列の内側から呼ばれたときは既存 ambient をそのまま使う (`group_context` の契約)。
+
+    【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
+    分からない** — runner (エンジン) は解決済みの文脈を受け取るので fallback を書かない。
+    系列 (`insitu.engine._series_context`) と同じ ``m9_gpx_fallback`` の行で残す。
+    """
+    group, gpx_fallback = group_context(
+        frames[0].data_path if frames else "", gpx_dir=gpx_dir, save=save_gpx
+    )
+    if gpx_fallback and ledger is not None:
+        ledger.append("m9_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
+    return group
+
+
 def repair_isolated(
     frames: Sequence[FrameSpec],
     result: SequentialRietveldResult,
@@ -387,30 +408,17 @@ def repair_isolated(
     frame_results = result.frames
     n = len(frame_results)
     _, blocks = classify(discontinuities, n, min_block=min_block)
-    if not discontinuities:
-        # 【試行が無いなら run ディレクトリを作らない】: ③ は健全な系列にも診断として修復を呼ぶ。
-        #   そのたびにデータ隣接へ空の run-<日時>/ を撒くのはノイズにしかならない
-        #   (`gpxstore.series_context` が空入力で run を作らないのと同じ規律)。
-        return RepairReport(
-            systematic_hint=tuple(tuple(d.frame_index for d in block) for block in blocks)
-        )
     flagged = {d.frame_index for d in discontinuities}
     name_to_spec = {p.phase_name: p for p in phases}
 
     repairs: list[FrameRepair] = []
     needs_model_revision: list[int] = []
-    # 【修復 1 実行 = run ディレクトリ 1 つ】: 試行ごとに ambient が無いと `child_context` が
-    #   None を返し、各試行が別々の run ディレクトリを作って散らばる (設計 §3 の
-    #   「1 実行 = 1 run ディレクトリ」に反し、索引も 1 行ずつに割れる)。系列の内側から
-    #   呼ばれたときは既存 ambient をそのまま使う (`group_context` の契約)。
-    group, gpx_fallback = group_context(
-        frames[0].data_path if frames else "", gpx_dir=gpx_dir, save=save_gpx
-    )
-    # 【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
-    #   分からない** — runner (エンジン) は解決済みの文脈を受け取るので fallback を書かない。
-    #   系列 (`insitu.engine._series_context`) と同じ ``m9_gpx_fallback`` の行で残す。
-    if gpx_fallback and ledger is not None:
-        ledger.append("m9_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
+    # 【試行が走るまで run ディレクトリを作らない】: 対象が無い (健全な系列への診断呼び出し) /
+    #   対象はあるが良好な近傍が 1 つも無い、のどちらでも試行は 0 回である。入口で先に作ると
+    #   データ隣接へ空の run-<日時>/ を撒き、それを ``gpx_dir`` として返してしまう
+    #   (`gpxstore.series_context` が空入力で run を作らないのと同じ規律)。最初の試行の直前に
+    #   1 度だけ決め、以降の試行は全部それを共有する (1 実行 = 1 run ディレクトリ)。
+    group: GpxContext | None = None
 
     # 【全フラグフレームを試す】: 連続長でゲートしない (run-length プロキシは実データで反証済)。
     #   外向きの歩行が run の外側の良好フレームを見つけるため、連続ブロックも修復機会を得る。
@@ -439,6 +447,8 @@ def repair_isolated(
             )
             # 【修復試行も残す (規定 2026-08-20)】: 採用は「Rwp が改善したときのみ」なので、
             #   棄却された修復の fit は ledger の数字にしか残らない — 開けないと原因を見られない。
+            if group is None:
+                group = _repair_group(frames, gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger)
             with gpx_context(group.child(role="repair", index=i, label=str(source))):
                 trial = call_runner(
                     runner, frames[i], neighbour_phases, initial_cells, initial_fractions
@@ -513,5 +523,5 @@ def repair_isolated(
         repairs=tuple(repairs),
         needs_model_revision=tuple(sorted(needs_model_revision)),
         systematic_hint=tuple(tuple(d.frame_index for d in block) for block in blocks),
-        gpx_dir=group.run_dir if group.enabled else "",
+        gpx_dir=group.run_dir if group is not None and group.enabled else "",
     )

@@ -375,6 +375,27 @@ def test_repair_with_nothing_to_repair_leaves_no_run_directory(tmp_path, monkeyp
     assert out["gpx_dir"] == ""
 
 
+def test_repair_without_any_trial_leaves_no_run_directory(tmp_path, monkeypatch):
+    """対象はあっても**試行が 1 つも走らない** (良好な近傍が無い) なら run ディレクトリを作らない。
+
+    全フレームが対象 = 互いに warm-start 元から除外されるので、どのフレームにも良好な近傍が無く
+    全部 ``insitu_repair_no_neighbour`` になる。入口で run を先に作ると、空のディレクトリを
+    ``gpx_dir`` として ③ に渡す (開いても何も無い・索引も無い)。
+    """
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    frames = _frames_in(tmp_path, n=2)
+    calls, runner = _repair_recorder(rwp_after=8.0)
+
+    out = repair_frames(
+        _series(frames, [20.0, 21.0]), frames, [_P], target_frames=[0, 1], runner=runner
+    )
+
+    assert "error" not in out, out.get("error")
+    assert calls == [] and out["needs_model_revision"] == [0, 1]
+    assert not (tmp_path / "data" / "tsumugin_gpx").exists()
+    assert out["gpx_dir"] == ""
+
+
 # ---------------------------------------------------------------------------
 # ② 境界での型検査 — 入力スキーマは緩い object なので型は実処理側が守る
 # ---------------------------------------------------------------------------

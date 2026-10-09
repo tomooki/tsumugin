@@ -87,7 +87,8 @@ def _ledger_entry_to_dict(entry: "LedgerEntry") -> dict[str, object]:
     """``LedgerEntry`` を素の型 dict へ平坦化 (json.dumps allow_nan=False 安全)。
 
     ``repair_isolated`` が追記する ``insitu_repair_adopted`` / ``_rejected`` / ``_no_neighbour``
-    の payload はスカラ (frame/rwp*/source) と文字列列 (reasons) のみ。float は非有限を None へ
+    の payload はスカラ (frame/rwp*/source/``gpx_path``) と文字列列 (reasons) のみ、成果物を一時領域へ
+    退避したときの ``m9_gpx_fallback`` は文字列 (run_dir/reason) のみ。float は非有限を None へ
     落とす (`finite_or_none`) ことで allow_nan=False を担保する。
     """
     out: dict[str, object] = {"index": entry.index, "kind": entry.kind}
@@ -540,7 +541,8 @@ def repair_frames(
         ``TSUMUGIN_GPX_DIR`` より強い)。1 回の呼び出しは run ディレクトリを**1 つ**共有し、その下に
         **採否を問わず左右両方の試行** ``f<番号 4 桁>_repair_L.gpx`` / ``_R.gpx`` と ``manifest.jsonl``
         が並ぶ。省略時は env → 先頭フレームのデータ隣接 ``<data_dir>/tsumugin_gpx/run-<日時>/``。
-        実際の場所は返り値の ``gpx_dir`` (修復対象が無ければ run ディレクトリは作らず "")
+        実際の場所は返り値の ``gpx_dir`` (試行が 1 つも走らなければ — 対象が無い/良好な近傍が
+        無い — run ディレクトリは作らず "")
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。opt-out は**明示の ``false`` だけ**
         (``null`` は既定 = 保存、bool 以外は error dict)。⚠ **診断目的では止めない** —
         「warm-start でなぜ直らなかったか」は棄却された試行の fit そのものからしか追えない
