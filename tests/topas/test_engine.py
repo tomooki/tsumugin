@@ -228,6 +228,56 @@ def test_real_pbso4_refines_end_to_end(tmp_path):
 
 @pytest.mark.topas
 @_real_data
+def test_real_pbso4_each_stage_starts_from_the_last_accepted_out(tmp_path):
+    """**実 tc.exe で、段 N の INP の値 = 直前に受理した段の ``.out`` の精密化値** (#218)。
+
+    Issue の再現そのもの: 以前は 8 段すべて受理されても、どの段の INP も CIF の出発値
+    (a=8.48, Pb x=0.1882) から始まっていた。格子・Pb の x/z・scale・背景・TCHZ を確かめる。
+    """
+    import re
+
+    from tsumugin.topas.parse import background_values_from_out, named_refined_values_from_out
+
+    project = tmp_path / "proj"
+    result = eng.run_topas_rietveld(
+        [HistogramSpec(
+            data_path=str(_PBSO4_XRA), instrument_path=str(_PBSO4_PRM),
+            radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO, data_format="GSAS",
+            two_theta_limits=(20.0, 90.0),
+        )],
+        [PhaseSpec(structure_path=str(_PBSO4_CIF), phase_name="PbSO4")],
+        keep_project=str(project),
+    )
+    number = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+    carried: dict[str, float] = {}
+    background: "tuple[float, ...]" = ()
+    checked: set[str] = set()
+    for index, stage in enumerate(result.stage_results):
+        inp = (project / f"stage{index}.inp").read_text(encoding="utf-8")
+        for name, expected in carried.items():
+            found = re.search(rf"(?<![\w!])!?{re.escape(name)}(?:\s*,\s*|\s+)({number})", inp)
+            assert found, f"stage{index}: {name} の宣言が INP に無い"
+            assert float(found.group(1)) == expected, (
+                f"stage{index}: {name} = {found.group(1)} (受理済み .out は {expected})"
+            )
+            checked.add(name)
+        if background:
+            line = next(x for x in inp.splitlines() if x.strip().startswith("bkg"))
+            assert tuple(float(t) for t in line.split()[2:]) == background, f"stage{index}"
+        if stage.reverted:
+            continue  # 棄却した段の値は持ち越さない
+        out = (project / f"stage{index}.out").read_text(encoding="utf-8")
+        carried.update(named_refined_values_from_out(out))
+        background = background_values_from_out(out)[0] or background
+    for name in ("PbSO4_a", "PbSO4_b", "PbSO4_c", "PbSO4_Pb_x", "PbSO4_Pb_z",
+                 "PbSO4_scale_h0", "pku0_PbSO4", "pkw0_PbSO4"):
+        assert name in checked, f"{name} の持ち越しを一度も検算していない"
+    assert background, "背景係数の持ち越しを一度も検算していない"
+    assert math.isfinite(result.final_rwp)
+
+
+@pytest.mark.topas
+@_real_data
 def test_real_pbso4_saves_the_project_by_default(tmp_path, monkeypatch):
     """★規定「全解析で成果物を保存する」(NFR-108) が **TOPAS でも** 実 tc.exe で成立する。
 
@@ -337,6 +387,132 @@ def test_occupancy_is_released_only_for_declared_sites(synthetic_cif):
     out = apply_stage(doc, RefinementStage(label="occ", flags={"occupancy": True}))
     released = {s.label for s in out.phases[0].sites if s.occupancy.refine}
     assert released == {"O1"}
+
+
+# ---------------- 段の間の精密化値の持ち越し (#218) ----------------
+
+
+def _topas_like_out(inp_text: str, rwp: float, refined: "dict[str, float]",
+                    background: "tuple[float, ...]" = ()) -> str:
+    """tc.exe の ``.out`` 書き戻しを模す: **INP そのもの**に精密化値を ``value`_esd`` で埋める。
+
+    ``refined`` の名前は INP 中で ``!`` 無しに宣言されているもの (= 解放されたもの) だけ
+    書き換える (``!`` 付きは TOPAS も値を動かさない)。``background`` は ``bkg @`` 行の係数。
+    """
+    import re
+
+    text = inp_text
+    for name, value in refined.items():
+        text = re.sub(
+            rf"(?<![\w!])({re.escape(name)})(\s*,\s*|\s+)([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
+            lambda m, v=value: f"{m.group(1)}{m.group(2)}{v!r}`_0.001",
+            text,
+        )
+    if background:
+        coeffs = "  ".join(f"{v!r}`_0.5" for v in background)
+        text = re.sub(r"(?m)^(\s*bkg @).*$", lambda m: f"{m.group(1)}  {coeffs}", text)
+    header = f"r_p 1.0 r_wp {rwp} r_exp 5.0 gof 1.5\n"
+    return header + text
+
+
+@pytest.fixture()
+def topas_like_driver(monkeypatch):
+    """段ごとに (rwp, 精密化値, 背景) を仕込み、受け取った INP を記録する偽 tc.exe。"""
+    seen: list[str] = []
+
+    def make(script):
+        it = iter(script)
+
+        def fake_run_tc(inp_text, **kwargs):
+            rwp, refined, background = next(it)
+            seen.append(inp_text)
+
+            class R:
+                out_text = _topas_like_out(inp_text, rwp, refined, background)
+                results_text = f"r_wp\t{rwp}\ngof\t1.5\nwt_frac\tPbSO4\t100.0\t0.0\n"
+                stdout = ""
+
+            return R()
+
+        monkeypatch.setattr(eng, "run_tc", fake_run_tc)
+        return seen
+
+    return make
+
+
+_BKG = (111.459139, 13.479005, -5.96622276, -1.92068456, 5.79465128, -0.982759569)
+
+
+def test_next_stage_starts_from_the_refined_values_of_the_accepted_stage(topas_like_driver):
+    """**段 N の INP の値 = 段 N−1 (受理) の ``.out`` の精密化値** (#218 受入条件 1)。
+
+    以前は毎段 CIF の出発値から INP を描き直しており、「段階解放」が実際には
+    「累積フラグで出発値から解き直す」になっていた (実 PbSO4 で 8 段すべての INP が
+    a=8.48 のままだった)。
+    """
+    seen = topas_like_driver([
+        (30.0, {"PbSO4_scale_h0": 0.000232608191}, _BKG),
+        (20.0, {"PbSO4_a": 8.482776, "PbSO4_scale_h0": 0.00024}, _BKG),
+        (12.0, {"PbSO4_Pb_x": 0.18779}, ()),
+    ])
+    eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"background": {"coeffs": 6}, "scale": True}),
+            RefinementStage(label="S1", flags={"cell": True}),
+            RefinementStage(label="S2", flags={"coords": True}),
+        ),
+    )
+    stage1, stage2 = seen[1], seen[2]
+    assert "scale PbSO4_scale_h0 0.000232608191\n" in stage1
+    assert "bkg @ " + " ".join(repr(v) for v in _BKG) + "\n" in stage1, "背景係数が持ち越されていない"
+    assert "a PbSO4_a 8.482776\n" in stage2, "格子が CIF の出発値から解き直されている"
+    assert "scale PbSO4_scale_h0 0.00024\n" in stage2
+
+
+def test_stage_after_a_reverted_stage_starts_from_the_last_accepted_values(topas_like_driver):
+    """**棄却された段の次段は、直前に受理した段の値から始まる** (#218 受入条件 2)。
+
+    棄却段の値 (a=9.9) も、CIF の出発値も使わない。
+    """
+    seen = topas_like_driver([
+        (30.0, {"PbSO4_scale_h0": 0.00025}, _BKG),
+        (40.0, {"PbSO4_a": 9.9, "PbSO4_scale_h0": 0.0009}, (1.0,) * 6),  # 悪化 → revert
+        (20.0, {}, ()),
+    ])
+    result = eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"background": {"coeffs": 6}, "scale": True}),
+            RefinementStage(label="S1", flags={"cell": True}),
+            RefinementStage(label="S2", flags={"coords": True}),
+        ),
+    )
+    assert result.stage_results[1].reverted is True
+    stage2 = seen[2]
+    assert "scale PbSO4_scale_h0 0.00025\n" in stage2, "受理済みの値を捨てている"
+    assert "9.9" not in stage2 and "0.0009" not in stage2, "棄却した段の値が漏れている"
+    assert "bkg @ " + " ".join(repr(v) for v in _BKG) + "\n" in stage2
+
+
+def test_value_refined_earlier_survives_freezing(topas_like_driver):
+    """段 1 で精密化した座標を ``freeze_others`` で凍結したとき、**精密化値で**凍結する。
+
+    名前を付けずに描くと (固定の無名値) 名前で戻す先が無く、CIF の値へ黙って巻き戻る。
+    """
+    seen = topas_like_driver([
+        (30.0, {"PbSO4_Pb_x": 0.18779, "PbSO4_Pb_z": 0.16743}, ()),
+        (20.0, {}, ()),
+    ])
+    eng.run_topas_rietveld(
+        [_histogram()], [_phase()],
+        recipe=(
+            RefinementStage(label="S0", flags={"coords": True}),
+            RefinementStage(label="S1", flags={"freeze_others": True, "uiso": True}),
+        ),
+    )
+    assert "site Pb x !PbSO4_Pb_x 0.18779 " in seen[1]
+    assert " z !PbSO4_Pb_z 0.16743 " in seen[1]
 
 
 # ---------------- 対称操作の補完失敗 (#219) ----------------
@@ -509,8 +685,14 @@ _M7 = Path("docs/benchmark/testdata/m7")
 #: ⚠ 一時 43.49% と記録したが、それは **tc.exe のスレッド依存の非決定性**を引いた値だった
 #: (同一入力が 43.49/67.62/43.49/29.29% に散らばる)。`driver` が 1 スレッドに固定してからは
 #: この値でビット同一に再現する。
-_T4_RWP_MEASURED = 67.62
-_T4_RWP_CEILING = 69.0
+#:
+#: **2026-10-09 (#218) で 67.62 → 32.95%**。段の間で精密化値を持ち越すようになり、それまで
+#: 「CIF の出発値から累積フラグで解き直して」発散 → revert されていた S4 coords / S6 uiso /
+#: S7 Lorentzian / S8 非対称が受理されるようになった。⚠ その結果 **validity は fail に
+#: なった** (CaF2 の Uiso < 0) — 以前 pass だったのは Uiso 段が revert されていたからで、
+#: 調整済み設定と同じ既知の状態が既定でも表に出ただけである (Rwp だけで合格にしない)。
+_T4_RWP_MEASURED = 32.95
+_T4_RWP_CEILING = 34.0
 #: 同条件での観測点数 (11BM 2.5-32° + PG3-1066 11750-103794 µs + PG3-2665 全域)。
 _T4_N_OBS = 40150
 
@@ -567,7 +749,7 @@ def test_benchmark_t2_garnet_cw_neutron():
             mixed_occupancy_groups=(("Fe1", "Al1"), ("Al2", "Fe2")),
         )],
     )
-    assert result.final_rwp < 6.5, f"Rwp {result.final_rwp:.2f} (実測 5.54, GSAS 4.33)"
+    assert result.final_rwp < 6.5, f"Rwp {result.final_rwp:.2f} (実測 5.56, GSAS 4.33)"
     assert result.validity.passed
     assert result.atom_occupancy["garnet"]["Fe1"] == pytest.approx(0.58, abs=0.05)
 
@@ -609,7 +791,7 @@ def test_benchmark_t3_joint_reports_the_global_rwp():
     )
     assert len(result.histogram_rwp) == 2, "内訳が取れていない"
     assert result.final_rwp >= min(result.histogram_rwp) - 1e-9
-    assert result.final_rwp < 8.0, f"Rwp {result.final_rwp:.2f} (実測 7.19, GSAS 6.66)"
+    assert result.final_rwp < 8.0, f"Rwp {result.final_rwp:.2f} (実測 7.13, GSAS 6.66)"
     assert result.validity.passed
     # 【段が実際に走ったことを見る】: 温度差の段が落ちて revert されても総合 Rwp は
     #   8.29% で「基準の近く」に見えてしまう (実測: ε の箱が広すぎると tc.exe が
@@ -699,6 +881,11 @@ def test_benchmark_t4_multiphase_tof_synchrotron():
     # 格子は Rwp が未達でも妥当な位置に留まること (NAC 立方 a~10.25 / CaF2 蛍石 a~5.46)。
     assert 10.20 < result.refined_cells["NAC"][0] < 10.30
     assert 5.42 < result.refined_cells["CaF2"][0] < 5.50
+    # 【既知の赤旗】: #218 で Uiso 段が受理されるようになり、調整済み設定と同じく CaF2 の
+    #   Uiso < 0 が表に出た。直ったら落ちて記録の更新を強制する (調整済み側と同じ規律)。
+    assert not result.validity.passed, (
+        "CaF2 の Uiso が負でなくなった — 記録を更新すること (この赤旗は既知の状態の固定)"
+    )
 
 
 @pytest.mark.topas
@@ -714,13 +901,15 @@ def test_benchmark_t4_multiphase_tof_synchrotron():
 def test_benchmark_t4_tuned_configuration():
     """T4 の**到達点** — 放射光のプロファイル種付け + 背景 20 項 (#179)。
 
-    既定 (43.5%) から効いた 2 手を固定する:
+    既定 (#218 後 32.95%) から効いた 2 手を固定する:
 
     - ``seed_profile``: TOPAS は装置ファイルのプロファイルを読まないので、汎用初期値から
-      遠い放射光では**桁で効く** (11BM 43.9% → 8.7%)。**CW 中性子では悪化する**ので既定 OFF。
+      遠い放射光では**桁で効く** (#218 後の実測: 背景 6 項で 11BM 31.2% → 9.35%)。
     - 背景 20 項: 11BM は 6 項では背景を表せない (M9 CaTeO3 で 24 項が要った前例と同型)。
-      ⚠ 24 項にすると X 線 Lorentzian 段が revert されて総合 67% へ跳ねる — **多ければ
-      良いのではない**。
+
+    ⚠ #218 以前に記録した「24 項にすると X 線 Lorentzian 段が revert されて 67% へ跳ねる」
+    「CW 中性子では種付けで悪化する (garnet 5.54 → 9.76%)」は、どちらも**段を出発値から解き
+    直していた**ことの産物で、#218 後は再現しない (24 項 21.11% / garnet 5.557 → 5.557%)。
 
     ⚠ **物理妥当性は現在落ちる**: CaF2 の Ca が Uiso < 0 になる (少数相の未モデル寄与を
     吸っている疑い)。`assert not passed` は**既知の状態の記録**であり、直ったらこのテストが
@@ -738,7 +927,7 @@ def test_benchmark_t4_tuned_configuration():
         seed_profile=True,
     )
     assert result.final_rwp < 21.0, f"Rwp {result.final_rwp:.2f} (実測 19.25, GSAS ~12.8)"
-    assert result.histogram_rwp[0] < 10.0, "放射光の種付けが効いていない (実測 8.67)"
+    assert result.histogram_rwp[0] < 10.0, "放射光の種付けが効いていない (実測 8.68)"
     assert not result.validity.passed, (
         "CaF2 の Uiso が負でなくなった — 記録を更新すること (この赤旗は既知の状態の固定)"
     )

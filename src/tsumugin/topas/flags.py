@@ -9,12 +9,18 @@
 `apply_stage` は前段の文書を受けて新しい文書を返す純関数で、累積は自然に表現される
 (``freeze_others`` は「解放を落とした文書を作る」だけ)。
 
+**値には触らない** (#218): 前段の精密化値は `topas.carry` が ``.out`` から読み戻して
+`TopasDocument.carried_values` に載せ、描画時に宣言へ反映される。ここで新しく作る
+パラメータ (``CS_L``/``Strain_L``/``Simple_Axial_Model``) に**名前を付ける**のはそのため —
+無名の ``@`` は名前で戻す先が無く、次段で出発値へ黙って戻る。
+
 **未対応フラグは黙って無視しない** (:class:`UnsupportedStageFlagError`)。無視すると
 「段を適用したのに何も変わっていない」= CLAUDE.md の無言 no-op と同じ病理を招く。
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Sequence
 
@@ -369,14 +375,21 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
                 continue
             for phase in phases:
                 terms = _terms_for(hist, phase.phase_name)
+                stem = _slug(phase.phase_name)
+                # 【名前を付ける】: 無名の ``@`` は次段へ値を持ち越せない (#218)。名前は
+                #   相 × ヒストグラムで一意に (TOPAS のパラメータ名は大域)。
                 hist = _with_terms(
                     hist, phase.phase_name,
                     terms.with_updates(
                         size_lorentzian=Param(
-                            (terms.size_lorentzian or Param(200.0)).value, refine=True
+                            (terms.size_lorentzian or Param(200.0)).value,
+                            refine=True,
+                            name=f"csl_{stem}_h{i}",
                         ),
                         strain_lorentzian=Param(
-                            (terms.strain_lorentzian or Param(0.01)).value, refine=True
+                            (terms.strain_lorentzian or Param(0.01)).value,
+                            refine=True,
+                            name=f"strl_{stem}_h{i}",
                         ),
                     ),
                 )
@@ -392,11 +405,12 @@ def apply_stage(doc: TopasDocument, stage: RefinementStage) -> TopasDocument:
             histograms = [_toggle_profile_names(h, keys, True) for h in histograms]
 
     if flags.get("profile_asymmetry"):
+        # 【名前を付ける】: 無名の ``@`` は次段へ値を持ち越せない (#218)。
         histograms = [
-            h.with_updates(preamble=(*h.preamble, "Simple_Axial_Model(@, 5.0)"))
+            h.with_updates(preamble=(*h.preamble, f"Simple_Axial_Model(axial_h{i}, 5.0)"))
             if not any("Simple_Axial_Model" in line for line in h.preamble)
             else h
-            for h in histograms
+            for i, h in enumerate(histograms)
         ]
 
     if flags.get("tof_profile"):
@@ -464,6 +478,15 @@ def _apply_preferred_orientation(
             # 【名前は相 × ヒストグラムで一意に】: TOPAS のパラメータ名は大域なので、
             #   同名だと全相が 1 つの配向分布を強制的に共有する。
             name = f"po_{_slug(phase.phase_name)}_h{index}"
+            # 【同じ次数なら既存の行を保つ】: 精密化後は係数を展開した形
+            #   (``… load sh_Cij_prm { … }``) に置き換わっている (`topas.carry`, #218)。
+            #   短い形で上書きすると係数が 0 から解き直しになる。
+            current = _terms_for(hist, phase.phase_name).extras
+            if any(
+                re.match(rf"PO_Spherical_Harmonics\(\s*{name}\s*,\s*{order}(?!\d)", line)
+                for line in current
+            ):
+                continue
             hist = _phase_extras(
                 hist,
                 phase.phase_name,

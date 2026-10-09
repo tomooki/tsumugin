@@ -734,3 +734,91 @@ def test_frozen_cell_strain_is_not_published():
     ).render()
     assert "prm !eps_PbSO4_a_h1" in text, "宣言そのものは残る (参照式が壊れる)"
     assert "cell_strain" not in text, "固定値を出版値として出している"
+
+
+# ---------------- 持ち越した精密化値の反映 (#218) ----------------
+
+
+def test_carried_values_replace_declarations_but_not_references():
+    """名前で戻すのは**宣言**だけ。参照 (``=name;``) と ``Out(name, …)`` は書き換えない。"""
+    xray = _histogram()
+    neutron = TopasHistogram(data_path="n.xye", is_neutron=True, background=Param(0.0))
+    phase = _pbso4_phase()
+    phase = phase.with_updates(cell={k: Param(v.value, refine=True) for k, v in phase.cell.items()})
+    doc = TopasDocument(
+        histograms=(xray, neutron), phases=(phase,), results_path="r.txt",
+        carried_values={"PbSO4_a": 8.482776},
+    )
+    text = doc.render()
+    assert "prm PbSO4_a 8.482776\n" in text
+    assert text.count("      a =PbSO4_a;\n") == 2, "参照式が書き換わった"
+    assert '      Out(PbSO4_a, "cell\\tPbSO4\\ta\\t%.8f", "\\t%.8f\\n")\n' in text
+
+
+def test_carried_values_keep_the_refine_flag():
+    """値とフラグを混ぜない: 固定 (``!``) の宣言は固定のまま値だけ替わる。"""
+    doc = TopasDocument(
+        histograms=(_histogram(),), phases=(_pbso4_phase(),), results_path="r.txt",
+        carried_values={"PbSO4_Pb_x": 0.18779},
+    )
+    assert "site Pb x !PbSO4_Pb_x 0.18779 " in doc.render()
+
+
+def test_carried_values_reach_macro_arguments_in_opaque_lines():
+    """``TCHZ_Peak_Type(name, 値, …)`` のように**文字列で持つ行**のマクロ引数にも届く。"""
+    hist = _histogram(
+        phase_terms={"PbSO4": PhaseHistogramTerms(
+            peak_type="TCHZ_Peak_Type(pku0, 0.0, !pkz0, 0.0, pkw0, 0.003)"
+        )},
+    ).with_updates(preamble=("prm ze0 0.0 min -0.5 max 0.5",))
+    doc = TopasDocument(
+        histograms=(hist,), phases=(_pbso4_phase(),),
+        carried_values={"pku0": -0.00195887391, "pkw0": 0.143, "ze0": -0.0085},
+    )
+    text = doc.render()
+    assert "TCHZ_Peak_Type(pku0, -0.00195887391, !pkz0, 0.0, pkw0, 0.143)" in text
+    assert "   prm ze0 -0.0085 min -0.5 max 0.5\n" in text, "min/max まで書き換えた"
+
+
+def test_background_values_are_rendered_positionally_and_padded():
+    """背景係数は名前を付けられない (実測) ので位置で持つ。係数が増えた分は既定値で埋める。"""
+    hist = _histogram(background_values=(111.4, 13.5, -5.9))
+    text = TopasDocument(histograms=(hist,), phases=(_pbso4_phase(),)).render()
+    assert "   bkg @ 111.4 13.5 -5.9 0.0 0.0 0.0\n" in text
+    shorter = _histogram(background_values=(1.0,) * 8)
+    text = TopasDocument(histograms=(shorter,), phases=(_pbso4_phase(),)).render()
+    assert "   bkg @ 1.0 1.0 1.0 1.0 1.0 1.0\n" in text
+
+
+def test_fixed_sites_are_named_when_results_are_requested():
+    """固定値にも名前を付ける — 無名だと凍結した精密化値を名前で戻せない (#218)。"""
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(_pbso4_phase(),), results_path="r.txt"
+    ).render()
+    assert (
+        "      site Pb x !PbSO4_Pb_x 0.1879 y !PbSO4_Pb_y 0.25 z !PbSO4_Pb_z 0.1667"
+        " occ Pb+2 !PbSO4_Pb_occ 1.0 beq !PbSO4_Pb_beq 1.5\n"
+    ) in text
+    # 出版値 (Out) は精密化したものだけ — 固定値を「精密化した」と読ませない。
+    assert "Out(PbSO4_Pb_x" not in text
+
+
+def test_named_size_strain_terms_render_with_their_names():
+    hist = _histogram(
+        phase_terms={"PbSO4": PhaseHistogramTerms(
+            size_lorentzian=Param(200.0, refine=True, name="csl_PbSO4_h0"),
+            strain_lorentzian=Param(0.01, refine=False, name="strl_PbSO4_h0"),
+        )}
+    )
+    text = TopasDocument(histograms=(hist,), phases=(_pbso4_phase(),)).render()
+    assert "      CS_L(csl_PbSO4_h0, 200.0)\n" in text
+    assert "      Strain_L(!strl_PbSO4_h0, 0.01)\n" in text
+
+
+def test_unplaced_carried_names_are_reported():
+    """宣言が無く反映されなかった持ち越し値を返す (名前のずれで値が黙って捨てられる検出)。"""
+    doc = TopasDocument(
+        histograms=(_histogram(),), phases=(_pbso4_phase(),), results_path="r.txt",
+        carried_values={"PbSO4_a": 8.4801, "gone_c20": 0.1},
+    )
+    assert doc.unplaced_carried_names() == ("gone_c20",)

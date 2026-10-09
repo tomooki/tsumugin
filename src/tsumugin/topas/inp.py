@@ -101,6 +101,50 @@ def render_param(param: Param) -> str:
     return head
 
 
+def _macro_name(param: Param) -> str:
+    """``CS_L(c, v)`` 型マクロの第 1 引数 (パラメータ名) を描く。
+
+    名前があれば ``name`` / ``!name`` (解放/固定)。名前が無ければ従来どおり ``@``
+    (段階フラグ層 `topas.flags` は名前を付けて渡す — 名前で精密化値を持ち越すため)。
+    """
+    if param.name:
+        return param.name if param.refine else f"!{param.name}"
+    return "@"
+
+
+#: 浮動小数の字面 (``8.48`` / ``-0.5`` / ``1e-05`` / ``.01``)。
+_NUMBER = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+
+#: パラメータの**宣言**: ``name 値`` / ``!name 値`` / マクロ引数の ``name, 値``。
+#: 参照 (``=name;``)・``Out(name, "…")``・式中 (``name D_spacing``) は名前の直後が数値で
+#: ないので当たらない。キーワード (``lo 1.5405`` 等) も当たるが、置換するのは
+#: 持ち越し値を持つ名前だけなので触らない。
+_DECLARATION = re.compile(
+    rf"(?<![\w!@.])(!?)([A-Za-z_]\w*)(\s*,\s*|\s+)({_NUMBER})(?![\w.`])"
+)
+
+
+def _apply_carried_values(
+    text: str, values: Mapping[str, float]
+) -> "tuple[str, frozenset[str]]":
+    """宣言の値を持ち越し値へ差し替える。``(新テキスト, 差し替えた名前)`` を返す。
+
+    ``!`` の有無 (解放/固定) は保つ — 値とフラグを混ぜない (`TopasDocument.carried_values`)。
+    """
+    if not values:
+        return text, frozenset()
+    placed: set[str] = set()
+
+    def substitute(match: "re.Match[str]") -> str:
+        bang, name, gap, _ = match.groups()
+        if name not in values:
+            return match.group(0)
+        placed.add(name)
+        return f"{bang}{name}{gap}{_fmt(values[name])}"
+
+    return _DECLARATION.sub(substitute, text), frozenset(placed)
+
+
 @dataclass(frozen=True)
 class TopasSite:
     """結晶学的サイト 1 つ (``site`` 行)。"""
@@ -218,6 +262,14 @@ class TopasHistogram:
     """放射・光学系のマクロ行 (``CuKa5(0.001)`` / ``LP_Factor(...)`` 等)。"""
     background: "Param | None" = None
     background_coeffs: int = 6
+    background_values: tuple[float, ...] = ()
+    """直前に受理した段で精密化された背景係数 (#218)。空なら ``background.value`` で埋める。
+
+    **``bkg`` の係数は名前を付けられない** (実測: ``bkg b0 0 b1 0`` は ``Error loading
+    sstring_in`` で異常終了する) ので、名前で戻す :attr:`TopasDocument.carried_values` に
+    載らない。係数の**位置**で持ち越す。係数の数が増えたら不足分を ``background.value``
+    で埋め、減ったら先頭から使う。
+    """
     two_theta_limits: "tuple[float, float] | None" = None
     excluded_regions: tuple[tuple[float, float], ...] = ()
     weight: float = 1.0
@@ -380,6 +432,19 @@ class TopasDocument:
     「相ごとに別の値を持つのは物理的に誤り」だが ``scale_pks`` が ``str`` にしか書けない量が
     これに当たる。名前が重複すると TOPAS は黙って共有するため、宣言はここに 1 度だけ置く。
     """
+    carried_values: Mapping[str, float] = field(default_factory=dict)
+    """**直前に受理した段までの精密化値** (TOPAS のパラメータ名 → 値, #218)。
+
+    :meth:`render` が、この名前の**宣言** (``name 値`` / ``!name 値`` / マクロ引数の
+    ``name, 値``) の値を差し替える。段階解放は「少ないパラメータで最小値の近くまで寄せてから
+    自由度を足す」ためのものなので、次段は前段の精密化値から始まらなければならない
+    (以前は毎段 CIF の出発値から描き直しており、累積フラグで解き直していた)。
+
+    **値はここ、解放フラグは各 `Param`** という分担にしてある。フラグ層 (`topas.flags`) は
+    値に触らず、持ち越し (`topas.carry`) はフラグに触らない。名前で戻すので、参照
+    (``=name;``)・``Out(name, …)``・式中の出現は書き換わらない (どれも名前の直後が数値でない)。
+    名前を持たない値 (``bkg`` の係数) は :attr:`TopasHistogram.background_values` が運ぶ。
+    """
 
     # ------------------------------------------------------------ 部品
 
@@ -429,8 +494,12 @@ class TopasDocument:
             """結果出力を要求しているときは名前を付ける (`Out()` から参照するため)。
 
             無名の ``@`` は ``Out()`` で指せず、精密化した値と esd を回収できない。
+
+            **固定値にも付ける** (``!name 値``, #218): 段 1 で精密化した座標を後段の
+            ``freeze_others`` で凍結すると、無名の固定値として描かれて**名前で戻す先が
+            無くなり** CIF の値へ黙って巻き戻る。名前があれば精密化値のまま凍結できる。
             """
-            if not self.results_path or param.is_reference or param.name or not param.refine:
+            if not self.results_path or param.is_reference or param.name:
                 return param
             return replace(param, name=f"{stem}_{suffix}")
 
@@ -542,9 +611,15 @@ class TopasDocument:
             scale = replace(scale, name=scale_name)
         lines.append(f"{_INDENT_PHASE}scale {render_param(scale)}")
         if terms.size_lorentzian is not None:
-            lines.append(f"{_INDENT_PHASE}CS_L(@, {_fmt(terms.size_lorentzian.value)})")
+            lines.append(
+                f"{_INDENT_PHASE}CS_L({_macro_name(terms.size_lorentzian)}, "
+                f"{_fmt(terms.size_lorentzian.value)})"
+            )
         if terms.strain_lorentzian is not None:
-            lines.append(f"{_INDENT_PHASE}Strain_L(@, {_fmt(terms.strain_lorentzian.value)})")
+            lines.append(
+                f"{_INDENT_PHASE}Strain_L({_macro_name(terms.strain_lorentzian)}, "
+                f"{_fmt(terms.strain_lorentzian.value)})"
+            )
         if terms.preferred_orientation:
             lines.append(f"{_INDENT_PHASE}{terms.preferred_orientation}")
         # 【相分率】: MVW は質量/体積/**重量分率**を返す。Scale ではなく wt% であることが重要
@@ -694,7 +769,10 @@ class TopasDocument:
         for low, high in hist.excluded_regions:
             lines.append(f"{_INDENT_HIST}exclude {_fmt(low)} {_fmt(high)}")
         if hist.background is not None:
-            coeffs = " ".join(_fmt(hist.background.value) for _ in range(hist.background_coeffs))
+            count = hist.background_coeffs
+            carried = list(hist.background_values[:count])
+            values = carried + [hist.background.value] * (count - len(carried))
+            coeffs = " ".join(_fmt(value) for value in values)
             prefix = "@ " if hist.background.refine else ""
             lines.append(f"{_INDENT_HIST}bkg {prefix}{coeffs}")
         lines.extend(f"{_INDENT_HIST}{extra}" for extra in hist.extras)
@@ -708,7 +786,22 @@ class TopasDocument:
     # ------------------------------------------------------------ 公開 API
 
     def render(self) -> str:
-        """INP テキストを決定論的に生成する。"""
+        """INP テキストを決定論的に生成する (持ち越した精密化値を宣言へ反映する)。"""
+        text, _ = _apply_carried_values(self._render_unvalued(), self.carried_values)
+        return text
+
+    def unplaced_carried_names(self) -> tuple[str, ...]:
+        """持ち越した値のうち、**この文書に宣言が無く反映されなかった**名前 (昇順)。
+
+        正常なら空。例外は ``freeze_others`` が球面調和の行を落としたときの係数名で、
+        それ以外が並ぶなら**名前の付け方が段の間でずれて値が黙って捨てられている** (#218 が
+        直した「出発値から解き直す」の再発) ので、engine はこれを ledger に残す。
+        """
+        _, placed = _apply_carried_values(self._render_unvalued(), self.carried_values)
+        return tuple(sorted(set(self.carried_values) - placed))
+
+    def _render_unvalued(self) -> str:
+        """持ち越し値を反映する前の INP テキスト。"""
         share = len(self.histograms) > 1
         shared_lines, shared = _shared_prm_plan(self.phases, share=share)
         group_lines, group_map = _group_prm_plan(self.phases)

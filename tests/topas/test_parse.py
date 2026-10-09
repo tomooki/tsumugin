@@ -153,3 +153,109 @@ def test_a_purely_numeric_key_is_not_usable():
         pytest.approx(8.6),
         None,
     )
+
+
+# ---------------- 段の間の持ち越し: .out からの精密化値 (#218) ----------------
+
+#: 実 tc.exe の ``.out`` (GSAS-II チュートリアル PbSO4, 公開データ) の抜粋。
+#: raw 文字列: ``Out()`` の書式の ``\t`` は INP では字面 (バックスラッシュ + t) である。
+_REFINED_OUT = r"""
+r_p  5.66722753 r_wp  7.54225797 r_exp  4.12129093 gof  1.83007171
+   prm ze0 -0.00847558532`_0.00052133348 min -0.5 max 0.5 del = .01 Yobs_dx_at(X1);
+   th2_offset = ze0;
+   One_on_X(!oox0, 0)
+   Simple_Axial_Model(axial_h0, 9.77134733`_0.0605699294)
+   lam
+      la 1 lo 1.5405 lh 0.1
+   bkg @  111.459139`_1.03152924  13.479005`_1.6142107 -5.96622276`_1.10063674
+      a PbSO4_a  8.482776`_0.000101
+      site Pb x PbSO4_Pb_x  0.18779`_0.00009 y 0.25 z !PbSO4_Pb_z 0.167 occ Pb 1.0
+      TCHZ_Peak_Type(pku0_PbSO4,-0.00195887391`_0.00254119361, !pkz0_PbSO4, 0.0)
+      scale PbSO4_scale_h0  0.000232608191`_8.768e-07
+      CS_L(csl_PbSO4_h0, 443.12`_540.51_LIMIT_MIN_0.3)
+      MVW( 1213.050, 318.923`_0.007, mvw_wt_PbSO4_h0  100.000`_0.000)
+      Out(PbSO4_a, "cell\tPbSO4\ta\t%.8f", "\t%.8f\n")
+C_matrix_normalized
+{
+                             1   2
+ze0                    1:  100  74
+PbSO4_a                2:   74 100
+}
+"""
+
+
+def test_named_refined_values_are_the_backticked_ones():
+    """**バッククォートが精密化値の印** — 固定値 (``!name``) とキーワード (``lo``) は拾わない。"""
+    from tsumugin.topas.parse import named_refined_values_from_out
+
+    values = named_refined_values_from_out(_REFINED_OUT)
+    assert values["PbSO4_a"] == pytest.approx(8.482776)
+    assert values["PbSO4_Pb_x"] == pytest.approx(0.18779)
+    assert values["ze0"] == pytest.approx(-0.00847558532)
+    assert values["axial_h0"] == pytest.approx(9.77134733)
+    assert values["pku0_PbSO4"] == pytest.approx(-0.00195887391), "マクロ引数 (name,値) を拾っていない"
+    assert values["PbSO4_scale_h0"] == pytest.approx(0.000232608191)
+    assert values["csl_PbSO4_h0"] == pytest.approx(443.12), "_LIMIT_ 付きの値を拾っていない"
+    for fixed in ("PbSO4_Pb_z", "pkz0_PbSO4", "oox0", "lo", "la", "lh", "r_wp", "y"):
+        assert fixed not in values, f"{fixed} は精密化値ではない"
+
+
+def test_named_refined_values_skip_reported_values_and_the_correlation_matrix():
+    """``MVW`` の重量分率は TOPAS が計算する**報告値**、相関行列の行頭は名前だが値ではない。"""
+    from tsumugin.topas.parse import named_refined_values_from_out
+
+    values = named_refined_values_from_out(_REFINED_OUT)
+    assert "mvw_wt_PbSO4_h0" not in values
+    assert set(values) == {
+        "ze0", "axial_h0", "PbSO4_a", "PbSO4_Pb_x", "pku0_PbSO4", "PbSO4_scale_h0",
+        "csl_PbSO4_h0",
+    }
+
+
+def test_named_refined_values_without_do_errors_still_carry_the_backtick():
+    """``do_errors`` が無いと esd は付かないがバッククォートは付く (実測: ``8.482776```)。"""
+    from tsumugin.topas.parse import named_refined_values_from_out
+
+    assert named_refined_values_from_out("      a PbSO4_a  8.482776`\n") == {
+        "PbSO4_a": pytest.approx(8.482776)
+    }
+
+
+def test_background_values_are_read_per_line_in_order():
+    """``bkg`` の係数は名前を付けられないので行と位置で持ち越す。"""
+    from tsumugin.topas.parse import background_values_from_out
+
+    text = _REFINED_OUT.replace(
+        "C_matrix_normalized", "   bkg @  1.5`_0.1 -2.0`\nC_matrix_normalized"
+    )
+    rows = background_values_from_out(text)
+    assert rows[0] == pytest.approx((111.459139, 13.479005, -5.96622276))
+    assert rows[1] == pytest.approx((1.5, -2.0))
+    assert len(rows) == 2, "相関行列や他の行を bkg と読んでいる"
+
+
+def test_background_line_with_a_non_numeric_token_is_not_positionally_carried():
+    """位置の対応が取れない行は ``None`` — 別の係数へ入れるより持ち越さない方が安全。"""
+    from tsumugin.topas.parse import background_values_from_out
+
+    assert background_values_from_out("   bkg @ 1.0`_0.1 b1 2.0\n") == [None]
+
+
+def test_spherical_harmonics_block_is_flattened_to_one_line_without_esd():
+    """係数を展開した形を次段の行にする (1 行の形は実 tc.exe が受理することを確認済み)。"""
+    from tsumugin.topas.parse import spherical_harmonics_blocks_from_out
+
+    text = (
+        "      PO_Spherical_Harmonics(po_PbSO4_h0, 4 load sh_Cij_prm {\n"
+        "\t\t\ty00   !po_PbSO4_h0_c00  1.00000\n"
+        "\t\t\ty20   po_PbSO4_h0_c20  -0.06592`_0.00475\n"
+        "\t\t\ty44p  po_PbSO4_h0_c44p  0.01267`_0.00418\n"
+        "\t\t\t} ) \n"
+    )
+    assert spherical_harmonics_blocks_from_out(text) == {
+        "po_PbSO4_h0": (
+            "PO_Spherical_Harmonics(po_PbSO4_h0, 4 load sh_Cij_prm { "
+            "y00 !po_PbSO4_h0_c00 1.00000 y20 po_PbSO4_h0_c20 -0.06592 "
+            "y44p po_PbSO4_h0_c44p 0.01267 } )"
+        )
+    }

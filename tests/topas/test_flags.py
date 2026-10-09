@@ -463,3 +463,40 @@ def test_unsupported_and_inapplicable_flags_are_reported_together():
         _apply({"phase_fraction_sum": True, "no_such_flag": True})
     message = str(excinfo.value)
     assert "phase_fraction_sum" in message and "no_such_flag" in message
+
+
+# ---------------- 値を持ち越すための名前 (#218) ----------------
+
+
+def test_profile_asymmetry_is_named_per_histogram():
+    """無名の ``@`` は次段へ値を持ち越せない。名前はヒストグラムごとに一意。"""
+    doc = TopasDocument(histograms=(_hist(), _hist()), phases=(_phase(),))
+    out = _apply({"profile_asymmetry": True}, doc)
+    assert "Simple_Axial_Model(axial_h0, 5.0)" in out.histograms[0].preamble
+    assert "Simple_Axial_Model(axial_h1, 5.0)" in out.histograms[1].preamble
+
+
+def test_size_strain_terms_are_named_per_phase_and_histogram():
+    doc = TopasDocument(histograms=(_hist(), _hist()), phases=(_phase(), _phase(phase_name="Q")))
+    out = _apply({"size_strain": True}, doc)
+    names = {
+        (t.size_lorentzian.name, t.strain_lorentzian.name)
+        for h in out.histograms
+        for t in h.phase_terms.values()
+    }
+    assert ("csl_P_h0", "strl_P_h0") in names and ("csl_Q_h1", "strl_Q_h1") in names
+    assert len(names) == 4
+
+
+def test_reapplying_preferred_orientation_keeps_the_refined_block():
+    """精密化後の係数展開形 (`topas.carry`) を同じ次数の再適用で短い形に戻さない。"""
+    expanded = (
+        "PO_Spherical_Harmonics(po_P_h0, 4 load sh_Cij_prm { "
+        "y00 !po_P_h0_c00 1.0 y20 po_P_h0_c20 -0.066 } )"
+    )
+    doc = _doc(hist=_hist(phase_terms={"P": PhaseHistogramTerms(extras=(expanded,))}))
+    assert _extras(_apply({"preferred_orientation": 4}, doc)) == (expanded,)
+    # 次数を変えたら新しい形で張り直す (係数の集合が変わる)。
+    assert _extras(_apply({"preferred_orientation": 6}, doc)) == (
+        "PO_Spherical_Harmonics(po_P_h0, 6)",
+    )
