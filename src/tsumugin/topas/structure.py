@@ -20,7 +20,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .inp import Param, TopasPhase, TopasSite
-from .symmetry import fixed_coord_axes, free_coord_axes, snap_to_special_position
+from .symmetry import site_coord_axes, snap_to_special_position
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..autorietveld.cif_normalize import Atom, Structure
@@ -228,6 +228,11 @@ def _site(
     """1 原子を `TopasSite` へ写す (特殊位置は厳密値へ吸着させる)。"""
     raw = (atom.x, atom.y, atom.z)
     x, y, z = snap_to_special_position(symops, raw)
+    # 【自由軸・固定軸は吸着前の座標で判定する】: 吸着は判定結果を変えないが (同じサイト対称群
+    #   から出るので)、判定の入力を吸着後にすると「吸着が自分の判定根拠を作る」循環に
+    #   なる。1e-4 の許容差で拾えなかったサイトが吸着で拾えるようになる、という
+    #   取りこぼしの隠蔽を避ける。
+    free_axes, fixed_axes = site_coord_axes(symops, raw)
     return TopasSite(
         label=atom.label,
         element=to_topas_element(atom.type_symbol, ionic=ionic_scattering),
@@ -236,12 +241,8 @@ def _site(
         z=Param(z),
         occupancy=Param(atom.occ),
         beq=Param(atom.uiso * BEQ_PER_UISO),
-        # 【自由軸は吸着前の座標で判定する】: 吸着は判定結果を変えないが (同じサイト対称群
-        #   から出るので)、判定の入力を吸着後にすると「吸着が自分の判定根拠を作る」循環に
-        #   なる。1e-4 の許容差で拾えなかったサイトが吸着で拾えるようになる、という
-        #   取りこぼしの隠蔽を避ける。
-        free_coord_axes=free_coord_axes(symops, raw),
-        fixed_coord_axes=fixed_coord_axes(symops, raw),
+        free_coord_axes=free_axes,
+        fixed_coord_axes=fixed_axes,
     )
 
 

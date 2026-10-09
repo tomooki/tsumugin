@@ -728,6 +728,11 @@ class TopasDocument:
             stem = f"{_slug(name)}_{site_slugs[site.label]}"
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
                 prm = prm_for(f"site.{site.label}.{axis}", param, f"{stem}_{axis}")
+                if not prm and param.is_reference:
+                    # 【参照式の座標も値は出す】: ``x =式;`` の式を ``Out`` にそのまま渡す
+                    #   (``Out`` は式を取る — 混合占有の ``1-x`` と同じ)。格子の従属軸と違い
+                    #   結果側に独立変数から復元する手段が無いので、出さないと原子ごと消える。
+                    prm = param.expression
                 if not prm:
                     continue
                 if param.refine:

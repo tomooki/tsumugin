@@ -19,6 +19,7 @@ from tsumugin.topas.symmetry import (
     fixed_coord_axes,
     free_coord_axes,
     parse_symop,
+    site_coord_axes,
     site_symmetry_projector,
 )
 
@@ -153,6 +154,21 @@ def test_an_axis_that_follows_another_is_not_fixed_even_with_a_zero_diagonal():
 def test_no_symops_fixes_nothing():
     """判定材料が無ければ「固定」とも言わない (座標 esd は ``None`` = 決まっていない に倒れる)。"""
     assert fixed_coord_axes((), (0.0, 0.0, 0.0)) == ()
+
+
+def test_site_coord_axes_returns_both_classifications_from_one_projector():
+    """構造の読み込みは ``(自由軸, 固定軸)`` を 1 回の射影子計算で得る (サイトごとに 2 回作らない)。"""
+    for ops, position in (
+        (_PNMA, (0.1882, 0.25, 0.167)),
+        (_PNMA, (0.0, 0.0, 0.0)),
+        (_PNMA, (0.123, 0.456, 0.789)),
+        (("x,y,z", "-x+y,y,z"), (0.2, 0.4, 0.3)),
+        ((), (0.1, 0.2, 0.3)),
+    ):
+        assert site_coord_axes(ops, position) == (
+            free_coord_axes(ops, position),
+            fixed_coord_axes(ops, position),
+        )
 
 
 def test_unparsable_symops_are_skipped_not_fatal():

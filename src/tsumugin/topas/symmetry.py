@@ -32,6 +32,7 @@ __all__ = [
     "free_coord_axes",
     "parse_symop",
     "read_sg_symops",
+    "site_coord_axes",
     "site_symmetry_projector",
     "site_symmetry_residual",
     "snap_to_special_position",
@@ -160,18 +161,7 @@ def free_coord_axes(
     誤って解放すると Rwp が下がりながら構造が壊れる (対称性の破れは Rwp に現れにくい) ため、
     分からないときは動かさないのが安全側である。
     """
-    if not symops:
-        return ()
-    projector = site_symmetry_projector(symops, position, tol=tol)
-    free: list[str] = []
-    for index, axis in enumerate(_AXES):
-        diagonal = projector[index, index]
-        off_row = np.abs(np.delete(projector[index, :], index)).max()
-        off_col = np.abs(np.delete(projector[:, index], index)).max()
-        # 独立に動かせるのは「自分自身に完全に射影され、他軸と混ざらない」軸だけ。
-        if abs(diagonal - 1.0) < 1e-6 and off_row < 1e-6 and off_col < 1e-6:
-            free.append(axis)
-    return tuple(free)
+    return site_coord_axes(symops, position, tol=tol)[0]
 
 
 def fixed_coord_axes(
@@ -190,12 +180,38 @@ def fixed_coord_axes(
 
     対称操作が無ければ空 — 判定できないものを固定とは言わない。
     """
+    return site_coord_axes(symops, position, tol=tol)[1]
+
+
+def site_coord_axes(
+    symops: "tuple[str, ...]",
+    position: "tuple[float, float, float]",
+    *,
+    tol: float = 1e-4,
+) -> "tuple[tuple[str, ...], tuple[str, ...]]":
+    """``(自由軸, 固定軸)`` を **1 回の射影子計算**で返す (:func:`free_coord_axes` /
+    :func:`fixed_coord_axes` の本体)。
+
+    射影子は全対称操作をパースして作るので安くない (192 操作 × 20 原子で 1 相 ~70 ms)。
+    `backends.topas` は simulate/refine のたびに相を組み直すので、サイトごとに 2 回作らない。
+    """
     if not symops:
-        return ()
+        return (), ()
     projector = site_symmetry_projector(symops, position, tol=tol)
-    return tuple(
-        axis for index, axis in enumerate(_AXES) if np.abs(projector[index, :]).max() < 1e-6
-    )
+    free: list[str] = []
+    fixed: list[str] = []
+    for index, axis in enumerate(_AXES):
+        row = projector[index, :]
+        diagonal = projector[index, index]
+        off_row = np.abs(np.delete(row, index)).max()
+        off_col = np.abs(np.delete(projector[:, index], index)).max()
+        # 独立に動かせるのは「自分自身に完全に射影され、他軸と混ざらない」軸だけ。
+        if abs(diagonal - 1.0) < 1e-6 and off_row < 1e-6 and off_col < 1e-6:
+            free.append(axis)
+        # 値が動けないのは、許される変位の第 i 成分が常に 0 (= 行が 0) のときだけ。
+        if np.abs(row).max() < 1e-6:
+            fixed.append(axis)
+    return tuple(free), tuple(fixed)
 
 
 # ---------------------------------------------------------------- Sg/*.sg からの補完

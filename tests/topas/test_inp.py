@@ -837,6 +837,26 @@ def test_every_coordinate_axis_is_published_once_refined_or_not():
         assert 'Out(PbSO4_Pb_y, "coord_unrefined\\tPbSO4\\tPb\\ty\\t%.8f\\n")' in text
 
 
+def test_a_coordinate_given_as_an_expression_is_still_published():
+    """``x =式;`` の座標も**式のまま** ``Out`` に渡して値を回収する (``Out`` は式を取る)。
+
+    格子の従属軸 (``b =Get(a);``) は結果側で独立変数から復元できるので出さないが、座標には
+    その手段が無い。出さないと 3 軸そろわず、原子ごと ``atom_coords`` から消える。
+    """
+    phase = _pbso4_phase().with_updates(
+        sites=(
+            TopasSite("Pb", "Pb+2", Param(0.1879), Param(0.25), Param(0.1667), beq=Param(1.5)),
+            TopasSite("S", "S", Param.reference("PbSO4_Pb_x + 0.25"), Param(0.75),
+                      Param(0.1842), beq=Param(0.7)),
+        )
+    )
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
+    ).render()
+    assert "site S x =PbSO4_Pb_x + 0.25; " in text
+    assert 'Out(PbSO4_Pb_x + 0.25, "coord_unrefined\\tPbSO4\\tS\\tx\\t%.8f\\n")' in text
+
+
 def test_named_size_strain_terms_render_with_their_names():
     hist = _histogram(
         phase_terms={"PbSO4": PhaseHistogramTerms(
