@@ -1496,6 +1496,32 @@ def _refuse_polar_origin_with_ranked_coords(phases, stages) -> None:
         )
 
 
+def _refuse_polar_origin_with_coord_jitter(phases, jitter) -> None:
+    """`fix_polar_origin` の相への座標の初期摂動 (マルチスタートの構造軸) を拒否する (P1a)。
+
+    摂動 (`_apply_coord_jitter`) は原点固定 (`_apply_polar_origin`) より**先に**掛かるので、hold した
+    原子の極性方向の座標は摂動された値のまま固定され、構造全体が極性方向へずれた解になる。開始点
+    ごとに原点がずれるので、極性方向の座標が「初期値依存」と誤判定される (セルフレビュー 2 巡目)。
+    hold した座標を摂動から外す/極性方向の並進を除いて比べる対応は設計 §4.5 で P1-1B に予定
+    しているので、それまでは組み合わせを大声で止める。
+
+    :raises InvalidPhaseSpecError: 原点固定の相に正の摂動幅が与えられたとき
+    """
+    if not jitter:
+        return
+    bad = [
+        p.phase_name
+        for p in phases
+        if getattr(p, "fix_polar_origin", False) and float(jitter.get(p.phase_name, 0.0)) > 0.0
+    ]
+    if bad:
+        raise InvalidPhaseSpecError(
+            f"fix_polar_origin の相 {bad} には座標の初期摂動を掛けられません (摂動が原点固定より先に"
+            "掛かり、構造全体が極性方向へずれた解になる)。マルチスタートでは原点固定を外すか、"
+            "座標の摂動幅を 0 にしてください"
+        )
+
+
 def _atomic_number(raw: str) -> int:
     """GSAS の原子 type (例 "Fe+2") から原子番号を返す (不明は 0)。"""
     sym = str(raw)[:2].strip().capitalize()
@@ -2483,7 +2509,9 @@ def run_auto_rietveld(
     :param export_cif_dir: 精密化**後**の構造を相ごとに CIF で書き出すディレクトリ (fit-then-judge
         P1a; 結晶化学検査の入力)。既存ファイルは上書きせず連番を付ける。書き出しの失敗はフィットを
         落とさず ledger ``m7_cif_export_error`` に残す。書いたパスは結果の ``exported_cifs``。
-        既定 None (書き出さない)。
+        ⚠ 拘束で従属させたパラメータ (等値の組の従属側など) の esd は保証しない — 最終段が
+        revert されると GSAS の制約写像が巻き戻した試行のまま残り得る (未検証)。構造の検査には
+        使えるが、esd を出版に使う前に確かめること。既定 None (書き出さない)。
     """
     # FR-318: 占有率シーダーの範囲検証は GSAS import 前に行う (物理的に不可能な要求は即時失敗)。
     if initial_occupancies:
@@ -2506,6 +2534,7 @@ def run_auto_rietveld(
     else:
         stages = build_recipe(histograms, phases)
     _refuse_polar_origin_with_ranked_coords(phases, stages)
+    _refuse_polar_origin_with_coord_jitter(phases, initial_coord_jitter)
     # 検証は GSAS の解決より**前**に済ませる — 不正なレシピは GSAS が無い環境でも同じ
     # ``CorrelationGroupViolation`` で落ちるべきであり (入力の誤りは backend の有無と無関係)、
     # そうしないと本検証のテストが GSAS 導入環境でしか回らなくなる。
@@ -3453,13 +3482,13 @@ def _phase_integrated_intensity(g2phases, g2hists) -> dict[str, tuple[float | No
         except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
             refl = {}
         for ph in g2phases:
-            entry = refl.get(ph.name)
-            reflist = entry.get("RefList") if entry else None
-            # 空の反射リストは「未計算」(GSAS は計算前に [] を置く) — 0.0 を捏造しない。
-            if reflist is None or len(reflist) == 0:
-                out[ph.name].append(None)
-                continue
             try:
+                entry = refl.get(ph.name)
+                reflist = entry.get("RefList") if entry else None
+                # 空の反射リストは「未計算」(GSAS は計算前に [] を置く) — 0.0 を捏造しない。
+                if reflist is None or len(reflist) == 0:
+                    out[ph.name].append(None)
+                    continue
                 value = _integrated_intensity(reflist, bool(entry.get("Super", False)))
             except Exception:  # noqa: BLE001 — 想定外の形でも既定経路の最後で落とさない
                 out[ph.name].append(None)

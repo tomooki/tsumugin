@@ -12,8 +12,8 @@ GSAS-II チュートリアル T1–T4 の手順を一般化した普遍段階列
 - ``profile``: ["U","V","W"] — Gaussian プロファイル係数
 - ``profile_lorentzian``: True — X 線 Lorentzian X,Y + Zero の追加解放 (別段階, revert ガード)。
   キー列 (例 ``["X","Y"]``) ならその部分集合だけ (Zero を束ねない, fit-then-judge P1a)
-- ``zero_offset``: True — ゼロ点 Zero だけを解放 (CW。TOF・装置プロファイル固定は除外。
-  ``freeze_others`` の名前としては ``profile`` に属する)
+- ``zero_offset``: True — ゼロ点 Zero だけを解放 (CW。TOF・装置プロファイル固定は除外)。
+  ``freeze_others`` で ``profile`` を残さずに Zero だけ残すときは ``zero_offset`` を残す名前に入れる
 - ``size_strain``: True — 結晶子サイズ + 微小歪み (HAP)
 - ``coords``: True — 原子座標 X。int なら「重い方から int 番目の元素だけ」、
   ``"heavy_first"`` なら**engine が実元素数に応じて展開する宣言** (REQ-SAR-303)

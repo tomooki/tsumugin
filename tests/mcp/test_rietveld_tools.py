@@ -249,3 +249,14 @@ def test_series_tools_degrade_engine_domain_errors(module, name):
 
     src = inspect.getsource(importlib.import_module(module))
     assert f"@degrade_domain_errors\ndef {name}(" in src
+
+
+def test_release_params_flags_are_validated_like_stages():
+    """`ReleaseParams` の flags も `stages` と同じ検証を通す — 迂回すると綴りが黙って凍結に化ける (N4)。"""
+    from tsumugin.mcp.rietveld_tools import refine_with_revisions
+
+    out = refine_with_revisions(
+        [], [], [{"type": "ReleaseParams", "label": "r", "flags": {"freeze_others": ["zero"]}}],
+        runner=_raising_runner(AssertionError("検証で止まらず実行された")),
+    )
+    assert out["error_type"] == "ValueError" and "未知の名前" in out["error"]

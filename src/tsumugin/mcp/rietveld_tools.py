@@ -45,7 +45,7 @@ from ..autorietveld.search import (
 )
 from ..errors import TsumuginError
 from ._degrade import degrade_oserror
-from ._recipe_spec import stage_to_dict, stages_from_dicts
+from ._recipe_spec import stage_from_dict, stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
 from ..refine_loop.diagnostics import propose_next_actions as _propose
 from ..refine_loop.orchestrator import _default_gsas_runner
@@ -750,6 +750,11 @@ def refine_with_revisions(
     try:
         inp = _build_input(histograms, phases, background_coeffs, stages)
         for a in actions:
+            if isinstance(a, Mapping) and a.get("type") == "ReleaseParams":
+                # `ReleaseParams` の flags は段フラグそのもの — `stages` と同じ検証 (語彙・値) を
+                #   通す。通さないと `freeze_others: ["zero"]` のような綴りが黙って Zero を凍らせる。
+                stage_from_dict({"label": str(a.get("label", "release")),
+                                 "flags": a.get("flags", {})})
             inp = action_from_dict(a).apply(inp)
         opts = StabilityOptions.from_dict(stability)
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:

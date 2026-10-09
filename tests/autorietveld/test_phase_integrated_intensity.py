@@ -90,3 +90,11 @@ def test_empty_or_malformed_reflection_lists_are_unknown_not_zero():
     hists = [_Hist({"A": {"RefList": []}, "B": {"RefList": [[1, 2, 3]]}})]
     out = _phase_integrated_intensity([_Ph("A"), _Ph("B"), _Ph("C")], hists)
     assert out == {"A": (None,), "B": (None,), "C": (None,)}
+
+
+def test_unexpected_entry_shapes_are_unknown_not_errors():
+    """反射リストの項目が dict でない・RefList がスカラーでも既定経路の最後で落とさない (L2)。"""
+    from tsumugin.autorietveld.engine import _phase_integrated_intensity
+
+    hists = [_Hist({"A": "not-a-dict", "B": {"RefList": 3.0}})]
+    assert _phase_integrated_intensity([_Ph("A"), _Ph("B")], hists) == {"A": (None,), "B": (None,)}
