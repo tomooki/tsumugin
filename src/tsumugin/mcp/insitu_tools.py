@@ -28,6 +28,7 @@ from typing import Callable, Mapping, Sequence
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ._degrade import degrade_oserror
+from ._gpx_spec import gpx_args
 import dataclasses
 
 from ..insitu.model import (
@@ -815,6 +816,8 @@ def sequential_rietveld(
     #   貫通していた (② は例外を送出しない契約 — ③ は LLM なので回復不能なハード失敗になる)。
     #   `anchored_sequential` の `AnchorConfig.from_dict` は最初から try 内にあり非対称だった。
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         frame_specs = [FrameSpec.from_dict(f) for f in frames]
         phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
         # 【フィールド駆動パーサ】: 手書きホワイトリスト (旧 7 キー) をやめ、`PhaseIdConfig` の

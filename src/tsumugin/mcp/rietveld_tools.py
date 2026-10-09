@@ -45,6 +45,7 @@ from ..autorietveld.search import (
 )
 from ..errors import TsumuginError
 from ._degrade import degrade_oserror
+from ._gpx_spec import gpx_args
 from ._recipe_spec import stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
 from ..refine_loop.diagnostics import propose_next_actions as _propose
@@ -525,12 +526,17 @@ def auto_rietveld(
         (GSAS) / ``project_path`` (TOPAS) が実際の保存先。
         **これが MEM 系ツール (`mem_density` / `mem_rietveld_iterate`) の入力の出所**
         — 以前は ② から gpx を作る経路が無く、③ は MEM を呼べなかった (§4.5 到達可能性)。
-        ``search`` / ``multistart`` を渡した呼び出しでは**全候補 (``candidate_<名前>``)・全開始点
-        (``f000N_multistart``) が 1 つの run ディレクトリ**に並び、本引数も ``save_gpx`` も
-        それら全部に効く (``gpx_path`` は採用された fit を指す)。
+        ``search`` / ``multistart`` を渡した呼び出しでは**全候補 (``candidate_<名前>.gpx``)・
+        全開始点 (``f<開始点番号 4 桁>_multistart.gpx``) が 1 つの run ディレクトリ**に並び、
+        本引数も ``save_gpx`` もそれら全部に効く。``gpx_path`` は返した fit (探索なら採用候補・
+        収束確認なら最良の開始点) を指し、各候補/各開始点のパスは
+        ``search.candidates[].gpx_path`` / ``convergence.multistart.starts[].gpx_path`` に出る。
+        保存先に書けず一時領域へ退避したときは ``search.warnings`` /
+        ``convergence.warnings`` に理由が出る。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。フレーム数が多く容量が問題に
         なるときだけ False にする。⚠ **保存しなかった精密化は検算できない** — 段の無言
         no-op も、MEM も、再プロットも、精密化済みの成果物そのものを要求する。
+        opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
         診断 (WS-1): ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
         "detect_noop_stages": true, "record_weak_vars": true, "report_undetermined": true,
@@ -604,6 +610,8 @@ def auto_rietveld(
         ``AnalysisInput`` では表現できない
     """
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         inp = _build_input(histograms, phases, background_coeffs, stages)
         opts = StabilityOptions.from_dict(stability)
         # 【探索経路は backend を運べない】: `_run_search`/`_run_convergence` は候補ごとに
@@ -723,6 +731,8 @@ def refine_with_revisions(
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。
     """
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         inp = _build_input(histograms, phases, background_coeffs, stages)
         for a in actions:
             inp = action_from_dict(a).apply(inp)

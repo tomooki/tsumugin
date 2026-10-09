@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 
 import pytest
@@ -246,7 +247,12 @@ def _record_engine_calls(monkeypatch) -> list[dict]:
                 "ctx": explicit if explicit is not None else active_context(),
             }
         )
-        return _selected_result()
+        ctx = calls[-1]["ctx"]
+        saved = ctx is not None and ctx.enabled and ctx.run_dir
+        return dataclasses.replace(
+            _selected_result(),
+            gpx_path=os.path.join(ctx.run_dir, ctx.stem(data_stem="d") + ".gpx") if saved else "",
+        )
 
     monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_engine)
     return calls
@@ -270,8 +276,9 @@ def test_search_routes_honor_the_save_gpx_opt_out(route, tmp_path, monkeypatch):
     「止めたつもりで書き続けている」ことに誰も気づけない。エンジンに届いた引数と文脈の
     両方を見る (文脈が enabled のままだと、文脈を読む runner が保存してしまう)。
     """
-    env_root = tmp_path / "env-root"
-    monkeypatch.setenv(ENV_VAR, str(env_root))
+    # 既定 (env なし) の置き場所 = データ隣接。opt-out が届かなければここに run ができる
+    #   (env を差したままだと env の根が優先され、データ隣接の不在は何も確かめない)。
+    monkeypatch.delenv(ENV_VAR, raising=False)
     calls = _record_engine_calls(monkeypatch)
 
     out = auto_rietveld([_hist_in(tmp_path)], [_P], save_gpx=False, **route)
@@ -281,9 +288,9 @@ def test_search_routes_honor_the_save_gpx_opt_out(route, tmp_path, monkeypatch):
     for call in calls:
         assert call["save_gpx"] is False, call
         assert call["ctx"] is not None and call["ctx"].enabled is False, call
-    # どこにも書かない: env の根にもデータ隣接にも run ディレクトリを作らない
-    assert not env_root.exists()
+    # どこにも書かない: 既定の置き場所 (データ隣接) に run ディレクトリを作らない
     assert not (tmp_path / "data" / "tsumugin_gpx").exists()
+    assert out["gpx_path"] == ""
 
 
 @pytest.mark.parametrize("route", [_SEARCH, _MULTISTART], ids=["search", "multistart"])
@@ -333,3 +340,130 @@ def test_multistart_route_names_every_artifact_by_role(tmp_path, monkeypatch):
         ("multistart", 1, ""),
         ("multistart", 2, ""),
     ]
+
+
+@pytest.mark.parametrize("route", [_SEARCH, _MULTISTART], ids=["search", "multistart"])
+def test_search_routes_return_a_handle_to_every_artifact(route, tmp_path, monkeypatch):
+    """★負けた候補・各開始点の成果物パスが返り値に載る (§4.5 到達可能性)。
+
+    非トートロジー: 返るのが採用 fit の ``gpx_path`` だけだと、保存の目的そのもの
+    (「負けた候補/別ベイスンへ落ちた開始点がどんな解だったか」を開く・MEM に掛ける) に
+    ③ が届かない。採用 fit の保存が失敗した (``gpx_path == ""``) ときは run ディレクトリすら
+    辿れなくなる。
+    """
+    _record_engine_calls(monkeypatch)
+
+    out = auto_rietveld(
+        [_hist_in(tmp_path)], [_P], gpx_dir=str(tmp_path / "chosen"), **route
+    )
+
+    assert "error" not in out, out.get("error")
+    assert [os.path.basename(c["gpx_path"]) for c in out["search"]["candidates"]] == [
+        f"candidate_{name}.gpx" for name in route["search"]
+    ]
+    if "multistart" in route:
+        starts = out["convergence"]["multistart"]["starts"]
+        assert [os.path.basename(s["gpx_path"]) for s in starts] == [
+            "f0000_multistart.gpx", "f0001_multistart.gpx", "f0002_multistart.gpx"
+        ]
+
+
+@pytest.mark.parametrize("route", [_SEARCH, _MULTISTART], ids=["search", "multistart"])
+def test_search_routes_say_when_artifacts_fell_back_to_temp(route, tmp_path, monkeypatch):
+    """★頼まれた ``gpx_dir`` に書けず一時領域へ退避したら、それを返り値の警告で言う。
+
+    非トートロジー: 退避理由は run ディレクトリを解決した入口でしか分からない — エンジンは
+    解決済みの文脈を受け取るので ``m7_gpx_fallback`` を書かない。入口が理由を捨てると、
+    ③ は「指定した場所に保存された」と読んだまま、成果物は %TEMP% に置かれる
+    (設計 §5「temp へ退避し理由を ledger」/「黙って保存を諦めない」)。
+    """
+    import tempfile
+
+    def unwritable(root, base):
+        raise PermissionError(13, "read-only", root)
+
+    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    _record_engine_calls(monkeypatch)
+
+    out = auto_rietveld(
+        [_hist_in(tmp_path)], [_P], gpx_dir=str(tmp_path / "chosen"), **route
+    )
+
+    assert "error" not in out, out.get("error")
+    section = out["convergence"] if "multistart" in route else out["search"]
+    assert any("一時領域へ退避" in w for w in section["warnings"]), section["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# ② 境界での型検査 — 入力スキーマは緩い object なので型は実処理側が守る
+# ---------------------------------------------------------------------------
+
+
+def _call_tool_capturing(tool: str, monkeypatch, **gpx_kwargs) -> tuple[dict, dict]:
+    """保存指定を受ける ② ツールを呼び、エンジン側へ届いた ``save_gpx``/``gpx_dir`` を返す。"""
+    captured: dict[str, object] = {}
+
+    def fake_default_runner(seed, **kwargs):
+        captured.update(kwargs)
+        return lambda inp: _selected_result()
+
+    def fake_series(frames, phases, *args, gpx_dir=None, save_gpx=True, **kwargs):
+        captured.update(gpx_dir=gpx_dir, save_gpx=save_gpx)
+        return _seq_result("/series/run-1")
+
+    monkeypatch.setattr("tsumugin.mcp.rietveld_tools._default_gsas_runner", fake_default_runner)
+    monkeypatch.setattr("tsumugin.insitu.engine.run_sequential_rietveld", fake_series)
+    monkeypatch.setattr("tsumugin.insitu.anchor.engine.run_anchored_sequential", fake_series)
+    from tsumugin.mcp.rietveld_tools import refine_with_revisions
+
+    stub = lambda *a, **k: None  # noqa: E731 — 系列ツールの runner 注入 (実行されない)
+    calls = {
+        "auto_rietveld": lambda: auto_rietveld([_H], [_P], **gpx_kwargs),
+        "refine_with_revisions": lambda: refine_with_revisions([_H], [_P], [], **gpx_kwargs),
+        "sequential_rietveld": lambda: sequential_rietveld(
+            _FRAMES, [_P], runner=stub, **gpx_kwargs
+        ),
+        "anchored_sequential": lambda: anchored_sequential(
+            _FRAMES, [_P], runner=stub, **gpx_kwargs
+        ),
+    }
+    return calls[tool](), captured
+
+
+_GPX_TOOLS = ["auto_rietveld", "refine_with_revisions", "sequential_rietveld", "anchored_sequential"]
+
+
+@pytest.mark.parametrize("tool", _GPX_TOOLS)
+@pytest.mark.parametrize(
+    "bad",
+    [{"save_gpx": "false"}, {"save_gpx": 0}, {"gpx_dir": 123}, {"gpx_dir": ["/a"]}],
+    ids=["save-str", "save-int", "dir-int", "dir-list"],
+)
+def test_gpx_arguments_of_the_wrong_type_are_an_error(tool, bad, monkeypatch):
+    """★型の違う保存指定は error dict (黙って別の意味に読まない)。
+
+    非トートロジー: ``"false"`` は truthy なので ① は**保存する**と読み、``0`` は falsy なので
+    **止める**と読む — どちらも ③ の意図と無関係に決まる。``gpx_dir=123`` は単発経路では
+    精密化の後 (成果物の保存時) に ``TypeError`` が ② の境界を越える。
+    """
+    out, captured = _call_tool_capturing(tool, monkeypatch, **bad)
+
+    assert out.get("error_type") == "TypeError", out
+    assert next(iter(bad)) in out["error"]
+    assert captured == {}, "型検査は精密化を始める前に行う"
+
+
+@pytest.mark.parametrize("tool", _GPX_TOOLS)
+def test_save_gpx_null_means_the_default_not_an_opt_out(tool, monkeypatch):
+    """★``save_gpx: null`` は**既定 (保存する)** — opt-out は明示 ``false`` だけ (規定)。
+
+    非トートロジー: ``bool(None)`` も ``not None`` も「保存しない」に倒れる。他の引数
+    (``gpx_dir``/``search``/``stability``) の null はどれも「既定」を意味するので、
+    ``save_gpx`` だけ null が既定の**逆**になると ③ は気づかずに保存を止める。
+    """
+    out, captured = _call_tool_capturing(tool, monkeypatch, save_gpx=None)
+
+    assert "error" not in out, out
+    assert captured["save_gpx"] is True

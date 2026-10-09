@@ -159,52 +159,55 @@ def optimize_then_confirm(
     #   Phase B (`run_multistart_rietveld`) はそれぞれ `group_context` で根から run を解決する
     #   ので、ここで文脈を 1 つに決めて ambient に置かないと**同じ実行の成果物が 2 つの run
     #   ディレクトリに割れる** (採用手順の fit と、それを初期値を振って確かめた fit が並ばない)。
-    #   両 Phase の `group_context` は ambient があればそれを使う。
-    group, _reason = group_context(
+    #   両 Phase の `group_context` は ambient があればそれを使う。本体全体を包むのは、両 Phase の
+    #   間や後に精密化を足したときに文脈の外へ漏らさないため。
+    group, gpx_fallback = group_context(
         histograms[0].data_path if histograms else "",
         gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
         save=bool(run_kwargs.get("save_gpx", True)),
     )
     warnings: list[str] = []
-
+    # 【退避を黙らない (設計 §5)】: 両 Phase は ambient を使うので理由を返さない — 記録はここだけ。
+    if gpx_fallback:
+        ledger.append("m7_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
+        warnings.append(f"成果物の保存先: {gpx_fallback}")
     with gpx_context(group):
         search = run_recipe_search(
             list(histograms), list(phases),
             names=tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES,
             config=search_config, ledger=ledger, runner=search_runner, **run_kwargs,
         )
-    selected = search.selected
-    if selected is None or selected.result is None:
-        warnings.append("全候補が失敗したため収束確認へ進めない (手順が 1 つも立たなかった)")
-        return ConvergenceReport(
-            adopted_recipe="", search=search, multistart=None, best=None,
-            warnings=tuple(warnings),
+        selected = search.selected
+        if selected is None or selected.result is None:
+            warnings.append("全候補が失敗したため収束確認へ進めない (手順が 1 つも立たなかった)")
+            return ConvergenceReport(
+                adopted_recipe="", search=search, multistart=None, best=None,
+                warnings=tuple(warnings),
+            )
+
+        # 【採用候補の入力ごと固定する】: 適応候補はレンジ/背景項数を変えているので、元の入力で
+        #   Phase B を回すと**別の土俵で収束確認したことになる**。
+        cand = selected.candidate
+        confirm_kwargs = dict(run_kwargs)
+        confirm_kwargs["recipe"] = cand.stages
+        # 【`background_coeffs` は渡さない】: これは**レシピを組み立てる**引数であって
+        #   `run_auto_rietveld` は受け取らない (渡すと全開始点が TypeError で落ちる)。採用候補の
+        #   背景項数は `cand.stages` の `background: {"coeffs": N}` に既に焼き込まれているので、
+        #   段列を運べば背景モデルも一緒に運ばれる。呼び出し側が渡してきた分もここで落とす。
+        confirm_kwargs.pop("background_coeffs", None)
+        if cand.stability is not None:
+            confirm_kwargs["stability"] = cand.stability
+        ledger.append(
+            "convergence_phase_a",
+            {
+                "adopted": cand.name,
+                "reason": search.selection_reason,
+                "rwp": finite_or_none(selected.result.final_rwp),
+                "n_candidates": len(search.outcomes),
+            },
         )
 
-    # 【採用候補の入力ごと固定する】: 適応候補はレンジ/背景項数を変えているので、元の入力で
-    #   Phase B を回すと**別の土俵で収束確認したことになる**。
-    cand = selected.candidate
-    confirm_kwargs = dict(run_kwargs)
-    confirm_kwargs["recipe"] = cand.stages
-    # 【`background_coeffs` は渡さない】: これは**レシピを組み立てる**引数であって
-    #   `run_auto_rietveld` は受け取らない (渡すと全開始点が TypeError で落ちる)。採用候補の
-    #   背景項数は `cand.stages` の `background: {"coeffs": N}` に既に焼き込まれているので、
-    #   段列を運べば背景モデルも一緒に運ばれる。呼び出し側が渡してきた分もここで落とす。
-    confirm_kwargs.pop("background_coeffs", None)
-    if cand.stability is not None:
-        confirm_kwargs["stability"] = cand.stability
-    ledger.append(
-        "convergence_phase_a",
-        {
-            "adopted": cand.name,
-            "reason": search.selection_reason,
-            "rwp": finite_or_none(selected.result.final_rwp),
-            "n_candidates": len(search.outcomes),
-        },
-    )
-
-    run_confirm = multistart_runner or run_multistart_rietveld
-    with gpx_context(group):
+        run_confirm = multistart_runner or run_multistart_rietveld
         multistart = run_confirm(
             list(cand.histograms), list(phases),
             config=MultistartConfig(
@@ -216,25 +219,25 @@ def optimize_then_confirm(
             jobs=jobs,
             **confirm_kwargs,
         )
-    warnings.extend(f"収束確認: {w}" for w in multistart.warnings)
-    diverged = [
-        c for c, v in multistart.class_convergence.items() if v != "AGREE"
-    ]
-    if diverged:
-        warnings.append(
-            f"初期値依存のクラス: {sorted(diverged)} — **これらの値は「決まっている」として"
-            "出版してはならない**。縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消"
-            "できないので、閾値を緩めて隠すのではなく未決定として報告する"
+        warnings.extend(f"収束確認: {w}" for w in multistart.warnings)
+        diverged = [
+            c for c, v in multistart.class_convergence.items() if v != "AGREE"
+        ]
+        if diverged:
+            warnings.append(
+                f"初期値依存のクラス: {sorted(diverged)} — **これらの値は「決まっている」として"
+                "出版してはならない**。縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消"
+                "できないので、閾値を緩めて隠すのではなく未決定として報告する"
+            )
+        if diverged and not set(diverged) & set(ADOPTION_CLASSES):
+            warnings.append(
+                "**構造 (格子・座標・占有率) は収束している** — 構造の答えは採用してよい。"
+                f"割れているのは {sorted(diverged)} だけである"
+            )
+        # 最終値は収束確認の最良フィット (Phase A の単発結果ではない — 同じ手順で複数点走らせた
+        # うちの最良の方が、常に同等以上である)。
+        best = multistart.best if multistart.best is not None else selected.result
+        return ConvergenceReport(
+            adopted_recipe=cand.name, search=search, multistart=multistart,
+            best=best, warnings=tuple(warnings),
         )
-    if diverged and not set(diverged) & set(ADOPTION_CLASSES):
-        warnings.append(
-            "**構造 (格子・座標・占有率) は収束している** — 構造の答えは採用してよい。"
-            f"割れているのは {sorted(diverged)} だけである"
-        )
-    # 最終値は収束確認の最良フィット (Phase A の単発結果ではない — 同じ手順で複数点走らせた
-    # うちの最良の方が、常に同等以上である)。
-    best = multistart.best if multistart.best is not None else selected.result
-    return ConvergenceReport(
-        adopted_recipe=cand.name, search=search, multistart=multistart,
-        best=best, warnings=tuple(warnings),
-    )

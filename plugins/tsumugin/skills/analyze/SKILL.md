@@ -33,8 +33,10 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
   ⚠ 単発ツールは**呼び出しごとに独立した `run-<日時>/`** を作る (同じ `gpx_dir` を渡し続けると
   改訂の履歴が同じ根の下に時刻順で並ぶ)。1 つの run ディレクトリにまとまるのは
   系列解析 (`sequential_rietveld` / `anchored_sequential`) と、探索 (`search`) / 収束確認
-  (`multistart`) を渡した 1 回の呼び出しである — 全候補 (`candidate_<名前>`) と全開始点
-  (`f000N_multistart`) が並び、`gpx_dir` / `save_gpx` はそれら全部に効く。
+  (`multistart`) を渡した 1 回の呼び出しである — 全候補 (`candidate_<名前>.gpx`) と全開始点
+  (`f<開始点番号 4 桁>_multistart.gpx`, 例 `f0000_multistart.gpx`) が並び、`gpx_dir` /
+  `save_gpx` はそれら全部に効く。各成果物のパスは `search.candidates[].gpx_path` /
+  `convergence.multistart.starts[].gpx_path` (負けた候補・別ベイスンへ落ちた開始点を開くとき)。
 - **どこを見る**: 返り値の **`gpx_path`** (TOPAS は `project_path`)。run ディレクトリの
   `manifest.jsonl` が「役割・相・Rwp」の索引 (1 行 1 成果物)。
 - **何に使う**: **MEM 系ツール (`mem_density` / `mem_rietveld_iterate`) の入力はこれ**。

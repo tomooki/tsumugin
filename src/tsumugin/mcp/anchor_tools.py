@@ -32,6 +32,7 @@ from ..autorietveld import PhaseSpec
 from ..insitu.anchor.model import AnchorConfig
 from ..insitu.model import FrameSpec
 from ._degrade import degrade_oserror
+from ._gpx_spec import gpx_args
 from .insitu_tools import (
     _apply_charge_constraint_spec,
     _parse_two_theta_limits,
@@ -206,6 +207,8 @@ def anchored_sequential(
     from ..store.ledger import Ledger
 
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         frame_specs = [FrameSpec.from_dict(f) for f in frames]
         catalog: dict[str, PhaseSpec] = {}
         for p in phases:
