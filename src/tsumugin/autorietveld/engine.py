@@ -19,7 +19,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -1422,7 +1422,8 @@ def _apply_coord_jitter(
         (a=5Å と c=20Å では分率 0.01 の実距離が 4 倍違う)
     :param seed: 乱数種。同じ種なら何度実行してもビット同一 (NFR-102)
     :param frozen: 相名 → 動かさない原子ラベル (``PhaseSpec.frozen_coord_labels``)。
-        凍結原子は乱数を消費しない (凍結の無い相の摂動は従来とビット同一)
+        凍結原子は乱数を消費しない。凍結の無い入力は従来とビット同一だが、乱数列は全相で
+        1 本なので、凍結原子を持つ相より**後ろの相**は引く値がずれる (決定論は保たれる)
     :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
         呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
     """
@@ -2076,7 +2077,7 @@ def _apply_initial_cell_scale(
     g2phases,
     phases: Sequence[PhaseSpec],
     scales: Mapping[str, tuple[float, float, float]],
-    perturb=None,
+    perturb: "Callable[[object, tuple[float, float, float]], None] | None" = None,
 ) -> tuple[str, ...]:
     """初期格子摂動 (マルチスタート) を**格子を精密化する相だけ**に掛ける。
 
@@ -2445,7 +2446,17 @@ def run_auto_rietveld(
         #     格子を精密化しない相 (refine_cell=False) は摂動しない — 戻る道が無いので
         #     摂動値がそのまま最終格子になる (`_apply_initial_cell_scale`)。
         if initial_cell_scale:
-            _apply_initial_cell_scale(g2phases, phases, initial_cell_scale)
+            applied = _apply_initial_cell_scale(g2phases, phases, initial_cell_scale)
+            ledger.append(
+                "m7_cell_perturbation",
+                {
+                    "applied": list(applied),
+                    "skipped_refine_cell_false": sorted(
+                        p.phase_name for p in phases
+                        if not p.refine_cell and p.phase_name in initial_cell_scale
+                    ),
+                },
+            )
 
         # --- 初期相分率ウォームスタート (逐次精密化, 任意, Issue #82) ---
         if initial_fractions:
@@ -3145,6 +3156,7 @@ def run_auto_rietveld(
         hap_mustrain=micro[1],
         hap_size_esd=micro[2],
         hap_mustrain_esd=micro[3],
+        coord_jitter_axes_moved=int(n_jittered),
     )
 
 

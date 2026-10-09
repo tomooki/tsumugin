@@ -108,8 +108,8 @@ def independent_axes(free_index: FreeIndex) -> tuple[int, ...]:
 
     ``0`` (対称固定) の軸を除き、結束軸は**代表 (三つ組内で最初に現れる軸) だけ**を返す —
     従属軸は GSAS の等値拘束が追随するので、独立に動かすと結束関係が壊れる。
-    座標ジッタ (`engine._apply_coord_jitter`) と、その「動かした軸数」を結果から数え直す
-    `multistart._count_jittered_axes` の**共通規則** (片方だけ直すと傍証の条件がずれる)。
+    座標ジッタ (`engine._apply_coord_jitter`) がどの軸を動かすかの規則であり、動かした軸数は
+    結果の `coord_jitter_axes_moved` に載る (マルチスタートは数え直さずにそれを読む)。
     """
     seen: set[int] = set()
     axes: list[int] = []

@@ -216,15 +216,12 @@ def optimize_then_confirm(
             "出版してはならない**。縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消"
             "できないので、閾値を緩めて隠すのではなく未決定として報告する"
         )
-    if not multistart.perturbation_applied:
-        # 【空虚な収束確認を名指す】: 全クラス AGREE でも同じ入力から来ただけである。
-        #   `structure_is_corroborated` が False になる理由を ③ が読めるように書く。
-        warnings.append(
-            "開始点が全て同じ入力だった (格子倍率が全て 1.0 か格子を精密化する相が無く、"
-            "座標も 1 軸も動かしていない) — **収束確認は何も試験していない**ので、"
-            "構造の採用判断 (structure_is_corroborated) には使えない"
-        )
-    elif diverged and not set(diverged) & set(ADOPTION_CLASSES):
+    # 【空虚な収束確認では「採用してよい」と言わない】: 何も振っていなければ全クラスの AGREE は
+    #   同じ入力から来ただけである。理由 (「何も試験していない」) は `summarize_multistart` が
+    #   1 箇所で出し、上で転送済み — ここで同じ診断を重ねない。
+    if multistart.perturbation_applied and diverged and not set(diverged) & set(
+        ADOPTION_CLASSES
+    ):
         warnings.append(
             "**構造 (格子・座標・占有率) は収束している** — 構造の答えは採用してよい。"
             f"割れているのは {sorted(diverged)} だけである"

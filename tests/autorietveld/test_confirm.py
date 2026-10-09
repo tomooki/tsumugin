@@ -281,14 +281,20 @@ def test_identical_starts_are_not_an_adoptable_structure():
     ここが空虚に True になるのは最悪の失敗形 (何も試験していないのに採用を許す)。
     """
     rec = _Recorder({"default": 9.81})
-    fake_ms = _fake_multistart(rec, cell_scale={}, n_axes=0, jitter=0.0)
+    fake_ms = _fake_multistart(
+        rec, cell_scale={}, n_axes=0, jitter=0.0,
+        class_convergence={"cell": "AGREE", "coord": "AGREE", "occupancy": "AGREE",
+                           "microstructure": "DISAGREE"},
+    )
     got = optimize_then_confirm([_H], [_P], candidates=("default",),
                                 search_runner=rec.search_runner,
                                 multistart_runner=fake_ms)
 
     assert got.multistart is not None and got.multistart.perturbation_applied is False
     assert got.structure_is_corroborated is False, "何も振っていない収束確認で採用を許した"
-    assert any("何も試験していない" in w for w in got.warnings), "理由を述べずに False にしない"
+    # 理由の文言は `summarize_multistart` が 1 箇所で出す (ここは転送するだけ)。confirm が
+    # 「構造は収束している — 採用してよい」と**逆のことを言わない**ことを確かめる。
+    assert not any("採用してよい" in w for w in got.warnings), got.warnings
 
 
 def test_a_lattice_only_test_of_a_symmetry_fixed_structure_is_still_adoptable():
@@ -317,3 +323,43 @@ def test_jittered_coordinates_alone_make_the_test_real():
 
     assert got.multistart.perturbation_applied is True
     assert got.structure_is_corroborated is True
+
+
+def test_all_failed_starts_are_not_reported_as_an_untested_run():
+    """★全開始点が失敗したとき、confirm は「同じ入力だった/何も試験していない」と言わない。
+
+    非トートロジー: 失敗した開始点は軸数 0 で返るので、`perturbation_applied` は False になる。
+    それを「1 軸も動かしていない」と報告すると、③ は失敗の原因ではなく摂動の設定を直しに行く。
+    """
+    from tsumugin.autorietveld.multistart import (
+        MultistartStart,
+        RietveldMultistartResult,
+        StartPerturbation,
+    )
+
+    def all_failed(histograms, phases, **kwargs):
+        starts = tuple(
+            MultistartStart(
+                index=i,
+                perturbation=StartPerturbation(
+                    cell_scale={}, coord_jitter_ang=0.05, jitter_seed=i
+                ),
+                result=None,
+                error="TypeError: boom",
+            )
+            for i in range(2)
+        )
+        return RietveldMultistartResult(
+            best=None, best_index=-1, starts=starts, n_starts=0, n_diverged=0,
+            n_basins=0, is_global_corroborated=False, corroboration_reason="no_valid_start",
+            warnings=("2/2 開始点が失敗: TypeError: boom",),
+        )
+
+    rec = _Recorder({"default": 9.81})
+    got = optimize_then_confirm([_H], [_P], candidates=("default",),
+                                search_runner=rec.search_runner,
+                                multistart_runner=all_failed)
+
+    assert got.structure_is_corroborated is False
+    assert not any("何も試験していない" in w for w in got.warnings), got.warnings
+    assert any("TypeError: boom" in w for w in got.warnings), "失敗の理由は転送される"

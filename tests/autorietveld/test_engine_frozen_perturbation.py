@@ -14,6 +14,7 @@ import pytest
 
 from tsumugin.autorietveld.engine import _apply_initial_cell_scale
 from tsumugin.autorietveld.model import PhaseSpec
+from tsumugin.store import Ledger
 
 
 class _NamedPhase:
@@ -94,13 +95,15 @@ def test_engine_leaves_frozen_cell_and_frozen_atom_unperturbed():
     )
     recipe = [RefinementStage(label="bg", flags={"background": {"coeffs": 3}})]
 
-    def run(**kw: object):
+    def run(ledger: Ledger | None = None, **kw: object):
         return run_auto_rietveld(
-            [hist], [phase], recipe=recipe, max_cyc=1, save_gpx=False, **kw
+            [hist], [phase], recipe=recipe, max_cyc=1, save_gpx=False, ledger=ledger, **kw
         )
 
     base = run()
+    ledger = Ledger()
     pert = run(
+        ledger,
         initial_cell_scale={"fap": (1.01, 1.01, 1.01)},
         initial_coord_jitter={"fap": 0.05},
         jitter_seed=3,
@@ -111,3 +114,10 @@ def test_engine_leaves_frozen_cell_and_frozen_atom_unperturbed():
     assert pert.atom_coords["fap"]["O5"] != base.atom_coords["fap"]["O5"], (
         "対照: 凍結していない原子は摂動される (摂動そのものが無効化されていないこと)"
     )
+    # 【engine が実際に動かした軸数】: P6₃/m fluoroapatite の自由座標は CA1 z (1) + CA2/P3/
+    #   O5/O6 の x,y (2×4) = 9。F4 は全固定、O7 (一般位置 3 軸) は凍結なので数えない。
+    assert pert.coord_jitter_axes_moved == 9
+    assert base.coord_jitter_axes_moved == 0, "摂動を要求していない run は 0"
+    # 【飛ばした格子摂動は ledger に残る】: 単発 run の監査で「頼まれたが掛けなかった」が見える。
+    cell = [e.payload for e in ledger.entries if e.kind == "m7_cell_perturbation"]
+    assert cell == [{"applied": [], "skipped_refine_cell_false": ["fap"]}]

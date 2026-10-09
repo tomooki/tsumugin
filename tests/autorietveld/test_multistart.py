@@ -422,10 +422,13 @@ def test_a_dead_worker_becomes_failed_starts_not_an_exception(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _stub_engine(monkeypatch, free_index: dict) -> list[dict]:
+def _stub_engine(
+    monkeypatch, *, moved_axes: int = 0, free_index: dict | None = None
+) -> list[dict]:
     """`run_auto_rietveld` を差し替え、開始点が engine へ**何を渡したか**を記録する。
 
     ``jobs=1`` の直列経路は同じプロセスで `_run_one_start` を呼ぶので差し替えが効く。
+    ``moved_axes`` は engine が**実際に動かした**軸数 (`coord_jitter_axes_moved`) として返す。
     """
     from tsumugin.autorietveld import engine
 
@@ -441,7 +444,8 @@ def _stub_engine(monkeypatch, free_index: dict) -> list[dict]:
             final_gof=1.0,
             refined_cells={"main": (9.372, 9.372, 9.372, 90.0, 90.0, 90.0)},
             validity=ValidityReport(passed=True),
-            atom_coord_free_index=free_index,
+            atom_coord_free_index=free_index or {},
+            coord_jitter_axes_moved=moved_axes,
         )
 
     monkeypatch.setattr(engine, "run_auto_rietveld", fake_run)
@@ -468,7 +472,7 @@ def test_frozen_cells_are_neither_perturbed_nor_recorded_as_perturbed(monkeypatc
     from tsumugin.autorietveld.model import PhaseSpec
     from tsumugin.autorietveld.multistart import run_multistart_rietveld
 
-    captured = _stub_engine(monkeypatch, {})
+    captured = _stub_engine(monkeypatch)
     phases = [
         PhaseSpec(structure_path="a.cif", phase_name="main"),
         PhaseSpec(structure_path="b.cif", phase_name="minor", refine_cell=False),
@@ -486,23 +490,28 @@ def test_frozen_cells_are_neither_perturbed_nor_recorded_as_perturbed(monkeypatc
     )
 
 
-def test_frozen_atoms_are_not_counted_as_jittered_axes(monkeypatch):
-    """★engine が動かさない凍結原子の軸を「動かした軸」に数えない。
+def test_moved_axes_are_what_the_engine_moved_not_a_recount(monkeypatch):
+    """★「動かした軸数」は engine が**実際に動かした**数を読む (対称性からの数え直しをしない)。
 
     非トートロジー: ``n_axes_jittered`` は傍証の条件 (`perturbation_had_no_effect`) に使われる。
-    対称性の自由度だけで数えると、凍結原子の 3 軸が「試験した」ことになる。
+    結果の自由度指標から数え直すと、engine が動かさなかった軸 (凍結原子・読めなかった相) を
+    「試験した」と数える — 数え直しの規則が engine とずれた瞬間に空虚な傍証が戻る。
     """
     from tsumugin.autorietveld.model import PhaseSpec
     from tsumugin.autorietveld.multistart import run_multistart_rietveld
 
-    _stub_engine(monkeypatch, {"main": {"O1": (1, 2, 3), "O2": (1, 2, 3), "Ca1": (0, 0, 0)}})
-    phases = [PhaseSpec(structure_path="a.cif", phase_name="main", frozen_coord_labels=("O1",))]
+    # 自由度指標は 6 軸ぶんあるが、engine が動かしたのは 2 軸だけ、という結果。
+    _stub_engine(
+        monkeypatch, moved_axes=2, free_index={"main": {"O1": (1, 2, 3), "O2": (1, 2, 3)}},
+    )
+    phases = [PhaseSpec(structure_path="a.cif", phase_name="main")]
     got = run_multistart_rietveld(
         [_hist()], phases, config=MultistartConfig(n_starts=3),
         coord_jitter_ang=0.05, jobs=1, save_gpx=False,
     )
 
-    assert [st.n_axes_jittered for st in got.starts] == [3, 3, 3], "O2 の 3 軸だけ"
+    assert [st.n_axes_jittered for st in got.starts] == [2, 2, 2]
+    assert got.n_axes_jittered == 6
 
 
 def test_jitter_on_only_frozen_atoms_is_not_corroboration(monkeypatch):
@@ -510,7 +519,9 @@ def test_jitter_on_only_frozen_atoms_is_not_corroboration(monkeypatch):
     from tsumugin.autorietveld.model import PhaseSpec
     from tsumugin.autorietveld.multistart import run_multistart_rietveld
 
-    _stub_engine(monkeypatch, {"main": {"O1": (1, 2, 3), "Ca1": (0, 0, 0)}})
+    _stub_engine(
+        monkeypatch, moved_axes=0, free_index={"main": {"O1": (1, 2, 3), "Ca1": (0, 0, 0)}},
+    )
     phases = [PhaseSpec(structure_path="a.cif", phase_name="main", frozen_coord_labels=("O1",))]
     got = run_multistart_rietveld(
         [_hist()], phases, config=MultistartConfig(n_starts=3),
@@ -539,3 +550,46 @@ def test_starts_that_perturb_nothing_are_not_corroboration():
     assert got.is_global_corroborated is False
     assert got.corroboration_reason == "perturbation_had_no_effect"
     assert any("試験していない" in w for w in got.warnings), "理由を述べずに False にしない"
+
+
+def test_a_run_that_tested_nothing_says_so_and_names_the_adoption_flag():
+    """★何も振っていない収束確認は「何も試験していない」と言い、採用判断に使えないことを名指す。
+
+    非トートロジー: ③ は `structure_is_corroborated` を「解を採用してよいか」と読む。全クラス
+    AGREE なのにそれが false になる理由が書かれていなければ、③ は手順の不具合と誤読する。
+    """
+    starts = [
+        MultistartStart(i, StartPerturbation(cell_scale={}, jitter_seed=i), _result(9.8, 9.372))
+        for i in range(3)
+    ]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=3))
+
+    assert got.perturbation_applied is False
+    nothing = [w for w in got.warnings if "何も試験していない" in w]
+    assert len(nothing) == 1, got.warnings
+    assert "structure_is_corroborated" in nothing[0]
+    assert got.to_dict()["perturbation_applied"] is False, "② の JSON に理由のフラグが無い"
+
+
+def test_failed_starts_are_not_reported_as_identical_inputs():
+    """★全開始点が失敗したときに「同じ入力だった」と言わない — 不明であって「動かなかった」ではない。
+
+    非トートロジー: 失敗した開始点は軸数 0 で返る (`_run_one_start`)。それを「1 軸も動かして
+    いない」と読むと、③ は本当の原因 (失敗) ではなく摂動の設定を直しに行く。
+    """
+    starts = [
+        MultistartStart(
+            i,
+            StartPerturbation(
+                cell_scale={"ph": (f, f, f)}, coord_jitter_ang=0.05, jitter_seed=i
+            ),
+            result=None, error="TypeError: boom",
+        )
+        for i, f in enumerate((0.993, 1.0, 1.007))
+    ]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=3))
+
+    assert not any("何も試験していない" in w for w in got.warnings), got.warnings
+    assert any("TypeError: boom" in w for w in got.warnings), "失敗の理由は従来どおり残る"
+    # 失敗した開始点に記録された倍率は「試験した」証拠にならない (実行できていない)。
+    assert got.perturbation_applied is False
