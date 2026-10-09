@@ -183,3 +183,14 @@ def test_coordinate_freedom_mismatches_reach_layer_two_output():
         result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
     )
     assert payload["coordinate_freedom_mismatches"] == {"p": [["O1", "??", "1"]]}
+
+
+def test_correlation_group_violation_is_degraded_at_the_boundary():
+    """③ が相関群を割る段を `stages` で渡すと engine が `CorrelationGroupViolation` を送出する。
+    これは入力の誤りなので ② の境界で error dict にする (以前は ValueError だけを継いでいて
+    ドメインエラーとして扱われず、境界を越えていた)。"""
+    from tsumugin.autorietveld.recipe import CorrelationGroupViolation
+    from tsumugin.mcp.rietveld_tools import auto_rietveld
+
+    out = auto_rietveld([], [], runner=_raising_runner(CorrelationGroupViolation("群を分割")))
+    assert out == {"error": "群を分割", "error_type": "CorrelationGroupViolation"}

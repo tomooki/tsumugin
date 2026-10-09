@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from typing import Mapping, Sequence
 
+from ..errors import TsumuginError
 from .model import Geometry, HistogramSpec, PhaseSpec, RefinementStage
 
 # ---------------------------------------------------------------------------
@@ -84,8 +85,11 @@ _DISPLACEMENT_GROUPS: dict[str, frozenset[str]] = {
 }
 
 
-class CorrelationGroupViolation(ValueError):
+class CorrelationGroupViolation(TsumuginError, ValueError):
     """相関群 (REQ-SAR-301) を分割した段を検出したときに送出する。
+
+    入力 (レシピ・③ の ``stages``) の誤りなので Tsumugin のドメインエラーとし、② が
+    ``{"error","error_type"}`` へ縮退できるようにする (``ValueError`` も継いで既存の呼び手と互換)。
 
     レシピ生成側で送出することで、**群を割る段を書けてしまう**こと自体を防ぐ
     (engine まで届いてから実測で気づくのでは遅い — 割れた段は revert として現れるだけで、
