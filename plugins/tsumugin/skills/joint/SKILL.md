@@ -38,6 +38,12 @@ X 線と中性子それぞれの `HistogramSpec` (data_path・instrument_path・
   `.instprm` にして、その `path` を `HistogramSpec` に渡す。
 - `radiation` は各ヒストグラムで正しく (`xray_synchrotron`/`neutron_tof`/`neutron_cw`)。**波長/較正
   ファイルの取り違えに注意** (放射光の λ は較正ファイル値をそのまま使わないことがある — 実測 XND)。
+- **測定温度が違うなら各ヒストグラムに入れる**: `histograms[].temperature` (K)。温度の違う
+  ヒストグラム (M7 T3: X 線 295 K / 中性子 10 K) は構造としての格子 1 本では両方を説明できない
+  ので、既定レシピがヒストグラムごとの静水圧歪み Dij を解放する — 温度を入れないと解放されず
+  **両方が同じくらい悪くなる**。入ったかは `stages[]` で確かめる (GSAS は格子の段の `note` に
+  「温度差」、TOPAS は `S2b hydrostatic_strain` 段。その段が `reverted` なら吸収できていない)。
+  ⛔ 相の `temperature` はどのエンジンも読まない (入れても効かない)。
 - **装置ファイルが無い / 正しいか分からないときは `instrument` skill**。joint は放射源の異なる
   instprm を複数扱うので取り違えが起きやすい — 各ヒストグラムについて
   `inspect_instrument_params(path, radiation=..., geometry=...)` を**宣言する値で**呼び、

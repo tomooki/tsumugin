@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 
 import pytest
 
@@ -45,6 +46,28 @@ def test_phase_spec_defaults():
     p = PhaseSpec(structure_path="a/FAP.EXP", phase_name="fap", format_hint="EXP")
     assert p.mixed_occupancy_groups == ()
     assert p.temperature is None
+
+
+def _param_entry(doc: str, name: str) -> str:
+    """docstring の ``:param <name>:`` 項目 (次の ``:param`` か末尾まで) を返す。"""
+    m = re.search(rf":param {name}:(.*?)(?=\n\s*:param |\Z)", doc, re.S)
+    assert m, f":param {name}: が docstring に無い"
+    return m.group(1)
+
+
+def test_phase_spec_temperature_is_documented_as_metadata_that_no_engine_reads():
+    """★`PhaseSpec.temperature` の docstring は「どのエンジンも読まない」と言い、温度の置き場所を指す。
+
+    旧 docstring は「ヒストグラム間温度差の吸収判定に用いる」と書いていたが、判定
+    (`recipe.has_temperature_difference`、TOPAS 経路も同じ関数) が読むのは
+    `HistogramSpec.temperature` だけで、相の値はどこからも読まれていなかった — 文書を信じて
+    相に温度を入れると**呼べるが黙って効かない**。読まれないことの実証は
+    `test_recipe.py` / `topas/test_recipe.py` の `test_phase_temperature_is_not_read_*`。
+    """
+    entry = _param_entry(PhaseSpec.__doc__ or "", "temperature")
+    assert "読まない" in entry, "相の temperature が効かないことを docstring が言っていない"
+    assert "HistogramSpec.temperature" in entry, "温度の置き場所を docstring が指していない"
+    assert "吸収判定に用いる" not in entry, "効くかのような旧記述が残っている"
 
 
 def test_refinement_stage_flags_immutable():

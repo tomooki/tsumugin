@@ -220,9 +220,16 @@ class RemovePhase(ModelAction):
         return dataclasses.replace(inp, phases=phases)
 
 
-# PhaseSpec 上で改訂可能なフィールド (構造改訂は ③ が編集済みファイルを与える形で純変換化)
+# PhaseSpec 上で改訂可能なフィールド (構造改訂は ③ が編集済みファイルを与える形で純変換化)。
+# `temperature` は入れない — どのエンジンも読まないメタデータなので、改訂しても再精密化は
+# 変わらず「改訂した」ことだけが残る (呼べるが黙って効かない)。
 _REVISABLE_PHASE_FIELDS = frozenset(
-    {"structure_path", "phase_name", "format_hint", "mixed_occupancy_groups", "temperature"}
+    {"structure_path", "phase_name", "format_hint", "mixed_occupancy_groups"}
+)
+# 相の temperature の改訂を拒むときの置き場所 (③ はエラー文を読んで直すので名指す)
+_PHASE_TEMPERATURE_HINT = (
+    "相の temperature はどの精密化エンジンも読まない (改訂しても精密化は変わらない)。"
+    "ヒストグラム間の測定温度差は histograms[].temperature に入れる"
 )
 
 
@@ -232,6 +239,8 @@ class ReviseStructure(ModelAction):
 
     edits は PhaseSpec のフィールド更新として表現する (例: ③ が編集した CIF の
     ``structure_path`` 差し替え)。原子レベルの編集はファイル側で行い、ここでは spec を差し替える。
+    改訂できるのは ``_REVISABLE_PHASE_FIELDS`` だけで、それ以外は ``ValueError`` (相の
+    ``temperature`` も不可 — どのエンジンも読まないので改訂が効かない)。
 
     :param phase: 対象相名
     :param edits: PhaseSpec フィールドの更新辞書
@@ -243,7 +252,13 @@ class ReviseStructure(ModelAction):
     def apply(self, inp: AnalysisInput) -> AnalysisInput:
         bad = set(self.edits) - _REVISABLE_PHASE_FIELDS
         if bad:
-            raise ValueError(f"改訂不能なフィールド: {sorted(bad)}")
+            msg = (
+                f"改訂不能なフィールド: {sorted(bad)} "
+                f"(ReviseStructure で改訂できるのは {sorted(_REVISABLE_PHASE_FIELDS)})"
+            )
+            if "temperature" in bad:
+                msg += f" — {_PHASE_TEMPERATURE_HINT}"
+            raise ValueError(msg)
         if not any(p.phase_name == self.phase for p in inp.phases):
             raise KeyError(f"相 {self.phase!r} が存在しません")
         phases = tuple(
