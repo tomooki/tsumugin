@@ -3043,9 +3043,9 @@ def run_auto_rietveld(
         micro = _microstructure_maps(g2phases, g2hists)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
-        # 【規定: 全解析で gpx を保存する】: 明示 keep_gpx > save_gpx=False の opt-out >
-        #   既定保存 (ambient 文脈の run ディレクトリ、無ければデータ隣接)。opt-out が止めるのは
-        #   既定保存だけで、keep_gpx は併用しても残す (順位の正本は `plan_output`)。
+        # 【規定: 全解析で gpx を保存する】: keep_gpx / save_gpx / 既定保存 (ambient 文脈の
+        #   run ディレクトリ、無ければデータ隣接) の順位は `plan_output` が正本 — ここに写さない
+        #   (写しが実装と食い違い、keep_gpx が黙って捨てられていた: 2026-10-09)。
         gpx_ctx = gpx_context if gpx_context is not None else active_context()
         plan = plan_output(
             [h.data_path for h in histograms],

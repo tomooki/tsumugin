@@ -82,7 +82,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
-from ..gpxstore import gpx_context, group_context
+from ..gpxstore import gpx_context, group_context, reject_single_keep
 from ..store import Ledger
 from .model import (
     AutoRietveldResult,
@@ -995,6 +995,7 @@ def run_recipe_search(
     候補の実行で例外が出ても**送出しない** — `CandidateOutcome.error` に落として順位表へ残す
     (「バックエンドの失敗は例外でなく結果に縮退させ、ガードレールに処理させる」不変条件)。
     """
+    reject_single_keep(run_kwargs, entry="run_recipe_search")
     config = config or SearchConfig()
     ledger = ledger if ledger is not None else Ledger()
     requested = tuple(names) if names is not None else DEFAULT_CANDIDATES

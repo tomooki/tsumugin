@@ -445,8 +445,8 @@ def run_topas_rietveld(
         )
 
         # 【規定: 全解析で成果物を保存する】: GSAS の .gpx に対応するのがこの作業ディレクトリ
-        #   (INP/.out/results.txt)。明示 keep_project > save_gpx=False > 既定保存。opt-out が
-        #   止めるのは既定保存だけで、keep_project は併用しても残す (順位の正本は `plan_output`)。
+        #   (INP/.out/results.txt)。keep_project / save_gpx / 既定保存の順位は `plan_output` が
+        #   正本 — ここに写さない (写しが実装と食い違っていた: 2026-10-09)。
         out_project = _save_project_artifact(
             work,
             plan_output(

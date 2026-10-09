@@ -71,7 +71,8 @@ class GpxContext:
         ``multistart``/``candidate``/``model``)。ファイル名に出る
     :param index: フレーム番号や開始点番号 (ファイル名の ``f0180`` 部)
     :param label: 候補相名・区間名・レシピ名など (ファイル名の末尾)
-    :param enabled: False なら保存しない (opt-out)
+    :param enabled: False なら**既定保存**をしない (opt-out)。明示 ``keep`` は止めない
+        (`plan_output`)
     """
 
     run_dir: str = ""
@@ -347,6 +348,29 @@ def plan_output(
     return plan_artifact(data_paths, context, ext=ext, explicit_dir=gpx_dir, now=now)
 
 
+#: 成果物 **1 つ**のパスを名指しする engine 引数 (`run_auto_rietveld` / `run_topas_rietveld`)。
+KEEP_KEYS = ("keep_gpx", "keep_project")
+
+
+def reject_single_keep(run_kwargs: Mapping[str, object], *, entry: str) -> None:
+    """**N 回精密化する入口** (探索/マルチスタート/モデル比較) で単一パスの ``keep_*`` を拒む。
+
+    ``keep_*`` は成果物 1 つのパスで、`plan_output` では**どの opt-out にも勝つ**。各候補へ
+    透過すると N 回の精密化が同じパスへ上書きされ (マルチスタートは別プロセスが同時に書く)、
+    候補ごとの成果物 (NFR-108) は 1 つも残らない — 頼まれた保存も規定の保存も黙って壊れる。
+    精密化を 1 回も回さないうちに止めるので結果は失われない。置き場所の指定は ``gpx_dir``。
+
+    :raises ValueError: ``run_kwargs`` に空でない ``keep_gpx`` / ``keep_project`` があるとき
+    """
+    given = [k for k in KEEP_KEYS if run_kwargs.get(k)]
+    if given:
+        raise ValueError(
+            f"{entry} は 1 回の解析で複数回精密化するため、成果物 1 つのパス "
+            f"({', '.join(given)}) は渡せません (全候補が同じパスへ上書きされ、候補ごとの"
+            "成果物が残らない)。置き場所は gpx_dir で指定してください。"
+        )
+
+
 def series_context(
     data_path: str, *, gpx_dir: str | None = None, save: bool = True, now: str | None = None
 ) -> "tuple[GpxContext, str]":
@@ -354,7 +378,7 @@ def series_context(
 
     フレームごとに run ディレクトリが分かれると 754 個できて探せないので、系列の入口で
     1 度だけ解決する。``save=False`` / ``TSUMUGIN_GPX_DIR=none`` では ``enabled=False`` の
-    文脈を返す (None ではなく) — 下流が「保存しない」を一貫して読めるようにするため。
+    文脈を返す (None ではなく) — 下流が「既定保存しない」を一貫して読めるようにするため。
 
     :returns: ``(文脈, 退避理由)``。退避理由が非空なら呼び出し側が ledger/警告に載せること
     """
@@ -491,6 +515,7 @@ __all__ = [
     "DISABLED",
     "ENV_VAR",
     "GpxContext",
+    "KEEP_KEYS",
     "MANIFEST_NAME",
     "ManifestEntry",
     "active_context",
@@ -501,6 +526,7 @@ __all__ = [
     "plan_output",
     "read_manifest",
     "record_artifact",
+    "reject_single_keep",
     "resolve_run_dir",
     "sanitize_label",
     "series_context",

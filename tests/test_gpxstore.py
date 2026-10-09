@@ -310,6 +310,21 @@ def test_plan_output_save_false_is_the_opt_out(tmp_path):
     assert plan.path is None
 
 
+def test_plan_output_save_false_leaves_gpx_dir_unused(tmp_path):
+    """``gpx_dir`` は保存の依頼ではなく**既定保存の置き場所**なので、``save=False`` では使わない。
+
+    ``keep`` (成果物そのもののパス) と違い、止まった既定保存の置き場所だけを指す指定である。
+    ここで run ディレクトリを作ると、opt-out したのに空ディレクトリを撒くことになる。
+    """
+    from tsumugin.gpxstore import plan_output
+
+    root = tmp_path / "chosen-root"
+    plan = plan_output([str(tmp_path / "a.xye")], gpx_dir=str(root), save=False)
+
+    assert plan.path is None and plan.run_dir == ""
+    assert not root.exists()
+
+
 @pytest.mark.parametrize("opt_out", ["save_false", "env_none", "disabled_context"])
 def test_plan_output_explicit_keep_beats_every_opt_out(tmp_path, monkeypatch, opt_out):
     """★明示 ``keep`` はどの opt-out (``save=False`` / env ``none`` / 無効文脈) にも勝つ。

@@ -342,15 +342,23 @@ def test_real_pbso4_save_gpx_false_writes_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / DEFAULT_DIR_NAME).exists()
 
 
-def test_explicit_keep_project_survives_save_gpx_false(stub_driver, tmp_path):
+def test_explicit_keep_project_survives_save_gpx_false(monkeypatch, tmp_path):
     """★明示 ``keep_project`` は ``save_gpx=False`` でもそのパスへ残る (2026-10-09 実測)。
 
     ``run_topas_rietveld(keep_project=<dir>, save_gpx=False)`` が <dir> に何も残さず、例外も
     出さなかった。opt-out が止めるのは既定保存であって名指しされた保存ではない (優先順位の
     正本は `gpxstore.plan_output`)。ここは **engine の配線**を縛る — 方針関数だけ直しても
     engine が ``save_gpx`` で先に分岐すれば、方針関数のテストは緑のまま同じ欠落が戻るため。
+
+    スタブ driver は INP を書かないので、実 tc.exe と同じく INP を書く代役を使い、
+    **中身が複製されたこと**まで見る (ディレクトリの有無だけでは「作っただけ」を見分けられない)。
     """
-    stub_driver([30.0])
+
+    def fake_run_tc(inp_text, *, workdir, basename, **kwargs):
+        (Path(workdir) / f"{basename}.inp").write_text(inp_text, encoding="utf-8")
+        return _FakeRun(30.0)
+
+    monkeypatch.setattr(eng, "run_tc", fake_run_tc)
     keep = tmp_path / "kept-project"
     ledger = Ledger()
 
@@ -360,7 +368,7 @@ def test_explicit_keep_project_survives_save_gpx_false(stub_driver, tmp_path):
     )
 
     assert result.project_path == str(keep)
-    assert keep.is_dir()
+    assert {p.name for p in keep.iterdir()} >= {"stage0.inp", "hist0.xye"}
     assert "m12_project_saved" in [e.kind for e in ledger.entries]
 
 

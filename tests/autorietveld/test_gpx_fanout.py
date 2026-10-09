@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tsumugin.autorietveld.compare import ModelVariant, compare_models
 from tsumugin.autorietveld.model import (
     AutoRietveldResult,
@@ -111,6 +113,50 @@ def test_compare_models_labels_each_variant(tmp_path, monkeypatch):
     )
 
     assert seen == [("model", "model5"), ("model", "model6")]
+
+
+def _fanout(entry, runner, **kwargs):
+    """ファンアウト入口を 1 つ呼ぶ (2 回以上精密化する構成で)。"""
+    variants = [
+        ModelVariant(name="model5", phases=(_PHASE,)),
+        ModelVariant(name="model6", phases=(_PHASE,)),
+    ]
+    if entry == "search":
+        return run_recipe_search([_HIST], [_PHASE], names=["default", "polish"], **kwargs)
+    if entry == "multistart":
+        return run_multistart_rietveld(
+            [_HIST], [_PHASE], config=MultistartConfig(n_starts=3), jobs=1, **kwargs
+        )
+    if entry == "compare":
+        return compare_models([_HIST], variants, runner=runner, **kwargs)
+    from tsumugin.refine_loop.model_compare import run_model_comparison
+
+    return run_model_comparison([_HIST], variants, runner=runner, **kwargs)
+
+
+@pytest.mark.parametrize("key", ["keep_gpx", "keep_project"])
+@pytest.mark.parametrize("entry", ["search", "multistart", "compare", "model_comparison"])
+def test_fanout_rejects_a_single_keep_path_before_refining(tmp_path, monkeypatch, entry, key):
+    """★N 回精密化する入口は、成果物 **1 つ**のパス (``keep_*``) を精密化前に拒む。
+
+    ``keep_*`` は `plan_output` でどの opt-out にも勝つ (2026-10-09)。透過すると N 回の精密化が
+    同じパスへ上書きされ (マルチスタートは別プロセスが同時に書き、衝突は「発散」扱いになる)、
+    候補ごとの成果物 (NFR-108) は 1 つも残らない — ``save_gpx=False`` を添えても書く。
+    1 回も精密化しないうちに止めるので、結果は失われない。
+    """
+    calls: list[int] = []
+
+    def fake_engine(histograms, phases, **kwargs):
+        calls.append(1)
+        return _result()
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_engine)
+
+    with pytest.raises(ValueError, match=key):
+        _fanout(entry, fake_engine, **{key: str(tmp_path / "one.gpx")}, save_gpx=False)
+
+    assert calls == [], "拒む前に精密化している (結果を捨てることになる)"
+    assert not (tmp_path / "one.gpx").exists()
 
 
 def test_refinement_loop_labels_each_iteration(tmp_path):

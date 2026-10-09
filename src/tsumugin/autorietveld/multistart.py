@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
-from ..gpxstore import group_context
+from ..gpxstore import group_context, reject_single_keep
 from ..multistart.perturb import MultistartConfig
 from ..store import Ledger
 from .agreement import (
@@ -518,6 +518,7 @@ def run_multistart_rietveld(
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
 
+    reject_single_keep(run_kwargs, entry="run_multistart_rietveld")
     config = config if config is not None else MultistartConfig()
     ledger = ledger if ledger is not None else Ledger()
     phase_names = [p.phase_name for p in phases]
