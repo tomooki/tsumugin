@@ -59,8 +59,6 @@ def _run_engine_with_fake_gsas(monkeypatch, phases_labels):
     """``phases_labels``: 相名 → GSAS が読んだ (ことにする) 原子ラベル列。"""
     from tsumugin.autorietveld import engine as eng
 
-    added: list[str] = []
-
     class _Project:
         def __init__(self, newgpx):
             pass
@@ -69,7 +67,6 @@ def _run_engine_with_fake_gsas(monkeypatch, phases_labels):
             return _FakeHist()
 
         def add_phase(self, path, phasename, **k):
-            added.append(phasename)
             return _FakePhase(phases_labels[phasename], name=phasename)
 
     class _G2sc:
@@ -78,7 +75,6 @@ def _run_engine_with_fake_gsas(monkeypatch, phases_labels):
     monkeypatch.setattr(eng, "_g2sc", lambda: _G2sc)
     specs = [PhaseSpec(structure_path=f"{n}.cif", phase_name=n) for n in phases_labels]
     eng.run_auto_rietveld([_hist()], specs, save_gpx=False)
-    return added
 
 
 def test_duplicate_label_is_refused_before_refinement(monkeypatch):
