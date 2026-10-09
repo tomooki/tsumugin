@@ -30,6 +30,7 @@ __all__ = [
     "atom_row",
     "coord_esd_states",
     "free_index_from_site_symmetry",
+    "independent_axes",
     "lock_from_free_index",
 ]
 
@@ -100,6 +101,24 @@ def free_index_from_site_symmetry(
         return (int(raw[0]), int(raw[1]), int(raw[2]))
     except Exception:  # noqa: BLE001 — 未知 sytsym は一般位置判定へ縮退 (相を落とさない)
         return (1, 2, 3) if sym == "1" else (0, 0, 0)
+
+
+def independent_axes(free_index: FreeIndex) -> tuple[int, ...]:
+    """`FreeIndex` → **独立変数として動かせる軸** (0=x, 1=y, 2=z) の列。
+
+    ``0`` (対称固定) の軸を除き、結束軸は**代表 (三つ組内で最初に現れる軸) だけ**を返す —
+    従属軸は GSAS の等値拘束が追随するので、独立に動かすと結束関係が壊れる。
+    座標ジッタ (`engine._apply_coord_jitter`) と、その「動かした軸数」を結果から数え直す
+    `multistart._count_jittered_axes` の**共通規則** (片方だけ直すと傍証の条件がずれる)。
+    """
+    seen: set[int] = set()
+    axes: list[int] = []
+    for axis, fid in enumerate(free_index):
+        if fid == 0 or fid in seen:
+            continue
+        seen.add(fid)
+        axes.append(axis)
+    return tuple(axes)
 
 
 def lock_from_free_index(free_index: FreeIndex) -> dict[str, bool]:

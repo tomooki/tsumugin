@@ -403,6 +403,12 @@ Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より
 | `jitter_seed` | 0 | 摂動の種 (固定 = 再現する) |
 | `jobs` | 開始点数 | 並列度 |
 
+摂動は**精密化するパラメータだけ**に掛かる — `refine_cell=False` の相の格子と
+`frozen_coord_labels` の原子は振らない (振ると摂動値がそのまま残り、偽の分岐として
+`undetermined_by_initial_values` に出る)。全相を格子凍結して `coord_jitter_ang: 0` にすると
+開始点が全部同じ入力になり、収束確認は**何も試験しない** (`structure_is_corroborated: false`、
+warnings に「何も試験していない」)。その場合は座標摂動を戻すか、凍結を見直す。
+
 ⚠ **`stages` (追加段階) とは併用できない** (error dict になる)。収束確認は候補を**名前**で
 手順を固定するので追加段階を運べない — 追加段階を試すなら `search` 単独で、収束確認するなら
 `stages` なしで呼ぶ。

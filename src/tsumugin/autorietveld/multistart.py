@@ -36,6 +36,7 @@ from .agreement import (
     cluster_agreement_basins,
     effective_trajectory,
 )
+from .atomrows import independent_axes
 from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
 
 
@@ -129,6 +130,16 @@ class RietveldMultistartResult:
     #: 縮退は手順では解消できないが、**影響を受けた値を「決まっている」として出版しない**
     #: ことはできる。`undetermined_parameters` と同じ規律 (所見であって失敗ではない)。
     initial_value_dependent: tuple[str, ...] = ()
+
+    @property
+    def perturbation_applied(self) -> bool:
+        """どれか 1 つの開始点が初期値を**実際に**動かしたか (格子倍率 ≠ 1.0 か座標 1 軸以上)。
+
+        False なら全開始点が同じ入力であり、**どのクラスの AGREE も空虚**である (同じ入力は
+        同じ解へ行く)。全相 ``refine_cell=False`` で倍率が記録されず、座標摂動も無い場合に起きる。
+        `confirm.ConvergenceReport.structure_is_corroborated` がこれを要求する。
+        """
+        return self.n_axes_jittered > 0 or _lattice_moved(self.starts)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -315,9 +326,12 @@ def summarize_multistart(
         warnings.extend(f"一致判定: {w}" for w in report.warnings)
 
     # 【傍証の条件】: 単一ベイスン ∧ valid ≥2 ∧ 発散なし ∧ **摂動が実際に効いた**。
-    #   最後の条件が要点 — 座標摂動を要求したのに全軸が対称固定で 1 つも動かなかった場合、
-    #   開始点は実質同じものになる。それを傍証と呼ぶのは `n_basins == 1` の空虚な True と同型。
+    #   最後の条件が要点 — 座標摂動を要求したのに全軸が対称固定 (または凍結原子) で 1 つも
+    #   動かなかった場合、開始点は実質同じものになる。それを傍証と呼ぶのは `n_basins == 1` の
+    #   空虚な True と同型。格子だけの試験でも同じで、どの開始点も倍率 1.0 (格子を精密化する相が
+    #   無い = 全相 ``refine_cell=False`` で倍率が記録されない場合を含む) なら全開始点が同じ入力である。
     jitter_requested = any(s.perturbation.coord_jitter_ang > 0.0 for s in starts)
+    had_effect = n_axes > 0 if jitter_requested else _lattice_moved(starts)
     rwps = [s.result.final_rwp for s in valid]  # type: ignore[union-attr]
     rwp_spread = (max(rwps) - min(rwps)) if len(rwps) >= 2 else 0.0
     conditions = (
@@ -325,7 +339,7 @@ def summarize_multistart(
         ("insufficient_valid_starts", len(valid) >= 2),
         ("diverged_starts", n_diverged == 0),
         ("multiple_basins", n_basins == 1),
-        ("perturbation_had_no_effect", (not jitter_requested) or n_axes > 0),
+        ("perturbation_had_no_effect", had_effect),
     )
     reason = next((name for name, ok in conditions if not ok), "corroborated")
     corroborated = all(ok for _, ok in conditions)
@@ -345,10 +359,15 @@ def summarize_multistart(
             "解が割れているのではなく当てはめの良し悪しである。恒常的なら装置分解能の固定 "
             "(instrument_profile) を検討する材料になる"
         )
-    if reason == "perturbation_had_no_effect":
+    if reason == "perturbation_had_no_effect" and jitter_requested:
         warnings.append(
-            "座標摂動を要求したが動かせた軸が 0 (全軸が対称拘束で固定) — "
+            "座標摂動を要求したが動かせた軸が 0 (全軸が対称拘束で固定か凍結原子) — "
             "**この軸では試験していない**ので傍証にはならない"
+        )
+    elif reason == "perturbation_had_no_effect":
+        warnings.append(
+            "どの開始点も初期値を動かしていない (格子倍率が全て 1.0 か、格子を精密化する相が無い。"
+            "座標摂動なし) — 全開始点が同じ入力なので**試験していない**。傍証にはならない"
         )
 
     # 【クラス別の収束 + 初期値依存パラメータ】: 全対の判定を畳む。あるクラスがどこか 1 対でも
@@ -393,6 +412,19 @@ def summarize_multistart(
 
 def _is_valid_or_finite(result: AutoRietveldResult) -> bool:
     return math.isfinite(result.final_rwp)
+
+
+def _lattice_moved(starts: Sequence[MultistartStart]) -> bool:
+    """どれかの開始点が格子を倍率 ≠ 1.0 で振ったか (記録された ``cell_scale`` から読む)。
+
+    ``refine_cell=False`` の相は倍率を記録しない (`run_multistart_rietveld`) ので、
+    凍結相しか無ければ False になる — 振っていない格子を「振った」と数えない。
+    """
+    return any(
+        tuple(v) != (1.0, 1.0, 1.0)
+        for s in starts
+        for v in s.perturbation.cell_scale.values()
+    )
 
 
 #: BLAS/OpenMP のスレッド数を縛る環境変数 (実装により名前が違うので全部立てる)。
@@ -462,29 +494,29 @@ def _run_one_start(payload: tuple) -> tuple:
     except Exception as exc:  # noqa: BLE001 — 実行失敗は発散扱いで継続 (pickle 可能な文字列へ)
         return (index, None, 0, repr(exc)[:200])
     # 摂動を要求していないときは 0 (自由軸の本数ではなく**動かした軸数**である)。
-    n_axes = _count_jittered_axes(result) if jitter is not None else 0
+    n_axes = _count_jittered_axes(result, phases) if jitter is not None else 0
     return (index, result, n_axes, "")
 
 
-def _count_jittered_axes(result: AutoRietveldResult) -> int:
+def _count_jittered_axes(result: AutoRietveldResult, phases: Sequence[PhaseSpec]) -> int:
     """結果から「座標摂動で**動かせた**軸数」を数える (engine が ledger に残した値の代替)。
 
     ⚠ 呼び出し側は**摂動を要求したときだけ**呼ぶこと — 本関数が数えるのは「自由軸の本数」で
     あり、摂動していなければそれは動いた軸ではない。
 
     ledger はワーカー内に閉じており親へ返さないので、**自由度指標から数え直す** —
-    ``atom_coord_free_index`` の各原子について、``0`` でなく三つ組内で最初に現れる正値の
-    軸数が「動かせた軸」である (`engine._apply_coord_jitter` と同じ規則)。
+    ``atom_coord_free_index`` の各原子の `atomrows.independent_axes` の本数が「動かせた軸」で
+    あり、``frozen_coord_labels`` の原子は数えない (`engine._apply_coord_jitter` と同じ規則。
+    凍結原子を数えると、1 軸も動いていない run が `perturbation_had_no_effect` を通り抜ける)。
     """
+    frozen = {p.phase_name: set(p.frozen_coord_labels) for p in phases}
     total = 0
-    for atoms in result.atom_coord_free_index.values():
-        for free in atoms.values():
-            seen: set[int] = set()
-            for fid in free:
-                if fid == 0 or fid in seen:
-                    continue
-                seen.add(fid)
-                total += 1
+    for phase_name, atoms in result.atom_coord_free_index.items():
+        skip = frozen.get(phase_name, set())
+        for label, free in atoms.items():
+            if label in skip:
+                continue
+            total += len(independent_axes(free))
     return total
 
 
@@ -520,7 +552,12 @@ def run_multistart_rietveld(
 
     config = config if config is not None else MultistartConfig()
     ledger = ledger if ledger is not None else Ledger()
-    phase_names = [p.phase_name for p in phases]
+    # 【格子を精密化しない相は振らない】: ``refine_cell=False`` の相 (Issue #47 の副相格子固定) は
+    #   cell 段が Cell を解放しないので、摂動した格子が**そのまま最終格子**になる — 開始点ごとに
+    #   違う値で固定され、偽のベイスン分岐と副相フィットの劣化を生む。engine も同じ規則で
+    #   掛けない (`_apply_initial_cell_scale`) が、ここで外すのは**記録を実際と一致させる**ため
+    #   (start_key / ledger の ``scale`` / 空虚な傍証の判定がこの値を読む)。
+    phase_names = [p.phase_name for p in phases if p.refine_cell]
     perturbations = generate_perturbations(
         phase_names, config, coord_jitter_ang=coord_jitter_ang, seed=seed
     )

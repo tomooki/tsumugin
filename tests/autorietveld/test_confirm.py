@@ -60,7 +60,12 @@ class _Recorder:
 
 def _fake_multistart(rec: _Recorder, *, corroborated: bool = True,
                      class_convergence: dict | None = None,
-                     dependent: tuple = ()):
+                     dependent: tuple = (),
+                     cell_scale: dict | None = None,
+                     n_axes: int = 3,
+                     jitter: float = 0.05):
+    """Phase B の差し替え。既定の開始点は**実際に振った**格子 (0.993/1.007) + 座標 3 軸 —
+    全部 1.0 だと同じ入力 = 空虚な収束確認になる (`test_identical_starts_...`)。"""
     from tsumugin.autorietveld.multistart import (
         MultistartStart,
         RietveldMultistartResult,
@@ -74,13 +79,21 @@ def _fake_multistart(rec: _Recorder, *, corroborated: bool = True,
         starts = tuple(
             MultistartStart(
                 index=i,
-                perturbation=StartPerturbation(cell_scale={"ph": (1.0, 1.0, 1.0)}),
+                perturbation=StartPerturbation(
+                    cell_scale=(
+                        {"ph": (f, f, f)} if cell_scale is None else cell_scale
+                    ),
+                    coord_jitter_ang=jitter,
+                    jitter_seed=i,
+                ),
                 result=best,
+                n_axes_jittered=n_axes,
             )
-            for i in range(2)
+            for i, f in enumerate((0.993, 1.007))
         )
         return RietveldMultistartResult(
             best=best, best_index=0, starts=starts, n_starts=2, n_diverged=0,
+            n_axes_jittered=n_axes * len(starts),
             n_basins=1 if corroborated else 2,
             is_global_corroborated=corroborated,
             corroboration_reason="corroborated" if corroborated else "multiple_basins",
@@ -257,3 +270,50 @@ def test_phase_b_is_only_given_kwargs_that_the_engine_accepts():
     )
     unknown = set(rec.multistart_kwargs) - allowed
     assert not unknown, f"Phase B へエンジンが受け取れない引数が渡っている: {sorted(unknown)}"
+
+
+def test_identical_starts_are_not_an_adoptable_structure():
+    """★どの開始点も初期値を動かしていなければ、全クラスの AGREE は**空虚**である。
+
+    非トートロジー: 全相 ``refine_cell=False`` (格子倍率が記録されない) で座標摂動なし、
+    のように開始点が全部同じ入力だと、同じ入力は同じ解へ行くので全クラスが AGREE になる。
+    `structure_is_corroborated` は ③ が「解を採用してよい」と読む headline なので、
+    ここが空虚に True になるのは最悪の失敗形 (何も試験していないのに採用を許す)。
+    """
+    rec = _Recorder({"default": 9.81})
+    fake_ms = _fake_multistart(rec, cell_scale={}, n_axes=0, jitter=0.0)
+    got = optimize_then_confirm([_H], [_P], candidates=("default",),
+                                search_runner=rec.search_runner,
+                                multistart_runner=fake_ms)
+
+    assert got.multistart is not None and got.multistart.perturbation_applied is False
+    assert got.structure_is_corroborated is False, "何も振っていない収束確認で採用を許した"
+    assert any("何も試験していない" in w for w in got.warnings), "理由を述べずに False にしない"
+
+
+def test_a_lattice_only_test_of_a_symmetry_fixed_structure_is_still_adoptable():
+    """【対照】座標が全て対称固定 (動かせる軸 0) でも、格子を振っていれば試験は成立している。
+
+    高対称の標準試料 (CeO₂ 等) は自由座標を持たないので座標軸は試験しようがない。
+    格子は実際に振ったので、`structure_is_corroborated` を False へ縮退させない。
+    """
+    rec = _Recorder({"default": 9.81})
+    fake_ms = _fake_multistart(rec, n_axes=0)
+    got = optimize_then_confirm([_H], [_P], candidates=("default",),
+                                search_runner=rec.search_runner,
+                                multistart_runner=fake_ms)
+
+    assert got.multistart.perturbation_applied is True
+    assert got.structure_is_corroborated is True
+
+
+def test_jittered_coordinates_alone_make_the_test_real():
+    """【対照】格子が全相凍結 (倍率なし) でも、座標を実際に動かしていれば試験は成立している。"""
+    rec = _Recorder({"default": 9.81})
+    fake_ms = _fake_multistart(rec, cell_scale={}, n_axes=3)
+    got = optimize_then_confirm([_H], [_P], candidates=("default",),
+                                search_runner=rec.search_runner,
+                                multistart_runner=fake_ms)
+
+    assert got.multistart.perturbation_applied is True
+    assert got.structure_is_corroborated is True
