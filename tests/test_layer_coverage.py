@@ -440,6 +440,11 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "histogram_rwp",
         "ヒストグラム別 Rwp (joint の内訳; 総合値だけではどちらが悪いか分からない)",
     ),
+    "coordinate_freedom_mismatches": (
+        "coordinate_freedom_mismatches",
+        "座標の自由度の食い違い (fit-then-judge P1a)。engine は原子行の site symmetry を"
+        "解釈できないと黙って座標を凍結する — その原子を ③ が見つけられるようにする",
+    ),
     "phase_integrated_intensity": (
         "phase_integrated_intensity",
         "相ごとの積分計算強度 Σ Fc²·Icorr (fit-then-judge P1a)。どの相が散乱を担っているかの"

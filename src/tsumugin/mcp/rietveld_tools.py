@@ -129,6 +129,12 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
             name: [finite_or_none(v) if v is not None else None for v in values]
             for name, values in result.phase_integrated_intensity.items()
         },
+        # 座標の自由度の食い違い: 相名 → [[原子, 原子行の site symmetry, 再計算した site
+        #   symmetry], ...]。空 = なし。engine が黙って座標を凍結した原子をここで見つける。
+        "coordinate_freedom_mismatches": {
+            name: [list(t) for t in found]
+            for name, found in result.coordinate_freedom_mismatches.items()
+        },
         "stages": [
             {
                 "label": s.label,

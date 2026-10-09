@@ -1015,3 +1015,10 @@ class AutoRietveldResult:
     phase_integrated_intensity: Mapping[str, tuple["float | None", ...]] = field(
         default_factory=dict
     )
+    # 【座標の自由度の食い違い】(fit-then-judge P1a): 相名 → (原子ラベル, 原子行の site symmetry,
+    #   座標から再計算した site symmetry) の列。engine は原子行の site symmetry で座標を解放するか
+    #   決めるが、解釈できないと**黙って凍結する**。再計算 (`SytSym`) と独立変数の並びが違う原子を
+    #   ここに出す (再計算できなければ "?")。空 = 食い違いなし。観測のみ。
+    coordinate_freedom_mismatches: Mapping[str, tuple[tuple[str, str, str], ...]] = field(
+        default_factory=dict
+    )

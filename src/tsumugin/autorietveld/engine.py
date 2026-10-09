@@ -3250,7 +3250,52 @@ def run_auto_rietveld(
         hap_size_esd=micro[2],
         hap_mustrain_esd=micro[3],
         phase_integrated_intensity=_phase_integrated_intensity(g2phases, g2hists),
+        coordinate_freedom_mismatches=_coordinate_freedom_mismatches(g2phases),
     )
+
+
+def _coordinate_freedom_mismatches(
+    g2phases, getcsxinel=None, sytsym=None
+) -> dict[str, tuple[tuple[str, str, str], ...]]:
+    """原子行の site symmetry と、座標から再計算した site symmetry の自由度の食い違い (P1a)。
+
+    比べるのは `GetCSxinel` の**独立変数の番号の並び** (自由な軸と結合の両方) — 記号の字面が
+    違っても並びが同じなら食い違いではない。原子行を解釈できない原子 (engine が黙って凍結する
+    当の病理) は食い違いとして出す。再計算に失敗した原子は ``"?"`` で出す (捏造しない)。
+
+    :param getcsxinel: / :param sytsym: テスト注入用 (None なら GSAS-II)。
+    """
+    if getcsxinel is None or sytsym is None:
+        from GSASII import GSASIIspc as G2spc
+
+        getcsxinel = getcsxinel or G2spc.GetCSxinel
+        sytsym = sytsym or G2spc.SytSym
+
+    def pattern(sym: str) -> tuple[int, ...] | None:
+        try:
+            return tuple(int(v) for v in getcsxinel(sym)[0])
+        except Exception:  # noqa: BLE001 — 解釈できない = 食い違いとして出す
+            return None
+
+    out: dict[str, tuple[tuple[str, str, str], ...]] = {}
+    for ph in g2phases:
+        general = ph.data["General"]
+        cx, ct, cs, cia = general["AtomPtrs"]
+        found: list[tuple[str, str, str]] = []
+        for row in ph.data["Atoms"]:
+            label = str(row[ct - 1])
+            row_sym = str(row[cs]).strip()
+            try:
+                recomputed = str(sytsym(row[cx : cx + 3], general["SGData"])[0]).strip()
+            except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+                found.append((label, row_sym, "?"))
+                continue
+            row_pattern = pattern(row_sym)
+            if row_pattern is None or row_pattern != pattern(recomputed):
+                found.append((label, row_sym, recomputed))
+        if found:
+            out[ph.name] = tuple(found)
+    return out
 
 
 def _integrated_intensity(reflist, super_: bool = False) -> float:

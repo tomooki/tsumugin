@@ -167,3 +167,19 @@ def test_phase_integrated_intensity_reaches_layer_two_output():
         result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
     )
     assert payload["phase_integrated_intensity"] == {"A": [7.0, None], "B": [3.0, None]}
+
+
+def test_coordinate_freedom_mismatches_reach_layer_two_output():
+    """fit-then-judge P1a タスク 6: 座標の自由度の食い違いを ③ が読めること。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(), final_rwp=10.0, final_gof=1.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+        coordinate_freedom_mismatches={"p": (("O1", "??", "1"),)},
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    assert payload["coordinate_freedom_mismatches"] == {"p": [["O1", "??", "1"]]}

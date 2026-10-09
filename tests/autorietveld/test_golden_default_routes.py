@@ -168,6 +168,8 @@ def test_default_route_matches_golden_bit_for_bit(
     for name, values in result.phase_integrated_intensity.items():
         assert values and all(v is not None and v > 0 for v in values), (name, values)
     assert set(result.phase_integrated_intensity) == set(result.refined_cells)
+    # P1a タスク 6: 公開チュートリアルの構造では座標の自由度の食い違いは無い。
+    assert result.coordinate_freedom_mismatches == {}, result.coordinate_freedom_mismatches
     # P1a タスク 1 の観測の整合: GSAS 経路は revert 理由を必ず記録する (受理なら None)。
     for s in result.stage_results:
         assert (s.revert_reason is not None) == bool(s.reverted), (
