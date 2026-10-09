@@ -100,6 +100,31 @@ def test_repair_docs_say_where_rejected_repair_fits_are(path: Path):
     assert "別の run ディレクトリ" in body, f"{path}: 修復試行が系列と別の run にあることが書かれていない"
 
 
+#: 退避理由を返す ② ツール → それを ③ に説明する手順書。キーは「その手順書が名指しすべき返り値」。
+_FALLBACK_DOCS = {
+    _SKILLS / "analyze" / "SKILL.md": ("warnings", "search.warnings", "convergence.warnings"),
+    _SKILLS / "insitu" / "SKILL.md": ("warnings", "m9_gpx_fallback"),
+}
+
+
+@pytest.mark.parametrize(
+    "path", sorted(_FALLBACK_DOCS), ids=lambda p: f"{p.parent.name}/{p.name}"
+)
+def test_skills_say_where_the_fallback_reason_appears(path: Path):
+    """成果物が一時領域へ退避したとき**どのキーに理由が出るか**を手順書が言う (設計 §5/§6)。
+
+    ② が理由を返していても、手順書がキーを書かなければ ③ は ``gpx_path`` を「頼んだ場所」と
+    読んだまま報告する (退避先は OS の掃除で消えうる)。行の形 (``成果物の保存先:``) も書く —
+    `validity.warnings` 等と同じ ``warnings`` 名なので、形が無いと ③ は見分けられない。
+    """
+    body = _text(path)
+
+    assert "成果物の保存先" in body, f"{path}: 退避理由の行の形が書かれていない"
+    assert "一時領域" in body, f"{path}: 退避したら一時領域にあることが書かれていない"
+    for key in _FALLBACK_DOCS[path]:
+        assert f"`{key}`" in body, f"{path}: 退避理由が出るキー {key!r} が書かれていない"
+
+
 @pytest.mark.parametrize("path", _PLAYBOOKS, ids=lambda p: p.parent.name)
 def test_playbooks_mention_the_retention_rule(path: Path):
     """非 Claude 実行者向け PLAYBOOK にも規定が書かれていること (skill と同じ内容)。"""

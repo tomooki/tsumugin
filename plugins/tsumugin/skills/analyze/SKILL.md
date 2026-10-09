@@ -39,6 +39,14 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
   `convergence.multistart.starts[].gpx_path` (負けた候補・別ベイスンへ落ちた開始点を開くとき)。
 - **どこを見る**: 返り値の **`gpx_path`** (TOPAS は `project_path`)。run ディレクトリの
   `manifest.jsonl` が「役割・相・Rwp」の索引 (1 行 1 成果物)。
+- **頼んだ場所に置かれなかったとき**: 置き場所 (`gpx_dir` / データ隣接) に書けないと
+  (読み取り専用の共有ディスク等) 成果物は**一時領域へ退避**され、`成果物の保存先: <理由>` の行が返る —
+  `auto_rietveld` / `refine_with_revisions` は **`warnings`** (退避が無ければ空リスト)、
+  探索 (`search`) は `search.warnings`、収束確認 (`multistart`) は `convergence.warnings`
+  (この 2 つでは最上位の `warnings` は空のまま)。**この行があったら `gpx_path` は %TEMP% の中**であり、
+  OS の掃除で消えうる — 報告には「指定した場所」ではなく「一時領域へ退避した」と理由ごと書き、
+  残すべき成果物は書ける場所へ移す (または書ける `gpx_dir` を渡して回し直す)。
+  行が無ければ成果物は頼んだ場所にある。
 - **何に使う**: **MEM 系ツール (`mem_density` / `mem_rietveld_iterate`) の入力はこれ**。
   以前は ② から精密化済み gpx を作る経路が無く、`mem-model-fix` skill は呼び出せなかった。
 - **止めたいとき**: `save_gpx=false`。⚠ **既定で止めない** — 保存しなかった精密化は
