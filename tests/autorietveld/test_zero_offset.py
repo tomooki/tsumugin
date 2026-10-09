@@ -102,3 +102,39 @@ def test_layer_two_refuses_values_the_engine_would_misread(flags):
 
     with pytest.raises(ValueError):
         stage_from_dict({"label": "bad", "flags": flags})
+
+
+def test_false_values_release_nothing():
+    """値の真偽で判定する — false を「解放する」と読むと検証や TOPAS と解釈が食い違う (M2)。"""
+    assert _run({"zero_offset": False}) == []
+    assert _run({"profile_lorentzian": False}) == []
+
+
+class _ClearHist:
+    def __init__(self):
+        self.cleared = []
+
+    def clear_refinements(self, spec):
+        if "Instrument Parameters" in spec:
+            self.cleared.extend(spec["Instrument Parameters"])
+
+
+def test_freeze_others_can_keep_zero_without_keeping_widths():
+    """`zero_offset` を残す名前にすると Zero だけ残り、U,V,W,X,Y は凍結される (M7)。"""
+    from tsumugin.autorietveld.engine import _freeze_all
+
+    h = _ClearHist()
+    _freeze_all([h], [], [], [Radiation.XRAY_LAB], {"zero_offset"})
+    assert "Zero" not in h.cleared and {"U", "V", "W", "X", "Y"} <= set(h.cleared)
+    h2 = _ClearHist()
+    _freeze_all([h2], [], [], [Radiation.XRAY_LAB], set())
+    assert "Zero" in h2.cleared
+
+
+@pytest.mark.parametrize("names", [["cell", "zero"], ["coords"]])
+def test_layer_two_refuses_unknown_keep_names(names):
+    """語彙外の名前は engine が黙って「残さない」と読む — 残したつもりで凍る (M7)。"""
+    from tsumugin.mcp._recipe_spec import stage_from_dict
+
+    with pytest.raises(ValueError, match="未知の名前"):
+        stage_from_dict({"label": "s", "flags": {"freeze_others": names}})

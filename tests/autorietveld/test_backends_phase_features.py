@@ -50,3 +50,18 @@ def test_gsas_backend_is_not_wrapped():
     from tsumugin import autorietveld
 
     assert resolve_backend("gsasii") is autorietveld.run_auto_rietveld
+
+
+def test_topas_refuses_lorentzian_key_lists(stub_topas):
+    """TOPAS は profile_lorentzian の値の真偽で x,y を解放するだけ — ["Zero"] でも幅が動く (M3)。"""
+    from tsumugin.autorietveld.model import RefinementStage
+    from tsumugin.topas.flags import UnsupportedStageFlagError
+
+    engine = resolve_backend("topas")
+    stage = RefinementStage("l", {"profile_lorentzian": ["Zero"]})
+    with pytest.raises(UnsupportedStageFlagError, match="キー列"):
+        engine([], [PhaseSpec("x.cif", "x")], recipe=(stage,))
+    assert stub_topas == []
+    # 真偽値は従来どおり通す
+    ok = RefinementStage("l", {"profile_lorentzian": True})
+    assert engine([], [PhaseSpec("x.cif", "x")], recipe=(ok,)) == "ran"

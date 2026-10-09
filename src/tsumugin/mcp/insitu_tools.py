@@ -27,7 +27,7 @@ from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
-from ._degrade import degrade_oserror
+from ._degrade import degrade_domain_errors, degrade_oserror
 import dataclasses
 
 from ..insitu.model import (
@@ -688,6 +688,7 @@ def _apply_charge_constraint_spec(
 
 
 @degrade_oserror
+@degrade_domain_errors
 def sequential_rietveld(
     frames: Sequence[Mapping[str, object]],
     initial_phases: Sequence[Mapping[str, object]],

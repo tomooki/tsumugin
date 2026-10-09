@@ -90,3 +90,12 @@ def test_real_gsas_phase_detects_a_corrupted_site_symmetry(tmp_path):
     ph.data["Atoms"][1][cs] = "bogus"
     found = _coordinate_freedom_mismatches([ph])
     assert list(found) == ["ZnO"] and found["ZnO"][0][:2] == ("O1", "bogus")
+
+
+def test_coefficient_only_differences_are_reported():
+    """番号の並びが同じでも係数 (符号・倍率) が違えば別の拘束 (L5)。"""
+    cs = {"XXZ": ((1, 1, 2), (1.0, 1.0, 1.0)), "X-XZ": ((1, 1, 2), (1.0, -1.0, 1.0))}
+    ph = _Phase("p", [("O1", (0.1, -0.1, 0.3), "XXZ")], {(0.1, -0.1, 0.3): "X-XZ"})
+    assert _coordinate_freedom_mismatches([ph], lambda s: cs[str(s).strip()], ph.sytsym) == {
+        "p": (("O1", "XXZ", "X-XZ"),)
+    }

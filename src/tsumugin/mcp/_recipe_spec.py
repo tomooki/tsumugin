@@ -42,6 +42,14 @@ from ..autorietveld import RefinementStage
 
 __all__ = ["stage_from_dict", "stage_to_dict", "stages_from_dicts"]
 
+#: `freeze_others` に渡せる「凍結しない名前」の閉じた語彙 (engine `_freeze_all` と同じ)。
+#: ``scale``/``background`` は `_freeze_all` が元々凍結しない (常時解放) ので、残す名前として
+#: 渡しても無害 — 既存の受け入れを壊さないよう語彙に含める。
+FREEZE_KEEP_NAMES = frozenset(
+    {"cell", "displacement", "profile", "size_strain", "atoms", "zero_offset", "scale",
+     "background"}
+)
+
 #: RefinementStage の JSON 表現が許す最上位キー。それ以外はタイポ/誤用として拒否する。
 _ALLOWED_STAGE_KEYS = frozenset({"label", "flags", "note"})
 
@@ -133,6 +141,14 @@ def _check_flag_value(label: str, name: str, value: object) -> None:
         if isinstance(value, bool):
             return
         if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
+            # 残す名前は engine `_freeze_all` の閉じた語彙。語彙外の名前は黙って「残さない」と
+            # 読まれ、残したつもりのパラメータまで凍る (例: "zero" と綴ると Zero が凍る)。
+            unknown = sorted(set(value) - FREEZE_KEEP_NAMES)
+            if unknown:
+                raise ValueError(
+                    f"stage.flags['freeze_others'] に未知の名前 {unknown} があります ({label!r})。"
+                    f"残せる名前: {sorted(FREEZE_KEEP_NAMES)}"
+                )
             # 空リストは「何も残さず全部凍結」と読めるが、engine は `if keep:` で真偽を見るため
             # **凍結そのものを飛ばす** = 正反対の意味になる (例外にも ledger にも出ない)。
             # PR #129 の ``instrument.recipe: []`` と同型なので、黙って通さず綴りを教える。

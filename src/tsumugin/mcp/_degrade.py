@@ -39,3 +39,23 @@ def degrade_oserror(fn: _F) -> _F:
             return {"error": str(exc), "error_type": type(exc).__name__}
 
     return wrapper  # type: ignore[return-value]
+
+
+def degrade_domain_errors(fn: _F) -> _F:
+    """Tsumugin の**ドメインエラー** (`errors.TsumuginError`) を ``{"error","error_type"}`` へ縮退する。
+
+    相仕様の誤り (`InvalidPhaseSpecError`)・エンジン未導入・相関群の分割など、精密化の
+    呼び出しの奥で送出される入力起因の失敗を、関数レベルでも error dict にする (MCP の実際の境界
+    `server._call_tool` は全例外を縮退するが、関数を直接呼ぶ呼び手と揃える)。
+    ドメインエラー**以外** (論理バグ) は透過させる — `degrade_oserror` と同じ方針。
+    """
+    from ..errors import TsumuginError
+
+    @functools.wraps(fn)
+    def wrapper(*args: object, **kwargs: object) -> dict:
+        try:
+            return fn(*args, **kwargs)
+        except TsumuginError as exc:
+            return {"error": str(exc), "error_type": type(exc).__name__}
+
+    return wrapper  # type: ignore[return-value]

@@ -96,14 +96,14 @@ def test_stage_result_revert_reason_defaults_keep_old_constructors_valid():
     """fit-then-judge P1a タスク 1: 新フィールドは末尾追加・既定値で後方互換。
 
     既定の ``revert_reason=None`` は「受理」か「理由を記録しない経路」を意味する
-    (``reverted`` と組で読む)。``is_noop=False`` は既存の no-op 検出 (ledger) と同じ判定を
-    結果側にも載せるためのもので、既定は「検出していない」。
+    (``reverted`` と組で読む)。``is_noop=None`` は「検査していない」— 検査していないのに
+    False (= 動いた) と答えない (セルフレビュー M1)。
     """
     from tsumugin.autorietveld.model import StageResult
 
     s = StageResult(label="cell", rwp=10.0, gof=1.0, n_params=3, converged=True)
     assert s.revert_reason is None
-    assert s.is_noop is False
+    assert s.is_noop is None
 
 
 def test_phase_spec_uiso_equiv_groups_round_trip_and_default():

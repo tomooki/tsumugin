@@ -164,13 +164,9 @@ def test_default_route_matches_golden_bit_for_bit(
     fp = fingerprint(result)
     # 非トートロジー: 指紋が空のまま一致するのを防ぐ (抽出が壊れても「一致」してしまう)。
     assert fp["stages"] and fp["cells"] and fp["coords"], f"指紋が空: {fp}"
-    # P1a タスク 5: 相ごとの積分計算強度が埋まり、正の有限値であること。
-    for name, values in result.phase_integrated_intensity.items():
-        assert values and all(v is not None and v > 0 for v in values), (name, values)
-    assert set(result.phase_integrated_intensity) == set(result.refined_cells)
-    # P1a タスク 6: 公開チュートリアルの構造では座標の自由度の食い違いは無い。
-    assert result.coordinate_freedom_mismatches == {}, result.coordinate_freedom_mismatches
-    # P1a タスク 1 の観測の整合: GSAS 経路は revert 理由を必ず記録する (受理なら None)。
+    # 既存経路の観測の整合 (P1a タスク 1): GSAS 経路は revert 理由を必ず記録する (受理なら None)。
+    #   T1/CaTeO3 は fit-then-judge の準 hold-out なので、ここで見るのは**既存経路の非回帰と
+    #   その観測の整合だけ** (新しい観測フィールドの性質は hold-out 外の garnet で検査する)。
     for s in result.stage_results:
         assert (s.revert_reason is not None) == bool(s.reverted), (
             f"段 {s.label!r}: reverted={s.reverted} なのに revert_reason={s.revert_reason!r}"

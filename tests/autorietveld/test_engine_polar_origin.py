@@ -84,13 +84,22 @@ def test_111_atom_on_the_threefold_axis_holds_dax_only():
     assert gpx.calls == [("hold", ["0::dAx:0"])]
 
 
-def test_uninterpretable_site_symmetry_is_loud_not_silent():
-    def broken(sym):
-        raise KeyError(sym)
+def test_uninterpretable_site_symmetry_pins_the_origin_like_the_engine():
+    """解釈できない原子は engine (`_phase_atom_info`) が座標を凍結する = 原点を決めている。
 
-    ph = _Phase("z", [("Zn1", "Zn", "weird")])
-    with pytest.raises(ValueError, match="site symmetry"):
-        _apply_polar_origin(_Gpx(), [ph], [_spec(fix_polar_origin=True)], broken)
+    固定を足すと実在の自由度を消すので何もしない (その原子は
+    `coordinate_freedom_mismatches` に現れる)。以前は例外にしていたが engine の規則と食い違った。
+    """
+
+    def partly_broken(sym):
+        if sym == "weird":
+            raise KeyError(sym)
+        return _getcsxinel(sym)
+
+    gpx = _Gpx()
+    ph = _Phase("z", [("O1", "O", "weird"), ("Zn1", "Zn", "3m(z)")])
+    assert _apply_polar_origin(gpx, [ph], [_spec(fix_polar_origin=True)], partly_broken) == []
+    assert gpx.calls == []
 
 
 def test_phase_spec_fix_polar_origin_round_trip():
@@ -186,3 +195,19 @@ def test_polar_origin_is_held_on_a_real_gsas_refinement(tmp_path, monkeypatch):
     o = result.atom_coords["ZnO"]["O1"]
     assert zn[2] == 0.0, f"原点を固定した Zn の z が動いた: {zn}"
     assert abs(o[2] - 0.382) < 0.003, f"O の z が真値へ戻らない: {o}"
+
+
+def test_polar_origin_with_element_ranked_coords_stages_is_refused():
+    """元素ランクの座標段では原点は既に決まっている — 静的な固定と組み合わせない (M6)。"""
+    from tsumugin.autorietveld.engine import _refuse_polar_origin_with_ranked_coords
+    from tsumugin.autorietveld.model import RefinementStage
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    ranked = [RefinementStage("z0", {"coords": 0}), RefinementStage("all", {"coords": True})]
+    with pytest.raises(InvalidPhaseSpecError, match="元素ランク"):
+        _refuse_polar_origin_with_ranked_coords([_spec(fix_polar_origin=True)], ranked)
+    # 全原子を解放する段だけなら可・相が opt-in していなければ検査しない
+    _refuse_polar_origin_with_ranked_coords(
+        [_spec(fix_polar_origin=True)], [RefinementStage("all", {"coords": True})]
+    )
+    _refuse_polar_origin_with_ranked_coords([_spec()], ranked)

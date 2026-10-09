@@ -68,3 +68,25 @@ def test_ratio_matches_gsas_phase_fractions_on_a_simulated_two_phase_pattern(tmp
     (ia,), (ib,) = out["A"], out["B"]
     assert ia > 0 and ib > 0
     assert math.isclose(ia / ib, 0.7 / 0.3, rel_tol=1e-9), (ia, ib)
+
+
+class _Hist:
+    def __init__(self, refl):
+        self._refl = refl
+
+    def reflections(self):
+        return self._refl
+
+
+class _Ph:
+    def __init__(self, name):
+        self.name = name
+
+
+def test_empty_or_malformed_reflection_lists_are_unknown_not_zero():
+    """空の反射リストは「未計算」、想定外の形は読めない — どちらも 0.0 を捏造しない (L2)。"""
+    from tsumugin.autorietveld.engine import _phase_integrated_intensity
+
+    hists = [_Hist({"A": {"RefList": []}, "B": {"RefList": [[1, 2, 3]]}})]
+    out = _phase_integrated_intensity([_Ph("A"), _Ph("B"), _Ph("C")], hists)
+    assert out == {"A": (None,), "B": (None,), "C": (None,)}

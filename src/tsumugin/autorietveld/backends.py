@@ -86,6 +86,18 @@ def _run_topas_refusing_gsas_only_features(histograms, phases, *args, **kwargs):
                 "TOPAS バックエンドは実装していません (渡すと何もせずに完走するため拒否します)。"
                 "backend='gsasii' を使うか、これらを外してください"
             )
+    # `profile_lorentzian` のキー列 (GSAS 経路で Zero を束ねないための形) は TOPAS が解釈しない:
+    # TOPAS の翻訳は値の真偽だけを見て x,y を解放するので、["Zero"] でも Lorentzian 幅が動く。
+    from ..topas.flags import UnsupportedStageFlagError
+
+    for stage in kwargs.get("recipe") or ():
+        value = getattr(stage, "flags", {}).get("profile_lorentzian")
+        if isinstance(value, (list, tuple)):
+            raise UnsupportedStageFlagError(
+                f"(段 {getattr(stage, 'label', '?')!r}) TOPAS は profile_lorentzian のキー列 "
+                f"{list(value)} を解釈しません (真偽値で x,y を解放するだけ)。true/false を使って"
+                "ください"
+            )
     # 解決は呼び出し時 (`monkeypatch.setattr("tsumugin.topas.engine.run_topas_rietveld", …)`
     # の注入経路を素通りしない)。
     from ..topas import engine as topas_engine

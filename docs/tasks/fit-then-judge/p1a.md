@@ -10,7 +10,8 @@
 - **静的に表す**: 部品はすべて `RefinementStage.flags` か `PhaseSpec`/`HistogramSpec` のフィールド、または
   `run_auto_rietveld` の引数で表し、`run_auto_rietveld(recipe=…)` だけで再生できる (P1-1B の静的コンパイルの前提)。
 - **(準) hold-out を使わない**: 新しいフィールド・フラグを使うテストは T1/CaTeO3/T3/T4 のデータを参照しない
-  (合成データか、範囲外の公開データ)。既存経路の非回帰 (ゴールデン) だけは読んでよい。
+  (合成データか、範囲外の公開データ)。既存経路の非回帰 (ゴールデン) と、その観測の整合 (revert 理由の記録)
+  だけは読んでよい。関数単位の恒久ガード `tests/test_holdout_guard.py` が強制する。
 - **①②③ の露出**: `PhaseSpec` のフィールドと段フラグは既存の ② JSON (`phases`/`stages`) で到達できるようにする
   (`from_dict`/`to_dict` と `mcp/_recipe_spec` の検証)。観測フィールドは `_result_to_dict` に載せる。
   ③ の手順書には P1-1B (テンプレート) まで書かない — **非露出の理由**: 単独では使い道が無く、テンプレートが組み合わせて使う部品だから。
@@ -22,7 +23,7 @@
 | # | タスク | 変更箇所 | テスト | 状態 |
 |---|---|---|---|---|
 | 0 | **ゴールデン**: 既定経路の指紋 (最終 Rwp/GOF・段列 [label, rwp, gof, n_params, reverted, converged]・格子・座標・esd) を、変更前のコード (abccffb) で採取。環境の指紋 (Python・numpy・BLAS・GSAS-II の版) が一致するときだけビット比較し、違えば skip | `tests/autorietveld/golden/` + gated テスト | T1 単発 (`run_auto_rietveld` 既定) と CaTeO3 frame030 (`make_gsas_runner` 単発) | 済 (7f0b55f) |
-| 1 | revert 理由を `StageResult.revert_reason` に (列挙: `worse`/`non_finite`/`error`/`gate:<名前>`/`noop`)。値は変えない | `autorietveld/model.py`・`engine.py`・`mcp/rietveld_tools._result_to_dict` | 決定論 (段の判定関数) + ゴールデン | 済 (7331e2d) |
+| 1 | revert 理由を `StageResult.revert_reason` に (列挙: `worse`/`unconverged`/`non_finite`/`error`/`gate:cell`/`gate:profile`)。no-op は独立の `is_noop` (検査していなければ None)。値は変えない | `autorietveld/model.py`・`engine.py`・`mcp/rietveld_tools._result_to_dict` | 決定論 (段の判定関数) + ゴールデン | 済 (7331e2d) |
 | 2 | `PhaseSpec.uiso_equiv_groups` — 原子ラベルの組ごとに Uiso を `add_EquivConstr` で等値にする。混合占有の Uiso 等価と重なる組は**合併**して 1 回だけ張る (二重拘束を避ける) | `model.py`・`engine._setup_constraints` | 決定論 (合併の純関数) + gated (合成 or 範囲外データで等値が効くこと) | 済 (c76fd2b) |
 | 3 | `PhaseSpec.fix_polar_origin` — 極性方向 (`SGPolax`) の並進ごとに、最大散乱能で自由座標を持つ原子の座標を固定 (`add_HoldConstr`; [111] 極性は dAx+dAy+dAz=0 の `add_EqnConstr`、(x,x,x) 上の原子は dAx の hold)。**失敗は握りつぶさず例外** (既存の chi2=inf 経路へ) | `engine._setup_constraints` | 決定論 (極性軸 → 拘束式の純関数) + gated | 済 (11d8ca2) |
 | 4 | ゼロ点の独立解放 — 段フラグ `zero_offset` と `CORRELATION_GROUPS["zero_offset"]`。`profile_lorentzian` にキー列 (`["X","Y"]`) を許す (既存の `True` は従来どおり X,Y,Zero) | `recipe.py`・`engine._apply_stage`・`mcp/_recipe_spec.py` | 決定論 (フラグ → 解放キー) + ゴールデン | 済 (85082f0 + ff70fb3) |
@@ -53,3 +54,35 @@
 ## 保留 (P1-1B)
 
 相ごとの格子ロールバック・任意段の統計的受理・段ごとのサイクル数・再試行段・保存した gpx から開始して摂動・ledger 永続化の ② 配線・BLAS のスレッド固定 (旧タスク 8)。
+
+## セルフレビュー 1 巡目 (読み取り専用のレビューエージェント。HIGH 0 / MEDIUM 8 / LOW 12)
+
+| 指摘 | 対応 |
+|---|---|
+| M1 測っていない値を「正常」と返す (no-op 未検査で `false`、TOPAS の観測が `{}`) | `is_noop` は未検査なら None → ② は null。理由を記録しない revert は `"unrecorded"`。観測フィールドは未計測なら None → null |
+| M2 `zero_offset: false`/`profile_lorentzian: false` で解放される | engine を値の真偽で判定 |
+| M3 TOPAS が `profile_lorentzian` のキー列を x,y の解放と読む | TOPAS の入口でキー列を拒否 (`UnsupportedStageFlagError`)、手順書に明記 |
+| M4 系列の ② ツールで新しいドメインエラーが境界を越える | `degrade_domain_errors` を `sequential_rietveld`/`anchored_sequential`/`repair_frames` に。※ MCP の実際の境界 (`server._call_tool`) は元から全例外を縮退しているので、③ に例外が届く欠陥ではなかった |
+| M5 静的に分かる Uiso の組の割れが毎段の revert に溶ける | free/frozen で割れる組・未知ラベル・2 原子未満の組は精密化前に `InvalidPhaseSpecError`。混合占有の組の未知ラベルは既存経路と同じく無視。段の例外の文言を note に載せる |
+| M6 極性原点の固定と元素ランクの座標段の衝突 | 組み合わせを精密化前に拒否 (段ごとの拘束の入れ替えは P1-1B) |
+| M7 `freeze_others` で Zero だけ残せない | 残す名前に `zero_offset` を追加、② で名前の語彙を閉じる (`scale`/`background` は元々凍結されないので無害な名前として許容) |
+| M8 CIF 書き出しの失敗がフィットを落とす | ディレクトリ作成も失敗を記録して続行、一時ファイルに書いてから改名 |
+| L2 積分強度の想定外の形・空の反射リスト | 読めなければ None、空は未計算として None |
+| L3 docstring の「1/V²」 | 「体積の補正 (Vst)」に訂正 |
+| L4 極性原点で site symmetry を解釈できない原子を例外にしていた | engine と同じく凍結された原子 (= 原点を決めている) として扱う |
+| L5 座標の自由度の比較が係数を見ていない | 番号の並びと係数の両方を比べる |
+| L6 1 原子・空の組を黙って受理 | M5 と同じく精密化前に拒否 |
+| L10 弱い比較・誤ったコメント | 修正 |
+| L11 ゴールデン (準 hold-out) で新しい観測を検査していた / hold-out のガード未実装 | 新しい観測の検査は garnet へ移した。関数単位のガードを実装 |
+| L12 文書の語彙が実装と食い違う | 修正 |
+
+**見送った指摘 (理由)**:
+
+- **L1** `run_topas_rietveld` を直接呼ぶと GSAS 専用の相機能が素通りする: TOPAS 本体は別作業 (PR #229, TOPAS が
+  相の機能を一括分類して入口で拒否する仕組み) の範囲。#229 の後で `uiso_equiv_groups`/`fix_polar_origin` を「拒否」に分類する。
+- **L7** 論理バグを関数レベルで透過させるテストが「② は例外を送出しない」と衝突する: MCP の実際の境界
+  (`server._call_tool`) は全例外を縮退しており、関数レベルで論理バグを透過させるのは既存の `degrade_oserror` と同じ
+  方針 (握り潰すと不具合が入力の誤りに見える)。衝突しない。
+- **L8** 最終段が revert されると `export_CIF` の従属パラメータの esd が古い拘束構造から計算されうる: 推測で未確認。
+  書き出した CIF は P1-1A の結晶化学検査器の入力 (esd は使わない) なので、出版に使う前に P1-1A で確かめる。
+- **L9** 極性原点の固定と Phase B の摂動: Phase B が凍結した座標まで摂動する既存の欠陥 (別作業として修正中) と同じ根。

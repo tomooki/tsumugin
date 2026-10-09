@@ -125,16 +125,26 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "n_obs": result.n_obs,
         # 相ごとの積分計算強度 Σ Fc²·Icorr (ヒストグラム索引順; その相が無ければ null)。
         #   どの相が散乱を担っているかの観測 (相分率は潰れうるので別に要る)。
-        "phase_integrated_intensity": {
-            name: [finite_or_none(v) if v is not None else None for v in values]
-            for name, values in result.phase_integrated_intensity.items()
-        },
+        #   null = 計測していない (例: TOPAS 経路)。{} と混同させない。
+        "phase_integrated_intensity": (
+            None
+            if result.phase_integrated_intensity is None
+            else {
+                name: [finite_or_none(v) if v is not None else None for v in values]
+                for name, values in result.phase_integrated_intensity.items()
+            }
+        ),
         # 座標の自由度の食い違い: 相名 → [[原子, 原子行の site symmetry, 再計算した site
         #   symmetry], ...]。空 = なし。engine が黙って座標を凍結した原子をここで見つける。
-        "coordinate_freedom_mismatches": {
-            name: [list(t) for t in found]
-            for name, found in result.coordinate_freedom_mismatches.items()
-        },
+        #   null = 計測していない (例: TOPAS 経路) — 空 ({} = 食い違いなし) と区別する。
+        "coordinate_freedom_mismatches": (
+            None
+            if result.coordinate_freedom_mismatches is None
+            else {
+                name: [list(t) for t in found]
+                for name, found in result.coordinate_freedom_mismatches.items()
+            }
+        ),
         "stages": [
             {
                 "label": s.label,
@@ -145,9 +155,14 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
                 "converged": bool(s.converged),
                 "reverted": bool(s.reverted),
                 # revert の理由と no-op は語彙の決まった独立キーで出す (note の文言に頼らせない)。
-                #   ``revert_reason=None`` は受理か理由を記録しない経路 — ``reverted`` と組で読む。
-                "revert_reason": s.revert_reason,
-                "noop": bool(s.is_noop),
+                #   revert したのに理由を記録しない経路 (例: TOPAS) は "unrecorded" と明示する
+                #   (null だと「受理」と区別できない)。noop は検査していなければ null。
+                "revert_reason": (
+                    s.revert_reason
+                    if s.revert_reason is not None
+                    else ("unrecorded" if s.reverted else None)
+                ),
+                "noop": s.is_noop,
                 # 【note を落とさない (★ ②到達可能性)】: 段の所見 (``unconverged`` /
                 #   ``noop`` / ``pruned=N`` / ``bound_hits=N`` / ``auto_frozen_cells=…``) は
                 #   **ここにしか出ない**。ledger は ② の戻り値に含まれないので、note を落とすと

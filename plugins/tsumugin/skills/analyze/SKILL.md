@@ -104,7 +104,8 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
 - **`zero_offset` は未対応** — ゼロ点だけを解放する GSAS 経路のフラグ (汎用テンプレートの
   部品として追加)。TOPAS では未翻訳で、指定すると段が明示的に失敗する。TOPAS の
   `profile_lorentzian` は x,y だけでゼロ点を含まない (GSAS の `profile_lorentzian: true` は
-  X,Y,Zero) ことにも注意。
+  X,Y,Zero) ことにも注意。**`profile_lorentzian` のキー列** (例 `["X","Y"]`) も TOPAS では
+  未対応で、true/false のみ (キー列を渡すと段が明示的に失敗する)。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
 - **`seed_profile`** (TOPAS 専用の引数): TOPAS は装置ファイルのプロファイル (Caglioti U,V,W)

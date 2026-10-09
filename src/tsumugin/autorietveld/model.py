@@ -321,7 +321,9 @@ class PhaseSpec:
     混合占有の Uiso 等価 (`mixed_occupancy_groups`) と同じ原子を含む組は**推移的に合併して
     1 回だけ張る** (二重拘束を避ける, `constraint_groups.merge_equiv_groups`)。組の原子は
     **全員が解放されているか全員が凍結されているか**でなければならず、一部だけに Uiso の
-    フラグが立つ段は例外 → 既存の revert 経路に載る。相に無いラベルは例外。既定 () (張らない)。
+    フラグが立つのは不正 — free/frozen_uiso_labels で静的に割れる組・相に無いラベル・2 原子未満の
+    組は**精密化の前に**例外 (② では error dict)。元素ランクの段で割れるときはその段の例外 →
+    既存の revert 経路に載る (理由は段の note と ledger)。既定 () (張らない)。
     ⚠ 末尾追加のみ (上の `frozen_uiso_labels` と同じ理由)。"""
     fix_polar_origin: bool = False
     """極性空間群で原点を固定するか (fit-then-judge P1a)。極性方向へ全原子を一斉に並進しても
@@ -329,8 +331,12 @@ class PhaseSpec:
     (GSAS-II は警告するだけで固定しない)。True なら、その場合に限り最も散乱の強い原子 (X 線の
     原子番号) でその方向の座標の一次結合を 1 本固定する (`constraint_groups.polar_origin_constraints`:
     c 極性 → dAz の hold、菱面体軸の [111] 極性 → 一般位置なら dAx+dAy+dAz=0、(x,x,x) 上なら
-    dAx の hold)。1 原子でも凍結されていれば原点はそれで決まっているので何もしない。
-    固定できない (site symmetry を解釈できない・固定が重なる) ときは例外。既定 False。"""
+    dAx の hold)。1 原子でも凍結されていれば原点はそれで決まっているので何もしない
+    (site symmetry を解釈できない原子は engine が座標を凍結するので、同じく原点を決めている)。
+    固定は精密化の前に 1 回だけ張る静的な拘束なので、**元素ランクで座標を一部の原子だけ解放する
+    段 (`coords: <int>`) とは組み合わせられない** (その段では固定原子以外が凍結されて原点は既に
+    決まっており、固定が実在の自由度を消す) — 組み合わせたら例外。固定どうしが重なるときも例外。
+    既定 False。"""
 
     def to_dict(self) -> dict[str, object]:
         """MCP JSON 露出用に素の型 dict へ写像する (tuple 組→list of list)。"""
@@ -702,8 +708,10 @@ class StageResult:
         ``unconverged`` / ``non_finite`` / ``error`` / ``gate:cell`` / ``gate:profile``)。
         ``None`` は「受理」か「理由を記録しない経路」— 必ず ``reverted`` と組で読む。
         **観測のみ** (判定には使わない)。
-    :param is_noop: 受理されたが何も動いていない段 (REQ-SAR-102 の検出。ledger
-        ``m7_stage_noop`` と同じ判定を結果にも載せる)。**観測のみ**。
+    :param is_noop: 受理されたが何も動いていない段か (REQ-SAR-102 の検出。ledger
+        ``m7_stage_noop`` と同じ判定を結果にも載せる)。``None`` = **検査していない**
+        (`StabilityOptions.detect_noop_stages` が無効、または検出しないバックエンド) — 検査して
+        いないのに ``False`` (= 動いた) と答えない。**観測のみ**。
     """
 
     label: str
@@ -715,7 +723,7 @@ class StageResult:
     note: str = ""
     rwp_penalized: "float | None" = None
     revert_reason: "str | None" = None
-    is_noop: bool = False
+    is_noop: "bool | None" = None
 
 
 @dataclass(frozen=True)
@@ -1009,19 +1017,17 @@ class AutoRietveldResult:
     #   に採り、ここには各 `xdd` の値を入れる。空 = 未計測 (バックエンドが出さない)。
     histogram_rwp: tuple[float, ...] = ()
     # 【相ごとの積分計算強度】(fit-then-judge P1a): 相名 → ヒストグラム索引順の Σ Fc²·Icorr
-    #   (GSAS の反射リスト。Icorr はスケール・多重度・偏光・選択配向・吸収・Lorentz・1/V² を
-    #   含むので、相の**散乱寄与**そのもの)。テンプレートが対象相を「潰れうる段 0 の相分率」
-    #   ではなくこれで決めるための観測。その相がヒストグラムに無ければ None。観測のみ。
-    phase_integrated_intensity: Mapping[str, tuple["float | None", ...]] = field(
-        default_factory=dict
-    )
+    #   (GSAS の反射リスト。Icorr はスケール・多重度・偏光・選択配向・吸収・Lorentz・体積の
+    #   補正 Vst を含むので、相の**散乱寄与**そのもの)。テンプレートが対象相を「潰れうる段 0 の
+    #   相分率」ではなくこれで決めるための観測。その相がヒストグラムに無い/反射リストが空なら
+    #   要素が None。**フィールド全体が None = 計測していない** (例: TOPAS 経路)。観測のみ。
+    phase_integrated_intensity: "Mapping[str, tuple[float | None, ...]] | None" = None
     # 【座標の自由度の食い違い】(fit-then-judge P1a): 相名 → (原子ラベル, 原子行の site symmetry,
     #   座標から再計算した site symmetry) の列。engine は原子行の site symmetry で座標を解放するか
     #   決めるが、解釈できないと**黙って凍結する**。再計算 (`SytSym`) と独立変数の並びが違う原子を
-    #   ここに出す (再計算できなければ "?")。空 = 食い違いなし。観測のみ。
-    coordinate_freedom_mismatches: Mapping[str, tuple[tuple[str, str, str], ...]] = field(
-        default_factory=dict
-    )
+    #   ここに出す (再計算できなければ "?")。空 = 食い違いなし、**None = 計測していない**
+    #   (例: TOPAS 経路 — 空と混同させない)。観測のみ。
+    coordinate_freedom_mismatches: "Mapping[str, tuple[tuple[str, str, str], ...]] | None" = None
     # 【書き出した精密化後の構造】(fit-then-judge P1a): 相名 → CIF パス。
     #   `run_auto_rietveld(export_cif_dir=)` を指定したときだけ埋まる。空 = 書き出していない。
     exported_cifs: Mapping[str, str] = field(default_factory=dict)

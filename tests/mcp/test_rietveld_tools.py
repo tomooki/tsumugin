@@ -95,6 +95,9 @@ def test_stage_revert_reason_and_noop_reach_layer_two_output():
             StageResult("scale", 30.0, 3.0, 2, True),
             StageResult("cell", 30.0, 3.0, 2, False, reverted=True, revert_reason="gate:cell"),
             StageResult("profile", 30.0, 3.0, 2, True, is_noop=True),
+            StageResult("lorentz", 30.0, 3.0, 2, True, is_noop=False),
+            # 理由を記録しない経路 (例: TOPAS) の revert は "unrecorded" — null だと受理と区別不能
+            StageResult("asym", 30.0, 3.0, 2, True, reverted=True),
         ),
         final_rwp=30.0, final_gof=3.0, refined_cells={},
         validity=ValidityReport(passed=True, checks=(), warnings=()),
@@ -103,8 +106,9 @@ def test_stage_revert_reason_and_noop_reach_layer_two_output():
         result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
     )
     stages = payload["stages"]
-    assert [s["revert_reason"] for s in stages] == [None, "gate:cell", None]
-    assert [s["noop"] for s in stages] == [False, False, True]
+    assert [s["revert_reason"] for s in stages] == [None, "gate:cell", None, None, "unrecorded"]
+    # 検査していない (None) は null のまま — False (= 動いた) と答えない
+    assert [s["noop"] for s in stages] == [None, None, True, False, None]
 
 
 def test_uiso_equiv_groups_reach_engine_from_layer_two_json():
@@ -169,6 +173,22 @@ def test_phase_integrated_intensity_reaches_layer_two_output():
     assert payload["phase_integrated_intensity"] == {"A": [7.0, None], "B": [3.0, None]}
 
 
+def test_unmeasured_observations_are_null_not_empty():
+    """計測していない経路 (例: TOPAS) の観測は null — 空 ({} = 食い違いなし) と混同させない。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(), final_rwp=10.0, final_gof=1.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    assert payload["phase_integrated_intensity"] is None
+    assert payload["coordinate_freedom_mismatches"] is None
+
+
 def test_coordinate_freedom_mismatches_reach_layer_two_output():
     """fit-then-judge P1a タスク 6: 座標の自由度の食い違いを ③ が読めること。"""
     from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
@@ -194,3 +214,38 @@ def test_correlation_group_violation_is_degraded_at_the_boundary():
 
     out = auto_rietveld([], [], runner=_raising_runner(CorrelationGroupViolation("群を分割")))
     assert out == {"error": "群を分割", "error_type": "CorrelationGroupViolation"}
+
+
+def test_degrade_domain_errors_decorator():
+    """関数レベルのドメインエラー縮退 (M4)。論理バグは透過させる。"""
+    from tsumugin.errors import InvalidPhaseSpecError
+    from tsumugin.mcp._degrade import degrade_domain_errors
+
+    @degrade_domain_errors
+    def tool(exc):
+        raise exc
+
+    assert tool(InvalidPhaseSpecError("x")) == {"error": "x", "error_type": "InvalidPhaseSpecError"}
+    with pytest.raises(ZeroDivisionError):
+        tool(ZeroDivisionError("bug"))
+
+
+@pytest.mark.parametrize(
+    "module, name",
+    [
+        ("tsumugin.mcp.insitu_tools", "sequential_rietveld"),
+        ("tsumugin.mcp.anchor_tools", "anchored_sequential"),
+        ("tsumugin.mcp.operando_diag_tools", "repair_frames"),
+    ],
+)
+def test_series_tools_degrade_engine_domain_errors(module, name):
+    """系列の ② ツールも、精密化の奥で出るドメインエラーを error dict にする (M4)。
+
+    縮退の振舞いは上の装飾子のテストが担う。ここでは 3 ツールに装飾が**実際に掛かっている**
+    ことを確かめる (実行には系列データと精密化が要るので、モジュールのソースの装飾行で見る)。
+    """
+    import importlib
+    import inspect
+
+    src = inspect.getsource(importlib.import_module(module))
+    assert f"@degrade_domain_errors\ndef {name}(" in src

@@ -66,4 +66,45 @@ def test_refined_structure_is_exported_on_garnet(tmp_path, monkeypatch):
     a_refined = result.refined_cells["garnet"][0]
     assert abs(_cell_a(path.read_text(encoding="utf-8")) - a_refined) < 1e-3
     start_a = _cell_a((_T2 / "garnet_YFeAlO.cif").read_text(encoding="utf-8"))
-    assert a_refined != start_a, "格子が動いていない (この比較が空振りする)"
+    assert abs(a_refined - start_a) > 1e-3, "格子が動いていない (この比較が空振りする)"
+
+
+class _Ledger:
+    def __init__(self):
+        self.entries = []
+
+    def append(self, kind, payload):
+        self.entries.append((kind, payload))
+
+
+class _Ph:
+    def __init__(self, name, fail=False):
+        self.name = name
+        self.fail = fail
+
+    def export_CIF(self, path):
+        if self.fail:
+            Path(path).write_text("partial")
+            raise RuntimeError("boom")
+        Path(path).write_text("data_x\n")
+
+
+def test_export_failures_do_not_fail_the_fit_and_leave_no_partial_files(tmp_path):
+    """書き出しの失敗はフィットを落とさず ledger に残し、書きかけを正規の名前で残さない (M8)。"""
+    from tsumugin.autorietveld.engine import _export_refined_cifs
+
+    ledger = _Ledger()
+    out = _export_refined_cifs([_Ph("ok"), _Ph("bad", fail=True)], str(tmp_path), ledger)
+    assert out == {"ok": str(tmp_path / "ok.cif")}
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ok.cif"]
+    assert [k for k, _ in ledger.entries] == ["m7_cif_export_error"]
+
+
+def test_unusable_directory_is_recorded_not_raised(tmp_path):
+    from tsumugin.autorietveld.engine import _export_refined_cifs
+
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    ledger = _Ledger()
+    assert _export_refined_cifs([_Ph("ok")], str(blocker / "sub"), ledger) == {}
+    assert ledger.entries and ledger.entries[0][0] == "m7_cif_export_error"
