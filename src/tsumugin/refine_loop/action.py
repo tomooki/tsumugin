@@ -109,7 +109,9 @@ class RestrictUiso(SafeAction):
     :param labels: Uiso を解放してよい原子ラベル (これ以外は Uiso 固定)。**空タプルは
         「1 原子も解放しない」** = 相ごと ADP 凍結 (#189 の型分離により docstring どおりになった。
         以前は空を渡すと逆に全原子が解放されていた)
-    :param phase: 対象相名 (None なら全相)
+    :param phase: 対象相名 (None なら全相)。原子ラベルは相の中でしか意味を持たないので、
+        多相で None を使うと全相に同じラベル列が入る (他相のラベルを抱え、凍結相も上書きする)。
+        診断 (`propose_next_actions`) は相ごとに名指しで出す
     """
 
     labels: tuple[str, ...]

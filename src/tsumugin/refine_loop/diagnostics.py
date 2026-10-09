@@ -17,7 +17,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
-from tsumugin.autorietveld import AutoRietveldResult
+from tsumugin.autorietveld import AutoRietveldResult, PhaseSpec
 from .action import (
     AddPhase,
     AdjustBackground,
@@ -56,13 +56,19 @@ class ResidualFeatures:
     bg_extrema_count: int = 0
     """背景プロファイルの極値数 (過多で背景減項候補, REQ-104)。"""
     diverged_uiso_labels: tuple[str, ...] = ()
-    """発散/負値の Uiso 原子ラベル (RestrictUiso 候補, REQ-105)。"""
+    """発散/負値の Uiso 原子ラベル (RestrictUiso 候補, REQ-105)。**相を畳んだ見え方**で、
+    同名ラベル (両相の "O1" など) がどの相で発散したかは区別できない — 相の帰属は
+    `diverged_uiso_atoms` が運ぶ。"""
     absorption_uncertain: bool = False
     """吸収寄与が不確実か (free/物理/0 の SetAbsorption 三択候補, REQ-106)。"""
     radiation_is_tof: bool = False
     """TOF ヒストか (非対称候補を SH/L[X線] と alpha/beta[TOF] で分岐, REQ-101)。"""
     radiation_is_neutron: bool = False
     """中性子ヒストか (CW 中性子は X 線専用 Lorentzian/SH-L が engine で無効 → 該当候補を出さない)。"""
+    diverged_uiso_atoms: tuple[tuple[str, str], ...] = ()
+    """発散/負値の Uiso 原子の (相名, 原子ラベル) 組 (昇順)。原子ラベルは相の中でしか意味を
+    持たないので、RestrictUiso はこれを使って相ごとに提案する。空でラベルだけある場合
+    (旧形式・注入 diagnose) の帰属は `propose_next_actions` を参照。"""
 
 
 @dataclass(frozen=True)
@@ -96,10 +102,15 @@ def propose_next_actions(
     intensity_bias_tol: float = 0.05,
     background_min: int = 6,
     bg_extrema_max: int = 6,
+    phases: Sequence[PhaseSpec] | None = None,
 ) -> tuple[ActionProposal, ...]:
     """残差シグネチャと妥当性から次手候補を決定論・安定順で返す (§5)。
 
     順序: safe 優先 → 優先度降順 → Action 型名昇順 (NFR-102 決定論)。適用はしない。
+
+    :param phases: 結果を出した入力の相仕様。**RestrictUiso はこれが無いと提案しない** —
+        Uiso の解放集合は相の指定 (`free_uiso_labels=()` の相凍結・`frozen_uiso_labels`) の
+        上に張るもので、指定を知らずに書き換えると凍結した相を解除してしまう
     """
     proposals: list[ActionProposal] = []
 
@@ -224,27 +235,8 @@ def propose_next_actions(
                         safe=True,
                     )
                 )
-        # Uiso 発散/負値 → 解放対象を安定原子に限定 (RestrictUiso, REQ-105)。
-        # 発散原子を除いた残り (重原子/水など) のみ Uiso 解放を許す。
-        if f.diverged_uiso_labels:
-            diverged = set(f.diverged_uiso_labels)
-            all_labels = {lab for ph in result.atom_uiso.values() for lab in ph}
-            keep = tuple(sorted(all_labels - diverged))
-            if keep:
-                proposals.append(
-                    ActionProposal(
-                        action=RestrictUiso(keep),
-                        rationale=f"hist{f.hist_id}: Uiso 発散 {tuple(sorted(diverged))} "
-                        f"→ 解放を {keep} に限定",
-                        priority=float(len(diverged)),
-                        evidence={
-                            "signal": "uiso_diverged",
-                            "diverged": tuple(sorted(diverged)),
-                            "hist_id": f.hist_id,
-                        },
-                        safe=True,
-                    )
-                )
+        # Uiso 発散/負値 → 解放対象を安定原子に限定 (RestrictUiso, REQ-105)。相ごとに出す。
+        proposals.extend(_restrict_uiso_proposals(result, f, phases))
         # 吸収寄与が不確実 → free / 物理(現値固定) / 0 の三択を「別々に」試す (SetAbsorption, REQ-106)。
         if f.absorption_uncertain:
             cur = (
@@ -318,6 +310,85 @@ def propose_next_actions(
     # 決定論・安定順: safe 優先 → 優先度降順 → Action 型名昇順
     proposals.sort(key=lambda p: (not p.safe, -p.priority, type(p.action).__name__))
     return tuple(proposals)
+
+
+def _phase_atom_labels(result: AutoRietveldResult, phase: str) -> set[str]:
+    """相の原子ラベル全体。`atom_uiso` だけでは足りない — 異方性原子は Uiso を持たないので
+    そこに現れないが、未指定 (全原子解放) の相では解放されている。占有率は全原子が持つ。"""
+    return set(result.atom_uiso.get(phase, {})) | set(result.atom_occupancy.get(phase, {}))
+
+
+def _diverged_by_phase(result: AutoRietveldResult, f: ResidualFeatures) -> dict[str, set[str]]:
+    """発散原子を相へ帰属させる。
+
+    相付きの `diverged_uiso_atoms` があればそれに従う。ラベルだけの旧形式 (注入 diagnose 等) は
+    **そのラベルを持つ全相に帰属させる** — 同名ラベルがどの相で発散したかは判別できないので、
+    両相で解放を止める (発散しうる原子を解放し続けるより保守的で、採否は受理基準が決める)。
+    """
+    by_phase: dict[str, set[str]] = {}
+    if f.diverged_uiso_atoms:
+        for phase, label in f.diverged_uiso_atoms:
+            by_phase.setdefault(phase, set()).add(label)
+        return by_phase
+    labels = set(f.diverged_uiso_labels)
+    for phase in set(result.atom_uiso) | set(result.atom_occupancy):
+        hit = labels & _phase_atom_labels(result, phase)
+        if hit:
+            by_phase[phase] = hit
+    return by_phase
+
+
+def _restrict_uiso_proposals(
+    result: AutoRietveldResult,
+    f: ResidualFeatures,
+    phases: Sequence[PhaseSpec] | None,
+) -> list[ActionProposal]:
+    """Uiso 発散/負値 → 発散原子を除いた残りに解放を限定する (RestrictUiso, REQ-105)。
+
+    **相ごとに 1 つ**、その相自身のラベルだけで張る。全相のラベルを混ぜた 1 つの限定を全相に
+    掛けると、各相が他相のラベルを抱え (GSAS は ``No such atom`` で uiso 段ごと revert =
+    Uiso が 1 つも精密化されない)、同名ラベルは発散していない相でも止まり、凍結した相が
+    解除される。
+
+    限定は相の指定の**内側**に張る (広げない): 未指定なら相の全原子・明示の解放集合ならその
+    集合から `frozen_uiso_labels` を引いたものが現在の解放集合で、そこから発散原子を除く。
+    発散原子が現在解放されていない相 (`free_uiso_labels=()` の凍結相・凍結原子の初期値が
+    範囲外なだけ) は限定しても何も変わらないので提案しない。解放中の原子が全て発散した相は
+    ``()`` = 相ごと凍結を提案する (#189 以降 ``()`` は「1 原子も解放しない」)。
+    """
+    if phases is None:
+        return []
+    specs = {p.phase_name: p for p in phases}
+    proposals: list[ActionProposal] = []
+    for name, diverged in sorted(_diverged_by_phase(result, f).items()):
+        spec = specs.get(name)
+        if spec is None:
+            continue  # 指定の無い相は凍結状態を知れない
+        released = (
+            _phase_atom_labels(result, name)
+            if spec.free_uiso_labels is None
+            else set(spec.free_uiso_labels)
+        ) - set(spec.frozen_uiso_labels)
+        hit = tuple(sorted(diverged & released))
+        if not hit:
+            continue
+        keep = tuple(sorted(released - set(hit)))
+        then = f"解放を {keep} に限定" if keep else "相の Uiso を凍結"
+        proposals.append(
+            ActionProposal(
+                action=RestrictUiso(keep, phase=name),
+                rationale=f"hist{f.hist_id}: 相 {name} の Uiso 発散 {hit} → {then}",
+                priority=float(len(hit)),
+                evidence={
+                    "signal": "uiso_diverged",
+                    "phase": name,
+                    "diverged": hit,
+                    "hist_id": f.hist_id,
+                },
+                safe=True,
+            )
+        )
+    return proposals
 
 
 def propose_initial_limits(

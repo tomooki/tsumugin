@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 from tsumugin.autorietveld.model import (
     AutoRietveldResult,
     Geometry,
@@ -15,7 +17,7 @@ from tsumugin.autorietveld.model import (
     StageResult,
     ValidityReport,
 )
-from tsumugin.refine_loop.action import AddPhase, ReleaseParams
+from tsumugin.refine_loop.action import AddPhase, ReleaseParams, RestrictUiso
 from tsumugin.refine_loop.diagnostics import ResidualFeatures
 from tsumugin.refine_loop.orchestrator import run_refinement_loop
 
@@ -79,3 +81,39 @@ def test_model_action_routed_to_open_proposals():
     assert any(isinstance(p.action, AddPhase) for p in res.open_proposals)
     # 相は増えていない (適用されていない)。
     assert all(not s.accepted or not isinstance(s.action, AddPhase) for s in res.steps)
+
+
+def test_uiso_restriction_in_a_multiphase_loop_stays_within_each_phase():
+    """多相で Uiso が 1 相だけ発散 → 限定はその相の原子だけで張られ、凍結相は凍結のまま。
+
+    以前は全相のラベルを混ぜた 1 つの RestrictUiso が全相に掛かり、(1) 各相が他相の
+    ラベルを抱える (GSAS は ``No such atom`` で uiso 段を revert = Uiso が 1 つも精密化
+    されない) (2) ``free_uiso_labels=()`` の凍結相が解除される、の 2 つが同時に起きていた。
+    """
+    atoms = {"PbSO4": ("Pb", "S", "O1"), "CaF2": ("Ca", "O1")}  # O1 は両相に居る
+    phases = [PhaseSpec("pbso4.cif", "PbSO4"),
+              PhaseSpec("caf2.cif", "CaF2", free_uiso_labels=())]
+    seen: list[tuple[PhaseSpec, ...]] = []
+
+    def runner(inp):
+        seen.append(inp.phases)
+        pb = next(p for p in inp.phases if p.phase_name == "PbSO4")
+        o1_free = pb.free_uiso_labels is None or "O1" in pb.free_uiso_labels
+        res = _res(10.0 if not o1_free else 12.0)
+        uiso = {
+            "PbSO4": {"Pb": 0.01, "S": 0.01, "O1": 0.9 if o1_free else 0.02},
+            # 凍結相の Ca は初期値 (CIF 由来) が範囲外 = 発散と判定されるが、解放されていない。
+            "CaF2": {"Ca": 0.7, "O1": 0.02},
+        }
+        return dataclasses.replace(res, atom_uiso=uiso)
+
+    res = run_refinement_loop(_H, phases, runner=runner)
+
+    accepted = [s.action for s in res.steps if s.accepted]
+    assert accepted == [RestrictUiso(("Pb", "S"), phase="PbSO4")]
+    assert res.best.final_rwp == 10.0
+    for inp_phases in seen:
+        for p in inp_phases:
+            if p.free_uiso_labels is not None:
+                assert set(p.free_uiso_labels) <= set(atoms[p.phase_name]), p
+        assert next(p for p in inp_phases if p.phase_name == "CaF2").free_uiso_labels == ()

@@ -69,6 +69,17 @@ def test_diverged_uiso_detected():
     assert feats[0].diverged_uiso_labels == ("C1", "O2A")  # 昇順・物理範囲外のみ
 
 
+def test_diverged_uiso_is_attributed_to_its_phase():
+    """同名ラベル "O1" が A でだけ発散 — 相を運ばないと B の O1 まで解放を止めてしまう。"""
+    res = _result(atom_uiso={
+        "B": {"Ca": 0.01, "O1": 0.02},
+        "A": {"Pb": 0.01, "O1": 0.9, "O2": -0.1},
+    })
+    f = diagnose_residual(res, _inp())[0]
+    assert f.diverged_uiso_atoms == (("A", "O1"), ("A", "O2"))  # (相名, ラベル) 昇順
+    assert f.diverged_uiso_labels == ("O1", "O2")  # 相を畳んだ従来の見え方は不変
+
+
 def test_missing_introspection_degrades_no_error():
     # 内省フィールド皆無 (旧 result) でも例外なく縮退 (EDGE-001)。
     feats = diagnose_residual(_result(), _inp())
@@ -76,6 +87,7 @@ def test_missing_introspection_degrades_no_error():
     assert feats[0].fwhm_ratio == 1.0  # 既定
     assert feats[0].asymmetry_residual == 0.0
     assert feats[0].diverged_uiso_labels == ()
+    assert feats[0].diverged_uiso_atoms == ()
 
 
 def test_all_noise_residual_no_signal():
