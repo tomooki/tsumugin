@@ -535,7 +535,10 @@ class SequentialRietveldResult:
     :param frames: フレーム別結果 (フレーム順)
     :param appearances: 自動同定で採用された新相の記録 (採用順)
     :param phase_names: 系列で観測された全相名の和 (安定順)
-    :param warnings: 非致命の警告
+    :param warnings: 非致命の警告。成果物の run ディレクトリが頼まれた根に作れず一時領域へ
+        退避したときは、**先頭**に ``成果物の保存先: <理由>`` の 1 行が入る (系列全体の前提で
+        あってどのフレームの所見でもない; `gpxstore.fallback_warning` の形。台帳の
+        ``m9_gpx_fallback`` / ``m10_gpx_fallback`` と同じ理由)
     :param ledger: 追記された台帳 (None なら未使用)
     :param gpx_dir: 系列**全体**が成果物を書いた run ディレクトリ ("" = 保存無効)。
         フレームの成果物・棄却トライアル・整合の再精密化がすべてこの下に並び、

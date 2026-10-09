@@ -976,3 +976,13 @@ class AutoRietveldResult:
     #   総合値 (`final_rwp`) と混同しないこと — TOPAS 経路では `.out` の総合値を `final_rwp`
     #   に採り、ここには各 `xdd` の値を入れる。空 = 未計測 (バックエンドが出さない)。
     histogram_rwp: tuple[float, ...] = ()
+    # 【成果物の退避理由】: 頼まれた根 (`gpx_dir` / env / データ隣接) に run ディレクトリを
+    #   作れず、成果物 (`gpx_path` / `project_path`) を**一時領域へ退避して保存した**ときの理由
+    #   (`gpxstore.ArtifactPlan.fallback_reason`)。"" = 退避していない (保存しなかった・保存に
+    #   失敗した場合も "" — そちらは台帳の ``m7_gpx_error`` / ``m12_project_error``)。
+    #   台帳の ``m7_gpx_fallback`` / ``m12_project_fallback`` と同じ値だが、台帳は任意で
+    #   ② の単発経路は台帳を返さないので、**結果に載せないと ③ には %TEMP% を指すパスしか
+    #   見えない** (gpx-retention 設計 §5)。エンジンが自分で run ディレクトリを解決した
+    #   単発経路でだけ非空になる — 系列・探索等の入口が解決した文脈の下では、理由はその入口が
+    #   1 度だけ記録する (結果ごとに繰り返さない)。
+    artifact_fallback_reason: str = ""

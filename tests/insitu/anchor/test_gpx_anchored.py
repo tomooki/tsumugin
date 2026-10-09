@@ -98,3 +98,58 @@ def test_save_gpx_false_disables_the_anchored_series(tmp_path):
 
     assert enabled and not any(enabled)
     assert res.gpx_dir == ""
+
+
+def _plain_runner(frame, phases, cells):
+    return _res(9.0, {"alpha": (5.0, 5.0, 5.0, 90, 90, 90)}, {"alpha": 1.0})
+
+
+def test_anchored_series_reports_a_fallback_to_temp_in_its_warnings(
+    tmp_path, unwritable_gpx_root
+):
+    """★M10 でも退避理由を台帳 (``m10_gpx_fallback``) だけでなく結果の警告に載せる。
+
+    非トートロジー: ② `anchored_sequential` は台帳を作るが、読んで返すのはアンカー/crossover
+    要約だけである。結果の ``warnings`` に無いと ③ からは %TEMP% を指す ``gpx_dir`` しか
+    見えない (M9 逐次と同じ入口 `_series_context` を通るので同じ形で載る)。
+    """
+    from tsumugin.store.ledger import Ledger
+
+    ledger = Ledger()
+
+    res = run_anchored_sequential(
+        _frames(2), [ALPHA], runner=_plain_runner, identifier=None, ledger=ledger,
+        gpx_dir=str(tmp_path / "chosen"),
+    )
+
+    assert res.gpx_dir.startswith(str(unwritable_gpx_root))
+    notes = [w for w in res.warnings if w.startswith("成果物の保存先: ")]
+    assert len(notes) == 1 and "一時領域へ退避" in notes[0], res.warnings
+    rows = [e.payload for e in ledger.entries if e.kind == "m10_gpx_fallback"]
+    assert len(rows) == 1 and rows[0]["reason"] in notes[0]
+
+
+def test_anchored_series_keeps_the_fallback_warning_without_frames(
+    tmp_path, unwritable_gpx_root
+):
+    """フレーム 0 枚でも明示 ``gpx_dir`` なら run は解決される — その退避も黙らない。
+
+    `gpxstore.series_context` は明示 ``gpx_dir`` があれば空の系列でも run ディレクトリを作る
+    (頼まれた保存をデータパスの欠落で捨てない)。M10 の本体はフレーム 0 枚で早期に返るので、
+    警告を本体の中で積む実装はこの経路で理由を落とす。
+    """
+    res = run_anchored_sequential(
+        [], [ALPHA], runner=_plain_runner, identifier=None, gpx_dir=str(tmp_path / "chosen")
+    )
+
+    assert res.frames == ()
+    assert [w for w in res.warnings if w.startswith("成果物の保存先: ")], res.warnings
+
+
+def test_anchored_series_has_no_fallback_warning_when_the_root_is_writable(tmp_path):
+    """書ける根なら退避の警告は出ない (常に出す実装で上を満たせないように)。"""
+    res = run_anchored_sequential(
+        _frames(2), [ALPHA], runner=_plain_runner, identifier=None, gpx_dir=str(tmp_path)
+    )
+
+    assert not [w for w in res.warnings if w.startswith("成果物の保存先: ")], res.warnings

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
-from ..gpxstore import group_context, reject_single_keep
+from ..gpxstore import fallback_warning, group_context, reject_single_keep
 from ..multistart.perturb import MultistartConfig
 from ..store import Ledger
 from .agreement import (
@@ -609,7 +609,7 @@ def run_multistart_rietveld(
     summary = summarize_multistart(starts, config)
     if gpx_fallback:
         summary = replace(
-            summary, warnings=summary.warnings + (f"成果物の保存先: {gpx_fallback}",)
+            summary, warnings=summary.warnings + (fallback_warning(gpx_fallback),)
         )
     ledger.append(
         "multistart_summary",

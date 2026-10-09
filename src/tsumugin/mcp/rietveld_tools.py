@@ -44,6 +44,7 @@ from ..autorietveld.search import (
     run_recipe_search,
 )
 from ..errors import TsumuginError
+from ..gpxstore import fallback_warning, is_fallback_warning
 from ._degrade import degrade_oserror
 from ._gpx_spec import gpx_args
 from ._recipe_spec import stage_to_dict, stages_from_dicts
@@ -236,6 +237,18 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         #   **どちらのヒストグラムが悪いのか分からない** — 放射源ごとに当てはまりが大きく
         #   違うのが普通なので、③ が次に何を触るか決めるのに要る。空 = 未計測。
         "histogram_rwp": list(result.histogram_rwp),
+        # 【成果物の退避を黙らない (gpx-retention 設計 §5)】: 頼まれた根に書けず一時領域へ
+        #   退避したときの理由。エンジンは台帳 (`m7_gpx_fallback`) にも書くが、② の単発経路は
+        #   台帳を返さないので、ここに無いと ③ に見えるのは %TEMP% を指す `gpx_path` だけになる。
+        #   形は兄弟の ② (`compare_structure_models` の `warnings`・探索の `search.warnings`) と同じ。
+        #   キーは常に在る (空 = 警告なし。欠落と取り違えさせない)。探索/収束確認経路の退避は
+        #   run ディレクトリ単位で決まるので、`_run_search` / `_run_convergence` がそちらの
+        #   警告からここへ拾い上げる (③ は経路によらずこのキーを見ればよい)。
+        "warnings": (
+            [fallback_warning(result.artifact_fallback_reason)]
+            if result.artifact_fallback_reason
+            else []
+        ),
     }
 
 
@@ -323,11 +336,14 @@ def _run_search(
     )
     selected = summary.selected
     if selected is None or selected.result is None:
-        return {
+        failed: dict = {
             "error": "探索の全候補が失敗しました: " + " / ".join(summary.warnings),
             "error_type": "RecipeSearchFailed",
             "search": summary.to_dict(),
         }
+        # 失敗した候補の成果物もこの run に残る — 置き場所が一時領域なら error でも言う。
+        _lift_fallback_warnings(failed, summary.warnings)
+        return failed
     chosen = _replace(
         inp,
         histograms=selected.candidate.histograms,
@@ -335,6 +351,7 @@ def _run_search(
     )
     payload = _result_to_dict(selected.result, chosen)
     payload["search"] = summary.to_dict()
+    _lift_fallback_warnings(payload, summary.warnings)
     return payload
 
 
@@ -399,12 +416,14 @@ def _run_convergence(
         **kwargs,  # type: ignore[arg-type]
     )
     if report.best is None:
-        return {
+        failed: dict = {
             "error": "手順が 1 つも立たなかったため収束確認へ進めませんでした: "
             + " / ".join(report.warnings),
             "error_type": "ConvergenceNotAttempted",
             "convergence": report.to_dict(),
         }
+        _lift_fallback_warnings(failed, report.warnings)
+        return failed
     selected = report.search.selected if report.search is not None else None
     chosen = inp
     if selected is not None:
@@ -417,7 +436,24 @@ def _run_convergence(
     if report.search is not None:
         payload["search"] = report.search.to_dict()
     payload["convergence"] = report.to_dict()
+    _lift_fallback_warnings(payload, report.warnings)
     return payload
+
+
+def _lift_fallback_warnings(payload: dict, nested: Sequence[str]) -> None:
+    """探索/収束確認の警告にある**成果物の退避理由**を最上位の ``warnings`` へ拾い上げる。
+
+    退避は run ディレクトリ単位 (= 入口 1 回で 1 行) なので理由は ``search.warnings`` /
+    ``convergence.warnings`` に載る。最上位に無いと、単発経路の読み方 (``warnings`` を見る) を
+    した ③ が「警告なし = 頼んだ場所にある」と読む。順序依存などの他の警告は拾わない
+    (それは探索の所見であって、返した fit の成果物の話ではない)。全候補が失敗した error dict
+    にも付ける (失敗した候補の成果物も同じ run に残る)。
+
+    ⚠ 拾えるのは `gpxstore.fallback_warning` の形のまま入れ子に載った行だけ — 入れ子の警告に
+    接頭辞を足して積み直す (確認の ``収束確認: …`` のような) 経路を退避の行に使わないこと。
+    """
+    lifted = [w for w in nested if is_fallback_warning(w)]
+    payload["warnings"] = [*payload.get("warnings", []), *lifted]
 
 
 def _with_extra_stages(inp: AnalysisInput, names: Sequence[str]) -> tuple[RecipeCandidate, ...]:
@@ -531,8 +567,10 @@ def auto_rietveld(
         本引数も ``save_gpx`` もそれら全部に効く。``gpx_path`` は返した fit (探索なら採用候補・
         収束確認なら最良の開始点) を指し、各候補/各開始点のパスは
         ``search.candidates[].gpx_path`` / ``convergence.multistart.starts[].gpx_path`` に出る。
-        保存先に書けず一時領域へ退避したときは ``search.warnings`` /
-        ``convergence.warnings`` に理由が出る。
+        保存先に書けず一時領域へ退避したときは返り値の ``warnings`` に
+        ``成果物の保存先: <理由>`` の行が出る (退避が無ければ空リスト。探索/収束確認でも同じ行が
+        最上位に出る — 元の在処は ``search.warnings`` / ``convergence.warnings``)。
+        この行があったら ``gpx_path`` は一時領域の中である (頼んだ場所ではない)。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。フレーム数が多く容量が問題に
         なるときだけ False にする。⚠ **保存しなかった精密化は検算できない** — 段の無言
         no-op も、MEM も、再プロットも、精密化済みの成果物そのものを要求する。
@@ -728,6 +766,8 @@ def refine_with_revisions(
         同じ ``gpx_dir`` を渡し続けると**同じ根の下に改訂ごとの run ディレクトリが時刻順に並ぶ**
         (1 つの run ディレクトリにまとまるのは系列解析 `sequential_rietveld` の方)。
         どの改訂がどれかは各 run の ``manifest.jsonl`` (Rwp・相) と返り値の ``gpx_path`` で辿る。
+        保存先に書けず一時領域へ退避したときは返り値の ``warnings`` に
+        ``成果物の保存先: <理由>`` の行が出る (`auto_rietveld` の単発経路と同じ)。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。
         opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     """

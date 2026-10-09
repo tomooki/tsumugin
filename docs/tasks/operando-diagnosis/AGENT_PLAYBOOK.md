@@ -36,6 +36,9 @@
   `save_gpx=false` で止まるが、診断目的の系列では止めないこと。
   `repair_frames` の修復試行 (左右両方・**棄却されたものも**) は**別の run ディレクトリ**に残る
   (返り値 `gpx_dir`。`repair_frames` も `gpx_dir=` / `save_gpx=` を受ける)。
+  置き場所に書けないと run ディレクトリごと一時領域へ退避し、系列の `warnings` の先頭に
+  `成果物の保存先: <理由>` の行が出る (`repair_frames` は `ledger_entries` の `m9_gpx_fallback`)。
+  この行があったら一次資料は %TEMP% の中で OS の掃除で消えうる — 先に書ける場所へ移す。
 
 ## 2. 手順
 
