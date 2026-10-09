@@ -10,7 +10,12 @@
 
 from __future__ import annotations
 
-from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+import os
+
+import pytest
+
+from tsumugin.autorietveld.model import AutoRietveldResult, StageResult, ValidityReport
+from tsumugin.gpxstore import ENV_VAR, active_context
 from tsumugin.insitu.model import FrameRietveldResult, SequentialRietveldResult
 from tsumugin.mcp.anchor_tools import anchored_sequential
 from tsumugin.mcp.insitu_tools import sequential_rietveld
@@ -192,3 +197,139 @@ def test_topas_backend_receives_the_same_gpx_arguments(monkeypatch):
     assert captured["save_gpx"] is True
     assert out["project_path"] == "/out/run/PBSO4"
     assert out["gpx_path"] == ""  # TOPAS に .gpx は無い
+
+
+# ---------------------------------------------------------------------------
+# 探索 (`search`) / 収束確認 (`multistart`) 経路 — 1 呼び出しで N 回精密化する経路
+# ---------------------------------------------------------------------------
+#
+# この 2 経路は単発経路と違い `_default_gsas_runner` を通らず、① の探索/収束確認が候補ごと・
+# 開始点ごとに `run_auto_rietveld` を呼ぶ。そのため ② で受けた ``gpx_dir``/``save_gpx`` を
+# ① へ**明示的に運ばない限り届かない** — 届かないと (a) ``save_gpx=False`` (唯一の opt-out) が
+# 黙って無視されてデータ隣接へ書かれ、(b) 明示 ``gpx_dir`` が黙って無視されて成果物が
+# 頼んでいない場所に散らばる。どちらも返り値には現れない (精密化結果は同じなので)。
+#
+# 実 GSAS を回さずに見るため、①の候補/開始点が呼ぶ `run_auto_rietveld` を差し替え、
+# **実際に届いた引数**と ambient 文脈を記録する (`search_runner` を注入すると ① の既定 runner
+# ごと迂回して `run_kwargs` が見えなくなるので、注入しない)。
+
+
+def _selected_result() -> AutoRietveldResult:
+    """探索で採用されうる (収束した段を持つ) 結果。"""
+    return AutoRietveldResult(
+        stage_results=(
+            StageResult(label="S1", rwp=9.5, gof=1.5, n_params=30, converged=True),
+        ),
+        final_rwp=9.5,
+        final_gof=1.5,
+        refined_cells={"ph": (10.0, 10.0, 10.0, 90.0, 90.0, 90.0)},
+        validity=ValidityReport(passed=True),
+        n_obs=4000,
+    )
+
+
+def _record_engine_calls(monkeypatch) -> list[dict]:
+    """①の候補/開始点が呼ぶ `run_auto_rietveld` を記録スタブへ差し替える。
+
+    記録するのは「エンジンが保存先を決めるのに読む 3 つ」= 明示引数 ``gpx_dir``/``save_gpx``、
+    明示文脈 ``gpx_context`` (マルチスタート) と ambient 文脈 (探索)。
+    """
+    calls: list[dict] = []
+
+    def fake_engine(histograms, phases, **kwargs):
+        explicit = kwargs.get("gpx_context")
+        calls.append(
+            {
+                "gpx_dir": kwargs.get("gpx_dir", "<absent>"),
+                "save_gpx": kwargs.get("save_gpx", "<absent>"),
+                # エンジンと同じ優先順位 (明示 > ambient) で「実際に効く文脈」を採る
+                "ctx": explicit if explicit is not None else active_context(),
+            }
+        )
+        return _selected_result()
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_engine)
+    return calls
+
+
+def _hist_in(tmp_path) -> dict:
+    data = tmp_path / "data" / "d.xra"
+    data.parent.mkdir(parents=True)
+    return {**_H, "data_path": str(data)}
+
+
+_SEARCH = {"search": ["default", "polish"]}
+_MULTISTART = {"search": ["default"], "multistart": {"n_starts": 3, "jobs": 1}}
+
+
+@pytest.mark.parametrize("route", [_SEARCH, _MULTISTART], ids=["search", "multistart"])
+def test_search_routes_honor_the_save_gpx_opt_out(route, tmp_path, monkeypatch):
+    """★``save_gpx=False`` (規定の**唯一の** opt-out) が全候補・全開始点へ届く。
+
+    非トートロジー: 届かないと ① は既定どおり保存する — 返り値の Rwp は同じなので
+    「止めたつもりで書き続けている」ことに誰も気づけない。エンジンに届いた引数と文脈の
+    両方を見る (文脈が enabled のままだと、文脈を読む runner が保存してしまう)。
+    """
+    env_root = tmp_path / "env-root"
+    monkeypatch.setenv(ENV_VAR, str(env_root))
+    calls = _record_engine_calls(monkeypatch)
+
+    out = auto_rietveld([_hist_in(tmp_path)], [_P], save_gpx=False, **route)
+
+    assert "error" not in out, out.get("error")
+    assert calls, "候補/開始点が 1 つも走っていない (テストの前提崩れ)"
+    for call in calls:
+        assert call["save_gpx"] is False, call
+        assert call["ctx"] is not None and call["ctx"].enabled is False, call
+    # どこにも書かない: env の根にもデータ隣接にも run ディレクトリを作らない
+    assert not env_root.exists()
+    assert not (tmp_path / "data" / "tsumugin_gpx").exists()
+
+
+@pytest.mark.parametrize("route", [_SEARCH, _MULTISTART], ids=["search", "multistart"])
+def test_search_routes_honor_an_explicit_gpx_dir(route, tmp_path, monkeypatch):
+    """★明示 ``gpx_dir`` が全候補・全開始点の置き場所になる (env より強い)。
+
+    非トートロジー: 届かないと ① は env → データ隣接で根を決める — 成果物は**保存はされる**
+    ので「保存されたか」だけを見るテストでは落ちない。どこに置かれたかを見る。
+    """
+    monkeypatch.setenv(ENV_VAR, str(tmp_path / "env-root"))
+    chosen = tmp_path / "chosen"
+    calls = _record_engine_calls(monkeypatch)
+
+    out = auto_rietveld([_hist_in(tmp_path)], [_P], gpx_dir=str(chosen), **route)
+
+    assert "error" not in out, out.get("error")
+    assert calls
+    run_dirs = set()
+    for call in calls:
+        assert call["save_gpx"] is True, call
+        ctx = call["ctx"]
+        assert ctx is not None and ctx.enabled, call
+        assert os.path.dirname(ctx.run_dir) == str(chosen), call
+        run_dirs.add(ctx.run_dir)
+    # 1 実行 = 1 run ディレクトリ (設計 §3)。収束確認は Phase A (探索) と Phase B (開始点) を
+    #   含むが、1 回の ② 呼び出しなので**同じ** run ディレクトリに並ばなければ探せない。
+    assert len(run_dirs) == 1, run_dirs
+    assert not (tmp_path / "env-root").exists()
+
+
+def test_multistart_route_names_every_artifact_by_role(tmp_path, monkeypatch):
+    """★収束確認の成果物は役割名付きで残る — 候補は ``candidate``、開始点は ``multistart``。
+
+    負けた候補・別ベイスンへ落ちた開始点こそ後から開きたい成果物なので、名前で区別できる
+    ことを ② の経路で確かめる (① 単体のテストは ② が引数を落としても green のまま)。
+    """
+    calls = _record_engine_calls(monkeypatch)
+
+    auto_rietveld(
+        [_hist_in(tmp_path)], [_P], gpx_dir=str(tmp_path / "chosen"), **_MULTISTART
+    )
+
+    roles = [(c["ctx"].role, c["ctx"].index, c["ctx"].label) for c in calls]
+    assert roles == [
+        ("candidate", None, "default"),
+        ("multistart", 0, ""),
+        ("multistart", 1, ""),
+        ("multistart", 2, ""),
+    ]

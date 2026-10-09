@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .._json import finite_or_none
+from ..gpxstore import gpx_context, group_context
 from ..multistart.perturb import MultistartConfig, PerturbationSpec
 from ..store import Ledger
 from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
@@ -154,13 +155,24 @@ def optimize_then_confirm(
     :param multistart_runner: Phase B の実行 callable (同上)
     """
     ledger = ledger if ledger is not None else Ledger()
+    # 【1 実行 = 1 run ディレクトリ (gpx-retention 設計 §3)】: Phase A (`run_recipe_search`) と
+    #   Phase B (`run_multistart_rietveld`) はそれぞれ `group_context` で根から run を解決する
+    #   ので、ここで文脈を 1 つに決めて ambient に置かないと**同じ実行の成果物が 2 つの run
+    #   ディレクトリに割れる** (採用手順の fit と、それを初期値を振って確かめた fit が並ばない)。
+    #   両 Phase の `group_context` は ambient があればそれを使う。
+    group, _reason = group_context(
+        histograms[0].data_path if histograms else "",
+        gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
+        save=bool(run_kwargs.get("save_gpx", True)),
+    )
     warnings: list[str] = []
 
-    search = run_recipe_search(
-        list(histograms), list(phases),
-        names=tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES,
-        config=search_config, ledger=ledger, runner=search_runner, **run_kwargs,
-    )
+    with gpx_context(group):
+        search = run_recipe_search(
+            list(histograms), list(phases),
+            names=tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES,
+            config=search_config, ledger=ledger, runner=search_runner, **run_kwargs,
+        )
     selected = search.selected
     if selected is None or selected.result is None:
         warnings.append("全候補が失敗したため収束確認へ進めない (手順が 1 つも立たなかった)")
@@ -192,17 +204,18 @@ def optimize_then_confirm(
     )
 
     run_confirm = multistart_runner or run_multistart_rietveld
-    multistart = run_confirm(
-        list(cand.histograms), list(phases),
-        config=MultistartConfig(
-            n_starts=n_starts, spec=PerturbationSpec(lattice_frac=lattice_frac)
-        ),
-        ledger=ledger,
-        coord_jitter_ang=coord_jitter_ang,
-        seed=jitter_seed,
-        jobs=jobs,
-        **confirm_kwargs,
-    )
+    with gpx_context(group):
+        multistart = run_confirm(
+            list(cand.histograms), list(phases),
+            config=MultistartConfig(
+                n_starts=n_starts, spec=PerturbationSpec(lattice_frac=lattice_frac)
+            ),
+            ledger=ledger,
+            coord_jitter_ang=coord_jitter_ang,
+            seed=jitter_seed,
+            jobs=jobs,
+            **confirm_kwargs,
+        )
     warnings.extend(f"収束確認: {w}" for w in multistart.warnings)
     diverged = [
         c for c, v in multistart.class_convergence.items() if v != "AGREE"

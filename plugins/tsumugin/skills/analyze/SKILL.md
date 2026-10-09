@@ -32,7 +32,9 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
   `gpx_dir="..."` で**根**を指定できる (環境変数 `TSUMUGIN_GPX_DIR` より強い)。
   ⚠ 単発ツールは**呼び出しごとに独立した `run-<日時>/`** を作る (同じ `gpx_dir` を渡し続けると
   改訂の履歴が同じ根の下に時刻順で並ぶ)。1 つの run ディレクトリにまとまるのは
-  系列解析 (`sequential_rietveld` / `anchored_sequential`) と、その中の探索/収束確認である。
+  系列解析 (`sequential_rietveld` / `anchored_sequential`) と、探索 (`search`) / 収束確認
+  (`multistart`) を渡した 1 回の呼び出しである — 全候補 (`candidate_<名前>`) と全開始点
+  (`f000N_multistart`) が並び、`gpx_dir` / `save_gpx` はそれら全部に効く。
 - **どこを見る**: 返り値の **`gpx_path`** (TOPAS は `project_path`)。run ディレクトリの
   `manifest.jsonl` が「役割・相・Rwp」の索引 (1 行 1 成果物)。
 - **何に使う**: **MEM 系ツール (`mem_density` / `mem_rietveld_iterate`) の入力はこれ**。

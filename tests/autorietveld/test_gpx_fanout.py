@@ -135,3 +135,38 @@ def test_refinement_loop_labels_each_iteration(tmp_path):
     assert [r for r, _, _ in seen] == ["iteration"] * len(seen)
     assert [i for _, i, _ in seen] == list(range(len(seen)))
     assert len({d for _, _, d in seen}) == 1, "反復ごとに run ディレクトリが分かれている"
+
+
+def test_optimize_then_confirm_keeps_one_run_dir_for_both_phases(tmp_path, monkeypatch):
+    """★収束確認 (Phase A 探索 → Phase B 開始点) は **1 実行 = 1 run ディレクトリ** (設計 §3)。
+
+    非トートロジー: Phase A/B はそれぞれ `group_context` で根から run を解決するので、入口で
+    文脈を 1 つに決めないと**同じ実行の成果物が 2 つの run ディレクトリに割れる** (実測:
+    ``run-<日時>-2`` に候補、``run-<日時>-3`` に開始点)。採用手順の fit と、それを初期値を
+    振って確かめた fit を並べて見られないのでは、収束確認の結論を検算できない。
+    """
+    from tsumugin.autorietveld.confirm import optimize_then_confirm
+    from tsumugin.autorietveld.model import StageResult
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_engine(histograms, phases, **kwargs):
+        ctx = kwargs.get("gpx_context") or active_context()
+        seen.append((ctx.role, ctx.run_dir) if ctx else ("", ""))
+        return AutoRietveldResult(
+            stage_results=(
+                StageResult(label="S1", rwp=9.0, gof=1.0, n_params=30, converged=True),
+            ),
+            final_rwp=9.0, final_gof=1.0,
+            refined_cells={"ph": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+            validity=ValidityReport(passed=True), n_obs=1000,
+        )
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_engine)
+    optimize_then_confirm(
+        [_HIST], [_PHASE], candidates=("default",), n_starts=3, jobs=1,
+        gpx_dir=str(tmp_path),
+    )
+
+    assert [r for r, _ in seen] == ["candidate", "multistart", "multistart", "multistart"]
+    assert len({d for _, d in seen}) == 1, f"run ディレクトリが割れている: {seen}"
