@@ -19,7 +19,10 @@ from pathlib import Path
 
 import pytest
 
+from tsumugin.autorietveld.model import Geometry, HistogramSpec, PhaseSpec, Radiation
+from tsumugin.autorietveld.recipe import build_recipe
 from tsumugin.mcp.tools import MCP_TOOLS
+from tsumugin.topas.recipe import build_topas_recipe
 
 # cwd に依らず repo を指す (相対パスだと別の cwd で走査対象が空になり、ガードが黙って通る)
 _ROOT = Path(__file__).resolve().parents[1]
@@ -36,11 +39,31 @@ _PHASE_TEMPERATURE = re.compile(
 #: 言及に必須の否定。「読まない」単独だと「GSAS は読まないが TOPAS では効く」も通るので、
 #: エンジン全体について言っていることを要求する。
 _NO_ENGINE_READS = re.compile(r"(?:どの|どちらの)(?:精密化)?(?:エンジン|バックエンド)も読まない")
-#: JSON の相オブジェクト (`phase_name`/`structure_path` を持つ入れ子なしの `{...}`) と、
-#: その中で temperature に値を入れているもの (`null` は相の既定の往復なので許す)。
+#: JSON で temperature に値を入れているキー (`null` は相の既定の往復なので許す)。
 #: ⚠ 空白は先読みの**中**に置く — `:\s*(?!null)` だと `\s*` が後退して `: null` も一致する。
-_PHASE_OBJECT = re.compile(r"\{[^{}]*\"(?:phase_name|structure_path)\"[^{}]*\}")
 _SETS_TEMPERATURE = re.compile(r"\"temperature\"\s*:(?!\s*null\b)")
+_PHASE_KEY = re.compile(r"\"(?:phase_name|structure_path)\"")
+
+
+def _enclosing_object(text: str, pos: int) -> str:
+    """``pos`` を直接囲む ``{...}`` (入れ子の ``{}`` は跨ぐ)。囲みが無ければ空文字。"""
+    depth, start = 0, -1
+    for i in range(pos - 1, -1, -1):
+        if text[i] == "}":
+            depth += 1
+        elif text[i] == "{":
+            if depth == 0:
+                start = i
+                break
+            depth -= 1
+    if start < 0:
+        return ""
+    depth = 0
+    for j in range(start, len(text)):
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        if depth == 0:
+            return text[start : j + 1]
+    return text[start:]
 
 
 def _offending(name: str, text: str) -> list[str]:
@@ -50,11 +73,10 @@ def _offending(name: str, text: str) -> list[str]:
         for n, line in enumerate(text.splitlines(), 1)
         if _PHASE_TEMPERATURE.search(line) and not _NO_ENGINE_READS.search(line)
     ]
-    bad += [
-        f"{name}: JSON の相の例に temperature: {m.group(0)}"
-        for m in _PHASE_OBJECT.finditer(text)
-        if _SETS_TEMPERATURE.search(m.group(0))
-    ]
+    for m in _SETS_TEMPERATURE.finditer(text):
+        obj = _enclosing_object(text, m.start())
+        if _PHASE_KEY.search(obj):
+            bad.append(f"{name}: JSON の相の例に temperature: {' '.join(obj.split())[:160]}")
     return bad
 
 
@@ -66,11 +88,19 @@ def test_the_guard_catches_an_instruction_to_set_a_phase_temperature():
     assert _offending("x", "GSAS は読まないが TOPAS では相の `temperature` が効く")
     assert _offending("x", '{"structure_path": "a.cif", "phase_name": "A", "temperature": 10}')
     assert _offending("x", '{"phase_name": "A",\n "temperature": 295.0}')
+    assert _offending(  # 入れ子の {} を持つ相の例 (workbench の display 等)
+        "x", '{"structure_path": "a.cif", "display": {"mp_id": "mp-1"}, "temperature": 10}'
+    )
     assert not _offending("x", "相の `temperature` はどのエンジンも読まない")
     assert not _offending("x", "相の `temperature` は**どちらのエンジンも読まない**。")
     assert not _offending("x", "各 `histograms[].temperature` に入れる")
     assert not _offending("x", '{"phase_name": "A", "temperature": null}')
     assert not _offending("x", '{"data_path": "x.xye", "temperature": 295.0}')  # ヒストグラム
+    # 外側に phases があっても、temperature を直接囲むのはヒストグラムなので通す
+    assert not _offending(
+        "x",
+        '{"histograms": [{"data_path": "x", "temperature": 295}], "phases": [{"phase_name": "A"}]}',
+    )
 
 
 def test_the_scan_covers_the_skills_and_playbooks():
@@ -107,3 +137,34 @@ def test_spec_building_skills_say_where_the_measurement_temperature_goes(skill: 
     body = (_PLUGIN / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
     assert "histograms[].temperature" in body, f"{skill}: 測定温度の置き場所を言っていない"
     assert _PHASE_TEMPERATURE.search(body), f"{skill}: 相の temperature が効かないことを言っていない"
+    # 効いたかの確かめ方 (下の契約テストが両エンジンの実出力と対応させる)
+    assert "「温度差」" in body and "S2b hydrostatic_strain" in body, (
+        f"{skill}: 温度差の吸収が効いたかを stages[] で確かめる方法を言っていない"
+    )
+
+
+def test_the_verification_hint_matches_what_each_engine_reports():
+    """skill の「効いたかは `stages[]` で確かめる」が両エンジンの出力で真であること。
+
+    確かめ方があれば、温度を相の側 (や片方のヒストグラムだけ) に入れた ③ が自分で気づける。
+    GSAS は Dij を格子の段に同居させ、段の `note` (`StageResult.note` は `stage.note` を
+    引き継ぐ) に「温度差」が出る。TOPAS は独立の段 `S2b hydrostatic_strain` を出す (TOPAS の
+    `StageResult.note` は実行時の注記だけなので、見えるのは `label`)。どちらかを変えたら skill も直す。
+    """
+    hists = [
+        HistogramSpec(
+            data_path="x.xra", instrument_path="i.prm", radiation=Radiation.XRAY_LAB,
+            geometry=Geometry.BRAGG_BRENTANO, temperature=295.0,
+        ),
+        HistogramSpec(
+            data_path="n.gsa", instrument_path="j.prm", radiation=Radiation.NEUTRON_CW,
+            geometry=Geometry.DEBYE_SCHERRER, temperature=10.0,
+        ),
+    ]
+    phases = [PhaseSpec(structure_path="p.cif", phase_name="P")]
+    gsas = build_recipe(hists, phases)
+    assert any("温度差" in s.note and "hydrostatic_strain" in s.flags for s in gsas)
+    topas = build_topas_recipe(hists, phases)
+    assert any(
+        s.label == "S2b hydrostatic_strain" and "hydrostatic_strain" in s.flags for s in topas
+    )
