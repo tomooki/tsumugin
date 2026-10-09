@@ -195,7 +195,8 @@ def anchored_sequential(
         省略時は ``TSUMUGIN_GPX_DIR`` → 先頭フレームのデータ隣接。実際の保存先は返り値の
         ``gpx_dir`` / ``frames[].gpx_path``
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。⚠ 双方向は 1 フレームあたり
-        2 回以上精密化するため容量は逐次の 2 倍前後 (0.5-1.5 MB × パス数)
+        2 回以上精密化するため容量は逐次の 2 倍前後 (0.5-1.5 MB × パス数)。
+        opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     :param runner: **注入/テスト用** callable ((frame, phases, initial_cells)→AutoRietveldResult)。
         JSON 越しには渡せない。明示指定時は instrument より優先
     :returns: M9 と同型の系列結果 dict (frames/phase_names/appearances/warnings; per-frame に出版値

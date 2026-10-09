@@ -729,6 +729,7 @@ def refine_with_revisions(
         (1 つの run ディレクトリにまとまるのは系列解析 `sequential_rietveld` の方)。
         どの改訂がどれかは各 run の ``manifest.jsonl`` (Rwp・相) と返り値の ``gpx_path`` で辿る。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。
+        opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     """
     try:
         # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
