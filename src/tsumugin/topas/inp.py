@@ -239,8 +239,13 @@ class TopasPhase:
     space_group: str
     cell: Mapping[str, Param]
     sites: tuple[TopasSite, ...] = ()
-    occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
-    """占有率和 = 1 のサイト組 (混合占有)。1 変数 x と 1-x で表す。"""
+    mixed_occupancy_groups: tuple[tuple[str, ...], ...] = ()
+    """占有率和 = 1 の**2 原子**の組 (混合占有)。1 変数 x と 1-x で表す。
+
+    ⚠ `PhaseSpec.occupancy_sum_groups` (親 = Σ子) とは**別の拘束**で、それは
+    :attr:`occupancy_parent_sum_groups` が運ぶ。以前はこのフィールドが ``occupancy_sum_groups``
+    という名前で両方を受けており、「親 = 子」を「親 + 子 = 1」として黙って精密化していた。
+    名前を分けたのは、古い名前で組み立てるコードを**型エラーで**止めるためである。"""
     beq_equiv_groups: tuple[tuple[str, ...], ...] = ()
     """beq を等値拘束するサイト組。"""
     free_occupancy_labels: tuple[str, ...] = ()
@@ -270,9 +275,37 @@ class TopasPhase:
     解放してよい (後方互換)。
     """
     extras: tuple[str, ...] = ()
+    refine_cell: bool = True
+    """False なら格子段でも格子を解放しない (`PhaseSpec.refine_cell`, #47 の副相格子凍結)。"""
+    frozen_coord_labels: tuple[str, ...] = ()
+    """座標段で解放しない原子 (`PhaseSpec.frozen_coord_labels`)。"""
+    beq_release_labels: "tuple[str, ...] | None" = None
+    """uiso 段で beq を解放する原子。**None = 全原子 / () = 0 原子** (#189 の 3 値を解決済みの形)。
+
+    `PhaseSpec.free_uiso_labels` と `frozen_uiso_labels` を `structure_to_topas_phase` が
+    GSAS の `_resolve_uiso_targets` と同じ規約 (凍結が解放指定に勝つ) で畳んだもの。
+    ``()`` を「未指定」と読み替えない — 凍結したつもりで全原子が解放される (#189 の本体)。
+    """
+    occupancy_equiv_groups: tuple[tuple[str, ...], ...] = ()
+    """占有率を等値にする組 (`PhaseSpec.occupancy_equiv_groups`)。組ごとに 1 つの共有 ``prm``。"""
+    occupancy_parent_sum_groups: tuple[tuple[str, ...], ...] = ()
+    """``(親, 子1, 子2, …)`` で **親の占有率 = Σ子** (`PhaseSpec.occupancy_sum_groups` と同じ意味、
+    GSAS の ``Σ子 − 親 = 0``)。子はそれぞれ共有 ``prm``、親はその和の式になる。"""
+    position_groups: tuple[tuple[str, ...], ...] = ()
+    """座標の**シフト**を等値にする組 (GSAS の dAx/dAy/dAz 等値 `_equiv_positions` と同じ意味)。
+
+    先頭の原子の座標を共有 ``prm`` にし、残りは**初期の相対位置を保って**追随する
+    (``=P_pos_g0_x + 0.1;``)。混合占有の組 (GSAS は共位置も張る) と
+    `PhaseSpec.position_equiv_groups` を合併したもので、組の全員が同じ自由軸を持つことは
+    `structure_to_topas_phase` が検証済み (違うと特殊位置の原子が特殊位置から外れる)。
+    """
 
     def with_updates(self, **kw: object) -> "TopasPhase":
         return replace(self, **kw)  # type: ignore[arg-type]
+
+    def beq_released(self, label: str) -> bool:
+        """uiso 段でこの原子の beq を解放してよいか。"""
+        return self.beq_release_labels is None or label in self.beq_release_labels
 
 
 @dataclass(frozen=True)
@@ -349,8 +382,9 @@ def _shared_prm_plan(
     for phase in phases:
         stem = _slug(phase.phase_name)
         site_slugs = _site_slugs(phase)
-        grouped_occ = {label for group in phase.occupancy_sum_groups for label in group}
-        grouped_beq = {label for group in phase.beq_equiv_groups for label in group}
+        grouped = _grouped_labels(phase)
+        grouped_occ = {label for label, kind in grouped if kind == "occ"}
+        grouped_beq = {label for label, kind in grouped if kind == "beq"}
         for axis, param in phase.cell.items():
             if param.is_reference:
                 continue
@@ -360,7 +394,10 @@ def _shared_prm_plan(
         for site in phase.sites:
             label = site_slugs[site.label]
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
-                if param.is_reference:
+                # 【結束した座標は持ち上げない】: `_group_prm_plan` が組の共有 prm にしている。
+                #   個別にも宣言すると、どこからも参照されない座標 prm が残る (解放されれば
+                #   結果に効かない精密化対象になり、結束が二重に書かれた INP になる)。
+                if param.is_reference or (site.label, axis) in grouped:
                     continue
                 name = f"{stem}_{label}_{axis}"
                 mapping[(phase.phase_name, f"site.{site.label}.{axis}")] = name
@@ -386,50 +423,117 @@ def _shared_prm_plan(
 
 
 def _grouped_labels(phase: TopasPhase) -> "set[tuple[str, str]]":
-    """グループ拘束に属する (原子ラベル, 種別) の集合。
+    """グループ拘束に属する (原子ラベル, 種別) の集合。種別は ``occ`` / ``beq`` / 座標軸。
 
-    グループサイトの ``Param.refine`` は常に False で、解放は共有 prm 側
+    グループサイトの占有率・beq の ``Param.refine`` は常に False で、解放は共有 prm 側
     (`release_occupancy_groups` / `release_beq_groups`) が持つ。出版値を出すかの判定に使う。
+    結束した座標 (``x``/``y``/``z``) は組の先頭の**自由軸だけ**が対象で、joint で個別に
+    持ち上げないための判定に使う。
     """
     labels: set[tuple[str, str]] = set()
-    for group in phase.occupancy_sum_groups:
+    for group in (
+        *phase.mixed_occupancy_groups,
+        *phase.occupancy_equiv_groups,
+        *phase.occupancy_parent_sum_groups,
+    ):
         labels.update((label, "occ") for label in group)
     for group in phase.beq_equiv_groups:
         labels.update((label, "beq") for label in group)
+    sites = {site.label: site for site in phase.sites}
+    for group in phase.position_groups:
+        for axis in sites[group[0]].free_coord_axes:
+            labels.update((label, axis) for label in group)
     return labels
 
 
+def _offset_expression(name: str, offset: float) -> str:
+    """``name`` から初期の相対位置 ``offset`` だけずれた座標の式。
+
+    【符号を数値に付けない】: ``name -0.1`` と書くと持ち越しの置換 (`_DECLARATION` =
+    「名前 + 空白 + 数値」) が**宣言と誤認して値を書き換える**。演算子と数値の間に空白を置く。
+    【丸める】: CIF の座標は 5-8 桁なので、浮動小数の差の末尾 (``0.10000000000000009``) は
+    情報ではない。
+    """
+    rounded = round(offset, 10)
+    if rounded == 0.0:
+        return name
+    sign = "+" if rounded > 0 else "-"
+    # 【固定小数で書く】: ``repr`` は小さな値を ``5e-05`` と指数表記にする。TOPAS の式で指数表記が
+    #   通るかは実測していないので、検証済みの形 (``0.1``) と同じ固定小数に揃える。
+    magnitude = f"{abs(rounded):.10f}".rstrip("0").rstrip(".")
+    return f"{name} {sign} {magnitude}"
+
+
+def _occupancy_seed(sites: "Mapping[str, TopasSite]", label: str, fallback: float) -> float:
+    site = sites.get(label)
+    return site.occupancy.value if site is not None else fallback
+
+
 def _group_prm_plan(phases: Sequence[TopasPhase]) -> "tuple[list[str], dict[tuple[str, str], str]]":
-    """占有率和 = 1 / beq 等値の共有 ``prm`` を計画する (単一ヒストグラムでも必要)。"""
+    """占有率・beq・座標の拘束の共有 ``prm`` を計画する (単一ヒストグラムでも必要)。
+
+    【`!` の有無が段階解放】: 名前付き prm は TOPAS では**既定で精密化対象**なので、解放前は `!`。
+    【[0,1] 拘束】: 混合占有は物理的に区間内なので境界外への逸走を TOPAS 側で止める (GSAS も
+    `_bound_occupancy` で張る)。等値・和の組は GSAS が張らないので張らない。
+    """
     lines: list[str] = []
     mapping: dict[tuple[str, str], str] = {}
     for phase in phases:
         stem = _slug(phase.phase_name)
-        for gi, group in enumerate(phase.occupancy_sum_groups):
+        sites = {site.label: site for site in phase.sites}
+        occ_prefix = "" if phase.release_occupancy_groups else "!"
+        for gi, group in enumerate(phase.mixed_occupancy_groups):
             name = f"{stem}_occ_g{gi}"
-            seed = 1.0 / max(len(group), 1)
-            for site in phase.sites:
-                if site.label == group[0]:
-                    seed = site.occupancy.value
-                    break
-            # 【[0,1] 拘束】: 占有率は物理的に区間内。境界外への逸走を TOPAS 側で止める。
-            # 【`!` の有無が段階解放】: 名前付き prm は既定で精密化対象なので、解放前は `!`。
-            prefix = "" if phase.release_occupancy_groups else "!"
-            lines.append(f"prm {prefix}{name} {_fmt(seed)} min 0 max 1")
+            seed = _occupancy_seed(sites, group[0], 1.0 / max(len(group), 1))
+            lines.append(f"prm {occ_prefix}{name} {_fmt(seed)} min 0 max 1")
             for position, label in enumerate(group):
                 expr = name if position == 0 else f"1-{name}"
                 mapping[(phase.phase_name, f"occ.{label}")] = expr
+        for gi, group in enumerate(phase.occupancy_equiv_groups):
+            # GSAS の add_EquivConstr: 組の全員が 1 変数。初期値は先頭の原子から。
+            # 【[0,1] を張らない】: GSAS は等値・和の組に範囲拘束を張らない (`_update_atom_flags`
+            #   「[0,1] 拘束は張らない」)。TOPAS だけ張ると、最適が 1 を超える (= モデルの誤りの
+            #   信号) ときに TOPAS だけが 1 に張り付き、エンジン間の照合が食い違う。範囲外は
+            #   validity が拾う。
+            name = f"{stem}_occeq_g{gi}"
+            seed = _occupancy_seed(sites, group[0], 1.0)
+            lines.append(f"prm {occ_prefix}{name} {_fmt(seed)}")
+            for label in group:
+                mapping[(phase.phase_name, f"occ.{label}")] = name
+        for gi, group in enumerate(phase.occupancy_parent_sum_groups):
+            # GSAS の Σ子 − 親 = 0: 子を独立変数にし、親をその和の式にする (自由度は同じ)。
+            # 子にも親にも [0,1] を張らない (GSAS も張らない; 上の等値の組と同じ理由)。
+            parent, children = group[0], group[1:]
+            names = []
+            for k, child in enumerate(children, start=1):
+                name = f"{stem}_occsum_g{gi}_{k}"
+                seed = _occupancy_seed(sites, child, 0.0)
+                lines.append(f"prm {occ_prefix}{name} {_fmt(seed)}")
+                mapping[(phase.phase_name, f"occ.{child}")] = name
+                names.append(name)
+            mapping[(phase.phase_name, f"occ.{parent}")] = " + ".join(names)
         for gi, group in enumerate(phase.beq_equiv_groups):
             name = f"{stem}_beq_g{gi}"
-            seed = 1.0
-            for site in phase.sites:
-                if site.label == group[0]:
-                    seed = site.beq.value
-                    break
-            prefix = "" if phase.release_beq_groups else "!"
-            lines.append(f"prm {prefix}{name} {_fmt(seed)}")
+            seed = sites[group[0]].beq.value if group[0] in sites else 1.0
+            # 組の解放は uiso 段 + その組が解放対象であること (`beq_release_labels`)。
+            # 組の一部だけ解放対象という指定は `structure_to_topas_phase` が拒否済み。
+            released = phase.release_beq_groups and phase.beq_released(group[0])
+            lines.append(f"prm {'' if released else '!'}{name} {_fmt(seed)}")
             for label in group:
                 mapping[(phase.phase_name, f"beq.{label}")] = name
+        for gi, group in enumerate(phase.position_groups):
+            lead = sites[group[0]]
+            for axis in lead.free_coord_axes:
+                param = getattr(lead, axis)
+                # 解放フラグは先頭の原子の座標が持つ (`flags._release_sites` が組の全員に
+                # 同じ判定を下す — 自由軸と凍結が組で揃っていることは検証済み)。
+                name = f"{stem}_pos_g{gi}_{axis}"
+                lines.append(f"prm {'' if param.refine else '!'}{name} {_fmt(param.value)}")
+                for label in group:
+                    offset = getattr(sites[label], axis).value - param.value
+                    mapping[(phase.phase_name, f"site.{label}.{axis}")] = _offset_expression(
+                        name, offset
+                    )
     return lines, mapping
 
 
@@ -716,6 +820,7 @@ class TopasDocument:
         #   出版できない**うえ、「Rwp は下がったが占有率が非物理」を検出する唯一の手段でもある。
         #   解放していないものは出さない (固定値を「精密化した」と読ませない)。
         site_slugs = _site_slugs(phase)
+        grouped = _grouped_labels(phase)  # 相ごとに 1 回 (サイトごとに組み直さない)
         for site in phase.sites:
             stem = f"{_slug(name)}_{site_slugs[site.label]}"
             for axis, param in (("x", site.x), ("y", site.y), ("z", site.z)):
@@ -730,7 +835,7 @@ class TopasDocument:
             # 【グループサイトの解放フラグは相側にある】: 混合占有/等値サイトの `Param.refine`
             #   は常に False で、解放は共有 prm 側 (`release_*_groups`) が持つ。site 側だけを
             #   見ると**グループ化した占有率の出版値が静かに欠落する** (実 garnet で実測)。
-            in_occ_group = (site.label, "occ") in _grouped_labels(phase)
+            in_occ_group = (site.label, "occ") in grouped
             if site.occupancy.refine or (in_occ_group and phase.release_occupancy_groups):
                 prm = prm_for(f"occ.{site.label}", site.occupancy, f"{stem}_occ")
                 if prm:
@@ -738,8 +843,11 @@ class TopasDocument:
                         f'{_INDENT_PHASE}Out({prm}, '
                         f'"occ\\t{name}\\t{site.label}\\t%.8f", "\\t%.8f\\n")'
                     )
-            in_beq_group = (site.label, "beq") in _grouped_labels(phase)
-            if site.beq.refine or (in_beq_group and phase.release_beq_groups):
+            in_beq_group = (site.label, "beq") in grouped
+            beq_group_released = (
+                in_beq_group and phase.release_beq_groups and phase.beq_released(site.label)
+            )
+            if site.beq.refine or beq_group_released:
                 prm = prm_for(f"beq.{site.label}", site.beq, f"{stem}_beq")
                 if prm:
                     lines.append(

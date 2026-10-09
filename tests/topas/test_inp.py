@@ -283,7 +283,7 @@ def test_shared_occupancy_group_uses_one_prm_and_its_complement():
             TopasSite("Al1", "Al+3", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.5), beq=Param(0.5)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
     )
     text = TopasDocument(histograms=(_histogram(),), phases=(phase,)).render()
     # 【`!` 付きで宣言】: TOPAS の名前付き prm は既定で精密化対象なので、解放前は固定する。
@@ -336,7 +336,7 @@ def test_group_prms_are_released_only_when_asked():
             TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.5), beq=Param(0.5)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
         beq_equiv_groups=(("Fe1", "Al1"),),
         release_occupancy_groups=True,
         release_beq_groups=True,
@@ -509,7 +509,7 @@ def test_grouped_occupancy_complement_is_still_published():
             TopasSite("Al", "Al", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.4, refine=True), beq=Param(1.0)),
         ),
-        occupancy_sum_groups=(("Fe", "Al"),),
+        mixed_occupancy_groups=(("Fe", "Al"),),
         release_occupancy_groups=True,
     )
     text = TopasDocument(
@@ -534,7 +534,7 @@ def test_grouped_sites_publish_even_though_their_param_is_not_refined():
             TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.1), beq=Param(0.8)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
         beq_equiv_groups=(("Fe1", "Al1"),),
         release_occupancy_groups=True,
         release_beq_groups=True,
@@ -556,7 +556,7 @@ def test_grouped_sites_do_not_publish_before_release():
             TopasSite("Fe1", "Fe", Param(0.0), Param(0.0), Param(0.0), occupancy=Param(0.9)),
             TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0), occupancy=Param(0.1)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
     )
     text = TopasDocument(
         histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
