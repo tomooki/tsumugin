@@ -310,10 +310,21 @@ def _entry(name: str):
         )
         return r.warnings
 
-    return {"search": search, "multistart": multistart, "confirm": confirm}[name]
+    def refine_loop(ledger, **kw):
+        from tsumugin.refine_loop.orchestrator import run_refinement_loop
+
+        # 既定 runner は GSAS を要るので、エンジンの差し替えではなく runner を注入する。
+        r = run_refinement_loop(
+            [_HIST], [_PHASE], runner=lambda inp: _converged_result(), ledger=ledger, **kw
+        )
+        return r.warnings
+
+    return {
+        "search": search, "multistart": multistart, "confirm": confirm, "refine_loop": refine_loop,
+    }[name]
 
 
-@pytest.mark.parametrize("entry", ["search", "multistart", "confirm"])
+@pytest.mark.parametrize("entry", ["search", "multistart", "confirm", "refine_loop"])
 def test_fanout_entries_record_a_fallback_to_temp(entry, tmp_path, monkeypatch):
     """★run ディレクトリが一時領域へ退避したら、入口が ledger と警告に理由を残す (設計 §5)。
 
@@ -336,3 +347,34 @@ def test_fanout_entries_record_a_fallback_to_temp(entry, tmp_path, monkeypatch):
     assert "一時領域へ退避" in fallbacks[0]["reason"]
     assert fallbacks[0]["run_dir"].startswith(str(tmp_path / "tmp"))
     assert any("一時領域へ退避" in w for w in warnings), warnings
+
+
+def test_refinement_loop_reports_a_fallback_without_a_ledger(tmp_path, monkeypatch):
+    """★M8 閉ループは台帳が任意 (None = 未使用) — 台帳が無くても退避理由を**結果の警告**で返す。
+
+    非トートロジー: 退避理由は入口の `group_context` でしか分からず、注入/既定 runner の
+    エンジンは自前の台帳 (呼び出し側は見ない) に書くだけである。台帳を渡さない呼び出しで
+    警告にも載せないと、成果物が %TEMP% に置かれたことはどこにも残らない (設計 §5 の
+    「ledger を持たない入口は結果の警告で返す」)。
+    """
+    from tsumugin.refine_loop.orchestrator import run_refinement_loop
+
+    _unwritable_root(tmp_path, monkeypatch)
+
+    res = run_refinement_loop(
+        [_HIST], [_PHASE], runner=lambda inp: _converged_result(), gpx_dir=str(tmp_path / "c")
+    )
+
+    assert res.ledger is None
+    assert any("一時領域へ退避" in w for w in res.warnings), res.warnings
+
+
+def test_refinement_loop_has_no_warning_when_the_root_is_writable(tmp_path):
+    """退避が無ければ警告も無い (常に警告を出す実装で上の 2 つを満たせないように)。"""
+    from tsumugin.refine_loop.orchestrator import run_refinement_loop
+
+    res = run_refinement_loop(
+        [_HIST], [_PHASE], runner=lambda inp: _converged_result(), gpx_dir=str(tmp_path)
+    )
+
+    assert res.warnings == ()
