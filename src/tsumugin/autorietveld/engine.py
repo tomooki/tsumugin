@@ -2209,7 +2209,9 @@ def run_auto_rietveld(
     :param max_cyc: 各段階の最大精密化サイクル
     :param worsen_eps: Rwp 悪化とみなす閾値
     :param keep_gpx: 最終 .gpx を**このパスへ**保存する明示指定 (最優先)。None なら既定の
-        置き場所 (下記) に保存する。⚠ **「None なら破棄」ではなくなった** (2026-08-20 規定変更)
+        置き場所 (下記) に保存する。⚠ **「None なら破棄」ではなくなった** (2026-08-20 規定変更)。
+        **``save_gpx=False`` / ``TSUMUGIN_GPX_DIR=none`` にも勝つ** — opt-out が止めるのは
+        既定保存だけで、名指しされた保存は止めない (順位の正本は `gpxstore.plan_output`)
     :param gpx_dir: 既定の置き場所の**根**を上書きする (env ``TSUMUGIN_GPX_DIR`` より強い)。
         None なら ``TSUMUGIN_GPX_DIR`` → 観測データ隣接 ``<data_dir>/tsumugin_gpx/`` の順で決まり、
         その下に ``run-<日時>/`` を作る。ambient 文脈 (`gpxstore.gpx_context`) がある系列解析では
@@ -2218,8 +2220,9 @@ def run_auto_rietveld(
         (`gpxstore.GpxContext`)。通常は ambient (`gpxstore.gpx_context`) が運ぶので指定不要 —
         **別プロセスへ渡る経路 (マルチスタートの並列実行) は ambient が届かない**ため、
         そこだけ明示的に渡す (frozen dataclass なので pickle 可能)。明示指定が ambient に優先。
-    :param save_gpx: **規定は True = 保存する**。False で完全に無効化する opt-out
-        (ディスクを使わせたくないとき。``TSUMUGIN_GPX_DIR=none`` でも同じ)。
+    :param save_gpx: **規定は True = 保存する**。False で**既定保存**を完全に無効化する opt-out
+        (ディスクを使わせたくないとき。``TSUMUGIN_GPX_DIR=none`` でも同じ)。⚠ 明示
+        ``keep_gpx`` は止めない (併用すると ``keep_gpx`` のパスにだけ残る)。
         保存しなかった精密化は検算できない — 無言失敗 (段が no-op) の追跡も、MEM
         (`mem_density`/`mem_rietveld_iterate`) も、精密化済み gpx そのものを要求する
     :param bond_restraints: 相名→結合距離ソフト拘束の列 (GSAS-II Bond restraint)。各拘束は
@@ -3040,8 +3043,9 @@ def run_auto_rietveld(
         micro = _microstructure_maps(g2phases, g2hists)
         resid_tt, resid_int, resid_sig = _extract_residual(g2hists, histograms)
 
-        # 【規定: 全解析で gpx を保存する】: 明示 keep_gpx > save_gpx=False の opt-out >
-        #   既定保存 (ambient 文脈の run ディレクトリ、無ければデータ隣接)。
+        # 【規定: 全解析で gpx を保存する】: keep_gpx / save_gpx / 既定保存 (ambient 文脈の
+        #   run ディレクトリ、無ければデータ隣接) の順位は `plan_output` が正本 — ここに写さない
+        #   (写しが実装と食い違い、keep_gpx が黙って捨てられていた: 2026-10-09)。
         gpx_ctx = gpx_context if gpx_context is not None else active_context()
         plan = plan_output(
             [h.data_path for h in histograms],
