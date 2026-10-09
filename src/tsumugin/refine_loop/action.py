@@ -252,7 +252,10 @@ class ReviseStructure(ModelAction):
     def apply(self, inp: AnalysisInput) -> AnalysisInput:
         bad = set(self.edits) - _REVISABLE_PHASE_FIELDS
         if bad:
-            msg = f"改訂不能なフィールド: {sorted(bad)}"
+            msg = (
+                f"改訂不能なフィールド: {sorted(bad)} "
+                f"(ReviseStructure で改訂できるのは {sorted(_REVISABLE_PHASE_FIELDS)})"
+            )
             if "temperature" in bad:
                 msg += f" — {_PHASE_TEMPERATURE_HINT}"
             raise ValueError(msg)

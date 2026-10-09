@@ -155,7 +155,8 @@ def test_revise_structure_updates_phase_fields():
 
 
 def test_revise_structure_unknown_field_raises():
-    with pytest.raises(ValueError):
+    # 拒否文は改訂できるフィールドを名指す (③ はエラー文を読んで直すので、何なら通るかを言う)
+    with pytest.raises(ValueError, match="structure_path"):
         ReviseStructure("nac", {"bogus_field": 1}).apply(_inp())
 
 
