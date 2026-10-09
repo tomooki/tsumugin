@@ -280,12 +280,16 @@ def run_topas_rietveld(
 
     :param keep_project: 作業ディレクトリ (INP/.out/results.txt) を**このパスへ**残す明示指定
         (最優先)。⚠ **「None なら破棄」ではなくなった** (2026-08-20 規定「全解析で成果物を
-        保存する」) — None なら既定の置き場所へ残す
+        保存する」) — None なら既定の置き場所へ残す。**``save_gpx=False`` /
+        ``TSUMUGIN_GPX_DIR=none`` にも勝つ** — opt-out が止めるのは既定保存だけで、名指し
+        された保存は止めない (順位の正本は `gpxstore.plan_output`)
     :param gpx_dir: 既定の置き場所の**根**を上書きする (env ``TSUMUGIN_GPX_DIR`` より強い)。
         GSAS 経路と**同じ引数名**にしてある — 消費側 (② `auto_rietveld(backend=)`) が
         バックエンドで呼び分けずに済むため。TOPAS は .gpx ではなくプロジェクト
         **ディレクトリ**が残る (`project_path`)
-    :param save_gpx: **規定は True = 保存する**。False で完全に無効化する opt-out
+    :param save_gpx: **規定は True = 保存する**。False で**既定保存**を完全に無効化する opt-out
+        (``TSUMUGIN_GPX_DIR=none`` でも同じ)。⚠ 明示 ``keep_project`` は止めない (併用すると
+        ``keep_project`` のパスにだけ残る)
     :param stability: 安定性診断ゲート (`StabilityOptions`)。**TOPAS 経路は未実装**なので、
         非 None を渡されたら黙って捨てず ``ValidityReport.warnings`` と ledger に残す。
         黙って無視すると「ゲートを頼んだのに何も見ていない」が Rwp にも note にも現れない
@@ -441,7 +445,8 @@ def run_topas_rietveld(
         )
 
         # 【規定: 全解析で成果物を保存する】: GSAS の .gpx に対応するのがこの作業ディレクトリ
-        #   (INP/.out/results.txt)。明示 keep_project > save_gpx=False > 既定保存。
+        #   (INP/.out/results.txt)。keep_project / save_gpx / 既定保存の順位は `plan_output` が
+        #   正本 — ここに写さない (写しが実装と食い違っていた: 2026-10-09)。
         out_project = _save_project_artifact(
             work,
             plan_output(

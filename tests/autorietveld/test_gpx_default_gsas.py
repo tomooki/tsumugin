@@ -7,6 +7,7 @@
 2. `AutoRietveldResult.gpx_path` がそのファイルを指すこと (③ が MEM へ渡せる)
 3. 索引 (manifest.jsonl) に Rwp 付きで 1 行残ること
 4. `save_gpx=False` では 1 バイトも書かないこと (opt-out が本当に効く)
+5. ただし明示 `keep_gpx` は `save_gpx=False` でもそのパスに残ること (止まるのは既定保存だけ)
 
 を確かめる。データはテストの tmp へ**コピーして**使う — 既定がデータ隣接なので、
 追跡済みの `docs/benchmark/testdata/` を汚さないため。
@@ -81,6 +82,24 @@ def test_save_gpx_false_writes_nothing(tmp_path, monkeypatch):
 
     assert result.gpx_path == ""
     assert not (tmp_path / DEFAULT_DIR_NAME).exists()
+
+
+@pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
+def test_explicit_keep_gpx_survives_save_gpx_false(tmp_path, monkeypatch):
+    """★明示 ``keep_gpx`` は ``save_gpx=False`` でもそのパスへ残る (止まるのは既定保存だけ)。
+
+    opt-out は「置き場所を tsumugin が決める保存」を止めるもので、名指しされた保存を黙って
+    捨てるものではない (優先順位の正本は `gpxstore.plan_output`)。engine の配線を縛る。
+    """
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    hist, phase = _staged(tmp_path)
+    target = tmp_path / "kept.gpx"
+
+    result = run_auto_rietveld([hist], [phase], keep_gpx=str(target), save_gpx=False, max_cyc=1)
+
+    assert result.gpx_path == str(target)
+    assert target.is_file() and target.stat().st_size > 0
+    assert not (tmp_path / DEFAULT_DIR_NAME).exists()  # 既定保存は止まったまま
 
 
 @pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
