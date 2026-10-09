@@ -1022,3 +1022,6 @@ class AutoRietveldResult:
     coordinate_freedom_mismatches: Mapping[str, tuple[tuple[str, str, str], ...]] = field(
         default_factory=dict
     )
+    # 【書き出した精密化後の構造】(fit-then-judge P1a): 相名 → CIF パス。
+    #   `run_auto_rietveld(export_cif_dir=)` を指定したときだけ埋まる。空 = 書き出していない。
+    exported_cifs: Mapping[str, str] = field(default_factory=dict)

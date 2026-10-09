@@ -26,6 +26,7 @@ import numpy as np
 from .._json import finite_or_none
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
 from ..gpxstore import record_artifact as _record_artifact
+from ..gpxstore import sanitize_label as _sanitize_label
 from ..store import Ledger
 from .absorption import apply_absorption_correction
 from .atomrows import (
@@ -2336,6 +2337,7 @@ def run_auto_rietveld(
     content_constraint: Mapping[str, float] | None = None,
     check_occupancy_uiso: bool = False,
     stability: StabilityOptions | None = None,
+    export_cif_dir: str | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -2409,6 +2411,10 @@ def run_auto_rietveld(
         1 度も触らず、``Refine`` の呼び出しも現行のまま)。詳細は `StabilityOptions`。
         ⚠ **箱拘束は装置・幾何だけ** — 占有率/Uiso/座標には張らない (P-SAR-1)。
     :returns: AutoRietveldResult
+    :param export_cif_dir: 精密化**後**の構造を相ごとに CIF で書き出すディレクトリ (fit-then-judge
+        P1a; 結晶化学検査の入力)。既存ファイルは上書きせず連番を付ける。書き出しの失敗はフィットを
+        落とさず ledger ``m7_cif_export_error`` に残す。書いたパスは結果の ``exported_cifs``。
+        既定 None (書き出さない)。
     """
     # FR-318: 占有率シーダーの範囲検証は GSAS import 前に行う (物理的に不可能な要求は即時失敗)。
     if initial_occupancies:
@@ -3251,6 +3257,9 @@ def run_auto_rietveld(
         hap_mustrain_esd=micro[3],
         phase_integrated_intensity=_phase_integrated_intensity(g2phases, g2hists),
         coordinate_freedom_mismatches=_coordinate_freedom_mismatches(g2phases),
+        exported_cifs=(
+            _export_refined_cifs(g2phases, export_cif_dir, ledger) if export_cif_dir else {}
+        ),
     )
 
 
@@ -3296,6 +3305,36 @@ def _coordinate_freedom_mismatches(
         if found:
             out[ph.name] = tuple(found)
     return out
+
+
+def _unique_path(directory, stem: str, suffix: str) -> Path:
+    """``directory/<stem><suffix>`` を返す。既にあれば ``-1``, ``-2``… を付ける (上書きしない)。
+
+    ``stem`` は相名など任意の文字列なので `gpxstore.sanitize_label` でパス安全にする。
+    """
+    base = Path(directory)
+    safe = _sanitize_label(stem)
+    candidate = base / f"{safe}{suffix}"
+    n = 1
+    while candidate.exists():
+        candidate = base / f"{safe}-{n}{suffix}"
+        n += 1
+    return candidate
+
+
+def _export_refined_cifs(g2phases, directory: str, ledger) -> dict[str, str]:
+    """相ごとに精密化後の CIF を書き出す (fit-then-judge P1a)。失敗は ledger に残して続ける。"""
+    out_dir = Path(directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    exported: dict[str, str] = {}
+    for ph in g2phases:
+        try:
+            path = _unique_path(out_dir, ph.name, ".cif")
+            ph.export_CIF(str(path))
+            exported[ph.name] = str(path)
+        except Exception as exc:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+            ledger.append("m7_cif_export_error", {"phase": ph.name, "error": repr(exc)[:200]})
+    return exported
 
 
 def _integrated_intensity(reflist, super_: bool = False) -> float:
