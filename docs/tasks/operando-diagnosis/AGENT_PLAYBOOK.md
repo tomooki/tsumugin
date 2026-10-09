@@ -34,6 +34,8 @@
   採られなかった方向も同じ場所に残る (索引 `manifest.jsonl`)。**本指示書が扱う誤りの多くは
   Rwp に現れない**ので、疑わしいフレームは fit そのものを開いて確かめる — その一次資料である。
   `save_gpx=false` で止まるが、診断目的の系列では止めないこと。
+  `repair_frames` の修復試行 (左右両方・**棄却されたものも**) は**別の run ディレクトリ**に残る
+  (返り値 `gpx_dir`。`repair_frames` も `gpx_dir=` / `save_gpx=` を受ける)。
 
 ## 2. 手順
 
@@ -223,13 +225,16 @@ result["frames"][i]["residual_report"]
 
 ```python
 repair_frames(result, frames, phases, instrument={...}, two_theta_limits=[2.4, 18.0])
-# -> {"repairs":[…採用済…], "needs_model_revision":[…], "ledger_entries":[…]}
+# -> {"repairs":[…採用済…], "needs_model_revision":[…], "ledger_entries":[…], "gpx_dir": "…"}
 ```
 
 - **`phases` には系列で使われている全相を渡す** (`appearances` の自動追加相を含む)。欠けると
   ② がエラーにする — **黙って相を落として「Rwp 15→7 の修復成功」と報告させないため**。
 - `repairs` は Rwp 改善時のみ採用済 (自己検証可能な規則 → ①/② に置ける安全部分集合)。
 - **`needs_model_revision` はモデルの欠陥**。近傍 warm-start では直らない (**両隣も同欠陥**)。
+  その試行の fit は `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` (開いて確かめる。
+  近傍が無く試せなかったフレームは `insitu_repair_no_neighbour` 行で、fit は無い)。
+  採用された修復の fit は `repairs[j]["gpx_path"]` (`frames[i]["gpx_path"]` は**修復前**)。
   相集合/セル解放を**再構成**する (実データ: pure-mono ブロックは単相 mono+セル解放で
   9.1-10.7% → **6.5-8.1%**)。
 - **系全体が前方単一パス由来の系統ブロックで汚染 (偽相が全域に湧く・分率 0 近傍で esd 発散・
