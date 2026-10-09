@@ -14,7 +14,8 @@ GSAS 経路 (`engine._phase_atom_info` / `_setup_constraints`) は相に無い�
 
 **1 原子を 2 つの占有率拘束に入れること**はここでは拒否しない — GSAS は両方の拘束を同時に
 満たす (equivalence を constraint に変換して解く, 2026-10-09 に PbSO4 で実測)。張れないのは
-TOPAS の INP (後に書いた方だけが効く) なので、3 原子以上の混合占有と同じく TOPAS 固有の規則。
+TOPAS の INP (原子ごとに占有率を 1 つの式で書く) の一部の形だけなので、3 原子以上の混合占有と
+同じく TOPAS 固有の規則 (和の組の親の共有は TOPAS も張れる — `topas.structure`)。
 
 numpy-only (GSAS 非依存)。
 """

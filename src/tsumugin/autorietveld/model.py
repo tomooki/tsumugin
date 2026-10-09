@@ -421,8 +421,9 @@ def check_phase_spec_labels(spec: PhaseSpec, labels: "Sequence[str]") -> None:
 
     エンジン固有の制約は各エンジンが別に検査する。たとえば**1 原子を 2 つの占有率拘束に入れる**
     ことは GSAS では意味が決まる (equivalence を constraint に変換して全拘束を同時に満たす,
-    2026-10-09 に PbSO4 で実測) ので、ここでは拒否しない — 張れないのは TOPAS の INP
-    (後に書いた方だけが効く) で、3 原子以上の混合占有と同じく `topas.structure` が拒否する。
+    2026-10-09 に PbSO4 で実測) ので、ここでは拒否しない — TOPAS の INP は原子ごとに占有率を
+    1 つの式で書くので張れない形があり、3 原子以上の混合占有と同じく `topas.structure` が拒否する
+    (和の組の親の共有 = `deuterium.place_hd_mix` の形は TOPAS も張れる)。
 
     :raises InvalidPhaseSpecError: 上記のとき (② は ``{"error","error_type"}`` へ縮退する)
     """
