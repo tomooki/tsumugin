@@ -3,8 +3,10 @@
 ③ は LLM なので、GSAS/ローダーが投げる ``FileNotFoundError`` 等の I/O 例外が MCP 境界を越えると
 **回復不能なハード失敗**になる (CLAUDE.md ② 不変条件: 例外を送出せず ``{"error","error_type"}``
 へ縮退する)。精密化そのものの失敗は ① が ``chi2=inf`` の結果へ変換済みなので、ここで縮退するのは
-主に**入力ファイル不在**の I/O エラー (実測: 存在しないパスで ``auto_rietveld``/``sequential_rietveld``/
-``anchored_sequential`` が ``FileNotFoundError`` を送出していた)。
+**入力ファイル不在**の I/O エラー (実測: 存在しないパスで ``auto_rietveld``/``sequential_rietveld``/
+``anchored_sequential`` が ``FileNotFoundError`` を送出していた) と、**ドメインエラー**
+(``TsumuginError``: 相の指定の誤り・エンジン未導入等。逐次系は GSAS を入力解析の ``try`` の外で
+回すので、engine が送出したものがそのまま届く)。
 
 **テストシームを壊さない**: 注入 runner / monkeypatch を使う決定論テストはファイルに触れないため
 ``OSError`` を投げず、本デコレータは透過する (正常 dict をそのまま返す)。実 GSAS 経路で実ファイルが

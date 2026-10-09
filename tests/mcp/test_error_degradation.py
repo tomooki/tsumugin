@@ -93,7 +93,7 @@ def test_degrade_oserror_converts_oserror_to_dict():
 
 
 def test_degrade_oserror_does_not_swallow_non_oserror():
-    """OSError 以外 (論理バグ) は透過させる — 握り潰さない。"""
+    """OSError とドメインエラー (TsumuginError) 以外 = 論理バグは透過させる — 握り潰さない。"""
 
     @degrade_oserror
     def logic_bug():

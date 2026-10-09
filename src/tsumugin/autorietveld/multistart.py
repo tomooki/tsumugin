@@ -518,6 +518,12 @@ def run_multistart_rietveld(
 
     ⚠ 決定論のため、結果は**完了順ではなく開始点 index 順**に並べ、**ledger も join 後に
     列挙順で再発行**する (`Ledger` はハッシュ鎖 / NFR-102。完了順の追記はビット同一性を壊す)。
+
+    開始点の実行失敗は例外にせず ``starts[i].error`` と warnings に残す。**例外は相の指定の誤り
+    だけ** (どの開始点でも同じ入力の誤りなので、発散に畳むと「初期値で解が割れた」と読まれる)。
+
+    :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル等を名指すとき
+        (`model.check_phase_spec_labels`)。直列でも並列 (``pool.map`` が親で送出し直す) でも同じ
     """
     import os
     from concurrent.futures import ProcessPoolExecutor
