@@ -109,9 +109,11 @@ run_sequential_rietveld
 実際に `group, _reason = group_context(...)` の形で捨てていた入口が 6 つ中 5 つあった
 (探索 / マルチスタート / モデル比較 / 修復 / M8 閉ループ。系列だけが載せていた)。
 
+- **捨てる既定を持たない**: `resolve_run_dir` は常に `(run_dir, 退避理由)` を返す (旧
+  `report_fallback=False` 既定はパスだけを返して理由を捨てていたので撤去した)。
 - **歯止め**: `tests/test_gpx_fallback_surfaced.py` が src の全呼び出しを AST で検査する (戻り値を
-  その場で 2 名に分解し、理由名を `_` で始めず、同じ関数で読む。素通しの `return` は `gpxstore`
-  自身の解決関数の中だけ。`resolve_run_dir` は `report_fallback=True` を明示)。網が止めるのは
+  その場で 2 名に分解し、理由名を `_` で始めず、分解の後・上書きの前に読む。理由を
+  `return ctx, reason` のように転送するだけの形は `gpxstore` 自身の解決関数の中だけ)。網が止めるのは
   **うっかり捨てる形**までで、載せる先 (台帳の種別・`warnings`) の正しさは入口ごとの振る舞い
   テストが見る。
 - **採らなかった案 — 理由を `GpxContext` に載せ、エンジンの `_save_gpx_artifact` に
@@ -127,7 +129,7 @@ run_sequential_rietveld
 
 | 層 | 到達手段 |
 |---|---|
-| ① | `run_auto_rietveld` / `run_topas_rietveld` / `run_sequential_rietveld` / `run_anchored_sequential` / `run_refinement_loop` / `run_recipe_search` / `run_multistart_rietveld` / `compare_models` / `repair_isolated` の `gpx_dir` / `save_gpx` |
+| ① | `run_auto_rietveld` / `run_topas_rietveld` / `run_sequential_rietveld` / `run_anchored_sequential` / `run_refinement_loop` / `run_recipe_search` / `run_multistart_rietveld` / `compare_models` / `repair_isolated` の `gpx_dir` / `save_gpx`。⚠ `run_refinement_loop` は **② から呼ばれない** (② の `refine_with_revisions` は改訂を適用した単発精密化で、ループを回すのは ③ 自身) ので、その退避理由 (`RefinementLoopResult.warnings` / 台帳の `m7_gpx_fallback`) は **① 専用 (非露出)** |
 | ② | `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` / `compare_structure_models` / `repair_frames` の `gpx_dir` / `save_gpx` (**`auto_rietveld` の `search`/`multistart` 経路にも届く** — この 2 経路は既定 runner を通らないので ① へ明示的に運ぶ)。型は ② の入口で検査する: `save_gpx` の null は既定 (保存)・bool 以外と非文字列 `gpx_dir` は error dict (スキーマが緩いので `bool(None)` が opt-out に倒れる)。出力は `gpx_path` (単発) / `frames[].gpx_path` + `gpx_dir` (系列) / `project_path` (TOPAS) / `search.candidates[].gpx_path` + `convergence.multistart.starts[].gpx_path` (探索・収束確認の全候補/全開始点) / `scores[].gpx_path` (モデル比較の全バリアント = 棄却モデルも) / `repairs[].gpx_path` + `gpx_dir` + `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` (修復: 採用 / 試行の run ディレクトリ / 棄却)。退避理由は探索/収束確認なら `search.warnings` / `convergence.warnings`、モデル比較なら `warnings`、修復なら `ledger_entries` の `m9_gpx_fallback`。⚠ **単発 `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` は退避理由を返さない (既知の穴)** — ① は台帳に書くが、これらの ② は台帳を戻り値に含めないので、③ から見えるのは `gpx_path` が一時領域を指していることだけ |
 | ③ | `skills/analyze`「精密化成果物」節 / `skills/insitu` の成果物表 / `skills/operando-diagnose`「疑うときの一次資料」/ `skills/mem-model-fix` の入力の出所 / `skills/joint` / AGENT_PLAYBOOK 3 本 |
 

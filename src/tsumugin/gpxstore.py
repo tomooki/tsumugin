@@ -193,22 +193,21 @@ def resolve_run_dir(
     explicit_dir: str | None = None,
     run_id: str | None = None,
     now: str | None = None,
-    report_fallback: bool = False,
-):
+) -> tuple[str | None, str]:
     """1 回の解析 (系列なら系列全体) の run ディレクトリを作って返す。
 
     :param data_path: 観測データのパス (既定の根をこの隣に作る)
     :param explicit_dir: 呼び出し側の明示指定 (env より強い)
     :param run_id: run ディレクトリ名の明示指定 (既定は ``run-<日時>``)
     :param now: 日時文字列の注入 (テスト用)
-    :param report_fallback: True なら ``(run_dir, 退避理由)`` のタプルを返す。⚠ 既定 (False) は
-        **退避理由を捨てる** — src からは常に True で呼ぶ (`tests/test_gpx_fallback_surfaced.py`
-        が静的に止める)
-    :returns: run ディレクトリのパス。**None は保存無効** (``TSUMUGIN_GPX_DIR=none``)
+    :returns: ``(run ディレクトリ, 退避理由)``。run ディレクトリの **None は保存無効**
+        (``TSUMUGIN_GPX_DIR=none``)。退避理由は根に書けず一時領域へ退避したときだけ非空。
+        **理由を返さない呼び方は無い** (旧 ``report_fallback=False`` 既定はパスだけを返して理由を
+        捨てていたので撤去した — 捨てる形は `tests/test_gpx_fallback_surfaced.py` が src で止める)
     """
     root = _root_dir(data_path, explicit_dir)
     if root is None:
-        return (None, "") if report_fallback else None
+        return None, ""
 
     stamp = now or time.strftime("%Y%m%d-%H%M%S")
     base = run_id or f"run-{stamp}"
@@ -221,7 +220,7 @@ def resolve_run_dir(
         #   のも裏切りなので temp へ退避し、理由を呼び出し側 (ledger/警告) へ返す。
         reason = f"{type(exc).__name__}: {exc} ({root} へ書けないため一時領域へ退避)"
         path = tempfile.mkdtemp(prefix="tsumugin-gpx-")
-    return (path, reason) if report_fallback else path
+    return path, reason
 
 
 def _make_unique_dir(root: str, base: str) -> str:
@@ -277,9 +276,7 @@ def plan_artifact(
     reason = ""
     run_dir = ctx.run_dir if (ctx is not None and ctx.run_dir) else ""
     if not run_dir:
-        run_dir, reason = resolve_run_dir(
-            first, explicit_dir=explicit_dir, now=now, report_fallback=True
-        )
+        run_dir, reason = resolve_run_dir(first, explicit_dir=explicit_dir, now=now)
         if run_dir is None:
             return ArtifactPlan(path=None, run_dir="")
     else:
@@ -395,9 +392,7 @@ def series_context(
         #   ただし**明示 ``gpx_dir`` があるなら置き場所は決まっている**ので保存する
         #   (頼まれた保存をデータパスの欠落で黙って捨てない)。
         return GpxContext(enabled=False), ""
-    run_dir, reason = resolve_run_dir(
-        data_path, explicit_dir=gpx_dir, now=now, report_fallback=True
-    )
+    run_dir, reason = resolve_run_dir(data_path, explicit_dir=gpx_dir, now=now)
     if run_dir is None:
         return GpxContext(enabled=False), ""
     return GpxContext(run_dir=run_dir), reason

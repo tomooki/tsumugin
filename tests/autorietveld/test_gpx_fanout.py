@@ -1,7 +1,7 @@
 """★規定「全解析で gpx を保存する」の**ファンアウト経路** — レシピ探索 / マルチスタート /
-モデル比較 (GSAS 非依存の決定論テスト)。
+収束確認 / モデル比較 / M8 閉ループ (GSAS 非依存の決定論テスト)。
 
-この 3 つは「1 回の解析」の中で **N 回精密化する**。採用されるのは 1 つだけなので、
+どれも「1 回の解析」の中で **N 回精密化する**。採用されるのは 1 つだけなので、
 
 - 探索: 負けた候補の fit が無いと「なぜその手順が勝ったか」を後から見られない
 - 収束確認: 別ベイスンへ落ちた開始点の fit が無いと**どんな解へ落ちたか**を確認できない
@@ -378,3 +378,36 @@ def test_refinement_loop_has_no_warning_when_the_root_is_writable(tmp_path):
     )
 
     assert res.warnings == ()
+
+
+def test_refinement_loop_inside_an_outer_run_does_not_record_the_fallback_again(
+    tmp_path, monkeypatch
+):
+    """入れ子 (外側の入口が run ディレクトリを決めた ambient の中) では退避を**記録し直さない**。
+
+    退避は外側の入口が解決し記録済みである (`group_context` は ambient のとき理由 "" を返す)。
+    根が書けない状況でも、内側のループは外側の run ディレクトリを使い、台帳にも警告にも
+    2 度目を出さない (「1 実行 = 退避の記録 1 行」)。
+    """
+    from tsumugin.gpxstore import GpxContext, gpx_context
+    from tsumugin.refine_loop.orchestrator import run_refinement_loop
+    from tsumugin.store import Ledger
+
+    _unwritable_root(tmp_path, monkeypatch)
+    outer = str(tmp_path / "outer-run")
+    seen: list[str] = []
+
+    def runner(inp):
+        ctx = active_context()
+        seen.append(ctx.run_dir if ctx else "")
+        return _converged_result()
+
+    ledger = Ledger()
+    with gpx_context(GpxContext(run_dir=outer)):
+        res = run_refinement_loop(
+            [_HIST], [_PHASE], runner=runner, ledger=ledger, gpx_dir=str(tmp_path / "c")
+        )
+
+    assert seen and set(seen) == {outer}
+    assert res.warnings == ()
+    assert not [e for e in ledger.entries if e.kind == "m7_gpx_fallback"]

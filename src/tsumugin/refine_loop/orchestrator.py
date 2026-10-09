@@ -90,7 +90,8 @@ def run_refinement_loop(
     :param diagnose: (結果, 入力)->残差シグネチャ。None なら結果ベースの粗診断
     :param background_coeffs: 初期背景係数数
     :param budget: 停止条件 (既定 PolicyBudget())
-    :param ledger: 追記台帳 (None なら未使用)
+    :param ledger: 追記台帳 (None なら未使用)。成果物の run ディレクトリが一時領域へ退避したときは
+        ``m7_gpx_fallback`` 行を足す (台帳が無くても `RefinementLoopResult.warnings` には載る)
     :param accept_eps: Rwp 改善判定の下限
     :param seed: GSAS runner 用の乱数種 (再現性)
     :param gpx_dir: 成果物の保存先の根 (2026-08-20 規定「全解析で保存する」)。**ループ 1 回で

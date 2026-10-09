@@ -1,12 +1,11 @@
 """★成果物の退避理由を**呼び出し側が捨てない** — `gpxstore` の解決関数の全呼び出しを見る静的ガード。
 
-`gpxstore.group_context` / `series_context` / `resolve_run_dir(report_fallback=True)` は
-``(値, 退避理由)`` を返す。理由が非空なのは、頼まれた根 (``gpx_dir`` / データ隣接) に run
-ディレクトリを作れず**一時領域へ退避した**ときである (gpx-retention 設計 §5「temp へ退避し理由を
-ledger」)。理由は**解決した入口でしか分からない** — エンジンは解決済みの文脈を受け取るだけで、
-しかもファンアウト経路 (探索 / マルチスタート / 収束確認 / モデル比較 / 修復 / 系列 / M8 閉ループ)
-ではエンジンの台帳は呼び出し側が見ない私有の台帳である。入口が理由を捨てると、成果物が
-%TEMP% に置かれたことは**どこにも残らない**。
+`gpxstore.group_context` / `series_context` / `resolve_run_dir` は ``(値, 退避理由)`` を返す。
+理由が非空なのは、頼まれた根 (``gpx_dir`` / データ隣接) に run ディレクトリを作れず**一時領域へ
+退避した**ときである (gpx-retention 設計 §5「temp へ退避し理由を ledger」)。理由は**解決した入口で
+しか分からない** — エンジンは解決済みの文脈を受け取るだけで、しかもファンアウト経路 (探索 /
+マルチスタート / 収束確認 / モデル比較 / 修復 / 系列 / M8 閉ループ) ではエンジンの台帳は呼び出し側が
+見ない私有の台帳である。入口が理由を捨てると、成果物が %TEMP% に置かれたことは**どこにも残らない**。
 
 実害: `group, _reason = group_context(...)` の形で捨てていた入口が複数あり (探索 / マルチスタート /
 モデル比較 / 修復は個別に直した)、直した後にも `refine_loop.orchestrator` に 1 件残っていた。
@@ -17,17 +16,21 @@ ledger」)。理由は**解決した入口でしか分からない** — エン�
 1. 呼び出しの戻り値は**その場で 2 つの名前に分解する** (``ctx, reason = group_context(...)``)。
    添字 (``[0]``) ・単一名への代入・式文として捨てる・他の式へ埋め込む、はどれも違反
 2. 理由の名前は ``_`` で始めない (``_`` / ``_reason`` は「捨てた」の宣言である)
-3. 理由の名前は同じ関数の中で**読まれる** (代入しただけ / ``del`` しただけは違反)
-4. ``return group_context(...)`` のような**素通しの転送**は `gpxstore` 自身の解決関数の中だけ
-   (外で許すと、その関数が新しい解決関数になり、その呼び出し側が網から外れる)
-5. ``resolve_run_dir`` は ``report_fallback=True`` を明示する (既定では理由を捨てる API なので)
+3. 理由は分解の**後で、上書きされる前に**読まれる。読みは同じ関数の中 (入れ子の関数も含むが、
+   同じ名前を自分で束縛する入れ子の関数・内包表記の中は別の変数なので数えない)。代入しただけ /
+   ``del`` しただけ / 分解より前にしか現れない / 読む前に上書き、はどれも違反
+4. 理由を**呼び出し側へ転送するだけ**の形 (``return group_context(...)`` / ``return ctx, reason`` /
+   ``return reason``) は `gpxstore` 自身の解決関数の中だけ。外で許すと、その関数が新しい解決関数に
+   なり、その呼び出し側が網から外れる
 
 **網の限界 (正直に言う)**: 「読んだ」は「ledger/警告に載せた」ではない — ``if reason: pass`` は
-通る。網が止めるのは**うっかり捨てる形** (``_reason`` / ``[0]`` / 未使用) であり、載せる先が正しいか
-(台帳の種別・② の ``warnings``) は入口ごとの振る舞いテスト
+通る。網が止めるのは**うっかり捨てる形**であり、載せる先が正しいか (台帳の種別・② の
+``warnings``) は入口ごとの振る舞いテスト
 (`tests/autorietveld/test_gpx_fanout.py::test_fanout_entries_record_a_fallback_to_temp` ほか) が
-見る。また ``ArtifactPlan.fallback_reason`` (エンジンが `plan_output` から受け取る側) は本網の
-対象外で、両エンジンの ``_save_*_artifact`` が読んでいることは各エンジンのテストが見る。
+見る。順序は行・列の位置で見るので、分岐 (片方の枝でだけ上書き) やループの 2 周目は区別しない。
+解決関数を別名の変数へ代入して呼ぶ (``f = group_context; f(...)``) 形も追わない。
+``ArtifactPlan.fallback_reason`` (エンジンが `plan_output` から受け取る側) は本網の対象外で、両エンジンの
+``_save_*_artifact`` が読んでいることは各エンジンのテストが見る。
 
 **なぜ型 (`GpxContext` に理由を載せる) にしなかったか**: 理由を文脈に載せてエンジンの
 ``_save_gpx_artifact`` に ``m7_gpx_fallback`` を書かせる案は、ファンアウト経路ではエンジンの台帳が
@@ -38,12 +41,15 @@ ledger」)。理由は**解決した入口でしか分からない** — エン�
 変異検査で実証済 (実ソースへの変異で `test_no_src_caller_discards_the_fallback_reason` が fail):
 ``refine_loop.orchestrator`` を修正前の ``group, _reason =`` に戻す / ``compare.py`` の警告行を
 ``warnings = ()`` に置き換える (理由が未使用) / ``search.py`` を ``group_context(...)[0]`` にする /
-``gpxstore.series_context`` の ``report_fallback=True`` を外す。
+``gpxstore.series_context`` が理由の代わりに ``""`` を返す / ``insitu.engine._series_context`` で
+分解直後に ``reason = ""`` と上書きする / ``insitu.repair._repair_group`` が台帳に書かず
+``return group, gpx_fallback`` で転送する。
 """
 
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 import pytest
@@ -55,9 +61,6 @@ _GPXSTORE = _SRC / "gpxstore.py"
 
 #: ``(値, 退避理由)`` を返す解決関数。
 _RESOLVERS = frozenset({"group_context", "series_context", "resolve_run_dir"})
-
-#: 既定では理由を返さない (= 捨てる) 解決関数と、理由を返させるフラグ。
-_OPT_IN_FLAG = {"resolve_run_dir": "report_fallback"}
 
 #: 網が実際にこれらの呼び出しを見ていること (走査先を取り違えると 0 件で黙って緑になる)。
 #: 呼び出しを移した/消したときは意識的にここを更新する。
@@ -73,15 +76,21 @@ _KNOWN_CALLERS = frozenset({
 })
 
 _Scope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+_Comprehension = ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
 
 
 def _resolver_names(tree: ast.AST, *, defines_resolvers: bool) -> dict[str, str]:
-    """この module で解決関数を指すローカル名 → 解決関数名 (``as`` 別名・関数内 import も拾う)。"""
+    """この module で解決関数を指すローカル名 → 解決関数名。
+
+    ``as`` 別名・関数内 import・``import *`` も拾う (どれも名前呼び出しで網を抜けうる)。
+    """
     names = {r: r for r in _RESOLVERS} if defines_resolvers else {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "gpxstore":
             for alias in node.names:
-                if alias.name in _RESOLVERS:
+                if alias.name == "*":
+                    names.update({r: r for r in _RESOLVERS})
+                elif alias.name in _RESOLVERS:
                     names[alias.asname or alias.name] = alias.name
     return names
 
@@ -96,11 +105,48 @@ def _called_resolver(call: ast.Call, names: dict[str, str]) -> str | None:
     return None
 
 
-def _is_loaded(scope: ast.AST, name: str) -> bool:
+def _rebinds(node: ast.AST, name: str) -> bool:
+    """入れ子の関数/内包表記が ``name`` を**自分の変数として**束縛するか (= 外の理由とは別物)。"""
+    if isinstance(node, _Comprehension):
+        return any(
+            isinstance(t, ast.Name) and t.id == name
+            for gen in node.generators
+            for t in ast.walk(gen.target)
+        )
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return False
+    a = node.args
+    params = [*a.posonlyargs, *a.args, *a.kwonlyargs, *(p for p in (a.vararg, a.kwarg) if p)]
+    if any(p.arg == name for p in params):
+        return True
+    if isinstance(node, ast.Lambda):
+        return False
+    if any(
+        isinstance(n, (ast.Nonlocal, ast.Global)) and name in n.names for n in ast.walk(node)
+    ):
+        return False
     return any(
-        isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
-        for n in ast.walk(scope)
+        isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+        for n in ast.walk(node)
     )
+
+
+def _occurrences(scope: ast.AST, name: str) -> list[ast.Name]:
+    """``scope`` の中の ``name`` の出現 (同名を自前で束縛する入れ子の中は除く)。"""
+    out: list[ast.Name] = []
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        if _rebinds(node, name):
+            continue
+        if isinstance(node, ast.Name) and node.id == name:
+            out.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
+def _pos(node: ast.AST) -> tuple[int, int]:
+    return (node.lineno, node.col_offset)  # type: ignore[attr-defined]
 
 
 def _scan(source: str, *, defines_resolvers: bool = False) -> tuple[list[int], list[str]]:
@@ -118,6 +164,17 @@ def _scan(source: str, *, defines_resolvers: bool = False) -> tuple[list[int], l
             cur = parent.get(cur)
         return cur if cur is not None else tree  # type: ignore[return-value]
 
+    def forwarded(load: ast.Name, scope: _Scope) -> bool:
+        """``return reason`` / ``return ctx, reason`` — 読まずに呼び出し側へ渡すだけの形。
+
+        **解決した関数自身の** ``return`` だけを数える。入れ子の関数 (閉包) が理由を返すのは
+        その関数を呼んだ側が読むという意味なので、転送ではなく読みである。
+        """
+        up = parent.get(load)
+        if isinstance(up, ast.Tuple):
+            up = parent.get(up)
+        return isinstance(up, ast.Return) and enclosing_scope(up) is scope
+
     sites: list[int] = []
     violations: list[str] = []
     for node in ast.walk(tree):
@@ -131,22 +188,17 @@ def _scan(source: str, *, defines_resolvers: bool = False) -> tuple[list[int], l
         def bad(why: str, node: ast.Call = node, resolver: str = resolver) -> None:
             violations.append(f"{node.lineno} {resolver}: {why}")
 
-        flag = _OPT_IN_FLAG.get(resolver)
-        if flag is not None and not any(
-            kw.arg == flag and isinstance(kw.value, ast.Constant) and kw.value.value is True
-            for kw in node.keywords
-        ):
-            bad(f"{flag}=True が無い — 既定では退避理由を返さない (捨てる)")
-
         holder = parent.get(node)
         scope = enclosing_scope(node)
+        # 【転送してよいのは gpxstore 自身の解決関数だけ】: 外で許すとその関数が新しい解決関数に
+        #   なり、その呼び出し側が網から外れる。
+        own_resolver = (
+            defines_resolvers
+            and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and scope.name in _RESOLVERS
+        )
         if isinstance(holder, ast.Return):
-            forwards_own = (
-                defines_resolvers
-                and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and scope.name in _RESOLVERS
-            )
-            if not forwards_own:
+            if not own_resolver:
                 bad("素通しで返している — 呼び出し側が網から外れる (分解して理由を扱うこと)")
             continue
         targets = holder.targets if isinstance(holder, ast.Assign) else []
@@ -161,21 +213,39 @@ def _scan(source: str, *, defines_resolvers: bool = False) -> tuple[list[int], l
         reason = targets[0].elts[1].id  # type: ignore[attr-defined]
         if reason.startswith("_"):
             bad(f"理由を {reason!r} で捨てている")
-        elif not _is_loaded(scope, reason):
-            bad(f"理由 {reason!r} を一度も読んでいない")
+            continue
+        # 【分解の後で、上書きされる前の読みだけを数える】: 同じ関数に同名の別の変数があると、
+        #   位置を見ない網は「読んだ」と誤認する (理由を捨てても緑になる)。
+        assert isinstance(holder, ast.Assign)
+        start = (holder.end_lineno or holder.lineno, holder.end_col_offset or 0)
+        seen = _occurrences(scope, reason)
+        stop = min(
+            (_pos(n) for n in seen if not isinstance(n.ctx, ast.Load) and _pos(n) > start),
+            default=(10**9, 0),
+        )
+        reads = [n for n in seen if isinstance(n.ctx, ast.Load) and start < _pos(n) < stop]
+        if not reads:
+            bad(f"理由 {reason!r} を分解の後で (上書き前に) 一度も読んでいない")
+        elif all(forwarded(n, scope) for n in reads) and not own_resolver:
+            bad(f"理由 {reason!r} を返り値に詰めて転送するだけ — 呼び出し側が網から外れる")
     return sites, violations
 
 
-def _scan_src() -> tuple[dict[str, list[int]], list[str]]:
+@functools.cache
+def _scan_src() -> tuple[dict[str, list[int]], tuple[str, ...]]:
+    """src 全体を 1 度だけ走査する (2 つのテストが同じ結果を使う)。"""
     sites: dict[str, list[int]] = {}
     violations: list[str] = []
     for path in sorted(_SRC.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "gpxstore" not in text and path != _GPXSTORE:
+            continue  # 解決関数は gpxstore からしか来ない (import か属性呼び出しに名前が出る)
         rel = path.relative_to(_SRC).as_posix()
-        found, bad = _scan(path.read_text(encoding="utf-8"), defines_resolvers=path == _GPXSTORE)
+        found, bad = _scan(text, defines_resolvers=path == _GPXSTORE)
         if found:
             sites[rel] = found
         violations.extend(f"src/tsumugin/{rel}:{v}" for v in bad)
-    return sites, violations
+    return sites, tuple(violations)
 
 
 def test_no_src_caller_discards_the_fallback_reason():
@@ -203,14 +273,39 @@ _HEAD = "from tsumugin.gpxstore import group_context, series_context, resolve_ru
 _DISCARDS = {
     "underscore_name": _HEAD + "def f():\n    g, _reason = group_context('d')\n    return g\n",
     "bare_underscore": _HEAD + "def f():\n    g, _ = series_context('d')\n    return g\n",
+    "resolve_underscore": _HEAD + "def f():\n    run_dir, _ = resolve_run_dir('d')\n    return run_dir\n",
     "subscript": _HEAD + "def f():\n    g = group_context('d')[0]\n    return g\n",
     "expression_statement": _HEAD + "def f():\n    group_context('d')\n",
     "single_name": _HEAD + "def f():\n    pair = group_context('d')\n    return pair\n",
     "never_read": _HEAD + "def f():\n    g, reason = group_context('d')\n    return g\n",
     "only_deleted": _HEAD + "def f():\n    g, reason = group_context('d')\n    del reason\n",
+    "read_only_before_the_unpack": (
+        _HEAD + "def f(log):\n    reason = 'other'\n    log(reason)\n"
+        "    g, reason = group_context('d')\n    return g\n"
+    ),
+    "overwritten_before_read": (
+        _HEAD + "def f(log):\n    g, reason = group_context('d')\n    reason = ''\n"
+        "    log(reason)\n    return g\n"
+    ),
+    "shadowed_by_a_nested_parameter": (
+        _HEAD + "def f():\n    g, reason = group_context('d')\n"
+        "    def note(reason):\n        return reason\n    return g, note\n"
+    ),
+    "shadowed_by_a_nested_assignment": (
+        _HEAD + "def f():\n    g, reason = group_context('d')\n"
+        "    def note():\n        reason = 'x'\n        return reason\n    return g, note\n"
+    ),
+    "shadowed_by_a_comprehension": (
+        _HEAD + "def f(xs):\n    g, reason = group_context('d')\n"
+        "    return g, [reason for reason in xs]\n"
+    ),
     "aliased_import": (
         "from ..gpxstore import series_context as sc\n"
         "def f():\n    c, _r = sc('d')\n    return c\n"
+    ),
+    "star_import": (
+        "from tsumugin.gpxstore import *\n"
+        "def f():\n    g, _ = group_context('d')\n    return g\n"
     ),
     "attribute_call": (
         "from tsumugin import gpxstore\n"
@@ -221,13 +316,11 @@ _DISCARDS = {
         "    g, _ = group_context('d')\n    return g\n"
     ),
     "forwarded_outside_gpxstore": _HEAD + "def make():\n    return group_context('d')\n",
-    "resolve_without_opt_in": (
-        _HEAD + "def f():\n    run_dir, reason = resolve_run_dir('d')\n    return run_dir, reason\n"
+    "repacked_into_a_return": (
+        _HEAD + "def make():\n    g, reason = group_context('d')\n    return g, reason\n"
     ),
-    "resolve_with_opt_out": (
-        _HEAD + "def f():\n"
-        "    run_dir, reason = resolve_run_dir('d', report_fallback=False)\n"
-        "    return run_dir, reason\n"
+    "returned_alone": (
+        _HEAD + "def make():\n    g, reason = group_context('d')\n    return reason\n"
     ),
 }
 
@@ -249,10 +342,17 @@ _SURFACED = {
         _HEAD + "def f():\n    g, reason = series_context('d')\n"
         "    def note():\n        return reason\n    return g, note\n"
     ),
-    "resolve_with_opt_in": (
-        _HEAD + "def f():\n"
-        "    run_dir, reason = resolve_run_dir('d', report_fallback=True)\n"
-        "    return run_dir, reason\n"
+    "resolve_run_dir_read": (
+        _HEAD + "def f(log):\n    run_dir, reason = resolve_run_dir('d')\n"
+        "    log(reason)\n    return run_dir\n"
+    ),
+    "read_then_overwritten": (
+        _HEAD + "def f(log):\n    g, reason = group_context('d')\n    log(reason)\n"
+        "    reason = ''\n    return g\n"
+    ),
+    "carried_into_a_constructor": (
+        _HEAD + "def f(Plan):\n    run_dir, reason = resolve_run_dir('d')\n"
+        "    return Plan(run_dir, fallback_reason=reason)\n"
     ),
 }
 
@@ -268,11 +368,18 @@ def test_the_net_accepts_a_surfaced_reason(case):
 def test_gpxstore_may_forward_between_its_own_resolvers():
     """`group_context` が `series_context` の (値, 理由) をそのまま返すのは転送であって破棄ではない。
 
-    同じ形でも `gpxstore` の外 (= 解決関数でない関数) なら違反になることを対で確かめる。
+    `series_context` が `resolve_run_dir` の理由を自分の戻り値に詰めるのも同じ。同じ形でも
+    `gpxstore` の外 (= 解決関数でない関数) なら違反になることを対で確かめる。
     """
     src = (
-        "def series_context(d):\n    return 1, ''\n"
+        "def resolve_run_dir(d):\n    return d, ''\n"
+        "def series_context(d):\n    run_dir, reason = resolve_run_dir(d)\n"
+        "    return run_dir, reason\n"
         "def group_context(d):\n    return series_context(d)\n"
     )
-    assert _scan(src, defines_resolvers=True) == ([4], [])
+    assert _scan(src, defines_resolvers=True) == ([4, 7], [])
+    helper = src.replace("def series_context", "def helper").replace(
+        "def group_context(d):\n    return series_context(d)\n", ""
+    )
+    assert _scan(helper, defines_resolvers=True)[1]
     assert _scan("def helper(d):\n    return series_context(d)\n", defines_resolvers=True)[1]
