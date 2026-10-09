@@ -45,6 +45,7 @@ from ..autorietveld.search import (
 )
 from ..errors import TsumuginError
 from ._degrade import degrade_oserror
+from ._gpx_spec import gpx_args
 from ._recipe_spec import stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
 from ..refine_loop.diagnostics import propose_next_actions as _propose
@@ -290,6 +291,9 @@ def _run_search(
     max_cyc: int,
     opts: StabilityOptions,
     search_runner: "SearchRunner | None",
+    *,
+    gpx_dir: str | None,
+    save_gpx: bool,
 ) -> dict:
     """レシピ探索を実行し「採用候補の結果 + 候補表」を返す (REQ-SAR-500/501)。
 
@@ -311,6 +315,11 @@ def _run_search(
         candidates=None if not inp.extra_stages else _with_extra_stages(inp, names),
         max_cyc=max_cyc,
         stability=opts,
+        # 【成果物の指定は ① へ明示的に運ぶ】: 探索は `_default_gsas_runner` を通らないので、
+        #   ここで落とすと ``save_gpx=False`` (唯一の opt-out) も明示 ``gpx_dir`` も**黙って
+        #   無視され**、全候補が既定 (env → データ隣接) へ書かれる。Rwp には現れない。
+        gpx_dir=gpx_dir,
+        save_gpx=save_gpx,
     )
     selected = summary.selected
     if selected is None or selected.result is None:
@@ -343,6 +352,9 @@ def _run_convergence(
     max_cyc: int,
     opts: StabilityOptions,
     search_runner: "SearchRunner | None",
+    *,
+    gpx_dir: str | None,
+    save_gpx: bool,
 ) -> dict:
     """規定の標準経路 (手順最適化 → 収束確認) を実行する。
 
@@ -381,6 +393,9 @@ def _run_convergence(
         max_cyc=max_cyc,
         stability=opts,
         search_runner=search_runner,
+        # 探索と同じ理由で明示的に運ぶ (Phase A の候補と Phase B の開始点の両方へ届く)。
+        gpx_dir=gpx_dir,
+        save_gpx=save_gpx,
         **kwargs,  # type: ignore[arg-type]
     )
     if report.best is None:
@@ -511,9 +526,17 @@ def auto_rietveld(
         (GSAS) / ``project_path`` (TOPAS) が実際の保存先。
         **これが MEM 系ツール (`mem_density` / `mem_rietveld_iterate`) の入力の出所**
         — 以前は ② から gpx を作る経路が無く、③ は MEM を呼べなかった (§4.5 到達可能性)。
+        ``search`` / ``multistart`` を渡した呼び出しでは**全候補 (``candidate_<名前>.gpx``)・
+        全開始点 (``f<開始点番号 4 桁>_multistart.gpx``) が 1 つの run ディレクトリ**に並び、
+        本引数も ``save_gpx`` もそれら全部に効く。``gpx_path`` は返した fit (探索なら採用候補・
+        収束確認なら最良の開始点) を指し、各候補/各開始点のパスは
+        ``search.candidates[].gpx_path`` / ``convergence.multistart.starts[].gpx_path`` に出る。
+        保存先に書けず一時領域へ退避したときは ``search.warnings`` /
+        ``convergence.warnings`` に理由が出る。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。フレーム数が多く容量が問題に
         なるときだけ False にする。⚠ **保存しなかった精密化は検算できない** — 段の無言
         no-op も、MEM も、再プロットも、精密化済みの成果物そのものを要求する。
+        opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     :param stability: **安定性診断ゲート + 箱拘束** (stable-auto-rietveld)。
         診断 (WS-1): ``{"require_convergence": true, "max_shift_esd": 1.0, "extra_cycles": 1,
         "detect_noop_stages": true, "record_weak_vars": true, "report_undetermined": true,
@@ -587,6 +610,8 @@ def auto_rietveld(
         ``AnalysisInput`` では表現できない
     """
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         inp = _build_input(histograms, phases, background_coeffs, stages)
         opts = StabilityOptions.from_dict(stability)
         # 【探索経路は backend を運べない】: `_run_search`/`_run_convergence` は候補ごとに
@@ -626,11 +651,13 @@ def auto_rietveld(
             #   意味を成さない呼び方が可能になる。
             names = _search_names(search) if search not in (None, False) else DEFAULT_CANDIDATES
             return _run_convergence(
-                inp, names, search_config, multistart, max_cyc, opts, search_runner
+                inp, names, search_config, multistart, max_cyc, opts, search_runner,
+                gpx_dir=gpx_dir, save_gpx=save_gpx,
             )
         if search is not None and search is not False:
             return _run_search(
-                inp, _search_names(search), search_config, max_cyc, opts, search_runner
+                inp, _search_names(search), search_config, max_cyc, opts, search_runner,
+                gpx_dir=gpx_dir, save_gpx=save_gpx,
             )
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
@@ -702,8 +729,11 @@ def refine_with_revisions(
         (1 つの run ディレクトリにまとまるのは系列解析 `sequential_rietveld` の方)。
         どの改訂がどれかは各 run の ``manifest.jsonl`` (Rwp・相) と返り値の ``gpx_path`` で辿る。
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。
+        opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     """
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         inp = _build_input(histograms, phases, background_coeffs, stages)
         for a in actions:
             inp = action_from_dict(a).apply(inp)

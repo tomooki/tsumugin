@@ -108,7 +108,7 @@ run_sequential_rietveld
 | 層 | 到達手段 |
 |---|---|
 | ① | `run_auto_rietveld` / `run_topas_rietveld` / `run_sequential_rietveld` / `run_anchored_sequential` / `run_refinement_loop` / `run_recipe_search` / `run_multistart_rietveld` / `compare_models` の `gpx_dir` / `save_gpx` |
-| ② | `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` の `gpx_dir` / `save_gpx`。出力は `gpx_path` (単発) / `frames[].gpx_path` + `gpx_dir` (系列) / `project_path` (TOPAS) |
+| ② | `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` の `gpx_dir` / `save_gpx` (**`auto_rietveld` の `search`/`multistart` 経路にも届く** — この 2 経路は既定 runner を通らないので ① へ明示的に運ぶ)。型は ② の入口で検査する: `save_gpx` の null は既定 (保存)・bool 以外と非文字列 `gpx_dir` は error dict (スキーマが緩いので `bool(None)` が opt-out に倒れる)。出力は `gpx_path` (単発) / `frames[].gpx_path` + `gpx_dir` (系列) / `project_path` (TOPAS) / `search.candidates[].gpx_path` + `convergence.multistart.starts[].gpx_path` (探索・収束確認の全候補/全開始点)。退避理由は探索/収束確認なら `search.warnings` / `convergence.warnings` |
 | ③ | `skills/analyze`「精密化成果物」節 / `skills/insitu` の成果物表 / `skills/operando-diagnose`「疑うときの一次資料」/ `skills/mem-model-fix` の入力の出所 / `skills/joint` / AGENT_PLAYBOOK 3 本 |
 
 恒久ガード: `tests/test_plugin_gpx_retention.py` (手順書が規定とハンドル名を書いているか・

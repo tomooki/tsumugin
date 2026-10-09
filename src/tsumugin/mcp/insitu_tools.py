@@ -28,6 +28,7 @@ from typing import Callable, Mapping, Sequence
 from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ._degrade import degrade_oserror
+from ._gpx_spec import gpx_args
 import dataclasses
 
 from ..insitu.model import (
@@ -763,7 +764,8 @@ def sequential_rietveld(
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。容量の目安は **0.5-1.5 MB/フレーム**
         (754 フレームで ~1 GB) なので、長い系列で容量が問題になるときだけ False にする。
         ⚠ **系列こそ保存が要る** — どのフレームで段が無言 no-op だったか、棄却トライアルが
-        なぜ棄却されたかは、残った fit そのものからしか追えない (最終 Rwp には現れない)
+        なぜ棄却されたかは、残った fit そのものからしか追えない (最終 Rwp には現れない)。
+        opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     :param instrument: **JSON クライアント (③) の実運用経路** (Issue #93)。指定かつ ``runner`` 未指定
         なら、この spec からサーバ側で ``make_gsas_runner`` を組み立てる。指定なし (None) は従来通り
         engine 既定の ``_default_gsas_runner`` (実験室 X 線 Bragg-Brentano・背景 6 項・装置は data_path
@@ -815,6 +817,8 @@ def sequential_rietveld(
     #   貫通していた (② は例外を送出しない契約 — ③ は LLM なので回復不能なハード失敗になる)。
     #   `anchored_sequential` の `AnchorConfig.from_dict` は最初から try 内にあり非対称だった。
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         frame_specs = [FrameSpec.from_dict(f) for f in frames]
         phase_specs = [PhaseSpec.from_dict(p) for p in initial_phases]
         # 【フィールド駆動パーサ】: 手書きホワイトリスト (旧 7 キー) をやめ、`PhaseIdConfig` の

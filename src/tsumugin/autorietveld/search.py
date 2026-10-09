@@ -332,6 +332,9 @@ class CandidateOutcome:
             "tier": tier,
             "tier_label": TIER_LABELS[tier],
             "error": self.error,
+            # 【負けた候補の成果物へのハンドル】: 採用 fit の ``gpx_path`` だけでは、保存の目的
+            #   (負けた手順がどんな解だったかを開く/MEM に掛ける) に ③ が届かない。"" = 未保存。
+            "gpx_path": (self.result.gpx_path or "") if self.result else "",
         }
 
 
@@ -1009,11 +1012,16 @@ def run_recipe_search(
     # 【負けた候補の fit も残す (規定 2026-08-20)】: 「なぜその手順が勝ったか」は順位表の
     #   Rwp だけでは追えない (どこで発散したか・どの段が revert されたか)。候補ごとに
     #   ``f…_candidate_<候補名>.gpx`` として同じ run ディレクトリに並べる。
-    group, _reason = group_context(
+    group, gpx_fallback = group_context(
         histograms[0].data_path if histograms else "",
         gpx_dir=run_kwargs.get("gpx_dir"),  # type: ignore[arg-type]
         save=bool(run_kwargs.get("save_gpx", True)),
     )
+    # 【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
+    #   分からない** — エンジンは解決済みの文脈を受け取るので `m7_gpx_fallback` を書かない。
+    #   捨てると、頼まれた ``gpx_dir`` ではなく %TEMP% に置かれたことがどこにも残らない。
+    if gpx_fallback:
+        ledger.append("m7_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
 
     outcomes: list[CandidateOutcome] = []
     for i, cand in enumerate(cands):
@@ -1043,6 +1051,10 @@ def run_recipe_search(
                     for n in missing
                 ),
             )
+    if gpx_fallback:
+        summary = replace(
+            summary, warnings=summary.warnings + (f"成果物の保存先: {gpx_fallback}",)
+        )
     ledger.append(
         "m7_search_select",
         {
