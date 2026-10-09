@@ -151,3 +151,19 @@ def test_logic_bugs_are_not_swallowed_at_the_boundary():
 
     with pytest.raises(ZeroDivisionError):
         auto_rietveld([], [], runner=_raising_runner(ZeroDivisionError("bug")))
+
+
+def test_phase_integrated_intensity_reaches_layer_two_output():
+    """fit-then-judge P1a タスク 5: 相ごとの積分計算強度を ③ が読めること (欠測は null)。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(), final_rwp=10.0, final_gof=1.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+        phase_integrated_intensity={"A": (7.0, None), "B": (3.0, float("nan"))},
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    assert payload["phase_integrated_intensity"] == {"A": [7.0, None], "B": [3.0, None]}

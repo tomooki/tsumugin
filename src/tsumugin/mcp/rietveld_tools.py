@@ -123,6 +123,12 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "final_rwp_penalized": finite_or_none(result.final_rwp_penalized),
         "final_restraint_penalty": finite_or_none(result.final_restraint_penalty),
         "n_obs": result.n_obs,
+        # 相ごとの積分計算強度 Σ Fc²·Icorr (ヒストグラム索引順; その相が無ければ null)。
+        #   どの相が散乱を担っているかの観測 (相分率は潰れうるので別に要る)。
+        "phase_integrated_intensity": {
+            name: [finite_or_none(v) if v is not None else None for v in values]
+            for name, values in result.phase_integrated_intensity.items()
+        },
         "stages": [
             {
                 "label": s.label,

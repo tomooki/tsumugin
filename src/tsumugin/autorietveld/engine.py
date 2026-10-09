@@ -3249,7 +3249,41 @@ def run_auto_rietveld(
         hap_mustrain=micro[1],
         hap_size_esd=micro[2],
         hap_mustrain_esd=micro[3],
+        phase_integrated_intensity=_phase_integrated_intensity(g2phases, g2hists),
     )
+
+
+def _integrated_intensity(reflist, super_: bool = False) -> float:
+    """反射リスト 1 本の Σ Fc²·Icorr (列 9/11、超空間群は 1 つずれる)。空なら 0.0。"""
+    import numpy as np
+
+    arr = np.asarray(reflist, dtype=float)
+    if arr.size == 0:
+        return 0.0
+    im = 1 if super_ else 0
+    return float(np.sum(arr[:, 9 + im] * arr[:, 11 + im]))
+
+
+def _phase_integrated_intensity(g2phases, g2hists) -> dict[str, tuple[float | None, ...]]:
+    """相名 → ヒストグラム索引順の積分計算強度 Σ Fc²·Icorr (fit-then-judge P1a)。
+
+    最終状態の反射リスト (`G2PwdrData.reflections()`) から読む。その相がヒストグラムに
+    無い・反射リストが無いときは None (0.0 を捏造しない)。観測のみ。
+    """
+    out: dict[str, list[float | None]] = {ph.name: [] for ph in g2phases}
+    for hist in g2hists:
+        try:
+            refl = hist.reflections() or {}
+        except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+            refl = {}
+        for ph in g2phases:
+            entry = refl.get(ph.name)
+            if not entry or "RefList" not in entry:
+                out[ph.name].append(None)
+                continue
+            value = _integrated_intensity(entry["RefList"], bool(entry.get("Super", False)))
+            out[ph.name].append(value if math.isfinite(value) else None)
+    return {name: tuple(vals) for name, vals in out.items()}
 
 
 def _extract_residual(

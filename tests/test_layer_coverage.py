@@ -440,6 +440,11 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "histogram_rwp",
         "ヒストグラム別 Rwp (joint の内訳; 総合値だけではどちらが悪いか分からない)",
     ),
+    "phase_integrated_intensity": (
+        "phase_integrated_intensity",
+        "相ごとの積分計算強度 Σ Fc²·Icorr (fit-then-judge P1a)。どの相が散乱を担っているかの"
+        "観測 — 相分率 (Scale) は潰れうるので、テンプレートの対象相の判定はこちらを使う",
+    ),
     "project_path": (
         "project_path",
         "バックエンド中立の成果物ハンドル (GSAS は .gpx、TOPAS は INP/.out/results.txt の"

@@ -1008,3 +1008,10 @@ class AutoRietveldResult:
     #   総合値 (`final_rwp`) と混同しないこと — TOPAS 経路では `.out` の総合値を `final_rwp`
     #   に採り、ここには各 `xdd` の値を入れる。空 = 未計測 (バックエンドが出さない)。
     histogram_rwp: tuple[float, ...] = ()
+    # 【相ごとの積分計算強度】(fit-then-judge P1a): 相名 → ヒストグラム索引順の Σ Fc²·Icorr
+    #   (GSAS の反射リスト。Icorr はスケール・多重度・偏光・選択配向・吸収・Lorentz・1/V² を
+    #   含むので、相の**散乱寄与**そのもの)。テンプレートが対象相を「潰れうる段 0 の相分率」
+    #   ではなくこれで決めるための観測。その相がヒストグラムに無ければ None。観測のみ。
+    phase_integrated_intensity: Mapping[str, tuple["float | None", ...]] = field(
+        default_factory=dict
+    )
