@@ -15,6 +15,8 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from .._config_spec import check_float, check_str, spec_required, spec_value
+
 
 @dataclass(frozen=True)
 class AbsorberLayer:
@@ -39,10 +41,13 @@ class AbsorberLayer:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "AbsorberLayer":
+        # 欠落/null は既定 (`_config_spec.spec_value`)。旧 ``str(d.get(...))`` は null を
+        # "None" にし、補正の適用時 (精密化の途中) に「未対応のジオメトリ」で落ちていた。
+        s = "AbsorberLayer"
         return cls(
-            thickness_cm=float(d["thickness_cm"]),  # type: ignore[arg-type]
-            mu_cm=float(d["mu_cm"]),  # type: ignore[arg-type]
-            geometry=str(d.get("geometry", "transmission")),
+            thickness_cm=spec_required(d, "thickness_cm", s, check_float),
+            mu_cm=spec_required(d, "mu_cm", s, check_float),
+            geometry=spec_value(d, "geometry", s, "transmission", check_str),
         )
 
 

@@ -35,16 +35,36 @@ policy 定数を設定する frozen dataclass」である。本モジュール�
 
 呼び出し側 (②) はこの ValueError を ``{"error", "error_type"}`` dict へ縮退させる契約
 (CLAUDE.md ② 不変条件: ③ は LLM なので例外は回復不能なハード失敗になる)。
+
+**型の規則 (``check_*``) は往復 spec と共有する。null の扱いだけが違う**:
+`PhaseSpec`/`HistogramSpec` (と同じ ② 入力面の `stability`/`search_config`) の ``from_dict`` は
+`spec_value`/`spec_required` を通し、**キー欠落と null を既定値 (= 未指定)** として読む。
+``to_dict`` 自身が Optional フィールドを null で出し (`free_uiso_labels` の None = 未指定, #189)、
+② はそれを ``specs`` として ③ へ返すので、③ が学ぶ null の意味は「未指定」である。旧実装は
+``bool(d.get("refine_cell", True))`` で null を ``bool(None) == False`` = **格子凍結**に読み替えて
+いた (例外も警告も出ず、格子が初期値のまま出版される)。本モジュールの ``config_from_dict`` が
+null を拒むのは、policy 定数で「null で無効化したつもり」を既定値で走らせないための選択である。
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import Mapping, Sequence, TypeVar
+import numbers
+from typing import Callable, Mapping, Sequence, TypeVar
 
-__all__ = ["config_from_dict"]
+__all__ = [
+    "check_bool",
+    "check_float",
+    "check_int",
+    "check_str",
+    "check_str_tuple",
+    "config_from_dict",
+    "spec_required",
+    "spec_value",
+]
 
 T = TypeVar("T")
+D = TypeVar("D")
 
 
 def _annotation(field: "dataclasses.Field") -> str:
@@ -63,6 +83,76 @@ def _is_optional(field: "dataclasses.Field") -> bool:
     return "None" in ann or "Optional" in ann
 
 
+def check_bool(name: str, value: object) -> bool:
+    """真の bool のみ。0/1 も拒む (JSON の真偽値は数値と別物)。"""
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{name} は真偽値 (true/false) である必要があります: {value!r} "
+            f"({type(value).__name__})。文字列 \"false\" は Python では真になるため、"
+            "黙って逆の意味になるのを防いでいます"
+        )
+    return value
+
+
+def check_int(name: str, value: object) -> int:
+    """整数のみ (``40.0`` は許すが ``3.9`` は拒否 — ``int(3.9) == 3`` の黙った切り捨てを防ぐ)。"""
+    # bool は int のサブクラスなので**先に**弾く (True が 1 になる)。
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(
+            f"{name} は整数である必要があります: {value!r} ({type(value).__name__})"
+        )
+    if not isinstance(value, numbers.Integral) and not float(value).is_integer():
+        raise ValueError(
+            f"{name} は整数である必要があります: {value!r} "
+            "(切り捨てると黙って別の値になるため拒否します)"
+        )
+    return int(value)
+
+
+def check_float(name: str, value: object) -> float:
+    """数値のみ。bool は拒む (``float(True) == 1.0`` で「1」を黙って作らない)。"""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(
+            f"{name} は数値である必要があります: {value!r} ({type(value).__name__})"
+        )
+    return float(value)
+
+
+def check_str(name: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{name} は文字列である必要があります: {value!r} ({type(value).__name__})"
+        )
+    return value
+
+
+def check_str_tuple(
+    name: str, value: object, *, item: str = "文字列", why: str = ""
+) -> tuple[str, ...]:
+    """文字列の**リスト**のみ。裸の文字列も非文字列要素も拒む。
+
+    ``"CaTeO"`` を許すと ``("C","a","T","e","O")`` に、``[19, 25]`` を ``str()`` で通すと
+    ``("19","25")`` になる — どちらも指定したものと別の集合になり、例外を出さないまま
+    下流が空振りする (元素系なら候補が全滅、原子ラベルなら何も凍結しない)。
+
+    :param item: メッセージに出す要素の名前 (「元素記号」「原子ラベル」等)
+    :param why: 要素型違反のメッセージ末尾に足す帰結の説明
+    """
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(
+            f"{name} は{item}の**リスト**である必要があります: {value!r} "
+            f"({type(value).__name__})。裸の文字列は 1 文字ずつに分解され、"
+            "指定したものと別の集合になります"
+        )
+    bad = [v for v in value if not isinstance(v, str)]
+    if bad:
+        raise ValueError(
+            f"{name} の要素は{item}の文字列である必要があります: {bad!r}。"
+            "数値や入れ子を str() で黙って文字列化すると別の値になります" + why
+        )
+    return tuple(value)
+
+
 def _coerce(name: str, value: object, default: object, field: "dataclasses.Field") -> object:
     """1 フィールド分の値を既定値の型へ強制する (規則はモジュール docstring 参照)。
 
@@ -79,40 +169,13 @@ def _coerce(name: str, value: object, default: object, field: "dataclasses.Field
 
     # bool は int のサブクラスなので**先に**判定する (順序を入れ替えると True が 1 になる)。
     if isinstance(default, bool):
-        if not isinstance(value, bool):
-            raise ValueError(
-                f"{name} は真偽値 (true/false) である必要があります: {value!r} "
-                f"({type(value).__name__})。文字列 \"false\" は Python では真になるため、"
-                "黙って逆の意味になるのを防いでいます"
-            )
-        return value
-
+        return check_bool(name, value)
     if isinstance(default, int):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(
-                f"{name} は整数である必要があります: {value!r} ({type(value).__name__})"
-            )
-        if isinstance(value, float) and not value.is_integer():
-            raise ValueError(
-                f"{name} は整数である必要があります: {value!r} "
-                "(切り捨てると黙って別の値になるため拒否します)"
-            )
-        return int(value)
-
+        return check_int(name, value)
     if isinstance(default, float):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(
-                f"{name} は数値である必要があります: {value!r} ({type(value).__name__})"
-            )
-        return float(value)
-
+        return check_float(name, value)
     if isinstance(default, str):
-        if not isinstance(value, str):
-            raise ValueError(
-                f"{name} は文字列である必要があります: {value!r} ({type(value).__name__})"
-            )
-        return value
-
+        return check_str(name, value)
     if isinstance(default, tuple):
         # 現状の対象設定 (PhaseIdConfig.elements) は **str タプルのみ**。別の要素型を ① に
         # 足したらここで大声で失敗する (黙って str 化して静かに壊さない)。
@@ -121,29 +184,43 @@ def _coerce(name: str, value: object, default: object, field: "dataclasses.Field
                 f"{name}: str 以外の要素を持つタプル型 ({_annotation(field)}) は "
                 "本パーサが未対応です (_config_spec に要素型の変換規則を足してください)"
             )
-        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-            raise ValueError(
-                f"{name} は文字列の**リスト**である必要があります: {value!r} "
-                f"({type(value).__name__})。裸の文字列は 1 文字ずつに分解され、"
-                "指定したものと別の集合になります"
-            )
-        # 【要素型も検証する】: `str(v)` で黙って文字列化すると、リストの**中身**が元素記号で
-        #   ないときに裸文字列と同じ事故になる — 原子番号 ``[19, 25, 26]`` は ``("19","25","26")``
-        #   に、入れ子 ``[["K"], "Mn"]`` は ``("['K']","Mn")`` になり、どちらも例外を出さずに
-        #   候補が全滅する (③ は「MP に候補が無い」と誤診する)。他の型 (bool/int/float/str) は
-        #   全て不一致で ValueError にしているので、タプルの要素だけ黙って読み替えない。
-        bad = [v for v in value if not isinstance(v, str)]
-        if bad:
-            raise ValueError(
-                f"{name} の要素は元素記号の文字列である必要があります: {bad!r}。"
-                "数値や入れ子は str() で黙って文字列化すると元素記号にならず "
-                "(例 19 → \"19\")、例外を出さないまま候補が全滅します"
-            )
-        return tuple(value)
+        return check_str_tuple(
+            name, value, item="元素記号",
+            why=" (例 19 → \"19\" は元素記号にならず、例外を出さないまま候補が全滅します)",
+        )
 
     raise ValueError(  # pragma: no cover - 未対応の既定値型 (設定側の追加時に大声で気づく)
         f"{name}: 既定値の型 {type(default).__name__} は本パーサが未対応です"
     )
+
+
+def spec_value(
+    d: Mapping[str, object],
+    key: str,
+    spec: str,
+    default: D,
+    check: Callable[[str, object], T],
+) -> "T | D":
+    """往復 spec の 1 キーを読む: **欠落/null は ``default``**、値があれば ``check`` を通す。
+
+    ``check`` は ``(表示名, 値) -> 値`` で型が合わなければ ValueError (``check_*`` 等)。
+    ``[]``/``0``/``""`` は null と別物として ``check`` に渡る (#189: ``[]`` は「凍結」)。
+    """
+    value = d.get(key)
+    if value is None:
+        return default
+    return check(f"{spec}.{key}", value)
+
+
+def spec_required(
+    d: Mapping[str, object], key: str, spec: str, check: Callable[[str, object], T]
+) -> T:
+    """既定の無いキー。欠落は KeyError のまま (呼び出し側が「必須キー」へ言い換える契約)、
+    null は ValueError (``str(None) == "None"`` を名前やパスとして黙って使わない)。"""
+    value = d[key]
+    if value is None:
+        raise ValueError(f"{spec}.{key} に null は指定できません (必須・既定値なし)")
+    return check(f"{spec}.{key}", value)
 
 
 def config_from_dict(cls: "type[T]", data: Mapping[str, object], *, spec_name: str) -> T:

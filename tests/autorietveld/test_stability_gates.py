@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
+import re
 
 import pytest
 
@@ -174,31 +176,38 @@ def test_unknown_box_key_is_rejected_not_ignored():
         StabilityOptions.from_dict({"bound_cel": 0.05})
 
 
-_STABILITY_BOOLS = (
-    "require_convergence",
-    "detect_noop_stages",
-    "record_weak_vars",
-    "report_undetermined",
-    "polish_frozen_undetermined",
-    "prune_weak_vars_each_stage",
-    "rescue_freeze_on_failure",
-    "record_correlations",
-    "bound_size_strain",
-    "enable_restraints",
-)
+def _wrong_value_for(default: object) -> object:
+    """既定値の型に対する「黙って別の値になっていた」入力 (旧 bool()/int()/float()/tuple())。"""
+    if isinstance(default, bool):
+        return "false"  # bool("false") is True — ゲートを逆に有効化していた
+    if isinstance(default, int):
+        return 2.5  # int(2.5) == 2 — 黙って切り捨てていた
+    if isinstance(default, tuple):
+        return "dAx"  # ("d","A","x") の部分一致でほぼ全変数を報告から外していた
+    return True  # float(True) == 1.0 (bound_cell=1.0 は ±100% の箱 = 実質無拘束)
 
 
-@pytest.mark.parametrize("key", _STABILITY_BOOLS)
-def test_bool_gate_rejects_the_string_false(key):
-    # 【目的】: ``bool("false") is True`` — ③ が JSON 文字列で送った "false" が**ゲートを有効に**
-    #   しないこと (旧 `bool(d.get(...))` の縮退)。
-    with pytest.raises(ValueError, match=f"{key} は真偽値"):
-        StabilityOptions.from_dict({key: "false"})
+_STABILITY_FIELDS = [f.name for f in dataclasses.fields(StabilityOptions)]
 
 
-@pytest.mark.parametrize("key", _STABILITY_BOOLS)
-def test_bool_gate_null_is_the_default(key):
-    assert getattr(StabilityOptions.from_dict({key: None}), key) is False
+@pytest.mark.parametrize("key", _STABILITY_FIELDS)
+def test_every_stability_field_rejects_a_wrong_type(key):
+    # 【目的】: フィールド全数 (dataclasses.fields から列挙 — 後から足したフィールドも対象)。
+    value = _wrong_value_for(getattr(StabilityOptions(), key))
+    with pytest.raises(ValueError, match=re.escape(f"stability.{key}")):
+        StabilityOptions.from_dict({key: value})
+
+
+@pytest.mark.parametrize("key", _STABILITY_FIELDS)
+def test_every_stability_field_null_is_the_default(key):
+    assert getattr(StabilityOptions.from_dict({key: None}), key) == getattr(
+        StabilityOptions(), key
+    )
+
+
+def test_zero_width_box_is_not_collapsed_to_disabled():
+    # 【目的】: WS-2 — 0.0 (「幅ゼロの箱」= 誤設定) は null (無効) と別物のまま運ぶ。
+    assert StabilityOptions.from_dict({"bound_cell": 0.0}).bound_cell == 0.0
 
 
 # ---------------------------------------------------------------------------

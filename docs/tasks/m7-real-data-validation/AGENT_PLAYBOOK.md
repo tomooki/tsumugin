@@ -50,8 +50,10 @@ Rwp/GOF/物理的妥当性を再現することを目標とする。
   **多相で少数相の Uiso を自由にすると発散し** (実測 10^8–10^9 Å²)、Debye-Waller が実質 0 =
   Bragg 強度を出さないのに重量分率だけ大きい「幽霊相」になる (#209) ので、少数相は凍結する。
 - **② に JSON で渡すとき、キーを書かない / null は既定 (未指定)** である。`"refine_cell": null` は
-  既定の True (格子を精密化) — 凍結したい相だけ `false` を明示する。型の違う値 (真偽値に文字列、
-  ラベル列に裸の文字列 `"O7"`、組の列に平坦な `["Fe1","Al1"]`) は `{"error", "error_type"}` で返る
+  既定の True (格子を精密化) — 凍結したい相だけ `false` を明示する。`HistogramSpec`/`PhaseSpec`
+  (入れ子の `instrument_profile`/`absorber_layers` 含む) と `stability`/`search_config` の各キーで
+  型の違う値 (真偽値に文字列、ラベル列に裸の文字列 `"O7"`、組の列に平坦な `["Fe1","Al1"]`、
+  `two_theta_limits` に 3 要素) は `{"error", "error_type"}` で返る
   (旧実装は null を凍結に、`"false"` を True に、`"O7"` を `("O","7")` に黙って読み替えていた)。
 
 ## 2. 呼び出しパターン

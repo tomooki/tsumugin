@@ -137,3 +137,22 @@ def test_refine_cell_string_is_an_error_dict_not_a_silent_flip(tool):
     )
     assert out["error_type"] == "ValueError" and "refine_cell は真偽値" in out["error"]
     assert seen == []  # 精密化を回してから失敗しない
+
+
+def test_result_with_an_instrument_profile_survives_the_mcp_json_boundary():
+    """source_rwp 省略の instrument_profile でも、応答 (specs 同梱) が JSON に乗ること。
+
+    旧実装は specs に NaN を載せ、server の ``json.dumps(allow_nan=False)`` が**精密化を回した後に**
+    応答全体を error dict へ置き換えていた。
+    """
+    import json
+
+    seen: list = []
+    hist = {**_HIST, "instrument_profile": {"values": {"U": 1.0}}}
+    out = auto_rietveld(
+        [hist], [{"structure_path": "a.cif", "phase_name": "A"}],
+        runner=_capturing_runner(seen),
+    )
+    assert "error" not in out
+    json.dumps(out, allow_nan=False)
+    assert out["specs"]["histograms"][0]["instrument_profile"]["source_rwp"] is None

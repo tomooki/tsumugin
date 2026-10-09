@@ -6,7 +6,10 @@ from_dict は往復同型 (round-trip) を保証する (architecture.md §6)。
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import math
+import re
 
 import pytest
 
@@ -182,25 +185,86 @@ def test_group_list_accepts_lists_and_tuples(key):
     )
 
 
-@pytest.mark.parametrize(
-    "key, default",
-    [
-        ("format_hint", "CIF"),
-        ("mixed_occupancy_groups", ()),
-        ("free_occupancy_labels", ()),
-        ("occupancy_equiv_groups", ()),
-        ("free_uiso_labels", None),  # None = 未指定 (全原子解放) — [] (凍結) と別物 (#189)
-        ("position_equiv_groups", ()),
-        ("occupancy_sum_groups", ()),
-        ("frozen_coord_labels", ()),
-        ("frozen_uiso_labels", ()),
-        ("refine_cell", True),
-        ("temperature", None),
-    ],
-)
-def test_phase_spec_null_is_the_field_default(key, default):
-    assert getattr(_phase(**{key: None}), key) == default
-    assert getattr(PhaseSpec("a.cif", "A"), key) == default  # 表が dataclass 既定とずれない
+# ---- フィールド全数のガード (表を手で書かない) ----
+#
+# 既定値を持つフィールドは **dataclasses.fields から列挙**する。後から足したフィールドが
+# `bool(d.get(...))` / `or ()` / `str(...)` で読まれても、ここで必ず引っかかる。
+
+
+def _defaulted(cls) -> list[str]:
+    return [
+        f.name
+        for f in dataclasses.fields(cls)
+        if f.default is not dataclasses.MISSING or f.default_factory is not dataclasses.MISSING
+    ]
+
+
+_PHASE_DEFAULT = PhaseSpec("a.cif", "A")
+_HIST_DEFAULT = HistogramSpec("d.xye", "i.instprm", Radiation.XRAY_LAB, Geometry.BRAGG_BRENTANO)
+
+
+@pytest.mark.parametrize("key", _defaulted(PhaseSpec))
+def test_phase_spec_null_is_the_field_default(key):
+    assert getattr(_phase(**{key: None}), key) == getattr(_PHASE_DEFAULT, key)
+
+
+@pytest.mark.parametrize("key", _defaulted(HistogramSpec))
+def test_histogram_spec_null_is_the_field_default(key):
+    assert getattr(_hist(**{key: None}), key) == getattr(_HIST_DEFAULT, key)
+
+
+def test_null_defaults_keep_the_semantic_distinctions():
+    # 列挙ガードは「dataclass 既定と同じ」しか見ないので、意味のある既定は名指しで固定する。
+    assert _phase(refine_cell=None).refine_cell is True  # 凍結ではない
+    assert _phase(free_uiso_labels=None).free_uiso_labels is None  # 未指定 (全原子解放, #189)
+    assert _hist(weight=None).weight == 1.0
+
+
+#: 既定値を持つ各フィールドへの「型違い」の値。旧実装はどれも例外を出さずに別の値を作っていた。
+_PHASE_WRONG = {
+    "format_hint": True,
+    "mixed_occupancy_groups": ["Fe1", "Al1"],
+    "free_occupancy_labels": "Ow",
+    "occupancy_equiv_groups": "O1",
+    "free_uiso_labels": "Cu",
+    "position_equiv_groups": [["H1", 1]],
+    "occupancy_sum_groups": ["O1", "H1", "D1"],
+    "frozen_coord_labels": "D1",
+    "refine_cell": "false",
+    "temperature": "300",
+    "frozen_uiso_labels": [1],
+}
+_HIST_WRONG = {
+    "data_format": True,
+    "bank": 2.5,
+    "two_theta_limits": [5.0, 90.0, 120.0],
+    "excluded_regions": [[10.0, 11.0, 12.0]],
+    "temperature": True,
+    "weight": "2",
+    "absorption": True,
+    "instrument_profile": "x",
+    "profile_bounds": {"U": [0.0]},
+    "absorber_layers": [{"thickness_cm": 0.1, "mu_cm": 2.0, "geometry": 5}],
+}
+
+
+def test_wrong_type_tables_cover_every_defaulted_field():
+    assert set(_PHASE_WRONG) == set(_defaulted(PhaseSpec))
+    assert set(_HIST_WRONG) == set(_defaulted(HistogramSpec))
+
+
+@pytest.mark.parametrize("key", sorted(_PHASE_WRONG))
+def test_phase_spec_rejects_a_wrong_type_for_every_field(key):
+    with pytest.raises(ValueError, match=f"PhaseSpec.{key}"):
+        _phase(**{key: _PHASE_WRONG[key]})
+
+
+@pytest.mark.parametrize("key", sorted(_HIST_WRONG))
+def test_histogram_spec_rejects_a_wrong_type_for_every_field(key):
+    # 入れ子 spec は自分の名前で報告する (AbsorberLayer.geometry 等)。
+    where = "AbsorberLayer.geometry" if key == "absorber_layers" else f"HistogramSpec.{key}"
+    with pytest.raises(ValueError, match=re.escape(where)):
+        _hist(**{key: _HIST_WRONG[key]})
 
 
 def test_free_uiso_labels_empty_list_still_means_frozen():
@@ -239,27 +303,6 @@ def test_phase_temperature_rejects_non_numbers(value):
 def test_phase_temperature_accepts_int_and_float():
     assert _phase(temperature=300).temperature == 300.0
     assert _phase(temperature=10.5).temperature == 10.5
-
-
-@pytest.mark.parametrize(
-    "key, default",
-    [
-        ("data_format", "GSAS"),
-        ("bank", None),
-        ("two_theta_limits", None),
-        ("excluded_regions", ()),
-        ("temperature", None),
-        ("weight", 1.0),
-        ("absorption", 0.0),
-        ("instrument_profile", None),
-        ("profile_bounds", None),
-        ("absorber_layers", ()),
-    ],
-)
-def test_histogram_spec_null_is_the_field_default(key, default):
-    assert getattr(_hist(**{key: None}), key) == default
-    base = HistogramSpec("d.xye", "i.instprm", Radiation.XRAY_LAB, Geometry.BRAGG_BRENTANO)
-    assert getattr(base, key) == default  # 表が dataclass 既定とずれない
 
 
 @pytest.mark.parametrize("key", ["data_path", "instrument_path"])
@@ -329,3 +372,36 @@ def test_full_histogram_spec_survives_a_json_round_trip():
         profile_bounds={"U": (0.0, None)},
     )
     assert HistogramSpec.from_dict(json.loads(json.dumps(h.to_dict()))) == h
+
+
+def test_instrument_profile_without_source_rwp_is_json_safe_and_round_trips():
+    # 既定 NaN の source_rwp をそのまま出すと、② の応答 (specs を同梱) が
+    # json.dumps(allow_nan=False) で丸ごと落ちる。null で出し、null を既定 NaN へ戻す。
+    from tsumugin.autorietveld.model import InstrumentProfile
+
+    h = HistogramSpec(
+        "d.xye", "i.instprm", Radiation.XRAY_LAB, Geometry.BRAGG_BRENTANO,
+        instrument_profile=InstrumentProfile(values={"U": 1.0, "W": 0.5}),
+    )
+    text = json.dumps(h.to_dict(), allow_nan=False)
+    back = HistogramSpec.from_dict(json.loads(text))
+    assert back.instrument_profile is not None
+    assert dict(back.instrument_profile.values) == {"U": 1.0, "W": 0.5}
+    assert math.isnan(back.instrument_profile.source_rwp)
+
+
+def test_instrument_profile_values_must_be_numbers():
+    with pytest.raises(ValueError, match=re.escape("InstrumentProfile.values.U は数値")):
+        _hist(instrument_profile={"values": {"U": True}})
+
+
+@pytest.mark.parametrize("value", [[True, 90.0], [5.0], "5,90"])
+def test_two_theta_limits_rejects_anything_but_two_numbers(value):
+    with pytest.raises(ValueError, match="two_theta_limits"):
+        _hist(two_theta_limits=value)
+
+
+@pytest.mark.parametrize("value", [False, [[10.0, True]], [10.0, 11.0]])
+def test_excluded_regions_rejects_anything_but_a_list_of_pairs(value):
+    with pytest.raises(ValueError, match="excluded_regions"):
+        _hist(excluded_regions=value)
