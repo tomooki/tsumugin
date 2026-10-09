@@ -255,7 +255,8 @@ def test_topas_phase_spec_refusal_is_documented(analyze_text: str):
     assert "InvalidPhaseSpecError" in section
     assert "TopasInputError" in section, "INP を組めない入力の error_type が書かれていない"
     # TOPAS で張れない形は GSAS では正しい入力でありうる — 「直せ」ではなく「GSAS で回せ」。
-    # (D/H 混合の親の共有は TOPAS でも張れる — `test_shared_parent_sum_groups_are_documented_…`)
+    # (D/H 混合の親の共有は TOPAS でも張れる —
+    #  `test_shared_parent_sum_groups_are_documented_as_topas_capable`)
     assert "GSAS で回す" in section
     assert "uiso_frozen_all" in section, "凍結できたかの確かめ方が書かれていない"
     assert "回し直す" in section, "以前の TOPAS 結果が凍結を無視していたことの扱いが無い"
