@@ -367,22 +367,24 @@ class PhaseSpec:
         )
 
 
-def resolve_uiso_release(
-    declared: "Sequence[str] | None", frozen: Iterable[str], all_labels: Iterable[str]
-) -> list[str]:
-    """uiso 段で Uiso を解放する原子ラベルを解決する (#189/#211) — **規則の正本**。
+def resolve_uiso_targets(
+    labels: "Sequence[str]",
+    free_uiso_labels: "Sequence[str] | None",
+    frozen_uiso_labels: "Iterable[str]" = (),
+) -> "list[str]":
+    """uiso 段で Uiso を解放する原子ラベルを解決する (#189/#211) — **両エンジン共通の 1 箇所**。
 
-    `PhaseSpec.free_uiso_labels` (``declared``) が `None` = 未指定 → 相の全原子、``()`` = 明示的に
-    凍結 → 0 原子、非空 → その原子のみ。`frozen_uiso_labels` はそこから差し引く (凍結が勝つ)。
-    engine (何を精密化するか) と refine_loop (何を限定できるか) が同じ集合を見るためにここに置く —
-    写しを持つと、規則が変わったとき限定の提案が実際の解放集合とずれる。
+    `PhaseSpec.free_uiso_labels` が ``None`` (未指定) → ``labels`` 全部、``()`` (明示的に凍結)
+    → 0 原子、非空 → その原子のみ。`frozen_uiso_labels` はそこから差し引く (**凍結が解放指定に
+    勝つ**)。並びは ``free_uiso_labels`` を書いた順 (未指定なら ``labels`` の順)。
 
-    ⚠ ``declared or all_labels`` と書くと**空が「未指定」に化け、凍結したつもりで全原子が
-    解放される** (#189 の本体)。
+    ⚠ ``free_uiso_labels or labels`` と書くと**空列が「未指定」に化け、凍結したつもりで全原子が
+    解放される** (#189 の本体)。GSAS (`engine._resolve_uiso_targets`) と TOPAS
+    (`topas.structure`) が別々に実装すると、片方だけこの穴に戻りうるので 1 つにしてある。
     """
-    targets = list(all_labels) if declared is None else list(declared)
-    frozen_set = set(frozen)
-    return [lab for lab in targets if lab not in frozen_set]
+    targets = list(labels) if free_uiso_labels is None else list(free_uiso_labels)
+    frozen = set(frozen_uiso_labels)
+    return [label for label in targets if label not in frozen] if frozen else targets
 
 
 @dataclass(frozen=True)

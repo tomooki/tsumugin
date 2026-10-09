@@ -18,7 +18,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from tsumugin.autorietveld import AutoRietveldResult, PhaseSpec
-from tsumugin.autorietveld.model import resolve_uiso_release
+from tsumugin.autorietveld.model import resolve_uiso_targets
 from .action import (
     AddPhase,
     AdjustBackground,
@@ -367,7 +367,7 @@ def _restrict_uiso_proposals(
     解除される。
 
     限定は相の指定の**内側**に張る (広げない): 現在の解放集合 (engine と同じ規則
-    `resolve_uiso_release` — 未指定なら相の全原子・明示の解放集合ならその集合、から
+    `resolve_uiso_targets` — 未指定なら相の全原子・明示の解放集合ならその集合、から
     `frozen_uiso_labels` を引いたもの) から発散原子を除く。
     発散原子が現在解放されていない相 (`free_uiso_labels=()` の凍結相・凍結原子の初期値が
     範囲外なだけ) は限定しても何も変わらないので提案しない。解放中の原子が全て発散した相は
@@ -381,8 +381,10 @@ def _restrict_uiso_proposals(
         spec = specs.get(name)
         if spec is None:
             continue  # 指定の無い相は凍結状態を知れない
-        released = set(resolve_uiso_release(
-            spec.free_uiso_labels, spec.frozen_uiso_labels, _phase_atom_labels(result, name)
+        released = set(resolve_uiso_targets(
+            sorted(_phase_atom_labels(result, name)),
+            spec.free_uiso_labels,
+            spec.frozen_uiso_labels,
         ))
         hit = tuple(sorted(diverged & released))
         if not hit:

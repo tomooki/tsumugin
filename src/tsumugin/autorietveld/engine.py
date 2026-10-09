@@ -63,7 +63,7 @@ from .model import (
     StabilityOptions,
     StageResult,
     ValidityReport,
-    resolve_uiso_release,
+    resolve_uiso_targets,
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
@@ -836,10 +836,13 @@ def _resolve_uiso_targets(info: dict) -> "list[str]":
 
     `None` = 未指定 → 全原子、`[]` = 明示的に凍結 → 0 原子、非空 → その原子のみ。
     `frozen_uiso` はそこから差し引く (`frozen_coord_labels` と同じ規約 = 凍結が解放指定に勝つ)。
-    規則の正本は `model.resolve_uiso_release` (refine_loop の RestrictUiso 提案と共有)。
+
+    ⚠ `info.get("uiso_labels") or info["labels"]` と書くと**空リストが「未指定」に化け、
+    凍結したつもりで全原子が解放される** (#189 の本体)。
     """
-    return resolve_uiso_release(
-        info.get("uiso_labels"), info.get("frozen_uiso") or (), info["labels"]
+    # 規約の本体は `model.resolve_uiso_targets` (TOPAS 経路と共有する 1 箇所)。
+    return resolve_uiso_targets(
+        info["labels"], info.get("uiso_labels"), info.get("frozen_uiso") or ()
     )
 
 
