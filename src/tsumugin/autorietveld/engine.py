@@ -72,6 +72,7 @@ from .model import (
     check_unique_atom_labels,
     resolve_uiso_targets,
 )
+from .blas import blas_thread_report, with_blas_threads
 from .recipe import build_recipe, check_phase_scoped_flags, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
 from .constraint_groups import (
@@ -2446,6 +2447,7 @@ def _save_gpx_artifact(
     return plan.path
 
 
+@with_blas_threads
 def run_auto_rietveld(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
@@ -2472,6 +2474,7 @@ def run_auto_rietveld(
     check_occupancy_uiso: bool = False,
     stability: StabilityOptions | None = None,
     export_cif_dir: str | None = None,
+    blas_threads: int | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -2557,6 +2560,9 @@ def run_auto_rietveld(
         ⚠ 拘束で従属させたパラメータ (等値の組の従属側など) の esd は保証しない — 最終段が
         revert されると GSAS の制約写像が巻き戻した試行のまま残り得る (未検証)。構造の検査には
         使えるが、esd を出版に使う前に確かめること。既定 None (書き出さない)。
+    :param blas_threads: BLAS のスレッド数をこの数に固定して精密化する (fit-then-judge P1-1B, NFR-102 —
+        悪条件の最小二乗は総和順序で結果が揺れる)。⚠ **プロセス全体に効く** (同じプロセスで並行に走る
+        精密化も制限を受ける)。実際のスレッド数を ledger ``m7_blas_threads`` に残す。既定 None (触らない)。
     :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル・相の中で 2 原子以上を指すラベル・
         異なる 2 原子に満たない組を名指すとき (`model.check_phase_spec_labels`)。GSAS が相を読んで
         ラベルが分かった直後、**精密化の前に**送出する (② は error dict へ縮退する)
@@ -2590,6 +2596,10 @@ def run_auto_rietveld(
     g2sc = _g2sc()
     ledger = ledger if ledger is not None else Ledger()
     radiations = [h.radiation for h in histograms]
+    if blas_threads is not None:
+        # 制限は `with_blas_threads` が関数全体に張っている。ここでは実際の数を記録するだけ
+        # (検出できなかった・数が違うときに「固定した」と黙って主張しない)。
+        ledger.append("m7_blas_threads", blas_thread_report(blas_threads))
 
     with tempfile.TemporaryDirectory(prefix="tsumugin-m7-") as tmp:
         tmp_path = Path(tmp)
