@@ -124,3 +124,28 @@ def test_place_d2o_unknown_label_raises(tmp_path):
     src.write_text(_CIF, encoding="utf-8")
     with pytest.raises(ValueError, match="見つかりません"):
         place_d2o(src, ["NoSuch"], tmp_path / "out.cif")
+
+
+def test_place_d2o_twice_on_the_same_water_is_refused(tmp_path):
+    """★自分の出力へもう一度配置すると DOw1/DOw2 が 2 組になる。以前は黙って書き、GSAS は
+    2 組目にフラグを付けなかった (先頭一致)。書き出す前に止める。"""
+    from tsumugin.errors import DuplicateAtomLabelError
+
+    src = tmp_path / "m.cif"
+    src.write_text(_CIF, encoding="utf-8")
+    once, _ = place_d2o(src, ["Ow"], tmp_path / "once.cif")
+    twice = tmp_path / "twice.cif"
+    with pytest.raises(DuplicateAtomLabelError, match="DOw1"):
+        place_d2o(once, ["Ow"], twice)
+    assert not twice.exists()
+
+
+@pytest.mark.parametrize("helper", ["place_d2o", "place_hd_mix"])
+def test_repeating_a_water_label_is_refused(tmp_path, helper):
+    from tsumugin.autorietveld import deuterium
+    from tsumugin.errors import DuplicateAtomLabelError
+
+    src = tmp_path / "m.cif"
+    src.write_text(_CIF, encoding="utf-8")
+    with pytest.raises(DuplicateAtomLabelError, match="Ow1"):
+        getattr(deuterium, helper)(src, ["Ow", "Ow"], tmp_path / "o.cif")

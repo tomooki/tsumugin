@@ -27,10 +27,12 @@ from .._json import finite_or_none
 
 __all__ = [
     "AtomRow",
+    "atom_labels",
     "atom_row",
     "coord_esd_state",
     "coord_esd_states",
     "free_index_from_site_symmetry",
+    "independent_axes",
     "lock_from_free_index",
 ]
 
@@ -61,6 +63,16 @@ class AtomRow:
     site_symmetry: str
     multiplicity: float
     uiso: "float | None"
+
+
+def atom_labels(rows: Sequence[Sequence[object]], ptrs: Sequence[int]) -> list[str]:
+    """原子行の並び → ラベルの並び (``row[ct-1]``)。
+
+    ラベルだけを読む経路 (重複ラベルの検査など) 用。`atom_row` は座標・占有率まで float に
+    するので、ラベルしか要らない検査を数値列の形に依存させない。
+    """
+    ct = int(ptrs[1])
+    return [str(row[ct - 1]) for row in rows]
 
 
 def atom_row(row: Sequence[object], ptrs: Sequence[int]) -> AtomRow:
@@ -101,6 +113,24 @@ def free_index_from_site_symmetry(
         return (int(raw[0]), int(raw[1]), int(raw[2]))
     except Exception:  # noqa: BLE001 — 未知 sytsym は一般位置判定へ縮退 (相を落とさない)
         return (1, 2, 3) if sym == "1" else (0, 0, 0)
+
+
+def independent_axes(free_index: FreeIndex) -> tuple[int, ...]:
+    """`FreeIndex` → **独立変数として動かせる軸** (0=x, 1=y, 2=z) の列。
+
+    ``0`` (対称固定) の軸を除き、結束軸は**代表 (三つ組内で最初に現れる軸) だけ**を返す —
+    従属軸は GSAS の等値拘束が追随するので、独立に動かすと結束関係が壊れる。
+    座標ジッタ (`engine._apply_coord_jitter`) がどの軸を動かすかの規則であり、動かした軸数は
+    結果の `coord_jitter_axes_moved` に載る (マルチスタートは数え直さずにそれを読む)。
+    """
+    seen: set[int] = set()
+    axes: list[int] = []
+    for axis, fid in enumerate(free_index):
+        if fid == 0 or fid in seen:
+            continue
+        seen.add(fid)
+        axes.append(axis)
+    return tuple(axes)
 
 
 def lock_from_free_index(free_index: FreeIndex) -> dict[str, bool]:
