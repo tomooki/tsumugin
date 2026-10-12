@@ -176,7 +176,7 @@ def _frozen_cell_phases(claims: Mapping[str, Claim], phases: Sequence[object] | 
 
 def _issue(
     claims: Mapping[str, Claim], result: object, phases: Sequence[object] | None,
-    phase_set: tuple[Check, Witness],
+    phase_set: tuple[Check, Witness], chemistry: Mapping[str, tuple[Check, Witness]],
 ) -> list[JudgmentRequest]:
     out: list[JudgmentRequest] = []
     outcome, witness = phase_set
@@ -208,7 +208,11 @@ def _issue(
                     if c.phase == phase and c.param_class in _STRUCTURE_CLASSES
                 ),
                 trigger=f"相 {phase} の結晶化学検査が {chem.value}",
-                evidence={"phase": phase}, candidates=("hold", "revise_structure"),
+                # 検査ごとの結果と理由 (unevaluated なら何が組めなかったか) — ③ が報告に書ける形で
+                evidence={"phase": phase, **(
+                    chemistry[phase][1].to_dict() if phase in chemistry else {}
+                )},
+                candidates=("hold", "revise_structure"),
                 priority=0.8,
             ))
     out.extend(_validity_requests(claims, result))
@@ -267,7 +271,9 @@ def assess_claims(
             c = c.with_check("crystal_chemistry", chem[c.phase][0])
         checked[key] = c
 
-    requests = [replace(r, default=_HOLD) for r in _issue(checked, result, phases, phase_set)]
+    requests = [
+        replace(r, default=_HOLD) for r in _issue(checked, result, phases, phase_set, chem)
+    ]
     gated = dict(checked)
     for r in requests:
         if r.blocking:

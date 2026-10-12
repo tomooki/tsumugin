@@ -127,3 +127,12 @@ def test_data_too_coarse_for_a_peak_sized_window_is_unevaluated():
     )
     assert check is Check.UNEVALUATED
     assert witness.detail["reason"] == "no_window"
+
+
+def test_the_tail_of_a_known_peak_just_outside_the_exclusion_is_not_a_phase():
+    """既知相のピークの裾 (非対称・形の合わなさ) は除外域の外まで単調に伸びる — 実データ (T2
+    garnet, 50.77° の強い反射の手前) で偽の fail になった形。坂は山ではない。"""
+    resid, sigma = _noise()
+    ramp = np.where((_TT > 29.2) & (_TT < 30.29), 8.0 * np.exp((_TT - 30.29) / 0.4), 0.0)
+    check, witness = _run(resid + ramp, sigma)
+    assert check is Check.PASS, witness.detail

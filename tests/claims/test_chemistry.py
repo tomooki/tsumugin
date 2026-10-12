@@ -125,3 +125,48 @@ def test_without_pymatgen_every_check_is_unevaluated(nacl, monkeypatch):
     got = crystal_chemistry("P", nacl, result)
     assert all(got[name][0] is Check.UNEVALUATED for name in (*CHEMISTRY_CHECKS,
                                                                "crystal_chemistry"))
+
+
+def test_mixed_occupancy_sites_are_evaluated_not_crashed(tmp_path):
+    """混合占有サイト (garnet の Fe/Al 型) でも結合原子価和を計算する — pymatgen の
+    ``calculate_bv_sum_unordered`` は近接原子の型の違いで AttributeError になり、実データ (T2 garnet)
+    で bvs_gii が常に unevaluated だった。"""
+    path = _write_cif(tmp_path, "mixed", "P4_2/mnm", 4.65, 3.03,
+                      [{"Ti": 0.5, "Sn": 0.5}, "O"], [[0, 0, 0], [0.3053, 0.3053, 0]])
+    result, _ = _result_from_cif(path, "P")
+    got = crystal_chemistry("P", path, result)
+    outcome, witness = got["bvs_gii"]
+    assert "AttributeError" not in str(witness.detail.get("reason", ""))
+    assert outcome in (Check.PASS, Check.FAIL), dict(witness.detail)
+
+
+def test_bond_valence_sum_matches_pymatgen_on_ordered_sites(rutile):
+    """自前の和は順序サイトでは pymatgen の ``calculate_bv_sum`` と一致する (式の取り違えの検出)。"""
+    from pymatgen.analysis.bond_valence import calculate_bv_sum
+    from pymatgen.io.cif import CifParser
+
+    from tsumugin.claims.chemistry import _bv_sum
+
+    s = CifParser(rutile).parse_structures(primitive=False)[0]
+    for site in s:
+        nn = s.get_neighbors(site, 3.5)
+        assert _bv_sum(site, nn) == pytest.approx(calculate_bv_sum(site, nn), rel=1e-9)
+
+
+def test_a_mixed_site_sum_is_the_occupancy_weighted_mean_of_its_species(tmp_path):
+    """Ti0.5Sn0.5 サイトの結合原子価和 = 0.5 × (Ti だけ) + 0.5 × (Sn だけ)。"""
+    from pymatgen.io.cif import CifParser
+
+    from tsumugin.claims.chemistry import _bv_sum
+
+    path = _write_cif(tmp_path, "mixed", "P4_2/mnm", 4.65, 3.03,
+                      [{"Ti": 0.5, "Sn": 0.5}, "O"], [[0, 0, 0], [0.3053, 0.3053, 0]])
+    s = CifParser(path).parse_structures(primitive=False)[0]
+    i = next(k for k, site in enumerate(s) if not site.is_ordered)
+    mixed = _bv_sum(s[i], s.get_neighbors(s[i], 3.5))
+    pure = []
+    for el in ("Ti", "Sn"):
+        t = s.copy()
+        t.replace(i, el)
+        pure.append(_bv_sum(t[i], t.get_neighbors(t[i], 3.5)))
+    assert mixed == pytest.approx(0.5 * pure[0] + 0.5 * pure[1], rel=1e-9)

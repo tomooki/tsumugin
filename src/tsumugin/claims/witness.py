@@ -6,8 +6,11 @@
    除外する (計算反射の上の残差は既知の相の合わなさで、欠落相の証拠ではない)。
 2. 残った点の連続区間ごとに、±5 FWHM の局所中央値を引いて背景のゆっくりした合わなさを除く。
 3. 反射から離れた点の規格化残差の MAD で σ の過小評価 (GOF > 1) を割り戻す (1 未満にはしない)。
-4. 各点を中心とする幅 1 FWHM の窓で ``S/N = Σr / (尺度·sqrt(Σσ²))`` を求め、最大が ``snr_threshold``
-   を超えれば ``fail``。
+4. 各点を中心に**平均 0 の山形の窓** (中央 1 FWHM を +、その両側 FWHM/2 ずつを − で重み付けし和を 0 に
+   する) を当て、``S/N = Σkr / (尺度·sqrt(Σk²σ²))`` の最大が ``snr_threshold`` を超えれば ``fail``。
+   平均 0 なので**坂 (既知相のピークの裾・背景の傾き) は打ち消され、盛り上がり (欠落相の山) だけが残る**
+   — 単純な窓の和では、除外域のすぐ外まで伸びた強い反射の裾を欠落相と取り違えた (実データ T2 garnet)。
+   両側の帯が区間に収まらない窓は使わない (片側だけの窓は坂を打ち消せない)。
 
 計算できないとき (残差が空・反射位置が無い・幅を決められない・窓が残らない) は **``unevaluated``**。
 既存の ``unindexed_peak_frac`` (反射位置を見ない・計算できなくても 0.0) と ``check_phase_set``
@@ -30,7 +33,7 @@ from .model import Check, Witness
 __all__ = ["WITNESS_VERSION", "cw_fwhm_deg", "residual_window_witness"]
 
 #: 証人の規則の版 (閾値・除外幅を変えたら上げる)。
-WITNESS_VERSION = "residual-window/1"
+WITNESS_VERSION = "residual-window/2"
 
 _GAUSS_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))  # σ → FWHM
 #: GSAS の getFWHM と同じくガウス分散の下限 (centideg²) — 負の U,V,W で幅が虚数にならない。
@@ -134,16 +137,30 @@ def residual_window_witness(
     for x, hp, e, w in segments:
         cs_r = np.concatenate([[0.0], np.cumsum(hp)])
         cs_v = np.concatenate([[0.0], np.cumsum(e**2)])
-        lo = np.searchsorted(x, x - w / 2.0)
-        hi = np.searchsorted(x, x + w / 2.0, side="right")
-        for i, j in zip(lo, hi):
-            if j - i < 3:
+        c_lo = np.searchsorted(x, x - w / 2.0)
+        c_hi = np.searchsorted(x, x + w / 2.0, side="right")
+        s_lo = np.searchsorted(x, x - w)
+        s_hi = np.searchsorted(x, x + w, side="right")
+        for k in range(x.size):
+            ci, cj, si, sj = c_lo[k], c_hi[k], s_lo[k], s_hi[k]
+            n_center, n_side = cj - ci, (ci - si) + (sj - cj)
+            # 両側の帯が区間の端で切れていない (= 中心から ±1 FWHM の点がある) 窓だけ
+            if n_center < 3 or ci - si < 2 or sj - cj < 2:
                 continue
+            if x[si] > x[k] - 0.9 * w[k] or x[sj - 1] < x[k] + 0.9 * w[k]:
+                continue
+            side_weight = n_center / n_side  # 中央 +1、両側 −n_center/n_side で和 0
+            num = (cs_r[cj] - cs_r[ci]) - side_weight * (
+                (cs_r[ci] - cs_r[si]) + (cs_r[sj] - cs_r[cj])
+            )
+            var = (cs_v[cj] - cs_v[ci]) + side_weight**2 * (
+                (cs_v[ci] - cs_v[si]) + (cs_v[sj] - cs_v[cj])
+            )
             n_windows += 1
-            snr = (cs_r[j] - cs_r[i]) / (noise_scale * math.sqrt(cs_v[j] - cs_v[i]))
+            snr = num / (noise_scale * math.sqrt(var))
             if snr > best_snr:
                 best_snr = snr
-                best_window = (float(x[i]), float(x[j - 1]))
+                best_window = (float(x[ci]), float(x[cj - 1]))
     if n_windows == 0:
         return _unevaluated("no_window")
 

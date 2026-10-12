@@ -11,8 +11,8 @@
 
 - 構造は**入力 CIF の非対称単位に精密化後の格子・座標・占有率を差し込んで**組む (対称操作は CIF の
   ものを使う)。どれかの原子が結果に無い・CIF を読めない・pymatgen が無い → 3 検査とも ``unevaluated``。
-- 結合原子価は pymatgen 同梱の O'Keeffe–Brese 元素パラメータ (``bond_valence.calculate_bv_sum``) を
-  使い、リポジトリに表を複製しない。酸化数は**入力構造**に ``BVAnalyzer`` を掛けて元素ごとに決める
+- 結合原子価は pymatgen 同梱の O'Keeffe–Brese 元素パラメータ (``bond_valence.BV_PARAMS``) で
+  占有率を重み付けて計算し (`_bv_sum`)、リポジトリに表を複製しない。酸化数は**入力構造**に ``BVAnalyzer`` を掛けて元素ごとに決める
   (精密化後の占有率がずれて電荷が合わなくなったことを、入力の酸化数で検出するため)。決められなければ
   ``bvs_gii``・``charge_neutrality`` は ``unevaluated``。
 - 閾値は経験則 (GII は Salinas-Sanchez らの目安) で P1.5 で調整する (`CHEMISTRY_VERSION`)。
@@ -123,16 +123,36 @@ def _short_contact(pmg) -> tuple[Check, dict]:
     return outcome, {"min_ratio": worst, "pair": worst_pair, "limit": _SHORT_CONTACT_RATIO}
 
 
-def _gii(pmg, valences: Mapping[str, float]) -> tuple[Check, dict]:
-    from pymatgen.analysis.bond_valence import calculate_bv_sum, calculate_bv_sum_unordered
+def _bv_sum(site, neighbors) -> float:
+    """結合原子価和 (O'Keeffe–Brese の元素パラメータ)。占有率で重み付けするので混合占有にも効く。
 
+    順序サイトでは pymatgen ``calculate_bv_sum`` と同じ値 (テストで固定)。pymatgen の
+    ``calculate_bv_sum_unordered`` は近接原子が ``PeriodicNeighbor`` のとき ``.specie`` を引いて
+    AttributeError になる (実データ T2 garnet の Fe/Al 混合サイトで踏んだ) ので使わない。
+    """
+    from pymatgen.analysis.bond_valence import BV_PARAMS, ELECTRONEG
+
+    occ = sum(site.species.values())
+    total = 0.0
+    for sp_i, amt_i in site.species.items():
+        el_i = sp_i.element if hasattr(sp_i, "element") else sp_i
+        for nb in neighbors:
+            for sp_j, amt_j in nb.species.items():
+                el_j = sp_j.element if hasattr(sp_j, "element") else sp_j
+                if el_i == el_j or (el_i not in ELECTRONEG and el_j not in ELECTRONEG):
+                    continue
+                r1, c1 = BV_PARAMS[el_i]["r"], BV_PARAMS[el_i]["c"]
+                r2, c2 = BV_PARAMS[el_j]["r"], BV_PARAMS[el_j]["c"]
+                r0 = r1 + r2 - r1 * r2 * (math.sqrt(c1) - math.sqrt(c2)) ** 2 / (c1 * r1 + c2 * r2)
+                v = math.exp((r0 - float(nb.nn_distance)) / 0.31)
+                total += (amt_i / occ) * float(amt_j) * v * (1 if el_i.X < el_j.X else -1)
+    return total
+
+
+def _gii(pmg, valences: Mapping[str, float]) -> tuple[Check, dict]:
     devs: list[float] = []
     for site in pmg:
-        nn = pmg.get_neighbors(site, _NEIGHBOR_CUTOFF)
-        if site.is_ordered:
-            bvs = calculate_bv_sum(site, nn)
-        else:
-            bvs = calculate_bv_sum_unordered(site, nn)
+        bvs = _bv_sum(site, pmg.get_neighbors(site, _NEIGHBOR_CUTOFF))
         occ = sum(site.species.values())
         expected = sum(abs(valences[el.symbol]) * amt for el, amt in site.species.items()) / occ
         devs.append((abs(bvs) - expected) ** 2)

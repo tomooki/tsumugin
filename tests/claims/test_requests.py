@@ -119,6 +119,8 @@ def test_crystal_chemistry_blocks_only_the_structure_of_that_phase(checks_pass):
     checks_pass["chem"]["P"] = Check.FAIL
     a = rq.assess(_result(), _PHASES)
     assert "crystal_chemistry:P" in a.claims["coord:P.O1.y"].gate
+    (req,) = [r for r in a.requests if r.id == "crystal_chemistry:P"]
+    assert req.evidence["kind"] == "crystal_chemistry", "検査の中身 (証人) を根拠に載せる"
     assert "crystal_chemistry:P" in a.claims["uiso:P.Pb"].gate
     assert not a.claims["cell:P.a"].gate  # 格子・分率は止めない (表の範囲)
     assert a.claims["cell:P.a"].publishable is True
