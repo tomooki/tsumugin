@@ -38,6 +38,11 @@ Rwp/GOF/物理的妥当性を再現することを目標とする。
 
 - CIF があれば `format_hint="CIF"`。GSAS `.EXP` 相なら `format_hint="EXP"`。
 - CIF が無い場合: 元素一覧から `tsumugin.reference.identify_phases` / Materials Project で候補構造を得る。
+- **原子ラベルは相の中で一意**にする。GSAS は原子ごとの精密化フラグをラベルの先頭の一致に
+  しか付けず、同名の 2 番目以降は出発値のまま黙って凍結される (Rwp には出ない)。engine は
+  `add_phase` 直後に `DuplicateAtomLabelError` で止め、② は `{"error","error_type"}` を返す。
+  重複が対称等価原子の P1 展開なら非対称単位の CIF を取り直し、別サイトの同名なら別ファイルに
+  一意な名前で書き出す (原本は上書きしない)。
 - **混合占有サイト** (例 Fe/Al 同席) がある場合は `mixed_occupancy_groups` に
   同席原子ラベルの組を渡す (例 `(("Fe1","Al1"), ("Al2","Fe2"))`)。占有率和=1 制約と
   Uiso 等価制約が自動生成される。

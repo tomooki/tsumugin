@@ -1035,6 +1035,7 @@ def run_recipe_search(
         except InvalidPhaseSpecError:
             # 【相の指定の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
             #   どの候補でも同じになる。候補の失敗に畳むと「立つ手順が無い」と読まれる。
+            #   原子ラベルの重複 (`DuplicateAtomLabelError`) もこの子クラスとして同じく送出する。
             raise
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]

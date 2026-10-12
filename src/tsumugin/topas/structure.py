@@ -485,12 +485,15 @@ def structure_to_topas_phase(
     :param symops: 対称操作の上書き。CIF が対称操作を持たないとき、呼び出し側 (engine) が
         TOPAS の ``Sg/`` から補完したものを渡す。**本関数自体は純粋なまま**にするため、
         tc.exe を起動する補完はここでは行わない (`topas.symmetry.ensure_symops` の責務)。
-    :raises InvalidPhaseSpecError: 原子ラベルが重複しているとき (共有 ``prm`` 名が衝突して
-        **別サイトが黙って結合される**)、相の指定の意味を決められないとき
+    :raises DuplicateAtomLabelError: 原子ラベルが重複しているとき。共有 ``prm`` 名が衝突して
+        **別サイトが黙って結合される**ため、ここで弾く。GSAS 経路と同じ検査・同じ例外
+        (`autorietveld.model.check_unique_atom_labels`; `InvalidPhaseSpecError` の子)。
+    :raises InvalidPhaseSpecError: 相の指定の意味を決められないとき
         (`_resolve_phase_spec`)、または受理した拘束を INP に書けないとき (`inp._group_prm_plan`
         を一度組んで確かめる — 段の中で止まると rwp=inf → revert に吸われる)。``ValueError`` を
         継ぐので従来の捕まえ方とも互換。
     """
+    from ..autorietveld.model import check_unique_atom_labels
     from ..errors import InvalidPhaseSpecError
 
     if spec is not None:
@@ -498,13 +501,11 @@ def structure_to_topas_phase(
         # 呼ぶのは engine を経ずに本関数を使う呼び手のため — 拒否したフィールドが黙って
         # 素通りする入口を作らない。
         check_phase_spec_supported(spec)
-    labels = [atom.label for atom in structure.atoms]
-    duplicates = sorted({label for label in labels if labels.count(label) > 1})
-    if duplicates:
-        raise InvalidPhaseSpecError(
-            f"原子ラベルが重複しています: {duplicates}。TOPAS の共有パラメータ名が衝突し "
-            f"別サイトが黙って結合されるため、CIF 側でラベルを一意にしてください。"
-        )
+    check_unique_atom_labels(
+        f"相 {phase_name!r}",
+        [atom.label for atom in structure.atoms],
+        consequence="TOPAS の共有パラメータ名が衝突し、別サイトが黙って結合されます",
+    )
 
     system = crystal_system(structure.it_number, structure.spacegroup_hm)
     cell, free_cell_keys = _cell_block(structure, system)

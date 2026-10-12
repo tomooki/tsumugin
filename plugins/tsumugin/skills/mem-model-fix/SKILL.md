@@ -56,6 +56,9 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
    提示し、**承認を待ってから** `edit_cif` を呼ぶ。承認なしに構造は変えない。
 7. **`edit_cif`** で新 CIF を作り、**`refine_with_revisions`** に
    `ReviseStructure(phase, {"structure_path": 新CIF})` を渡して再精密化する。
+   - `add` の `label` は**相の中で一意**な名前にする (既存ラベルは拒否される)。入力 CIF に同名の
+     原子が既にあると `edit_cif` は **`error_type: "DuplicateAtomLabelError"`** を返す — どの原子に
+     当たるか決まらないため (精密化エンジンも同じ CIF を拒否する)。直し方は `analyze` skill 手順 1。
    ⚠ `ReviseStructure` は構造ファイルを差し替えるだけで、相の指定が名指す原子ラベル
    (`free_occupancy_labels`・`frozen_*`・占有率/座標の組) は**そのまま引き継ぐ**。原子を除いた
    (`op="remove"`) ときは、その原子を名指す指定も `phases` から外して渡す — 残すと相に無い
