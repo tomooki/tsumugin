@@ -54,3 +54,22 @@ def test_an_unreadable_structure_is_unevaluated_not_individual_by_accident(tmp_p
     bad.write_text("not a cif", encoding="utf-8")
     g = uiso_groups_from_cif(str(bad))
     assert g.status == "unevaluated" and g.groups == () and g.reason
+
+
+def test_mixed_occupancy_sites_are_left_to_the_engine(tmp_path):
+    """混合占有のサイトはまとめない (同じ位置の Uiso 等価は engine が混合占有の組として張る)。"""
+    from pymatgen.core import Lattice, Structure
+    from pymatgen.io.cif import CifWriter
+
+    mixed = {"Fe": 0.5, "Al": 0.5}
+    s = Structure(
+        Lattice.cubic(5.64),
+        [mixed, mixed, "O", "O"],
+        [(0, 0, 0), (0.5, 0.5, 0.5), (0.5, 0, 0), (0, 0.5, 0)],
+        labels=["M1", "M2", "O1", "O2"],
+    )
+    path = tmp_path / "mixed.cif"
+    CifWriter(s).write_file(str(path))
+    g = uiso_groups_from_cif(str(path))
+    assert g.status == "pass"
+    assert not any(lab in ("M1", "M2") for grp in g.groups for lab in grp)
