@@ -86,6 +86,38 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
   `<data_dir>/tsumugin_gpx/run-<日時>/<データ名>/` に残って `manifest.jsonl` にも
   `backend: "topas"` の行が入る (2026-08-20 規定)。**見るキーだけが `gpx_path` → `project_path`
   に変わる**ので、報告や引き継ぎで取り違えないこと。
+- **相の指定 (`phases[]`) は GSAS と同じ意味で効く**: `refine_cell` (副相の格子固定) /
+  `frozen_coord_labels` / `free_uiso_labels` / `frozen_uiso_labels` (少数相の ADP 凍結) /
+  `mixed_occupancy_groups` / `free_occupancy_labels` / `occupancy_equiv_groups` /
+  `occupancy_sum_groups` (親 = Σ子。親を共有する複数の組も可 — 下記) / `position_equiv_groups`。
+  凍結できたかの確かめ方:
+  全相の Uiso を凍結した uiso 段は GSAS と同じく `note` に **`uiso_frozen_all`** が付く。一部の
+  相・原子だけなら、凍結した原子は結果の `atom_uiso` / `atom_coords` に**出ない** (TOPAS は
+  精密化した値だけを出版する)。格子を固定した相の `cell_esd` は **`null` × 6** になる
+  (0 ではない — 「精密化して 0 に決まった」とは読まない)。
+  ⚠ **2026-10-09 より前の TOPAS 経路はこれらを黙って無視していた** (`occupancy_sum_groups` は
+  「親 = Σ子」でなく「和 = 1」で張っていた)。凍結・拘束を指定した**古い TOPAS 結果は回し直す**
+  — 指定したつもりの凍結が効いていない。
+  - TOPAS は意味を決められない指定を**精密化の段を回す前に** `error_type: "InvalidPhaseSpecError"`
+    で止める: 相に無い原子ラベル / 1 変数に束ねた組 (混合占有の beq・座標の結束) の一部だけを
+    凍結 / サイト対称の違う原子の座標の結束 / `format_hint` が CIF 以外。エラー文が指定を
+    名指しするので**直して回し直す** (相に無いラベル等の**ラベルの誤りは GSAS でも同じく
+    精密化の前に止まる** (手順 1) — エンジンを替えても直らない)。
+    **TOPAS では張れない形は GSAS で回す** (同じエラーで止まる): 3 原子以上の混合占有 (x と 1-x の
+    2 原子形だけ) / 1 原子が 2 つの占有率拘束に入る形のうち、同じ原子が 2 つの組の子になる・
+    ある組の子が別の組の親になる (入れ子)・混合占有や等値の組と重なる形 (INP は原子ごとに占有率を
+    1 つの式で書く。GSAS は全拘束を同時に満たす。1 つの拘束にまとめると別のモデルになる)。
+    **和の組の親を複数の組で共有する形は TOPAS でも張れる** — H/D ミキシング (親水 O に共位置の
+    D/H 対を 2 組置き、各対を親水 O の和の組にする) の
+    `"occupancy_sum_groups": [["Ow","DOw1","HOw1"],["Ow","DOw2","HOw2"]]` は GSAS と同じ自由度
+    (5 原子 − 2 拘束 = 3) で両方の和を満たすので、**GSAS へ回さなくてよい**。各対は
+    `"position_equiv_groups": [["DOw1","HOw1"],["DOw2","HOw2"]]` で共位置に結束する (結束しないと
+    座標段で D と H が別々に動き、共位置の H/D 対でなくなる)。D/H の原子は CIF に置いてから渡す
+    (足すのは構造の編集なので `edit_cif` の `add` — ユーザー承認を挟む)。
+    入力ファイルから INP を組めないとき (装置ファイルに波長が無い・CIF に空間群や原子ループが
+    無い等) は `error_type: "TopasInputError"` — エラー文が原因を名指すので入力を直す。
+  - 相の `temperature` は**どちらのエンジンも読まない**。ヒストグラム間の温度差は
+    `histograms[].temperature` に入れる。
 - 段階フラグは**全て翻訳できる**が、条件が合わない指定は**明示的に失敗して revert される**
   (黙って無視されない)。段の `note` に `UnsupportedStageFlagError` が出る。
   - `hydrostatic_strain` は **joint (複数ヒストグラム) 専用**。単一ヒストグラムでは格子
@@ -167,6 +199,40 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
      凍結できたかは `stages[]` の uiso 段の `note` に **`uiso_frozen_all`** が出るかで確かめる。
      **`noop` だけで `uiso_frozen_all` が無い段は凍結ではなく無言失敗の疑い** (段が何も
      精密化できていない) — 両者は rwp/n_params がビット同一なのでここでしか区別できない。
+   - **spec の JSON は「書かない / null = 既定 (未指定)」**。とりわけ `"refine_cell": null` は
+     既定の**精密化する**であって凍結ではない — 格子を固定したい相だけ `false` を明示する。
+     `histograms`/`phases` の各キーと `stability`/`search_config` では、型の違う値 (真偽値に
+     文字列 `"false"`、ラベル列に裸の文字列 `"O7"`、組の列に平坦な `["Fe1","Al1"]`
+     [正しくは `[["Fe1","Al1"]]`]、`two_theta_limits` に 3 要素) は **error dict** で返るので、
+     `error` を読んで直して呼び直す。⚠ 系列の `frames` (FrameSpec) はまだこの検査を通らない —
+     そちらは型を自分で確かめてから渡す。
+   - **測定温度はヒストグラムに入れる**: ヒストグラムごとに測定温度が違う joint (例 X 線 295 K +
+     中性子 10 K) は各 `histograms[].temperature` に K で入れる — 既定レシピが温度差の静水圧歪み
+     Dij を解放する。**入ったかは `stages[]` で確かめる**: GSAS は格子の段の `note` に「温度差」、
+     TOPAS は `S2b hydrostatic_strain` 段が出る (その段が `reverted` なら吸収できていない)。
+     出ていなければ温度が効く場所に入っていない (片方のヒストグラムだけ・相の側)。
+     ⛔ 相の `temperature` はどのエンジンも読まないメタデータで、入れても精密化は何も変わらない
+     (`specs` の各相に `"temperature": null` が見えても埋めない)。`ReviseStructure` で改訂
+     しようとするとエラーになる。
+   - **相の指定が名指す原子ラベルは CIF の `_atom_site_label` と完全一致で書く** (前後の空白・
+     大小も区別する。配列の所に文字列を書くと 1 文字ずつ別のラベルとして読まれる)。相に無いラベル /
+     相の中で 2 原子以上を指すラベル / 異なる 2 原子に満たない組 (`[["O1"]]`・`[["O1","O1"]]`) は、
+     **どちらのエンジンでも精密化の前に** `error_type: "InvalidPhaseSpecError"` で返る — エラー文が
+     近いラベル (`'Pb '` → `['Pb']`) と相の原子ラベル一覧 (40 件まで) を添えるので、それに合わせて
+     直して回し直す。⚠ 2026-10-09 より前の GSAS 経路は
+     凍結 (`frozen_*`) と座標の等値 (`position_equiv_groups`) の綴り違いを**黙って飛ばして完走**して
+     いた (凍結したつもりで凍結されていない)。解放 (`free_*`)・占有率の組 (混合・等値・和) の綴り違いは
+     その段ごと revert されていた (`free_uiso_labels` なら Uiso が 1 つも精密化されない)。該当する古い
+     結果は回し直す。
+   - **CIF の原子ラベル (`_atom_site_label`) は相の中で一意であること**。GSAS は原子ごとの
+     精密化フラグをラベルの**先頭の一致**にしか付けないので、同じラベルの 2 番目以降の原子は
+     座標・Uiso・占有率が出発値のまま黙って凍結され、Rwp にも validity にも出ない (結果の
+     `atom_*` もラベルで潰れる)。GSAS 経路は精密化の前に
+     **`error_type: "DuplicateAtomLabelError"`** で止める (エラー文に重複ラベルと原子の番号が
+     並ぶ。TOPAS 経路も同じ error_type で拒否する)。直し方: 重複が**対称等価な原子の P1 展開**なら
+     非対称単位の CIF (空間群付き) を取り直す — 改名して P1 のまま回すとセル 6 変数と全原子が
+     独立に解放され、擬高対称の構造では精密化が壊れる。**別サイトがたまたま同名**なら、原本を
+     上書きせず別ファイルに書き出して一意に改名し (例 `O1` → `O1a`/`O1b`)、改名の対応を報告する。
    - **相数が事前に分からない未知試料**は `identify_pattern` (M11 統一同定) を使う。1 相受理する
      ごとに残差からその寄与を減算し、**残差 S/N < 5σ になるまで**積み上げる (単相なら 1 相で停止、
      多相なら複数相)。`accepted[]` の各相の CIF/formula を `PhaseSpec` に配線して精密化へ進む
@@ -406,6 +472,13 @@ Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より
 | `coord_jitter_ang` | 0.05 | 座標摂動の振幅 (Å)。**0 にすると構造の局所解を試験しない** (格子軸だけの試験になる) |
 | `jitter_seed` | 0 | 摂動の種 (固定 = 再現する) |
 | `jobs` | 開始点数 | 並列度 |
+
+摂動は**精密化するパラメータだけ**に掛かる — `refine_cell=False` の相の格子と
+`frozen_coord_labels` の原子は振らない (振ると摂動値がそのまま残り、偽の分岐として
+`undetermined_by_initial_values` に出る)。全相を格子凍結して `coord_jitter_ang: 0` にすると
+開始点が全部同じ入力になり、収束確認は**何も試験しない** (`structure_is_corroborated: false`、
+`convergence.multistart.perturbation_applied: false`、warnings に「何も試験していない」)。
+全クラスが AGREE でもこの場合は採用しない — 座標摂動を戻すか、凍結を見直す。
 
 ⚠ **`stages` (追加段階) とは併用できない** (error dict になる)。収束確認は候補を**名前**で
 手順を固定するので追加段階を運べない — 追加段階を試すなら `search` 単独で、収束確認するなら

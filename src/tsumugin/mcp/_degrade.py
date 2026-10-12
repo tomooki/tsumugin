@@ -1,10 +1,12 @@
-"""② 実行系ツールの I/O 例外縮退デコレータ (Issue #94)。
+"""② 実行系ツールの I/O 例外・ドメインエラー縮退デコレータ (Issue #94)。
 
 ③ は LLM なので、GSAS/ローダーが投げる ``FileNotFoundError`` 等の I/O 例外が MCP 境界を越えると
 **回復不能なハード失敗**になる (CLAUDE.md ② 不変条件: 例外を送出せず ``{"error","error_type"}``
 へ縮退する)。精密化そのものの失敗は ① が ``chi2=inf`` の結果へ変換済みなので、ここで縮退するのは
-主に**入力ファイル不在**の I/O エラー (実測: 存在しないパスで ``auto_rietveld``/``sequential_rietveld``/
-``anchored_sequential`` が ``FileNotFoundError`` を送出していた)。
+**入力ファイル不在**の I/O エラー (実測: 存在しないパスで ``auto_rietveld``/``sequential_rietveld``/
+``anchored_sequential`` が ``FileNotFoundError`` を送出していた) と、**ドメインエラー**
+(``TsumuginError``: 相の指定の誤り・エンジン未導入等。逐次系は GSAS を入力解析の ``try`` の外で
+回すので、engine が送出したものがそのまま届く)。
 
 **テストシームを壊さない**: 注入 runner / monkeypatch を使う決定論テストはファイルに触れないため
 ``OSError`` を投げず、本デコレータは透過する (正常 dict をそのまま返す)。実 GSAS 経路で実ファイルが
@@ -20,22 +22,31 @@ from __future__ import annotations
 import functools
 from typing import Callable, TypeVar
 
+from ..errors import TsumuginError
+
 _F = TypeVar("_F", bound=Callable[..., dict])
 
 
 def degrade_oserror(fn: _F) -> _F:
-    """``OSError`` (ファイル不在等の I/O 失敗) を ``{"error","error_type"}`` dict へ縮退する。
+    """``OSError`` (ファイル不在等の I/O 失敗) と**ドメインエラー** (``TsumuginError``) を
+    ``{"error","error_type"}`` dict へ縮退する。
 
-    ``error_type`` に実際の例外クラス名 (``FileNotFoundError``/``PermissionError`` 等) を入れるので、
-    ③ は「入力ファイルが無い」と「別の失敗」を区別できる。``OSError`` **以外**の例外は透過させる
-    (論理バグを握り潰さない — 縮退対象は I/O 失敗に限る)。
+    ``error_type`` に実際の例外クラス名 (``FileNotFoundError``/``InvalidPhaseSpecError`` 等) を入れるので、
+    ③ は「入力ファイルが無い」「相の指定が誤っている」と「別の失敗」を区別できる。それ以外の例外は
+    透過させる (論理バグを握り潰さない — `rietveld_tools._run_degrading_domain_errors` と同じ線引き)。
+
+    ドメインエラーを含めるのは、逐次系 (`sequential_rietveld` 等) が GSAS を**入力解析の ``try`` の外**で
+    回すから。engine が相を読んでから送出する `InvalidPhaseSpecError` (相に無いラベル等) や
+    `GSASUnavailableError` は、ここで縮退しないと例外のまま ② を越える。
+
+    名前が ``oserror`` のままなのは歴史的理由 (11 ツールが使っており、改名は並行ブランチと衝突する)。
     """
 
     @functools.wraps(fn)
     def wrapper(*args: object, **kwargs: object) -> dict:
         try:
             return fn(*args, **kwargs)
-        except OSError as exc:
+        except (OSError, TsumuginError) as exc:
             return {"error": str(exc), "error_type": type(exc).__name__}
 
     return wrapper  # type: ignore[return-value]

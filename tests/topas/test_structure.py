@@ -252,7 +252,11 @@ def test_everything_starts_fixed():
 
 
 def test_phase_spec_constraint_groups_are_carried_through():
-    """`PhaseSpec` の混合占有/等値宣言が TopasPhase の拘束宣言へ写る。"""
+    """`PhaseSpec` の混合占有/等値宣言が TopasPhase の拘束宣言へ写る。
+
+    ⚠ 以前は構造に Fe1/Al1/O1/D1 が無いまま通っていた (相に無いラベルを黙って受けていた)。
+    今は相に無いラベルを拒否するので、宣言する原子を構造に置く。
+    """
     from tsumugin.autorietveld.model import PhaseSpec
 
     spec = PhaseSpec(
@@ -261,22 +265,45 @@ def test_phase_spec_constraint_groups_are_carried_through():
         mixed_occupancy_groups=(("Fe1", "Al1"),),
         occupancy_equiv_groups=(("O1", "D1"),),
     )
-    phase = structure_to_topas_phase(_structure(), "garnet", spec=spec)
-    assert phase.occupancy_sum_groups == (("Fe1", "Al1"),)
+    structure = _structure(
+        atoms=(
+            Atom(label="Fe1", type_symbol="Fe", x=0.0, y=0.0, z=0.0, occ=0.5, uiso=0.01),
+            Atom(label="Al1", type_symbol="Al", x=0.0, y=0.0, z=0.0, occ=0.5, uiso=0.01),
+            Atom(label="O1", type_symbol="O", x=0.1, y=0.2, z=0.3, occ=1.0, uiso=0.01),
+            Atom(label="D1", type_symbol="H", x=0.15, y=0.2, z=0.35, occ=1.0, uiso=0.02),
+        )
+    )
+    phase = structure_to_topas_phase(structure, "garnet", spec=spec)
+    assert phase.mixed_occupancy_groups == (("Fe1", "Al1"),)
+    assert phase.occupancy_equiv_groups == (("O1", "D1"),)
     # 混合占有サイトは Uiso 等価も張る (GSAS の add_EquivConstr 相当)
     assert ("Fe1", "Al1") in phase.beq_equiv_groups
 
 
+def test_unknown_labels_in_the_phase_spec_are_refused():
+    """綴り違いの拘束は**張ったつもりで何も効かない**。以前は黙って受けていた。"""
+    from tsumugin.autorietveld.model import PhaseSpec
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    spec = PhaseSpec(structure_path="x.cif", phase_name="g", occupancy_equiv_groups=(("Pb", "D1"),))
+    with pytest.raises(InvalidPhaseSpecError, match="D1"):
+        structure_to_topas_phase(_structure(), "g", spec=spec)
+
+
 def test_duplicate_labels_are_rejected():
-    """同名サイトは共有 prm 名が衝突して**黙って別サイトを結合する**ので弾く。"""
+    """同名サイトは共有 prm 名が衝突して**黙って別サイトを結合する**ので弾く。GSAS 経路と同じ
+    例外 (`DuplicateAtomLabelError`) で — ② の縮退と ③ の手順書が両エンジンで同じ型を見る。"""
+    from tsumugin.errors import DuplicateAtomLabelError
+
     struct = _structure(
         atoms=(
             Atom(label="O", type_symbol="O", x=0.1, y=0.2, z=0.3, occ=1.0, uiso=0.01),
             Atom(label="O", type_symbol="O", x=0.4, y=0.5, z=0.6, occ=1.0, uiso=0.01),
         )
     )
-    with pytest.raises(ValueError, match="重複"):
+    with pytest.raises(DuplicateAtomLabelError, match=r"相 'x'.*\{'O': \[1, 2\]\}"):
         structure_to_topas_phase(struct, "x")
+    assert issubclass(DuplicateAtomLabelError, ValueError), "従来の ValueError の捕まえ方と互換"
 
 
 # ---------------- 特殊位置の精度 (#172) ----------------
@@ -334,6 +361,25 @@ def test_snapping_does_not_change_which_axes_are_free():
     )
     free = {s.label: s.free_coord_axes for s in structure_to_topas_phase(struct, "FAP").sites}
     assert free == {"CA1": ("z",), "F4": (), "O7": ("x", "y", "z")}
+
+
+def test_sites_record_the_axes_site_symmetry_fixes():
+    """サイトは**対称で厳密に固定される軸**も運ぶ (結果の座標 esd ``0.0`` の根拠)。
+
+    結果を組む時点では対称操作が手元に無いので、自由軸と同じく構造の読み込みで決めておく。
+    4f (1/3, 2/3, z) は x/y、2a (0, 0, 1/4) は 3 軸とも、一般位置はどれも固定されない。
+    """
+    struct = _hexagonal(
+        (
+            Atom(label="CA1", type_symbol="Ca", x=0.333333, y=0.666667, z=0.001913,
+                 occ=1.0, uiso=0.006),
+            Atom(label="F4", type_symbol="F", x=0.0, y=0.0, z=0.25, occ=1.0, uiso=0.014),
+            Atom(label="O7", type_symbol="O", x=0.33951, y=0.258126, z=0.070641,
+                 occ=1.0, uiso=0.0067),
+        )
+    )
+    fixed = {s.label: s.fixed_coord_axes for s in structure_to_topas_phase(struct, "FAP").sites}
+    assert fixed == {"CA1": ("x", "y"), "F4": ("x", "y", "z"), "O7": ()}
 
 
 def test_snapping_is_skipped_when_the_cif_has_no_symops():
