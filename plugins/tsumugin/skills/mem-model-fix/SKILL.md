@@ -56,6 +56,10 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
    提示し、**承認を待ってから** `edit_cif` を呼ぶ。承認なしに構造は変えない。
 7. **`edit_cif`** で新 CIF を作り、**`refine_with_revisions`** に
    `ReviseStructure(phase, {"structure_path": 新CIF})` を渡して再精密化する。
+   ⚠ `ReviseStructure` は構造ファイルを差し替えるだけで、相の指定が名指す原子ラベル
+   (`free_occupancy_labels`・`frozen_*`・占有率/座標の組) は**そのまま引き継ぐ**。原子を除いた
+   (`op="remove"`) ときは、その原子を名指す指定も `phases` から外して渡す — 残すと相に無い
+   ラベルとして**精密化の前に** `error_type: "InvalidPhaseSpecError"` で返る。
 8. **受理判定**: **Rwp 改善 ∧ `validity.passed` 維持** なら採用。悪化・妥当性を壊すなら**棄却**し
    (元 CIF に戻す)、別の読み (分割/占有/水素) を試す。
    - **編集候補が複数あるとき / サイトの有無そのものを問うとき (例 ゼオライト水 Ow は要るか) は、

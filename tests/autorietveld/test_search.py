@@ -728,3 +728,16 @@ def test_polish_candidate_carries_its_own_stability_because_a_stage_list_cannot_
     assert default.stability is None
     assert polish.stability is not None
     assert polish.stability.polish_frozen_undetermined is True
+
+
+def test_run_recipe_search_raises_a_phase_spec_error_instead_of_failing_every_candidate():
+    """相の指定の誤りは**どの候補でも同じ**入力の誤り。候補の失敗に畳むと「立つ手順が無い」
+    (② の ``RecipeSearchFailed``) と読まれ、③ は綴りではなく手順を疑う。それ以外の失敗は
+    従来どおり結果へ縮退する (上の不変条件)。"""
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def runner(candidate: RecipeCandidate) -> AutoRietveldResult:
+        raise InvalidPhaseSpecError("相 'ph': 相に無い原子ラベルがあります: ['Ox']")
+
+    with pytest.raises(InvalidPhaseSpecError, match="Ox"):
+        run_recipe_search([_H], [_P], runner=runner, names=("default", "serious"))
