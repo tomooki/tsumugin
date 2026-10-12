@@ -110,8 +110,13 @@ def _head_stages(
     stage0: dict[str, object] = {"scale": True, "background": {"coeffs": background_coeffs}}
     if len(phases) > 1:
         stage0["phase_fraction_sum"] = True
-    stage1: dict[str, object] = {"cell": True}
-    if cell_phases is not None:
+    # cell_phases が空 = 全相の格子を凍結した (pass 1 の帰属でどの 1 相を外しても段 1 が通らなかった)。
+    #   段 1 はオフセットだけを解放し、格子は段 R に任せる。
+    stage1: dict[str, object] = {}
+    if cell_phases is None:
+        stage1["cell"] = True
+    elif cell_phases:
+        stage1["cell"] = True
         stage1["cell_phases"] = list(cell_phases)
     if geometry is Geometry.BRAGG_BRENTANO:
         stage1["displacement"] = {0: ["Shift"]}
@@ -121,7 +126,10 @@ def _head_stages(
         offset_note = "Zero (偏心は解放しない)"
     out = [
         RefinementStage("T0 scale+background", stage0, f"背景 {background_coeffs} 項"),
-        RefinementStage("T1 lattice+offset", stage1, f"格子 + {offset_note}"),
+        RefinementStage(
+            "T1 lattice+offset", stage1,
+            (f"格子 + {offset_note}" if "cell" in stage1 else f"{offset_note} (格子は段 R)"),
+        ),
     ]
     if calibrated:
         out.append(

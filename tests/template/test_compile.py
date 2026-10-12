@@ -76,6 +76,12 @@ def test_frozen_cells_are_left_out_of_stage_one_and_retried():
     assert _flags(c, "lattice-retry") == {"cell": True}
 
 
+def test_when_every_cell_is_frozen_stage_one_releases_only_the_offset():
+    c = compile_template([_hist()], [A, B], _decisions(frozen_cell_phases=("A", "B")))
+    assert _flags(c, "lattice+offset") == {"displacement": {0: ["Shift"]}}
+    assert _flags(c, "lattice-retry") == {"cell": True}
+
+
 def test_no_lattice_retry_without_frozen_cells():
     c = compile_template([_hist()], [A, B], _decisions())
     assert "lattice-retry" not in _labels(c)
