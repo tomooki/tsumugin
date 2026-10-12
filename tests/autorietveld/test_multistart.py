@@ -62,9 +62,12 @@ def test_select_best_falls_back_to_lowest_rwp_when_none_valid():
 # ---- 集計 ----
 
 def test_summarize_corroborated_when_single_basin():
+    # 開始点は格子を実際に振っていること (全部 1.0 だと同じ入力 = 空虚な傍証。
+    # `test_starts_that_perturb_nothing_are_not_corroboration` 参照)。
+    factors = (0.99, 1.0, 1.01, 1.02)
     starts = tuple(
-        MultistartStart(i, _pert({"ph": (1.0, 1.0, 1.0)}), _result(10.0 + i * 0.1, 9.372, valid=True))
-        for i in range(4)
+        MultistartStart(i, _pert({"ph": (f, f, f)}), _result(10.0 + i * 0.1, 9.372, valid=True))
+        for i, f in enumerate(factors)
     )
     res = summarize_multistart(starts, MultistartConfig(n_starts=4))
     assert res.is_global_corroborated
@@ -412,3 +415,181 @@ def test_a_dead_worker_becomes_failed_starts_not_an_exception(monkeypatch):
     assert all(s.result is None for s in got.starts), "全開始点が失敗として記録される"
     joined = " / ".join(got.warnings)
     assert "BrokenProcessPool" in joined, f"死因が落ちている: {joined}"
+
+
+# ---------------------------------------------------------------------------
+# 精密化しないパラメータは摂動しない (refine_cell=False / frozen_coord_labels)
+# ---------------------------------------------------------------------------
+
+
+def _stub_engine(
+    monkeypatch, *, moved_axes: int = 0, free_index: dict | None = None
+) -> list[dict]:
+    """`run_auto_rietveld` を差し替え、開始点が engine へ**何を渡したか**を記録する。
+
+    ``jobs=1`` の直列経路は同じプロセスで `_run_one_start` を呼ぶので差し替えが効く。
+    ``moved_axes`` は engine が**実際に動かした**軸数 (`coord_jitter_axes_moved`) として返す。
+    """
+    from tsumugin.autorietveld import engine
+
+    captured: list[dict] = []
+
+    def fake_run(histograms, phases, **kw):
+        captured.append(kw)
+        return AutoRietveldResult(
+            stage_results=(
+                StageResult(label="S0", rwp=9.8, gof=1.0, n_params=1, converged=True),
+            ),
+            final_rwp=9.8,
+            final_gof=1.0,
+            refined_cells={"main": (9.372, 9.372, 9.372, 90.0, 90.0, 90.0)},
+            validity=ValidityReport(passed=True),
+            atom_coord_free_index=free_index or {},
+            coord_jitter_axes_moved=moved_axes,
+        )
+
+    monkeypatch.setattr(engine, "run_auto_rietveld", fake_run)
+    return captured
+
+
+def _hist():
+    from tsumugin.autorietveld.model import Geometry, HistogramSpec, Radiation
+
+    return HistogramSpec(
+        data_path="d.xra", instrument_path="i.prm",
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.BRAGG_BRENTANO,
+    )
+
+
+def test_frozen_cells_are_neither_perturbed_nor_recorded_as_perturbed(monkeypatch):
+    """★`refine_cell=False` の相 (Issue #47 の副相格子固定) の格子を開始点で振らない。
+
+    非トートロジー: cell 段は凍結相に Cell フラグを立てないので、摂動した格子が**そのまま
+    最終格子**になる。開始点ごとに違う倍率で固定されるため、標準経路 Phase B は副相の格子差を
+    偽のベイスン分岐として報告し、副相のフィットも摂動値で劣化する。記録 (start_key / ledger)
+    も実際に掛けた摂動と一致させる — 掛けていない摂動を記録すると監査で嘘をつく。
+    """
+    from tsumugin.autorietveld.model import PhaseSpec
+    from tsumugin.autorietveld.multistart import run_multistart_rietveld
+
+    captured = _stub_engine(monkeypatch)
+    phases = [
+        PhaseSpec(structure_path="a.cif", phase_name="main"),
+        PhaseSpec(structure_path="b.cif", phase_name="minor", refine_cell=False),
+    ]
+    got = run_multistart_rietveld(
+        [_hist()], phases, config=MultistartConfig(n_starts=3), jobs=1, save_gpx=False,
+    )
+
+    passed = [kw["initial_cell_scale"] for kw in captured]
+    assert len(passed) == 3
+    assert all("minor" not in s for s in passed), f"凍結相の格子を摂動している: {passed}"
+    assert len({s["main"] for s in passed}) == 3, "対照: 解放する相は従来どおり振る"
+    assert all("minor" not in st.perturbation.cell_scale for st in got.starts), (
+        "記録上の摂動が実際に掛けた摂動と食い違う"
+    )
+
+
+def test_moved_axes_are_what_the_engine_moved_not_a_recount(monkeypatch):
+    """★「動かした軸数」は engine が**実際に動かした**数を読む (対称性からの数え直しをしない)。
+
+    非トートロジー: ``n_axes_jittered`` は傍証の条件 (`perturbation_had_no_effect`) に使われる。
+    結果の自由度指標から数え直すと、engine が動かさなかった軸 (凍結原子・読めなかった相) を
+    「試験した」と数える — 数え直しの規則が engine とずれた瞬間に空虚な傍証が戻る。
+    """
+    from tsumugin.autorietveld.model import PhaseSpec
+    from tsumugin.autorietveld.multistart import run_multistart_rietveld
+
+    # 自由度指標は 6 軸ぶんあるが、engine が動かしたのは 2 軸だけ、という結果。
+    _stub_engine(
+        monkeypatch, moved_axes=2, free_index={"main": {"O1": (1, 2, 3), "O2": (1, 2, 3)}},
+    )
+    phases = [PhaseSpec(structure_path="a.cif", phase_name="main")]
+    got = run_multistart_rietveld(
+        [_hist()], phases, config=MultistartConfig(n_starts=3),
+        coord_jitter_ang=0.05, jobs=1, save_gpx=False,
+    )
+
+    assert [st.n_axes_jittered for st in got.starts] == [2, 2, 2]
+    assert got.n_axes_jittered == 6
+
+
+def test_jitter_on_only_frozen_atoms_is_not_corroboration(monkeypatch):
+    """★自由座標を持つ原子が全部凍結なら、座標摂動は 1 軸も効いていない — 傍証にしない。"""
+    from tsumugin.autorietveld.model import PhaseSpec
+    from tsumugin.autorietveld.multistart import run_multistart_rietveld
+
+    _stub_engine(
+        monkeypatch, moved_axes=0, free_index={"main": {"O1": (1, 2, 3), "Ca1": (0, 0, 0)}},
+    )
+    phases = [PhaseSpec(structure_path="a.cif", phase_name="main", frozen_coord_labels=("O1",))]
+    got = run_multistart_rietveld(
+        [_hist()], phases, config=MultistartConfig(n_starts=3),
+        coord_jitter_ang=0.05, jobs=1, save_gpx=False,
+    )
+
+    assert got.n_axes_jittered == 0
+    assert got.is_global_corroborated is False
+    assert got.corroboration_reason == "perturbation_had_no_effect"
+
+
+def test_starts_that_perturb_nothing_are_not_corroboration():
+    """★全相の格子が凍結 (倍率なし) で座標摂動も無いなら、開始点は**全部同じ入力**である。
+
+    非トートロジー: 凍結相を格子摂動から外すと、全相凍結 + 格子だけの試験では開始点の初期値が
+    ビット同一になる。同じ入力は同じ解へ行くので 1 ベイスンは**空虚に**成立する
+    (`test_a_requested_jitter_that_moved_nothing_is_not_corroboration` の格子版)。
+    """
+    starts = [
+        MultistartStart(i, StartPerturbation(cell_scale={}, jitter_seed=i), _result(9.8, 9.372))
+        for i in range(3)
+    ]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=3))
+
+    assert got.n_basins == 1
+    assert got.is_global_corroborated is False
+    assert got.corroboration_reason == "perturbation_had_no_effect"
+    assert any("試験していない" in w for w in got.warnings), "理由を述べずに False にしない"
+
+
+def test_a_run_that_tested_nothing_says_so_and_names_the_adoption_flag():
+    """★何も振っていない収束確認は「何も試験していない」と言い、採用判断に使えないことを名指す。
+
+    非トートロジー: ③ は `structure_is_corroborated` を「解を採用してよいか」と読む。全クラス
+    AGREE なのにそれが false になる理由が書かれていなければ、③ は手順の不具合と誤読する。
+    """
+    starts = [
+        MultistartStart(i, StartPerturbation(cell_scale={}, jitter_seed=i), _result(9.8, 9.372))
+        for i in range(3)
+    ]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=3))
+
+    assert got.perturbation_applied is False
+    nothing = [w for w in got.warnings if "何も試験していない" in w]
+    assert len(nothing) == 1, got.warnings
+    assert "structure_is_corroborated" in nothing[0]
+    assert got.to_dict()["perturbation_applied"] is False, "② の JSON に理由のフラグが無い"
+
+
+def test_failed_starts_are_not_reported_as_identical_inputs():
+    """★全開始点が失敗したときに「同じ入力だった」と言わない — 不明であって「動かなかった」ではない。
+
+    非トートロジー: 失敗した開始点は軸数 0 で返る (`_run_one_start`)。それを「1 軸も動かして
+    いない」と読むと、③ は本当の原因 (失敗) ではなく摂動の設定を直しに行く。
+    """
+    starts = [
+        MultistartStart(
+            i,
+            StartPerturbation(
+                cell_scale={"ph": (f, f, f)}, coord_jitter_ang=0.05, jitter_seed=i
+            ),
+            result=None, error="TypeError: boom",
+        )
+        for i, f in enumerate((0.993, 1.0, 1.007))
+    ]
+    got = summarize_multistart(starts, MultistartConfig(n_starts=3))
+
+    assert not any("何も試験していない" in w for w in got.warnings), got.warnings
+    assert any("TypeError: boom" in w for w in got.warnings), "失敗の理由は従来どおり残る"
+    # 失敗した開始点に記録された倍率は「試験した」証拠にならない (実行できていない)。
+    assert got.perturbation_applied is False
