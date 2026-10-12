@@ -14,7 +14,7 @@
 - **採否**: 1A と 1B は独立に採否できる。決定 2 (LLM/人の回答ループ) は引き続き設計段階に留める
 - **第 1 期の範囲**: CW X 線・単一ヒストグラム・単一パターン・GSAS-II。範囲外は**明示的に失敗させる**
 - **関連**: `docs/design/stable-baseline-recipe/STANDARD-PROCEDURE.md` / `docs/design/claim-oriented-architecture/principles.md` /
-  `docs/design/m8-agentic-loop/` / `docs/spec/stable-auto-rietveld/requirements.md` / 作業計画 `docs/tasks/fit-then-judge/p1a.md`
+  `docs/design/m8-agentic-loop/` / `docs/spec/stable-auto-rietveld/requirements.md` / 作業計画 `docs/tasks/fit-then-judge/p1a.md` / P0 事前登録 [p0-preregistration.md](p0-preregistration.md)
 
 ---
 
@@ -284,7 +284,7 @@ pass 1 の成果物も gpxstore に役割名 (`template_pass1`) 付きで全保�
 
 | 段階 | 内容 | 通過条件 |
 |---|---|---|
-| **P0** | 不変の評価プロトコルの事前登録 (指標・同値幅・通過基準・データ区分と最小件数・構造の悪化の指標・`provisional` 割合の上限・`determined` の外れ率の上限・反証の検出力の報告形式)。結晶化学検査器の**実装は P1-1A に分ける** (登録と実装を混ぜない) | commit |
+| **P0** | 不変の評価プロトコルの事前登録 (指標・同値幅・通過基準・データ区分と最小件数・構造の悪化の指標・`provisional` 割合の上限・`determined` の外れ率の上限・反証の検出力の報告形式)。結晶化学検査器の**実装は P1-1A に分ける** (登録と実装を混ぜない)。→ [p0-preregistration.md](p0-preregistration.md) | commit |
 | **P1a** | engine の部品 (下表)。すべて**既定は無効 (opt-in)・既存経路はビット同一** | 決定論テスト + ゴールデン |
 | **P1-1A** | `Claim` の型と写像 → 判断要求の発行 → 証人 → D → ② (`claims`/`publishable_values`) → ③ の手順書 → sidecar → CIF/CSV。結晶化学検査器 (R0 表・酸化数・`unevaluated`) と参照構造での陽性/陰性対照 | 決定論テスト + ①②③ 露出 + 状態を落とす変換の禁止テスト |
 | **P1-1B** | pass 1 → コンパイル → `"template"` 候補 → 既存ツールとの境界 → ③ 手順書。統計規約 (§5) の実装 | 同上 |
