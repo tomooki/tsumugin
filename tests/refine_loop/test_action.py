@@ -155,8 +155,21 @@ def test_revise_structure_updates_phase_fields():
 
 
 def test_revise_structure_unknown_field_raises():
-    with pytest.raises(ValueError):
+    # 拒否文は改訂できるフィールドを名指す (③ はエラー文を読んで直すので、何なら通るかを言う)
+    with pytest.raises(ValueError, match="structure_path"):
         ReviseStructure("nac", {"bogus_field": 1}).apply(_inp())
+
+
+def test_revise_structure_rejects_phase_temperature_and_names_where_it_belongs():
+    """★相の `temperature` は改訂できない — どのエンジンも読まないので、改訂しても精密化は変わらない。
+
+    旧実装は `_REVISABLE_PHASE_FIELDS` に入れていたため、③ が「温度を直す構造改訂」を出すと
+    再精密化がビット同一のまま「改訂した」ことになった (呼べるが黙って効かない)。拒否する
+    だけでなく、エラー文で温度の置き場所 (`histograms[].temperature`) を名指す — ③ はエラー文を
+    読んで直すので、置き場所を言わないと同じ誤りを別の経路で繰り返す。
+    """
+    with pytest.raises(ValueError, match=r"histograms\[\]\.temperature"):
+        ReviseStructure("nac", {"temperature": 10.0}).apply(_inp())
 
 
 def test_set_mixed_occupancy_sets_groups():

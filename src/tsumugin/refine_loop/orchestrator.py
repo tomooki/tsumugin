@@ -124,7 +124,7 @@ def run_refinement_loop(
     iteration = 0
     while True:
         features = diagnose(result, inp)
-        proposals = propose_next_actions(result, features)
+        proposals = propose_next_actions(result, features, phases=inp.phases)
         state = AnalysisState(result, proposals, tuple(steps), iteration, budget)
         action = policy.decide(state)
 

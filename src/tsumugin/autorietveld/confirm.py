@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .._json import finite_or_none
+from ..gpxstore import reject_single_keep
 from ..multistart.perturb import MultistartConfig, PerturbationSpec
 from ..store import Ledger
 from .model import AutoRietveldResult, HistogramSpec, PhaseSpec
@@ -87,9 +88,12 @@ class ConvergenceReport:
         縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消できないので、全クラスの
         収束を採用条件にすると**どのデータでも解を出せなくなる**。構造が収束していれば
         構造の答えは信頼でき、割れたクラスは「決まっていない」として報告すればよい。
+
+        **開始点が初期値を実際に動かしたこと** (`perturbation_applied`) も要求する — 全開始点が
+        同じ入力なら全クラスの AGREE は空虚である (全相 ``refine_cell=False`` + 座標摂動なし)。
         """
         ms = self.multistart
-        if ms is None or not ms.class_convergence:
+        if ms is None or not ms.class_convergence or not ms.perturbation_applied:
             return False
         return all(
             ms.class_convergence.get(c, "INCOMPARABLE") == "AGREE"
@@ -152,7 +156,13 @@ def optimize_then_confirm(
     :param search_runner: Phase A の候補実行 callable (**テスト注入専用のシーム**)。
         実運用経路は JSON spec であり ③ はここへ callable を送れない (CLAUDE.md §4.5)
     :param multistart_runner: Phase B の実行 callable (同上)
+    :param run_kwargs: Phase A / B の各精密化へ透過する追加引数。⚠ ``keep_gpx`` /
+        ``keep_project`` は不可 — 何も回す前に ValueError (`gpxstore.reject_single_keep`)。
+        置き場所は ``gpx_dir``
     """
+    # 【入口で拒む】: Phase A (`run_recipe_search`) も拒むが、そこに頼ると本関数が Phase A より
+    #   前にディスクへ触る変更 (run ディレクトリの解決など) をしたとき空の痕跡が残る。
+    reject_single_keep(run_kwargs, entry="optimize_then_confirm")
     ledger = ledger if ledger is not None else Ledger()
     warnings: list[str] = []
 
@@ -213,7 +223,12 @@ def optimize_then_confirm(
             "出版してはならない**。縮退 (サイズ/微小歪み ↔ Caglioti U/V/W) は手順では解消"
             "できないので、閾値を緩めて隠すのではなく未決定として報告する"
         )
-    if diverged and not set(diverged) & set(ADOPTION_CLASSES):
+    # 【空虚な収束確認では「採用してよい」と言わない】: 何も振っていなければ全クラスの AGREE は
+    #   同じ入力から来ただけである。理由 (「何も試験していない」) は `summarize_multistart` が
+    #   1 箇所で出し、上で転送済み — ここで同じ診断を重ねない。
+    if multistart.perturbation_applied and diverged and not set(diverged) & set(
+        ADOPTION_CLASSES
+    ):
         warnings.append(
             "**構造 (格子・座標・占有率) は収束している** — 構造の答えは採用してよい。"
             f"割れているのは {sorted(diverged)} だけである"
