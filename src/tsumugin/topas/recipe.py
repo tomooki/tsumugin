@@ -101,7 +101,13 @@ def build_topas_recipe(
     # 【占有率の段は宣言があるときだけ】: `apply_stage` は**宣言されたサイトだけ**解放する
     #   (全サイト一斉解放はスケール因子と縮退して占有率 1 超の非物理解へ行くため)。
     #   宣言が無ければ解放対象がゼロ = 構造的な no-op なので、段そのものを出さない。
-    if any(p.free_occupancy_labels or p.mixed_occupancy_groups for p in phases):
+    #   等値・和の拘束も占有率の宣言である (GSAS 側 `build_recipe` と同じ条件)。抜けると
+    #   拘束を張った占有率が**一度も解放されない**まま完走する。
+    if any(
+        p.free_occupancy_labels or p.mixed_occupancy_groups
+        or p.occupancy_equiv_groups or p.occupancy_sum_groups
+        for p in phases
+    ):
         stages.append(
             RefinementStage(
                 label="S5 occupancy",

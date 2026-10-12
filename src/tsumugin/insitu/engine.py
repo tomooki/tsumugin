@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
+from ..errors import DuplicateAtomLabelError
 from ..gpxstore import GpxContext, gpx_context, series_context
 
 if TYPE_CHECKING:
@@ -685,6 +686,8 @@ def _try_add_phase(
     競わせると偽相が勝つ。落とした候補は ledger `m9_phaseid_skipped` に残る。
 
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
+        原子ラベルの重複で精密化できなかった候補は棄却して次へ進み (系列は止めない)、ledger
+        ``m9_phaseid_trial_refused`` に残したうえで、別の候補を採用したときも警告文を返す。
     """
     exclude = [p.phase_name for p in phases] + list(known_formulas)
     # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
@@ -715,6 +718,7 @@ def _try_add_phase(
         ledger.append("m9_phaseid_error", {"frame": frame_idx, "error": repr(exc)[:200]})
         return base_result, None, f"frame {frame_idx}: 相同定に失敗 ({type(exc).__name__})"
     best: "tuple[AutoRietveldResult, PhaseSpec, dict] | None" = None
+    refused: list[str] = []
     for cand_spec, meta in candidates:
         # 【同定スコアゲート】: 残差を説明していない候補 (score ≤ 閾値) は試行に回さない。
         #   後段の選択は「受理基準を満たす中で最小 Rwp」だが Rwp は母数増で必ず下がるため、
@@ -743,8 +747,23 @@ def _try_add_phase(
             if series_ctx is not None
             else None
         )
-        with gpx_context(trial_ctx):
-            trial = runner(frame, trial_phases, base_cells)
+        try:
+            with gpx_context(trial_ctx):
+                trial = runner(frame, trial_phases, base_cells)
+        except DuplicateAtomLabelError as exc:
+            # 【候補の構造の誤りは、その候補の棄却】: 現行相は同じフレームの base 精密化を通って
+            #   いるので、ここで出る重複は候補の CIF のもの。系列ごと止めると、それまでの全フレームの
+            #   結果が ② で error dict に化ける。相同定の失敗 (`m9_phaseid_error`) と同じく候補だけ外す。
+            ledger.append(
+                "m9_phaseid_trial_refused",
+                {
+                    "frame": frame_idx, "candidate": cand_spec.phase_name,
+                    "phase_id": str(meta.get("phase_id", "")),
+                    "error_type": type(exc).__name__, "error": str(exc)[:300],
+                },
+            )
+            refused.append(cand_spec.phase_name)
+            continue
         trial_rwp = float(trial.final_rwp)
         new_frac = float(trial.phase_fractions.get(cand_spec.phase_name, 0.0))
         accepted = _accept_new_phase(trial, cand_spec.phase_name, base_rwp, trial_rwp,
@@ -771,6 +790,12 @@ def _try_add_phase(
         if accepted and (best is None or trial_rwp < float(best[0].final_rwp)):
             best = (trial, cand_spec, meta)
 
+    refused_warn = (
+        f"frame {frame_idx}: 候補 {refused} は原子ラベルが重複して精密化できず棄却"
+        " (ledger m9_phaseid_trial_refused)"
+        if refused
+        else None
+    )
     if best is not None:
         trial, cand_spec, meta = best
         phases.append(cand_spec)
@@ -788,9 +813,9 @@ def _try_add_phase(
             rwp_before=base_rwp,
             rwp_after=float(trial.final_rwp),
             evidence=meta,
-        ), None
+        ), refused_warn
     # 候補はあったが受理基準を満たさず / 候補ゼロ (相同定不発)。
-    warn = None
+    warn = refused_warn
     if not candidates:
         warn = f"frame {frame_idx}: 変化点だが新相候補なし (未指数ピークが残存の可能性)"
     return base_result, None, warn

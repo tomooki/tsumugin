@@ -230,3 +230,109 @@ def test_refinement_loop_labels_each_iteration(tmp_path):
     assert [r for r, _, _ in seen] == ["iteration"] * len(seen)
     assert [i for _, i, _ in seen] == list(range(len(seen)))
     assert len({d for _, _, d in seen}) == 1, "反復ごとに run ディレクトリが分かれている"
+
+
+def test_optimize_then_confirm_keeps_one_run_dir_for_both_phases(tmp_path, monkeypatch):
+    """★収束確認 (Phase A 探索 → Phase B 開始点) は **1 実行 = 1 run ディレクトリ** (設計 §3)。
+
+    非トートロジー: Phase A/B はそれぞれ `group_context` で根から run を解決するので、入口で
+    文脈を 1 つに決めないと**同じ実行の成果物が 2 つの run ディレクトリに割れる** (実測:
+    ``run-<日時>-2`` に候補、``run-<日時>-3`` に開始点)。採用手順の fit と、それを初期値を
+    振って確かめた fit を並べて見られないのでは、収束確認の結論を検算できない。
+    """
+    from tsumugin.autorietveld.confirm import optimize_then_confirm
+    from tsumugin.autorietveld.model import StageResult
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_engine(histograms, phases, **kwargs):
+        ctx = kwargs.get("gpx_context") or active_context()
+        seen.append((ctx.role, ctx.run_dir) if ctx else ("", ""))
+        return AutoRietveldResult(
+            stage_results=(
+                StageResult(label="S1", rwp=9.0, gof=1.0, n_params=30, converged=True),
+            ),
+            final_rwp=9.0, final_gof=1.0,
+            refined_cells={"ph": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+            validity=ValidityReport(passed=True), n_obs=1000,
+        )
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_engine)
+    optimize_then_confirm(
+        [_HIST], [_PHASE], candidates=("default",), n_starts=3, jobs=1,
+        gpx_dir=str(tmp_path),
+    )
+
+    assert [r for r, _ in seen] == ["candidate", "multistart", "multistart", "multistart"]
+    assert len({d for _, d in seen}) == 1, f"run ディレクトリが割れている: {seen}"
+
+
+def _unwritable_root(tmp_path, monkeypatch) -> None:
+    """run ディレクトリを作れない状況 (読み取り専用の共有ディスク等) を作る。"""
+    import tempfile
+
+    def unwritable(root, base):
+        raise PermissionError(13, "read-only", root)
+
+    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+
+
+def _converged_result(rwp=9.0):
+    from tsumugin.autorietveld.model import StageResult
+
+    return AutoRietveldResult(
+        stage_results=(StageResult(label="S1", rwp=rwp, gof=1.0, n_params=30, converged=True),),
+        final_rwp=rwp, final_gof=1.0,
+        refined_cells={"ph": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+        validity=ValidityReport(passed=True), n_obs=1000,
+    )
+
+
+def _entry(name: str):
+    """各ファンアウト入口を (呼び出し, 警告の取り出し) で包む。"""
+    from tsumugin.autorietveld.confirm import optimize_then_confirm
+
+    def search(ledger, **kw):
+        r = run_recipe_search([_HIST], [_PHASE], names=["default"], ledger=ledger, **kw)
+        return r.warnings
+
+    def multistart(ledger, **kw):
+        r = run_multistart_rietveld(
+            [_HIST], [_PHASE], config=MultistartConfig(n_starts=2), jobs=1, ledger=ledger, **kw
+        )
+        return r.warnings
+
+    def confirm(ledger, **kw):
+        r = optimize_then_confirm(
+            [_HIST], [_PHASE], candidates=("default",), n_starts=2, jobs=1, ledger=ledger, **kw
+        )
+        return r.warnings
+
+    return {"search": search, "multistart": multistart, "confirm": confirm}[name]
+
+
+@pytest.mark.parametrize("entry", ["search", "multistart", "confirm"])
+def test_fanout_entries_record_a_fallback_to_temp(entry, tmp_path, monkeypatch):
+    """★run ディレクトリが一時領域へ退避したら、入口が ledger と警告に理由を残す (設計 §5)。
+
+    非トートロジー: 退避は入口の `group_context` でしか起きず、エンジンは解決済みの文脈を
+    受け取るので ``m7_gpx_fallback`` を書かない。入口が理由を捨てると、成果物が %TEMP% に
+    置かれたことはどこにも残らない (「黙って保存を諦めない」の裏切り)。
+    """
+    from tsumugin.store import Ledger
+
+    _unwritable_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tsumugin.autorietveld.engine.run_auto_rietveld", lambda h, p, **kw: _converged_result()
+    )
+    ledger = Ledger()
+
+    warnings = _entry(entry)(ledger, gpx_dir=str(tmp_path / "chosen"))
+
+    fallbacks = [e.payload for e in ledger.entries if e.kind == "m7_gpx_fallback"]
+    assert len(fallbacks) == 1, fallbacks  # 入れ子 (確認 ⊃ 探索/開始点) でも 1 回だけ
+    assert "一時領域へ退避" in fallbacks[0]["reason"]
+    assert fallbacks[0]["run_dir"].startswith(str(tmp_path / "tmp"))
+    assert any("一時領域へ退避" in w for w in warnings), warnings
