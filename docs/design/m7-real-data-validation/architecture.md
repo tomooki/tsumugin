@@ -29,6 +29,9 @@ tsumugin/autorietveld/
   `data_format` ("GSAS"/"FXYE"/"XYE"), `bank`(TOF フレーム用), `two_theta_limits`
 - `PhaseSpec` (frozen): `structure_path` (CIF/EXP), `phase_name`, `format_hint`,
   `mixed_occupancy_sites` (占有率制約対象), `temperature` (温度差吸収の要否判定)
+  - ※ 2026-10-09 訂正: 実装では温度差の判定は `HistogramSpec.temperature` で行う
+    (`recipe.has_temperature_difference`)。`PhaseSpec.temperature` はどの精密化エンジンも
+    読まないメタデータとして残っている (v0.1 公開済みの位置引数・JSON 往復のため)
 - `RefinementStage` (frozen): `label`, `flags` (GSAS-II set_refinements 相当の宣言的記述)
 - `StageResult` (frozen): `label`, `rwp`, `gof`, `n_params`, `converged`, `reverted`
 - `AutoRietveldResult` (frozen): `stage_results`, `final_rwp`, `final_gof`, `refined_cells`,

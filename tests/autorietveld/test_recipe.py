@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
@@ -128,6 +130,28 @@ def test_temperature_difference_triggers_hydrostatic_strain():
 def test_no_temperature_difference_omits_hydrostatic_strain():
     stages = build_recipe([_XRAY_BB], _SINGLE_PHASE)
     assert not _find(stages, "hydrostatic_strain")
+
+
+def test_phase_temperature_is_not_read_by_the_recipe():
+    """★相の `temperature` は温度差の判定に効かない — 判定はヒストグラムの温度だけを見る。
+
+    `PhaseSpec.temperature` の docstring (「どのエンジンも読まない」) の実証。温度の無い
+    joint のヒストグラムに、相の側で 295 K / 10 K を入れても温度差の段は立たず、レシピは
+    相の温度が無いときと同一になる。**これを配線するなら、このテスト・docstring・skill
+    (`analyze`/`joint` の温度の置き場所) を同じ PR で直すこと**。
+    """
+    hists = (_XRAY_BB, _NEUTRON_DS)  # どちらも温度なし
+    plain = (
+        PhaseSpec(structure_path="a.cif", phase_name="hot"),
+        PhaseSpec(structure_path="b.cif", phase_name="cold"),
+    )
+    tempered = (
+        dataclasses.replace(plain[0], temperature=295.0),
+        dataclasses.replace(plain[1], temperature=10.0),
+    )
+    stages = build_recipe(hists, tempered)
+    assert not _find(stages, "hydrostatic_strain"), "相の温度差で静水圧歪みの段が立った"
+    assert stages == build_recipe(hists, plain), "相の temperature でレシピが変わった"
 
 
 def test_recipe_stages_are_nonempty_and_labeled():

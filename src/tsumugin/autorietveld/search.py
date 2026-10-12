@@ -83,7 +83,8 @@ from typing import Callable, Mapping, Sequence
 
 from .._config_spec import check_bool, check_float, spec_value
 from .._json import finite_or_none
-from ..gpxstore import gpx_context, group_context
+from ..errors import InvalidPhaseSpecError
+from ..gpxstore import gpx_context, group_context, reject_single_keep
 from ..store import Ledger
 from .model import (
     AutoRietveldResult,
@@ -998,7 +999,14 @@ def run_recipe_search(
 
     候補の実行で例外が出ても**送出しない** — `CandidateOutcome.error` に落として順位表へ残す
     (「バックエンドの失敗は例外でなく結果に縮退させ、ガードレールに処理させる」不変条件)。
+    **候補の実行から送出するのは相の指定の誤りだけ**: 精密化の前に engine が止める入力の誤りで、
+    どの候補でも同じになるため、候補の失敗に畳まず送出する。
+
+    :raises ValueError: 未知の候補名 (`build_candidates`、候補を回す前)
+    :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル等を名指すとき
+        (`model.check_phase_spec_labels`)
     """
+    reject_single_keep(run_kwargs, entry="run_recipe_search")
     config = config or SearchConfig()
     ledger = ledger if ledger is not None else Ledger()
     requested = tuple(names) if names is not None else DEFAULT_CANDIDATES
@@ -1024,6 +1032,10 @@ def run_recipe_search(
             with gpx_context(group.child(role="candidate", label=cand.name)):
                 result: "AutoRietveldResult | None" = run(cand)
             error = ""
+        except InvalidPhaseSpecError:
+            # 【相の指定の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
+            #   どの候補でも同じになる。候補の失敗に畳むと「立つ手順が無い」と読まれる。
+            raise
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]
         outcome = CandidateOutcome(index=i, candidate=cand, result=result, error=error)

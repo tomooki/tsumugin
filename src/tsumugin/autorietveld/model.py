@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Callable, Mapping, TypeVar
+from typing import Callable, Iterable, Mapping, NoReturn, Sequence, TypeVar
 
 from .._config_spec import (
     check_bool,
@@ -263,6 +263,8 @@ class HistogramSpec:
         構造を持ち、``set_refinements({'Exclude': ...})`` キーは存在しない (実測で例外)。本フィールドは
         engine が使用域設定後に ``[lo, hi]`` を直接 append する。既定 () (除外なし; 後方互換)。
     :param temperature: 測定温度 (K)。複数ヒストグラム間の温度差吸収判定に用いる
+        (`recipe.has_temperature_difference`、GSAS/TOPAS 共通)。**測定温度はここに入れる** —
+        `PhaseSpec.temperature` はどのエンジンも読まない
     """
 
     data_path: str
@@ -370,7 +372,19 @@ class PhaseSpec:
         ⚠ 旧実装は既定が ``()`` で engine が ``or`` フォールバックしていたため、``()`` を渡すと
         **凍結したつもりで全原子が解放**されていた (#189)。少数相の ADP を凍結したいだけなら
         ``free_uiso_labels=()`` か `frozen_uiso_labels` を使う
-    :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
+    :param temperature: 相に付随する温度 (K) の**記録のみ** (メタデータ)。**どの精密化エンジン
+        (GSAS-II / TOPAS) も読まない** — 入れても精密化は何も変わらない。ヒストグラム間の温度差の
+        吸収 (静水圧歪み Dij の段) は `HistogramSpec.temperature` だけで判定する
+        (`recipe.has_temperature_difference`、TOPAS 経路も同じ関数)。測定温度は測定の属性なので
+        ヒストグラムに入れる。⚠ 旧 docstring は温度差の判定に使うと書いていたが、一度も読まれて
+        いなかった。v0.1 公開済みの位置引数と JSON 往復 (`to_dict`/`from_dict`、workbench の
+        project.json と表示) のために残す。非推奨警告は出さない — 取り除けないうえ、警告が届くのは
+        Python の呼び手だけで、誤用しうる ③ (JSON で呼ぶ) には届かないため。`ReviseStructure` では
+        改訂できない (改訂しても再精密化が変わらないので拒否する)
+
+    原子ラベルを名指すフィールド (`PHASE_SPEC_LABEL_FIELDS` / `PHASE_SPEC_GROUP_FIELDS`) は、相の
+    構造ファイルの原子ラベルと**完全一致**で書く。相に無いラベル等は、どちらのエンジンも相を読んだ
+    直後・精密化の前に `check_phase_spec_labels` が `InvalidPhaseSpecError` で拒否する。
     """
 
     structure_path: str
@@ -452,6 +466,116 @@ class PhaseSpec:
             refine_cell=spec_value(d, "refine_cell", s, True, check_bool),
             temperature=spec_value(d, "temperature", s, None, check_float),
         )
+
+
+def resolve_uiso_targets(
+    labels: "Sequence[str]",
+    free_uiso_labels: "Sequence[str] | None",
+    frozen_uiso_labels: "Iterable[str]" = (),
+) -> "list[str]":
+    """uiso 段で Uiso を解放する原子ラベルを解決する (#189/#211) — **両エンジン共通の 1 箇所**。
+
+    `PhaseSpec.free_uiso_labels` が ``None`` (未指定) → ``labels`` 全部、``()`` (明示的に凍結)
+    → 0 原子、非空 → その原子のみ。`frozen_uiso_labels` はそこから差し引く (**凍結が解放指定に
+    勝つ**)。並びは ``free_uiso_labels`` を書いた順 (未指定なら ``labels`` の順)。
+
+    ⚠ ``free_uiso_labels or labels`` と書くと**空列が「未指定」に化け、凍結したつもりで全原子が
+    解放される** (#189 の本体)。GSAS (`engine._resolve_uiso_targets`) と TOPAS
+    (`topas.structure`) が別々に実装すると、片方だけこの穴に戻りうるので 1 つにしてある。
+    """
+    targets = list(labels) if free_uiso_labels is None else list(free_uiso_labels)
+    frozen = set(frozen_uiso_labels)
+    return [label for label in targets if label not in frozen] if frozen else targets
+
+
+#: 原子ラベルを 1 つずつ並べる `PhaseSpec` のフィールド (`check_phase_spec_labels` の対象)。
+PHASE_SPEC_LABEL_FIELDS: "tuple[str, ...]" = (
+    "free_occupancy_labels", "free_uiso_labels", "frozen_coord_labels", "frozen_uiso_labels",
+)
+#: 原子ラベルの**組**を並べる `PhaseSpec` のフィールド (各組は異なる 2 原子以上)。
+#: ラベルを運ぶフィールドを `PhaseSpec` に足したら、どちらかに入れない限りテストが落ちる
+#: (`tests/autorietveld/test_phase_spec_labels.py`)。
+PHASE_SPEC_GROUP_FIELDS: "tuple[str, ...]" = (
+    "mixed_occupancy_groups", "occupancy_equiv_groups", "occupancy_sum_groups",
+    "position_equiv_groups",
+)
+
+
+#: 相に無いラベルのエラー文に載せる相の原子ラベルの上限 (それより多ければ件数で畳む)。
+_MAX_LABELS_IN_MESSAGE = 40
+
+
+def check_phase_spec_labels(spec: PhaseSpec, labels: "Sequence[str]") -> None:
+    """相の指定が名指す原子ラベルを、相の実際の原子ラベルと突き合わせる — **両エンジン共通**。
+
+    エンジンが相を読み込んでラベルが分かった時点 (GSAS は ``add_phase`` の後、TOPAS は CIF を
+    読んだ後)、**精密化の前に**呼ぶ。``labels`` はエンジンが拘束・凍結を引き当てるのと同じ並び
+    (GSAS なら原子行のラベル列) を渡す。止めるのはエンジンを問わず意味を決められない指定だけ:
+
+    - **相に無いラベル** — GSAS 経路は ``if lab in label_to_idx`` で黙って飛ばしていた
+      (綴り違いの ``frozen_uiso_labels=["Ca1 "]`` は何も凍結せずに完走する)。前後の空白・大小を
+      読み替えないのは、推測で埋めると別の綴り違いで同じ穴が開くから
+    - **相の中で 2 原子以上を指すラベル** (名指したものだけ) — GSAS は凍結・解放を
+      ``G2Phase.atom`` の**先頭**の一致に、拘束を ``label_to_idx`` の**末尾**の一致に当てる
+    - **異なる 2 原子に満たない組** — 1 原子の組は何も拘束しない (GSAS は ``len(idxs) < 2:
+      continue`` で黙って飛ばしていた)。``("O1", "O1")`` の混合占有は O1 + O1 = 1 になる
+
+    エンジン固有の制約は各エンジンが別に検査する。たとえば**1 原子を 2 つの占有率拘束に入れる**
+    ことは GSAS では意味が決まる (equivalence を constraint に変換して全拘束を同時に満たす,
+    2026-10-09 に PbSO4 で実測) ので、ここでは拒否しない — TOPAS の INP は原子ごとに占有率を
+    1 つの式で書くので張れない形があり、3 原子以上の混合占有と同じく `topas.structure` が拒否する
+    (和の組の親の共有 = `deuterium.place_hd_mix` の形は TOPAS も張れる)。
+
+    :raises InvalidPhaseSpecError: 上記のとき (② は ``{"error","error_type"}`` へ縮退する)
+    """
+    import difflib
+
+    from ..errors import InvalidPhaseSpecError
+
+    order = list(labels)
+    known = set(order)
+
+    def refuse(message: str) -> NoReturn:
+        raise InvalidPhaseSpecError(f"相 {spec.phase_name!r}: {message}")
+
+    named: dict[str, list[str]] = {}
+    for name in PHASE_SPEC_LABEL_FIELDS:
+        named[name] = list(getattr(spec, name) or ())
+    for name in PHASE_SPEC_GROUP_FIELDS:
+        named[name] = [label for group in getattr(spec, name) for label in group]
+
+    unknown = {name: missing for name, refs in named.items()
+               if (missing := [label for label in refs if label not in known])}
+    if unknown:
+        # 近いラベルを添え、相の原子一覧は長ければ切る (P1 展開の相は数百原子になり、② の
+        # エラー文に全部載せると肝心の「どのフィールドのどのラベルか」が埋もれる)。
+        near = {label: hits for refs in unknown.values() for label in refs
+                if (hits := difflib.get_close_matches(label, order, n=3))}
+        shown = order if len(order) <= _MAX_LABELS_IN_MESSAGE else [
+            *order[:_MAX_LABELS_IN_MESSAGE], f"... (+{len(order) - _MAX_LABELS_IN_MESSAGE})"
+        ]
+        refuse(
+            f"相に無い原子ラベルがあります: {unknown}"
+            + (f" (近いラベル: {near})" if near else "")
+            + f" (相の原子: {shown})。綴り違い (前後の空白・大小を含む) は「凍結・拘束したつもりで"
+            "何も効かない」精密化になるため止めます"
+        )
+
+    referenced = {label for refs in named.values() for label in refs}
+    ambiguous = sorted(label for label in referenced if order.count(label) > 1)
+    if ambiguous:
+        refuse(
+            f"ラベル {ambiguous} は相の中で 2 原子以上を指します。どの原子を凍結・拘束するか"
+            "決められないため止めます (CIF 側でラベルを一意にしてください)"
+        )
+
+    for name in PHASE_SPEC_GROUP_FIELDS:
+        for group in getattr(spec, name):
+            if len(group) < 2 or len(set(group)) != len(group):
+                refuse(
+                    f"`{name}` の組 {list(group)} は異なる 2 原子以上で書いてください "
+                    "(1 原子の組は何も拘束しません)"
+                )
 
 
 @dataclass(frozen=True)
@@ -1061,3 +1185,8 @@ class AutoRietveldResult:
     #   総合値 (`final_rwp`) と混同しないこと — TOPAS 経路では `.out` の総合値を `final_rwp`
     #   に採り、ここには各 `xdd` の値を入れる。空 = 未計測 (バックエンドが出さない)。
     histogram_rwp: tuple[float, ...] = ()
+    # 【座標ジッタで engine が**実際に動かした**軸数】(マルチスタートの構造軸)。摂動を要求して
+    #   いない run は 0。対称固定の軸・結束軸の従属側・``frozen_coord_labels`` の原子は数えない。
+    #   マルチスタートはこれを傍証の条件 (`perturbation_had_no_effect`) に使う — 結果の自由度指標
+    #   から数え直すと、engine が動かさなかった軸を「試験した」と数える余地が残る。
+    coord_jitter_axes_moved: int = 0

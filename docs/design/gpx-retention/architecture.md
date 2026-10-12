@@ -18,6 +18,18 @@
 **opt-out**: `save_gpx=False` (呼び出し単位) / `TSUMUGIN_GPX_DIR=none` (環境単位)。
 **上書き**: 明示 `gpx_dir` > `TSUMUGIN_GPX_DIR` > データ隣接。**明示指定は `none` にも勝つ**
 (頼まれた保存を環境変数で黙って捨てない)。
+**明示パス** (`keep_gpx` / `keep_project`) は opt-out (`save_gpx=False` / `none`) **にも勝つ**
+(2026-10-09 決定、順位の正本は `gpxstore.plan_output`)。opt-out が止めるのは**既定保存**
+(置き場所を tsumugin が決める保存) であり、名指しされた保存ではない。明示パスは単独でも既定保存を
+置き換えるので、併用は「そのパスにだけ残す」と一意に読める。`gpx_dir` は保存の依頼ではなく
+既定保存の置き場所なので、`save_gpx=False` と併用すると使われない。
+**N 回精密化する入口** (`run_recipe_search` / `run_multistart_rietveld` / `compare_models` と、
+標準経路 `optimize_then_confirm`。`run_model_comparison` は `compare_models` 経由) は明示パスを
+**何も回す前・ディスクに触る前に ValueError で拒み** `gpx_dir` を案内する (`gpxstore.reject_single_keep`)。
+透過すると全候補が 1 パスへ上書きされ (マルチスタートは並列で競合)、候補ごとの成果物も残らない。
+剥がして警告する手は「頼まれたパスに何も置かない」点で黙った無効化と変わらず、各回のパスを派生する手は
+「このパス」を「この接頭辞」に読み替える (頼まれていない解釈) ので採らなかった。`None` / `""` は
+`plan_output` と同じく「指定なし」として通す。
 
 ## 2. なぜ「棄却された fit」まで残すのか
 
