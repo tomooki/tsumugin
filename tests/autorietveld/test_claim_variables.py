@@ -110,3 +110,11 @@ def test_a_monochromatic_instrument_has_no_kalpha2_positions():
 
     got = _reflection_two_theta([_FakeHist([120.0], {"Lam": [1.5406, 1.5406, False]})], [])
     assert got == (120.0,)
+
+
+def test_a_non_finite_position_does_not_drop_every_kalpha2_line():
+    """非有限の位置が 1 つ混じっても、他の反射の Kα2 を黙って捨てない (3 巡目 LOW)。"""
+    from tsumugin.autorietveld.claim_variables import kalpha2_positions
+
+    got = kalpha2_positions([float("inf"), 120.0, float("nan")], 1.540593, 1.544414)
+    assert len(got) == 1 and got[0] > 120.0

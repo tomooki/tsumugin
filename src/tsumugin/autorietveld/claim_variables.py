@@ -88,6 +88,8 @@ def kalpha2_positions(two_theta: "Sequence[float]", lam1: float, lam2: float) ->
     ratio = float(lam2) / float(lam1)
     out = []
     for tt in two_theta:
+        if not math.isfinite(float(tt)):
+            continue  # 1 つの非有限値で残りの Kα2 を失わない (呼び手は例外を握って Kα1 だけで続ける)
         s2 = ratio * math.sin(math.radians(float(tt) / 2.0))
         if s2 < 1.0:
             out.append(2.0 * math.degrees(math.asin(s2)))
