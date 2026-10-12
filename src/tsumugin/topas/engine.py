@@ -5,9 +5,15 @@
 ``runner: Callable[..., AutoRietveldResult]`` を注入する設計なので、同じ形の関数を用意すれば
 そのまま差し替えられる。
 
+**段の間の値の持ち越し** (#218): 受理した段の ``.out`` (精密化値を埋め込んだ INP) から値を
+読み戻し (`topas.carry`)、次段はその値から始める。GSAS 経路で gpx が値を持ち越すのと同じ
+意味にするためで、以前は毎段 CIF の出発値から描き直していた (段階解放が「累積フラグで
+出発値から解き直す」になっていた)。
+
 **revert の実現**: GSAS 経路は ``.gpx`` をファイルコピーして復元するが、TOPAS では
-**文書がそのまま状態**なので、悪化した段は「その段を適用する前の `TopasDocument` に戻す」
-だけでよい (追記型・上書きなし = P2 と整合)。
+**文書がそのまま状態** (解放フラグ + 持ち越した精密化値) なので、悪化した段は「その段を
+適用する前の `TopasDocument` に戻す」だけでよい — これで**直前に受理した段の値**へ戻る
+(追記型・上書きなし = P2 と整合)。
 
 **失敗の扱い**: ``TopasRunError`` は例外のまま上げず ``rwp=inf`` に縮退させ、既存の
 「悪化した段は revert」経路に載せる (不変条件「バックエンドの失敗は例外でなく chi2=inf に変換」)。
@@ -37,11 +43,18 @@ from ..errors import TopasRunError
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
 from ..gpxstore import record_artifact as _record_artifact
 from ..store import Ledger
+from .carry import carry_refined_values
 from .driver import run_tc
 from .flags import apply_stage
 from .inp import TopasDocument, _slug
 from .instrument import histogram_to_topas
-from .parse import TopasRecords, limit_hits_from_out, parse_out_metrics, parse_records
+from .parse import (
+    TopasRecords,
+    limit_hits_from_out,
+    parse_out_metrics,
+    parse_records,
+    refined_values_from_out,
+)
 from .structure import BEQ_PER_UISO, structure_to_topas_phase, to_topas_spacegroup
 
 __all__ = ["run_topas_rietveld"]
@@ -175,9 +188,9 @@ def _metrics(run_out: str, results_text: str) -> "tuple[float, float, int]":
     metrics = dict(parse_out_metrics(run_out))
     rwp = metrics.get("r_wp", records.scalars.get("r_wp", float("inf")))
     gof = metrics.get("gof", records.scalars.get("gof", float("inf")))
-    # 解放パラメータ数は .out の ``value`_esd`` 記法の個数で数える (esd が付くのは精密化した値)。
-    from .parse import refined_values_from_out
-
+    # 解放パラメータ数は .out で値にバッククォートの印が付いたものの個数で数える (``value`_esd``、
+    #   do_errors 無しなら ``value```)。同じ印を持つ MVW の報告値と末尾の相関行列は
+    #   `refined_values_from_out` が除く。
     n_params = len(refined_values_from_out(run_out))
     return float(rwp), float(gof), int(n_params)
 
@@ -267,12 +280,16 @@ def run_topas_rietveld(
 
     :param keep_project: 作業ディレクトリ (INP/.out/results.txt) を**このパスへ**残す明示指定
         (最優先)。⚠ **「None なら破棄」ではなくなった** (2026-08-20 規定「全解析で成果物を
-        保存する」) — None なら既定の置き場所へ残す
+        保存する」) — None なら既定の置き場所へ残す。**``save_gpx=False`` /
+        ``TSUMUGIN_GPX_DIR=none`` にも勝つ** — opt-out が止めるのは既定保存だけで、名指し
+        された保存は止めない (順位の正本は `gpxstore.plan_output`)
     :param gpx_dir: 既定の置き場所の**根**を上書きする (env ``TSUMUGIN_GPX_DIR`` より強い)。
         GSAS 経路と**同じ引数名**にしてある — 消費側 (② `auto_rietveld(backend=)`) が
         バックエンドで呼び分けずに済むため。TOPAS は .gpx ではなくプロジェクト
         **ディレクトリ**が残る (`project_path`)
-    :param save_gpx: **規定は True = 保存する**。False で完全に無効化する opt-out
+    :param save_gpx: **規定は True = 保存する**。False で**既定保存**を完全に無効化する opt-out
+        (``TSUMUGIN_GPX_DIR=none`` でも同じ)。⚠ 明示 ``keep_project`` は止めない (併用すると
+        ``keep_project`` のパスにだけ残る)
     :param stability: 安定性診断ゲート (`StabilityOptions`)。**TOPAS 経路は未実装**なので、
         非 None を渡されたら黙って捨てず ``ValidityReport.warnings`` と ledger に残す。
         黙って無視すると「ゲートを頼んだのに何も見ていない」が Rwp にも note にも現れない
@@ -318,11 +335,14 @@ def run_topas_rietveld(
         for index, stage in enumerate(stages):
             before = doc
             note = ""
+            unplaced: tuple[str, ...] = ()
+            carry_warnings: tuple[str, ...] = ()
             try:
                 doc = apply_stage(doc, stage)
-                run = run_tc(
-                    doc.render(), workdir=work, basename=f"stage{index}", timeout=timeout
-                )
+                # 【持ち越し値の行き先】: 名前の付け方が段の間でずれると値が黙って捨てられ、
+                #   出発値から解き直す (#218) が再発する。検出できる事実として ledger に残す。
+                inp_text, unplaced = doc.render_with_report()
+                run = run_tc(inp_text, workdir=work, basename=f"stage{index}", timeout=timeout)
                 rwp, gof, n_params = _metrics(run.out_text, run.results_text)
                 hits = limit_hits_from_out(run.out_text)
                 if hits:
@@ -342,11 +362,17 @@ def run_topas_rietveld(
             stage_cause, inf_cause = inf_cause, None
             worsened = decision.reverted
             if worsened:
-                doc = before  # revert = 段を適用する前の文書に戻すだけ
+                # revert = 段を適用する前の文書 (= 直前に受理した段の値) に戻すだけ。
+                doc = before
             else:
                 prev_rwp, prev_gof, prev_nvar = rwp, gof, n_params
                 if run is not None:
                     best_results = run.results_text
+                    # 【次段はこの段の精密化値から】 (#218)。
+                    doc, carry_warnings = carry_refined_values(doc, run.out_text)
+                    if carry_warnings:
+                        joined = "; ".join(carry_warnings)
+                        note = f"{note}; {joined}" if note else joined
             if decision.is_noop:
                 # 【無言 no-op】: 段を適用したのに rwp/gof/母数がビット同一 = 何も精密化して
                 #   いない。**revert はしない** (検出のみ) — 効かない理由 (解放先が無い /
@@ -385,6 +411,9 @@ def run_topas_rietveld(
                         "noop": decision.is_noop,
                         "note": note,
                         "backend": _BACKEND,
+                        "carried": len(doc.carried_values),
+                        "carry_unplaced": list(unplaced),
+                        "carry_warnings": list(carry_warnings),
                     },
                 )
 
@@ -424,7 +453,8 @@ def run_topas_rietveld(
         )
 
         # 【規定: 全解析で成果物を保存する】: GSAS の .gpx に対応するのがこの作業ディレクトリ
-        #   (INP/.out/results.txt)。明示 keep_project > save_gpx=False > 既定保存。
+        #   (INP/.out/results.txt)。keep_project / save_gpx / 既定保存の順位は `plan_output` が
+        #   正本 — ここに写さない (写しが実装と食い違っていた: 2026-10-09)。
         out_project = _save_project_artifact(
             work,
             plan_output(

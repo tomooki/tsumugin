@@ -48,11 +48,12 @@ def run_model_comparison(
     :param variants: 比較する構造モデル変種
     :param runner: 精密化関数 (None なら compare 既定 = run_auto_rietveld; テストでスタブ注入)
     :param ledger: 追記台帳 (None なら未使用)
-    :param run_kwargs: runner へ渡す追加引数 (recipe/max_cyc/keep_gpx 等)
+    :param run_kwargs: runner へ渡す追加引数 (recipe/max_cyc/gpx_dir 等)。⚠ ``keep_*`` は不可
+        (全変種が 1 パスへ上書きされるため `compare_models` が ValueError)
     :returns: :class:`ModelCompareResult`
 
     Raises:
-        ValueError: variants が空のとき (compare_models が送出)。
+        ValueError: variants が空のとき / ``keep_*`` を渡したとき (compare_models が送出)。
     """
     compare_kwargs = dict(run_kwargs)
     if runner is not None:

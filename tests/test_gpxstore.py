@@ -302,12 +302,76 @@ def test_plan_output_saves_by_default(tmp_path, monkeypatch):
 
 
 def test_plan_output_save_false_is_the_opt_out(tmp_path):
-    """``save=False`` で完全に無効化できる (ディスクを使わせない明示の逃げ道)。"""
+    """``save=False`` で**既定保存**を完全に無効化できる (ディスクを使わせない明示の逃げ道)。"""
     from tsumugin.gpxstore import plan_output
 
     plan = plan_output([str(tmp_path / "a.xye")], save=False)
 
     assert plan.path is None
+
+
+def test_plan_output_save_false_leaves_gpx_dir_unused(tmp_path):
+    """``gpx_dir`` は保存の依頼ではなく**既定保存の置き場所**なので、``save=False`` では使わない。
+
+    ``keep`` (成果物そのもののパス) と違い、止まった既定保存の置き場所だけを指す指定である。
+    ここで run ディレクトリを作ると、opt-out したのに空ディレクトリを撒くことになる。
+    """
+    from tsumugin.gpxstore import plan_output
+
+    root = tmp_path / "chosen-root"
+    plan = plan_output([str(tmp_path / "a.xye")], gpx_dir=str(root), save=False)
+
+    assert plan.path is None and plan.run_dir == ""
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("opt_out", ["save_false", "env_none", "disabled_context"])
+def test_plan_output_explicit_keep_beats_every_opt_out(tmp_path, monkeypatch, opt_out):
+    """★明示 ``keep`` はどの opt-out (``save=False`` / env ``none`` / 無効文脈) にも勝つ。
+
+    opt-out が止めるのは**既定保存** (置き場所を tsumugin が決める保存) であって、呼び出し側が
+    パスを名指しした保存ではない。2026-10-09 に ``run_topas_rietveld(keep_project=<dir>,
+    save_gpx=False)`` が <dir> に何も残さず、例外も ledger も出さなかった = 頼まれた保存を
+    黙って捨てた (「明示指定は黙って無効化しない」違反)。``keep`` は単独でも既定保存を
+    置き換える (索引も書かない) ので、併用は矛盾ではなく「このパスにだけ残す」と読める。
+    """
+    from tsumugin.gpxstore import plan_output
+
+    target = tmp_path / "explicit" / "refined.gpx"
+    kwargs: dict[str, object] = {"keep": str(target)}
+    if opt_out == "save_false":
+        kwargs["save"] = False
+    elif opt_out == "env_none":
+        monkeypatch.setenv(ENV_VAR, DISABLED)
+    else:
+        kwargs["context"] = GpxContext(enabled=False)
+
+    plan = plan_output([str(tmp_path / "a.xye")], **kwargs)
+
+    assert plan.path == str(target)
+    assert plan.run_dir == ""  # 明示パスは索引を書かない (keep 単独と同じ扱い)
+
+
+def test_reject_single_keep_lets_an_absent_keep_through():
+    """``keep_*=None`` / ``""`` は「指定なし」— ファンアウト入口はこれを拒まない。
+
+    引数を素通しで組み立てる呼び出し側は ``keep_gpx=None`` を明示的に渡しうる。「鍵がある」
+    だけで拒むと、そうした呼び出しが全部 ValueError になる (`plan_output` の ``if keep:``
+    と同じく**値**で判定する)。
+    """
+    from tsumugin.gpxstore import reject_single_keep
+
+    reject_single_keep(
+        {"keep_gpx": None, "keep_project": "", "gpx_dir": "/x", "save_gpx": False}, entry="e"
+    )
+
+
+def test_reject_single_keep_names_the_entry_and_the_key():
+    """拒否の理由に**どの入口**で**どの引数**かを出す (直し方が分かるように)。"""
+    from tsumugin.gpxstore import reject_single_keep
+
+    with pytest.raises(ValueError, match=r"run_x.*keep_project.*gpx_dir"):
+        reject_single_keep({"keep_project": "/out/p"}, entry="run_x")
 
 
 def test_plan_output_uses_the_ambient_context_for_naming(tmp_path, monkeypatch):

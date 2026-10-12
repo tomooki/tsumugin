@@ -10,7 +10,8 @@
 置き場所の既定は**観測データ隣接** ``<data_dir>/tsumugin_gpx/<run_id>/``。上書きは環境変数
 ``TSUMUGIN_GPX_DIR`` (``none`` で保存無効化)、さらに強い上書きは呼び出し側の明示指定
 (``gpx_dir`` 引数)。**明示指定は env の ``none`` にも勝つ** — 頼まれた保存を環境変数で黙って
-捨てない。
+捨てない。成果物のパスそのものを名指しする ``keep`` (`plan_output`) は ``save=False`` を含む
+**すべての opt-out に勝つ** (opt-out が止めるのは既定保存だけ)。
 
 本モジュールは**置き場所と名前だけ**を決める。精密化の物理には一切影響しない
 (NFR-102: 保存先が変わっても結果はビット同一)。文脈 (`GpxContext`) は成果物に人が読める名前を
@@ -70,7 +71,8 @@ class GpxContext:
         ``multistart``/``candidate``/``model``)。ファイル名に出る
     :param index: フレーム番号や開始点番号 (ファイル名の ``f0180`` 部)
     :param label: 候補相名・区間名・レシピ名など (ファイル名の末尾)
-    :param enabled: False なら保存しない (opt-out)
+    :param enabled: False なら**既定保存**をしない (opt-out)。明示 ``keep`` は止めない
+        (`plan_output`)
     """
 
     run_dir: str = ""
@@ -312,25 +314,61 @@ def plan_output(
 ) -> ArtifactPlan:
     """**両エンジン共通の保存方針** — 明示パス > 無効化 > 既定保存。
 
-    優先順位 (上が強い):
+    優先順位 (上が強い)。**この関数が正本** — エンジン側の docstring/コメントはこれに従う:
 
-    1. ``save=False`` … 保存しない (呼び出し側の明示 opt-out)
-    2. ``keep`` … そのパスへ保存する (既存呼び出しの非回帰。索引は書かない —
-       置き場所の取り決めが呼び出し側にあるため ``run_dir`` を名乗らない)
+    1. ``keep`` … そのパスへ保存する。**どの opt-out にも勝つ** (``save=False`` /
+       ``TSUMUGIN_GPX_DIR=none`` / 無効文脈)。索引は書かない — 置き場所の取り決めが
+       呼び出し側にあるため ``run_dir`` を名乗らない
+    2. ``save=False`` (と env ``none``・無効文脈) … **既定保存**をしない (明示 opt-out)
     3. ``gpx_dir`` / ambient 文脈 / ``TSUMUGIN_GPX_DIR`` / データ隣接 … 既定で保存する
 
+    【なぜ keep が opt-out に勝つか (2026-10-09 決定)】: opt-out が止めるのは**既定保存**
+    (置き場所を tsumugin が決める保存; NFR-108 の「opt-out を要するが既定は保存」の opt-out)
+    であって、呼び出し側がパスを名指しした保存ではない。以前は ``save=False`` を先に見て
+    いたため ``keep_project=<dir>, save_gpx=False`` が <dir> に何も残さず例外も出さなかった
+    (= 頼まれた保存を黙って捨てた; 明示 ``gpx_dir`` が env ``none`` に勝つのと同じ原則に反する)。
+    ``keep`` は単独でも既定保存を**置き換える** (2 つ目の成果物は作らない) ので、併用は矛盾
+    ではなく「このパスにだけ残す」の一意な意味を持つ — ValueError で拒む利点は無く、しかも
+    本関数は精密化を回し終えた**後**に呼ばれるので、ここで投げると結果ごと失う。
+    ⚠ 一方 ``gpx_dir`` は保存の依頼ではなく**既定保存の置き場所の指定**なので、
+    ``save=False`` と併用すると使われない (既定保存そのものが無いため)。
+
     :param data_paths: 観測データのパス列 (先頭が既定の置き場所と名前の元)
-    :param keep: 明示パス (``run_auto_rietveld(keep_gpx=)`` / ``run_topas_rietveld(keep_project=)``)
-    :param gpx_dir: run ディレクトリの根の明示指定 (env より強い)
-    :param save: False で保存無効
+    :param keep: 明示パス (``run_auto_rietveld(keep_gpx=)`` / ``run_topas_rietveld(keep_project=)``)。
+        ``save`` の値に関わらず保存する
+    :param gpx_dir: 既定保存の run ディレクトリの根 (env より強い。``save=False`` では使われない)
+    :param save: False で既定保存を無効化 (``keep`` は止めない)
     :param ext: ``.gpx`` / TOPAS プロジェクトディレクトリは ``""``
     :param context: 文脈 (None なら ambient を見る)
     """
-    if not save:
-        return ArtifactPlan(path=None, run_dir="")
     if keep:
         return ArtifactPlan(path=str(keep), run_dir="")
+    if not save:
+        return ArtifactPlan(path=None, run_dir="")
     return plan_artifact(data_paths, context, ext=ext, explicit_dir=gpx_dir, now=now)
+
+
+#: 成果物 **1 つ**のパスを名指しする engine 引数 (`run_auto_rietveld` / `run_topas_rietveld`)。
+KEEP_KEYS = ("keep_gpx", "keep_project")
+
+
+def reject_single_keep(run_kwargs: Mapping[str, object], *, entry: str) -> None:
+    """**N 回精密化する入口** (探索/マルチスタート/モデル比較/標準経路) で単一パスの ``keep_*`` を拒む。
+
+    ``keep_*`` は成果物 1 つのパスで、`plan_output` では**どの opt-out にも勝つ**。各候補へ
+    透過すると N 回の精密化が同じパスへ上書きされ (マルチスタートは別プロセスが同時に書く)、
+    候補ごとの成果物 (NFR-108) は 1 つも残らない — 頼まれた保存も規定の保存も黙って壊れる。
+    精密化を 1 回も回さないうちに止めるので結果は失われない。置き場所の指定は ``gpx_dir``。
+
+    :raises ValueError: ``run_kwargs`` に空でない ``keep_gpx`` / ``keep_project`` があるとき
+    """
+    given = [k for k in KEEP_KEYS if run_kwargs.get(k)]
+    if given:
+        raise ValueError(
+            f"{entry} は 1 回の解析で複数回精密化するため、成果物 1 つのパス "
+            f"({', '.join(given)}) は渡せません (全候補が同じパスへ上書きされ、候補ごとの"
+            "成果物が残らない)。置き場所は gpx_dir で指定してください。"
+        )
 
 
 def series_context(
@@ -340,7 +378,7 @@ def series_context(
 
     フレームごとに run ディレクトリが分かれると 754 個できて探せないので、系列の入口で
     1 度だけ解決する。``save=False`` / ``TSUMUGIN_GPX_DIR=none`` では ``enabled=False`` の
-    文脈を返す (None ではなく) — 下流が「保存しない」を一貫して読めるようにするため。
+    文脈を返す (None ではなく) — 下流が「既定保存しない」を一貫して読めるようにするため。
 
     :returns: ``(文脈, 退避理由)``。退避理由が非空なら呼び出し側が ledger/警告に載せること
     """
@@ -477,6 +515,7 @@ __all__ = [
     "DISABLED",
     "ENV_VAR",
     "GpxContext",
+    "KEEP_KEYS",
     "MANIFEST_NAME",
     "ManifestEntry",
     "active_context",
@@ -487,6 +526,7 @@ __all__ = [
     "plan_output",
     "read_manifest",
     "record_artifact",
+    "reject_single_keep",
     "resolve_run_dir",
     "sanitize_label",
     "series_context",
