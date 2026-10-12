@@ -34,6 +34,7 @@ from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ..insitu.model import FrameSpec
 from ._degrade import degrade_oserror
+from ._gpx_spec import gpx_args
 from .insitu_tools import (
     _parse_two_theta_limits,
     _result_from_dict,
@@ -86,7 +87,8 @@ def _ledger_entry_to_dict(entry: "LedgerEntry") -> dict[str, object]:
     """``LedgerEntry`` を素の型 dict へ平坦化 (json.dumps allow_nan=False 安全)。
 
     ``repair_isolated`` が追記する ``insitu_repair_adopted`` / ``_rejected`` / ``_no_neighbour``
-    の payload はスカラ (frame/rwp*/source) と文字列列 (reasons) のみ。float は非有限を None へ
+    の payload はスカラ (frame/rwp*/source/``gpx_path``) と文字列列 (reasons) のみ、成果物を一時領域へ
+    退避したときの ``m9_gpx_fallback`` は文字列 (run_dir/reason) のみ。float は非有限を None へ
     落とす (`finite_or_none`) ことで allow_nan=False を担保する。
     """
     out: dict[str, object] = {"index": entry.index, "kind": entry.kind}
@@ -463,6 +465,8 @@ def repair_frames(
     two_theta_limits: Sequence[float] | None = None,
     instrument: Mapping[str, object] | None = None,
     runner: Callable | None = None,
+    gpx_dir: str | None = None,
+    save_gpx: bool = True,
     reason: str = "",
 ) -> dict:
     """不連続フレームを検出 (or 明示指定) し近傍 warm-start で修復する (① ``insitu.repair`` へ委譲)。
@@ -533,18 +537,32 @@ def repair_frames(
     :param runner: **注入/テスト用**の Python callable
         ``(frame, phases, initial_cells) -> AutoRietveldResult``。JSON 境界越しには渡せない。
         明示指定時は ``instrument`` より優先する (``sequential_rietveld`` と同じ優先順)
+    :param gpx_dir: **修復試行の成果物の保存先の根** (2026-08-20 規定「全解析で保存する」; env
+        ``TSUMUGIN_GPX_DIR`` より強い)。1 回の呼び出しは run ディレクトリを**1 つ**共有し、その下に
+        **採否を問わず左右両方の試行** ``f<番号 4 桁>_repair_L.gpx`` / ``_R.gpx`` と ``manifest.jsonl``
+        が並ぶ。省略時は env → 先頭フレームのデータ隣接 ``<data_dir>/tsumugin_gpx/run-<日時>/``。
+        実際の場所は返り値の ``gpx_dir`` (試行が 1 つも走らなければ — 対象が無い/良好な近傍が
+        無い — run ディレクトリは作らず "")
+    :param save_gpx: 保存の opt-out (既定 True = 保存する)。opt-out は**明示の ``false`` だけ**
+        (``null`` は既定 = 保存、bool 以外は error dict)。⚠ **診断目的では止めない** —
+        「warm-start でなぜ直らなかったか」は棄却された試行の fit そのものからしか追えない
     :returns: ``fraction_basis`` (常に ``"scale"`` = **検出**に使った基準)/``repairs``/
         ``needs_model_revision``/``systematic_hint``/``discontinuities``/
-        ``ledger_entries``。``repairs[]`` は ``{frame, rwp_before, rwp_after, source,
+        ``ledger_entries``/``gpx_dir``。``repairs[]`` は ``{frame, rwp_before, rwp_after, source,
         phase_fractions, phase_weight_fractions, phase_weight_fraction_esd, cell_esd,
-        gpx_path}`` —
+        gpx_path}`` (``gpx_path`` = 修復後の fit。``result["frames"][i]["gpx_path"]`` は修復前) —
         ⚠ ``phase_fractions`` は **Scale** であって wt% ではない。**修復後の出版値は
         ``phase_weight_fractions`` ± ``phase_weight_fraction_esd``**。
         (``fraction_basis`` は検出基準のラベルであって ``repairs[]`` の出版値に掛かるものではない:
         出版値は ``phase_weight_fractions`` という**キー名で**基準が判る。)
         出版値の 3 キーは常に存在し、値が得られなかった精密化では空 dict (esd=0 ではない)。
+        **棄却された修復** (``needs_model_revision``) の fit は ``ledger_entries`` の
+        ``insitu_repair_rejected`` 行の ``gpx_path`` (同じ行の ``rwp_after``/``source`` の fit)。
+        保存先に書けず一時領域へ退避したときは ``ledger_entries`` に ``m9_gpx_fallback`` 行
+        (``reason``) が出る。
         失敗 (系列結果が空/不正・フレーム数不一致・相集合の欠落・spec 復元
-        失敗・instrument spec 不正・レンジ不正・``target_frames`` が空/範囲外/非整数) は
+        失敗・instrument spec 不正・レンジ不正・``target_frames`` が空/範囲外/非整数・
+        型の違う ``gpx_dir``/``save_gpx``) は
         ``{"error", "error_type"}``
         (この場合 ``repairs`` 等のキーは返らない = 「不連続なし」と誤読されない)
     """
@@ -561,6 +579,8 @@ def repair_frames(
     #   フレーム数ガード (0 == 0) すら通り抜けて `repairs=[]`/`needs_model_revision=[]` の
     #   「異常なし」を返していた (check_phase_set と同じ失敗様態)。判定の前に形を検証する。
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         _validate_seq_result(result)
         seq = _result_from_dict(result)
         frame_specs = [FrameSpec.from_dict(f) for f in frames]
@@ -644,6 +664,12 @@ def repair_frames(
         rwp_tol=rwp_tol,
         min_block=min_block,
         ledger=ledger,
+        # 【成果物の指定は ① へ明示的に運ぶ】: 修復の runner は 4 引数プロトコルなので保存指定は
+        #   引数では運べない — ① が入口で作る文脈が唯一の経路。ここで落とすと ``save_gpx=False``
+        #   (唯一の opt-out) も明示 ``gpx_dir`` も**黙って無視され**、試行が既定 (env → データ隣接)
+        #   へ書かれる。Rwp には現れない。
+        gpx_dir=gpx_dir,
+        save_gpx=save_gpx,
     )
 
     return {
@@ -688,6 +714,8 @@ def repair_frames(
         ],
         "needs_model_revision": list(report.needs_model_revision),
         "systematic_hint": [list(block) for block in report.systematic_hint],
+        # 修復試行の成果物置き場 (左右両方の試行 + 索引 manifest.jsonl)。"" = 保存無効/試行なし。
+        "gpx_dir": str(report.gpx_dir),
         "discontinuities": [
             {
                 "frame": d.frame_index,

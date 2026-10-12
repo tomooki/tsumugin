@@ -21,7 +21,7 @@ description: MEM (最大エントロピー法) 電子/核密度から構造モ�
 | `propose_structure_revisions` | 計器 (診断) | MEM ピーク + phase → `ReviseStructure` 候補 (具体 evidence: frac/suggested_edit) |
 | `edit_cif` | アクチュエータ | CIF + `AtomEdit[]` (add/move/set_occupancy/set_uiso/remove) → 新 CIF ハンドル |
 | `refine_with_revisions` | アクチュエータ | spec + `ReviseStructure(edits={"structure_path": 新CIF})` → 再精密化 |
-| `compare_structure_models` | 計器 (モデル選択) | histograms + `variants[{name, phases:[PhaseSpec]}]` → BIC/AIC 序列 + `best`/`best_is_valid`/各 `delta_bic`。**構造の差 (サイトの有無・空間群) を客観的に比べる** |
+| `compare_structure_models` | 計器 (モデル選択) | histograms + `variants[{name, phases:[PhaseSpec]}]` → BIC/AIC 序列 + `best`/`best_is_valid`/各 `delta_bic`。**構造の差 (サイトの有無・空間群) を客観的に比べる**。各 `scores[].gpx_path` (**棄却モデルも**) はそのバリアントの fit = `mem_density` の入力にもなる (サイトを欠いた側に未モデル密度が出るかを見る) |
 | `mem_rietveld_iterate` | 計器 (MPF 反復) | 精密化済み gpx → **Rietveld ⇄ MEM を交互反復** (子スナップショット gpx・ledger)。`cycles[]` (反復毎 rwp/密度/未モデルピーク数) + `stop_reason`。**単発 mem_density で改善が止まったとき**に自己無撞着へ向かうか見る |
 
 Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnavailableError"}` を返す。その旨と

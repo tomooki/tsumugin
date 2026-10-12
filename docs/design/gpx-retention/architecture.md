@@ -67,8 +67,8 @@
   manifest.jsonl                # 索引 (役割/番号/ラベル/データ/相/Rwp/GOF/backend)
 ```
 
-**run ディレクトリの粒度**: 系列解析・探索・収束確認・モデル比較・M8 閉ループは **1 実行 = 1
-ディレクトリ**を共有する (フレームごとに分かれると 754 個できて探せない)。単発ツール
+**run ディレクトリの粒度**: 系列解析・探索・収束確認・モデル比較・不連続修復・M8 閉ループは
+**1 実行 = 1 ディレクトリ**を共有する (フレームごとに分かれると 754 個できて探せない)。単発ツール
 (`auto_rietveld` / `refine_with_revisions`) は**呼び出しごとに独立した run ディレクトリ**を作る。
 
 ## 4. 命名をどう運ぶか — ContextVar 側路
@@ -95,7 +95,7 @@ run_sequential_rietveld
 
 | 失敗 | 振る舞い | 理由 |
 |---|---|---|
-| データ隣接に書けない (読み取り専用ディスク等) | **temp へ退避し理由を ledger** (`m9_gpx_fallback` / `m7_gpx_fallback`) | 750 フレームの系列をこれだけで落とさない。かつ黙って保存を諦めない |
+| データ隣接に書けない (読み取り専用ディスク等) | **temp へ退避し理由を ledger** (`m9_gpx_fallback` / `m7_gpx_fallback`)。ledger を持たない入口は**結果の警告**で返す (モデル比較 `compare_models` → `ModelComparison.warnings` = ② `warnings`。台帳を受ける `run_model_comparison` はそれを `model_compare_warning` 行に写す) | 750 フレームの系列をこれだけで落とさない。かつ黙って保存を諦めない |
 | 既定保存のコピーに失敗 | `gpx_path=""` + ledger `m7_gpx_error`、**精密化結果は返す** | 成果物は便宜であって結果ではない |
 | **明示 `keep_gpx` の保存に失敗** | **例外のまま送出** | 握り潰すと呼び出し側が「保存しない設定」と区別できない |
 | 索引 (`manifest.jsonl`) の書き込み失敗 | 黙って諦める (解析は続行) | 索引は便宜。真実は ledger と結果オブジェクト |
@@ -107,13 +107,15 @@ run_sequential_rietveld
 
 | 層 | 到達手段 |
 |---|---|
-| ① | `run_auto_rietveld` / `run_topas_rietveld` / `run_sequential_rietveld` / `run_anchored_sequential` / `run_refinement_loop` / `run_recipe_search` / `run_multistart_rietveld` / `compare_models` の `gpx_dir` / `save_gpx` |
-| ② | `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` の `gpx_dir` / `save_gpx` (**`auto_rietveld` の `search`/`multistart` 経路にも届く** — この 2 経路は既定 runner を通らないので ① へ明示的に運ぶ)。型は ② の入口で検査する: `save_gpx` の null は既定 (保存)・bool 以外と非文字列 `gpx_dir` は error dict (スキーマが緩いので `bool(None)` が opt-out に倒れる)。出力は `gpx_path` (単発) / `frames[].gpx_path` + `gpx_dir` (系列) / `project_path` (TOPAS) / `search.candidates[].gpx_path` + `convergence.multistart.starts[].gpx_path` (探索・収束確認の全候補/全開始点)。退避理由は探索/収束確認なら `search.warnings` / `convergence.warnings` |
+| ① | `run_auto_rietveld` / `run_topas_rietveld` / `run_sequential_rietveld` / `run_anchored_sequential` / `run_refinement_loop` / `run_recipe_search` / `run_multistart_rietveld` / `compare_models` / `repair_isolated` の `gpx_dir` / `save_gpx` |
+| ② | `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` / `compare_structure_models` / `repair_frames` の `gpx_dir` / `save_gpx` (**`auto_rietveld` の `search`/`multistart` 経路にも届く** — この 2 経路は既定 runner を通らないので ① へ明示的に運ぶ)。型は ② の入口で検査する: `save_gpx` の null は既定 (保存)・bool 以外と非文字列 `gpx_dir` は error dict (スキーマが緩いので `bool(None)` が opt-out に倒れる)。出力は `gpx_path` (単発) / `frames[].gpx_path` + `gpx_dir` (系列) / `project_path` (TOPAS) / `search.candidates[].gpx_path` + `convergence.multistart.starts[].gpx_path` (探索・収束確認の全候補/全開始点) / `scores[].gpx_path` (モデル比較の全バリアント = 棄却モデルも) / `repairs[].gpx_path` + `gpx_dir` + `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` (修復: 採用 / 試行の run ディレクトリ / 棄却)。退避理由は探索/収束確認なら `search.warnings` / `convergence.warnings`、モデル比較なら `warnings`、修復なら `ledger_entries` の `m9_gpx_fallback` |
 | ③ | `skills/analyze`「精密化成果物」節 / `skills/insitu` の成果物表 / `skills/operando-diagnose`「疑うときの一次資料」/ `skills/mem-model-fix` の入力の出所 / `skills/joint` / AGENT_PLAYBOOK 3 本 |
 
 恒久ガード: `tests/test_plugin_gpx_retention.py` (手順書が規定とハンドル名を書いているか・
 ② に無い ① 専用引数 `keep_gpx` を宣伝していないか) / `tests/test_layer_coverage.py`
-(`gpxstore` パッケージ宣言 + `FrameRietveldResult.gpx_path` の露出宣言)。
+(`gpxstore` パッケージ宣言 + `FrameRietveldResult.gpx_path` の露出宣言 + **`runner` 注入シームを
+持つ = 精密化を回す ② ツールは全部 `gpx_dir` / `save_gpx` を受ける** — モデル比較と修復が ① では
+保存しているのに ② から止められず置き場所も選べなかった穴の再発防止)。
 
 ## 7. 容量
 
