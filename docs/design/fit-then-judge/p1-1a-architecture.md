@@ -151,6 +151,8 @@ sidecar に D の版を記録する。
 | `judgment_requests` | `[JudgmentRequest.to_dict()]` |
 | `publishable_values` | `{キー: {"value", "esd", "unit"}}` — `publishable` な値だけ |
 | `claims_sidecar` | 書いた sidecar のパス (`""` = 書いていない) |
+| `claims_sidecar_reason` | sidecar を書かなかった理由 (`warnings` は成果物の退避理由の行なので混ぜない) |
+| `claims_policy` | 既定ポリシー D の版 (`D-1A/1`) |
 
 - 単発経路 (`auto_rietveld` 単発・`refine_with_revisions`): 収束確認が無いので `determined` は付かない
   (`esd_only` が上限)。

@@ -295,7 +295,49 @@ def _run_degrading_domain_errors(run: "Callable[[AnalysisInput], AutoRietveldRes
         result = run(inp)
     except TsumuginError as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
-    return _result_to_dict(result, inp)
+    payload = _result_to_dict(result, inp)
+    _attach_claims(payload, result, inp.phases)
+    return payload
+
+
+def _attach_claims(
+    payload: dict, result: AutoRietveldResult, phases: "Sequence[object]",
+    multistart: object | None = None,
+) -> None:
+    """② の結果に出版状態を**足す** (fit-then-judge 1A。既存キーは変えない)。
+
+    - ``claims_version`` / ``claims`` (値ごとの `Claim`) / ``judgment_requests`` (決まらなかったこと・
+      検査できなかったこと。D の既定回答付き) / ``publishable_values`` (出版してよい値だけ)
+    - ``claims_sidecar``: 精密化済み gpx の隣に書いた ``<stem>.claims.json`` (``""`` = 書いていない。
+      理由は ``claims_sidecar_reason`` — ``warnings`` は成果物の退避理由の行に使うので混ぜない)
+    - 単発・探索・`refine_with_revisions` は収束確認が無いので ``determined`` は付かない。収束確認経路は
+      ``multistart`` (Phase B) を渡し、全開始点で一致した値にだけ証人を付ける
+    - **例外にしない**: 組み立てに失敗したら ``claims: null``・``publishable_values: {}`` (= 何も出版
+      できない側) にし、理由を ``warnings`` に載せる (フィット結果は落とさない)
+    """
+    from ..claims.build import CLAIMS_VERSION
+    from ..claims.requests import assess
+    from ..claims.sidecar import write_claims_sidecar
+
+    warnings = payload.setdefault("warnings", [])
+    try:
+        body = assess(result, phases, multistart).to_dict()
+    except Exception as exc:  # noqa: BLE001 — 出版状態の失敗でフィット結果を落とさない
+        payload.update({
+            "claims_version": CLAIMS_VERSION, "claims": None, "judgment_requests": [],
+            "publishable_values": {}, "claims_sidecar": "", "claims_sidecar_reason": "",
+        })
+        warnings.append(f"出版状態 (claims) を作れませんでした: {type(exc).__name__}: {exc}")
+        return
+    payload.update({k: body[k] for k in (
+        "claims_version", "claims", "judgment_requests", "publishable_values",
+    )})
+    payload["claims_policy"] = body["policy"]
+    path, reason = ("", "") if not payload.get("gpx_path") else write_claims_sidecar(
+        str(payload["gpx_path"]), body,
+    )
+    payload["claims_sidecar"] = path
+    payload["claims_sidecar_reason"] = reason
 
 
 def _result_from_dict(result: Mapping[str, object]) -> AutoRietveldResult:
@@ -396,6 +438,7 @@ def _run_search(
         background_coeffs=selected.candidate.background_coeffs,
     )
     payload = _result_to_dict(selected.result, chosen)
+    _attach_claims(payload, selected.result, chosen.phases)
     payload["search"] = summary.to_dict()
     _lift_fallback_warnings(payload, summary.warnings)
     return payload
@@ -479,6 +522,7 @@ def _run_convergence(
             background_coeffs=selected.candidate.background_coeffs,
         )
     payload = _result_to_dict(report.best, chosen)
+    _attach_claims(payload, report.best, chosen.phases, report.multistart)
     if report.search is not None:
         payload["search"] = report.search.to_dict()
     payload["convergence"] = report.to_dict()
