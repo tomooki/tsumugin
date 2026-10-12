@@ -73,13 +73,15 @@ def _install_fake_multistart(
             seen.update(kwargs)
             seen["histograms"] = list(histograms)
         best = _result(best_rwp)
+        # 開始点は格子を実際に振っている (全部 1.0 だと同じ入力 = 空虚な収束確認になり、
+        # `structure_is_corroborated` は False へ倒れる — `confirm.perturbation_applied`)。
         starts = tuple(
             MultistartStart(
                 index=i,
-                perturbation=StartPerturbation(cell_scale={"ph": (1.0, 1.0, 1.0)}),
+                perturbation=StartPerturbation(cell_scale={"ph": (f, f, f)}),
                 result=best,
             )
-            for i in range(2)
+            for i, f in enumerate((0.993, 1.007))
         )
         return RietveldMultistartResult(
             best=best,

@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import math
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
-from .inp import Param, TopasPhase, TopasSite
+from .inp import Param, TopasPhase, TopasSite, _group_prm_plan
 from .symmetry import free_coord_axes, snap_to_special_position
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -28,6 +28,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = [
     "BEQ_PER_UISO",
+    "PHASE_SPEC_FIELDS",
+    "check_phase_spec_supported",
     "crystal_system",
     "structure_to_topas_phase",
     "to_topas_element",
@@ -244,6 +246,227 @@ def _site(
     )
 
 
+# ---------------------------------------------------------------- PhaseSpec の相の指定
+
+#: `PhaseSpec` の各フィールドを TOPAS 経路がどう扱うか (**単一の真実源**)。値は (分類, 説明)。
+#:
+#: - ``honored``: GSAS 経路と同じ意味で INP に写す
+#: - ``refused``: 既定値でなければ**精密化の前に** `InvalidPhaseSpecError` で止める
+#: - ``unused``: **どのバックエンドも読まない** (TOPAS だけで拒否すると、同じ入力が片方の
+#:   エンジンでだけ止まる)
+#:
+#: **PhaseSpec にフィールドを足したら、ここで分類しない限りテストが落ちる**
+#: (`tests/topas/test_phase_spec_fields.py`)。以前の TOPAS 経路は `refine_cell` /
+#: `frozen_coord_labels` / `free_uiso_labels` などを一度も参照せず、`backend="topas"` で渡すと
+#: 何もせずに完走していた (= 呼べるが黙って間違う)。個別に直しても次に足したフィールドで
+#: 再発するので、分類そのものを強制する。③ の手順書 (`skills/analyze`) もこの表と突き合わせる。
+PHASE_SPEC_FIELDS: "dict[str, tuple[str, str]]" = {
+    "structure_path": ("honored", "CIF を読む"),
+    "phase_name": ("honored", "str ブロックの phase_name とパラメータ名の接頭辞"),
+    "format_hint": (
+        "refused",
+        "TOPAS 経路は CIF しか読まない (`read_structure_cif`)。GSAS .EXP 等は CIF にして渡す",
+    ),
+    "mixed_occupancy_groups": (
+        "honored", "2 原子の組だけ (x と 1-x)。beq の等値と座標の結束も張る (GSAS と同じ)",
+    ),
+    "free_occupancy_labels": ("honored", "占有率段で単独に解放する ([0,1])"),
+    "occupancy_equiv_groups": ("honored", "組で 1 つの占有率 (GSAS と同じく [0,1] は張らない)"),
+    "free_uiso_labels": ("honored", "None = 全原子 / () = 0 原子 / 列挙 = その原子だけ"),
+    "position_equiv_groups": ("honored", "座標のシフトを等値にする (初期の相対位置を保つ)"),
+    "occupancy_sum_groups": (
+        "honored",
+        "(親, 子1, …) で 親 = Σ子 ([0,1] は張らない)。親を共有する複数の組も GSAS と同じ自由度で張る",
+    ),
+    "frozen_coord_labels": ("honored", "座標段で解放しない"),
+    "refine_cell": ("honored", "False なら格子段でも格子を固定する (#47)"),
+    "temperature": (
+        "unused",
+        "どのバックエンドも読まない (ヒストグラム間の温度差は HistogramSpec.temperature で判定)",
+    ),
+    "frozen_uiso_labels": ("honored", "uiso 段で解放しない (free_uiso_labels より強い)"),
+}
+
+
+def check_phase_spec_supported(spec: "PhaseSpec") -> None:
+    """TOPAS 経路が実装していない相の指定を、**構造ファイルを読む前に**拒否する。
+
+    :raises InvalidPhaseSpecError: ``refused`` に分類したフィールドが既定値でないとき
+        (② は error dict へ縮退する)
+    """
+    from dataclasses import MISSING, fields
+
+    from ..errors import InvalidPhaseSpecError
+
+    defaults = {f.name: f.default for f in fields(spec)}
+    used: list[str] = []
+    for name, (kind, note) in PHASE_SPEC_FIELDS.items():
+        if kind != "refused" or name not in defaults:
+            continue
+        value, default = getattr(spec, name), defaults[name]
+        if default is MISSING:
+            continue
+        if isinstance(value, str) and isinstance(default, str):
+            # 大小と前後の空白は意味を持たない ("cif" も CIF)。
+            differs = value.strip().upper() != default.strip().upper()
+        else:
+            differs = value != default
+        if differs:
+            used.append(f"`{name}`={value!r} ({note})")
+    if used:
+        raise InvalidPhaseSpecError(
+            f"相 {spec.phase_name!r}: TOPAS バックエンドが実装していない指定です: "
+            f"{'; '.join(used)}。黙って別の意味で精密化しないよう止めます。"
+            "backend='gsasii' を使うか、指定を外してください"
+        )
+
+
+def _resolve_phase_spec(spec: "PhaseSpec", sites: "tuple[TopasSite, ...]") -> dict:
+    """相の指定を検証し、`TopasPhase` のフィールドへ解決する。
+
+    意味を決められない指定は推測で埋めずに止める。**エンジンを問わない規則** (相に無いラベル /
+    2 原子以上を指すラベル / 異なる 2 原子に満たない組) は GSAS 経路と同じ関数
+    (`autorietveld.model.check_phase_spec_labels`) で検査する。ここに残るのは **TOPAS の INP の
+    書き方 (1 原子 = 1 つの式・組 = 1 変数) に起因する**制約で、GSAS 経路には同じ規則を課さない
+    (GSAS が意味を決めて張れることを実測したのは占有率拘束の重なりだけ。残りの GSAS での扱いは
+    未検証):
+
+    - 3 原子以上の混合占有 (``x, 1-x, 1-x`` は和が 1 にならない)
+    - 1 原子が 2 つの占有率拘束に入っている (INP では後に書いた方だけが効く。GSAS は
+      equivalence を constraint に変換して全拘束を同時に満たす)。**例外は和の組の親の共有**
+      (``(O, D1, H1), (O, D2, H2)`` — `deuterium.place_hd_mix` の形) で、これは GSAS と同じ
+      自由度 (変数 − 拘束) で張れる。同じ原子が 2 つの組の子になる・ある組の子が別の組の親に
+      なる・混合占有や等値の組と重なる形は止める
+    - 1 変数に束ねた組 (混合占有の beq / 座標の結束) の**一部だけ**を凍結する
+    - サイト対称の違う原子どうしの座標の結束 (特殊位置の原子が特殊位置から外れる)
+
+    :raises InvalidPhaseSpecError: 上記のとき
+    """
+    from ..autorietveld.model import check_phase_spec_labels, resolve_uiso_targets
+    from ..errors import InvalidPhaseSpecError
+
+    order = [site.label for site in sites]
+    check_phase_spec_labels(spec, order)
+
+    def refuse(message: str) -> NoReturn:
+        raise InvalidPhaseSpecError(f"相 {spec.phase_name!r}: {message}")
+
+    groups = {
+        "mixed_occupancy_groups": tuple(tuple(g) for g in spec.mixed_occupancy_groups),
+        "occupancy_equiv_groups": tuple(tuple(g) for g in spec.occupancy_equiv_groups),
+        "occupancy_sum_groups": tuple(tuple(g) for g in spec.occupancy_sum_groups),
+        "position_equiv_groups": tuple(tuple(g) for g in spec.position_equiv_groups),
+    }
+    for group in groups["mixed_occupancy_groups"]:
+        if len(group) != 2:
+            refuse(
+                f"`mixed_occupancy_groups` の組 {list(group)}: TOPAS 経路の混合占有は 2 原子 "
+                "(x と 1-x) だけです。3 原子以上に同じ形を当てると x, 1-x, 1-x で和が 1 に"
+                "なりません。backend='gsasii' を使ってください"
+            )
+
+    # 【占有率の拘束の重なり】: INP は原子ごとに占有率を **1 つの式**で書くので、2 つ目の拘束で
+    #   同じ原子を書くと後に書いた方だけが効く。張れる重なりは**和の組の親の共有**だけ —
+    #   最初の組で 親 = Σ子 と書き、後の組は親を書き直さずに最後の子を「親の式 − 他の子」に
+    #   する (`inp._group_prm_plan`)。H/D ミキシング (`deuterium.place_hd_mix`) が親水 O を
+    #   (O, D1, H1), (O, D2, H2) の 2 組の親にするのがこの形。
+    #   【止める形は「まとめろ」でなく GSAS へ案内する】: 重なりは GSAS では正しい入力でありうる
+    #   (GSAS は全拘束を同時に満たす)。1 つの拘束にまとめると別のモデルになる。
+    sum_parent = ("occupancy_sum_groups", "親")
+    roles: dict[str, list[tuple[str, str]]] = {}  # 原子 → [(フィールド, 役割)]
+    for name in ("mixed_occupancy_groups", "occupancy_equiv_groups", "occupancy_sum_groups"):
+        for group in groups[name]:
+            for position, label in enumerate(group):
+                if name != "occupancy_sum_groups":
+                    role = ""
+                else:
+                    role = "親" if position == 0 else "子"
+                roles.setdefault(label, []).append((name, role))
+    for label in order:
+        found = roles.get(label, [])
+        if len(found) > 1 and any(role != sum_parent for role in found):
+            described = " と ".join(f"`{name}`" + (f" の{role}" if role else "")
+                                   for name, role in found)
+            refuse(
+                f"原子 {label} の占有率が {len(found)} つの拘束 ({described}) に入っています。"
+                "INP は原子ごとに占有率を 1 つの式で書くので後に書いた方だけが効くため"
+                "止めます (TOPAS で張れる重なりは和の組の親を複数の組で共有する形だけです)。"
+                "GSAS は全拘束を同時に満たすので backend='gsasii' を使ってください"
+            )
+
+    # 【座標の結束】: GSAS は混合占有の組にも座標 (dAx/dAy/dAz) の等値を張る。等値は推移的
+    #   なので、混合占有と position_equiv_groups を連結成分に合併して 1 組 1 変数にする。
+    root = {label: label for label in order}
+
+    def find(label: str) -> str:
+        while root[label] != label:
+            root[label] = root[root[label]]
+            label = root[label]
+        return label
+
+    for group in (*groups["mixed_occupancy_groups"], *groups["position_equiv_groups"]):
+        for label in group[1:]:
+            root[find(label)] = find(group[0])
+    components: dict[str, list[str]] = {}
+    for label in order:  # 組の中の並びはサイト順 (先頭 = 共有座標の初期値の出どころ)
+        components.setdefault(find(label), []).append(label)
+    by_label = {site.label: site for site in sites}
+    frozen_coords = set(spec.frozen_coord_labels)
+    position_groups: list[tuple[str, ...]] = []
+    for members in components.values():
+        if len(members) < 2:
+            continue
+        axes = {by_label[label].free_coord_axes for label in members}
+        if len(axes) > 1:
+            detail = {label: by_label[label].free_coord_axes for label in members}
+            refuse(
+                f"座標を結束する組 {members} のサイト対称が揃っていません (自由軸 {detail})。"
+                "結束すると特殊位置の原子が特殊位置から外れるため止めます"
+            )
+        if not next(iter(axes)):
+            continue  # 全員が特殊位置で動かない — 結束する変数が無い
+        frozen = [label for label in members if label in frozen_coords]
+        if frozen and len(frozen) != len(members):
+            refuse(
+                f"座標を結束する組 {members} の一部 {frozen} だけが `frozen_coord_labels` に"
+                "あります。結束した原子は一緒に動くので一部だけは凍結できません — 組ごと"
+                "凍結するか、凍結を外してください"
+            )
+        position_groups.append(tuple(members))
+
+    # 【Uiso の対象】: GSAS 経路と**同じ関数**で解決する (`model.resolve_uiso_targets`:
+    #   None = 全原子 / () = 0 原子 / 列挙 = その原子、凍結が解放指定に勝つ)。何も指定が無いときは
+    #   None のまま (従来の INP)。
+    beq_release: "tuple[str, ...] | None" = None
+    if spec.free_uiso_labels is not None or spec.frozen_uiso_labels:
+        targets = set(
+            resolve_uiso_targets(order, spec.free_uiso_labels, spec.frozen_uiso_labels)
+        )
+        beq_release = tuple(label for label in order if label in targets)
+        for group in groups["mixed_occupancy_groups"]:
+            inside = [label for label in group if label in beq_release]
+            if inside and len(inside) != len(group):
+                refuse(
+                    f"混合占有の組 {list(group)} の beq は 1 変数 (等値拘束) なので、一部 {inside} "
+                    "だけは解放できません。`free_uiso_labels` / `frozen_uiso_labels` に組の全員を"
+                    "入れるか、全員を外してください"
+                )
+
+    return {
+        "mixed_occupancy_groups": groups["mixed_occupancy_groups"],
+        # 【混合占有には Uiso 等価も張る】: 同一サイトを分け合う原子は同じ熱振動をする。
+        #   GSAS 経路が add_EqnConstr と add_EquivConstr を対で張るのと同じ (M7 T2 の教訓)。
+        "beq_equiv_groups": groups["mixed_occupancy_groups"],
+        "free_occupancy_labels": tuple(spec.free_occupancy_labels),
+        "occupancy_equiv_groups": groups["occupancy_equiv_groups"],
+        "occupancy_parent_sum_groups": groups["occupancy_sum_groups"],
+        "position_groups": tuple(position_groups),
+        "refine_cell": bool(spec.refine_cell),
+        "frozen_coord_labels": tuple(spec.frozen_coord_labels),
+        "beq_release_labels": beq_release,
+    }
+
+
 def structure_to_topas_phase(
     structure: "Structure",
     phase_name: str,
@@ -257,16 +480,27 @@ def structure_to_topas_phase(
     **何も解放しない状態**で返す (すべて固定)。どのパラメータを解放するかは段階フラグ
     (`topas.flags`) の責務であり、構造の読み込みと解放戦略を混ぜない。
 
-    :param spec: `PhaseSpec` があれば混合占有/等値の宣言を拘束として引き継ぐ。
+    :param spec: `PhaseSpec` があれば相の指定 (拘束・凍結) を引き継ぐ。扱いはフィールドごとに
+        :data:`PHASE_SPEC_FIELDS` が決める。
     :param symops: 対称操作の上書き。CIF が対称操作を持たないとき、呼び出し側 (engine) が
         TOPAS の ``Sg/`` から補完したものを渡す。**本関数自体は純粋なまま**にするため、
         tc.exe を起動する補完はここでは行わない (`topas.symmetry.ensure_symops` の責務)。
     :raises DuplicateAtomLabelError: 原子ラベルが重複しているとき。共有 ``prm`` 名が衝突して
         **別サイトが黙って結合される**ため、ここで弾く。GSAS 経路と同じ検査・同じ例外
-        (`autorietveld.model.check_unique_atom_labels`; ``ValueError`` も継ぐ)。
+        (`autorietveld.model.check_unique_atom_labels`; `InvalidPhaseSpecError` の子)。
+    :raises InvalidPhaseSpecError: 相の指定の意味を決められないとき
+        (`_resolve_phase_spec`)、または受理した拘束を INP に書けないとき (`inp._group_prm_plan`
+        を一度組んで確かめる — 段の中で止まると rwp=inf → revert に吸われる)。``ValueError`` を
+        継ぐので従来の捕まえ方とも互換。
     """
     from ..autorietveld.model import check_unique_atom_labels
+    from ..errors import InvalidPhaseSpecError
 
+    if spec is not None:
+        # engine は構造を読む前に同じ検査をする (読めない形式で読みに行かないため)。ここでも
+        # 呼ぶのは engine を経ずに本関数を使う呼び手のため — 拒否したフィールドが黙って
+        # 素通りする入口を作らない。
+        check_phase_spec_supported(spec)
     check_unique_atom_labels(
         f"相 {phase_name!r}",
         [atom.label for atom in structure.atoms],
@@ -288,25 +522,23 @@ def structure_to_topas_phase(
         _site(atom, effective_symops, ionic_scattering=ionic_scattering)
         for atom in structure.atoms
     )
+    resolved = _resolve_phase_spec(spec, sites) if spec is not None else {}
 
-    occupancy_sum_groups: tuple[tuple[str, ...], ...] = ()
-    beq_equiv_groups: tuple[tuple[str, ...], ...] = ()
-    free_occupancy_labels: tuple[str, ...] = ()
-    if spec is not None:
-        occupancy_sum_groups = tuple(tuple(g) for g in spec.mixed_occupancy_groups)
-        occupancy_sum_groups += tuple(tuple(g) for g in spec.occupancy_sum_groups)
-        # 【混合占有には Uiso 等価も張る】: 同一サイトを分け合う原子は同じ熱振動をする。
-        #   GSAS 経路が add_EqnConstr と add_EquivConstr を対で張るのと同じ (M7 T2 の教訓)。
-        beq_equiv_groups = tuple(tuple(g) for g in spec.mixed_occupancy_groups)
-        free_occupancy_labels = tuple(spec.free_occupancy_labels)
-
-    return TopasPhase(
+    phase = TopasPhase(
         phase_name=phase_name,
         space_group=to_topas_spacegroup(structure.spacegroup_hm, structure.it_number),
         cell=cell,
         sites=sites,
-        occupancy_sum_groups=occupancy_sum_groups,
-        beq_equiv_groups=beq_equiv_groups,
-        free_occupancy_labels=free_occupancy_labels,
         free_cell_keys=free_cell_keys,
+        **resolved,
     )
+    if spec is not None:
+        # 【受理した指定は INP に書ける】: 拘束を書くのは `inp._group_prm_plan` で、書けない重なりは
+        #   そこが ``ValueError`` で止める。ここで一度組んでおくと、`_resolve_phase_spec` の
+        #   規則と書き手がずれても**精密化の前に** InvalidPhaseSpecError になる (段の中で
+        #   止まると rwp=inf → revert に吸われ、全段 revert のまま完走する)。
+        try:
+            _group_prm_plan((phase,))
+        except ValueError as exc:
+            raise InvalidPhaseSpecError(str(exc)) from exc  # 書き手のエラー文が相を名指す
+    return phase

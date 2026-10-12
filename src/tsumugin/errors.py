@@ -15,6 +15,17 @@ class EscalationRequired(TsumuginError):
     """自動リトライ上限(FR-212, 既定3回)に達し人間/Triage へのエスカレーションが必要。"""
 
 
+class InvalidPhaseSpecError(TsumuginError, ValueError):
+    """相仕様 (`PhaseSpec`) がそのエンジンで実行できないとき。
+
+    例 (TOPAS 経路): 相に無い原子ラベルを凍結・拘束に書いた / 3 原子以上の混合占有 /
+    1 変数に束ねた組の一部だけを凍結した / TOPAS が実装していない指定を渡した
+    (`topas.structure.PHASE_SPEC_FIELDS` の ``refused``)。精密化の**前**に送出されるので、
+    ② はこれを ``{"error","error_type"}`` へ縮退させる (③ は LLM なので例外は回復不能)。
+    ``ValueError`` も継ぐので、入力検証を ``ValueError`` で捕まえる既存の呼び手と互換。
+    """
+
+
 class GSASUnavailableError(TsumuginError):
     """GSAS-II (GSASIIscriptable) が未導入の環境で GSASIIBackend を要求したとき。"""
 
@@ -55,6 +66,18 @@ class TopasSymmetryError(TsumuginError):
     過去に TOPAS で回した機械か」で結果が変わっていた** (NFR-102 違反)。対処は CIF に
     対称操作ループ (``_symmetry_equiv_pos_as_xyz`` / ``_space_group_symop_operation_xyz``) を
     足すか、空間群記号が TOPAS の受け付ける形かを確かめること。
+    """
+
+
+class TopasInputError(TsumuginError, ValueError):
+    """TOPAS 経路の入力 (CIF・装置ファイル・観測データ) から INP を組めないとき。
+
+    例: 装置ファイルから波長を読めない / CIF に空間群・セル・原子ループのいずれかが無い /
+    対称操作の書式が読めない。組み立て側は ``ValueError`` で知らせるが、② の縮退
+    (`mcp.rietveld_tools._run_degrading_domain_errors`) は**ドメインエラーだけ**を捕まえる
+    (論理バグを「入力の誤り」に見せないため) ので、そのままでは例外が ② の境界を越える。
+    `topas.engine.run_topas_rietveld` が INP を組む区間で入力の誤りをこれに包む。
+    ``ValueError`` も継ぐので、従来の捕まえ方とも互換。
     """
 
 
@@ -141,7 +164,7 @@ class MPUnavailableError(TsumuginError):
     """
 
 
-class DuplicateAtomLabelError(TsumuginError, ValueError):
+class DuplicateAtomLabelError(InvalidPhaseSpecError):
     """相の構造で 2 つ以上の原子が同じラベルを持つとき (精密化の前に送出)。
 
     送出元は `autorietveld.model.check_unique_atom_labels` の 1 つで、呼ぶのは両エンジンの入口
@@ -155,4 +178,6 @@ class DuplicateAtomLabelError(TsumuginError, ValueError):
     結果・相の指定・拘束もすべてラベルキーなので、ラベルの一意性はその契約全体の前提である。
     ② はこれを ``{"error","error_type"}`` へ縮退させる (③ は LLM なので例外は回復不能)。
     ``ValueError`` も継ぐので、入力検証を ``ValueError`` で捕まえる既存の呼び手と互換。
+    `InvalidPhaseSpecError` の子なので、相の入力の誤りとして再送出・縮退する経路 (探索・
+    マルチスタート・② の縮退) はこれも同じく扱う。
     """

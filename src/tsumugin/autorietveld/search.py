@@ -81,8 +81,9 @@ import math
 from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
+from .._config_spec import check_bool, check_float, spec_value
 from .._json import finite_or_none
-from ..errors import DuplicateAtomLabelError
+from ..errors import InvalidPhaseSpecError
 from ..gpxstore import gpx_context, group_context, reject_single_keep
 from ..store import Ledger
 from .model import (
@@ -216,12 +217,15 @@ class SearchConfig:
             raise ValueError(
                 f"search_config に未知のキーがあります: {unknown} (既知: {sorted(known)})"
             )
+        # 欠落/null は既定 (`spec_value`)。既定 True の require_convergence を旧 ``bool(None)`` は
+        # False へ潰し、**収束していない best を選び得る**規則へ黙って切り替えていた。
+        s = "search_config"
         return cls(
-            rwp_tie_eps=float(d.get("rwp_tie_eps", 0.1)),  # type: ignore[arg-type]
-            disagreement_rwp_eps=float(d.get("disagreement_rwp_eps", 0.5)),  # type: ignore[arg-type]
-            cell_rel_tol=float(d.get("cell_rel_tol", 1.0e-3)),  # type: ignore[arg-type]
-            fraction_abs_tol=float(d.get("fraction_abs_tol", 0.02)),  # type: ignore[arg-type]
-            require_convergence=bool(d.get("require_convergence", True)),
+            rwp_tie_eps=spec_value(d, "rwp_tie_eps", s, 0.1, check_float),
+            disagreement_rwp_eps=spec_value(d, "disagreement_rwp_eps", s, 0.5, check_float),
+            cell_rel_tol=spec_value(d, "cell_rel_tol", s, 1.0e-3, check_float),
+            fraction_abs_tol=spec_value(d, "fraction_abs_tol", s, 0.02, check_float),
+            require_convergence=spec_value(d, "require_convergence", s, True, check_bool),
         )
 
 
@@ -995,8 +999,12 @@ def run_recipe_search(
 
     候補の実行で例外が出ても**送出しない** — `CandidateOutcome.error` に落として順位表へ残す
     (「バックエンドの失敗は例外でなく結果に縮退させ、ガードレールに処理させる」不変条件)。
-    **例外は `errors.DuplicateAtomLabelError` だけ**で、これは再送出する — 精密化の前に engine が
-    止める入力 (構造) の誤りで、どの候補でも同じになる (② は error dict へ縮退する)。
+    **候補の実行から送出するのは相の指定の誤りだけ**: 精密化の前に engine が止める入力の誤りで、
+    どの候補でも同じになるため、候補の失敗に畳まず送出する。
+
+    :raises ValueError: 未知の候補名 (`build_candidates`、候補を回す前)
+    :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル等を名指すとき
+        (`model.check_phase_spec_labels`)
     """
     reject_single_keep(run_kwargs, entry="run_recipe_search")
     config = config or SearchConfig()
@@ -1024,9 +1032,10 @@ def run_recipe_search(
             with gpx_context(group.child(role="candidate", label=cand.name)):
                 result: "AutoRietveldResult | None" = run(cand)
             error = ""
-        except DuplicateAtomLabelError:
-            # 【構造の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
+        except InvalidPhaseSpecError:
+            # 【相の指定の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
             #   どの候補でも同じになる。候補の失敗に畳むと「立つ手順が無い」と読まれる。
+            #   原子ラベルの重複 (`DuplicateAtomLabelError`) もこの子クラスとして同じく送出する。
             raise
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]

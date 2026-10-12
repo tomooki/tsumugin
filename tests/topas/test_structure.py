@@ -252,7 +252,11 @@ def test_everything_starts_fixed():
 
 
 def test_phase_spec_constraint_groups_are_carried_through():
-    """`PhaseSpec` の混合占有/等値宣言が TopasPhase の拘束宣言へ写る。"""
+    """`PhaseSpec` の混合占有/等値宣言が TopasPhase の拘束宣言へ写る。
+
+    ⚠ 以前は構造に Fe1/Al1/O1/D1 が無いまま通っていた (相に無いラベルを黙って受けていた)。
+    今は相に無いラベルを拒否するので、宣言する原子を構造に置く。
+    """
     from tsumugin.autorietveld.model import PhaseSpec
 
     spec = PhaseSpec(
@@ -261,10 +265,29 @@ def test_phase_spec_constraint_groups_are_carried_through():
         mixed_occupancy_groups=(("Fe1", "Al1"),),
         occupancy_equiv_groups=(("O1", "D1"),),
     )
-    phase = structure_to_topas_phase(_structure(), "garnet", spec=spec)
-    assert phase.occupancy_sum_groups == (("Fe1", "Al1"),)
+    structure = _structure(
+        atoms=(
+            Atom(label="Fe1", type_symbol="Fe", x=0.0, y=0.0, z=0.0, occ=0.5, uiso=0.01),
+            Atom(label="Al1", type_symbol="Al", x=0.0, y=0.0, z=0.0, occ=0.5, uiso=0.01),
+            Atom(label="O1", type_symbol="O", x=0.1, y=0.2, z=0.3, occ=1.0, uiso=0.01),
+            Atom(label="D1", type_symbol="H", x=0.15, y=0.2, z=0.35, occ=1.0, uiso=0.02),
+        )
+    )
+    phase = structure_to_topas_phase(structure, "garnet", spec=spec)
+    assert phase.mixed_occupancy_groups == (("Fe1", "Al1"),)
+    assert phase.occupancy_equiv_groups == (("O1", "D1"),)
     # 混合占有サイトは Uiso 等価も張る (GSAS の add_EquivConstr 相当)
     assert ("Fe1", "Al1") in phase.beq_equiv_groups
+
+
+def test_unknown_labels_in_the_phase_spec_are_refused():
+    """綴り違いの拘束は**張ったつもりで何も効かない**。以前は黙って受けていた。"""
+    from tsumugin.autorietveld.model import PhaseSpec
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    spec = PhaseSpec(structure_path="x.cif", phase_name="g", occupancy_equiv_groups=(("Pb", "D1"),))
+    with pytest.raises(InvalidPhaseSpecError, match="D1"):
+        structure_to_topas_phase(_structure(), "g", spec=spec)
 
 
 def test_duplicate_labels_are_rejected():
