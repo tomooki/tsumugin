@@ -185,7 +185,8 @@ def test_eight_tools_registered_in_mcp_tools():
     #   + 装置パラメータ 5 (FR-502: list_instrument_presets/read_pattern_metadata/
     #   create_instrument_params/inspect_instrument_params/calibrate_instrument。
     #   instrument_path の出所が Z-Code 利用者以外にも存在するようになった = §4.5)
-#   = 43 ツール登録
+    #   + export_claims_csv 1 (fit-then-judge 1A: 出版状態の列付き CSV)
+#   = 44 ツール登録
     expected = {
         "submit_analysis",
         "list_hypotheses",
@@ -200,6 +201,7 @@ def test_eight_tools_registered_in_mcp_tools():
         "identify_pattern",
         "propose_discriminating_measurements",
         "auto_rietveld",
+        "export_claims_csv",
         "propose_next_actions",
         "refine_with_revisions",
         "sequential_rietveld",

@@ -243,6 +243,16 @@ report = optimize_then_confirm(histograms, phases, n_starts=5, coord_jitter_ang=
 根拠と実測: `docs/design/stable-baseline-recipe/STANDARD-PROCEDURE.md` /
 `docs/benchmark/stable-baseline-recipe/PHASE-B-FINDINGS.md`。
 
+### 出版状態 — 報告する値は `publishable_values` から (fit-then-judge 1A)
+
+結果には値ごとの出版状態 (`claims`)・判断要求 (`judgment_requests`)・**出版してよい値だけ**の
+`publishable_values` が付く。報告・出版に数値として載せるのは `publishable_values` の値だけで、
+それ以外は `claims[キー]` の `determinacy`・`gate`・`checks` を添えて「決まっていない / 検査
+できなかった」と書く。`judgment_requests` は報告に並べ、エージェントが閉じてはならない
+(既定ポリシー D は常に `hold`)。表で渡すときは `export_claims_csv(claims, 絶対パス)`。
+⛔ `refined_cells` などの平文フィールドから数値を拾って出版しない (互換のために残っているだけ)。
+詳細は `plugins/tsumugin/skills/analyze/SKILL.md`「出版状態」。
+
 ## 6. 失敗時の対処 (エージェントの意思決定)
 
 | 症状 | 原因候補 | 対処 |

@@ -70,6 +70,7 @@ SearchRunner = Callable[[RecipeCandidate], AutoRietveldResult]
 __all__ = [
     "RIETVELD_TOOLS",
     "auto_rietveld",
+    "export_claims_csv",
     "list_refinement_backends",
     "propose_data_preprocessing",
     "propose_next_actions",
@@ -1104,8 +1105,48 @@ def list_refinement_backends() -> dict:
         return {"error": str(exc), "error_type": type(exc).__name__}
 
 
+def export_claims_csv(claims: "Mapping[str, object] | None", path: str) -> dict:
+    """出版状態 (`claims`) を値ごとに状態の列付きで CSV に書く (fit-then-judge 1A)。
+
+    :param claims: ``auto_rietveld`` / ``refine_with_revisions`` の出力の ``claims`` そのもの
+        (§4.5 到達可能性)。``null`` (出版状態を作れなかった)・空・状態を持たない値は error dict
+    :param path: 出力先の**絶対パス** (相対パスはサーバの作業ディレクトリに化けるので受けない)。
+        既存ファイルは上書きしない (error dict)。置き場所の目安は ``claims_sidecar`` と同じ run ディレクトリ
+    :returns: ``{"path", "n_rows", "n_publishable"}``。全行が ``publishable``・``determinacy``・
+        ``provenance``・``scope``・``checks``・``gate`` の列を持つ — 出版不可の行も消さずに状態で示す
+    """
+    from pathlib import Path
+
+    from ..claims.export import write_claims_csv
+    from ..claims.model import Claim
+
+    if not isinstance(claims, Mapping) or not claims:
+        return {
+            "error": "claims が空か null です (auto_rietveld の出力の claims をそのまま渡してください。"
+                     "null は出版状態を作れなかったことを意味し、書ける値がありません)",
+            "error_type": "ValueError",
+        }
+    if not Path(path).is_absolute():
+        return {
+            "error": f"出力先は絶対パスで指定してください: {path!r} (相対パスはサーバの作業"
+                     "ディレクトリに解決され、意図しない場所に書かれます)",
+            "error_type": "ValueError",
+        }
+    try:
+        parsed = {str(k): Claim.from_dict(v) for k, v in claims.items()}  # type: ignore[arg-type]
+        out = write_claims_csv(parsed, path)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+    return {
+        "path": str(out),
+        "n_rows": len(parsed),
+        "n_publishable": sum(1 for c in parsed.values() if c.publishable),
+    }
+
+
 RIETVELD_TOOLS: Mapping[str, object] = {
     "auto_rietveld": auto_rietveld,
+    "export_claims_csv": export_claims_csv,
     "list_refinement_backends": list_refinement_backends,
     "propose_next_actions": propose_next_actions,
     "propose_data_preprocessing": propose_data_preprocessing,

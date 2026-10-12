@@ -244,7 +244,7 @@ def test_create_mcp_server_wires_all_eight_tools():
     # +1: list_refinement_backends (M12 TOPAS バックエンド選択の可用性確認) → 38
     # +5: 装置パラメータ (FR-502: list_instrument_presets/read_pattern_metadata/
     #     create_instrument_params/inspect_instrument_params/calibrate_instrument) → 43
-    assert len(MCP_TOOLS) == 43
+    assert len(MCP_TOOLS) == 44
 
 
 def _collect_tool_names(server: object) -> list[str]:
