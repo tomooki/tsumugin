@@ -503,8 +503,9 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "exported_cifs": (
         UNEXPOSED,
         "意図的 (fit-then-judge P1a): `run_auto_rietveld(export_cif_dir=)` を ② はまだ渡さないので"
-        "常に空。精密化後の構造は 1A の結晶化学検査器が内部で使う部品で、③ が単独で呼ぶ用途は"
-        "P1-1A で検査器と一緒に露出する (docs/design/fit-then-judge/proposal.md §6)",
+        "常に空。P1-1A の結晶化学検査器は書き出した CIF を使わず、入力 CIF に精密化後の値を"
+        "差し込んで組む (`claims.chemistry`) ので、③ が単独で呼ぶ用途はまだ無い"
+        "(docs/design/fit-then-judge/p1-1a-architecture.md §5)",
     ),
     "phase_integrated_intensity": (
         "phase_integrated_intensity",
