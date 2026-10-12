@@ -3501,6 +3501,149 @@ def run_auto_rietveld(
     )
 
 
+def _refined_coord_free_labels(ph) -> set[str]:
+    """座標の精密化フラグ (``X``) が**立っていない**原子のラベル (= 摂動しない原子)。"""
+    general = ph.data["General"]
+    _cx, ct, _cs, _cia = general["AtomPtrs"]
+    out: set[str] = set()
+    for row in ph.data["Atoms"]:
+        flags = str(row[ct + 1]) if len(row) > ct + 1 else ""
+        if "X" not in flags:
+            out.add(str(row[ct - 1]))
+    return out
+
+
+def _coord_constrained_labels(gpx, ph) -> set[str]:
+    """座標のシフト (``dAx/dAy/dAz``) が**拘束に入っている**原子のラベル (= プローブで摂動しない原子)。
+
+    極性原点の hold・座標の等値などは「動かない/一緒に動く」ことを拘束が決めているので、初期値を
+    振ると拘束が摂動値のまま固定する (原点ごと並進した解になる)。拘束の変数は `G2VarObj` で、
+    原子はランダム ID (`ranId`) で指す (名前ではない — 読み込み前の str は ``?::dAz:?``)。
+    """
+    try:
+        phase_rid = ph.data["ranId"]
+        cia = int(ph.data["General"]["AtomPtrs"][3])
+        by_rid = {row[cia + 8]: str(row[ph.data["General"]["AtomPtrs"][1] - 1])
+                  for row in ph.data["Atoms"]}
+        constraints = gpx.data["Constraints"]["data"].get("Phase", [])
+    except Exception:  # noqa: BLE001 — 読めなければ拘束なしとして扱う (呼び手は全フラグを見る)
+        return set()
+    out: set[str] = set()
+    for item in constraints:
+        for term in item:
+            if not isinstance(term, (list, tuple)) or len(term) < 2:
+                continue
+            var = term[1]
+            if (
+                getattr(var, "phase", None) == phase_rid
+                and str(getattr(var, "name", "")).startswith("dA")
+                and getattr(var, "atom", None) in by_rid
+            ):
+                out.add(by_rid[var.atom])
+    return out
+
+
+@with_blas_threads
+def probe_from_gpx(
+    gpx_path: str,
+    *,
+    cell_frac: float,
+    coord_jitter_ang: float,
+    sign: int,
+    seed: int = 0,
+    max_cyc: int = 12,
+    blas_threads: int | None = None,
+) -> AutoRietveldResult:
+    """保存した精密化済み gpx から開始し、解放されているパラメータだけを摂動して精密化し直す
+    (fit-then-judge P1-1B, proposal §4.5 の初期値プローブ)。
+
+    `run_auto_rietveld` は毎回 CIF から組み立てるので「最終状態の近く」から始められない。本関数は gpx を
+    一時ディレクトリへ**複製して**開き (保存した成果物は書き換えない)、**その時点で精密化フラグが立っている**
+    格子 (varyList に A 項がある相) の a,b,c を ``1 + sign·cell_frac`` 倍、座標フラグ ``X`` が立っていて座標が
+    拘束に入っていない原子 (極性原点の hold 等は除く — `_coord_constrained_labels`) の対称性が自由な軸を
+    ``coord_jitter_ang`` Å の一様乱数で動かし、フラグを変えずに精密化する。
+    凍結した値を振らない (振ると摂動値がそのまま最終値になり、偽の「割れ」になる — PR #226 と同じ理由)。
+
+    結果は値の比較 (`agreement.parameter_agreements`) に要るフィールドだけを持つ `AutoRietveldResult`
+    (段は 1 つ ``probe``)。精密化の失敗は `RefinementFailedError` として送出する (呼び手が「回らなかった
+    = 証人なし」に畳む — 「戻った」とは数えない)。
+
+    :param sign: 格子の摂動の向き (+1 / -1)。±δ の 2 開始点で使う
+    """
+    if sign not in (1, -1):
+        raise ValueError(f"sign は +1 か -1 です: {sign!r}")
+    if not (math.isfinite(cell_frac) and cell_frac >= 0.0):
+        raise ValueError(f"cell_frac は 0 以上の有限値です: {cell_frac!r}")
+    g2sc = _g2sc()
+    with tempfile.TemporaryDirectory(prefix="tsumugin-probe-") as tmp:
+        copy = Path(tmp) / "probe.gpx"
+        shutil.copyfile(gpx_path, copy)
+        gpx = g2sc.G2Project(gpxfile=str(copy))
+        g2phases, g2hists = gpx.phases(), gpx.histograms()
+        moved_cells: list[str] = []
+        if cell_frac > 0.0:
+            for ph in g2phases:
+                if _cell_was_refined(ph):
+                    f = 1.0 + sign * cell_frac
+                    _perturb_initial_cell(ph, (f, f, f))
+                    moved_cells.append(ph.name)
+        n_axes = 0
+        if coord_jitter_ang > 0.0:
+            n_axes = _apply_coord_jitter(
+                g2phases, {ph.name: coord_jitter_ang for ph in g2phases}, seed,
+                frozen={
+                    ph.name: tuple(sorted(
+                        _refined_coord_free_labels(ph) | _coord_constrained_labels(gpx, ph)
+                    ))
+                    for ph in g2phases
+                },
+            )
+        gpx.data["Controls"]["data"]["max cyc"] = max_cyc
+        _refine_once(gpx)
+        rwp, gof, nvar = _rvals(gpx)
+        g2phases, g2hists = gpx.phases(), gpx.histograms()
+        refined_cells, _uiso, _occ = _extract_state(g2phases)
+        atom_maps = _atom_result_maps(g2phases)
+        micro = _microstructure_maps(g2phases, g2hists)
+        wt_fracs, wt_frac_esd = _weight_fraction_maps(g2phases, g2hists)
+        prof_full = _extract_profile(g2hists)
+        result = AutoRietveldResult(
+            stage_results=(
+                StageResult(
+                    "probe", rwp, gof, nvar, _converged(gpx),
+                    note=f"sign={sign} cell_frac={cell_frac} coord_jitter_ang={coord_jitter_ang}"
+                    f" cells={moved_cells} axes={n_axes}",
+                ),
+            ),
+            final_rwp=rwp,
+            final_gof=gof,
+            refined_cells=refined_cells,
+            validity=ValidityReport(passed=True),
+            n_obs=_nobs(gpx),
+            cell_esd=_cell_esd_map(g2phases),
+            phase_weight_fractions=wt_fracs,
+            phase_weight_fraction_esd=wt_frac_esd,
+            atom_uiso=atom_maps.uiso,
+            atom_occupancy=atom_maps.occupancy,
+            atom_multiplicity=atom_maps.multiplicity,
+            atom_occupancy_esd=atom_maps.occupancy_esd,
+            atom_coords=atom_maps.coords,
+            atom_coord_esd=atom_maps.coord_esd,
+            atom_coord_free_index=atom_maps.coord_free_index,
+            atom_uiso_esd=atom_maps.uiso_esd,
+            hist_profile=tuple({k: v for k, (v, _) in d.items()} for d in prof_full),
+            hist_profile_refined=tuple({k: bool(r) for k, (_, r) in d.items()} for d in prof_full),
+            hist_profile_esd=_profile_esd_map(g2hists),
+            hap_size=micro[0],
+            hap_mustrain=micro[1],
+            hap_size_esd=micro[2],
+            hap_mustrain_esd=micro[3],
+            coord_jitter_axes_moved=int(n_axes),
+            final_covariance=_final_covariance(gpx),
+        )
+    return result
+
+
 def _final_covariance(gpx) -> "CovarianceRecord | None":
     """最終段の共分散の記録 (fit-then-judge P1-1A。観測のみ — 失敗はフィットを落とさず None)。"""
     try:

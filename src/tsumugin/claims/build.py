@@ -28,7 +28,7 @@ from ..autorietveld.agreement import AgreementTolerances, is_agreement, paramete
 from ..autorietveld.model import AutoRietveldResult
 from .model import Check, Claim, Determinacy, Scope, Witness, compose, weaker_determinacy
 
-__all__ = ["CLAIMS_VERSION", "base_claims", "with_convergence"]
+__all__ = ["CLAIMS_VERSION", "base_claims", "with_convergence", "with_probe"]
 
 #: claims の写像規則の版 (② の出力・sidecar に記録する)。
 CLAIMS_VERSION = "fit-then-judge/1A/1"
@@ -246,6 +246,7 @@ def with_convergence(
             witness_ok and pairs > 0 and len(found) == pairs
             and all(is_agreement(v[0]) for v in found)
             and claim.determinacy is Determinacy.ESD_ONLY
+            and "refined" in claim.provenance  # 解放しなかった入力値は「決まった」のではない
             and (coords_tested or claim.param_class != "coord")
         ):
             zs = [v[1] for v in found if v[1] is not None]
@@ -255,5 +256,67 @@ def with_convergence(
                     "n_starts": len(starts), "n_pairs": pairs, "k_esd": tolerances.k_esd,
                     "max_z": max(zs) if zs else None,
                 }),
+            )
+    return out
+
+
+def with_probe(
+    claims: Mapping[str, Claim], base: AutoRietveldResult, outcome: object | None
+) -> dict[str, Claim]:
+    """初期値プローブ (±δ の 2 開始点) で値ごとに「戻ったか」を見る (REQ-FTJ-1B-602)。
+
+    - どちらかの開始点で割れた値 (DISAGREE) は `initial_value_dependent`
+    - 両方で戻った `esd_only` の値は `locally_stable` (証人付き)。`determined` 等は変えない
+      (合成は最小 — 割れたときだけ落ちる)
+    - 2 開始点とも回っていなければ何もしない (回らなかった・省いた値は基底状態のまま)
+    - 座標の摂動を頼んだのに 1 軸も動かなかったら、座標には証人を付けない
+    """
+    out = dict(claims)
+    if outcome is None or not getattr(outcome, "complete", False):
+        return out
+    probes = tuple(getattr(outcome, "probes", ()))
+    config = getattr(outcome, "config", None)
+    jitter = float(getattr(config, "coord_jitter_ang", 0.0) or 0.0)
+    cell_frac = float(getattr(config, "cell_frac", 0.0) or 0.0)
+    coords_tested = jitter > 0.0 and all(int(p.coord_jitter_axes_moved) > 0 for p in probes)
+    if not coords_tested and cell_frac <= 0.0:
+        return out  # 何も振っていない — 戻ったのは当然で証人にならない
+    # 振らなかった種類の値には証人を付けない (格子を振らずに「格子が戻った」と言わない)。
+    untested = ({"coord"} if not coords_tested else set()) | ({"cell"} if cell_frac <= 0.0 else set())
+    tolerances = AgreementTolerances()
+    found: dict[str, list[tuple[str, float | None, int]]] = {}
+    for i, probe in enumerate(probes):
+        for cls, items in parameter_agreements(base, probe, tolerances).items():
+            for it in items:
+                found.setdefault(f"{cls}:{it.key}", []).append((it.verdict, it.z, i))
+    detail_base = {
+        "n_probes": len(probes),
+        "cell_frac": getattr(config, "cell_frac", None),
+        "coord_jitter_ang": jitter,
+        "k_esd": tolerances.k_esd,
+    }
+    for key, claim in list(out.items()):
+        verdicts = found.get(key, [])
+        split = [v for v in verdicts if v[0] == "DISAGREE"]
+        if split:
+            worst = max(split, key=lambda v: v[1] if v[1] is not None else math.inf)
+            out[key] = claim.weakened_to(
+                Determinacy.INITIAL_VALUE_DEPENDENT,
+                Witness("initial_value_probe_split", {
+                    **detail_base, "probe": worst[2], "z": worst[1],
+                }),
+            )
+            continue
+        if (
+            len(verdicts) == len(probes)
+            and all(is_agreement(v[0]) for v in verdicts)
+            and claim.determinacy is Determinacy.ESD_ONLY
+            and "refined" in claim.provenance  # 解放しなかった入力値は戻って当然 (証人にならない)
+            and claim.param_class not in untested
+        ):
+            zs = [v[1] for v in verdicts if v[1] is not None]
+            out[key] = claim.strengthened_to(
+                Determinacy.LOCALLY_STABLE,
+                Witness("initial_value_probe", {**detail_base, "max_z": max(zs) if zs else None}),
             )
     return out

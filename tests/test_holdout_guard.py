@@ -72,6 +72,10 @@ FEATURE_TOKENS = (
     "preferred_orientation_phases",
     "occupancy_phases",
     "check_phase_scoped_flags",
+    "probe_from_gpx",
+    "run_initial_value_probe",
+    "with_probe",
+    "autorietveld.probe",
 )
 
 #: (準) hold-out の参照 (パスらしい文字列の中で照合する)。大文字小文字を区別しない。

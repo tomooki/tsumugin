@@ -162,6 +162,15 @@ def test_values_that_agree_across_all_starts_are_determined_with_a_witness():
     assert w.detail["n_starts"] == 3 and w.detail["n_pairs"] == 3
 
 
+def test_an_input_value_is_not_determined_by_agreeing_starts():
+    """解放しなかった入力値は開始点で同じなのが当然 — 「決まった」と読ませない (P1-1B で発見)。"""
+    claims = with_convergence(base_claims(_result()), _ms([_result()] * 3))
+    c = claims["coord:P.O1.z"]
+    assert c.provenance == {"input"}
+    assert c.determinacy is Determinacy.ESD_ONLY
+    assert not any(w.kind == "multistart_agreement" for w in c.witnesses)
+
+
 def test_a_value_that_split_between_starts_is_initial_value_dependent():
     split = _result(atom_coords={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.35, 0.1, 0.3)}})
     claims = with_convergence(base_claims(_result()), _ms([_result(), _result(), split]))
