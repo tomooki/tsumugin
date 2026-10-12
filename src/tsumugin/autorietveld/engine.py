@@ -26,6 +26,7 @@ import numpy as np
 from .._json import finite_or_none
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
 from ..gpxstore import record_artifact as _record_artifact
+from ..gpxstore import sanitize_label as _sanitize_label
 from ..store import Ledger
 from .absorption import apply_absorption_correction
 from .atomrows import (
@@ -71,7 +72,17 @@ from .model import (
 )
 from .recipe import build_recipe, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
-from .stagepolicy import StageMetrics, decide_stage
+from .constraint_groups import (
+    AtomSite,
+    merge_equiv_groups,
+    partially_released_groups,
+    polar_origin_constraints,
+    refuse_polar_origin_with_coord_jitter,
+    refuse_polar_origin_with_ranked_coords,
+    unknown_labels,
+)
+from ..errors import InvalidPhaseSpecError
+from .stagepolicy import StageMetrics, decide_stage, revert_reason
 from .validity import (
     check_initial_uiso,
     check_profile_physicality,
@@ -769,6 +780,15 @@ def _phase_atom_info(ph, spec: PhaseSpec) -> dict:
             None if spec.free_uiso_labels is None else list(spec.free_uiso_labels)
         ),
         "frozen_uiso": set(spec.frozen_uiso_labels),
+        # Uiso の等値の組 (混合占有の組と合併済み)。`uiso_equiv_groups` を指定したときだけ
+        # 張り・検査する — 混合占有だけの既存経路の挙動は変えない (fit-then-judge P1a)。
+        "uiso_groups": (
+            merge_equiv_groups(
+                _known_label_groups(spec.mixed_occupancy_groups, labels), spec.uiso_equiv_groups
+            )
+            if spec.uiso_equiv_groups
+            else ()
+        ),
         "refine_cell": spec.refine_cell,
         # 原子ラベル→元素記号 (重原子から順に解放する "本気フィット" 手順で使う)
         "element_of": element_of,
@@ -830,6 +850,9 @@ def _freeze_all(hists, phases, atom_flag_maps, radiations, keep: "set[str]") -> 
 
     GSAS の ``clear_refinements`` / ``clear_HAP_refinements`` を使う。背景とヒストグラム
     スケールは "本気フィット" 手順で常時解放の前提なので触らない。
+
+    ``keep`` の語彙: ``cell`` / ``displacement`` / ``profile`` / ``size_strain`` / ``atoms`` /
+    ``zero_offset`` (② `mcp._recipe_spec` が同じ閉じた集合で検証する)。
     """
     if "cell" not in keep:
         for ph in phases:
@@ -845,9 +868,14 @@ def _freeze_all(hists, phases, atom_flag_maps, radiations, keep: "set[str]") -> 
                 except Exception:  # noqa: BLE001 — 当該ジオメトリに無いキーは無視
                     pass
     if "profile" not in keep:
+        # ゼロ点は `zero_offset` の名前で残せる (fit-then-judge P1a: 位置の項として格子と一緒に
+        # 解くため、幅の項 U,V,W,X,Y と別に残したい)。
+        profile_keys = ("U", "V", "W", "X", "Y", "Zero", "SH/L", "alpha", "beta-0", "beta-1",
+                        "sig-0", "sig-1", "sig-2")
+        if "zero_offset" in keep:
+            profile_keys = tuple(k for k in profile_keys if k != "Zero")
         for hist in hists:
-            for key in ("U", "V", "W", "X", "Y", "Zero", "SH/L", "alpha", "beta-0", "beta-1",
-                        "sig-0", "sig-1", "sig-2"):
+            for key in profile_keys:
                 try:
                     hist.clear_refinements({"Instrument Parameters": [key]})
                 except Exception:  # noqa: BLE001
@@ -920,6 +948,17 @@ def _update_atom_flags(flag_map: dict[str, str], info: dict, stage_flags) -> boo
     if "uiso" in stage_flags:
         for lab in _element_rank_labels(info, _resolve_uiso_targets(info), stage_flags["uiso"]):
             add(lab, "U")
+        # 等値の組の一部だけに U が立つと、拘束が「動く変数」と「動かない変数」を結ぶ。
+        #   黙って別の手順に化けさせず、例外 → 既存の inf→revert→ledger 経路に載せる。
+        partial = partially_released_groups(
+            info.get("uiso_groups", ()),
+            {lab for lab, f in flag_map.items() if "U" in f},
+        )
+        if partial:
+            raise InvalidPhaseSpecError(
+                f"Uiso の等値の組の一部だけが解放される段です: {partial}。"
+                "組の原子は全員解放か全員凍結にしてください (free/frozen_uiso_labels・元素ランク)"
+            )
     if "occupancy" in stage_flags:
         occ_labels = (
             list(info["mixed"]) + list(info.get("free_occ", set()))
@@ -1098,15 +1137,32 @@ def _apply_stage(
             except Exception:
                 pass
             ph.set_HAP_refinements({"Pref.Ori.": True}, histograms=list(hists))
-    if "profile_lorentzian" in flags:
+    if flags.get("profile_lorentzian"):
         # Lorentzian (X,Y) + Zero を X 線に追加解放する (別段階, revert ガード)。実験室/放射光 X 線は
         # Lorentzian 成分が支配的で U,V,W だけでは実測ピーク形状に合わない (CaTeO3: 43%→13%)。悪化時は
         # 本段階ごと revert され U,V,W は保持される (T3/T4 非回帰)。TOF/中性子は除外。
+        # キー列なら**その部分集合だけ** (fit-then-judge P1a: Zero を X,Y と束ねない — 位置の項は
+        # `zero_offset` で格子と同じ段に解く)。True は従来どおり X,Y,Zero (既定経路は不変)。
+        # 判定は値の真偽 — ``false`` を「解放する」と読むと検証 (`released_group_members`) や
+        # TOPAS と解釈が食い違う (以前は ``in flags`` で ``false`` でも解放していた)。
+        lorentz = flags["profile_lorentzian"]
+        lorentz_keys = (
+            list(lorentz) if isinstance(lorentz, (list, tuple)) else ["X", "Y", "Zero"]
+        )
         for i, hist in enumerate(hists):
             rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
             if rad.is_tof or rad.is_neutron or fixed_profile[i]:
                 continue
-            hist.set_refinements({"Instrument Parameters": ["X", "Y", "Zero"]})
+            hist.set_refinements({"Instrument Parameters": lorentz_keys})
+    if flags.get("zero_offset"):
+        # ゼロ点だけを解放する (fit-then-judge P1a)。CW なら放射源によらず位置の項なので、
+        # Lorentzian と違い CW 中性子も対象。TOF (Zero の意味が違う) と装置プロファイル固定
+        # (較正済みのゼロ点) は除外。
+        for i, hist in enumerate(hists):
+            rad = radiations[i] if i < len(radiations) else Radiation.XRAY_LAB
+            if rad.is_tof or fixed_profile[i]:
+                continue
+            hist.set_refinements({"Instrument Parameters": ["Zero"]})
     if "profile_asymmetry" in flags:
         # 軸発散非対称 (SH/L) を X 線に別段階で追加解放する (分割擬フォークト相当の経験的ピーク形状;
         # 物理解釈を要さない)。低角の非対称に効くが常には改善しないため X,Y,Zero とは分け、悪化時は
@@ -1343,6 +1399,46 @@ def _equiv_positions(gpx, pid, idxs) -> None:
             pass
 
 
+def _known_label_groups(groups, labels) -> tuple[tuple[str, ...], ...]:
+    """組から相に無いラベルを除く (混合占有の組は既存経路で未知ラベルを許容している)。"""
+    known = set(labels)
+    return tuple(tuple(lab for lab in g if lab in known) for g in groups)
+
+
+def _checked_uiso_groups(spec: PhaseSpec, labels: "list[str]") -> tuple[tuple[str, ...], ...]:
+    """`uiso_equiv_groups` を検査し、混合占有の組と合併した Uiso の等値の組を返す (P1a)。
+
+    **精密化の前に分かる誤りはここで止める** (段ごとの revert に溶かすと、全 uiso 段が
+    ``revert_reason="error"`` のまま「Uiso を一度も精密化しない」フィットが完走する):
+    相に無いラベル・2 原子未満の組・free/frozen_uiso_labels で静的に割れる組。
+    元素ランクの段で動的に割れる場合だけは段の例外 (`_update_atom_flags`) に任せる。
+
+    :raises InvalidPhaseSpecError: 上の誤り (② は error dict へ縮退する)
+    """
+    bad = [list(g) for g in spec.uiso_equiv_groups if len(set(g)) < 2]
+    if bad:
+        raise InvalidPhaseSpecError(
+            f"相 {spec.phase_name!r} の uiso_equiv_groups に 2 原子未満の組があります: {bad}"
+        )
+    missing = unknown_labels(spec.uiso_equiv_groups, labels)
+    if missing:
+        raise InvalidPhaseSpecError(
+            f"相 {spec.phase_name!r} の uiso_equiv_groups に原子が無いラベルがあります: {missing}"
+        )
+    merged = merge_equiv_groups(
+        _known_label_groups(spec.mixed_occupancy_groups, labels), spec.uiso_equiv_groups
+    )
+    declared = labels if spec.free_uiso_labels is None else list(spec.free_uiso_labels)
+    released = set(declared) - set(spec.frozen_uiso_labels)
+    split = partially_released_groups(merged, released)
+    if split:
+        raise InvalidPhaseSpecError(
+            f"相 {spec.phase_name!r} の Uiso の等値の組 {split} が free_uiso_labels/"
+            "frozen_uiso_labels で一部だけ解放されます。組の原子は全員解放か全員凍結にしてください"
+        )
+    return merged
+
+
 def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
     """占有率和=1・Uiso 等価 (混合占有) と相分率和=1 (多相) の制約を登録する (REQ-102/104)。
 
@@ -1361,16 +1457,27 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
         ct = ph.data["General"]["AtomPtrs"][1]
         label_to_idx = {row[ct - 1]: i for i, row in enumerate(atoms)}
         pid = ph.id
+        # Uiso の等値の組 (fit-then-judge P1a): 指定があれば混合占有の Uiso 等価と**合併して
+        #   1 回だけ**張る (同じ変数を 2 つの組に入れない)。指定が無ければ従来どおり混合占有の
+        #   組ごとに張る (既存経路はビット同一)。
+        uiso_groups: tuple[tuple[str, ...], ...] = ()
+        if spec.uiso_equiv_groups:
+            uiso_groups = _checked_uiso_groups(spec, list(label_to_idx))
         for group in spec.mixed_occupancy_groups:
             idxs = [label_to_idx[lab] for lab in group]
             fracs = [f"{pid}::Afrac:{i}" for i in idxs]
             uisos = [f"{pid}::AUiso:{i}" for i in idxs]
             gpx.add_EqnConstr(1.0, fracs, [1.0] * len(fracs))
-            gpx.add_EquivConstr(uisos)
+            if not spec.uiso_equiv_groups:
+                gpx.add_EquivConstr(uisos)
             for frac in fracs:
                 _bound_occupancy(gpx, frac)
             # 共有サイトは共位置: 座標 (dAx/dAy/dAz) も等値拘束する。
             _equiv_positions(gpx, pid, idxs)
+        for group in uiso_groups:
+            idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
+            if len(idxs) >= 2:
+                gpx.add_EquivConstr([f"{pid}::AUiso:{i}" for i in idxs])
         # 明示的な座標等値グループ (共位置 H/D 対など)。
         for group in spec.position_equiv_groups:
             _equiv_positions(gpx, pid, [label_to_idx[lab] for lab in group])
@@ -1392,6 +1499,83 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
             hid = hist.id
             scales = [f"{ph.id}:{hid}:Scale" for ph in g2phases]
             gpx.add_EqnConstr(1.0, scales, [1.0] * len(scales))
+
+
+def _atomic_number(raw: str) -> int:
+    """GSAS の原子 type (例 "Fe+2") から原子番号を返す (不明は 0)。"""
+    sym = str(raw)[:2].strip().capitalize()
+    return _Z_ORDER.get(sym, _Z_ORDER.get(sym[:1].upper(), 0))
+
+
+def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
+    """`PhaseSpec.fix_polar_origin` の相に、極性方向の原点固定を登録する (fit-then-judge P1a)。
+
+    精密化する原子の判定は `_phase_atom_info` と同じ規則 (自由座標を持つ原子 −
+    `frozen_coord_labels`)。site symmetry を解釈できない原子は engine が座標を凍結するので、
+    「動けるが凍結された原子」(= 原点を決めている) として扱う (その原子は
+    `coordinate_freedom_mismatches` に現れる)。
+
+    :param getcsxinel: site symmetry → `GetCSxinel` の戻り値 (テスト注入用。None なら GSAS)。
+    :returns: 登録した固定の記録 (ledger 用)。
+    """
+    applied: list[dict] = []
+    targets = [(ph, spec) for ph, spec in zip(g2phases, specs) if spec.fix_polar_origin]
+    if not targets:
+        return applied
+    if getcsxinel is None:
+        from GSASII import GSASIIspc as G2spc
+
+        getcsxinel = G2spc.GetCSxinel
+    for ph, spec in targets:
+        general = ph.data["General"]
+        polax = str(general["SGData"].get("SGPolax", ""))
+        cx, ct, cs, cia = general["AtomPtrs"]
+        frozen = set(spec.frozen_coord_labels)
+        sites: list[AtomSite] = []
+        index_of: dict[str, int] = {}
+        for i, row in enumerate(ph.data["Atoms"]):
+            label = str(row[ct - 1])
+            index_of[label] = i
+            sym = str(row[cs]).strip()
+            try:
+                xid, xcoef = getcsxinel(row[cs])[:2]
+                has_free = any(xid)
+            except Exception:  # noqa: BLE001 — `_phase_atom_info` と同じ規則
+                # 解釈できない原子: engine は "1" 以外を凍結する。凍結された原子は (どの方向へも
+                # 動けるものとして) 原点を決めているので、一般位置の形で「精密化しない」と置く。
+                xid, xcoef = (1, 2, 3), (1.0, 1.0, 1.0)
+                has_free = sym == "1"
+            sites.append(
+                AtomSite(
+                    label=label,
+                    z=float(_atomic_number(row[ct])),
+                    xid=tuple(int(v) for v in xid),  # type: ignore[arg-type]
+                    xcoef=tuple(float(v) for v in xcoef),  # type: ignore[arg-type]
+                    refined=has_free and label not in frozen,
+                )
+            )
+        try:
+            constraints = polar_origin_constraints(polax, sites)
+        except ValueError as exc:
+            raise InvalidPhaseSpecError(
+                f"相 {spec.phase_name!r} の極性原点を固定できません: {exc}"
+            ) from exc
+        for label, terms in constraints:
+            idx = index_of[label]
+            names = [f"{ph.id}::dA{axis}:{idx}" for axis, _ in terms]
+            if len(terms) == 1:
+                gpx.add_HoldConstr(names)
+            else:
+                gpx.add_EqnConstr(0.0, names, [c for _, c in terms])
+            applied.append(
+                {
+                    "phase": spec.phase_name,
+                    "polax": polax,
+                    "atom": label,
+                    "terms": [[axis, c] for axis, c in terms],
+                }
+            )
+    return applied
 
 
 def _apply_content_constraint(gpx, g2phases, g2hists, content_constraint) -> None:
@@ -2275,6 +2459,7 @@ def run_auto_rietveld(
     content_constraint: Mapping[str, float] | None = None,
     check_occupancy_uiso: bool = False,
     stability: StabilityOptions | None = None,
+    export_cif_dir: str | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -2354,6 +2539,12 @@ def run_auto_rietveld(
         1 度も触らず、``Refine`` の呼び出しも現行のまま)。詳細は `StabilityOptions`。
         ⚠ **箱拘束は装置・幾何だけ** — 占有率/Uiso/座標には張らない (P-SAR-1)。
     :returns: AutoRietveldResult
+    :param export_cif_dir: 精密化**後**の構造を相ごとに CIF で書き出すディレクトリ (fit-then-judge
+        P1a; 結晶化学検査の入力)。既存ファイルは上書きせず連番を付ける。書き出しの失敗はフィットを
+        落とさず ledger ``m7_cif_export_error`` に残す。書いたパスは結果の ``exported_cifs``。
+        ⚠ 拘束で従属させたパラメータ (等値の組の従属側など) の esd は保証しない — 最終段が
+        revert されると GSAS の制約写像が巻き戻した試行のまま残り得る (未検証)。構造の検査には
+        使えるが、esd を出版に使う前に確かめること。既定 None (書き出さない)。
     :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル・相の中で 2 原子以上を指すラベル・
         異なる 2 原子に満たない組を名指すとき (`model.check_phase_spec_labels`)。GSAS が相を読んで
         ラベルが分かった直後、**精密化の前に**送出する (② は error dict へ縮退する)
@@ -2378,6 +2569,8 @@ def run_auto_rietveld(
         validate_correlation_groups(stages, histograms=histograms)
     else:
         stages = build_recipe(histograms, phases)
+    refuse_polar_origin_with_ranked_coords(phases, stages)
+    refuse_polar_origin_with_coord_jitter(phases, initial_coord_jitter)
     # 検証は GSAS の解決より**前**に済ませる — 不正なレシピは GSAS が無い環境でも同じ
     # ``CorrelationGroupViolation`` で落ちるべきであり (入力の誤りは backend の有無と無関係)、
     # そうしないと本検証のテストが GSAS 導入環境でしか回らなくなる。
@@ -2546,6 +2739,9 @@ def run_auto_rietveld(
 
         # --- 制約登録 (混合占有: 占有率和=1 + Uiso 等価; 多相: 相分率和=1) ---
         _setup_constraints(gpx, g2phases, g2hists, phases)
+        # 極性方向の原点固定 (fit-then-judge P1a; `PhaseSpec.fix_polar_origin` の相だけ)。
+        for entry in _apply_polar_origin(gpx, g2phases, phases):
+            ledger.append("m7_polar_origin", entry)
         # 相間の総量線形拘束 (FR-318 lock_fractions; feasibility ゲートは呼び出し側)。
         _apply_content_constraint(gpx, g2phases, g2hists, content_constraint)
         # 結合距離ソフト拘束 (初期座標が理想幾何のうちに登録; O–H/D の漂流防止)。
@@ -2637,6 +2833,11 @@ def run_auto_rietveld(
             # 同じ parmFrozen へ書く esd プルーニング/救済との取り違えは、窓を狭めるのではなく
             # **凍らせた名前を基準側へ足す** ことで切り分ける (`_bound_hit_baseline`)。
             frozen_before = _frozen_variables(gpx) if box_bounds else set()
+            # rwp を inf にした直接の原因 (`stagepolicy.REVERT_CAUSES`)。revert 理由の記録専用で
+            # 判定には使わない (fit-then-judge P1a タスク 1)。
+            inf_cause: str | None = None
+            # 段の例外の要約 (note に載せる — ledger にしか無いと ② の出力から理由が読めない)。
+            error_note: str | None = None
             try:
                 auto_frozen = _apply_stage(
                     gpx, g2hists, g2phases, phase_infos, atom_flag_maps, radiations, stage,
@@ -2730,13 +2931,18 @@ def run_auto_rietveld(
                 # 格子崩壊 (0 近傍/非有限) またはプロファイル非物理化 (幅関数がレンジ内で負・散乱/立上り
                 # 係数が非物理) は発散とみなし inf 化 → 既存 revert 経路 (物理妥当性ガード)。
                 # プロファイルガードは解放済パラメータのみ hard 判定するため T1〜T4 は非回帰。
-                if not _cells_physical(g2phases) or not _profiles_physical(
-                    g2hists, radiations, histograms
-                ).passed:
+                # 短絡評価の順序 (格子 → プロファイル) は従来の ``or`` と同じに保つ。
+                if not _cells_physical(g2phases):
+                    inf_cause = "gate:cell"
+                elif not _profiles_physical(g2hists, radiations, histograms).passed:
+                    inf_cause = "gate:profile"
+                if inf_cause is not None:
                     rwp, gof, converged, rwp_penalized = (
                         float("inf"), float("inf"), False, None
                     )
             except Exception as exc:  # 精密化失敗 → inf 変換 (REQ-403)
+                inf_cause = "error"
+                error_note = f"error={type(exc).__name__}: {str(exc)[:160]}"
                 rwp, gof, nvar, converged = float("inf"), float("inf"), 0, False
                 rwp_penalized = None
                 # 失敗した精密化の penalty は**測れていない**。前段の値を残すと「この段の試行で
@@ -2952,6 +3158,8 @@ def run_auto_rietveld(
                 note_extras.append("unconverged")
             if is_noop:
                 note_extras.append("noop")
+            if error_note:
+                note_extras.append(error_note)
             # 【意図的な凍結を無言失敗と区別する (#211)】: 全相凍結の uiso 段は原理的に
             #   ビット同一 no-op になる。事実を残さないと真の無言失敗と見分けが付かない。
             if uiso_frozen_all:
@@ -2975,6 +3183,9 @@ def run_auto_rietveld(
                     reverted=reverted,
                     note=note,
                     rwp_penalized=rwp_penalized,
+                    revert_reason=revert_reason(decision, cause=inf_cause),
+                    # 検査していない (detect_noop_stages 無効) のに False と答えない
+                    is_noop=decision.is_noop if stab.detect_noop_stages else None,
                 )
             )
             # 【penalty 分離の記録】: 拘束を χ² に入れた段だけ、分離の**材料ごと**残す。
@@ -3200,11 +3411,145 @@ def run_auto_rietveld(
         hap_mustrain=micro[1],
         hap_size_esd=micro[2],
         hap_mustrain_esd=micro[3],
+        phase_integrated_intensity=_phase_integrated_intensity(g2phases, g2hists),
+        coordinate_freedom_mismatches=_coordinate_freedom_mismatches(g2phases),
+        exported_cifs=(
+            _export_refined_cifs(g2phases, export_cif_dir, ledger) if export_cif_dir else {}
+        ),
         # 退避して**保存できた**ときだけ (= 台帳の `m7_gpx_fallback` と同じ条件)。台帳は呼び出し側に
         #   返らないことがある (② 単発) ので、理由は結果にも載せる (設計 §5)。
         artifact_fallback_reason=plan.fallback_reason if out_gpx else "",
         coord_jitter_axes_moved=int(n_jittered),
     )
+
+
+def _coordinate_freedom_mismatches(
+    g2phases, getcsxinel=None, sytsym=None
+) -> dict[str, tuple[tuple[str, str, str], ...]]:
+    """原子行の site symmetry と、座標から再計算した site symmetry の自由度の食い違い (P1a)。
+
+    比べるのは `GetCSxinel` の**独立変数の番号の並びと係数** (自由な軸・結合・符号・倍率) —
+    記号の字面が違っても両方が同じなら食い違いではない。原子行を解釈できない原子 (engine が黙って凍結する
+    当の病理) は食い違いとして出す。再計算に失敗した原子は ``"?"`` で出す (捏造しない)。
+
+    :param getcsxinel: / :param sytsym: テスト注入用 (None なら GSAS-II)。
+    """
+    if getcsxinel is None or sytsym is None:
+        from GSASII import GSASIIspc as G2spc
+
+        getcsxinel = getcsxinel or G2spc.GetCSxinel
+        sytsym = sytsym or G2spc.SytSym
+
+    def pattern(sym: str) -> "tuple[tuple[int, ...], tuple[float, ...]] | None":
+        # 独立変数の番号だけでなく係数 (符号・倍率) も比べる — "X X Z" と "X -X Z"、
+        # "X 2X 0" と "2X X 0" は番号の並びが同じでも別の拘束。
+        try:
+            xid, xcoef = getcsxinel(sym)[:2]
+            return tuple(int(v) for v in xid), tuple(round(float(c), 9) for c in xcoef)
+        except Exception:  # noqa: BLE001 — 解釈できない = 食い違いとして出す
+            return None
+
+    out: dict[str, tuple[tuple[str, str, str], ...]] = {}
+    for ph in g2phases:
+        general = ph.data["General"]
+        cx, ct, cs, cia = general["AtomPtrs"]
+        found: list[tuple[str, str, str]] = []
+        for row in ph.data["Atoms"]:
+            label = str(row[ct - 1])
+            row_sym = str(row[cs]).strip()
+            try:
+                recomputed = str(sytsym(row[cx : cx + 3], general["SGData"])[0]).strip()
+            except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+                found.append((label, row_sym, "?"))
+                continue
+            row_pattern = pattern(row_sym)
+            if row_pattern is None or row_pattern != pattern(recomputed):
+                found.append((label, row_sym, recomputed))
+        if found:
+            out[ph.name] = tuple(found)
+    return out
+
+
+def _unique_path(directory, stem: str, suffix: str) -> Path:
+    """``directory/<stem><suffix>`` を返す。既にあれば ``-1``, ``-2``… を付ける (上書きしない)。
+
+    ``stem`` は相名など任意の文字列なので `gpxstore.sanitize_label` でパス安全にする。
+    """
+    base = Path(directory)
+    safe = _sanitize_label(stem)
+    candidate = base / f"{safe}{suffix}"
+    n = 1
+    while candidate.exists():
+        candidate = base / f"{safe}-{n}{suffix}"
+        n += 1
+    return candidate
+
+
+def _export_refined_cifs(g2phases, directory: str, ledger) -> dict[str, str]:
+    """相ごとに精密化後の CIF を書き出す (fit-then-judge P1a)。失敗は ledger に残して続ける。"""
+    out_dir = Path(directory)
+    exported: dict[str, str] = {}
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001 — ディレクトリが作れなくてもフィットは落とさない
+        ledger.append("m7_cif_export_error", {"phase": None, "error": repr(exc)[:200]})
+        return exported
+    for ph in g2phases:
+        tmp: Path | None = None
+        try:
+            path = _unique_path(out_dir, ph.name, ".cif")
+            # 一時ファイルに書いてから改名する (書きかけの CIF を正規の名前で残さない)
+            tmp = path.with_name(path.name + ".partial")
+            ph.export_CIF(str(tmp))
+            tmp.replace(path)
+            exported[ph.name] = str(path)
+        except Exception as exc:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+            ledger.append("m7_cif_export_error", {"phase": ph.name, "error": repr(exc)[:200]})
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    return exported
+
+
+def _integrated_intensity(reflist, super_: bool = False) -> float:
+    """反射リスト 1 本の Σ Fc²·Icorr (列 9/11、超空間群は 1 つずれる)。空なら 0.0。"""
+    import numpy as np
+
+    arr = np.asarray(reflist, dtype=float)
+    if arr.size == 0:
+        return 0.0
+    im = 1 if super_ else 0
+    return float(np.sum(arr[:, 9 + im] * arr[:, 11 + im]))
+
+
+def _phase_integrated_intensity(g2phases, g2hists) -> dict[str, tuple[float | None, ...]]:
+    """相名 → ヒストグラム索引順の積分計算強度 Σ Fc²·Icorr (fit-then-judge P1a)。
+
+    最終状態の反射リスト (`G2PwdrData.reflections()`) から読む。その相がヒストグラムに
+    無い・反射リストが無い/空・想定外の形のときは None (0.0 を捏造しない)。観測のみ。
+    """
+    out: dict[str, list[float | None]] = {ph.name: [] for ph in g2phases}
+    for hist in g2hists:
+        try:
+            refl = hist.reflections() or {}
+        except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+            refl = {}
+        for ph in g2phases:
+            try:
+                entry = refl.get(ph.name)
+                reflist = entry.get("RefList") if entry else None
+                # 空の反射リストは「未計算」(GSAS は計算前に [] を置く) — 0.0 を捏造しない。
+                if reflist is None or len(reflist) == 0:
+                    out[ph.name].append(None)
+                    continue
+                value = _integrated_intensity(reflist, bool(entry.get("Super", False)))
+            except Exception:  # noqa: BLE001 — 想定外の形でも既定経路の最後で落とさない
+                out[ph.name].append(None)
+                continue
+            out[ph.name].append(value if math.isfinite(value) else None)
+    return {name: tuple(vals) for name, vals in out.items()}
 
 
 def _extract_residual(

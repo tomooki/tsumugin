@@ -41,7 +41,7 @@ from ..autorietveld.model import (
     StageResult,
     ValidityReport,
 )
-from ..autorietveld.stagepolicy import StageMetrics, decide_stage
+from ..autorietveld.stagepolicy import StageMetrics, decide_stage, revert_reason
 from ..errors import TopasInputError, TopasRunError, TsumuginError
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
 from ..gpxstore import record_artifact as _record_artifact
@@ -348,6 +348,7 @@ def run_topas_rietveld(
             raise TopasInputError(f"TOPAS の入力から INP を組めません: {exc}") from exc
 
         stage_results: list[StageResult] = []
+        inf_cause: str | None = None  # rwp を inf にした原因 (revert 理由の記録用)
         # 【直前の**受理済み**状態】: 段方針 (`autorietveld.stagepolicy`) は gof/母数も見る —
         #   「rwp・gof・n_params がビット同一で revert も立たない」段 = 無言 no-op の検出に要る。
         prev_rwp, prev_gof, prev_nvar = float("inf"), float("inf"), 0
@@ -371,6 +372,7 @@ def run_topas_rietveld(
             except (TopasRunError, Exception) as exc:  # noqa: BLE001
                 # 【不変条件】: バックエンドの失敗は例外でなく rwp=inf に変換しガードレールへ。
                 rwp, gof, n_params = float("inf"), float("inf"), 0
+                inf_cause = "error"
                 note = f"{type(exc).__name__}: {exc}"[:200]
                 run = None  # type: ignore[assignment]
 
@@ -379,6 +381,7 @@ def run_topas_rietveld(
                 StageMetrics(rwp, gof, n_params),
                 worsen_eps=worsen_eps,
             )
+            stage_cause, inf_cause = inf_cause, None
             worsened = decision.reverted
             if worsened:
                 # revert = 段を適用する前の文書 (= 直前に受理した段の値) に戻すだけ。
@@ -416,6 +419,10 @@ def run_topas_rietveld(
                     converged=math.isfinite(rwp),
                     reverted=worsened,
                     note=note,
+                    # 既に計算している判定を捨てない (fit-then-judge P1a): TOPAS は no-op 検出を
+                    #   常に行うので is_noop は検査済みの値。revert 理由は失敗なら "error"。
+                    revert_reason=revert_reason(decision, cause=stage_cause),
+                    is_noop=decision.is_noop,
                 )
             )
             if ledger is not None:
@@ -427,7 +434,8 @@ def run_topas_rietveld(
                         "gof": gof if math.isfinite(gof) else None,
                         "n_params": n_params,
                         "reverted": worsened,
-                        "revert_reason": decision.reason,
+                        # 結果 (`StageResult.revert_reason`) と同じ語彙 (受理は None・失敗は "error")
+                        "revert_reason": revert_reason(decision, cause=stage_cause),
                         "noop": decision.is_noop,
                         "uiso_frozen_all": uiso_frozen_all,
                         "note": note,

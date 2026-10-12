@@ -47,7 +47,7 @@ from ..errors import TsumuginError
 from ..gpxstore import fallback_warning, is_fallback_warning
 from ._degrade import degrade_oserror
 from ._gpx_spec import gpx_args
-from ._recipe_spec import stage_to_dict, stages_from_dicts
+from ._recipe_spec import stage_from_dict, stage_to_dict, stages_from_dicts
 from ..refine_loop.action import AnalysisInput
 from ..refine_loop.diagnostics import propose_next_actions as _propose
 from ..refine_loop.orchestrator import _default_gsas_runner
@@ -125,6 +125,28 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
         "final_rwp_penalized": finite_or_none(result.final_rwp_penalized),
         "final_restraint_penalty": finite_or_none(result.final_restraint_penalty),
         "n_obs": result.n_obs,
+        # 相ごとの積分計算強度 Σ Fc²·Icorr (ヒストグラム索引順; その相が無ければ null)。
+        #   どの相が散乱を担っているかの観測 (相分率は潰れうるので別に要る)。
+        #   null = 計測していない (例: TOPAS 経路)。{} と混同させない。
+        "phase_integrated_intensity": (
+            None
+            if result.phase_integrated_intensity is None
+            else {
+                name: [finite_or_none(v) if v is not None else None for v in values]
+                for name, values in result.phase_integrated_intensity.items()
+            }
+        ),
+        # 座標の自由度の食い違い: 相名 → [[原子, 原子行の site symmetry, 再計算した site
+        #   symmetry], ...]。空 = なし。engine が黙って座標を凍結した原子をここで見つける。
+        #   null = 計測していない (例: TOPAS 経路) — 空 ({} = 食い違いなし) と区別する。
+        "coordinate_freedom_mismatches": (
+            None
+            if result.coordinate_freedom_mismatches is None
+            else {
+                name: [list(t) for t in found]
+                for name, found in result.coordinate_freedom_mismatches.items()
+            }
+        ),
         "stages": [
             {
                 "label": s.label,
@@ -134,6 +156,15 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
                 "n_params": s.n_params,
                 "converged": bool(s.converged),
                 "reverted": bool(s.reverted),
+                # revert の理由と no-op は語彙の決まった独立キーで出す (note の文言に頼らせない)。
+                #   revert したのに理由を記録しない経路 (例: TOPAS) は "unrecorded" と明示する
+                #   (null だと「受理」と区別できない)。noop は検査していなければ null。
+                "revert_reason": (
+                    s.revert_reason
+                    if s.revert_reason is not None
+                    else ("unrecorded" if s.reverted else None)
+                ),
+                "noop": s.is_noop,
                 # 【note を落とさない (★ ②到達可能性)】: 段の所見 (``unconverged`` /
                 #   ``noop`` / ``pruned=N`` / ``bound_hits=N`` / ``auto_frozen_cells=…``) は
                 #   **ここにしか出ない**。ledger は ② の戻り値に含まれないので、note を落とすと
@@ -256,8 +287,8 @@ def _run_degrading_domain_errors(run: "Callable[[AnalysisInput], AutoRietveldRes
     """runner を実行し、Tsumugin の**ドメインエラー**だけを ``{"error","error_type"}`` へ縮退する。
 
     精密化の前に engine が送出する入力仕様の誤り (`errors.InvalidPhaseSpecError`: 相に無い
-    ラベル・TOPAS が実装していない相の指定 等) やエンジン未導入は、ここで縮退しないと ② の境界を
-    越える (③ は LLM なので例外は回復不能)。**ドメインエラー以外 (論理バグ) は透過させる** —
+    ラベル・極性原点の site symmetry・TOPAS が実装していない相の指定 等) やエンジン未導入は、
+    ここで縮退しないと ② の境界を越える (③ は LLM なので例外は回復不能)。**ドメインエラー以外 (論理バグ) は透過させる** —
     縮退対象を広げると不具合が「入力の誤り」に見えて握り潰される。
     """
     try:
@@ -791,6 +822,11 @@ def refine_with_revisions(
         gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         inp = _build_input(histograms, phases, background_coeffs, stages)
         for a in actions:
+            if isinstance(a, Mapping) and a.get("type") == "ReleaseParams":
+                # `ReleaseParams` の flags は段フラグそのもの — `stages` と同じ検証 (語彙・値) を
+                #   通す。通さないと `freeze_others: ["zero"]` のような綴りが黙って Zero を凍らせる。
+                stage_from_dict({"label": str(a.get("label", "release")),
+                                 "flags": a.get("flags", {})})
             inp = action_from_dict(a).apply(inp)
         opts = StabilityOptions.from_dict(stability)
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:

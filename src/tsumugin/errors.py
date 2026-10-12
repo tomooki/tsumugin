@@ -20,7 +20,9 @@ class InvalidPhaseSpecError(TsumuginError, ValueError):
 
     例 (TOPAS 経路): 相に無い原子ラベルを凍結・拘束に書いた / 3 原子以上の混合占有 /
     1 変数に束ねた組の一部だけを凍結した / TOPAS が実装していない指定を渡した
-    (`topas.structure.PHASE_SPEC_FIELDS` の ``refused``)。精密化の**前**に送出されるので、
+    (`topas.structure.PHASE_SPEC_FIELDS` の ``refused``)。
+    例 (GSAS 経路, fit-then-judge P1a): `uiso_equiv_groups` に相に無いラベルがある / 極性原点
+    固定で site symmetry を解釈できない。精密化の**前**に送出されるので、
     ② はこれを ``{"error","error_type"}`` へ縮退させる (③ は LLM なので例外は回復不能)。
     ``ValueError`` も継ぐので、入力検証を ``ValueError`` で捕まえる既存の呼び手と互換。
     """

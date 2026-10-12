@@ -117,3 +117,61 @@ def test_thresholds_stay_where_the_engines_expect_them():
     signature = __import__("inspect").signature(decide_stage)
     assert signature.parameters["worsen_eps"].default == pytest.approx(1e-6)
     assert math.isfinite(1e-6)
+
+
+# ---------------- revert 理由 (fit-then-judge P1a タスク 1) ----------------
+#
+# `decide_stage` の reason は ``non_finite`` 1 つに「GSAS の失敗」と「格子崩壊・プロファイル
+# 非物理のゲート」を潰す (engine がどちらも rwp=inf に変換してから渡すため)。テンプレートは
+# 理由ごとに扱いを変える (ゲート違反は相へ帰属させる・失敗は unevaluated) ので、engine が
+# 控えた原因で ``non_finite`` を割る。
+
+
+def test_accepted_stage_has_no_revert_reason():
+    from tsumugin.autorietveld.stagepolicy import revert_reason
+
+    decision = decide_stage(_m(20.0), _m(15.0))
+    assert revert_reason(decision, cause=None) is None
+
+
+def test_worse_and_unconverged_keep_the_policy_reason():
+    from tsumugin.autorietveld.stagepolicy import revert_reason
+
+    assert revert_reason(decide_stage(_m(10.0), _m(12.0)), cause=None) == "worse"
+    assert (
+        revert_reason(decide_stage(_m(10.0), _m(9.0), unconverged=True), cause=None)
+        == "unconverged"
+    )
+
+
+@pytest.mark.parametrize("cause", ["error", "gate:cell", "gate:profile"])
+def test_non_finite_is_split_by_the_recorded_cause(cause: str):
+    from tsumugin.autorietveld.stagepolicy import revert_reason
+
+    decision = decide_stage(_m(10.0), _m(math.inf))
+    assert revert_reason(decision, cause=cause) == cause
+
+
+def test_recorded_cause_wins_over_unconverged():
+    """ゲートが働いた段は収束判定にも落ち得る。rwp を inf にした直接の原因を優先する。"""
+    from tsumugin.autorietveld.stagepolicy import revert_reason
+
+    decision = decide_stage(_m(10.0), _m(math.inf), unconverged=True)
+    assert decision.reason == "unconverged"
+    assert revert_reason(decision, cause="gate:cell") == "gate:cell"
+
+
+def test_non_finite_without_cause_stays_non_finite():
+    """原因を控えていない経路 (例: TOPAS) で理由を捏造しない。"""
+    from tsumugin.autorietveld.stagepolicy import revert_reason
+
+    decision = decide_stage(_m(10.0), _m(math.inf))
+    assert revert_reason(decision, cause=None) == "non_finite"
+
+
+def test_unknown_cause_is_rejected():
+    """語彙外の原因を黙って通すと、理由で分岐する呼び手が別の手順に化ける。"""
+    from tsumugin.autorietveld.stagepolicy import revert_reason
+
+    with pytest.raises(ValueError):
+        revert_reason(decide_stage(_m(10.0), _m(math.inf)), cause="exploded")

@@ -110,7 +110,8 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
   — 指定したつもりの凍結が効いていない。
   - TOPAS は意味を決められない指定を**精密化の段を回す前に** `error_type: "InvalidPhaseSpecError"`
     で止める: 相に無い原子ラベル / 1 変数に束ねた組 (混合占有の beq・座標の結束) の一部だけを
-    凍結 / サイト対称の違う原子の座標の結束 / `format_hint` が CIF 以外。エラー文が指定を
+    凍結 / サイト対称の違う原子の座標の結束 / `format_hint` が CIF 以外 / GSAS 経路だけの
+    `uiso_equiv_groups` (Uiso の等値の組)・`fix_polar_origin` (極性方向の原点固定)。エラー文が指定を
     名指しするので**直して回し直す** (相に無いラベル等の**ラベルの誤りは GSAS でも同じく
     精密化の前に止まる** (手順 1) — エンジンを替えても直らない)。
     **TOPAS では張れない形は GSAS で回す** (同じエラーで止まる): 3 原子以上の混合占有 (x と 1-x の
@@ -147,6 +148,12 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
   `scale` が相分率そのもので、`MVW` が重量分率を正規化して返すため和=1 の拘束が存在しない。
   相分率を動かしたいなら `scale` を解放する (既定レシピは S0 で解放済み)。指定すると
   段が明示的に失敗する。
+- **`zero_offset` は未対応** — ゼロ点だけを解放する GSAS 経路のフラグ (汎用テンプレートの
+  部品として追加)。TOPAS では未翻訳で、指定すると段が明示的に失敗する。TOPAS の
+  `profile_lorentzian` は x,y だけでゼロ点を含まない (GSAS の `profile_lorentzian: true` は
+  X,Y,Zero) ことにも注意。**`profile_lorentzian` のキー列** (例 `["X","Y"]`) も TOPAS では
+  未対応で、true/false のみ。キー列を渡すと**精密化の前に呼び出し全体が拒否され** error dict が
+  返る (段が失敗する `zero_offset` とは現れ方が違う)。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
 - **段は直前に受理した段の精密化値から始まる** (GSAS 経路で gpx が値を持ち越すのと同じ)。

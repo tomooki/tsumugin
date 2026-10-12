@@ -22,10 +22,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-__all__ = ["StageDecision", "StageMetrics", "decide_stage"]
+__all__ = ["REVERT_CAUSES", "StageDecision", "StageMetrics", "decide_stage", "revert_reason"]
 
 #: 悪化とみなす閾値 (数値ノイズで段を捨てないための余裕)。両エンジンの実測既定。
 DEFAULT_WORSEN_EPS = 1e-6
+
+#: engine が控える「rwp を inf にした原因」の語彙 (`revert_reason` の ``cause``)。
+#: ``error`` = バックエンドの精密化失敗 (例外・無言失敗の例外化) / ``gate:cell`` = 格子崩壊 /
+#: ``gate:profile`` = プロファイルの非物理化。
+REVERT_CAUSES = frozenset({"error", "gate:cell", "gate:profile"})
 
 
 @dataclass(frozen=True)
@@ -106,3 +111,26 @@ def _is_noop(previous: StageMetrics, trial: StageMetrics, detect: bool) -> bool:
         and trial.rwp == previous.rwp
         and trial.gof == previous.gof
     )
+
+
+def revert_reason(decision: StageDecision, *, cause: "str | None") -> "str | None":
+    """段の revert 理由を返す (受理なら ``None``)。
+
+    `decide_stage` は engine が rwp を inf に変換した**後**の指標しか見ないので、
+    「バックエンドの失敗」と「物理ゲート違反」を ``non_finite`` 1 つに潰す。さらに収束判定は
+    rwp より先に見られるので、ゲートが働いた段でも ``unconverged`` が返り得る。engine が inf 化の
+    直前に控えた ``cause`` (`REVERT_CAUSES`) があれば**それを優先する** (rwp を inf にした直接の
+    原因であり、テンプレートは相への帰属に使う)。原因を控えない経路 (``cause=None``) では
+    `decide_stage` の理由をそのまま返し、理由を捏造しない。
+
+    :param decision: `decide_stage` の判断。
+    :param cause: engine が控えた inf 化の原因 (無ければ ``None``)。
+    :raises ValueError: ``cause`` が語彙外 (理由で分岐する呼び手が別の手順に化けるのを防ぐ)。
+    """
+    if cause is not None and cause not in REVERT_CAUSES:
+        raise ValueError(f"未知の revert 原因: {cause!r} (許容: {sorted(REVERT_CAUSES)})")
+    if not decision.reverted:
+        return None
+    if cause is not None:
+        return cause
+    return decision.reason

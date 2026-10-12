@@ -233,6 +233,8 @@ _PHASE_WRONG = {
     "refine_cell": "false",
     "temperature": "300",
     "frozen_uiso_labels": [1],
+    "uiso_equiv_groups": ["O1", "O2"],
+    "fix_polar_origin": "true",
 }
 _HIST_WRONG = {
     "data_format": True,

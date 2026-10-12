@@ -287,6 +287,12 @@ PHASE_SPEC_FIELDS: "dict[str, tuple[str, str]]" = {
         "どのバックエンドも読まない (ヒストグラム間の温度差は HistogramSpec.temperature で判定)",
     ),
     "frozen_uiso_labels": ("honored", "uiso 段で解放しない (free_uiso_labels より強い)"),
+    "uiso_equiv_groups": (
+        "refused", "Uiso の等値の組は GSAS 経路だけが張る (fit-then-judge P1a)",
+    ),
+    "fix_polar_origin": (
+        "refused", "極性方向の原点固定は GSAS 経路だけが張る (fit-then-judge P1a)",
+    ),
 }
 
 

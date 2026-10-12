@@ -82,6 +82,56 @@ def test_seed_profile_with_search_is_refused_not_silently_dropped():
     assert "seed_profile" in out["error"]
 
 
+def test_stage_revert_reason_and_noop_reach_layer_two_output():
+    """fit-then-judge P1a タスク 1: 段の revert 理由と no-op は ③ が読める形で出す。
+
+    note の文言に頼らせない (文言は変わってよい) — 理由は語彙の決まった独立キーにする。
+    """
+    from tsumugin.autorietveld.model import AutoRietveldResult, StageResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(
+            StageResult("scale", 30.0, 3.0, 2, True),
+            StageResult("cell", 30.0, 3.0, 2, False, reverted=True, revert_reason="gate:cell"),
+            StageResult("profile", 30.0, 3.0, 2, True, is_noop=True),
+            StageResult("lorentz", 30.0, 3.0, 2, True, is_noop=False),
+            # 理由を記録しない経路 (例: TOPAS) の revert は "unrecorded" — null だと受理と区別不能
+            StageResult("asym", 30.0, 3.0, 2, True, reverted=True),
+        ),
+        final_rwp=30.0, final_gof=3.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    stages = payload["stages"]
+    assert [s["revert_reason"] for s in stages] == [None, "gate:cell", None, None, "unrecorded"]
+    # 検査していない (None) は null のまま — False (= 動いた) と答えない
+    assert [s["noop"] for s in stages] == [None, None, True, False, None]
+
+
+def test_uiso_equiv_groups_reach_engine_from_layer_two_json():
+    """fit-then-judge P1a タスク 2: ③ は JSON しか送れない — phases の dict で届くこと。"""
+    from tsumugin.mcp.rietveld_tools import _build_input
+
+    inp = _build_input(
+        [], [{"structure_path": "x.cif", "phase_name": "x", "uiso_equiv_groups": [["O1", "O2"]]}],
+        6, None,
+    )
+    assert inp.phases[0].uiso_equiv_groups == (("O1", "O2"),)
+
+
+# ---------------- engine のドメインエラーを ② の境界で縮退する (fit-then-judge P1a) ----------------
+
+
+def _raising_runner(exc):
+    def run(inp):
+        raise exc
+
+    return run
+
+
 # ---------------- 相 spec の null / 型取り違え ----------------
 
 _HIST = {
@@ -105,6 +155,134 @@ def _capturing_runner(seen: list):
     return run
 
 
+@pytest.mark.parametrize("tool", ["auto_rietveld", "refine_with_revisions"])
+def test_engine_domain_error_is_degraded_not_raised(tool):
+    """`run(inp)` から出る Tsumugin のドメインエラー (相仕様の誤り・エンジン未導入等) は
+    error dict にする。③ は LLM なので例外は回復不能なハード失敗になる (CLAUDE.md 不変条件)。
+
+    P1a で engine に足した入力仕様の検査 (`uiso_equiv_groups` の未知ラベル・極性原点の
+    site symmetry) は精密化の前に送出されるので、ここで縮退しないと境界を越える。
+    """
+    from tsumugin.errors import InvalidPhaseSpecError
+    from tsumugin.mcp import rietveld_tools
+
+    fn = getattr(rietveld_tools, tool)
+    args = ([], []) if tool == "auto_rietveld" else ([], [], [])  # refine_with_revisions は actions 必須
+    out = fn(*args, runner=_raising_runner(InvalidPhaseSpecError("相 x に原子 Ox がありません")))
+    assert out == {"error": "相 x に原子 Ox がありません", "error_type": "InvalidPhaseSpecError"}
+
+
+def test_logic_bugs_are_not_swallowed_at_the_boundary():
+    """ドメインエラー以外 (論理バグ) は握り潰さない — 縮退対象を広げすぎない対照。"""
+    from tsumugin.mcp.rietveld_tools import auto_rietveld
+
+    with pytest.raises(ZeroDivisionError):
+        auto_rietveld([], [], runner=_raising_runner(ZeroDivisionError("bug")))
+
+
+def test_phase_integrated_intensity_reaches_layer_two_output():
+    """fit-then-judge P1a タスク 5: 相ごとの積分計算強度を ③ が読めること (欠測は null)。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(), final_rwp=10.0, final_gof=1.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+        phase_integrated_intensity={"A": (7.0, None), "B": (3.0, float("nan"))},
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    assert payload["phase_integrated_intensity"] == {"A": [7.0, None], "B": [3.0, None]}
+
+
+def test_unmeasured_observations_are_null_not_empty():
+    """計測していない経路 (例: TOPAS) の観測は null — 空 ({} = 食い違いなし) と混同させない。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(), final_rwp=10.0, final_gof=1.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    assert payload["phase_integrated_intensity"] is None
+    assert payload["coordinate_freedom_mismatches"] is None
+
+
+def test_coordinate_freedom_mismatches_reach_layer_two_output():
+    """fit-then-judge P1a タスク 6: 座標の自由度の食い違いを ③ が読めること。"""
+    from tsumugin.autorietveld.model import AutoRietveldResult, ValidityReport
+    from tsumugin.mcp.rietveld_tools import _result_to_dict
+
+    result = AutoRietveldResult(
+        stage_results=(), final_rwp=10.0, final_gof=1.0, refined_cells={},
+        validity=ValidityReport(passed=True, checks=(), warnings=()),
+        coordinate_freedom_mismatches={"p": (("O1", "??", "1"),)},
+    )
+    payload = _result_to_dict(
+        result, AnalysisInput(histograms=(), phases=(), background_coeffs=6, extra_stages=())
+    )
+    assert payload["coordinate_freedom_mismatches"] == {"p": [["O1", "??", "1"]]}
+
+
+def test_correlation_group_violation_is_degraded_at_the_boundary():
+    """③ が相関群を割る段を `stages` で渡すと engine が `CorrelationGroupViolation` を送出する。
+    これは入力の誤りなので ② の境界で error dict にする (以前は ValueError だけを継いでいて
+    ドメインエラーとして扱われず、境界を越えていた)。"""
+    from tsumugin.autorietveld.recipe import CorrelationGroupViolation
+    from tsumugin.mcp.rietveld_tools import auto_rietveld
+
+    out = auto_rietveld([], [], runner=_raising_runner(CorrelationGroupViolation("群を分割")))
+    assert out == {"error": "群を分割", "error_type": "CorrelationGroupViolation"}
+
+
+def test_degrade_domain_errors_decorator():
+    """関数レベルのドメインエラー縮退 (M4)。論理バグは透過させる。"""
+    from tsumugin.errors import InvalidPhaseSpecError
+    from tsumugin.mcp._degrade import degrade_domain_errors
+
+    @degrade_domain_errors
+    def tool(exc):
+        raise exc
+
+    assert tool(InvalidPhaseSpecError("x")) == {"error": "x", "error_type": "InvalidPhaseSpecError"}
+    with pytest.raises(ZeroDivisionError):
+        tool(ZeroDivisionError("bug"))
+
+
+@pytest.mark.parametrize(
+    "module, name",
+    [
+        ("tsumugin.mcp.insitu_tools", "sequential_rietveld"),
+        ("tsumugin.mcp.anchor_tools", "anchored_sequential"),
+        ("tsumugin.mcp.operando_diag_tools", "repair_frames"),
+    ],
+)
+def test_series_tools_degrade_engine_domain_errors(module, name):
+    """系列の ② ツールも、精密化の奥で出るドメインエラーを error dict にする (M4)。
+
+    縮退の振舞いは上の装飾子のテストが担う。ここでは 3 ツールに装飾が**実際に掛かっている**
+    ことを確かめる (実行には系列データと精密化が要るので、モジュールのソースの装飾行で見る)。
+    """
+    import importlib
+    import inspect
+
+    src = inspect.getsource(importlib.import_module(module))
+    assert f"@degrade_domain_errors\ndef {name}(" in src
+
+
+def test_release_params_flags_are_validated_like_stages():
+    """`ReleaseParams` の flags も `stages` と同じ検証を通す — 迂回すると綴りが黙って凍結に化ける (N4)。"""
+    from tsumugin.mcp.rietveld_tools import refine_with_revisions
+
+    out = refine_with_revisions(
+        [], [], [{"type": "ReleaseParams", "label": "r", "flags": {"freeze_others": ["zero"]}}],
+        runner=_raising_runner(AssertionError("検証で止まらず実行された")),
+    )
+    assert out["error_type"] == "ValueError" and "未知の名前" in out["error"]
 def _call(tool: str, phases, seen: list) -> dict:
     from tsumugin.mcp.rietveld_tools import refine_with_revisions
 

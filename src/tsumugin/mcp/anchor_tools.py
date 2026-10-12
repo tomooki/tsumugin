@@ -31,7 +31,7 @@ from .._json import finite_or_none
 from ..autorietveld import PhaseSpec
 from ..insitu.anchor.model import AnchorConfig
 from ..insitu.model import FrameSpec
-from ._degrade import degrade_oserror
+from ._degrade import degrade_domain_errors, degrade_oserror
 from ._gpx_spec import gpx_args
 from .insitu_tools import (
     _apply_charge_constraint_spec,
@@ -145,6 +145,7 @@ def _anchor_summary(ledger) -> tuple[list[dict], list[dict]]:
 
 
 @degrade_oserror
+@degrade_domain_errors
 def anchored_sequential(
     frames: Sequence[Mapping[str, object]],
     phases: Sequence[Mapping[str, object]],

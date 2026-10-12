@@ -471,6 +471,22 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "histogram_rwp",
         "ヒストグラム別 Rwp (joint の内訳; 総合値だけではどちらが悪いか分からない)",
     ),
+    "coordinate_freedom_mismatches": (
+        "coordinate_freedom_mismatches",
+        "座標の自由度の食い違い (fit-then-judge P1a)。engine は原子行の site symmetry を"
+        "解釈できないと黙って座標を凍結する — その原子を ③ が見つけられるようにする",
+    ),
+    "exported_cifs": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1a): `run_auto_rietveld(export_cif_dir=)` を ② はまだ渡さないので"
+        "常に空。精密化後の構造は 1A の結晶化学検査器が内部で使う部品で、③ が単独で呼ぶ用途は"
+        "P1-1A で検査器と一緒に露出する (docs/design/fit-then-judge/proposal.md §6)",
+    ),
+    "phase_integrated_intensity": (
+        "phase_integrated_intensity",
+        "相ごとの積分計算強度 Σ Fc²·Icorr (fit-then-judge P1a)。どの相が散乱を担っているかの"
+        "観測 — 相分率 (Scale) は潰れうるので、テンプレートの対象相の判定はこちらを使う",
+    ),
     "project_path": (
         "project_path",
         "バックエンド中立の成果物ハンドル (GSAS は .gpx、TOPAS は INP/.out/results.txt の"

@@ -59,13 +59,39 @@ def resolve_backend(name: "str | None") -> Callable[..., object]:
 
         return run_auto_rietveld
     if key == "topas":
-        from ..topas.engine import run_topas_rietveld
-
-        return run_topas_rietveld
+        return _run_topas_refusing_gsas_only_features
     raise UnknownBackendError(
         f"未知の精密化バックエンドです: {name!r}。利用可能: {', '.join(BACKEND_NAMES)}。"
         f"綴り間違いを既定へ黙って落とすと、意図と違うエンジンで回った結果に気づけません。"
     )
+
+
+def _run_topas_refusing_gsas_only_features(histograms, phases, *args, **kwargs):
+    """`run_topas_rietveld` の前に、GSAS 経路にしか無い段フラグの形を拒否する。
+
+    GSAS 経路にしか無い**相の機能** (`uiso_equiv_groups` / `fix_polar_origin`) は
+    `topas.structure.PHASE_SPEC_FIELDS` で ``refused`` に分類してあり、TOPAS エンジン自身が
+    構造を読む前に `InvalidPhaseSpecError` で拒否する (全フィールドの分類はテストが強制する)。
+
+    :raises UnsupportedStageFlagError: ``profile_lorentzian`` にキー列を渡したとき
+    """
+    # `profile_lorentzian` のキー列 (GSAS 経路で Zero を束ねないための形) は TOPAS が解釈しない:
+    # TOPAS の翻訳は値の真偽だけを見て x,y を解放するので、["Zero"] でも Lorentzian 幅が動く。
+    from ..topas.flags import UnsupportedStageFlagError
+
+    for stage in kwargs.get("recipe") or ():
+        value = getattr(stage, "flags", {}).get("profile_lorentzian")
+        if isinstance(value, (list, tuple)):
+            raise UnsupportedStageFlagError(
+                f"(段 {getattr(stage, 'label', '?')!r}) TOPAS は profile_lorentzian のキー列 "
+                f"{list(value)} を解釈しません (真偽値で x,y を解放するだけ)。true/false を使って"
+                "ください"
+            )
+    # 解決は呼び出し時 (`monkeypatch.setattr("tsumugin.topas.engine.run_topas_rietveld", …)`
+    # の注入経路を素通りしない)。
+    from ..topas import engine as topas_engine
+
+    return topas_engine.run_topas_rietveld(histograms, phases, *args, **kwargs)
 
 
 def resolve_protocol_backend(
