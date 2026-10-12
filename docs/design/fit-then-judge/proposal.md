@@ -14,7 +14,7 @@
 - **採否**: 1A と 1B は独立に採否できる。決定 2 (LLM/人の回答ループ) は引き続き設計段階に留める
 - **第 1 期の範囲**: CW X 線・単一ヒストグラム・単一パターン・GSAS-II。範囲外は**明示的に失敗させる**
 - **関連**: `docs/design/stable-baseline-recipe/STANDARD-PROCEDURE.md` / `docs/design/claim-oriented-architecture/principles.md` /
-  `docs/design/m8-agentic-loop/` / `docs/spec/stable-auto-rietveld/requirements.md` / 作業計画 `docs/tasks/fit-then-judge/p1a.md`
+  `docs/design/m8-agentic-loop/` / `docs/spec/stable-auto-rietveld/requirements.md` / 作業計画 `docs/tasks/fit-then-judge/p1a.md` / P0 事前登録 [p0-preregistration.md](p0-preregistration.md)
 
 ---
 
@@ -273,7 +273,7 @@ pass 1 の成果物も gpxstore に役割名 (`template_pass1`) 付きで全保�
 |---|---|---|
 | 開発用 | 未公開の実測データ (試作に使った群) + 合成ケース (**hold-out と別の構造から作る**。既知の欠陥の注入・混合占有・極性群) | P1・P1.5 (実データの検査はリポジトリの外で記録 — 未公開データは public に置けない) |
 | 準 hold-out | 範囲内の公開データ (T1・CaTeO3・T3 の X 線単独・T4 の 11-BM 単独)。⚠ テンプレートの設計自体がこれらの既知の挙動 (F1–F3・recipe.py の教訓) から作られているので「準」と表示する | P2 のみ。1 回だけ |
-| hold-out | 凍結後に取得した未公開データ。**最小件数はこれで満たす** (公開 4–5 件では率の推定に検出力が無い) | P2 のみ。1 回だけ |
+| hold-out | 凍結後に取得した未公開データ。**最小件数はこれで満たす** (公開 4–5 件では率の推定に検出力が無い)。P0 v1.2 で公開・未使用データの無作為抽出を追加 ([p0-preregistration.md](p0-preregistration.md) §3.2) | P2 のみ。1 回だけ |
 
 - **テンプレートのフラグ・`PhaseSpec` の新フィールドを使うテストは、(準) hold-out のファイルを参照しない** — ガードテストで縛る
   (ファイル名だけでなく、データディレクトリの参照を検査する)。既存経路の非回帰テスト (ゴールデン) は読んでよい。
@@ -284,7 +284,7 @@ pass 1 の成果物も gpxstore に役割名 (`template_pass1`) 付きで全保�
 
 | 段階 | 内容 | 通過条件 |
 |---|---|---|
-| **P0** | 不変の評価プロトコルの事前登録 (指標・同値幅・通過基準・データ区分と最小件数・構造の悪化の指標・`provisional` 割合の上限・`determined` の外れ率の上限・反証の検出力の報告形式)。結晶化学検査器の**実装は P1-1A に分ける** (登録と実装を混ぜない) | commit |
+| **P0** | 不変の評価プロトコルの事前登録 (指標・同値幅・通過基準・データ区分と最小件数・構造の悪化の指標・`provisional` 割合の上限・`determined` の外れ率の上限・反証の検出力の報告形式)。結晶化学検査器の**実装は P1-1A に分ける** (登録と実装を混ぜない)。→ [p0-preregistration.md](p0-preregistration.md) | commit |
 | **P1a** | engine の部品 (下表)。すべて**既定は無効 (opt-in)・既存経路はビット同一** | 決定論テスト + ゴールデン |
 | **P1-1A** | `Claim` の型と写像 → 判断要求の発行 → 証人 → D → ② (`claims`/`publishable_values`) → ③ の手順書 → sidecar → CIF/CSV。結晶化学検査器 (R0 表・酸化数・`unevaluated`) と参照構造での陽性/陰性対照 | 決定論テスト + ①②③ 露出 + 状態を落とす変換の禁止テスト |
 | **P1-1B** | pass 1 → コンパイル → `"template"` 候補 → 既存ツールとの境界 → ③ 手順書。統計規約 (§5) の実装 | 同上 |
