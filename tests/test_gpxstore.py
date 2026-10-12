@@ -20,6 +20,8 @@ from tsumugin.gpxstore import (
     ENV_VAR,
     GpxContext,
     ManifestEntry,
+    fallback_warning,
+    is_fallback_warning,
     plan_artifact,
     read_manifest,
     record_artifact,
@@ -121,6 +123,21 @@ def test_unwritable_data_dir_falls_back_and_says_so(tmp_path, monkeypatch):
 
     assert run_dir is not None and Path(run_dir).is_dir()
     assert "PermissionError" in reason
+
+
+def test_fallback_warning_has_the_form_the_layer3_docs_name():
+    """★退避理由の警告行は ``成果物の保存先: <理由>`` — ③ の手順書が**この形**を名指しする。
+
+    全入口 (探索・マルチスタート・収束確認・モデル比較・閉ループ・系列・② 単発) がこの関数で
+    行を作るので、形を変えると ③ の手順書 (analyze / insitu skill) と一斉にずれる。
+    ``is_fallback_warning`` は ② が入れ子の警告から退避の行だけを拾い上げるのに使う
+    (順序依存などの別の警告を拾わない)。
+    """
+    line = fallback_warning("PermissionError: read-only (/x へ書けないため一時領域へ退避)")
+
+    assert line == "成果物の保存先: PermissionError: read-only (/x へ書けないため一時領域へ退避)"
+    assert is_fallback_warning(line)
+    assert not is_fallback_warning("順序依存: Rwp は僅差なのに格子が割れている")
 
 
 # ---------------------------------------------------------------------------

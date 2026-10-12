@@ -477,6 +477,12 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "ディレクトリ)。`gpx_path` は GSAS 専用のまま残す — MEM 経路が .gpx を要求するため、"
         "TOPAS では空文字となり MEM は適用できない",
     ),
+    "artifact_fallback_reason": (
+        "warnings",
+        "成果物を頼まれた根に書けず一時領域へ退避した理由 (`成果物の保存先: <理由>` 行)。"
+        "エンジンの台帳 (`m7_gpx_fallback`) は ② の単発経路から返らないので、ここに無いと "
+        "③ には %TEMP% を指す `gpx_path` しか見えない (gpx-retention 設計 §5)",
+    ),
     "n_obs": ("n_obs", "観測点数 (bic/dof 用)"),
     # --- 出版値 (Issue #96 レビュー HIGH-2 で配線) ---
     "cell_esd": ("cell_esd", "格子 esd。esd を伴わない精密化値は出版できない"),

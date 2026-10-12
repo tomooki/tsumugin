@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from tsumugin.autorietveld import AutoRietveldResult, HistogramSpec, PhaseSpec
-from tsumugin.gpxstore import gpx_context, group_context
+from tsumugin.gpxstore import fallback_warning, gpx_context, group_context
 
 from .action import AnalysisInput, Stop
 from .diagnose_residual import diagnose_residual
@@ -115,7 +115,7 @@ def run_refinement_loop(
     if gpx_fallback:
         if ledger is not None:
             ledger.append("m7_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
-        warnings = (f"成果物の保存先: {gpx_fallback}",)
+        warnings = (fallback_warning(gpx_fallback),)
     if diagnose is None:
         # 既定は残差解析診断 (REQ-002/TASK-0009)。背景のみの粗診断 _default_diagnose は
         # 後方互換の代替として残置 (明示注入で選択可)。

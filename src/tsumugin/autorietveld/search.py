@@ -84,7 +84,7 @@ from typing import Callable, Mapping, Sequence
 from .._config_spec import check_bool, check_float, spec_value
 from .._json import finite_or_none
 from ..errors import InvalidPhaseSpecError
-from ..gpxstore import gpx_context, group_context, reject_single_keep
+from ..gpxstore import fallback_warning, gpx_context, group_context, reject_single_keep
 from ..store import Ledger
 from .model import (
     AutoRietveldResult,
@@ -1069,7 +1069,7 @@ def run_recipe_search(
             )
     if gpx_fallback:
         summary = replace(
-            summary, warnings=summary.warnings + (f"成果物の保存先: {gpx_fallback}",)
+            summary, warnings=summary.warnings + (fallback_warning(gpx_fallback),)
         )
     ledger.append(
         "m7_search_select",

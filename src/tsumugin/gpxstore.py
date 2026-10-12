@@ -46,6 +46,10 @@ MANIFEST_NAME = "manifest.jsonl"
 #: ラベルの最大長 (Windows の 260 文字パス制限に対する余裕を残す)。
 MAX_LABEL = 60
 
+#: 退避理由を**結果の警告**として載せる行の接頭辞 (全入口で共通)。③ の手順書はこの形を
+#: 名指しして「成果物は一時領域にある」と読ませるので、入口ごとに書き分けない (設計 §5)。
+FALLBACK_WARNING_PREFIX = "成果物の保存先: "
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -221,6 +225,16 @@ def resolve_run_dir(
         reason = f"{type(exc).__name__}: {exc} ({root} へ書けないため一時領域へ退避)"
         path = tempfile.mkdtemp(prefix="tsumugin-gpx-")
     return path, reason
+
+
+def fallback_warning(reason: str) -> str:
+    """退避理由を結果の警告 1 行にする (``成果物の保存先: <理由>``; 全入口で同じ形)。"""
+    return f"{FALLBACK_WARNING_PREFIX}{reason}"
+
+
+def is_fallback_warning(line: str) -> bool:
+    """警告の行が `fallback_warning` の作った退避理由か (入れ子の警告から拾い上げるため)。"""
+    return line.startswith(FALLBACK_WARNING_PREFIX)
 
 
 def _make_unique_dir(root: str, base: str) -> str:
@@ -515,14 +529,17 @@ __all__ = [
     "DEFAULT_DIR_NAME",
     "DISABLED",
     "ENV_VAR",
+    "FALLBACK_WARNING_PREFIX",
     "GpxContext",
     "KEEP_KEYS",
     "MANIFEST_NAME",
     "ManifestEntry",
     "active_context",
     "child_context",
+    "fallback_warning",
     "gpx_context",
     "group_context",
+    "is_fallback_warning",
     "plan_artifact",
     "plan_output",
     "read_manifest",

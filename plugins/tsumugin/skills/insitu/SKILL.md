@@ -54,6 +54,12 @@ description: 高温/時間 in situ 粉末回折の逐次 (parametric sequential)
 
 - **どこに**: 既定は**先頭フレームのデータ隣接** `<data_dir>/tsumugin_gpx/run-<日時>/`。
   `gpx_dir="..."` で指定できる。実際の場所は返り値の **`gpx_dir`**。
+- **頼んだ場所に置かれなかったとき**: 置き場所に書けないと (読み取り専用の共有ディスク等)
+  系列の run ディレクトリごと**一時領域へ退避**し、`sequential_rietveld` / `anchored_sequential` の
+  **`warnings` の先頭**に `成果物の保存先: <理由>` の行が出る (系列全体で 1 行)。この行があったら
+  `gpx_dir` も `frames[].gpx_path` も %TEMP% の中で、OS の掃除で消えうる — 報告には退避したことを
+  理由ごと書き、残す成果物は書ける場所へ移す。`repair_frames` の退避は `ledger_entries` の
+  `m9_gpx_fallback` 行に出る。
 - **どのフレームがどれか**: 返り値の **`frames[].gpx_path`**。任意のフレームへ
   `mem_density` を掛けるとき・fit を開き直すときはここを使う。
 - **なぜ棄却された fit まで残すのか**: 相分率 ~0 の棄却が「残差を説明できない相」なのか

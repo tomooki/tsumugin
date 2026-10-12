@@ -160,6 +160,9 @@ def test_order_dependence_warning_is_visible_through_the_boundary():
 
     assert out["search"]["order_dependent"] is True
     assert any("順序依存" in w for w in out["search"]["warnings"])
+    # 最上位の ``warnings`` へ拾い上げるのは**成果物の退避理由だけ** — 探索の所見 (順序依存) は
+    #   返した fit の成果物の話ではないので混ぜない (``search`` を読めば足りる)。
+    assert out["warnings"] == []
 
 
 def test_search_payload_is_json_safe():

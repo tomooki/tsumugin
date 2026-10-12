@@ -18,7 +18,7 @@ from typing import Callable, Mapping, Sequence
 from tsumugin.autorietveld.engine import run_auto_rietveld
 from tsumugin.autorietveld.model import AutoRietveldResult, HistogramSpec, PhaseSpec
 from tsumugin.evidence import AICBackend, BICBackend
-from tsumugin.gpxstore import gpx_context, group_context, reject_single_keep
+from tsumugin.gpxstore import fallback_warning, gpx_context, group_context, reject_single_keep
 from tsumugin.model import RefinementMetrics
 
 __all__ = [
@@ -152,7 +152,7 @@ def compare_models(
     # 【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
     #   分からない** — runner (エンジン) は解決済みの文脈を受け取るので `m7_gpx_fallback` を書かない。
     #   捨てると、頼まれた ``gpx_dir`` ではなく %TEMP% に置かれたことがどこにも残らない。
-    warnings = (f"成果物の保存先: {gpx_fallback}",) if gpx_fallback else ()
+    warnings = (fallback_warning(gpx_fallback),) if gpx_fallback else ()
 
     raw: list[ModelScore] = []
     for v in variants:

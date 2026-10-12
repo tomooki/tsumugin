@@ -95,7 +95,7 @@ run_sequential_rietveld
 
 | 失敗 | 振る舞い | 理由 |
 |---|---|---|
-| データ隣接に書けない (読み取り専用ディスク等) | **temp へ退避し理由を ledger** (`m7_gpx_fallback` = 単発・探索・マルチスタート・収束確認・M8 閉ループ / `m9_gpx_fallback` = 逐次・修復 / `m10_gpx_fallback` = アンカー双方向 / TOPAS 単発は `m12_project_fallback`)。ledger を持たない入口は**結果の警告**で返す (モデル比較 `compare_models` → `ModelComparison.warnings` = ② `warnings`。台帳を受ける `run_model_comparison` はそれを `model_compare_warning` 行に写す。M8 閉ループ `run_refinement_loop` は台帳が任意なので `RefinementLoopResult.warnings` にも常に載せる) | 750 フレームの系列をこれだけで落とさない。かつ黙って保存を諦めない |
+| データ隣接に書けない (読み取り専用ディスク等) | **temp へ退避し理由を ledger** (`m7_gpx_fallback` = 単発・探索・マルチスタート・収束確認・M8 閉ループ / `m9_gpx_fallback` = 逐次・修復 / `m10_gpx_fallback` = アンカー双方向 / TOPAS 単発は `m12_project_fallback`)。ledger を持たない入口・**台帳が呼び出し側へ返らない入口**は**結果にも**載せる (モデル比較 `compare_models` → `ModelComparison.warnings` = ② `warnings`。台帳を受ける `run_model_comparison` はそれを `model_compare_warning` 行に写す。M8 閉ループ `run_refinement_loop` は台帳が任意なので `RefinementLoopResult.warnings` にも常に載せる。逐次/アンカー双方向は `SequentialRietveldResult.warnings` の先頭行。単発 `run_auto_rietveld` / `run_topas_rietveld` は `AutoRietveldResult.artifact_fallback_reason`)。結果に載せる形は全入口で `成果物の保存先: <理由>` の 1 行 (`gpxstore.fallback_warning` — ③ の手順書がこの形を名指しするので入口ごとに書き分けない) | 750 フレームの系列をこれだけで落とさない。かつ黙って保存を諦めない |
 | 既定保存のコピーに失敗 | `gpx_path=""` + ledger `m7_gpx_error`、**精密化結果は返す** | 成果物は便宜であって結果ではない |
 | **明示 `keep_gpx` の保存に失敗** | **例外のまま送出** | 握り潰すと呼び出し側が「保存しない設定」と区別できない |
 | 索引 (`manifest.jsonl`) の書き込み失敗 | 黙って諦める (解析は続行) | 索引は便宜。真実は ledger と結果オブジェクト |
@@ -109,6 +109,16 @@ run_sequential_rietveld
 実際に `group, _reason = group_context(...)` の形で捨てていた入口が 6 つ中 5 つあった
 (探索 / マルチスタート / モデル比較 / 修復 / M8 閉ループ。系列だけが載せていた)。
 
+- **単発ではエンジン自身が入口である**: 文脈 (ambient / 明示) を受けずに呼ばれた
+  `run_auto_rietveld` / `run_topas_rietveld` は `plan_output` で自分の run ディレクトリを解決する
+  ので、退避理由を知っているのはエンジンである。台帳 (`m7_gpx_fallback` / `m12_project_fallback`)
+  に加えて `AutoRietveldResult.artifact_fallback_reason` に載せる — ② の単発 `auto_rietveld` /
+  `refine_with_revisions` はエンジンの台帳を返さず (`run_auto_rietveld` が内部で作る私有の台帳)、
+  TOPAS は台帳自体が任意なので、**結果に載せない限り ③ には %TEMP% を指すパスしか見えない**。
+  載せるのは**退避先に保存できたとき**だけ (台帳の `*_fallback` 行と同じ条件。退避先にも
+  書けなかったら `""` で、その失敗は `m7_gpx_error` / `m12_project_error` の担当)。他の入口が
+  解決した文脈の下で回るエンジン (系列のフレーム・探索の候補…) は文脈の run ディレクトリを使うので
+  理由は常に `""` — 退避の記録は解決した入口の 1 行だけで、結果ごとに繰り返さない。
 - **捨てる既定を持たない**: `resolve_run_dir` は常に `(run_dir, 退避理由)` を返す (旧
   `report_fallback=False` 既定はパスだけを返して理由を捨てていたので撤去した)。
 - **歯止め**: `tests/test_gpx_fallback_surfaced.py` が src の全呼び出しを AST で検査する (戻り値を
@@ -130,15 +140,22 @@ run_sequential_rietveld
 | 層 | 到達手段 |
 |---|---|
 | ① | `run_auto_rietveld` / `run_topas_rietveld` / `run_sequential_rietveld` / `run_anchored_sequential` / `run_refinement_loop` / `run_recipe_search` / `run_multistart_rietveld` / `compare_models` / `repair_isolated` の `gpx_dir` / `save_gpx`。⚠ `run_refinement_loop` は **② から呼ばれない** (② の `refine_with_revisions` は改訂を適用した単発精密化で、ループを回すのは ③ 自身) ので、その退避理由 (`RefinementLoopResult.warnings` / 台帳の `m7_gpx_fallback`) は **① 専用 (非露出)** |
-| ② | `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` / `compare_structure_models` / `repair_frames` の `gpx_dir` / `save_gpx` (**`auto_rietveld` の `search`/`multistart` 経路にも届く** — この 2 経路は既定 runner を通らないので ① へ明示的に運ぶ)。型は ② の入口で検査する: `save_gpx` の null は既定 (保存)・bool 以外と非文字列 `gpx_dir` は error dict (スキーマが緩いので `bool(None)` が opt-out に倒れる)。出力は `gpx_path` (単発) / `frames[].gpx_path` + `gpx_dir` (系列) / `project_path` (TOPAS) / `search.candidates[].gpx_path` + `convergence.multistart.starts[].gpx_path` (探索・収束確認の全候補/全開始点) / `scores[].gpx_path` (モデル比較の全バリアント = 棄却モデルも) / `repairs[].gpx_path` + `gpx_dir` + `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` (修復: 採用 / 試行の run ディレクトリ / 棄却)。退避理由は探索/収束確認なら `search.warnings` / `convergence.warnings`、モデル比較なら `warnings`、修復なら `ledger_entries` の `m9_gpx_fallback`。⚠ **単発 `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` は退避理由を返さない (既知の穴)** — ① は台帳に書くが、これらの ② は台帳を戻り値に含めないので、③ から見えるのは `gpx_path` が一時領域を指していることだけ |
+| ② | `auto_rietveld` / `refine_with_revisions` / `sequential_rietveld` / `anchored_sequential` / `compare_structure_models` / `repair_frames` の `gpx_dir` / `save_gpx` (**`auto_rietveld` の `search`/`multistart` 経路にも届く** — この 2 経路は既定 runner を通らないので ① へ明示的に運ぶ)。型は ② の入口で検査する: `save_gpx` の null は既定 (保存)・bool 以外と非文字列 `gpx_dir` は error dict (スキーマが緩いので `bool(None)` が opt-out に倒れる)。出力は `gpx_path` (単発) / `frames[].gpx_path` + `gpx_dir` (系列) / `project_path` (TOPAS) / `search.candidates[].gpx_path` + `convergence.multistart.starts[].gpx_path` (探索・収束確認の全候補/全開始点) / `scores[].gpx_path` (モデル比較の全バリアント = 棄却モデルも) / `repairs[].gpx_path` + `gpx_dir` + `ledger_entries` の `insitu_repair_rejected` 行の `gpx_path` (修復: 採用 / 試行の run ディレクトリ / 棄却)。退避理由 (`成果物の保存先: <理由>` 行) は単発 `auto_rietveld` / `refine_with_revisions` なら `warnings` (`AutoRietveldResult.artifact_fallback_reason` の写し; キーは常に在り、退避が無ければ空)、逐次 `sequential_rietveld` / アンカー `anchored_sequential` なら `warnings` (系列の先頭行)、探索/収束確認なら `search.warnings` / `convergence.warnings` (退避は run ディレクトリ単位なのでこちらに出る。③ が経路によらず同じキーを読めるよう、② が同じ行を最上位 `warnings` へ拾い上げる)、モデル比較なら `warnings`、修復なら `ledger_entries` の `m9_gpx_fallback`。精密化を回す ② は全部どこかで返す — 台帳を返さない ② が台帳だけに書くと、③ から見えるのは `gpx_path` が一時領域を指していることだけになる |
 | ③ | `skills/analyze`「精密化成果物」節 / `skills/insitu` の成果物表 / `skills/operando-diagnose`「疑うときの一次資料」/ `skills/mem-model-fix` の入力の出所 / `skills/joint` / AGENT_PLAYBOOK 3 本 |
 
 恒久ガード: `tests/test_plugin_gpx_retention.py` (手順書が規定とハンドル名を書いているか・
-② に無い ① 専用引数 `keep_gpx` を宣伝していないか) / `tests/test_layer_coverage.py`
+② に無い ① 専用引数 `keep_gpx` を宣伝していないか・**退避理由の行の形と在処のキーを退避の段落の
+中で名指ししているか** [analyze / insitu / operando-diagnose / AGENT_PLAYBOOK 3 本]) /
+`tests/test_layer_coverage.py`
 (`gpxstore` パッケージ宣言 + `FrameRietveldResult.gpx_path` の露出宣言 + **`runner` 注入シームを
 持つ = 精密化を回す ② ツールは全部 `gpx_dir` / `save_gpx` を受ける** — モデル比較と修復が ① では
 保存しているのに ② から止められず置き場所も選べなかった穴の再発防止) /
 `tests/test_gpx_fallback_surfaced.py` (退避理由を捨てる呼び出しを src 全体で止める — §5)。
+退避理由が ② の戻り値まで届くことは入口ごとの振る舞いテストが見る (単発/改訂/逐次/アンカーは
+`tests/mcp/test_gpx_exposure.py` の「退避理由」節 — 逐次/アンカーは ① の系列エンジンを本物のまま
+回す。単発のエンジン側は `tests/autorietveld/test_gpx_default_gsas.py` [gated] と
+`tests/topas/test_engine.py`。`AutoRietveldResult.artifact_fallback_reason` の ② キーは
+`tests/test_layer_coverage.py` の宣言表が強制する)。
 
 ## 7. 容量
 
