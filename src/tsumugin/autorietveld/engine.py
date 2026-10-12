@@ -45,9 +45,11 @@ from .bounds import (
     size_strain_box_bounds,
 )
 from .diagnostics import (
+    CovarianceRecord,
     RefinementDiagnostics,
     WeakVariable,
     data_term_rwp,
+    read_covariance_record,
     read_diagnostics,
     read_variable_esds,
     read_variable_values,
@@ -3420,7 +3422,97 @@ def run_auto_rietveld(
         #   返らないことがある (② 単発) ので、理由は結果にも載せる (設計 §5)。
         artifact_fallback_reason=plan.fallback_reason if out_gpx else "",
         coord_jitter_axes_moved=int(n_jittered),
+        final_covariance=_final_covariance(gpx),
+        claim_variables=_claim_variables(g2phases, g2hists),
+        reflection_two_theta=_reflection_two_theta(g2hists, histograms),
     )
+
+
+def _final_covariance(gpx) -> "CovarianceRecord | None":
+    """最終段の共分散の記録 (fit-then-judge P1-1A。観測のみ — 失敗はフィットを落とさず None)。"""
+    try:
+        return read_covariance_record(gpx)
+    except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+        return None
+
+
+def _claim_variables(g2phases, g2hists) -> "dict[str, tuple[str, ...]] | None":
+    """値のキー → 依存する GSAS 変数名 (fit-then-judge P1-1A。観測のみ)。"""
+    from .claim_variables import HistogramVariables, PhaseVariables, claim_variable_names
+
+    try:
+        phases = [
+            PhaseVariables(
+                name=ph.name, pid=int(ph.id),
+                labels=tuple(atom_labels(ph.data["Atoms"], ph.data["General"]["AtomPtrs"])),
+                cell=_phase_cell(ph),
+            )
+            for ph in g2phases
+        ]
+        hists = []
+        for i, h in enumerate(g2hists):
+            inst = h.data["Instrument Parameters"][0]
+            keys = tuple(k for k in _PROFILE_INTROSPECT_KEYS if k in inst)
+            hists.append(HistogramVariables(index=i, hid=int(h.id), profile_keys=keys))
+        return claim_variable_names(phases, hists)
+    except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+        return None
+
+
+def _phase_cell(ph) -> "tuple[float, float, float, float, float, float] | None":
+    """相の今の格子 (a,b,c,α,β,γ)。読めなければ None (格子の各軸は全項に依存させる側へ)。"""
+    try:
+        cell = ph.get_cell()
+        return tuple(float(cell[k]) for k in (  # type: ignore[return-value]
+            "length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma",
+        ))
+    except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+        return None
+
+
+def _reflection_two_theta(g2hists, histograms) -> "tuple[float, ...] | None":
+    """先頭ヒストグラムの全相の計算反射の 2θ (精密化範囲内・昇順。fit-then-judge P1-1A)。
+
+    Kα1+Kα2 の装置 (``Lam1``/``Lam2``) では Kα2 の位置も含める。
+    GSAS の粉末の反射リストは列 5 が位置 (2θ、超空間群は 1 つずれる)。反射リストが 1 本も
+    取れないときは None (= 計測していない)。範囲は `HistogramSpec.two_theta_limits` (無ければ全域)。
+    """
+    if not g2hists:
+        return None
+    try:
+        refl = g2hists[0].reflections() or {}
+    except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+        return None
+    lim = histograms[0].two_theta_limits if histograms else None
+    raw: list[float] = []
+    seen = False
+    for entry in refl.values():
+        try:
+            reflist = entry.get("RefList")
+            if reflist is None or len(reflist) == 0:
+                continue
+            col = 6 if entry.get("Super", False) else 5
+            seen = True
+            raw.extend(float(row[col]) for row in reflist)
+        except Exception:  # noqa: BLE001 — 想定外の形はその相だけ飛ばす
+            continue
+    if not seen:
+        return None
+    # 【Kα2 も計算反射】: GSAS の反射リストは Kα1 の位置だけを持つ。Kα1+Kα2 の装置では高角で Kα2 が
+    #   Kα1 から数 FWHM 離れ、その合わなさが「反射から離れた残差」= 欠落相に見える。
+    try:
+        inst = g2hists[0].data["Instrument Parameters"][0]
+        if "Lam1" in inst and "Lam2" in inst:
+            from .claim_variables import kalpha2_positions
+
+            raw.extend(kalpha2_positions(raw, float(inst["Lam1"][1]), float(inst["Lam2"][1])))
+    except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない (Kα2 なしで続ける)
+        pass
+    positions = [
+        p for p in raw
+        if math.isfinite(p) and (lim is None or lim[0] <= p <= lim[1])
+    ]
+    return tuple(sorted(positions))
 
 
 def _coordinate_freedom_mismatches(

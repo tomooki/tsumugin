@@ -66,6 +66,11 @@ UNEXPOSED = "UNEXPOSED"
 
 LAYER1_FEATURES: dict[str, tuple[str, str]] = {
     # feature: (露出を示すツール名 or UNEXPOSED, 根拠/理由)
+    "claims (fit-then-judge 1A)": (
+        "auto_rietveld",
+        "出版状態の型 `Claim`。② の `auto_rietveld`/`refine_with_revisions` の出力の `claims`・"
+        "`judgment_requests`・`publishable_values` と CSV (`export_claims_csv`) で到達する",
+    ),
     "autorietveld (M7)": (
         "auto_rietveld",
         "実構造 Rietveld。Issue #101 解決: 段階解放レシピの追加段階 (`stages` →"
@@ -295,6 +300,7 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "interop": "interop (XND)",
     "instprm": "instprm (FR-502)",
     "gpxstore": "gpx artifact retention (規定 2026-08-20)",
+    "claims": "claims (fit-then-judge 1A)",
     "operando": "echem sync (M3/FR-311)",  # ← Issue #99: これまで宣言リストに 1 行も無かった
     # --- 基盤 (③ に露出する独立能力ではない — 露出済みツールが内部で使うインフラ) ---
     "model": (FOUNDATIONAL, "不変 dataclass 群 (§4)。全層が共有する型であり単独能力ではない"),
@@ -476,11 +482,30 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "座標の自由度の食い違い (fit-then-judge P1a)。engine は原子行の site symmetry を"
         "解釈できないと黙って座標を凍結する — その原子を ③ が見つけられるようにする",
     ),
+    "final_covariance": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1-1A): 値の出自・相関・相集合の完全性の証人を決める**入力**で、"
+        "② には加工後の `claims` (出自・決定性・止め) として出る。GSAS の変数名や反射位置の"
+        "生の列を ③ に渡しても読む手順が無い (docs/design/fit-then-judge/p1-1a-architecture.md §3)",
+    ),
+    "claim_variables": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1-1A): 値の出自・相関・相集合の完全性の証人を決める**入力**で、"
+        "② には加工後の `claims` (出自・決定性・止め) として出る。GSAS の変数名や反射位置の"
+        "生の列を ③ に渡しても読む手順が無い (docs/design/fit-then-judge/p1-1a-architecture.md §3)",
+    ),
+    "reflection_two_theta": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1-1A): 値の出自・相関・相集合の完全性の証人を決める**入力**で、"
+        "② には加工後の `claims` (出自・決定性・止め) として出る。GSAS の変数名や反射位置の"
+        "生の列を ③ に渡しても読む手順が無い (docs/design/fit-then-judge/p1-1a-architecture.md §3)",
+    ),
     "exported_cifs": (
         UNEXPOSED,
         "意図的 (fit-then-judge P1a): `run_auto_rietveld(export_cif_dir=)` を ② はまだ渡さないので"
-        "常に空。精密化後の構造は 1A の結晶化学検査器が内部で使う部品で、③ が単独で呼ぶ用途は"
-        "P1-1A で検査器と一緒に露出する (docs/design/fit-then-judge/proposal.md §6)",
+        "常に空。P1-1A の結晶化学検査器は書き出した CIF を使わず、入力 CIF に精密化後の値を"
+        "差し込んで組む (`claims.chemistry`) ので、③ が単独で呼ぶ用途はまだ無い"
+        "(docs/design/fit-then-judge/p1-1a-architecture.md §5)",
     ),
     "phase_integrated_intensity": (
         "phase_integrated_intensity",

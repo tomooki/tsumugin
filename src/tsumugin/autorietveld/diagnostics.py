@@ -8,7 +8,7 @@
 そのまま JSON 化でき (非有限は None)、② MCP 境界へ載せられる。
 
 GSAS (``G2Project``) に触れるのは `read_diagnostics` / `read_variable_values` /
-`read_variable_esds` の **3 関数だけ**で、どれも同じ ``gpx.data["Covariance"]["data"]`` を読んで
+`read_variable_esds` / `read_covariance_record` の **4 関数だけ**で、どれも同じ ``gpx.data["Covariance"]["data"]`` を読んで
 **素の dict/dataclass へ落とす薄い層**である (``*_from_cov_data`` が実処理)。それ以外は
 numpy だけで動く純関数なので GSAS 無しでテストできる (`tests/autorietveld/test_diagnostics.py`)。
 
@@ -27,12 +27,15 @@ from .._json import finite_or_none
 
 __all__ = [
     "CorrelatedPair",
+    "CovarianceRecord",
     "RefinementDiagnostics",
     "WeakVariable",
     "correlated_pairs",
+    "covariance_record_from_cov_data",
     "data_term_rwp",
     "diagnostics_from_cov_data",
     "esds_from_cov_data",
+    "read_covariance_record",
     "read_diagnostics",
     "read_variable_esds",
     "read_variable_values",
@@ -73,6 +76,20 @@ class CorrelatedPair:
 
     def to_dict(self) -> dict[str, Any]:
         return {"a": self.a, "b": self.b, "r": finite_or_none(self.r)}
+
+
+@dataclass(frozen=True)
+class CovarianceRecord:
+    """最終の共分散が述べる「何を精密化したか」(fit-then-judge P1-1A — 値の出自の典拠)。
+
+    :param vary_list: 独立に精密化した変数名 (``varyList``)
+    :param dependent: 拘束の従属側として esd を持つ変数名 (``depSigDict`` のキー、ソート済み)
+    :param correlations: ``|r| >= 閾値`` の対 (`correlated_pairs`)
+    """
+
+    vary_list: tuple[str, ...]
+    dependent: tuple[str, ...]
+    correlations: tuple[CorrelatedPair, ...]
 
 
 @dataclass(frozen=True)
@@ -358,6 +375,26 @@ def diagnostics_from_cov_data(
     )
 
 
+def covariance_record_from_cov_data(
+    cov_data: Mapping[str, Any], *, corr_threshold: float = 0.9
+) -> CovarianceRecord | None:
+    """covData → `CovarianceRecord` (GSAS 非依存の純写像)。
+
+    ``varyList`` が無い (共分散が無い = 精密化していない・失敗) ときは **None** を返す — 空の記録
+    (「何も解放しなかった」) と混同させない。
+    """
+    raw = cov_data.get("varyList")
+    if raw is None:
+        return None
+    names = tuple(str(n) for n in _as_sequence(raw))
+    dep = cov_data.get("depSigDict")
+    dependent = tuple(sorted(str(k) for k in dep)) if isinstance(dep, Mapping) else ()
+    cov = cov_data.get("covMatrix")
+    sig = _as_sequence(cov_data.get("sig"))
+    pairs = correlated_pairs(names, cov, sig, corr_threshold) if cov is not None else ()
+    return CovarianceRecord(vary_list=names, dependent=dependent, correlations=pairs)
+
+
 def values_from_cov_data(cov_data: Mapping[str, Any]) -> dict[str, float]:
     """``covData`` から「変数名 → 精密化値」を取り出す (GSAS 非依存の純写像)。
 
@@ -431,9 +468,9 @@ def read_variable_esds(gpx) -> dict[str, float]:
 def read_variable_values(gpx) -> dict[str, float]:
     """精密化済み ``G2Project`` から「変数名 → 精密化値」を読む。
 
-    `read_diagnostics` / `read_variable_esds` と並ぶ **3 つの GSAS 入口**の 1 つ
-    (これら以外は gpx に触れない)。掘る場所はどれも同じ ``Covariance/data`` なので、
-    スキーマが変わったらこの 3 関数だけを直せばよい。
+    `read_diagnostics` / `read_variable_esds` / `read_covariance_record` と並ぶ **4 つの GSAS 入口**の
+    1 つ (これら以外は gpx に触れない)。掘る場所はどれも同じ ``Covariance/data`` なので、
+    スキーマが変わったらこの 4 関数だけを直せばよい。
     """
     try:
         cov_data = gpx.data["Covariance"]["data"]
@@ -444,10 +481,24 @@ def read_variable_values(gpx) -> dict[str, float]:
     return values_from_cov_data(cov_data)
 
 
+def read_covariance_record(gpx, *, corr_threshold: float = 0.9) -> CovarianceRecord | None:
+    """精密化済み ``G2Project`` から `CovarianceRecord` を読む (共分散が無ければ None)。
+
+    `read_diagnostics` 等と同じく ``Covariance/data`` だけを掘る GSAS 入口。
+    """
+    try:
+        cov_data = gpx.data["Covariance"]["data"]
+    except (KeyError, TypeError, AttributeError):
+        return None
+    if not isinstance(cov_data, Mapping):
+        return None
+    return covariance_record_from_cov_data(cov_data, corr_threshold=corr_threshold)
+
+
 def read_diagnostics(gpx, *, corr_threshold: float = 0.9) -> RefinementDiagnostics:
     """精密化済み ``G2Project`` から診断を読む。
 
-    `read_variable_values` / `read_variable_esds` と並ぶ **3 つの GSAS 入口**の 1 つ。
+    `read_variable_values` / `read_variable_esds` / `read_covariance_record` と並ぶ GSAS 入口の 1 つ。
     共分散が無い (未精密化 / 失敗) 場合も空の診断を返す。
     """
     try:

@@ -70,6 +70,7 @@ SearchRunner = Callable[[RecipeCandidate], AutoRietveldResult]
 __all__ = [
     "RIETVELD_TOOLS",
     "auto_rietveld",
+    "export_claims_csv",
     "list_refinement_backends",
     "propose_data_preprocessing",
     "propose_next_actions",
@@ -295,7 +296,52 @@ def _run_degrading_domain_errors(run: "Callable[[AnalysisInput], AutoRietveldRes
         result = run(inp)
     except TsumuginError as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
-    return _result_to_dict(result, inp)
+    payload = _result_to_dict(result, inp)
+    _attach_claims(payload, result, inp.phases)
+    return payload
+
+
+def _attach_claims(
+    payload: dict, result: AutoRietveldResult, phases: "Sequence[object]",
+    multistart: object | None = None,
+) -> None:
+    """② の結果に出版状態を**足す** (fit-then-judge 1A。既存キーは変えない)。
+
+    - ``claims_version`` / ``claims`` (値ごとの `Claim`) / ``judgment_requests`` (決まらなかったこと・
+      検査できなかったこと。D の既定回答付き) / ``publishable_values`` (出版してよい値だけ)
+    - ``claims_sidecar``: 精密化済み gpx の隣に書いた ``<stem>.claims.json`` (``""`` = 書いていない。
+      理由は ``claims_sidecar_reason`` — ``warnings`` は成果物の退避理由の行に使うので混ぜない)
+    - 単発・探索・`refine_with_revisions` は収束確認が無いので ``determined`` は付かない。収束確認経路は
+      ``multistart`` (Phase B) を渡し、全開始点で一致した値にだけ証人を付ける
+    - **例外にしない**: 組み立てに失敗したら ``claims: null``・``publishable_values: {}`` (= 何も出版
+      できない側) にし、理由を ``warnings`` に載せる (フィット結果は落とさない)
+    """
+    from ..claims.build import CLAIMS_VERSION
+    from ..claims.requests import assess
+    from ..claims.sidecar import write_claims_sidecar
+
+    warnings = payload.setdefault("warnings", [])
+    try:
+        body = assess(result, phases, multistart).to_dict()
+    except Exception as exc:  # noqa: BLE001 — 出版状態の失敗でフィット結果を落とさない
+        payload.update({
+            "claims_version": CLAIMS_VERSION, "claims": None, "judgment_requests": [],
+            "publishable_values": {}, "claims_sidecar": "", "claims_sidecar_reason": "",
+        })
+        warnings.append(f"出版状態 (claims) を作れませんでした: {type(exc).__name__}: {exc}")
+        return
+    payload.update({k: body[k] for k in (
+        "claims_version", "claims", "judgment_requests", "publishable_values",
+    )})
+    payload["claims_policy"] = body["policy"]
+    try:
+        path, reason = ("", "") if not payload.get("gpx_path") else write_claims_sidecar(
+            str(payload["gpx_path"]), body,
+        )
+    except Exception as exc:  # noqa: BLE001 — sidecar の失敗でフィット結果を落とさない
+        path, reason = "", f"{type(exc).__name__}: {exc}"
+    payload["claims_sidecar"] = path
+    payload["claims_sidecar_reason"] = reason
 
 
 def _result_from_dict(result: Mapping[str, object]) -> AutoRietveldResult:
@@ -396,6 +442,7 @@ def _run_search(
         background_coeffs=selected.candidate.background_coeffs,
     )
     payload = _result_to_dict(selected.result, chosen)
+    _attach_claims(payload, selected.result, chosen.phases)
     payload["search"] = summary.to_dict()
     _lift_fallback_warnings(payload, summary.warnings)
     return payload
@@ -479,6 +526,7 @@ def _run_convergence(
             background_coeffs=selected.candidate.background_coeffs,
         )
     payload = _result_to_dict(report.best, chosen)
+    _attach_claims(payload, report.best, chosen.phases, report.multistart)
     if report.search is not None:
         payload["search"] = report.search.to_dict()
     payload["convergence"] = report.to_dict()
@@ -1060,8 +1108,65 @@ def list_refinement_backends() -> dict:
         return {"error": str(exc), "error_type": type(exc).__name__}
 
 
+def export_claims_csv(gpx_path: str, path: str) -> dict:
+    """精密化済み gpx の出版状態を、値ごとに状態の列付きで CSV に書く (fit-then-judge 1A)。
+
+    出版状態は**gpx の隣の sidecar (内容ハッシュ照合済み) から読む** — ③ が手で渡した ``claims`` は
+    受けない (書き換えた ``gate``/``checks`` で「出版可」の行を作れてしまうため)。
+
+    :param gpx_path: ``auto_rietveld`` / ``refine_with_revisions`` の出力の ``gpx_path`` そのもの
+        (§4.5 到達可能性)。sidecar が無い・gpx の中身と一致しない (上書きされた) ときは error dict
+        (= 出版状態が不明。``save_gpx=false`` で回した結果は gpx も sidecar も無いので出せない)
+    :param path: 出力先の**絶対パス** (相対パスはサーバの作業ディレクトリに化けるので受けない)。
+        既存ファイルは上書きしない (error dict)。置き場所の目安は ``claims_sidecar`` と同じ run ディレクトリ
+    :returns: ``{"path", "n_rows", "n_publishable", "sidecar"}`` (``sidecar`` = 読んだ sidecar)。全行が ``publishable``・
+        ``determinacy``・``provenance``・``scope``・``checks``・``gate`` の列を持つ — 出版不可の行も
+        消さずに状態で示す
+    """
+    from pathlib import Path
+
+    from ..claims.export import write_claims_csv
+    from ..claims.model import Claim
+    from ..claims.sidecar import find_claims_sidecar
+
+    if not isinstance(gpx_path, str) or not gpx_path or not isinstance(path, str):
+        return {
+            "error": "gpx_path と path は文字列で指定してください (gpx_path は auto_rietveld の出力の"
+                     "gpx_path そのもの)",
+            "error_type": "ValueError",
+        }
+    if not Path(path).is_absolute():
+        return {
+            "error": f"出力先は絶対パスで指定してください: {path!r} (相対パスはサーバの作業"
+                     "ディレクトリに解決され、意図しない場所に書かれます)",
+            "error_type": "ValueError",
+        }
+    found = find_claims_sidecar(gpx_path)
+    claims = found[1].get("claims") if found else None
+    if not isinstance(claims, Mapping) or not claims:
+        return {
+            "error": f"{gpx_path!r} の出版状態 (sidecar) が見つからないか、gpx の中身と一致しません "
+                     "(状態不明 — 出版できる値はありません)。結果の claims_sidecar / "
+                     "claims_sidecar_reason を確かめてください",
+            "error_type": "FileNotFoundError",
+        }
+    try:
+        parsed = {str(k): Claim.from_dict(v) for k, v in claims.items()}
+        out = write_claims_csv(parsed, path)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+    return {
+        "path": str(out),
+        "n_rows": len(parsed),
+        "n_publishable": sum(1 for c in parsed.values() if c.publishable),
+        # どの sidecar から作ったか — ③ が結果の claims_sidecar と突き合わせられる
+        "sidecar": found[0] if found else "",
+    }
+
+
 RIETVELD_TOOLS: Mapping[str, object] = {
     "auto_rietveld": auto_rietveld,
+    "export_claims_csv": export_claims_csv,
     "list_refinement_backends": list_refinement_backends,
     "propose_next_actions": propose_next_actions,
     "propose_data_preprocessing": propose_data_preprocessing,

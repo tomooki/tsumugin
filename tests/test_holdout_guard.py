@@ -58,6 +58,12 @@ FEATURE_TOKENS = (
     "_integrated_intensity",
     "_checked_uiso_groups",
     "_export_refined_cifs",
+    # P1-1A (出版状態の型)
+    "tsumugin.claims",
+    "claim_variables",
+    "final_covariance",
+    "read_covariance_record",
+    "reflection_two_theta",
 )
 
 #: (準) hold-out の参照 (パスらしい文字列の中で照合する)。大文字小文字を区別しない。
