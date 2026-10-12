@@ -927,7 +927,15 @@ def test_real_tc_honours_the_freezes(tmp_path):
     assert math.isfinite(result.final_rwp)
     assert result.refined_cells["PbSO4"][:3] == pytest.approx((cif.a, cif.b, cif.c), abs=1e-9)
     assert result.cell_esd["PbSO4"] == (None,) * 6
-    assert "Pb" not in result.atom_coords["PbSO4"], "凍結した座標が出版値として出た"
+    # 凍結した原子も TOPAS が使った値 (= CIF 値) で載る (#236: GSAS と同じく全原子・全軸)。
+    #   凍結は「精密化されていない」ことで示す — 自由軸の esd は None、対称で固定の軸は 0.0。
+    pb = next(atom for atom in cif.atoms if atom.label == "Pb")
+    assert result.atom_coords["PbSO4"]["Pb"] == pytest.approx((pb.x, pb.y, pb.z), abs=1e-9), (
+        "凍結した座標が動いた"
+    )
+    assert result.atom_coord_esd["PbSO4"]["Pb"] == (None, 0.0, None), (
+        "凍結した座標が精密化値として出版された"
+    )
     assert {"S", "O1", "O2", "O3"} <= set(result.atom_coords["PbSO4"])
     assert set(result.atom_uiso["PbSO4"]) == {"Pb"}
     inp = (tmp_path / "proj" / f"stage{len(result.stage_results) - 1}.inp").read_text("utf-8")
