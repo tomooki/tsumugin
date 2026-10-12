@@ -85,7 +85,8 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
 - **相の指定 (`phases[]`) は GSAS と同じ意味で効く**: `refine_cell` (副相の格子固定) /
   `frozen_coord_labels` / `free_uiso_labels` / `frozen_uiso_labels` (少数相の ADP 凍結) /
   `mixed_occupancy_groups` / `free_occupancy_labels` / `occupancy_equiv_groups` /
-  `occupancy_sum_groups` (親 = Σ子) / `position_equiv_groups`。凍結できたかの確かめ方:
+  `occupancy_sum_groups` (親 = Σ子。親を共有する複数の組も可 — 下記) / `position_equiv_groups`。
+  凍結できたかの確かめ方:
   全相の Uiso を凍結した uiso 段は GSAS と同じく `note` に **`uiso_frozen_all`** が付く。一部の
   相・原子だけなら、凍結した原子は結果の `atom_uiso` / `atom_coords` に**出ない** (TOPAS は
   精密化した値だけを出版する)。格子を固定した相の `cell_esd` は **`null` × 6** になる
@@ -99,8 +100,16 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
     名指しするので**直して回し直す** (相に無いラベル等の**ラベルの誤りは GSAS でも同じく
     精密化の前に止まる** (手順 1) — エンジンを替えても直らない)。
     **TOPAS では張れない形は GSAS で回す** (同じエラーで止まる): 3 原子以上の混合占有 (x と 1-x の
-    2 原子形だけ) / 1 原子が 2 つの占有率拘束に入る形 — **D/H 混合 (`place_hd_mix`) が作る
-    「親水 O が 2 つの `occupancy_sum_groups` に入る」形もこれ**。GSAS は両方の拘束を同時に満たす。
+    2 原子形だけ) / 1 原子が 2 つの占有率拘束に入る形のうち、同じ原子が 2 つの組の子になる・
+    ある組の子が別の組の親になる (入れ子)・混合占有や等値の組と重なる形 (INP は原子ごとに占有率を
+    1 つの式で書く。GSAS は全拘束を同時に満たす。1 つの拘束にまとめると別のモデルになる)。
+    **和の組の親を複数の組で共有する形は TOPAS でも張れる** — H/D ミキシング (親水 O に共位置の
+    D/H 対を 2 組置き、各対を親水 O の和の組にする) の
+    `"occupancy_sum_groups": [["Ow","DOw1","HOw1"],["Ow","DOw2","HOw2"]]` は GSAS と同じ自由度
+    (5 原子 − 2 拘束 = 3) で両方の和を満たすので、**GSAS へ回さなくてよい**。各対は
+    `"position_equiv_groups": [["DOw1","HOw1"],["DOw2","HOw2"]]` で共位置に結束する (結束しないと
+    座標段で D と H が別々に動き、共位置の H/D 対でなくなる)。D/H の原子は CIF に置いてから渡す
+    (足すのは構造の編集なので `edit_cif` の `add` — ユーザー承認を挟む)。
     入力ファイルから INP を組めないとき (装置ファイルに波長が無い・CIF に空間群や原子ループが
     無い等) は `error_type: "TopasInputError"` — エラー文が原因を名指すので入力を直す。
   - 相の `temperature` は**どちらのエンジンも読まない**。ヒストグラム間の温度差は
