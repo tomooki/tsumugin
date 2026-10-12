@@ -56,6 +56,7 @@ __all__ = [
     "compare_results",
     "effective_trajectory",
     "is_agreement",
+    "parameter_agreements",
 ]
 
 #: パラメータクラス。``structure_classes`` の既定はこの前半 3 つ。
@@ -710,6 +711,35 @@ def _independence(
 # ---------------------------------------------------------------------------
 
 
+def parameter_agreements(
+    a: AutoRietveldResult,
+    b: AutoRietveldResult,
+    tolerances: "AgreementTolerances | None" = None,
+) -> dict[str, tuple[ParameterAgreement, ...]]:
+    """2 つの結果の**値ごと**の一致判定をクラス別に返す (`PARAM_CLASSES` の順)。
+
+    `compare_results` はこれをクラスごとに畳んで最悪の 1 件だけを残す。値ごとの判定を要る呼び手
+    (fit-then-judge 1A の `claims` — 収束確認の全対で一致した値だけに `determined` の証人を付ける)
+    のために公開する。`compare_results` 自身もこれを使うので、両者の判定は常に同じ。
+    """
+    tol = tolerances or AgreementTolerances()
+    return {
+        CELL: tuple(_cell_items(a, b, tol)),
+        COORD: tuple(_coord_items(a, b, tol)),
+        OCCUPANCY: tuple(_mapping_items(
+            OCCUPANCY, a.atom_occupancy, b.atom_occupancy,
+            a.atom_occupancy_esd, b.atom_occupancy_esd, tol.occupancy_abs_floor, tol.k_esd,
+        )),
+        UISO: tuple(_mapping_items(
+            UISO, a.atom_uiso, b.atom_uiso,
+            a.atom_uiso_esd, b.atom_uiso_esd, tol.uiso_abs_floor, tol.k_esd,
+        )),
+        MICROSTRUCTURE: tuple(_microstructure_items(a, b, tol)),
+        PROFILE: tuple(_profile_items(a, b, tol)),
+        WEIGHT_FRACTION: tuple(_fraction_items(a, b, tol)),
+    }
+
+
 def compare_results(
     a: AutoRietveldResult,
     b: AutoRietveldResult,
@@ -752,21 +782,7 @@ def compare_results(
                 "収束の比較ではない (compare_structure_models を使うこと)"
             )
 
-    by_class: dict[str, list[ParameterAgreement]] = {
-        CELL: _cell_items(a, b, tol),
-        COORD: _coord_items(a, b, tol),
-        OCCUPANCY: _mapping_items(
-            OCCUPANCY, a.atom_occupancy, b.atom_occupancy,
-            a.atom_occupancy_esd, b.atom_occupancy_esd, tol.occupancy_abs_floor, tol.k_esd,
-        ),
-        UISO: _mapping_items(
-            UISO, a.atom_uiso, b.atom_uiso,
-            a.atom_uiso_esd, b.atom_uiso_esd, tol.uiso_abs_floor, tol.k_esd,
-        ),
-        MICROSTRUCTURE: _microstructure_items(a, b, tol),
-        PROFILE: _profile_items(a, b, tol),
-        WEIGHT_FRACTION: _fraction_items(a, b, tol),
-    }
+    by_class = {c: list(items) for c, items in parameter_agreements(a, b, tol).items()}
     classes = tuple(_class_verdict(by_class[c], c) for c in PARAM_CLASSES)
     all_items = [it for c in PARAM_CLASSES for it in by_class[c]]
     independence = _independence(

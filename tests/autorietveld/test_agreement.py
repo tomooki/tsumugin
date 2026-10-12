@@ -506,3 +506,38 @@ def test_unknown_independence_basis_is_rejected():
     a, b = _result(), _result()
     with pytest.raises(ValueError, match="basis"):
         compare_results(a, b, _prov("A", a), _prov("B", b), basis="bogus")
+
+
+# ---------------------------------------------------------------------------
+# 値ごとの一致 (fit-then-judge P1-1A タスク 3)
+# ---------------------------------------------------------------------------
+
+
+def test_parameter_agreements_keep_every_value_not_only_the_worst():
+    """`compare_results` はクラスごとに最悪の 1 件しか残さない。値ごとの判定が要る呼び手
+    (`claims` の `determined` の証人) のために全件を返す — 割れた値の隣の、一致した値も見える。"""
+    from tsumugin.autorietveld.agreement import parameter_agreements
+
+    a = _result(coords={"O1": (0.25, 0.5, 0.125), "O2": (0.1, 0.2, 0.3)},
+                coord_esd={"O1": (0.001,) * 3, "O2": (0.001,) * 3})
+    b = _result(coords={"O1": (0.25, 0.5, 0.125), "O2": (0.15, 0.2, 0.3)},
+                coord_esd={"O1": (0.001,) * 3, "O2": (0.001,) * 3})
+    got = parameter_agreements(a, b)
+    by_key = {it.key: it.verdict for it in got["coord"]}
+    assert by_key["p.O2.x"] == "DISAGREE"
+    assert by_key["p.O1.x"] == "AGREE"
+    assert len(got["coord"]) == 6
+
+
+def test_compare_results_folds_exactly_the_same_items():
+    """`compare_results` のクラス判定は `parameter_agreements` の畳み込みと一致する (2 系統にしない)。"""
+    from tsumugin.autorietveld.agreement import parameter_agreements
+
+    a = _result()
+    b = _result(cell=(_CUBIC[0] * 1.01,) + tuple(_CUBIC[1:]))
+    pair = _cmp(a, b)
+    items = parameter_agreements(a, b)
+    for cls in pair.classes:
+        assert cls.n_compared == len(items[cls.param_class])
+        if cls.worst is not None:
+            assert cls.worst in items[cls.param_class]
