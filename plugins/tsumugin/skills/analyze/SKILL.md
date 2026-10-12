@@ -188,7 +188,7 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
   X,Y,Zero) ことにも注意。**`profile_lorentzian` のキー列** (例 `["X","Y"]`) も TOPAS では
   未対応で、true/false のみ。キー列を渡すと**精密化の前に呼び出し全体が拒否され** error dict が
   返る (段が失敗する `zero_offset` とは現れ方が違う)。
-- **`cell_phases` は未対応**・**`preferred_orientation_phases` は未対応** — 格子/選択配向を解放する相を
+- **`cell_phases` は未対応**・**`preferred_orientation_phases` は未対応**・**`occupancy_phases` は未対応** — 格子/選択配向/占有率を解放する相を
   絞る GSAS 経路のフラグ (テンプレートの部品)。TOPAS では未翻訳で、指定すると段が明示的に失敗する。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。

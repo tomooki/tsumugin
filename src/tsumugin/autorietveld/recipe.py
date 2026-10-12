@@ -238,6 +238,7 @@ def validate_correlation_groups(
 PHASE_SCOPED_FLAGS: dict[str, str] = {
     "cell_phases": "cell",
     "preferred_orientation_phases": "preferred_orientation",
+    "occupancy_phases": "occupancy",
 }
 
 

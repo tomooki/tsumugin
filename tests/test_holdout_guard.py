@@ -69,6 +69,7 @@ FEATURE_TOKENS = (
     "evidence.fitstats",
     "cell_phases",
     "preferred_orientation_phases",
+    "occupancy_phases",
     "check_phase_scoped_flags",
 )
 

@@ -78,6 +78,18 @@ def test_preferred_orientation_phases_limits_the_march_dollase_release():
     assert a.po_refined() and not b.po_refined()
 
 
+def test_occupancy_phases_limits_the_occupancy_release():
+    a, b = _Phase("A"), _Phase("B")
+    infos = [dict(_info(), mixed={"Fe1", "Al1"}), dict(_info(), mixed={"Fe2", "Al2"})]
+    maps = [{}, {}]
+    _apply_stage(
+        gpx=None, hists=[object()], phases=[a, b], phase_infos=infos, atom_flag_maps=maps,
+        radiations=[Radiation.XRAY_LAB],
+        stage=RefinementStage("s", {"occupancy": True, "occupancy_phases": ["A"]}),
+    )
+    assert maps[0] == {"Fe1": "F", "Al1": "F"} and maps[1] == {}
+
+
 def _spec(name: str) -> PhaseSpec:
     return PhaseSpec(structure_path=f"{name}.cif", phase_name=name)
 
@@ -92,6 +104,7 @@ def _spec(name: str) -> PhaseSpec:
         {"cell": True, "cell_phases": "A"},  # 文字列は文字の列に化ける
         {"preferred_orientation": 1, "preferred_orientation_phases": ["Z"]},
         {"preferred_orientation_phases": ["A"]},
+        {"occupancy_phases": ["A"]},
     ],
 )
 def test_misuse_is_refused_before_refinement(flags):
@@ -122,7 +135,7 @@ def test_the_engine_entry_checks_the_flags_before_gsas():
         )
 
 
-@pytest.mark.parametrize("name", ["cell_phases", "preferred_orientation_phases"])
+@pytest.mark.parametrize("name", ["cell_phases", "preferred_orientation_phases", "occupancy_phases"])
 def test_layer_two_accepts_the_flags_as_name_lists(name):
     stage_from_dict({"label": "s", "flags": {"cell": True, name: ["A"]}})
     for bad in ([], "A", [1], True):

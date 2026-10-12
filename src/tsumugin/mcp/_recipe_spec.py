@@ -71,6 +71,7 @@ KNOWN_STAGE_FLAGS = frozenset(
         "freeze_others",
         "hydrostatic_strain",
         "occupancy",
+        "occupancy_phases",
         "phase_fraction_sum",
         "preferred_orientation",
         "preferred_orientation_phases",
@@ -134,7 +135,7 @@ def _check_flag_value(label: str, name: str, value: object) -> None:
             f"stage.flags['profile_lorentzian'] は bool か {sorted(allowed)} の非空部分集合の列"
             f" である必要があります ({label!r}): {value!r}"
         )
-    if name in ("cell_phases", "preferred_orientation_phases"):
+    if name in ("cell_phases", "preferred_orientation_phases", "occupancy_phases"):
         # 相名の非空の列。相に実在するか・対象の解放がある段かは engine 入口
         # (`recipe.check_phase_scoped_flags`) が相の一覧と照合する (ここでは相を知らない)。
         if (

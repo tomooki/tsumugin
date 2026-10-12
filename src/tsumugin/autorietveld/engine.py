@@ -1226,8 +1226,15 @@ def _apply_stage(
         for ph in phases:
             ph.set_HAP_refinements({"Scale": True}, histograms=list(hists))
     # 原子フラグ (per-atom, 累積)
+    # 【占有率を解放する相を絞る (fit-then-judge P1-1B)】: ``occupancy_phases`` に無い相には
+    #   ``occupancy`` を見せない (座標/Uiso は相の `frozen_*_labels` で絞れるが占有率には凍結の欄が無い)。
+    occ_only = flags.get("occupancy_phases")
+    occ_scope = set(occ_only) if isinstance(occ_only, (list, tuple)) else None
     for ph, info, fmap in zip(phases, phase_infos, atom_flag_maps):
-        if _update_atom_flags(fmap, info, flags):
+        phase_flags = flags
+        if occ_scope is not None and ph.name not in occ_scope and "occupancy" in flags:
+            phase_flags = {k: v for k, v in flags.items() if k != "occupancy"}
+        if _update_atom_flags(fmap, info, phase_flags):
             active = {lab: fl for lab, fl in fmap.items() if fl}
             if active:
                 ph.set_refinements({"Atoms": active})
