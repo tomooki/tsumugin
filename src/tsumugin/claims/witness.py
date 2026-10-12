@@ -81,9 +81,9 @@ def residual_window_witness(
 
     :param residual: ``obs − calc`` (`AutoRietveldResult.residual_intensity`)
     :param sigma: 各点の σ (重み 0 の点は inf — 使わない)
-    :param reflections: 計算反射の 2θ (`AutoRietveldResult.reflection_two_theta`)。None = 計測していない
-    :param profile: 先頭ヒストグラムの装置プロファイル (`AutoRietveldResult.hist_profile[0]`)。
-        ``Lam1``・``Lam2`` があれば Kα2 の位置も計算反射として除外する
+    :param reflections: 計算反射の 2θ (`AutoRietveldResult.reflection_two_theta` — Kα1+Kα2 の装置では
+        engine が Kα2 の位置も入れている)。None = 計測していない
+    :param profile: 先頭ヒストグラムの装置プロファイル (`AutoRietveldResult.hist_profile[0]`)
     :param min_center_fraction: 窓の中心になれた点の割合の下限。これを下回れば ``unevaluated``
         (反射の隙間が少ししか無いパターンで、数個の窓だけから「欠落相なし」と言わない)
     """
@@ -103,13 +103,7 @@ def residual_window_witness(
 
     usable = np.isfinite(tt) & np.isfinite(r) & np.isfinite(s) & (s > 0.0)
     refl = np.asarray(reflections, dtype=float)
-    refl = refl[np.isfinite(refl)]
-    lam1, lam2 = (profile or {}).get("Lam1"), (profile or {}).get("Lam2")
-    if lam1 and lam2 and refl.size:
-        # Kα2 も計算反射 (GSAS は Kα1 の位置だけを反射リストに持つ) — 高角では Kα1 から数 FWHM 離れる
-        s2 = (float(lam2) / float(lam1)) * np.sin(np.radians(refl / 2.0))
-        refl = np.concatenate([refl, 2.0 * np.degrees(np.arcsin(s2[s2 < 1.0]))])
-    refl = np.sort(refl)
+    refl = np.sort(refl[np.isfinite(refl)])
     if refl.size:
         pos = np.searchsorted(refl, tt)
         left = np.abs(tt - refl[np.clip(pos - 1, 0, refl.size - 1)])
@@ -173,7 +167,9 @@ def residual_window_witness(
                 best_window = (float(x[ci]), float(x[cj - 1]))
     if n_windows == 0:
         return _unevaluated("no_window")
-    if n_windows / tt.size < min_center_fraction:
+    # 見つけた山は覆えた範囲が狭くても fail として返す (unevaluated に畳むと位置と S/N が根拠から消える)。
+    #   下限が効くのは「何も見つからなかった」(pass) ときだけ。
+    if best_snr <= snr_threshold and n_windows / tt.size < min_center_fraction:
         return _unevaluated("insufficient_coverage")
 
     check = Check.FAIL if best_snr > snr_threshold else Check.PASS

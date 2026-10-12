@@ -3461,6 +3461,7 @@ def _claim_variables(g2phases, g2hists) -> "dict[str, tuple[str, ...]] | None":
 def _reflection_two_theta(g2hists, histograms) -> "tuple[float, ...] | None":
     """先頭ヒストグラムの全相の計算反射の 2θ (精密化範囲内・昇順。fit-then-judge P1-1A)。
 
+    Kα1+Kα2 の装置 (``Lam1``/``Lam2``) では Kα2 の位置も含める。
     GSAS の粉末の反射リストは列 5 が位置 (2θ、超空間群は 1 つずれる)。反射リストが 1 本も
     取れないときは None (= 計測していない)。範囲は `HistogramSpec.two_theta_limits` (無ければ全域)。
     """
@@ -3471,7 +3472,7 @@ def _reflection_two_theta(g2hists, histograms) -> "tuple[float, ...] | None":
     except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
         return None
     lim = histograms[0].two_theta_limits if histograms else None
-    positions: list[float] = []
+    raw: list[float] = []
     seen = False
     for entry in refl.values():
         try:
@@ -3480,16 +3481,26 @@ def _reflection_two_theta(g2hists, histograms) -> "tuple[float, ...] | None":
                 continue
             col = 6 if entry.get("Super", False) else 5
             seen = True
-            for row in reflist:
-                pos = float(row[col])
-                if not math.isfinite(pos):
-                    continue
-                if lim is not None and not (lim[0] <= pos <= lim[1]):
-                    continue
-                positions.append(pos)
+            raw.extend(float(row[col]) for row in reflist)
         except Exception:  # noqa: BLE001 — 想定外の形はその相だけ飛ばす
             continue
-    return tuple(sorted(positions)) if seen else None
+    if not seen:
+        return None
+    # 【Kα2 も計算反射】: GSAS の反射リストは Kα1 の位置だけを持つ。Kα1+Kα2 の装置では高角で Kα2 が
+    #   Kα1 から数 FWHM 離れ、その合わなさが「反射から離れた残差」= 欠落相に見える。
+    try:
+        inst = g2hists[0].data["Instrument Parameters"][0]
+        if "Lam1" in inst and "Lam2" in inst:
+            from .claim_variables import kalpha2_positions
+
+            raw.extend(kalpha2_positions(raw, float(inst["Lam1"][1]), float(inst["Lam2"][1])))
+    except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない (Kα2 なしで続ける)
+        pass
+    positions = [
+        p for p in raw
+        if math.isfinite(p) and (lim is None or lim[0] <= p <= lim[1])
+    ]
+    return tuple(sorted(positions))
 
 
 def _coordinate_freedom_mismatches(

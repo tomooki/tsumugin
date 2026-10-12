@@ -170,9 +170,23 @@ def test_kalpha2_satellites_are_excluded_too():
     th = np.radians(73.0 / 2.0)
     k2 = float(np.degrees(2.0 * np.arcsin(lam2 / lam1 * np.sin(th))))
     # 幅を狭くして Kα2 (73° で +0.21°) が Kα1 の除外域 (3 FWHM ≈ 0.1°) の外に出るようにする
+    from tsumugin.autorietveld.claim_variables import kalpha2_positions
+
     narrow = {**_PROFILE, "W": 2.0}
     resid, sigma = _noise()
     misfit = resid + _peak(k2, 8.0, fwhm=0.033)
     assert _run(misfit, sigma, profile=narrow)[0] is Check.FAIL, "前提: Kα1 だけでは拾ってしまう"
-    check, _ = _run(misfit, sigma, profile={**narrow, "Lam1": lam1, "Lam2": lam2})
+    with_k2 = _REFL + kalpha2_positions(_REFL, lam1, lam2)  # engine が結果に入れる形
+    check, _ = _run(misfit, sigma, refl=with_k2, profile=narrow)
     assert check is Check.PASS
+
+
+def test_a_real_detection_is_reported_even_when_coverage_is_low():
+    """見つけた山は、覆えた範囲が狭くても fail として根拠ごと返す (unevaluated に畳むと位置と S/N が
+    判断要求の根拠から消える — 2 巡目 L-b)。"""
+    resid, sigma = _noise()
+    dense_high = tuple(np.arange(14.0, 80.0, 0.5))
+    check, witness = _run(resid + _peak(11.5, 8.0), sigma, refl=dense_high)
+    assert check is Check.FAIL
+    lo, hi = witness.detail["window_two_theta"]
+    assert lo <= 11.5 <= hi

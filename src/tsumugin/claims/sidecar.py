@@ -17,7 +17,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-__all__ = ["read_claims_sidecar", "sidecar_candidates", "write_claims_sidecar"]
+__all__ = [
+    "find_claims_sidecar", "read_claims_sidecar", "sidecar_candidates", "write_claims_sidecar",
+]
 
 
 def _sha256(path: Path) -> str:
@@ -45,7 +47,7 @@ def write_claims_sidecar(gpx_path: str, payload: Mapping[str, Any]) -> tuple[str
     gpx = Path(gpx_path)
     try:
         digest = _sha256(gpx)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:  # ValueError: パスに NUL など
         return "", f"gpx を読めない ({type(exc).__name__}: {exc})"
     body = {**dict(payload), "gpx_sha256": digest, "gpx_name": gpx.name}
     try:
@@ -72,18 +74,18 @@ def write_claims_sidecar(gpx_path: str, payload: Mapping[str, Any]) -> tuple[str
     return "", "同名の sidecar が既にあり、上書きしない"
 
 
-def read_claims_sidecar(gpx_path: str) -> dict[str, Any] | None:
-    """今の gpx の内容と一致する sidecar の中身。無い・壊れている・一致しない → None (状態不明)。"""
+def find_claims_sidecar(gpx_path: str) -> tuple[str, dict[str, Any]] | None:
+    """今の gpx の内容と一致する sidecar の ``(パス, 中身)``。無い・壊れている・一致しない → None。"""
     if not gpx_path:
         return None
     gpx = Path(gpx_path)
     try:
         digest = _sha256(gpx)
-    except OSError:
+    except (OSError, ValueError):  # ValueError: パスに NUL など — 状態不明として扱う
         return None
     # 同じ gpx に一致する sidecar が複数ある (同じ gpx を相の指定や収束確認を変えて評価し直した)
     #   ときは**最も新しい**ものを採る — 既定名 (= 最初に書いた方) を採ると古い状態を返す。
-    matches: list[tuple[float, int, dict[str, Any]]] = []
+    matches: list[tuple[float, int, str, dict[str, Any]]] = []
     for order, candidate in enumerate(sidecar_candidates(gpx_path)):
         try:
             body = json.loads(candidate.read_text(encoding="utf-8"))
@@ -91,5 +93,14 @@ def read_claims_sidecar(gpx_path: str) -> dict[str, Any] | None:
         except (OSError, ValueError):
             continue
         if isinstance(body, dict) and body.get("gpx_sha256") == digest:
-            matches.append((mtime, order, body))  # 時刻が同じなら後に書いた名前 (ハッシュ付き) を採る
-    return max(matches, key=lambda m: (m[0], m[1]))[2] if matches else None
+            matches.append((mtime, order, str(candidate), body))  # 同時刻なら後に書いた名前を採る
+    if not matches:
+        return None
+    _, _, path, body = max(matches, key=lambda m: (m[0], m[1]))
+    return path, body
+
+
+def read_claims_sidecar(gpx_path: str) -> dict[str, Any] | None:
+    """今の gpx の内容と一致する sidecar の中身 (`find_claims_sidecar` の中身だけ)。"""
+    found = find_claims_sidecar(gpx_path)
+    return found[1] if found else None

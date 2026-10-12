@@ -231,9 +231,10 @@ def test_propagation_stops_at_direct_partners_along_a_chain(checks_pass):
     assert "uiso:P.O1" in req.blocks and "uiso:P.Pb" not in req.blocks
 
 
-def test_a_split_value_correlated_through_a_constraint_blocks_its_whole_phase(checks_pass):
+def test_a_split_value_correlated_through_a_constraint_blocks_every_value(checks_pass):
     """混合占有の和の拘束は varyList で ``::constrN`` に置き換わり、相手の値を引けない (実 GSAS で確認)。
-    相手が分からない割れた値は、その相の全値を止める (止めすぎる側に倒す — レビュー M5)。"""
+    拘束の中身は**別の相**のこともある (スケール ↔ 他相の占有率) ので、相手が分からない割れた値は
+    全値を止める (止めすぎる側に倒す — レビュー M5 / 2 巡目 MEDIUM-2)。"""
     cov = CovarianceRecord(
         vary_list=_VARY + ("::constr0",), dependent=("0::Afrac:1",),
         correlations=(CorrelatedPair("0::AUiso:1", "::constr0", 0.97),),
@@ -244,9 +245,25 @@ def test_a_split_value_correlated_through_a_constraint_blocks_its_whole_phase(ch
     )
     a = rq.assess_claims({**claims, "uiso:P.O1": split}, _result(final_covariance=cov), _PHASES)
     (req,) = [r for r in a.requests if r.kind == "initial_value_dependence"]
-    assert "occupancy:P.O1" in req.blocks and "cell:P.a" in req.blocks
-    assert "cell:Q.a" not in req.blocks  # 他の相までは止めない
+    assert "occupancy:P.O1" in req.blocks and "cell:Q.a" in req.blocks
     assert req.evidence["unmapped_partners"] == ["::constr0"]
+
+
+def test_a_cross_phase_constraint_partner_is_not_missed(checks_pass):
+    """P の分率が割れ、その変数 (Q のスケール) が Q の拘束 ``::constr0`` と相関 — Q の値も止める。"""
+    cov = CovarianceRecord(
+        vary_list=_VARY + ("::constr0",), dependent=(),
+        correlations=(CorrelatedPair("1:0:Scale", "::constr0", 0.9),),
+    )
+    claims = rq.assess(_result(final_covariance=cov), _PHASES).claims
+    split = claims["weight_fraction:P.wt"].weakened_to(
+        Determinacy.INITIAL_VALUE_DEPENDENT, Witness("multistart_disagreement", {"z": 9.0}),
+    )
+    a = rq.assess_claims(
+        {**claims, "weight_fraction:P.wt": split}, _result(final_covariance=cov), _PHASES,
+    )
+    (req,) = [r for r in a.requests if r.kind == "initial_value_dependence"]
+    assert "occupancy:Q.C1" in req.blocks
 
 
 def test_a_pruned_cell_is_a_frozen_cell(checks_pass):
@@ -254,6 +271,17 @@ def test_a_pruned_cell_is_a_frozen_cell(checks_pass):
     res = _result(frozen_parameters=("1::A0",))
     a = rq.assess(res, _PHASES)
     assert "frozen_cell:Q" in _ids(a)
+
+
+def test_a_trivially_exact_weight_fraction_is_not_blocked_by_a_frozen_cell(checks_pass):
+    """単相の分率 = 1 は定義で決まる (exact) — 凍結した格子の誤差は移りようがない (2 巡目 L-a)。"""
+    res = _result(
+        refined_cells={"P": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+        phase_weight_fractions={"P": 1.0}, phase_weight_fraction_esd={"P": 0.0},
+    )
+    a = rq.assess(res, (PhaseSpec("p.cif", "P", refine_cell=False),))
+    assert "frozen_cell:P" in _ids(a)
+    assert not a.claims["weight_fraction:P.wt"].gate
 
 
 def test_a_frozen_cell_blocks_every_weight_fraction(checks_pass):

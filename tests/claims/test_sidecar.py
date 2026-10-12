@@ -99,3 +99,10 @@ def test_the_newest_state_for_the_same_gpx_wins(tmp_path):
     write_claims_sidecar(str(gpx), _PAYLOAD)
     write_claims_sidecar(str(gpx), {**_PAYLOAD, "claims_version": "second"})
     assert read_claims_sidecar(str(gpx))["claims_version"] == "second"
+
+
+def test_a_path_with_a_nul_character_is_state_unknown_not_an_exception(tmp_path):
+    """open() は NUL を含むパスで ValueError を出す — ② を越えて例外にしない (2 巡目 L-c)。"""
+    assert read_claims_sidecar(str(tmp_path / "a\x00b.gpx")) is None
+    path, reason = write_claims_sidecar(str(tmp_path / "a\x00b.gpx"), _PAYLOAD)
+    assert path == "" and reason

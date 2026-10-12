@@ -1119,7 +1119,7 @@ def export_claims_csv(gpx_path: str, path: str) -> dict:
         (= 出版状態が不明。``save_gpx=false`` で回した結果は gpx も sidecar も無いので出せない)
     :param path: 出力先の**絶対パス** (相対パスはサーバの作業ディレクトリに化けるので受けない)。
         既存ファイルは上書きしない (error dict)。置き場所の目安は ``claims_sidecar`` と同じ run ディレクトリ
-    :returns: ``{"path", "n_rows", "n_publishable"}``。全行が ``publishable``・
+    :returns: ``{"path", "n_rows", "n_publishable", "sidecar"}`` (``sidecar`` = 読んだ sidecar)。全行が ``publishable``・
         ``determinacy``・``provenance``・``scope``・``checks``・``gate`` の列を持つ — 出版不可の行も
         消さずに状態で示す
     """
@@ -1127,7 +1127,7 @@ def export_claims_csv(gpx_path: str, path: str) -> dict:
 
     from ..claims.export import write_claims_csv
     from ..claims.model import Claim
-    from ..claims.sidecar import read_claims_sidecar
+    from ..claims.sidecar import find_claims_sidecar
 
     if not isinstance(gpx_path, str) or not gpx_path or not isinstance(path, str):
         return {
@@ -1141,8 +1141,8 @@ def export_claims_csv(gpx_path: str, path: str) -> dict:
                      "ディレクトリに解決され、意図しない場所に書かれます)",
             "error_type": "ValueError",
         }
-    body = read_claims_sidecar(gpx_path)
-    claims = body.get("claims") if body else None
+    found = find_claims_sidecar(gpx_path)
+    claims = found[1].get("claims") if found else None
     if not isinstance(claims, Mapping) or not claims:
         return {
             "error": f"{gpx_path!r} の出版状態 (sidecar) が見つからないか、gpx の中身と一致しません "
@@ -1159,6 +1159,8 @@ def export_claims_csv(gpx_path: str, path: str) -> dict:
         "path": str(out),
         "n_rows": len(parsed),
         "n_publishable": sum(1 for c in parsed.values() if c.publishable),
+        # どの sidecar から作ったか — ③ が結果の claims_sidecar と突き合わせられる
+        "sidecar": found[0] if found else "",
     }
 
 

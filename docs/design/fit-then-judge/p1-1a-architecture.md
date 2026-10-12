@@ -91,15 +91,16 @@
 ### 4.2 相集合の完全性 — 反射から離れた窓の残差 S/N
 
 `claims.witness.residual_window_witness(two_theta, residual, sigma, reflections, profile)` (版 `residual-window/3`):
-1. 各計算反射 (Kα1 と、`Lam2` があれば Kα2) の周り ±`3·FWHM(2θ)` を除外する。FWHM は `hist_profile` の
+1. 各計算反射の周り ±`3·FWHM(2θ)` を除外する。Kα1+Kα2 の装置では engine が `reflection_two_theta` に
+   Kα2 の位置も入れる (GSAS の反射リストは Kα1 の位置しか持たない)。FWHM は `hist_profile` の
    U,V,W,X,Y から GSAS の CW の式で求める (取れなければ `unevaluated`)。
 2. 残りの連続区間ごとに ±5 FWHM の局所中央値を引き、反射から離れた点の規格化残差の MAD で σ の過小評価を
    割り戻す (1 未満にはしない)。
 3. 各点を中心に**平均 0 の山形の窓** (中央 1 FWHM を +、両側 FWHM/2 を −) の S/N をとり、最大が 5 を超えれば
    `fail`。平均 0 なので**坂は打ち消される** — 単純な窓の和は、除外域のすぐ外まで伸びた強い反射の裾を
    欠落相と取り違えた (実データ T2 garnet で踏んだ)。
-4. 残差が空・反射位置が無い・幅が無い・窓が無い・窓の中心になれた点が 5% 未満・**複数ヒストグラム** →
-   `unevaluated`。
+4. 残差が空・反射位置が無い・幅が無い・窓が無い・**複数ヒストグラム** → `unevaluated`。窓の中心になれた点が
+   5% 未満なら、山が見つからなかったときだけ `unevaluated` (見つけた山は根拠ごと `fail`)。
 合成データ (雑音 σ、FWHM 0.235°) で雑音のみ 200 種中 fail 0、FWHM 幅の山は 2σ/点で 12/50・3σ/点で 45/50 を検出。
 
 `check_phase_set` (系列専用) と `unindexed_peak_frac` (反射位置を見ない) は使わない。
@@ -134,13 +135,14 @@ proposal は「既存の `ActionProposal` を拡張する」としていたが�
 | `crystal_chemistry` | その相の検査が `fail`/`unevaluated` | yes | その相の coord/uiso/occupancy |
 | `validity` | `validity.checks` に fail | yes | 違反した値とその相 (検査名から引く) |
 | `initial_value_dependence` | §4.1 で割れた値がある | yes | 割れた値 + 直接 \|ρ\| の相手 |
-| `frozen_cell` | `refine_cell=False` の相、および格子を 1 軸も精密化しなかった相 (入力値・剪定) | yes | **全相の** weight_fraction (分率の和は 1 なので凍結相の誤差は他相に移る) |
+| `frozen_cell` | `refine_cell=False` の相、および格子を 1 軸も精密化しなかった相 (入力値・剪定) | yes | **全相の** weight_fraction (分率の和は 1 なので凍結相の誤差は他相に移る。単相の分率 = 1 の exact は除く) |
 | `coordinate_freedom` | `coordinate_freedom_mismatches` に原子 | yes | その原子の coord |
 
 blocking な要求の id は `blocks` の各 `Claim.gate` に入る。\|ρ\| の伝播は `final_covariance.correlations` を
 `claim_variables` の逆引きで値のキーに直し、**直接の相手だけ**に足す。GSAS は拘束 (混合占有の和など) を
 varyList で `::constrN` に置き換えるので、その変数との相関は相手の値を引けない (実 GSAS で確認)。拘束の従属側
-だけで動く値も同じ。相手が分からない割れた値は**その相の全値**を止める (`evidence.unmapped_partners`)。
+だけで動く値も同じ。拘束の中身は別の相のこともある (スケール ↔ 他相の占有率) ので、相手が分からない割れた
+値があれば**全値**を止める (`evidence.unmapped_partners`)。
 
 **D (`D-1A/1`)**: 全要求に `{"answer": "hold", "policy": "D-1A/1"}` を返す。gate を外さない。結果は
 `judgment_requests[].default` に載り、ledger には残さない (② の単発経路は ledger を返さない — gpx-retention と同じ事情)。

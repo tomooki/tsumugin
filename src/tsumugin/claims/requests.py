@@ -187,37 +187,31 @@ def _frozen_cell_phases(claims: Mapping[str, Claim], phases: Sequence[object] | 
     return frozen
 
 
-def _unmapped_partners(
-    split: set[str], claims: Mapping[str, Claim], result: object
-) -> tuple[set[str], set[str]]:
-    """割れた値の相関の相手のうち、値のキーに引けない変数と、そのせいで相手が分からない相。
+def _unmapped_partners(split: set[str], result: object) -> set[str]:
+    """割れた値の相関の相手のうち、値のキーに引けないもの。
 
     GSAS は拘束 (混合占有の和など) を varyList で ``::constrN`` に置き換えるので、その変数との相関は
     どの値の相手かを引けない (実 GSAS の garnet で確認)。拘束の従属側だけで動く値 (varyList に無く
-    ``depSigDict`` にだけある) も相関を持てない。どちらも「相手が無い」ではなく「分からない」なので、
-    その値の相の全値を止める (止めすぎる側に倒す)。
+    ``depSigDict`` にだけある) も相関を持てない。拘束の中身は**別の相**のこともある (スケール ↔ 他相の
+    占有率) ので、呼び手はこれが空でなければ全値を止める (「相手が無い」ではなく「分からない」)。
     """
     cov = getattr(result, "final_covariance", None)
     variables: Mapping[str, tuple[str, ...]] = getattr(result, "claim_variables", None) or {}
     if cov is None:
-        return set(), set()
+        return set()
     mapped = {v for names in variables.values() for v in names}
     vary = set(cov.vary_list)
     dependent = set(cov.dependent)
     unmapped: set[str] = set()
-    blind: set[str] = set()
     for key in split:
         names = set(variables.get(key, ()))
         if names and not names & vary and names & dependent:
             unmapped.add(f"<dependent:{key}>")
-            blind.add(claims[key].phase)
         for pair in cov.correlations:
             for mine, other in ((pair.a, pair.b), (pair.b, pair.a)):
                 if mine in names and other not in mapped and other.startswith("::constr"):
                     unmapped.add(other)
-                    blind.add(claims[key].phase)
-    blind.discard(None)  # type: ignore[arg-type]
-    return unmapped, blind
+    return unmapped
 
 
 def _issue(
@@ -265,8 +259,9 @@ def _issue(
     split = {k for k, c in claims.items() if c.determinacy is Determinacy.INITIAL_VALUE_DEPENDENT}
     if split:
         partners = {p for k in split for p in claims[k].correlations if p in claims}
-        unmapped, blind_phases = _unmapped_partners(split, claims, result)
-        partners |= {k for k, c in claims.items() if c.phase in blind_phases}
+        unmapped = _unmapped_partners(split, result)
+        if unmapped:
+            partners |= set(claims)  # 相手が分からない — 拘束の中身は別の相のこともあるので全値
         out.append(JudgmentRequest(
             id="initial_value_dependence", kind="initial_value_dependence", blocking=True,
             blocks=frozenset(split | partners),
@@ -278,8 +273,12 @@ def _issue(
     for phase in sorted(_frozen_cell_phases(claims, phases)):
         out.append(JudgmentRequest(
             id=f"frozen_cell:{phase}", kind="frozen_cell", blocking=True,
-            # 分率の和は 1 — 凍結した相の誤差は他相の分率にも同じだけ移るので全相の分率を止める
-            blocks=_keys(claims, param_class="weight_fraction"),
+            # 分率の和は 1 — 凍結した相の誤差は他相の分率にも同じだけ移るので全相の分率を止める。
+            #   単相の分率 = 1 (exact) は定義で決まるので止めない
+            blocks=frozenset(
+                k for k in _keys(claims, param_class="weight_fraction")
+                if "symmetry" not in claims[k].provenance
+            ),
             trigger=f"相 {phase} の格子を凍結した (相分率は格子の誤差を吸収しうる)",
             evidence={"phase": phase}, candidates=("hold", "release_cell"), priority=0.6,
         ))

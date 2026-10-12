@@ -23,10 +23,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
-__all__ = ["HistogramVariables", "PhaseVariables", "claim_variable_names"]
+__all__ = ["HistogramVariables", "PhaseVariables", "claim_variable_names", "kalpha2_positions"]
 
 _CELL_AXES = ("a", "b", "c", "alpha", "beta", "gamma")
 _CELL_TERMS = tuple(f"A{i}" for i in range(6))
@@ -77,3 +78,17 @@ def claim_variable_names(
         for key in h.profile_keys:
             out[f"profile:hist{h.index}.{key}"] = (f":{h.hid}:{key}",)
     return out
+
+
+def kalpha2_positions(two_theta: "Sequence[float]", lam1: float, lam2: float) -> tuple[float, ...]:
+    """Kα1 の反射位置 (2θ, deg) に対応する Kα2 の位置。GSAS の反射リストは Kα1 の位置しか持たない。
+
+    ``sin θ₂ = (λ₂/λ₁) sin θ₁``。θ₂ が 90° を越える (後方散乱で Kα2 が測定範囲外) ものは落とす。
+    """
+    ratio = float(lam2) / float(lam1)
+    out = []
+    for tt in two_theta:
+        s2 = ratio * math.sin(math.radians(float(tt) / 2.0))
+        if s2 < 1.0:
+            out.append(2.0 * math.degrees(math.asin(s2)))
+    return tuple(out)

@@ -89,7 +89,9 @@ def test_the_layer_two_tool_reads_the_state_from_the_hash_checked_sidecar(tmp_pa
     from tsumugin.mcp.rietveld_tools import export_claims_csv
 
     out = export_claims_csv(_saved(tmp_path), str(tmp_path / "claims.csv"))
-    assert out == {"path": str(tmp_path / "claims.csv"), "n_rows": 2, "n_publishable": 1}
+    # どの sidecar から作ったかを返す — ③ が結果の claims_sidecar と突き合わせられる (2 巡目 L-d)
+    assert out == {"path": str(tmp_path / "claims.csv"), "n_rows": 2, "n_publishable": 1,
+                   "sidecar": str(tmp_path / "fit.claims.json")}
     json.dumps(out)
 
 

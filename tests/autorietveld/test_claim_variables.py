@@ -78,3 +78,35 @@ def test_histogram_ids_are_gsas_ids_not_positions():
     )
     assert got["profile:hist0.U"] == (":3:U",)
     assert got["microstructure:P.hist0.size"] == ("0:3:Size;i",)
+
+
+class _FakeHist:
+    """`engine._reflection_two_theta` が読む最小の G2PwdrData (反射リストと装置パラメータ)。"""
+
+    def __init__(self, positions, inst):
+        self._refl = {"P": {"RefList": [[0, 0, 0, 1, 1.0, p] for p in positions]}}
+        self.data = {"Instrument Parameters": [inst, {}]}
+
+    def reflections(self):
+        return self._refl
+
+
+def test_kalpha2_positions_come_from_the_instrument_parameters():
+    """Kα1+Kα2 の装置では Kα2 の位置も計算反射に入れる — 証人が読む結果のフィールドに載せないと
+    実データでは働かない (レビュー 2 巡目 MEDIUM-1: プロファイルの dict には Lam1/Lam2 が無い)。"""
+    import math
+
+    from tsumugin.autorietveld.engine import _reflection_two_theta
+
+    inst = {"Lam1": [1.540593, 1.540593, False], "Lam2": [1.544414, 1.544414, False]}
+    got = _reflection_two_theta([_FakeHist([120.0], inst)], [])
+    k2 = 2.0 * math.degrees(math.asin(1.544414 / 1.540593 * math.sin(math.radians(60.0))))
+    assert got == (120.0, k2) or got == tuple(sorted((120.0, k2)))
+    assert abs(k2 - 120.0) > 0.4  # 高角では Kα2 が数 FWHM 離れる (120° で約 0.49°)
+
+
+def test_a_monochromatic_instrument_has_no_kalpha2_positions():
+    from tsumugin.autorietveld.engine import _reflection_two_theta
+
+    got = _reflection_two_theta([_FakeHist([120.0], {"Lam": [1.5406, 1.5406, False]})], [])
+    assert got == (120.0,)
