@@ -195,6 +195,13 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
      凍結できたかは `stages[]` の uiso 段の `note` に **`uiso_frozen_all`** が出るかで確かめる。
      **`noop` だけで `uiso_frozen_all` が無い段は凍結ではなく無言失敗の疑い** (段が何も
      精密化できていない) — 両者は rwp/n_params がビット同一なのでここでしか区別できない。
+   - **spec の JSON は「書かない / null = 既定 (未指定)」**。とりわけ `"refine_cell": null` は
+     既定の**精密化する**であって凍結ではない — 格子を固定したい相だけ `false` を明示する。
+     `histograms`/`phases` の各キーと `stability`/`search_config` では、型の違う値 (真偽値に
+     文字列 `"false"`、ラベル列に裸の文字列 `"O7"`、組の列に平坦な `["Fe1","Al1"]`
+     [正しくは `[["Fe1","Al1"]]`]、`two_theta_limits` に 3 要素) は **error dict** で返るので、
+     `error` を読んで直して呼び直す。⚠ 系列の `frames` (FrameSpec) はまだこの検査を通らない —
+     そちらは型を自分で確かめてから渡す。
    - **測定温度はヒストグラムに入れる**: ヒストグラムごとに測定温度が違う joint (例 X 線 295 K +
      中性子 10 K) は各 `histograms[].temperature` に K で入れる — 既定レシピが温度差の静水圧歪み
      Dij を解放する。**入ったかは `stages[]` で確かめる**: GSAS は格子の段の `note` に「温度差」、
