@@ -24,8 +24,12 @@ description: X線+中性子 (マルチヒストグラム) 同時 Rietveld 精密
 
 **精密化成果物 (.gpx) は既定で全部保存される** (2026-08-20 規定; 詳細は `analyze` skill)。
 joint も 1 精密化 = 1 ファイルで、`compare_structure_models` は**バリアントごとに 1 つ**残す
-(`…_model_<名前>.gpx`) — 棄却モデルがどう壊れていたか (実測 NaCuHCF model5 は Na>1 / O<0 に
-発散) を見ずに ΔBIC だけを報告しないこと。置き場所は既定で観測データ隣接、`gpx_dir` で変更可。
+(1 回の比較が 1 つの run ディレクトリを共有し、`model_<名前>.gpx` が並ぶ)。各バリアントの fit は
+返り値の **`scores[].gpx_path`** (**棄却モデルも**) — 棄却モデルがどう壊れていたか (実測 NaCuHCF
+model5 は Na>1 / O<0 に発散) を開いて見ずに ΔBIC だけを報告しないこと。置き場所は既定で観測データ
+隣接、`compare_structure_models` の `gpx_dir` で根を変更できる。`save_gpx=false` で止まるが、
+**モデル選択では止めない** (棄却の根拠が残らない)。保存先に書けず一時領域へ退避したときは返り値の
+`warnings` に理由が出る。
 
 ## 手順
 
@@ -38,6 +42,12 @@ X 線と中性子それぞれの `HistogramSpec` (data_path・instrument_path・
   `.instprm` にして、その `path` を `HistogramSpec` に渡す。
 - `radiation` は各ヒストグラムで正しく (`xray_synchrotron`/`neutron_tof`/`neutron_cw`)。**波長/較正
   ファイルの取り違えに注意** (放射光の λ は較正ファイル値をそのまま使わないことがある — 実測 XND)。
+- **測定温度が違うなら各ヒストグラムに入れる**: `histograms[].temperature` (K)。温度の違う
+  ヒストグラム (M7 T3: X 線 295 K / 中性子 10 K) は構造としての格子 1 本では両方を説明できない
+  ので、既定レシピがヒストグラムごとの静水圧歪み Dij を解放する — 温度を入れないと解放されず
+  **両方が同じくらい悪くなる**。入ったかは `stages[]` で確かめる (GSAS は格子の段の `note` に
+  「温度差」、TOPAS は `S2b hydrostatic_strain` 段。その段が `reverted` なら吸収できていない)。
+  ⛔ 相の `temperature` はどのエンジンも読まない (入れても効かない)。
 - **装置ファイルが無い / 正しいか分からないときは `instrument` skill**。joint は放射源の異なる
   instprm を複数扱うので取り違えが起きやすい — 各ヒストグラムについて
   `inspect_instrument_params(path, radiation=..., geometry=...)` を**宣言する値で**呼び、
@@ -71,6 +81,7 @@ Rwp 単独でなく `compare_structure_models` で BIC 比較する。Rwp は母
 
 `delta_bic` と `best_is_valid` を読む (実測 NaCuHCF: model6[+Ow] は model5 に **ΔBIC≈2.6e5** で
 支持され、かつ model6 のみ物理妥当 [model5 は占有率が [0,1] 逸脱] → **Ow は必要**と結論)。
+報告には各バリアントの `scores[].gpx_path` を添える (棄却したモデルの fit を人間が開いて確かめられる)。
 
 ### 5. 報告する
 

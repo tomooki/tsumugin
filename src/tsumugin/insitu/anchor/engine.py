@@ -82,17 +82,22 @@ def run_anchored_sequential(
     ここで系列 1 つ分の run ディレクトリを決め、内側の全精密化 (アンカー確定・A/B 検証・
     前方/後方パス) がその下に成果物を残す (2026-08-20 規定「全解析で保存する」)。
     """
-    from ..engine import _series_context  # 遅延 import (重い engine を import 時に引かない)
+    # 遅延 import (重い engine を import 時に引かない)
+    from ..engine import _series_context, _with_series_warnings
 
     ledger = ledger if ledger is not None else Ledger()
+    series_warnings: list[str] = []
     series_ctx = _series_context(
-        list(frames), gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger, kind="m10"
+        list(frames), gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger,
+        warn_sink=series_warnings, kind="m10",
     )
     with gpx_context(series_ctx):
-        return _run_anchored_sequential(
+        result = _run_anchored_sequential(
             frames, base_phases, runner=runner, identifier=identifier, cfg=cfg,
             ledger=ledger, charge_constraint=charge_constraint, series_ctx=series_ctx,
         )
+    # 退避理由は台帳 (`m10_gpx_fallback`) だけでなく結果の警告にも載せる — ② は台帳を返さない。
+    return _with_series_warnings(result, series_warnings)
 
 
 def _run_anchored_sequential(

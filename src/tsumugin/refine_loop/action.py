@@ -101,7 +101,7 @@ class Stop(SafeAction):
 
 @dataclass(frozen=True)
 class RestrictUiso(SafeAction):
-    """Uiso 解放対象を限定する (発散防止, REQ-105)。free_uiso_labels を設定する純変換。
+    """Uiso 解放対象を限定する (発散防止, REQ-105)。free_uiso_labels を狭める純変換 (広げない)。
 
     軽元素 framework や占有率 0 のゴースト原子の Uiso が発散/負値化するのを、重原子/可動イオン/
     水など安定な原子のみに Uiso 解放を絞ることで防ぐ (heavy-atom + 無秩序構造の定石)。
@@ -109,7 +109,9 @@ class RestrictUiso(SafeAction):
     :param labels: Uiso を解放してよい原子ラベル (これ以外は Uiso 固定)。**空タプルは
         「1 原子も解放しない」** = 相ごと ADP 凍結 (#189 の型分離により docstring どおりになった。
         以前は空を渡すと逆に全原子が解放されていた)
-    :param phase: 対象相名 (None なら全相)
+    :param phase: 対象相名 (None なら全相)。原子ラベルは相の中でしか意味を持たないので、
+        多相で None を使うと未指定の相に他相のラベルが入る (GSAS は ``No such atom``)。
+        診断 (`propose_next_actions`) は相ごとに名指しで出す
     """
 
     labels: tuple[str, ...]
@@ -117,12 +119,21 @@ class RestrictUiso(SafeAction):
 
     def apply(self, inp: AnalysisInput) -> AnalysisInput:
         phases = tuple(
-            dataclasses.replace(p, free_uiso_labels=tuple(self.labels))
+            dataclasses.replace(p, free_uiso_labels=self._narrow(p.free_uiso_labels))
             if (self.phase is None or p.phase_name == self.phase)
             else p
             for p in inp.phases
         )
         return dataclasses.replace(inp, phases=phases)
+
+    def _narrow(self, current: tuple[str, ...] | None) -> tuple[str, ...]:
+        """**限定は解放集合を広げない**。明示の解放集合 (凍結 ``()`` を含む) とは積を取る —
+        凍結した相を解除したり、解放されていない原子を足したりしない。未指定 (None = 全原子)
+        の相には labels をそのまま張る。解放を広げたいなら相の指定を直接書く。"""
+        if current is None:
+            return tuple(self.labels)
+        allowed = set(current)
+        return tuple(lab for lab in self.labels if lab in allowed)
 
 
 @dataclass(frozen=True)
@@ -220,9 +231,16 @@ class RemovePhase(ModelAction):
         return dataclasses.replace(inp, phases=phases)
 
 
-# PhaseSpec 上で改訂可能なフィールド (構造改訂は ③ が編集済みファイルを与える形で純変換化)
+# PhaseSpec 上で改訂可能なフィールド (構造改訂は ③ が編集済みファイルを与える形で純変換化)。
+# `temperature` は入れない — どのエンジンも読まないメタデータなので、改訂しても再精密化は
+# 変わらず「改訂した」ことだけが残る (呼べるが黙って効かない)。
 _REVISABLE_PHASE_FIELDS = frozenset(
-    {"structure_path", "phase_name", "format_hint", "mixed_occupancy_groups", "temperature"}
+    {"structure_path", "phase_name", "format_hint", "mixed_occupancy_groups"}
+)
+# 相の temperature の改訂を拒むときの置き場所 (③ はエラー文を読んで直すので名指す)
+_PHASE_TEMPERATURE_HINT = (
+    "相の temperature はどの精密化エンジンも読まない (改訂しても精密化は変わらない)。"
+    "ヒストグラム間の測定温度差は histograms[].temperature に入れる"
 )
 
 
@@ -232,6 +250,8 @@ class ReviseStructure(ModelAction):
 
     edits は PhaseSpec のフィールド更新として表現する (例: ③ が編集した CIF の
     ``structure_path`` 差し替え)。原子レベルの編集はファイル側で行い、ここでは spec を差し替える。
+    改訂できるのは ``_REVISABLE_PHASE_FIELDS`` だけで、それ以外は ``ValueError`` (相の
+    ``temperature`` も不可 — どのエンジンも読まないので改訂が効かない)。
 
     :param phase: 対象相名
     :param edits: PhaseSpec フィールドの更新辞書
@@ -243,7 +263,13 @@ class ReviseStructure(ModelAction):
     def apply(self, inp: AnalysisInput) -> AnalysisInput:
         bad = set(self.edits) - _REVISABLE_PHASE_FIELDS
         if bad:
-            raise ValueError(f"改訂不能なフィールド: {sorted(bad)}")
+            msg = (
+                f"改訂不能なフィールド: {sorted(bad)} "
+                f"(ReviseStructure で改訂できるのは {sorted(_REVISABLE_PHASE_FIELDS)})"
+            )
+            if "temperature" in bad:
+                msg += f" — {_PHASE_TEMPERATURE_HINT}"
+            raise ValueError(msg)
         if not any(p.phase_name == self.phase for p in inp.phases):
             raise KeyError(f"相 {self.phase!r} が存在しません")
         phases = tuple(

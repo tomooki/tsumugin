@@ -181,7 +181,7 @@ def test_default_backend_with_search_is_unaffected(monkeypatch):
     """既定 (gsasii) の探索経路は従来どおり通ること (非回帰)。"""
     called: dict = {}
 
-    def fake_search(inp, names, cfg, max_cyc, opts, runner):
+    def fake_search(inp, names, cfg, max_cyc, opts, runner, *, gpx_dir, save_gpx):
         called["ok"] = True
         return {"search": {"names": list(names)}}
 
@@ -254,7 +254,7 @@ def test_default_backend_spellings_are_not_refused_with_search(spelling, monkeyp
     """
     called: dict = {}
 
-    def fake_search(inp, names, cfg, max_cyc, opts, runner):
+    def fake_search(inp, names, cfg, max_cyc, opts, runner, *, gpx_dir, save_gpx):
         called["ok"] = True
         return {"search": {}}
 

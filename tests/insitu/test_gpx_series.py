@@ -144,3 +144,39 @@ def test_plain_three_arg_runner_still_works(tmp_path):
 
     assert len(res.frames) == 2
     assert [f.gpx_path for f in res.frames] == ["", ""]
+
+
+def test_series_reports_a_fallback_to_temp_in_its_warnings(tmp_path, unwritable_gpx_root):
+    """★系列の run ディレクトリが一時領域へ退避したら、台帳だけでなく**結果の警告**にも載せる。
+
+    非トートロジー: 理由は系列の入口 (`_series_context`) でしか分からず、従来は台帳の
+    ``m9_gpx_fallback`` 行にしか残らなかった。② `sequential_rietveld` は台帳を返さないので、
+    結果の ``warnings`` に無いと ③ からは %TEMP% を指す ``gpx_dir`` しか見えない
+    (兄弟の入口と同じ ``成果物の保存先: <理由>`` の形)。
+    """
+    ledger = Ledger()
+
+    def runner(frame, phases, initial_cells):
+        return _result(9.0, _CELL, {"alpha": 1.0})
+
+    res = run_sequential_rietveld(
+        _frames(2), [_ALPHA], runner=runner, ledger=ledger, gpx_dir=str(tmp_path / "chosen")
+    )
+
+    assert res.gpx_dir.startswith(str(unwritable_gpx_root))
+    notes = [w for w in res.warnings if w.startswith("成果物の保存先: ")]
+    assert len(notes) == 1 and "一時領域へ退避" in notes[0], res.warnings
+    # 台帳の記録は従来どおり 1 行 (警告に載せたことで台帳から消さない)
+    rows = [e.payload for e in ledger.entries if e.kind == "m9_gpx_fallback"]
+    assert len(rows) == 1 and rows[0]["reason"] in notes[0]
+
+
+def test_series_has_no_fallback_warning_when_the_root_is_writable(tmp_path):
+    """書ける根なら退避の警告は出ない (常に出す実装で上を満たせないように)。"""
+
+    def runner(frame, phases, initial_cells):
+        return _result(9.0, _CELL, {"alpha": 1.0})
+
+    res = run_sequential_rietveld(_frames(2), [_ALPHA], runner=runner, gpx_dir=str(tmp_path))
+
+    assert not [w for w in res.warnings if w.startswith("成果物の保存先: ")], res.warnings

@@ -109,6 +109,10 @@ axes, bc = pseudo_variable_series(result, "phase", lambda c: c[1] / c[2])
   `manifest.jsonl` が役割・相・Rwp の索引になる。**Rwp の表では切れない疑い**
   (段の無言 no-op・相分率 ~0 の棄却理由・偽相) は、この fit を開いて確かめる。
   `gpx_dir` を渡せば置き場所を指定でき、`save_gpx=false` で止められる (診断目的では止めない)。
+  置き場所に書けないと run ディレクトリごと**一時領域へ退避**し、`result.warnings` の先頭に
+  `成果物の保存先: <理由>` の行が出る (系列全体で 1 行; ② `sequential_rietveld` /
+  `anchored_sequential` の `warnings` も同じ)。この行があったら成果物は %TEMP% の中で OS の掃除で
+  消えうる — 報告に退避と理由を書き、残す成果物は書ける場所へ移す。
 
 ## 6. 失敗時の対処
 

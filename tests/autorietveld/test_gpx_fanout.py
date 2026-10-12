@@ -1,7 +1,7 @@
 """★規定「全解析で gpx を保存する」の**ファンアウト経路** — レシピ探索 / マルチスタート /
-モデル比較 (GSAS 非依存の決定論テスト)。
+収束確認 / モデル比較 / M8 閉ループ (GSAS 非依存の決定論テスト)。
 
-この 3 つは「1 回の解析」の中で **N 回精密化する**。採用されるのは 1 つだけなので、
+どれも「1 回の解析」の中で **N 回精密化する**。採用されるのは 1 つだけなので、
 
 - 探索: 負けた候補の fit が無いと「なぜその手順が勝ったか」を後から見られない
 - 収束確認: 別ベイスンへ落ちた開始点の fit が無いと**どんな解へ落ちたか**を確認できない
@@ -230,3 +230,184 @@ def test_refinement_loop_labels_each_iteration(tmp_path):
     assert [r for r, _, _ in seen] == ["iteration"] * len(seen)
     assert [i for _, i, _ in seen] == list(range(len(seen)))
     assert len({d for _, _, d in seen}) == 1, "反復ごとに run ディレクトリが分かれている"
+
+
+def test_optimize_then_confirm_keeps_one_run_dir_for_both_phases(tmp_path, monkeypatch):
+    """★収束確認 (Phase A 探索 → Phase B 開始点) は **1 実行 = 1 run ディレクトリ** (設計 §3)。
+
+    非トートロジー: Phase A/B はそれぞれ `group_context` で根から run を解決するので、入口で
+    文脈を 1 つに決めないと**同じ実行の成果物が 2 つの run ディレクトリに割れる** (実測:
+    ``run-<日時>-2`` に候補、``run-<日時>-3`` に開始点)。採用手順の fit と、それを初期値を
+    振って確かめた fit を並べて見られないのでは、収束確認の結論を検算できない。
+    """
+    from tsumugin.autorietveld.confirm import optimize_then_confirm
+    from tsumugin.autorietveld.model import StageResult
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_engine(histograms, phases, **kwargs):
+        ctx = kwargs.get("gpx_context") or active_context()
+        seen.append((ctx.role, ctx.run_dir) if ctx else ("", ""))
+        return AutoRietveldResult(
+            stage_results=(
+                StageResult(label="S1", rwp=9.0, gof=1.0, n_params=30, converged=True),
+            ),
+            final_rwp=9.0, final_gof=1.0,
+            refined_cells={"ph": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+            validity=ValidityReport(passed=True), n_obs=1000,
+        )
+
+    monkeypatch.setattr("tsumugin.autorietveld.engine.run_auto_rietveld", fake_engine)
+    optimize_then_confirm(
+        [_HIST], [_PHASE], candidates=("default",), n_starts=3, jobs=1,
+        gpx_dir=str(tmp_path),
+    )
+
+    assert [r for r, _ in seen] == ["candidate", "multistart", "multistart", "multistart"]
+    assert len({d for _, d in seen}) == 1, f"run ディレクトリが割れている: {seen}"
+
+
+def _unwritable_root(tmp_path, monkeypatch) -> None:
+    """run ディレクトリを作れない状況 (読み取り専用の共有ディスク等) を作る。"""
+    import tempfile
+
+    def unwritable(root, base):
+        raise PermissionError(13, "read-only", root)
+
+    monkeypatch.setattr("tsumugin.gpxstore._make_unique_dir", unwritable)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+
+
+def _converged_result(rwp=9.0):
+    from tsumugin.autorietveld.model import StageResult
+
+    return AutoRietveldResult(
+        stage_results=(StageResult(label="S1", rwp=rwp, gof=1.0, n_params=30, converged=True),),
+        final_rwp=rwp, final_gof=1.0,
+        refined_cells={"ph": (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)},
+        validity=ValidityReport(passed=True), n_obs=1000,
+    )
+
+
+def _entry(name: str):
+    """各ファンアウト入口を (呼び出し, 警告の取り出し) で包む。"""
+    from tsumugin.autorietveld.confirm import optimize_then_confirm
+
+    def search(ledger, **kw):
+        r = run_recipe_search([_HIST], [_PHASE], names=["default"], ledger=ledger, **kw)
+        return r.warnings
+
+    def multistart(ledger, **kw):
+        r = run_multistart_rietveld(
+            [_HIST], [_PHASE], config=MultistartConfig(n_starts=2), jobs=1, ledger=ledger, **kw
+        )
+        return r.warnings
+
+    def confirm(ledger, **kw):
+        r = optimize_then_confirm(
+            [_HIST], [_PHASE], candidates=("default",), n_starts=2, jobs=1, ledger=ledger, **kw
+        )
+        return r.warnings
+
+    def refine_loop(ledger, **kw):
+        from tsumugin.refine_loop.orchestrator import run_refinement_loop
+
+        # 既定 runner は GSAS を要るので、エンジンの差し替えではなく runner を注入する。
+        r = run_refinement_loop(
+            [_HIST], [_PHASE], runner=lambda inp: _converged_result(), ledger=ledger, **kw
+        )
+        return r.warnings
+
+    return {
+        "search": search, "multistart": multistart, "confirm": confirm, "refine_loop": refine_loop,
+    }[name]
+
+
+@pytest.mark.parametrize("entry", ["search", "multistart", "confirm", "refine_loop"])
+def test_fanout_entries_record_a_fallback_to_temp(entry, tmp_path, monkeypatch):
+    """★run ディレクトリが一時領域へ退避したら、入口が ledger と警告に理由を残す (設計 §5)。
+
+    非トートロジー: 退避は入口の `group_context` でしか起きず、エンジンは解決済みの文脈を
+    受け取るので ``m7_gpx_fallback`` を書かない。入口が理由を捨てると、成果物が %TEMP% に
+    置かれたことはどこにも残らない (「黙って保存を諦めない」の裏切り)。
+    """
+    from tsumugin.store import Ledger
+
+    _unwritable_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tsumugin.autorietveld.engine.run_auto_rietveld", lambda h, p, **kw: _converged_result()
+    )
+    ledger = Ledger()
+
+    warnings = _entry(entry)(ledger, gpx_dir=str(tmp_path / "chosen"))
+
+    fallbacks = [e.payload for e in ledger.entries if e.kind == "m7_gpx_fallback"]
+    assert len(fallbacks) == 1, fallbacks  # 入れ子 (確認 ⊃ 探索/開始点) でも 1 回だけ
+    assert "一時領域へ退避" in fallbacks[0]["reason"]
+    assert fallbacks[0]["run_dir"].startswith(str(tmp_path / "tmp"))
+    assert any("一時領域へ退避" in w for w in warnings), warnings
+
+
+def test_refinement_loop_reports_a_fallback_without_a_ledger(tmp_path, monkeypatch):
+    """★M8 閉ループは台帳が任意 (None = 未使用) — 台帳が無くても退避理由を**結果の警告**で返す。
+
+    非トートロジー: 退避理由は入口の `group_context` でしか分からず、注入/既定 runner の
+    エンジンは自前の台帳 (呼び出し側は見ない) に書くだけである。台帳を渡さない呼び出しで
+    警告にも載せないと、成果物が %TEMP% に置かれたことはどこにも残らない (設計 §5 の
+    「ledger を持たない入口は結果の警告で返す」)。
+    """
+    from tsumugin.refine_loop.orchestrator import run_refinement_loop
+
+    _unwritable_root(tmp_path, monkeypatch)
+
+    res = run_refinement_loop(
+        [_HIST], [_PHASE], runner=lambda inp: _converged_result(), gpx_dir=str(tmp_path / "c")
+    )
+
+    assert res.ledger is None
+    assert any("一時領域へ退避" in w for w in res.warnings), res.warnings
+
+
+def test_refinement_loop_has_no_warning_when_the_root_is_writable(tmp_path):
+    """退避が無ければ警告も無い (常に警告を出す実装で上の 2 つを満たせないように)。"""
+    from tsumugin.refine_loop.orchestrator import run_refinement_loop
+
+    res = run_refinement_loop(
+        [_HIST], [_PHASE], runner=lambda inp: _converged_result(), gpx_dir=str(tmp_path)
+    )
+
+    assert res.warnings == ()
+
+
+def test_refinement_loop_inside_an_outer_run_does_not_record_the_fallback_again(
+    tmp_path, monkeypatch
+):
+    """入れ子 (外側の入口が run ディレクトリを決めた ambient の中) では退避を**記録し直さない**。
+
+    退避は外側の入口が解決し記録済みである (`group_context` は ambient のとき理由 "" を返す)。
+    根が書けない状況でも、内側のループは外側の run ディレクトリを使い、台帳にも警告にも
+    2 度目を出さない (「1 実行 = 退避の記録 1 行」)。
+    """
+    from tsumugin.gpxstore import GpxContext, gpx_context
+    from tsumugin.refine_loop.orchestrator import run_refinement_loop
+    from tsumugin.store import Ledger
+
+    _unwritable_root(tmp_path, monkeypatch)
+    outer = str(tmp_path / "outer-run")
+    seen: list[str] = []
+
+    def runner(inp):
+        ctx = active_context()
+        seen.append(ctx.run_dir if ctx else "")
+        return _converged_result()
+
+    ledger = Ledger()
+    with gpx_context(GpxContext(run_dir=outer)):
+        res = run_refinement_loop(
+            [_HIST], [_PHASE], runner=runner, ledger=ledger, gpx_dir=str(tmp_path / "c")
+        )
+
+    assert seen and set(seen) == {outer}
+    assert res.warnings == ()
+    assert not [e for e in ledger.entries if e.kind == "m7_gpx_fallback"]

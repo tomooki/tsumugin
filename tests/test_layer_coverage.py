@@ -124,7 +124,9 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "**これが MEM 系ツール (`mem_density`/`mem_rietveld_iterate`) の入力の出所** — "
         "以前は ② から gpx を作れず、③ は MEM を呼べなかった (§4.5 到達可能性)。"
         "系列は `sequential_rietveld`/`anchored_sequential` の `gpx_dir` と "
-        "`frames[].gpx_path`/`gpx_dir` で到達する",
+        "`frames[].gpx_path`/`gpx_dir` で到達する。1 呼び出しで N 回精密化する計器も同じ 2 引数を"
+        "受ける: モデル比較は `compare_structure_models` の `scores[].gpx_path` (棄却モデルも)、"
+        "修復は `repair_frames` の `gpx_dir`/`repairs[].gpx_path` (棄却は台帳行の `gpx_path`)",
     ),
     "convergence confirmation (規定の標準経路)": (
         "auto_rietveld",
@@ -397,6 +399,35 @@ def test_unexposed_features_state_a_reason():
         )
 
 
+def test_every_layer2_tool_that_refines_accepts_the_gpx_arguments():
+    """★精密化を回す ② ツールは全部 ``gpx_dir`` / ``save_gpx`` を受ける (規定 2026-08-20)。
+
+    規定「全解析で保存する」の opt-out は ``save_gpx=False`` **だけ**であり、置き場所の明示は
+    ``gpx_dir`` である。① がどれだけ規定どおりに保存しても、② がこの 2 つを受けなければ
+    ③ (JSON しか送れない) からは**止められず・置き場所も選べない**。実際に起きた:
+    `compare_structure_models` (モデル比較の各バリアント) と `repair_frames` (修復の各試行) は
+    ① 側で保存していたのに ② が受けておらず、`gpx-retention` 設計 §6 の ② 行からも漏れていた。
+
+    「精密化を回すか」は **runner 注入シーム (``runner`` 引数) の有無**で機械的に判定する —
+    ② の ``runner`` は「① の既定 GSAS runner の代わりに差すテスト用シーム」という慣行
+    (各ツールの docstring) なので、これを持つツールは定義上 ① で精密化を回す。
+    ⚠ この網に掛からない精密化経路は設計 §8 に明示した対象外 (簡約モデルの `discriminate`) と、
+    独自の子スナップショット機構を持つ `mem_rietveld_iterate` である。
+    """
+    offenders = []
+    for name, fn in sorted(MCP_TOOLS.items()):
+        params = inspect.signature(fn).parameters  # type: ignore[arg-type]
+        if "runner" not in params:
+            continue
+        missing = sorted({"gpx_dir", "save_gpx"} - set(params))
+        if missing:
+            offenders.append(f"{name}: {missing}")
+    assert not offenders, (
+        "精密化を回す ② ツールが保存指定を受けていない (③ から opt-out も置き場所の指定も"
+        f"届かない): {offenders}"
+    )
+
+
 # ===========================================================================
 # 粒度②: **マイルストーン単位の宣言では、露出済み機能の中に足した新フィールドが見えない**
 # ---------------------------------------------------------------------------
@@ -462,6 +493,12 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "ディレクトリ)。`gpx_path` は GSAS 専用のまま残す — MEM 経路が .gpx を要求するため、"
         "TOPAS では空文字となり MEM は適用できない",
     ),
+    "artifact_fallback_reason": (
+        "warnings",
+        "成果物を頼まれた根に書けず一時領域へ退避した理由 (`成果物の保存先: <理由>` 行)。"
+        "エンジンの台帳 (`m7_gpx_fallback`) は ② の単発経路から返らないので、ここに無いと "
+        "③ には %TEMP% を指す `gpx_path` しか見えない (gpx-retention 設計 §5)",
+    ),
     "n_obs": ("n_obs", "観測点数 (bic/dof 用)"),
     # --- 出版値 (Issue #96 レビュー HIGH-2 で配線) ---
     "cell_esd": ("cell_esd", "格子 esd。esd を伴わない精密化値は出版できない"),
@@ -502,7 +539,9 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "Issue #97: ① `refine_loop.diagnostics`/`diagnose_residual` が消費する内省フィールド。"
         "ただし ② `propose_next_actions` は `_result_from_dict` で復元するため**この値は届かず**、"
         "Uiso 発散の診断が MCP 経路では発火しない (既知の穴; 単体で ③ に出す価値は薄いので "
-        "propose_next_actions 側で畳むのが筋)",
+        "propose_next_actions 側で畳むのが筋)。閉じるときは相の指定 (`phases=`) も渡すこと — "
+        "RestrictUiso は相の指定なしでは提案しない (凍結相を解除しないため) — と、"
+        "`action_to_dict` に RestrictUiso の分岐を足すこと (無いと proposal_to_dict が送出する)",
     ),
     "atom_occupancy": (UNEXPOSED, "Issue #97: 同上 (① 内省フィールド。占有率 [0,1] 逸脱の検出源)"),
     "atom_multiplicity": (
@@ -579,6 +618,12 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "undetermined_exempt": ("undetermined_exempt", ""),
     "frozen_parameters": ("frozen_parameters", ""),
     "final_polish": ("final_polish", ""),
+    "coord_jitter_axes_moved": (
+        UNEXPOSED,
+        "意図的: マルチスタートの開始点ごとの摂動記録。単発の ② `auto_rietveld` では摂動しないので"
+        "常に 0。② には収束確認の `multistart.starts[].n_axes_jittered` / `n_axes_jittered` / "
+        "`perturbation_applied` に畳んで出る (傍証の条件として③が読む形)",
+    ),
 }
 
 _H = HistogramSpec(

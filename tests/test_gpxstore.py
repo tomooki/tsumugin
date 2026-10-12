@@ -20,6 +20,8 @@ from tsumugin.gpxstore import (
     ENV_VAR,
     GpxContext,
     ManifestEntry,
+    fallback_warning,
+    is_fallback_warning,
     plan_artifact,
     read_manifest,
     record_artifact,
@@ -39,9 +41,9 @@ def test_default_root_is_next_to_the_data_file(tmp_path, monkeypatch):
     data.parent.mkdir(parents=True)
     data.write_text("x", encoding="utf-8")
 
-    run_dir = resolve_run_dir(str(data))
+    run_dir, reason = resolve_run_dir(str(data))
 
-    assert run_dir is not None
+    assert run_dir is not None and reason == ""
     assert Path(run_dir).parent == tmp_path / "raw" / "tsumugin_gpx"
     assert Path(run_dir).is_dir()
 
@@ -53,9 +55,9 @@ def test_env_var_overrides_the_default_root(tmp_path, monkeypatch):
     data = tmp_path / "raw" / "frame000.xrdml"
     data.parent.mkdir(parents=True)
 
-    run_dir = resolve_run_dir(str(data))
+    run_dir, reason = resolve_run_dir(str(data))
 
-    assert run_dir is not None
+    assert run_dir is not None and reason == ""
     assert Path(run_dir).parent == root
 
 
@@ -64,7 +66,7 @@ def test_env_none_disables_saving(tmp_path, monkeypatch):
     monkeypatch.setenv(ENV_VAR, DISABLED)
     data = tmp_path / "frame000.xrdml"
 
-    assert resolve_run_dir(str(data)) is None
+    assert resolve_run_dir(str(data)) == (None, "")
 
 
 def test_explicit_dir_beats_the_env_var(tmp_path, monkeypatch):
@@ -73,7 +75,7 @@ def test_explicit_dir_beats_the_env_var(tmp_path, monkeypatch):
     explicit = tmp_path / "explicit"
     data = tmp_path / "frame000.xrdml"
 
-    run_dir = resolve_run_dir(str(data), explicit_dir=str(explicit))
+    run_dir, _reason = resolve_run_dir(str(data), explicit_dir=str(explicit))
 
     assert run_dir is not None and Path(run_dir).parent == explicit
 
@@ -83,7 +85,7 @@ def test_explicit_dir_beats_env_none(tmp_path, monkeypatch):
     monkeypatch.setenv(ENV_VAR, DISABLED)
     explicit = tmp_path / "explicit"
 
-    run_dir = resolve_run_dir(str(tmp_path / "f.xye"), explicit_dir=str(explicit))
+    run_dir, _reason = resolve_run_dir(str(tmp_path / "f.xye"), explicit_dir=str(explicit))
 
     assert run_dir is not None and Path(run_dir).parent == explicit
 
@@ -93,8 +95,8 @@ def test_run_dirs_do_not_collide_across_runs(tmp_path, monkeypatch):
     monkeypatch.delenv(ENV_VAR, raising=False)
     data = tmp_path / "frame000.xrdml"
 
-    first = resolve_run_dir(str(data), now="20260820-134501")
-    second = resolve_run_dir(str(data), now="20260820-134501")
+    first, _ = resolve_run_dir(str(data), now="20260820-134501")
+    second, _ = resolve_run_dir(str(data), now="20260820-134501")
 
     assert first != second
     assert Path(first).is_dir() and Path(second).is_dir()
@@ -117,10 +119,25 @@ def test_unwritable_data_dir_falls_back_and_says_so(tmp_path, monkeypatch):
         return real_makedirs(name, *a, **k)
 
     monkeypatch.setattr(os, "makedirs", _boom)
-    run_dir, reason = resolve_run_dir(str(tmp_path / "f.xye"), report_fallback=True)
+    run_dir, reason = resolve_run_dir(str(tmp_path / "f.xye"))
 
     assert run_dir is not None and Path(run_dir).is_dir()
     assert "PermissionError" in reason
+
+
+def test_fallback_warning_has_the_form_the_layer3_docs_name():
+    """★退避理由の警告行は ``成果物の保存先: <理由>`` — ③ の手順書が**この形**を名指しする。
+
+    全入口 (探索・マルチスタート・収束確認・モデル比較・閉ループ・系列・② 単発) がこの関数で
+    行を作るので、形を変えると ③ の手順書 (analyze / insitu skill) と一斉にずれる。
+    ``is_fallback_warning`` は ② が入れ子の警告から退避の行だけを拾い上げるのに使う
+    (順序依存などの別の警告を拾わない)。
+    """
+    line = fallback_warning("PermissionError: read-only (/x へ書けないため一時領域へ退避)")
+
+    assert line == "成果物の保存先: PermissionError: read-only (/x へ書けないため一時領域へ退避)"
+    assert is_fallback_warning(line)
+    assert not is_fallback_warning("順序依存: Rwp は僅差なのに格子が割れている")
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +479,7 @@ def test_empty_data_path_does_not_write_outside_the_cwd(tmp_path, monkeypatch):
     work.mkdir()
     monkeypatch.chdir(work)
 
-    run_dir = resolve_run_dir("")
+    run_dir, _reason = resolve_run_dir("")
 
     assert Path(run_dir).parent == work / "tsumugin_gpx"
     assert not (tmp_path / "tsumugin_gpx").exists(), "CWD の親に撒いている"

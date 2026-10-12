@@ -1276,3 +1276,68 @@ def test_phaseid_trial_ledger_records_cell_provenance():
     assert payload["strain"] == pytest.approx(-0.031)
     assert payload["prealign_basis"] == "residual"
     assert payload["refined_cell"] == [8.1, 6.5, 13.3, 90.0, 90.0, 90.0]
+
+
+# ---------------- 候補の構造の誤り (原子ラベル重複) は候補の棄却 ----------------
+
+
+def _dup_label_series(candidates, *, raise_for=("dup",), exc=None):
+    """frame2 で Rwp がジャンプし ``candidates`` を試す系列。``raise_for`` の候補を含む trial で
+    runner が送出する (既定は engine と同じ `DuplicateAtomLabelError`)。"""
+    from tsumugin.errors import DuplicateAtomLabelError
+
+    alpha = PhaseSpec(structure_path="alpha.cif", phase_name="alpha")
+    call = {"n": 0}
+
+    def runner(frame, phases, initial_cells):
+        names = [p.phase_name for p in phases]
+        for bad in raise_for:
+            if bad in names:
+                raise exc or DuplicateAtomLabelError(
+                    f"相 {bad!r}: 原子ラベルが重複しています {{'O1': [3, 4]}}"
+                )
+        if "good" in names:
+            return _result(9.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90),
+                                 "good": (13.3, 6.5, 8.1, 90, 90, 90)},
+                           {"alpha": 0.7, "good": 0.3})
+        i = call["n"]
+        call["n"] += 1
+        return _result(9.0 if i < 2 else 20.0, {"alpha": (14.8, 6.8, 8.0, 90, 90, 90)},
+                       {"alpha": 1.0})
+
+    def finder(frame, elements, exclude, workdir, known_phases=()):
+        return [
+            (PhaseSpec(structure_path=f"{n}.cif", phase_name=n), {"dara_score": 0.5})
+            for n in candidates
+        ]
+
+    pid = PhaseIdConfig(elements=("Ca", "Te", "O"), frac_min=0.02, trigger_rwp_ratio=1.25)
+    return run_sequential_rietveld(
+        _frames(4), [alpha], runner=runner, phase_finder=finder,
+        config=SequentialConfig(phase_id=pid), ledger=Ledger(), save_gpx=False,
+    )
+
+
+def test_duplicate_labels_in_a_candidate_reject_only_that_candidate():
+    """★候補 CIF の重複ラベルで系列ごと止めない — 止めるとそれまでの全フレームが ② で error dict に
+    化ける。現行相は同じフレームの base 精密化を通っているので、重複は候補のもの。"""
+    res = _dup_label_series(["dup", "good"])
+    assert len(res.frames) == 4, "系列が最後まで回る"
+    assert [a.phase_name for a in res.appearances] == ["good"], "別の候補は採用できる"
+    refused = [e for e in res.ledger.entries if e.kind == "m9_phaseid_trial_refused"]
+    assert [e.payload["candidate"] for e in refused] == ["dup"]
+    assert refused[0].payload["error_type"] == "DuplicateAtomLabelError"
+    assert any("dup" in w and "重複" in w for w in res.warnings), res.warnings
+
+
+def test_all_candidates_refused_still_finishes_with_a_warning():
+    res = _dup_label_series(["dup"])
+    assert len(res.frames) == 4
+    assert res.appearances == ()
+    assert any("dup" in w for w in res.warnings), "棄却が黙って消えない"
+
+
+def test_other_trial_errors_are_not_swallowed():
+    """対照: 捕まえるのは構造の誤りだけ (論理バグを候補の棄却に見せない)。"""
+    with pytest.raises(RuntimeError, match="bug"):
+        _dup_label_series(["dup"], exc=RuntimeError("bug"))

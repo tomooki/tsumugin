@@ -21,7 +21,7 @@ description: MEM (最大エントロピー法) 電子/核密度から構造モ�
 | `propose_structure_revisions` | 計器 (診断) | MEM ピーク + phase → `ReviseStructure` 候補 (具体 evidence: frac/suggested_edit) |
 | `edit_cif` | アクチュエータ | CIF + `AtomEdit[]` (add/move/set_occupancy/set_uiso/remove) → 新 CIF ハンドル |
 | `refine_with_revisions` | アクチュエータ | spec + `ReviseStructure(edits={"structure_path": 新CIF})` → 再精密化 |
-| `compare_structure_models` | 計器 (モデル選択) | histograms + `variants[{name, phases:[PhaseSpec]}]` → BIC/AIC 序列 + `best`/`best_is_valid`/各 `delta_bic`。**構造の差 (サイトの有無・空間群) を客観的に比べる** |
+| `compare_structure_models` | 計器 (モデル選択) | histograms + `variants[{name, phases:[PhaseSpec]}]` → BIC/AIC 序列 + `best`/`best_is_valid`/各 `delta_bic`。**構造の差 (サイトの有無・空間群) を客観的に比べる**。各 `scores[].gpx_path` (**棄却モデルも**) はそのバリアントの fit = `mem_density` の入力にもなる (サイトを欠いた側に未モデル密度が出るかを見る) |
 | `mem_rietveld_iterate` | 計器 (MPF 反復) | 精密化済み gpx → **Rietveld ⇄ MEM を交互反復** (子スナップショット gpx・ledger)。`cycles[]` (反復毎 rwp/密度/未モデルピーク数) + `stop_reason`。**単発 mem_density で改善が止まったとき**に自己無撞着へ向かうか見る |
 
 Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnavailableError"}` を返す。その旨と
@@ -56,6 +56,13 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
    提示し、**承認を待ってから** `edit_cif` を呼ぶ。承認なしに構造は変えない。
 7. **`edit_cif`** で新 CIF を作り、**`refine_with_revisions`** に
    `ReviseStructure(phase, {"structure_path": 新CIF})` を渡して再精密化する。
+   - `add` の `label` は**相の中で一意**な名前にする (既存ラベルは拒否される)。入力 CIF に同名の
+     原子が既にあると `edit_cif` は **`error_type: "DuplicateAtomLabelError"`** を返す — どの原子に
+     当たるか決まらないため (精密化エンジンも同じ CIF を拒否する)。直し方は `analyze` skill 手順 1。
+   ⚠ `ReviseStructure` は構造ファイルを差し替えるだけで、相の指定が名指す原子ラベル
+   (`free_occupancy_labels`・`frozen_*`・占有率/座標の組) は**そのまま引き継ぐ**。原子を除いた
+   (`op="remove"`) ときは、その原子を名指す指定も `phases` から外して渡す — 残すと相に無い
+   ラベルとして**精密化の前に** `error_type: "InvalidPhaseSpecError"` で返る。
 8. **受理判定**: **Rwp 改善 ∧ `validity.passed` 維持** なら採用。悪化・妥当性を壊すなら**棄却**し
    (元 CIF に戻す)、別の読み (分割/占有/水素) を試す。
    - **編集候補が複数あるとき / サイトの有無そのものを問うとき (例 ゼオライト水 Ow は要るか) は、

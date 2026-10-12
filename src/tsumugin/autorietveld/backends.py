@@ -66,26 +66,15 @@ def resolve_backend(name: "str | None") -> Callable[..., object]:
     )
 
 
-#: GSAS-II 経路だけが実装している `PhaseSpec` の機能 (fit-then-judge P1a)。TOPAS に渡すと
-#: 何もせずに完走する (= 指定したつもりの拘束が無い精密化になる) ので入口で拒否する。
-_GSAS_ONLY_PHASE_FEATURES: tuple[str, ...] = ("uiso_equiv_groups", "fix_polar_origin")
-
-
 def _run_topas_refusing_gsas_only_features(histograms, phases, *args, **kwargs):
-    """`run_topas_rietveld` の前に、GSAS 経路にしか無い相の機能を拒否する。
+    """`run_topas_rietveld` の前に、GSAS 経路にしか無い段フラグの形を拒否する。
 
-    :raises InvalidPhaseSpecError: その機能を使った相があるとき (② が error dict へ縮退)
+    GSAS 経路にしか無い**相の機能** (`uiso_equiv_groups` / `fix_polar_origin`) は
+    `topas.structure.PHASE_SPEC_FIELDS` で ``refused`` に分類してあり、TOPAS エンジン自身が
+    構造を読む前に `InvalidPhaseSpecError` で拒否する (全フィールドの分類はテストが強制する)。
+
+    :raises UnsupportedStageFlagError: ``profile_lorentzian`` にキー列を渡したとき
     """
-    from ..errors import InvalidPhaseSpecError
-
-    for phase in phases:
-        used = [name for name in _GSAS_ONLY_PHASE_FEATURES if getattr(phase, name, None)]
-        if used:
-            raise InvalidPhaseSpecError(
-                f"相 {getattr(phase, 'phase_name', '?')!r} の {used} は GSAS-II 経路だけの機能で、"
-                "TOPAS バックエンドは実装していません (渡すと何もせずに完走するため拒否します)。"
-                "backend='gsasii' を使うか、これらを外してください"
-            )
     # `profile_lorentzian` のキー列 (GSAS 経路で Zero を束ねないための形) は TOPAS が解釈しない:
     # TOPAS の翻訳は値の真偽だけを見て x,y を解放するので、["Zero"] でも Lorentzian 幅が動く。
     from ..topas.flags import UnsupportedStageFlagError

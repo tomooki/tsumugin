@@ -32,6 +32,7 @@ from ..autorietveld import PhaseSpec
 from ..insitu.anchor.model import AnchorConfig
 from ..insitu.model import FrameSpec
 from ._degrade import degrade_domain_errors, degrade_oserror
+from ._gpx_spec import gpx_args
 from .insitu_tools import (
     _apply_charge_constraint_spec,
     _parse_two_theta_limits,
@@ -193,9 +194,11 @@ def anchored_sequential(
         後方パス (``f0005_backward_a0012.gpx``) が別々に残る。**採られなかった側が残っていないと
         bic crossover の判断 (相集合が違う経路の比較) を後から検算できない**。
         省略時は ``TSUMUGIN_GPX_DIR`` → 先頭フレームのデータ隣接。実際の保存先は返り値の
-        ``gpx_dir`` / ``frames[].gpx_path``
+        ``gpx_dir`` / ``frames[].gpx_path``。保存先に書けず一時領域へ退避したときは
+        ``warnings`` の先頭に ``成果物の保存先: <理由>`` の行が出る (`sequential_rietveld` と同じ)
     :param save_gpx: 保存の opt-out (既定 True = 保存する)。⚠ 双方向は 1 フレームあたり
-        2 回以上精密化するため容量は逐次の 2 倍前後 (0.5-1.5 MB × パス数)
+        2 回以上精密化するため容量は逐次の 2 倍前後 (0.5-1.5 MB × パス数)。
+        opt-out は**明示の ``false`` だけ** (``null`` は既定 = 保存、bool 以外は error dict)。
     :param runner: **注入/テスト用** callable ((frame, phases, initial_cells)→AutoRietveldResult)。
         JSON 越しには渡せない。明示指定時は instrument より優先
     :returns: M9 と同型の系列結果 dict (frames/phase_names/appearances/warnings; per-frame に出版値
@@ -207,6 +210,8 @@ def anchored_sequential(
     from ..store.ledger import Ledger
 
     try:
+        # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
+        gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         frame_specs = [FrameSpec.from_dict(f) for f in frames]
         catalog: dict[str, PhaseSpec] = {}
         for p in phases:

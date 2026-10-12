@@ -12,6 +12,7 @@ skill/PLAYBOOK は **③ (LLM) への実行可能な指示**であり、誤っ�
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,77 @@ def test_mem_skill_says_where_the_gpx_handle_comes_from():
         "系列フレームからも MEM を掛けられることが書かれていない "
         "(operando の任意フレームは sequential 系の出力からしか来ない)"
     )
+
+
+def test_joint_skill_says_where_each_model_variant_fit_is():
+    """`joint`: モデル比較の**各バリアント** (棄却モデルも) のハンドルと保存指定を言う。
+
+    `compare_structure_models` の目的は「サイトは要るか」の判定であり、その根拠は棄却された
+    モデルがどう壊れていたか (実測 NaCuHCF model5 は Na>1 / O<0 に発散) にある。ハンドル名を
+    書かなければ ③ は ΔBIC だけを報告し、棄却側の fit を誰も開かない。
+    """
+    body = _text(_SKILLS / "joint" / "SKILL.md")
+
+    assert "scores[].gpx_path" in body, "バリアント別ハンドルが書かれていない"
+    assert "gpx_dir" in body and "save_gpx" in body, "モデル比較の保存指定が書かれていない"
+
+
+_REPAIR_DOCS = (
+    _SKILLS / "insitu" / "SKILL.md",
+    _SKILLS / "operando-diagnose" / "SKILL.md",
+    Path("docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md"),
+)
+
+
+@pytest.mark.parametrize("path", _REPAIR_DOCS, ids=lambda p: f"{p.parent.name}/{p.name}")
+def test_repair_docs_say_where_rejected_repair_fits_are(path: Path):
+    """修復を扱う手順書: **棄却された修復**の fit の在処 (台帳行) と修復の run ディレクトリを言う。
+
+    棄却された修復 (`needs_model_revision`) は `repairs[]` に現れない。「warm-start でなぜ
+    直らなかったか」を見るために保存しているのに、在処 (`insitu_repair_rejected` 行の
+    `gpx_path`) を書かなければ ③ からは存在しないのと同じ。修復は系列とは別の呼び出しなので
+    成果物も**別の run ディレクトリ**にある (系列の `gpx_dir` を探しても見つからない)。
+    """
+    body = _text(path)
+
+    assert "insitu_repair_rejected" in body, f"{path}: 棄却された修復の fit の在処が書かれていない"
+    assert "別の run ディレクトリ" in body, f"{path}: 修復試行が系列と別の run にあることが書かれていない"
+
+
+#: 退避理由を返す ② ツール → それを ③ に説明する手順書。キーは「その手順書が名指しすべき返り値」。
+_FALLBACK_DOCS = {
+    _SKILLS / "analyze" / "SKILL.md": (
+        "warnings", "search.warnings", "convergence.warnings", "project_path",
+    ),
+    _SKILLS / "insitu" / "SKILL.md": ("warnings", "m9_gpx_fallback"),
+    _SKILLS / "operando-diagnose" / "SKILL.md": ("warnings", "m9_gpx_fallback"),
+    Path("docs/tasks/operando-diagnosis/AGENT_PLAYBOOK.md"): ("warnings", "m9_gpx_fallback"),
+    Path("docs/tasks/m9-insitu-sequential/AGENT_PLAYBOOK.md"): ("result.warnings",),
+    Path("docs/tasks/m7-real-data-validation/AGENT_PLAYBOOK.md"): (
+        "result.artifact_fallback_reason", "warnings",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "path", sorted(_FALLBACK_DOCS), ids=lambda p: f"{p.parent.name}/{p.name}"
+)
+def test_skills_say_where_the_fallback_reason_appears(path: Path):
+    """成果物が一時領域へ退避したとき**どのキーに理由が出るか**を手順書が言う (設計 §5/§6)。
+
+    ② が理由を返していても、手順書がキーを書かなければ ③ は ``gpx_path`` を「頼んだ場所」と
+    読んだまま報告する (退避先は OS の掃除で消えうる)。行の形 (``成果物の保存先:``) も書く —
+    `validity.warnings` 等と同じ ``warnings`` 名なので、形が無いと ③ は見分けられない。
+    """
+    # 【退避を説明する段落の中で見る】: ``warnings`` は無関係な行 (探索の順序依存など) にも
+    #   現れるので、文書全体で探すと退避の説明からキーを消しても通ってしまう。
+    segments = re.split(r"\n(?=- )|\n\s*\n", _text(path))
+    about = "\n".join(s for s in segments if "成果物の保存先" in s)
+
+    assert about, f"{path}: 退避理由の行の形 (成果物の保存先: …) が書かれていない"
+    assert "一時領域" in about, f"{path}: 退避したら一時領域にあることが書かれていない"
+    for key in _FALLBACK_DOCS[path]:
+        assert f"`{key}`" in about, f"{path}: 退避理由が出るキー {key!r} が退避の説明に無い"
 
 
 @pytest.mark.parametrize("path", _PLAYBOOKS, ids=lambda p: p.parent.name)

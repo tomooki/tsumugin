@@ -2,7 +2,8 @@
 
 `uiso_equiv_groups` (Uiso の等値の組) と `fix_polar_origin` (極性方向の原点固定) は GSAS-II
 経路だけが実装している。TOPAS バックエンドに渡すと何もせずに完走する (= 指定したつもりの
-拘束が無い精密化になる) ので、`resolve_backend("topas")` の入口で拒否する。
+拘束が無い精密化になる) ので、TOPAS エンジンが構造を読む前に拒否する
+(`topas.structure.PHASE_SPEC_FIELDS` の ``refused``)。
 """
 
 from __future__ import annotations
@@ -33,11 +34,15 @@ def stub_topas(monkeypatch):
         PhaseSpec("x.cif", "x", fix_polar_origin=True),
     ],
 )
-def test_topas_refuses_gsas_only_phase_features(spec, stub_topas):
-    engine = resolve_backend("topas")
+def test_topas_refuses_gsas_only_phase_features(spec):
+    """TOPAS の相の指定の分類表 (`PHASE_SPEC_FIELDS`) で ``refused`` にしてあり、TOPAS エンジンが
+    構造を読む前に呼ぶ `check_phase_spec_supported` が拒否する (#229 の仕組みに載せた)。"""
+    from tsumugin.topas.structure import PHASE_SPEC_FIELDS, check_phase_spec_supported
+
+    assert PHASE_SPEC_FIELDS["uiso_equiv_groups"][0] == "refused"
+    assert PHASE_SPEC_FIELDS["fix_polar_origin"][0] == "refused"
     with pytest.raises(InvalidPhaseSpecError, match="TOPAS"):
-        engine([], [spec], recipe=())
-    assert stub_topas == [], "拒否したのにエンジンが呼ばれた"
+        check_phase_spec_supported(spec)
 
 
 def test_topas_passes_ordinary_phases_through(stub_topas):

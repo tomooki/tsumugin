@@ -64,6 +64,7 @@ def test_default_run_saves_gpx_next_to_the_data(tmp_path, monkeypatch):
     assert saved.parent.parent == tmp_path / DEFAULT_DIR_NAME
     assert saved.name == "FAP.gpx"  # データ名から決まる (どのデータの精密化か分かる)
     assert saved.stat().st_size > 0
+    assert result.artifact_fallback_reason == ""  # 書ける場所なので退避していない
 
     entries = read_manifest(str(saved.parent))
     assert len(entries) == 1
@@ -113,3 +114,77 @@ def test_gpx_dir_overrides_the_default_location(tmp_path, monkeypatch):
 
     assert Path(result.gpx_path).parent.parent == target
     assert not (tmp_path / "env-root").exists()
+
+
+@pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
+def test_fallback_to_temp_is_reported_on_the_result(tmp_path, unwritable_gpx_root):
+    """★頼まれた根に書けず一時領域へ退避したら、理由を ``artifact_fallback_reason`` に載せる。
+
+    非トートロジー: 退避はエンジン自身が `plan_output` で解決し、理由は ``m7_gpx_fallback``
+    としてエンジンの台帳に書かれる。② の単発 `auto_rietveld` はその台帳を返さない (呼び出し側が
+    台帳を渡さなければ `run_auto_rietveld` の私有の台帳になる) ので、**結果に載らなければ ③ に
+    見えるのは一時領域を指す ``gpx_path`` だけ**になる。決定論テストは ② の写ししか見ないので、
+    エンジンが実際に載せることはここで確かめる。
+    """
+    from tsumugin.store import Ledger
+
+    hist, phase = _staged(tmp_path)
+    ledger = Ledger()
+
+    result = run_auto_rietveld(
+        [hist], [phase], gpx_dir=str(tmp_path / "chosen"), ledger=ledger, max_cyc=1
+    )
+
+    assert Path(result.gpx_path).is_file(), result.gpx_path
+    # 退避先 = `gpxstore` の一時 run ディレクトリ (エンジン自身の作業 temp ではない)
+    assert Path(result.gpx_path).parent.parent == unwritable_gpx_root
+    assert Path(result.gpx_path).parent.name.startswith("tsumugin-gpx-")
+    assert "一時領域へ退避" in result.artifact_fallback_reason
+    rows = [e.payload for e in ledger.entries if e.kind == "m7_gpx_fallback"]
+    assert [r["reason"] for r in rows] == [result.artifact_fallback_reason]
+
+
+@pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
+def test_no_fallback_reason_when_nothing_was_saved_at_the_fallback(
+    tmp_path, unsavable_gpx_fallback
+):
+    """退避先にも保存できなかったら理由は載せない — 「一時領域に在る」と言うのは嘘になる。
+
+    その失敗は台帳の ``m7_gpx_error`` の担当 (``gpx_path`` は "")。退避先を「書けない場所」
+    (親が通常ファイル) に向け、退避は起きたが複製は失敗した状態を作る。
+    """
+    from tsumugin.store import Ledger
+
+    hist, phase = _staged(tmp_path)
+    ledger = Ledger()
+
+    result = run_auto_rietveld(
+        [hist], [phase], gpx_dir=str(tmp_path / "chosen"), ledger=ledger, max_cyc=1
+    )
+
+    assert result.gpx_path == ""
+    assert result.artifact_fallback_reason == ""
+    assert "m7_gpx_error" in [e.kind for e in ledger.entries]
+
+
+@pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")
+def test_layer2_auto_rietveld_says_the_artifact_fell_back(tmp_path, unwritable_gpx_root):
+    """★② 越し (③ が実際に受け取る JSON) で退避理由が ``warnings`` に出る — 通しの検算。
+
+    非トートロジー: 決定論テストは ② の写し (スタブ結果) と ① のエンジン (本テスト群の上) を
+    別々に見るだけで、間の既定 runner (`_default_gsas_runner`) が結果を作り直す/差し替えると
+    どちらも緑のまま ③ には再び %TEMP% の ``gpx_path`` しか届かなくなる。
+    """
+    from tsumugin.mcp.rietveld_tools import auto_rietveld
+
+    hist, phase = _staged(tmp_path)
+
+    out = auto_rietveld(
+        [hist.to_dict()], [phase.to_dict()], gpx_dir=str(tmp_path / "chosen"), max_cyc=1
+    )
+
+    assert "error" not in out, out.get("error")
+    assert Path(out["gpx_path"]).parent.parent == unwritable_gpx_root
+    assert len(out["warnings"]) == 1, out["warnings"]
+    assert out["warnings"][0].startswith("成果物の保存先: ")
+    assert "一時領域へ退避" in out["warnings"][0]

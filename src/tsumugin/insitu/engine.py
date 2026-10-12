@@ -16,11 +16,13 @@ GSAS 駆動は既定 runner (`_default_gsas_runner`) 内の `run_auto_rietveld` 
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING, Callable, Sequence
 
 from .._json import finite_or_none
 from ..autorietveld.model import AutoRietveldResult, PhaseSpec
-from ..gpxstore import GpxContext, gpx_context, series_context
+from ..errors import DuplicateAtomLabelError
+from ..gpxstore import GpxContext, fallback_warning, gpx_context, series_context
 
 if TYPE_CHECKING:
     from ..autorietveld.model import RefinementStage
@@ -234,22 +236,31 @@ def run_sequential_rietveld(
     # 【系列で run ディレクトリを 1 つ共有する】: 文脈は「置き場所と名前」だけを運ぶ側路で、
     #   物理には影響しない (`gpxstore` の説明を参照)。無効化時も文脈は張る (enabled=False) —
     #   下流の `run_auto_rietveld` が「保存しない」を一貫して読めるようにするため。
-    series_ctx = _series_context(frames, gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger)
+    series_warnings: list[str] = []
+    series_ctx = _series_context(
+        frames, gpx_dir=gpx_dir, save_gpx=save_gpx, ledger=ledger, warn_sink=series_warnings
+    )
     with gpx_context(series_ctx):
-        return _run_sequential_rietveld(
+        result = _run_sequential_rietveld(
             frames, initial_phases, config=config, runner=runner, phase_finder=phase_finder,
             ledger=ledger, workdir=workdir, series_ctx=series_ctx,
         )
+    return _with_series_warnings(result, series_warnings)
 
 
 def _series_context(
     frames: Sequence[FrameSpec], *, gpx_dir: str | None, save_gpx: bool, ledger: Ledger,
-    kind: str = "m9",
+    warn_sink: list[str], kind: str = "m9",
 ) -> GpxContext:
-    """系列全体で共有する成果物文脈を作る (run ディレクトリは 1 つ) + ledger に残す。
+    """系列全体で共有する成果物文脈を作る (run ディレクトリは 1 つ) + ledger と警告に残す。
 
     M9 逐次 / M10 アンカーの**両方**がこれを使う (経路ごとの実装は取り残される — Issue #96 の
     ウォームスタートで実際に起きた病理)。``kind`` は ledger の接頭辞だけを分ける。
+
+    :param warn_sink: 系列の警告を積むリスト。一時領域へ退避したら ``成果物の保存先: <理由>`` を
+        足す — ② (`sequential_rietveld` / `anchored_sequential`) は台帳を返さないので、
+        台帳だけに書くと ③ には %TEMP% を指す ``gpx_dir`` しか見えない (gpx-retention 設計 §5)。
+        呼び出し側は `_with_series_warnings` で結果の ``warnings`` の先頭に載せる
     """
     ctx, reason = series_context(
         frames[0].data_path if frames else "", gpx_dir=gpx_dir, save=save_gpx
@@ -258,8 +269,22 @@ def _series_context(
         return ctx
     if reason:
         ledger.append(f"{kind}_gpx_fallback", {"run_dir": ctx.run_dir, "reason": reason})
+        warn_sink.append(fallback_warning(reason))
     ledger.append(f"{kind}_gpx_run_dir", {"run_dir": ctx.run_dir})
     return ctx
+
+
+def _with_series_warnings(
+    result: SequentialRietveldResult, series_warnings: Sequence[str]
+) -> SequentialRietveldResult:
+    """系列の入口で決まった警告 (成果物の退避) を結果の ``warnings`` の先頭に載せる。
+
+    本体の中で積まないのは、本体が早期に返る経路 (M10 のフレーム 0 枚) でも落とさないため。
+    先頭に置くのは、置き場所の話が系列全体の前提だから (どのフレームの所見でもない)。
+    """
+    if not series_warnings:
+        return result
+    return replace(result, warnings=(*series_warnings, *result.warnings))
 
 
 def _run_sequential_rietveld(
@@ -685,6 +710,8 @@ def _try_add_phase(
     競わせると偽相が勝つ。落とした候補は ledger `m9_phaseid_skipped` に残る。
 
     :returns: (結果, 採用相 or None, 警告文 or None)。相同定失敗/全候補棄却は警告文を返す (L1)。
+        原子ラベルの重複で精密化できなかった候補は棄却して次へ進み (系列は止めない)、ledger
+        ``m9_phaseid_trial_refused`` に残したうえで、別の候補を採用したときも警告文を返す。
     """
     exclude = [p.phase_name for p in phases] + list(known_formulas)
     # 既知相はウォームスタート (base_result の精密化格子) で、追加相は CIF 既定格子で再精密化する。
@@ -715,6 +742,7 @@ def _try_add_phase(
         ledger.append("m9_phaseid_error", {"frame": frame_idx, "error": repr(exc)[:200]})
         return base_result, None, f"frame {frame_idx}: 相同定に失敗 ({type(exc).__name__})"
     best: "tuple[AutoRietveldResult, PhaseSpec, dict] | None" = None
+    refused: list[str] = []
     for cand_spec, meta in candidates:
         # 【同定スコアゲート】: 残差を説明していない候補 (score ≤ 閾値) は試行に回さない。
         #   後段の選択は「受理基準を満たす中で最小 Rwp」だが Rwp は母数増で必ず下がるため、
@@ -743,8 +771,23 @@ def _try_add_phase(
             if series_ctx is not None
             else None
         )
-        with gpx_context(trial_ctx):
-            trial = runner(frame, trial_phases, base_cells)
+        try:
+            with gpx_context(trial_ctx):
+                trial = runner(frame, trial_phases, base_cells)
+        except DuplicateAtomLabelError as exc:
+            # 【候補の構造の誤りは、その候補の棄却】: 現行相は同じフレームの base 精密化を通って
+            #   いるので、ここで出る重複は候補の CIF のもの。系列ごと止めると、それまでの全フレームの
+            #   結果が ② で error dict に化ける。相同定の失敗 (`m9_phaseid_error`) と同じく候補だけ外す。
+            ledger.append(
+                "m9_phaseid_trial_refused",
+                {
+                    "frame": frame_idx, "candidate": cand_spec.phase_name,
+                    "phase_id": str(meta.get("phase_id", "")),
+                    "error_type": type(exc).__name__, "error": str(exc)[:300],
+                },
+            )
+            refused.append(cand_spec.phase_name)
+            continue
         trial_rwp = float(trial.final_rwp)
         new_frac = float(trial.phase_fractions.get(cand_spec.phase_name, 0.0))
         accepted = _accept_new_phase(trial, cand_spec.phase_name, base_rwp, trial_rwp,
@@ -771,6 +814,12 @@ def _try_add_phase(
         if accepted and (best is None or trial_rwp < float(best[0].final_rwp)):
             best = (trial, cand_spec, meta)
 
+    refused_warn = (
+        f"frame {frame_idx}: 候補 {refused} は原子ラベルが重複して精密化できず棄却"
+        " (ledger m9_phaseid_trial_refused)"
+        if refused
+        else None
+    )
     if best is not None:
         trial, cand_spec, meta = best
         phases.append(cand_spec)
@@ -788,9 +837,9 @@ def _try_add_phase(
             rwp_before=base_rwp,
             rwp_after=float(trial.final_rwp),
             evidence=meta,
-        ), None
+        ), refused_warn
     # 候補はあったが受理基準を満たさず / 候補ゼロ (相同定不発)。
-    warn = None
+    warn = refused_warn
     if not candidates:
         warn = f"frame {frame_idx}: 変化点だが新相候補なし (未指数ピークが残存の可能性)"
     return base_result, None, warn
