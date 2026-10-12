@@ -220,3 +220,41 @@ def test_cell_strain_output_is_documented(analyze_text: str):
     assert "cell_strain" in analyze_text
     section = analyze_text.split("cell_strain", 1)[1]
     assert "refined_cells" in section, "共有セルとの違いが書かれていない"
+
+
+# ---------------- 相の指定 (PhaseSpec) の TOPAS 対応 ----------------
+
+
+def _topas_constraints_section(analyze_text: str) -> str:
+    """「TOPAS 経路の制約」節 (次の ## 見出しまで)。"""
+    return analyze_text.split("**TOPAS 経路の制約**", 1)[1].split("\n## ", 1)[0]
+
+
+def test_topas_phase_options_match_the_implementation(analyze_text: str):
+    """手順書の TOPAS 節が、実装の分類 (`PHASE_SPEC_FIELDS`) と一致すること。
+
+    以前の TOPAS 経路は `refine_cell` や Uiso の凍結を黙って無視していたのに、手順 1 は
+    バックエンドを問わず「少数相の ADP を凍結する」と指示していた (= ③ は効かない凍結を
+    頼んで、効いたと読む)。実装で効くもの・拒否するもの・どちらのエンジンも読まないものを
+    ③ が TOPAS 節から読めること。分類はフィールド名を**実装から**引く (手書きの一覧と
+    照合すると、フィールドを足したときにガードごと古くなる)。
+    """
+    from tsumugin.topas.structure import PHASE_SPEC_FIELDS
+
+    section = _topas_constraints_section(analyze_text)
+    basic = {"structure_path", "phase_name"}  # 相を名指すだけの必須項目 (書くまでもない)
+    for name, (kind, _note) in PHASE_SPEC_FIELDS.items():
+        if name in basic:
+            continue
+        assert f"`{name}`" in section, f"{name} ({kind}) が TOPAS 節に書かれていない"
+
+
+def test_topas_phase_spec_refusal_is_documented(analyze_text: str):
+    """精密化の前の拒否は ② が error dict で返す — ③ がそれを読めるように error_type を書く。"""
+    section = _topas_constraints_section(analyze_text)
+    assert "InvalidPhaseSpecError" in section
+    assert "TopasInputError" in section, "INP を組めない入力の error_type が書かれていない"
+    # D/H 混合 (`place_hd_mix`) の形は GSAS では正しい入力 — 「直せ」ではなく「GSAS で回せ」。
+    assert "place_hd_mix" in section and "GSAS で回す" in section
+    assert "uiso_frozen_all" in section, "凍結できたかの確かめ方が書かれていない"
+    assert "回し直す" in section, "以前の TOPAS 結果が凍結を無視していたことの扱いが無い"

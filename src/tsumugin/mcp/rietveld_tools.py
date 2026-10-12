@@ -238,6 +238,21 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
     }
 
 
+def _run_degrading_domain_errors(run: "Callable[[AnalysisInput], AutoRietveldResult]", inp) -> dict:
+    """runner を実行し、Tsumugin の**ドメインエラー**だけを ``{"error","error_type"}`` へ縮退する。
+
+    精密化の前に engine が送出する入力仕様の誤り (`errors.InvalidPhaseSpecError`: 相に無い
+    ラベル・TOPAS が実装していない相の指定 等) やエンジン未導入は、ここで縮退しないと ② の境界を
+    越える (③ は LLM なので例外は回復不能)。**ドメインエラー以外 (論理バグ) は透過させる** —
+    縮退対象を広げると不具合が「入力の誤り」に見えて握り潰される。
+    """
+    try:
+        result = run(inp)
+    except TsumuginError as exc:
+        return {"error": str(exc), "error_type": type(exc).__name__}
+    return _result_to_dict(result, inp)
+
+
 def _result_from_dict(result: Mapping[str, object]) -> AutoRietveldResult:
     """propose_next_actions が使う最小フィールドで AutoRietveldResult を復元する。"""
     v = result.get("validity") or {}
@@ -643,7 +658,7 @@ def auto_rietveld(
         # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
         # **② は例外を送出しない** (③ は LLM なので例外は回復不能なハード失敗になる)。
         return {"error": str(exc), "error_type": type(exc).__name__}
-    return _result_to_dict(run(inp), inp)
+    return _run_degrading_domain_errors(run, inp)
 
 
 def propose_next_actions(
@@ -718,7 +733,7 @@ def refine_with_revisions(
     except (TsumuginError, ValueError) as exc:
         # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
         return {"error": str(exc), "error_type": type(exc).__name__}
-    return _result_to_dict(run(inp), inp)
+    return _run_degrading_domain_errors(run, inp)
 
 
 # ===========================================================================
