@@ -46,6 +46,9 @@ class RefinementLoopResult:
     :param open_proposals: 未適用の ModelAction 提案 (③/人間への申し送り)
     :param iterations: 実行反復数
     :param ledger: 追記された台帳 (None なら未使用)
+    :param warnings: 呼び出し側への警告。成果物の run ディレクトリが一時領域へ退避したときの
+        理由 (``成果物の保存先: …``) をここに載せる — 台帳は任意なので、台帳を渡さない
+        呼び出しでも退避が消えないように (gpx-retention 設計 §5)
     """
 
     best: AutoRietveldResult
@@ -53,6 +56,7 @@ class RefinementLoopResult:
     open_proposals: tuple[ActionProposal, ...]
     iterations: int
     ledger: object | None = None
+    warnings: tuple[str, ...] = ()
 
 
 def _accept(prev: AutoRietveldResult, cand: AutoRietveldResult, eps: float) -> bool:
@@ -86,7 +90,8 @@ def run_refinement_loop(
     :param diagnose: (結果, 入力)->残差シグネチャ。None なら結果ベースの粗診断
     :param background_coeffs: 初期背景係数数
     :param budget: 停止条件 (既定 PolicyBudget())
-    :param ledger: 追記台帳 (None なら未使用)
+    :param ledger: 追記台帳 (None なら未使用)。成果物の run ディレクトリが一時領域へ退避したときは
+        ``m7_gpx_fallback`` 行を足す (台帳が無くても `RefinementLoopResult.warnings` には載る)
     :param accept_eps: Rwp 改善判定の下限
     :param seed: GSAS runner 用の乱数種 (再現性)
     :param gpx_dir: 成果物の保存先の根 (2026-08-20 規定「全解析で保存する」)。**ループ 1 回で
@@ -100,9 +105,17 @@ def run_refinement_loop(
         runner = _default_gsas_runner(seed, gpx_dir=gpx_dir, save_gpx=save_gpx)
     # 【ループ 1 回 = run ディレクトリ 1 つ】: 反復ごとに別ディレクトリだと「何回目の手が
     #   どれか」を探せない。注入 runner でも文脈は張る (読まない runner は素通りする)。
-    group, _reason = group_context(
+    group, gpx_fallback = group_context(
         histograms[0].data_path if histograms else "", gpx_dir=gpx_dir, save=save_gpx
     )
+    # 【退避を黙らない (gpx-retention 設計 §5)】: 根に書けず一時領域へ退避した理由は**ここでしか
+    #   分からない** — runner (エンジン) は解決済みの文脈を受け取り、自前の台帳にしか書かない。
+    #   台帳は任意なので、無いときも結果の警告には必ず載せる。
+    warnings: tuple[str, ...] = ()
+    if gpx_fallback:
+        if ledger is not None:
+            ledger.append("m7_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
+        warnings = (f"成果物の保存先: {gpx_fallback}",)
     if diagnose is None:
         # 既定は残差解析診断 (REQ-002/TASK-0009)。背景のみの粗診断 _default_diagnose は
         # 後方互換の代替として残置 (明示注入で選択可)。
@@ -164,6 +177,7 @@ def run_refinement_loop(
         open_proposals=open_proposals,
         iterations=iteration,
         ledger=ledger,
+        warnings=warnings,
     )
 
 
