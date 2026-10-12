@@ -51,9 +51,7 @@
 
 | フィールド | 中身 | 未計測 |
 |---|---|---|
-| `final_vary_list` | 最終段の `varyList` (GSAS の変数名の組) | `None` (TOPAS・共分散なし) |
-| `final_dependent_variables` | 最終段の `depSigDict` のキー (拘束の従属側) | `None` |
-| `final_correlations` | 最終段の \|ρ\| ≥ 0.9 の対 (変数名, 変数名, ρ) | `None` |
+| `final_covariance` | 最終段の `varyList`・`depSigDict` のキー (拘束の従属側)・\|ρ\| ≥ 0.9 の対 (`diagnostics.CovarianceRecord`) | `None` (TOPAS・共分散なし) |
 | `claim_variables` | 値のキー → それが依存する GSAS 変数名の組 (例 `cell:P.a` → `0::A0…A5`) | `None` |
 | `reflection_two_theta` | 先頭ヒストグラムの全相の計算反射位置 (精密化範囲内) | `None` |
 
@@ -64,7 +62,7 @@
 
 | 条件 (上から先に当てる) | `provenance` | `determinacy` |
 |---|---|---|
-| `final_vary_list is None` | (空) | `esd_only`、検査 `provenance_known = unevaluated` |
+| `final_covariance is None` | (空) | `esd_only`、検査 `provenance_known = unevaluated` |
 | 依存変数のどれかが `frozen_parameters` にある | `pruned` | `undetermined_esd` |
 | 依存変数のどれかが varyList/従属にある、かつ `undetermined_parameters` に名がある | `refined` | `undetermined_esd` |
 | 依存変数のどれかが varyList/従属にある | `refined` | `esd_only` (最終段が非収束なら `unconverged`) |
@@ -134,7 +132,7 @@ proposal は「既存の `ActionProposal` を拡張する」としていたが�
 | `frozen_cell` | `refine_cell=False` の相 | yes | その相の weight_fraction |
 | `coordinate_freedom` | `coordinate_freedom_mismatches` に原子 | yes | その原子の coord |
 
-blocking な要求の id は `blocks` の各 `Claim.gate` に入る。\|ρ\| の伝播は `final_correlations` を
+blocking な要求の id は `blocks` の各 `Claim.gate` に入る。\|ρ\| の伝播は `final_covariance.correlations` を
 `claim_variables` の逆引きで値のキーに直し、**直接の相手だけ**に足す。
 
 **D (`D-1A/1`)**: 全要求に `{"answer": "hold", "policy": "D-1A/1"}` を返す。gate を外さない。結果は

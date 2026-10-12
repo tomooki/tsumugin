@@ -25,7 +25,7 @@ from .._config_spec import (
 )
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
-from .diagnostics import WeakVariable
+from .diagnostics import CovarianceRecord, WeakVariable
 
 T = TypeVar("T")
 
@@ -1289,3 +1289,14 @@ class AutoRietveldResult:
     #   マルチスタートはこれを傍証の条件 (`perturbation_had_no_effect`) に使う — 結果の自由度指標
     #   から数え直すと、engine が動かさなかった軸を「試験した」と数える余地が残る。
     coord_jitter_axes_moved: int = 0
+    # 【最終の共分散の記録】(fit-then-judge P1-1A): 最終段の varyList・従属変数・|ρ|≥0.9 の対。
+    #   値の出自 (`claims`) の典拠 — esd の三状態は「未解放・revert・共分散なし」を区別しない。
+    #   **None = 共分散が無い/計測していない** (TOPAS 経路・精密化の失敗)。観測のみ。
+    final_covariance: "CovarianceRecord | None" = None
+    # 【値のキー → 依存する GSAS 変数名】(fit-then-judge P1-1A): `claim_variables.claim_variable_names`。
+    #   相 id・原子行の添字を知っているのが engine だけなので engine が作る。None = 計測していない。
+    claim_variables: "Mapping[str, tuple[str, ...]] | None" = None
+    # 【計算反射の位置】(fit-then-judge P1-1A): 先頭ヒストグラムの全相の反射の 2θ (精密化範囲内、
+    #   昇順)。相集合の完全性の証人 (反射から離れた窓の残差) の入力。None = 計測していない
+    #   (反射リストが無い・TOPAS 経路)。空タプルは「範囲内に反射が無い」。観測のみ。
+    reflection_two_theta: "tuple[float, ...] | None" = None

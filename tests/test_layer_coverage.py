@@ -482,6 +482,24 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
         "座標の自由度の食い違い (fit-then-judge P1a)。engine は原子行の site symmetry を"
         "解釈できないと黙って座標を凍結する — その原子を ③ が見つけられるようにする",
     ),
+    "final_covariance": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1-1A): 値の出自・相関・相集合の完全性の証人を決める**入力**で、"
+        "② には加工後の `claims` (出自・決定性・止め) として出る。GSAS の変数名や反射位置の"
+        "生の列を ③ に渡しても読む手順が無い (docs/design/fit-then-judge/p1-1a-architecture.md §3)",
+    ),
+    "claim_variables": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1-1A): 値の出自・相関・相集合の完全性の証人を決める**入力**で、"
+        "② には加工後の `claims` (出自・決定性・止め) として出る。GSAS の変数名や反射位置の"
+        "生の列を ③ に渡しても読む手順が無い (docs/design/fit-then-judge/p1-1a-architecture.md §3)",
+    ),
+    "reflection_two_theta": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1-1A): 値の出自・相関・相集合の完全性の証人を決める**入力**で、"
+        "② には加工後の `claims` (出自・決定性・止め) として出る。GSAS の変数名や反射位置の"
+        "生の列を ③ に渡しても読む手順が無い (docs/design/fit-then-judge/p1-1a-architecture.md §3)",
+    ),
     "exported_cifs": (
         UNEXPOSED,
         "意図的 (fit-then-judge P1a): `run_auto_rietveld(export_cif_dir=)` を ② はまだ渡さないので"

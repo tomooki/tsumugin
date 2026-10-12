@@ -271,7 +271,8 @@ def test_only_the_declared_functions_touch_the_gsas_project():
         "read_diagnostics",
         "read_variable_values",
         "read_variable_esds",
-    }, "gpx を受け取る関数が増減した。docstring の宣言 (3 関数) と合わせること"
+        "read_covariance_record",
+    }, "gpx を受け取る関数が増減した。docstring の宣言 (4 関数) と合わせること"
 
 
 # ---------------------------------------------------------------------------
