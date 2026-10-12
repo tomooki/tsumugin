@@ -83,7 +83,7 @@ from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
 from ..errors import InvalidPhaseSpecError
-from ..gpxstore import gpx_context, group_context
+from ..gpxstore import gpx_context, group_context, reject_single_keep
 from ..store import Ledger
 from .model import (
     AutoRietveldResult,
@@ -1002,6 +1002,7 @@ def run_recipe_search(
     :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル等を名指すとき
         (`model.check_phase_spec_labels`)
     """
+    reject_single_keep(run_kwargs, entry="run_recipe_search")
     config = config or SearchConfig()
     ledger = ledger if ledger is not None else Ledger()
     requested = tuple(names) if names is not None else DEFAULT_CANDIDATES

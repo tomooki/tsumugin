@@ -156,6 +156,8 @@ class HistogramSpec:
         構造を持ち、``set_refinements({'Exclude': ...})`` キーは存在しない (実測で例外)。本フィールドは
         engine が使用域設定後に ``[lo, hi]`` を直接 append する。既定 () (除外なし; 後方互換)。
     :param temperature: 測定温度 (K)。複数ヒストグラム間の温度差吸収判定に用いる
+        (`recipe.has_temperature_difference`、GSAS/TOPAS 共通)。**測定温度はここに入れる** —
+        `PhaseSpec.temperature` はどのエンジンも読まない
     """
 
     data_path: str
@@ -278,7 +280,15 @@ class PhaseSpec:
         ⚠ 旧実装は既定が ``()`` で engine が ``or`` フォールバックしていたため、``()`` を渡すと
         **凍結したつもりで全原子が解放**されていた (#189)。少数相の ADP を凍結したいだけなら
         ``free_uiso_labels=()`` か `frozen_uiso_labels` を使う
-    :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
+    :param temperature: 相に付随する温度 (K) の**記録のみ** (メタデータ)。**どの精密化エンジン
+        (GSAS-II / TOPAS) も読まない** — 入れても精密化は何も変わらない。ヒストグラム間の温度差の
+        吸収 (静水圧歪み Dij の段) は `HistogramSpec.temperature` だけで判定する
+        (`recipe.has_temperature_difference`、TOPAS 経路も同じ関数)。測定温度は測定の属性なので
+        ヒストグラムに入れる。⚠ 旧 docstring は温度差の判定に使うと書いていたが、一度も読まれて
+        いなかった。v0.1 公開済みの位置引数と JSON 往復 (`to_dict`/`from_dict`、workbench の
+        project.json と表示) のために残す。非推奨警告は出さない — 取り除けないうえ、警告が届くのは
+        Python の呼び手だけで、誤用しうる ③ (JSON で呼ぶ) には届かないため。`ReviseStructure` では
+        改訂できない (改訂しても再精密化が変わらないので拒否する)
 
     原子ラベルを名指すフィールド (`PHASE_SPEC_LABEL_FIELDS` / `PHASE_SPEC_GROUP_FIELDS`) は、相の
     構造ファイルの原子ラベルと**完全一致**で書く。相に無いラベル等は、どちらのエンジンも相を読んだ
@@ -1089,3 +1099,8 @@ class AutoRietveldResult:
     #   総合値 (`final_rwp`) と混同しないこと — TOPAS 経路では `.out` の総合値を `final_rwp`
     #   に採り、ここには各 `xdd` の値を入れる。空 = 未計測 (バックエンドが出さない)。
     histogram_rwp: tuple[float, ...] = ()
+    # 【座標ジッタで engine が**実際に動かした**軸数】(マルチスタートの構造軸)。摂動を要求して
+    #   いない run は 0。対称固定の軸・結束軸の従属側・``frozen_coord_labels`` の原子は数えない。
+    #   マルチスタートはこれを傍証の条件 (`perturbation_had_no_effect`) に使う — 結果の自由度指標
+    #   から数え直すと、engine が動かさなかった軸を「試験した」と数える余地が残る。
+    coord_jitter_axes_moved: int = 0

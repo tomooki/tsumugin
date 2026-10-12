@@ -186,6 +186,14 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
      凍結できたかは `stages[]` の uiso 段の `note` に **`uiso_frozen_all`** が出るかで確かめる。
      **`noop` だけで `uiso_frozen_all` が無い段は凍結ではなく無言失敗の疑い** (段が何も
      精密化できていない) — 両者は rwp/n_params がビット同一なのでここでしか区別できない。
+   - **測定温度はヒストグラムに入れる**: ヒストグラムごとに測定温度が違う joint (例 X 線 295 K +
+     中性子 10 K) は各 `histograms[].temperature` に K で入れる — 既定レシピが温度差の静水圧歪み
+     Dij を解放する。**入ったかは `stages[]` で確かめる**: GSAS は格子の段の `note` に「温度差」、
+     TOPAS は `S2b hydrostatic_strain` 段が出る (その段が `reverted` なら吸収できていない)。
+     出ていなければ温度が効く場所に入っていない (片方のヒストグラムだけ・相の側)。
+     ⛔ 相の `temperature` はどのエンジンも読まないメタデータで、入れても精密化は何も変わらない
+     (`specs` の各相に `"temperature": null` が見えても埋めない)。`ReviseStructure` で改訂
+     しようとするとエラーになる。
    - **相の指定が名指す原子ラベルは CIF の `_atom_site_label` と完全一致で書く** (前後の空白・
      大小も区別する。配列の所に文字列を書くと 1 文字ずつ別のラベルとして読まれる)。相に無いラベル /
      相の中で 2 原子以上を指すラベル / 異なる 2 原子に満たない組 (`[["O1"]]`・`[["O1","O1"]]`) は、
@@ -435,6 +443,13 @@ Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より
 | `coord_jitter_ang` | 0.05 | 座標摂動の振幅 (Å)。**0 にすると構造の局所解を試験しない** (格子軸だけの試験になる) |
 | `jitter_seed` | 0 | 摂動の種 (固定 = 再現する) |
 | `jobs` | 開始点数 | 並列度 |
+
+摂動は**精密化するパラメータだけ**に掛かる — `refine_cell=False` の相の格子と
+`frozen_coord_labels` の原子は振らない (振ると摂動値がそのまま残り、偽の分岐として
+`undetermined_by_initial_values` に出る)。全相を格子凍結して `coord_jitter_ang: 0` にすると
+開始点が全部同じ入力になり、収束確認は**何も試験しない** (`structure_is_corroborated: false`、
+`convergence.multistart.perturbation_applied: false`、warnings に「何も試験していない」)。
+全クラスが AGREE でもこの場合は採用しない — 座標摂動を戻すか、凍結を見直す。
 
 ⚠ **`stages` (追加段階) とは併用できない** (error dict になる)。収束確認は候補を**名前**で
 手順を固定するので追加段階を運べない — 追加段階を試すなら `search` 単独で、収束確認するなら
