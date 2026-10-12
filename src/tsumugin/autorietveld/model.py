@@ -9,13 +9,115 @@ GSAS-II 非依存の純データ層。実 CIF/相ファイル + 実データ + �
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Mapping
+from typing import Callable, Iterable, Mapping, NoReturn, Sequence, TypeVar
 
+from .._config_spec import (
+    check_bool,
+    check_float,
+    check_int,
+    check_str,
+    check_str_tuple,
+    spec_required,
+    spec_value,
+)
 from .._json import finite_or_none
 from .absorption import AbsorberLayer
 from .diagnostics import WeakVariable
+
+T = TypeVar("T")
+
+
+# ---------------------------------------------------------------------------
+# JSON spec の値の検査 (`from_dict` 共通)
+# ---------------------------------------------------------------------------
+#
+# 規則は `_config_spec` (型の検査 ``check_*`` と、往復 spec の null 規則 ``spec_value``) に
+# 1 箇所で置く: **キー欠落と null は既定値 (= 未指定)、値があれば型が合うものだけ**。
+# ここには本モジュール固有の形 (原子ラベル・2θ 区間・入れ子 spec) だけを足す。
+
+
+def _path(name: str, value: object) -> str:
+    """パス文字列 (Python 呼び出しの ``Path`` も受ける)。"""
+    return check_str(name, os.fspath(value) if isinstance(value, os.PathLike) else value)
+
+
+def _labels(name: str, value: object) -> tuple[str, ...]:
+    return check_str_tuple(
+        name, value, item="原子ラベル",
+        why=" (存在しないラベルは engine が fail-open で黙って無視します)",
+    )
+
+
+def _list_of(
+    name: str, value: object, what: str, item: "Callable[[str, object], T]"
+) -> tuple[T, ...]:
+    """``what`` のリスト。要素は ``item(f"{name}[i]", 要素)`` で検査する (JSON の配列 = list/tuple)。"""
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{name} は{what}のリストである必要があります: {value!r} ({type(value).__name__})"
+        )
+    return tuple(item(f"{name}[{i}]", v) for i, v in enumerate(value))
+
+
+def _label_group(name: str, value: object) -> tuple[str, ...]:
+    # 平坦な ``["Fe1","Al1"]`` は旧実装で (("F","e","1"), ("A","l","1")) になり拘束が 1 本も
+    # 張られなかったので、組の位置に来た文字列は拒む。
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{name} は原子ラベルの組 (リスト) である必要があります: {value!r}。"
+            "1 組だけなら [[\"Fe1\", \"Al1\"]] のように入れ子にしてください"
+        )
+    return _labels(name, value)
+
+
+def _label_groups(name: str, value: object) -> tuple[tuple[str, ...], ...]:
+    return _list_of(name, value, "原子ラベルの組 (リスト)", _label_group)
+
+
+def _pair(name: str, value: object) -> tuple[float, float]:
+    """``[下限, 上限]`` の 2 数値 (3 要素目を黙って捨てない・bool を 1.0 にしない)。"""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{name} は [下限, 上限] の 2 要素である必要があります: {value!r}")
+    return (check_float(f"{name}[0]", value[0]), check_float(f"{name}[1]", value[1]))
+
+
+def _pairs(name: str, value: object) -> tuple[tuple[float, float], ...]:
+    return _list_of(name, value, " [下限, 上限] の組", _pair)
+
+
+def _mapping(name: str, value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"{name} はオブジェクト (dict) である必要があります: {value!r} ({type(value).__name__})"
+        )
+    return value
+
+
+def _profile_bounds(
+    name: str, value: object
+) -> "dict[str, tuple[float | None, float | None]]":
+    """``{GSAS キー: [min, max]}`` (片側 null = その側は自由)。"""
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for k, v in _mapping(name, value).items():
+        if not isinstance(v, (list, tuple)) or len(v) != 2:
+            raise ValueError(f"{name}.{k} は [min, max] の 2 要素である必要があります: {v!r}")
+        out[str(k)] = tuple(  # type: ignore[assignment]
+            None if b is None else check_float(f"{name}.{k}[{i}]", b) for i, b in enumerate(v)
+        )
+    return out
+
+
+def _instrument_profile(name: str, value: object) -> "InstrumentProfile":
+    return InstrumentProfile.from_dict(_mapping(name, value))
+
+
+def _absorber_layers(name: str, value: object) -> "tuple[AbsorberLayer, ...]":
+    return _list_of(
+        name, value, "吸収体レイヤー (dict)", lambda n, x: AbsorberLayer.from_dict(_mapping(n, x))
+    )
 
 
 class Radiation(Enum):
@@ -63,19 +165,24 @@ class InstrumentProfile:
     wavelength: float | None = None
 
     def to_dict(self) -> dict[str, object]:
+        # 非有限の source_rwp (既定 NaN) / wavelength は null で出す — NaN のままだと
+        # `HistogramSpec` を ``specs`` として返す ② の応答全体が ``json.dumps(allow_nan=False)`` で
+        # 落ちる (精密化を回した後に)。from_dict は null を既定 (NaN / None) へ戻す (inf の
+        # source_rwp も NaN に戻る — どちらも「出典の質は不明」)。
         return {
             "values": {str(k): float(v) for k, v in self.values.items()},
-            "source_rwp": self.source_rwp,
-            "wavelength": self.wavelength,
+            "source_rwp": finite_or_none(self.source_rwp),
+            "wavelength": finite_or_none(self.wavelength),
         }
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "InstrumentProfile":
-        raw = d.get("values", {}) or {}
+        s = "InstrumentProfile"
+        raw = spec_value(d, "values", s, {}, _mapping)
         return cls(
-            values={str(k): float(v) for k, v in dict(raw).items()},  # type: ignore[union-attr]
-            source_rwp=float(d.get("source_rwp", float("nan"))),  # type: ignore[arg-type]
-            wavelength=(float(d["wavelength"]) if d.get("wavelength") is not None else None),
+            values={str(k): check_float(f"{s}.values.{k}", v) for k, v in raw.items()},
+            source_rwp=spec_value(d, "source_rwp", s, float("nan"), check_float),
+            wavelength=spec_value(d, "wavelength", s, None, check_float),
         )
 
 
@@ -156,6 +263,8 @@ class HistogramSpec:
         構造を持ち、``set_refinements({'Exclude': ...})`` キーは存在しない (実測で例外)。本フィールドは
         engine が使用域設定後に ``[lo, hi]`` を直接 append する。既定 () (除外なし; 後方互換)。
     :param temperature: 測定温度 (K)。複数ヒストグラム間の温度差吸収判定に用いる
+        (`recipe.has_temperature_difference`、GSAS/TOPAS 共通)。**測定温度はここに入れる** —
+        `PhaseSpec.temperature` はどのエンジンも読まない
     """
 
     data_path: str
@@ -218,41 +327,26 @@ class HistogramSpec:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "HistogramSpec":
-        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
-        limits = d.get("two_theta_limits")
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。
+
+        キー欠落/null は既定値、型違いは ValueError (`_config_spec.spec_value` の規則)。
+        """
+        s = "HistogramSpec"
         return cls(
-            data_path=str(d["data_path"]),
-            instrument_path=str(d["instrument_path"]),
+            data_path=spec_required(d, "data_path", s, _path),
+            instrument_path=spec_required(d, "instrument_path", s, _path),
             radiation=Radiation(d["radiation"]),
             geometry=Geometry(d["geometry"]),
-            data_format=str(d.get("data_format", "GSAS")),
-            bank=d.get("bank"),  # type: ignore[arg-type]
-            two_theta_limits=(float(limits[0]), float(limits[1])) if limits is not None else None,
-            excluded_regions=tuple(
-                (float(r[0]), float(r[1])) for r in (d.get("excluded_regions") or ())
-            ),
-            temperature=d.get("temperature"),  # type: ignore[arg-type]
-            weight=float(d.get("weight", 1.0)),
-            absorption=float(d.get("absorption", 0.0)),
-            instrument_profile=(
-                InstrumentProfile.from_dict(d["instrument_profile"])  # type: ignore[arg-type]
-                if d.get("instrument_profile") is not None
-                else None
-            ),
-            profile_bounds=(
-                {
-                    str(k): (
-                        (None if v[0] is None else float(v[0])),
-                        (None if v[1] is None else float(v[1])),
-                    )
-                    for k, v in dict(d["profile_bounds"]).items()  # type: ignore[arg-type]
-                }
-                if d.get("profile_bounds") is not None
-                else None
-            ),
-            absorber_layers=tuple(
-                AbsorberLayer.from_dict(x) for x in (d.get("absorber_layers") or ())  # type: ignore[arg-type]
-            ),
+            data_format=spec_value(d, "data_format", s, "GSAS", check_str),
+            bank=spec_value(d, "bank", s, None, check_int),
+            two_theta_limits=spec_value(d, "two_theta_limits", s, None, _pair),
+            excluded_regions=spec_value(d, "excluded_regions", s, (), _pairs),
+            temperature=spec_value(d, "temperature", s, None, check_float),
+            weight=spec_value(d, "weight", s, 1.0, check_float),
+            absorption=spec_value(d, "absorption", s, 0.0, check_float),
+            instrument_profile=spec_value(d, "instrument_profile", s, None, _instrument_profile),
+            profile_bounds=spec_value(d, "profile_bounds", s, None, _profile_bounds),
+            absorber_layers=spec_value(d, "absorber_layers", s, (), _absorber_layers),
         )
 
 
@@ -278,7 +372,19 @@ class PhaseSpec:
         ⚠ 旧実装は既定が ``()`` で engine が ``or`` フォールバックしていたため、``()`` を渡すと
         **凍結したつもりで全原子が解放**されていた (#189)。少数相の ADP を凍結したいだけなら
         ``free_uiso_labels=()`` か `frozen_uiso_labels` を使う
-    :param temperature: 相の想定温度 (K)。ヒストグラム間温度差の吸収判定に用いる
+    :param temperature: 相に付随する温度 (K) の**記録のみ** (メタデータ)。**どの精密化エンジン
+        (GSAS-II / TOPAS) も読まない** — 入れても精密化は何も変わらない。ヒストグラム間の温度差の
+        吸収 (静水圧歪み Dij の段) は `HistogramSpec.temperature` だけで判定する
+        (`recipe.has_temperature_difference`、TOPAS 経路も同じ関数)。測定温度は測定の属性なので
+        ヒストグラムに入れる。⚠ 旧 docstring は温度差の判定に使うと書いていたが、一度も読まれて
+        いなかった。v0.1 公開済みの位置引数と JSON 往復 (`to_dict`/`from_dict`、workbench の
+        project.json と表示) のために残す。非推奨警告は出さない — 取り除けないうえ、警告が届くのは
+        Python の呼び手だけで、誤用しうる ③ (JSON で呼ぶ) には届かないため。`ReviseStructure` では
+        改訂できない (改訂しても再精密化が変わらないので拒否する)
+
+    原子ラベルを名指すフィールド (`PHASE_SPEC_LABEL_FIELDS` / `PHASE_SPEC_GROUP_FIELDS`) は、相の
+    構造ファイルの原子ラベルと**完全一致**で書く。相に無いラベル等は、どちらのエンジンも相を読んだ
+    直後・精密化の前に `check_phase_spec_labels` が `InvalidPhaseSpecError` で拒否する。
     """
 
     structure_path: str
@@ -338,33 +444,170 @@ class PhaseSpec:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "PhaseSpec":
-        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。"""
-        groups = d.get("mixed_occupancy_groups") or ()
-        free_occ = d.get("free_occupancy_labels") or ()
-        equiv = d.get("occupancy_equiv_groups") or ()
-        # `or ()` は null と [] を同じ () に潰す (#189)。キー欠落/null = 未指定 (None)、
-        # 明示的な [] = 凍結 として区別する。
-        raw_uiso = d.get("free_uiso_labels")
-        free_uiso = None if raw_uiso is None else tuple(str(a) for a in raw_uiso)
+        """to_dict の逆写像 (往復同型)。未知の余分キーは無視する。
+
+        キー欠落/null は既定値、型違いは ValueError (`_config_spec.spec_value` の規則)。とりわけ
+        ``refine_cell: null`` は既定の True (格子を精密化) であって凍結ではない。
+        """
+        s = "PhaseSpec"
         return cls(
-            structure_path=str(d["structure_path"]),
-            phase_name=str(d["phase_name"]),
-            format_hint=str(d.get("format_hint", "CIF")),
-            mixed_occupancy_groups=tuple(tuple(str(a) for a in g) for g in groups),
-            free_occupancy_labels=tuple(str(a) for a in free_occ),
-            occupancy_equiv_groups=tuple(tuple(str(a) for a in g) for g in equiv),
-            free_uiso_labels=free_uiso,
-            position_equiv_groups=tuple(
-                tuple(str(a) for a in g) for g in (d.get("position_equiv_groups") or ())
-            ),
-            occupancy_sum_groups=tuple(
-                tuple(str(a) for a in g) for g in (d.get("occupancy_sum_groups") or ())
-            ),
-            frozen_coord_labels=tuple(str(a) for a in (d.get("frozen_coord_labels") or ())),
-            frozen_uiso_labels=tuple(str(a) for a in (d.get("frozen_uiso_labels") or ())),
-            refine_cell=bool(d.get("refine_cell", True)),
-            temperature=d.get("temperature"),  # type: ignore[arg-type]
+            structure_path=spec_required(d, "structure_path", s, _path),
+            phase_name=spec_required(d, "phase_name", s, check_str),
+            format_hint=spec_value(d, "format_hint", s, "CIF", check_str),
+            mixed_occupancy_groups=spec_value(d, "mixed_occupancy_groups", s, (), _label_groups),
+            free_occupancy_labels=spec_value(d, "free_occupancy_labels", s, (), _labels),
+            occupancy_equiv_groups=spec_value(d, "occupancy_equiv_groups", s, (), _label_groups),
+            # null/欠落 = 未指定 (None, 全原子解放) と [] = 凍結 を潰さない (#189)。
+            free_uiso_labels=spec_value(d, "free_uiso_labels", s, None, _labels),
+            position_equiv_groups=spec_value(d, "position_equiv_groups", s, (), _label_groups),
+            occupancy_sum_groups=spec_value(d, "occupancy_sum_groups", s, (), _label_groups),
+            frozen_coord_labels=spec_value(d, "frozen_coord_labels", s, (), _labels),
+            frozen_uiso_labels=spec_value(d, "frozen_uiso_labels", s, (), _labels),
+            refine_cell=spec_value(d, "refine_cell", s, True, check_bool),
+            temperature=spec_value(d, "temperature", s, None, check_float),
         )
+
+
+def check_unique_atom_labels(subject: str, labels: Sequence[str], *, consequence: str) -> None:
+    """相の原子ラベルが一意であることを確かめる — **両エンジン共通** (精密化の前に呼ぶ)。
+
+    どちらのエンジンも原子をラベルで引き当てる (GSAS は原子ごとのフラグを ``G2Phase.atom`` の
+    **先頭**の一致に付け、TOPAS は共有 ``prm`` 名をラベルから作る)。結果 (`AutoRietveldResult`
+    の ``atom_*``)・相の指定・初期占有率・拘束もすべてラベルキーなので、一意性はその契約全体の
+    前提である。比較は完全一致 — 空白・大小違いは別原子として正しく引き当たるので読み替えない。
+
+    エンジンの入口に加え、構造を**書き出す側** (`cif_normalize.write_gsas_cif` — 正規化・重水素
+    配置・原子編集の共通の書き手) と**編集する側** (`cif_edit`) でも呼び、重複を作った場所で止める。
+
+    :param subject: エラー文の主語 (例 ``"相 'PbSO4'"`` / ``"書き出す CIF 'x.cif'"``)
+    :param labels: エンジンが原子を引き当てるのと同じ並び (GSAS は読んだ原子行、TOPAS は CIF の
+        原子ループ)。エラー文の番号はこの並びの 1 始まり
+    :param consequence: そのエンジンで重複が何を起こすか (エラー文に添える)
+    :raises DuplicateAtomLabelError: 重複があるとき。重複ラベルを全部、番号付きで並べる
+        (② は ``{"error","error_type"}`` へ縮退する)
+    """
+    from ..errors import DuplicateAtomLabelError
+
+    numbers_of: dict[str, list[int]] = {}
+    for number, label in enumerate(labels, start=1):
+        numbers_of.setdefault(label, []).append(number)
+    duplicated = {label: nums for label, nums in numbers_of.items() if len(nums) > 1}
+    if duplicated:
+        raise DuplicateAtomLabelError(
+            f"{subject}: 原子ラベルが重複しています {duplicated} (値は原子の並びの番号, "
+            f"1 始まり)。{consequence}。構造ファイル (CIF の _atom_site_label) でラベルを一意に"
+            "してください (例 O1 → O1a/O1b)。対称等価な原子の P1 展開なら、改名せず非対称単位の"
+            " CIF (空間群付き) を取り直してください"
+        )
+
+def resolve_uiso_targets(
+    labels: "Sequence[str]",
+    free_uiso_labels: "Sequence[str] | None",
+    frozen_uiso_labels: "Iterable[str]" = (),
+) -> "list[str]":
+    """uiso 段で Uiso を解放する原子ラベルを解決する (#189/#211) — **両エンジン共通の 1 箇所**。
+
+    `PhaseSpec.free_uiso_labels` が ``None`` (未指定) → ``labels`` 全部、``()`` (明示的に凍結)
+    → 0 原子、非空 → その原子のみ。`frozen_uiso_labels` はそこから差し引く (**凍結が解放指定に
+    勝つ**)。並びは ``free_uiso_labels`` を書いた順 (未指定なら ``labels`` の順)。
+
+    ⚠ ``free_uiso_labels or labels`` と書くと**空列が「未指定」に化け、凍結したつもりで全原子が
+    解放される** (#189 の本体)。GSAS (`engine._resolve_uiso_targets`) と TOPAS
+    (`topas.structure`) が別々に実装すると、片方だけこの穴に戻りうるので 1 つにしてある。
+    """
+    targets = list(labels) if free_uiso_labels is None else list(free_uiso_labels)
+    frozen = set(frozen_uiso_labels)
+    return [label for label in targets if label not in frozen] if frozen else targets
+
+
+#: 原子ラベルを 1 つずつ並べる `PhaseSpec` のフィールド (`check_phase_spec_labels` の対象)。
+PHASE_SPEC_LABEL_FIELDS: "tuple[str, ...]" = (
+    "free_occupancy_labels", "free_uiso_labels", "frozen_coord_labels", "frozen_uiso_labels",
+)
+#: 原子ラベルの**組**を並べる `PhaseSpec` のフィールド (各組は異なる 2 原子以上)。
+#: ラベルを運ぶフィールドを `PhaseSpec` に足したら、どちらかに入れない限りテストが落ちる
+#: (`tests/autorietveld/test_phase_spec_labels.py`)。
+PHASE_SPEC_GROUP_FIELDS: "tuple[str, ...]" = (
+    "mixed_occupancy_groups", "occupancy_equiv_groups", "occupancy_sum_groups",
+    "position_equiv_groups",
+)
+
+
+#: 相に無いラベルのエラー文に載せる相の原子ラベルの上限 (それより多ければ件数で畳む)。
+_MAX_LABELS_IN_MESSAGE = 40
+
+
+def check_phase_spec_labels(spec: PhaseSpec, labels: "Sequence[str]") -> None:
+    """相の指定が名指す原子ラベルを、相の実際の原子ラベルと突き合わせる — **両エンジン共通**。
+
+    エンジンが相を読み込んでラベルが分かった時点 (GSAS は ``add_phase`` の後、TOPAS は CIF を
+    読んだ後)、**精密化の前に**呼ぶ。``labels`` はエンジンが拘束・凍結を引き当てるのと同じ並び
+    (GSAS なら原子行のラベル列) を渡す。止めるのはエンジンを問わず意味を決められない指定だけ:
+
+    - **相に無いラベル** — GSAS 経路は ``if lab in label_to_idx`` で黙って飛ばしていた
+      (綴り違いの ``frozen_uiso_labels=["Ca1 "]`` は何も凍結せずに完走する)。前後の空白・大小を
+      読み替えないのは、推測で埋めると別の綴り違いで同じ穴が開くから
+    - **相の中で 2 原子以上を指すラベル** (名指したものだけ) — GSAS は凍結・解放を
+      ``G2Phase.atom`` の**先頭**の一致に、拘束を ``label_to_idx`` の**末尾**の一致に当てる
+    - **異なる 2 原子に満たない組** — 1 原子の組は何も拘束しない (GSAS は ``len(idxs) < 2:
+      continue`` で黙って飛ばしていた)。``("O1", "O1")`` の混合占有は O1 + O1 = 1 になる
+
+    エンジン固有の制約は各エンジンが別に検査する。たとえば**1 原子を 2 つの占有率拘束に入れる**
+    ことは GSAS では意味が決まる (equivalence を constraint に変換して全拘束を同時に満たす,
+    2026-10-09 に PbSO4 で実測) ので、ここでは拒否しない — TOPAS の INP は原子ごとに占有率を
+    1 つの式で書くので張れない形があり、3 原子以上の混合占有と同じく `topas.structure` が拒否する
+    (和の組の親の共有 = `deuterium.place_hd_mix` の形は TOPAS も張れる)。
+
+    :raises InvalidPhaseSpecError: 上記のとき (② は ``{"error","error_type"}`` へ縮退する)
+    """
+    import difflib
+
+    from ..errors import InvalidPhaseSpecError
+
+    order = list(labels)
+    known = set(order)
+
+    def refuse(message: str) -> NoReturn:
+        raise InvalidPhaseSpecError(f"相 {spec.phase_name!r}: {message}")
+
+    named: dict[str, list[str]] = {}
+    for name in PHASE_SPEC_LABEL_FIELDS:
+        named[name] = list(getattr(spec, name) or ())
+    for name in PHASE_SPEC_GROUP_FIELDS:
+        named[name] = [label for group in getattr(spec, name) for label in group]
+
+    unknown = {name: missing for name, refs in named.items()
+               if (missing := [label for label in refs if label not in known])}
+    if unknown:
+        # 近いラベルを添え、相の原子一覧は長ければ切る (P1 展開の相は数百原子になり、② の
+        # エラー文に全部載せると肝心の「どのフィールドのどのラベルか」が埋もれる)。
+        near = {label: hits for refs in unknown.values() for label in refs
+                if (hits := difflib.get_close_matches(label, order, n=3))}
+        shown = order if len(order) <= _MAX_LABELS_IN_MESSAGE else [
+            *order[:_MAX_LABELS_IN_MESSAGE], f"... (+{len(order) - _MAX_LABELS_IN_MESSAGE})"
+        ]
+        refuse(
+            f"相に無い原子ラベルがあります: {unknown}"
+            + (f" (近いラベル: {near})" if near else "")
+            + f" (相の原子: {shown})。綴り違い (前後の空白・大小を含む) は「凍結・拘束したつもりで"
+            "何も効かない」精密化になるため止めます"
+        )
+
+    referenced = {label for refs in named.values() for label in refs}
+    ambiguous = sorted(label for label in referenced if order.count(label) > 1)
+    if ambiguous:
+        refuse(
+            f"ラベル {ambiguous} は相の中で 2 原子以上を指します。どの原子を凍結・拘束するか"
+            "決められないため止めます (CIF 側でラベルを一意にしてください)"
+        )
+
+    for name in PHASE_SPEC_GROUP_FIELDS:
+        for group in getattr(spec, name):
+            if len(group) < 2 or len(set(group)) != len(group):
+                refuse(
+                    f"`{name}` の組 {list(group)} は異なる 2 原子以上で書いてください "
+                    "(1 原子の組は何も拘束しません)"
+                )
 
 
 @dataclass(frozen=True)
@@ -379,11 +622,6 @@ class RefinementStage:
     label: str
     flags: Mapping[str, object] = field(default_factory=dict)
     note: str = ""
-
-
-def _opt_float(value: object) -> "float | None":
-    """``None`` を保ったまま float 化する (JSON spec の「無効」と「0」を潰さない)。"""
-    return None if value is None else float(value)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -628,38 +866,41 @@ class StabilityOptions:
             raise ValueError(
                 f"stability に未知のキーがあります: {unknown} (既知: {sorted(known)})"
             )
-        tokens = d.get("esd_ratio_exempt_tokens")
-        return cls(
-            require_convergence=bool(d.get("require_convergence", False)),
-            max_shift_esd=float(d.get("max_shift_esd", 1.0)),  # type: ignore[arg-type]
-            extra_cycles=int(d.get("extra_cycles", 1)),  # type: ignore[arg-type]
-            detect_noop_stages=bool(d.get("detect_noop_stages", False)),
-            record_weak_vars=bool(d.get("record_weak_vars", False)),
-            report_undetermined=bool(d.get("report_undetermined", False)),
-            polish_frozen_undetermined=bool(d.get("polish_frozen_undetermined", False)),
-            prune_weak_vars_each_stage=bool(d.get("prune_weak_vars_each_stage", False)),
-            rescue_freeze_on_failure=bool(d.get("rescue_freeze_on_failure", False)),
-            rescue_max_freeze=int(d.get("rescue_max_freeze", 1)),  # type: ignore[arg-type]
-            rescue_max_rounds=int(d.get("rescue_max_rounds", 2)),  # type: ignore[arg-type]
-            esd_ratio_exempt_tokens=(
-                cls.esd_ratio_exempt_tokens  # type: ignore[union-attr]
-                if tokens is None
-                else tuple(str(t) for t in tokens)  # type: ignore[union-attr]
-            ),
-            record_correlations=bool(d.get("record_correlations", False)),
-            corr_threshold=float(d.get("corr_threshold", 0.9)),  # type: ignore[arg-type]
-            max_recorded_pairs=int(d.get("max_recorded_pairs", 10)),  # type: ignore[arg-type]
-            # WS-2: None (無効) と 0.0 (「幅ゼロの箱」= 誤設定) を潰さないため float() は
-            # 値がある場合のみ通す。
-            bound_cell=_opt_float(d.get("bound_cell")),
-            bound_displacement=_opt_float(d.get("bound_displacement")),
-            bound_size_strain=bool(d.get("bound_size_strain", False)),
-            min_size=float(d.get("min_size", 1.0e-3)),  # type: ignore[arg-type]
-            max_size=float(d.get("max_size", 1.0e4)),  # type: ignore[arg-type]
-            min_mustrain=float(d.get("min_mustrain", 1.0e-3)),  # type: ignore[arg-type]
-            max_mustrain=float(d.get("max_mustrain", 1.0e5)),  # type: ignore[arg-type]
-            enable_restraints=bool(d.get("enable_restraints", False)),
-        )
+        # 全フィールドを既定値の型で検査する (欠落/null は既定 — `spec_value`)。``bool("false")``
+        # はゲートを**有効に**し、裸の文字列 "dAx" の exempt トークンは ("d","A","x") の部分一致で
+        # ほぼ全変数を「決まらなかった」報告から外す。``int(2.5)`` は黙って 2 になる。
+        # WS-2: ``bound_*`` は None (無効) と 0.0 (「幅ゼロの箱」= 誤設定) を潰さない (0.0 は
+        # null ではないので `spec_value` が既定へ戻さない)。
+        defaults = cls()
+        kwargs: dict[str, object] = {}
+        for f in fields(cls):
+            default = getattr(defaults, f.name)
+            check = _stability_check(f.name, f.type, default)
+            kwargs[f.name] = spec_value(d, f.name, "stability", default, check)
+        return cls(**kwargs)  # type: ignore[arg-type]
+
+
+def _stability_check(
+    name: str, annotation: object, default: object
+) -> "Callable[[str, object], object]":
+    """`StabilityOptions` の 1 フィールドを検査する ``check_*`` を既定値の型から選ぶ。
+
+    既定 None のフィールドは現状 ``float | None`` (bound_*) だけ。対応表に無い型を足したら
+    **そのフィールド名で** ValueError にする (黙って float として読まない・KeyError で
+    `<class 'NoneType'>` とだけ言わない)。
+    """
+    if isinstance(default, bool):  # bool は int のサブクラスなので先に
+        return check_bool
+    if isinstance(default, int):
+        return check_int
+    if isinstance(default, float) or (default is None and "float" in str(annotation)):
+        return check_float
+    if isinstance(default, tuple) and "str" in str(annotation):
+        return lambda n, v: check_str_tuple(n, v, item="変数名トークン")
+    raise ValueError(
+        f"stability.{name}: 型 {annotation} は from_dict が未対応です "
+        "(_stability_check に検査を足してください)"
+    )
 
 
 @dataclass(frozen=True)
@@ -924,7 +1165,11 @@ class AutoRietveldResult:
     #   捨てていたため、③ は構造を報告することも比較することもできなかった。
     # 相名→原子ラベル→(x,y,z) 分率座標。出典は GSAS 原子行 ``row[cx..cx+2]``
     #   (`atomrows.atom_row`)。**``dAx`` の値ではない** — あれは精密化ごとに 0 へ再初期化される
-    #   シフトである (`GSASIIstrIO.py:1732`)。
+    #   シフトである (`GSASIIstrIO.py:1732`)。**精密化したかどうかによらず全原子の 3 軸が載る**
+    #   (解放しなかった軸も 0.0 で埋めず実際の値)。TOPAS 経路は最後に受理した run の ``Out()``
+    #   (``coord`` / ``coord_unrefined``) から採る (`topas.engine._atom_coord_maps`)。例外は
+    #   **3 軸の値が揃わなかった原子**で、0.0 で埋めずに載せない代わりに ``validity.warnings`` と
+    #   ledger ``m12_topas_coord_gaps`` に名前を残す (ラベルの存在を前提に引かないこと)。
     atom_coords: Mapping[str, Mapping[str, CoordTriple]] = field(default_factory=dict)
     # 相名→原子ラベル→座標 esd。**3 状態を区別する** (`cell_esd` と同型):
     #   ``>0.0`` = ``dA{axis}`` の sig (独立軸と、``depSigDict`` 経由の結束軸の双方) /
@@ -986,3 +1231,8 @@ class AutoRietveldResult:
     #   単発経路でだけ非空になる — 系列・探索等の入口が解決した文脈の下では、理由はその入口が
     #   1 度だけ記録する (結果ごとに繰り返さない)。
     artifact_fallback_reason: str = ""
+    # 【座標ジッタで engine が**実際に動かした**軸数】(マルチスタートの構造軸)。摂動を要求して
+    #   いない run は 0。対称固定の軸・結束軸の従属側・``frozen_coord_labels`` の原子は数えない。
+    #   マルチスタートはこれを傍証の条件 (`perturbation_had_no_effect`) に使う — 結果の自由度指標
+    #   から数え直すと、engine が動かさなかった軸を「試験した」と数える余地が残る。
+    coord_jitter_axes_moved: int = 0

@@ -283,7 +283,7 @@ def test_shared_occupancy_group_uses_one_prm_and_its_complement():
             TopasSite("Al1", "Al+3", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.5), beq=Param(0.5)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
     )
     text = TopasDocument(histograms=(_histogram(),), phases=(phase,)).render()
     # 【`!` 付きで宣言】: TOPAS の名前付き prm は既定で精密化対象なので、解放前は固定する。
@@ -336,7 +336,7 @@ def test_group_prms_are_released_only_when_asked():
             TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.5), beq=Param(0.5)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
         beq_equiv_groups=(("Fe1", "Al1"),),
         release_occupancy_groups=True,
         release_beq_groups=True,
@@ -509,7 +509,7 @@ def test_grouped_occupancy_complement_is_still_published():
             TopasSite("Al", "Al", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.4, refine=True), beq=Param(1.0)),
         ),
-        occupancy_sum_groups=(("Fe", "Al"),),
+        mixed_occupancy_groups=(("Fe", "Al"),),
         release_occupancy_groups=True,
     )
     text = TopasDocument(
@@ -534,7 +534,7 @@ def test_grouped_sites_publish_even_though_their_param_is_not_refined():
             TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0),
                       occupancy=Param(0.1), beq=Param(0.8)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
         beq_equiv_groups=(("Fe1", "Al1"),),
         release_occupancy_groups=True,
         release_beq_groups=True,
@@ -556,7 +556,7 @@ def test_grouped_sites_do_not_publish_before_release():
             TopasSite("Fe1", "Fe", Param(0.0), Param(0.0), Param(0.0), occupancy=Param(0.9)),
             TopasSite("Al1", "Al", Param(0.0), Param(0.0), Param(0.0), occupancy=Param(0.1)),
         ),
-        occupancy_sum_groups=(("Fe1", "Al1"),),
+        mixed_occupancy_groups=(("Fe1", "Al1"),),
     )
     text = TopasDocument(
         histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
@@ -799,8 +799,62 @@ def test_fixed_sites_are_named_when_results_are_requested():
         "      site Pb x !PbSO4_Pb_x 0.1879 y !PbSO4_Pb_y 0.25 z !PbSO4_Pb_z 0.1667"
         " occ Pb+2 !PbSO4_Pb_occ 1.0 beq !PbSO4_Pb_beq 1.5\n"
     ) in text
-    # 出版値 (Out) は精密化したものだけ — 固定値を「精密化した」と読ませない。
-    assert "Out(PbSO4_Pb_x" not in text
+    # 出版値 (``coord``) は精密化したものだけ — 固定値を「精密化した」と読ませない。
+    assert 'Out(PbSO4_Pb_x, "coord\\t' not in text
+
+
+def test_every_coordinate_axis_is_published_once_refined_or_not():
+    """**全サイトの全軸**が座標レコードを 1 本だけ持つ: 解放した軸は ``coord`` (値 + esd)、
+    解放していない軸は ``coord_unrefined`` (値だけ)。
+
+    以前は解放した軸しか出さず、結果側が欠けた軸を 0.0 で埋めていた (実 PbSO4 の S が
+    ``(0.0633, 0.0, 0.6843)``)。値は**TOPAS 自身に評価させる** — 持ち越し値・joint の共有
+    ``prm``・式で結んだ座標も、TOPAS がその run で使った値がそのまま返る。キーを分けて esd 書式を
+    付けないのは、固定値を「精密化して決まった値」と読ませないため。
+    """
+    phase = _pbso4_phase().with_updates(
+        sites=(
+            TopasSite("Pb", "Pb+2", Param(0.1879, refine=True), Param(0.25), Param(0.1667),
+                      beq=Param(1.5), free_coord_axes=("x", "z")),
+            TopasSite("S", "S", Param(0.4367), Param(0.75), Param(0.1842), beq=Param(0.7)),
+        )
+    )
+    single = TopasDocument(histograms=(_histogram(),), phases=(phase,), results_path="r.txt")
+    joint = TopasDocument(
+        histograms=(_histogram(), TopasHistogram(data_path="n.xye", background=Param(0.0))),
+        phases=(phase,), results_path="r.txt",
+    )
+    for doc in (single, joint):
+        text = doc.render()
+        records = re.findall(
+            r'Out\([^,]+, "(coord(?:_unrefined)?)\\t[^\\"]+\\t(\w+)\\t([xyz])\\t', text
+        )
+        assert sorted((label, axis) for _, label, axis in records) == sorted(
+            (label, axis) for label in ("Pb", "S") for axis in "xyz"
+        ), "座標レコードが軸ごとに 1 本ずつになっていない"
+        refined = {(label, axis) for kind, label, axis in records if kind == "coord"}
+        assert refined == {("Pb", "x")}
+        assert 'Out(PbSO4_Pb_y, "coord_unrefined\\tPbSO4\\tPb\\ty\\t%.8f\\n")' in text
+
+
+def test_a_coordinate_given_as_an_expression_is_still_published():
+    """``x =式;`` の座標も**式のまま** ``Out`` に渡して値を回収する (``Out`` は式を取る)。
+
+    格子の従属軸 (``b =Get(a);``) は結果側で独立変数から復元できるので出さないが、座標には
+    その手段が無い。出さないと 3 軸そろわず、原子ごと ``atom_coords`` から消える。
+    """
+    phase = _pbso4_phase().with_updates(
+        sites=(
+            TopasSite("Pb", "Pb+2", Param(0.1879), Param(0.25), Param(0.1667), beq=Param(1.5)),
+            TopasSite("S", "S", Param.reference("PbSO4_Pb_x + 0.25"), Param(0.75),
+                      Param(0.1842), beq=Param(0.7)),
+        )
+    )
+    text = TopasDocument(
+        histograms=(_histogram(),), phases=(phase,), results_path="r.txt"
+    ).render()
+    assert "site S x =PbSO4_Pb_x + 0.25; " in text
+    assert 'Out(PbSO4_Pb_x + 0.25, "coord_unrefined\\tPbSO4\\tS\\tx\\t%.8f\\n")' in text
 
 
 def test_named_size_strain_terms_render_with_their_names():

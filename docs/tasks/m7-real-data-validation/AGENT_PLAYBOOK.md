@@ -38,6 +38,11 @@ Rwp/GOF/物理的妥当性を再現することを目標とする。
 
 - CIF があれば `format_hint="CIF"`。GSAS `.EXP` 相なら `format_hint="EXP"`。
 - CIF が無い場合: 元素一覧から `tsumugin.reference.identify_phases` / Materials Project で候補構造を得る。
+- **原子ラベルは相の中で一意**にする。GSAS は原子ごとの精密化フラグをラベルの先頭の一致に
+  しか付けず、同名の 2 番目以降は出発値のまま黙って凍結される (Rwp には出ない)。engine は
+  `add_phase` 直後に `DuplicateAtomLabelError` で止め、② は `{"error","error_type"}` を返す。
+  重複が対称等価原子の P1 展開なら非対称単位の CIF を取り直し、別サイトの同名なら別ファイルに
+  一意な名前で書き出す (原本は上書きしない)。
 - **混合占有サイト** (例 Fe/Al 同席) がある場合は `mixed_occupancy_groups` に
   同席原子ラベルの組を渡す (例 `(("Fe1","Al1"), ("Al2","Fe2"))`)。占有率和=1 制約と
   Uiso 等価制約が自動生成される。
@@ -49,6 +54,12 @@ Rwp/GOF/物理的妥当性を再現することを目標とする。
   `frozen_uiso_labels` (`frozen_coord_labels` の ADP 版、解放集合から差し引く)。
   **多相で少数相の Uiso を自由にすると発散し** (実測 10^8–10^9 Å²)、Debye-Waller が実質 0 =
   Bragg 強度を出さないのに重量分率だけ大きい「幽霊相」になる (#209) ので、少数相は凍結する。
+- **② に JSON で渡すとき、キーを書かない / null は既定 (未指定)** である。`"refine_cell": null` は
+  既定の True (格子を精密化) — 凍結したい相だけ `false` を明示する。`HistogramSpec`/`PhaseSpec`
+  (入れ子の `instrument_profile`/`absorber_layers` 含む) と `stability`/`search_config` の各キーで
+  型の違う値 (真偽値に文字列、ラベル列に裸の文字列 `"O7"`、組の列に平坦な `["Fe1","Al1"]`、
+  `two_theta_limits` に 3 要素) は `{"error", "error_type"}` で返る
+  (旧実装は null を凍結に、`"false"` を True に、`"O7"` を `("O","7")` に黙って読み替えていた)。
 
 ## 2. 呼び出しパターン
 

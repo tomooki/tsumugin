@@ -209,3 +209,29 @@ def test_write_gsas_cif_no_symops_does_not_fabricate_loop(tmp_path):
     assert "_space_group_symop_operation_xyz" not in text
     assert "_symmetry_equiv_pos_as_xyz" not in text
     assert '_symmetry_space_group_name_H-M "P 21/c"' in text
+
+
+def test_write_gsas_cif_refuses_duplicate_labels_before_writing(tmp_path):
+    """★正規化・重水素配置・原子編集の共通の書き手。重複ラベルの CIF はどちらのエンジンも精密化の
+    前に拒否するので、作った/持ち込んだ場所で止め、壊れたファイルを残さない。"""
+    import dataclasses
+
+    from tsumugin.errors import DuplicateAtomLabelError
+
+    st = read_structure_cif_from_text(_CHECKCIF)
+    dup = dataclasses.replace(
+        st, atoms=st.atoms + (dataclasses.replace(st.atoms[1], x=0.1),)
+    )
+    out = tmp_path / "dup.cif"
+    with pytest.raises(DuplicateAtomLabelError, match=r"\{'Na1': \[2, 4\]\}"):
+        write_gsas_cif(dup, out, phase_name="p")
+    assert not out.exists()
+
+
+def test_normalize_refuses_a_source_cif_with_duplicate_labels(tmp_path):
+    from tsumugin.errors import DuplicateAtomLabelError
+
+    src = tmp_path / "in.cif"
+    src.write_text(_CHECKCIF + "Na1 Na 1 0.1 0.2 0.3 1.0\n", encoding="utf-8")
+    with pytest.raises(DuplicateAtomLabelError, match="Na1"):
+        normalize_cif_for_gsas(src, tmp_path / "out.cif", phase_name="p")
