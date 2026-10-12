@@ -90,12 +90,17 @@
 
 ### 4.2 相集合の完全性 — 反射から離れた窓の残差 S/N
 
-`claims.witness.phase_set_completeness(two_theta, residual, sigma, reflections, fwhm)`:
-1. 各計算反射の周り ±`m·FWHM(2θ)` (既定 m=3) を除外する。FWHM は `hist_profile` の U,V,W,X,Y から
-   GSAS の CW の式で求める (取れなければ `unevaluated`)。
-2. 残りを連続する窓に分け、窓ごとに `S/N = Σr / sqrt(Σσ²)` を求める。最大が閾値 (既定 5) を超えれば `fail`、
-   それ以外は `pass`。証人は最大の窓 (2θ 範囲・S/N)・除外幅・窓の数。
-3. 残差が空・反射位置が無い・プロファイルが無い・窓が 1 つも残らない → `None` (= `unevaluated`)。
+`claims.witness.residual_window_witness(two_theta, residual, sigma, reflections, profile)` (版 `residual-window/3`):
+1. 各計算反射 (Kα1 と、`Lam2` があれば Kα2) の周り ±`3·FWHM(2θ)` を除外する。FWHM は `hist_profile` の
+   U,V,W,X,Y から GSAS の CW の式で求める (取れなければ `unevaluated`)。
+2. 残りの連続区間ごとに ±5 FWHM の局所中央値を引き、反射から離れた点の規格化残差の MAD で σ の過小評価を
+   割り戻す (1 未満にはしない)。
+3. 各点を中心に**平均 0 の山形の窓** (中央 1 FWHM を +、両側 FWHM/2 を −) の S/N をとり、最大が 5 を超えれば
+   `fail`。平均 0 なので**坂は打ち消される** — 単純な窓の和は、除外域のすぐ外まで伸びた強い反射の裾を
+   欠落相と取り違えた (実データ T2 garnet で踏んだ)。
+4. 残差が空・反射位置が無い・幅が無い・窓が無い・窓の中心になれた点が 5% 未満・**複数ヒストグラム** →
+   `unevaluated`。
+合成データ (雑音 σ、FWHM 0.235°) で雑音のみ 200 種中 fail 0、FWHM 幅の山は 2σ/点で 12/50・3σ/点で 45/50 を検出。
 
 `check_phase_set` (系列専用) と `unindexed_peak_frac` (反射位置を見ない) は使わない。
 
@@ -129,11 +134,13 @@ proposal は「既存の `ActionProposal` を拡張する」としていたが�
 | `crystal_chemistry` | その相の検査が `fail`/`unevaluated` | yes | その相の coord/uiso/occupancy |
 | `validity` | `validity.checks` に fail | yes | 違反した値とその相 (検査名から引く) |
 | `initial_value_dependence` | §4.1 で割れた値がある | yes | 割れた値 + 直接 \|ρ\| の相手 |
-| `frozen_cell` | `refine_cell=False` の相 | yes | その相の weight_fraction |
+| `frozen_cell` | `refine_cell=False` の相、および格子を 1 軸も精密化しなかった相 (入力値・剪定) | yes | **全相の** weight_fraction (分率の和は 1 なので凍結相の誤差は他相に移る) |
 | `coordinate_freedom` | `coordinate_freedom_mismatches` に原子 | yes | その原子の coord |
 
 blocking な要求の id は `blocks` の各 `Claim.gate` に入る。\|ρ\| の伝播は `final_covariance.correlations` を
-`claim_variables` の逆引きで値のキーに直し、**直接の相手だけ**に足す。
+`claim_variables` の逆引きで値のキーに直し、**直接の相手だけ**に足す。GSAS は拘束 (混合占有の和など) を
+varyList で `::constrN` に置き換えるので、その変数との相関は相手の値を引けない (実 GSAS で確認)。拘束の従属側
+だけで動く値も同じ。相手が分からない割れた値は**その相の全値**を止める (`evidence.unmapped_partners`)。
 
 **D (`D-1A/1`)**: 全要求に `{"answer": "hold", "policy": "D-1A/1"}` を返す。gate を外さない。結果は
 `judgment_requests[].default` に載り、ledger には残さない (② の単発経路は ledger を返さない — gpx-retention と同じ事情)。
@@ -149,7 +156,7 @@ sidecar に D の版を記録する。
 | `claims_version` | `"fit-then-judge/1A/1"` |
 | `claims` | `{キー: Claim.to_dict()}` |
 | `judgment_requests` | `[JudgmentRequest.to_dict()]` |
-| `publishable_values` | `{キー: {"value", "esd", "unit"}}` — `publishable` な値だけ |
+| `publishable_values` | `{キー: {"value", "esd", "unit", "scope", "determinacy"}}` — `publishable` な値だけ (`scope` を落とすと相対値の格子が絶対値として報告される) |
 | `claims_sidecar` | 書いた sidecar のパス (`""` = 書いていない) |
 | `claims_sidecar_reason` | sidecar を書かなかった理由 (`warnings` は成果物の退避理由の行なので混ぜない) |
 | `claims_policy` | 既定ポリシー D の版 (`D-1A/1`) |
@@ -174,8 +181,9 @@ sidecar に D の版を記録する。
 
 - `claims.export.write_claims_csv(claims, path)`: 列は `key, class, phase, label, axis, value, esd, publishable,
   determinacy, provenance, scope, checks, gate`。**出版不可の行も書くが状態の列で示す** (値を消すと
-  「無かった」と読まれる)。上書きしない。② ツール `export_claims_csv(claims, path)` で露出する
-  (`claims` は `auto_rietveld` の出力そのもの — §4.5 到達可能性)。
+  「無かった」と読まれる)。上書きしない。② ツール `export_claims_csv(gpx_path, path)` で露出する。
+  出版状態は gpx の隣の sidecar (ハッシュ照合) から読み、**呼び手の渡した状態は受けない** (`gpx_path` は
+  `auto_rietveld` の出力そのもの — §4.5 到達可能性)。
 - ③ `skills/analyze`: 報告は `publishable_values` から書き、出版不可の値は `claims[k]` の `determinacy`・
   `gate`・`checks` を添えて「決まっていない/検査できなかった」と書く。`judgment_requests` を報告に載せる。
   ガードテストで手順書の記述を縛る。
@@ -187,3 +195,6 @@ sidecar に D の版を記録する。
 - 入力宣言 (内部標準・較正) の受け口は 1B。1A の格子は常に `scope = relative_within_sample`。
 - `locally_stable` (±δ プローブ) と `undeterminable` (縮退方向の証人) は 1A では発行しない (型だけ用意する)。
 - 結晶化学の閾値は経験則で、P1.5 で調整する。
+- 格子の各軸は A0..A5 の全項に依存するとしている (Laue 群ごとの軸 → 項の対応を持たない)。どれか 1 項が
+  剪定されると 6 軸すべてが `pruned` になり、相関の相手も 6 軸に広がる — 止めすぎる側 (安全側) の誤り。
+- 収束確認の一致は既定の `AgreementTolerances` (k=3) で判定する (multistart の結果は許容幅を持たない)。

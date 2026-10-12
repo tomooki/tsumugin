@@ -89,6 +89,7 @@ def test_publishable_values_are_exactly_the_publishable_claims(checks_pass):
     assert want and set(out["publishable_values"]) == want
     assert out["publishable_values"]["cell:ph.a"] == {
         "value": 10.0, "esd": 0.001, "unit": "angstrom",
+        "scope": "relative_within_sample", "determinacy": "esd_only",
     }
 
 

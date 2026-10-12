@@ -73,3 +73,29 @@ def test_unreadable_sidecar_is_state_unknown(tmp_path):
     gpx = _gpx(tmp_path)
     (tmp_path / "run.claims.json").write_text("{broken", encoding="utf-8")
     assert read_claims_sidecar(str(gpx)) is None
+
+
+def test_glob_special_characters_in_the_gpx_name_do_not_hide_sidecars(tmp_path):
+    gpx = tmp_path / "run[1].gpx"
+    gpx.write_bytes(b"gpx-1")
+    write_claims_sidecar(str(gpx), _PAYLOAD)
+    gpx.write_bytes(b"gpx-2")
+    path, _ = write_claims_sidecar(str(gpx), {**_PAYLOAD, "claims_version": "w"})
+    assert "claims." in path and path.endswith(".json")
+    assert read_claims_sidecar(str(gpx))["claims_version"] == "w"
+
+
+def test_an_undecodable_existing_sidecar_is_kept_and_does_not_raise(tmp_path):
+    gpx = _gpx(tmp_path)
+    (tmp_path / "run.claims.json").write_bytes(b"\xff\xfe\x83broken")
+    path, reason = write_claims_sidecar(str(gpx), _PAYLOAD)
+    assert reason == "" and path != str(tmp_path / "run.claims.json")
+    assert (tmp_path / "run.claims.json").read_bytes() == b"\xff\xfe\x83broken"
+
+
+def test_the_newest_state_for_the_same_gpx_wins(tmp_path):
+    """同じ gpx を別の相の指定で評価し直した — 最初に書いた既定名ではなく新しい方を返す。"""
+    gpx = _gpx(tmp_path)
+    write_claims_sidecar(str(gpx), _PAYLOAD)
+    write_claims_sidecar(str(gpx), {**_PAYLOAD, "claims_version": "second"})
+    assert read_claims_sidecar(str(gpx))["claims_version"] == "second"

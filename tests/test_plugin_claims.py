@@ -36,6 +36,8 @@ def test_the_reporting_rule_is_stated():
     assert "平文" in _CLAIMS_SECTION and "`refined_cells`" in _CLAIMS_SECTION
     # 判断要求を ③ が閉じない (1A に回答経路は無い)
     assert "閉じてはならない" in _CLAIMS_SECTION
+    # 格子は relative のまま出版される — scope を読めと言う (値だけ拾うと絶対値として報告される)
+    assert "`relative_within_sample`" in _CLAIMS_SECTION and "`scope`" in _CLAIMS_SECTION
 
 
 def test_the_final_report_step_points_at_publishable_values():
@@ -75,8 +77,8 @@ def test_the_csv_tool_is_called_with_its_real_parameters():
     from tsumugin.mcp.rietveld_tools import export_claims_csv
 
     params = list(inspect.signature(export_claims_csv).parameters)
-    assert params == ["claims", "path"]
-    assert "`export_claims_csv(claims, path)`" in _CLAIMS_SECTION
+    assert params == ["gpx_path", "path"]
+    assert "`export_claims_csv(gpx_path, path)`" in _CLAIMS_SECTION
 
 
 def test_the_playbook_carries_the_same_rule():

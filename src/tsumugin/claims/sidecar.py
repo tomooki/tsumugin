@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 from pathlib import Path
@@ -31,7 +32,9 @@ def sidecar_candidates(gpx_path: str) -> list[Path]:
     """この gpx の sidecar になりうるファイル (既定名 + ハッシュ付きの名前)。"""
     gpx = Path(gpx_path)
     default = gpx.with_suffix(".claims.json")
-    hashed = sorted(gpx.parent.glob(f"{gpx.stem}.claims.*.json"))
+    # stem に glob の特殊文字 (``[`` 等) があっても取りこぼさない
+    pattern = str(gpx.parent / f"{glob.escape(gpx.stem)}.claims.*.json")
+    hashed = sorted(Path(p) for p in glob.glob(pattern))
     return [default, *(p for p in hashed if p != default)]
 
 
@@ -52,7 +55,11 @@ def write_claims_sidecar(gpx_path: str, payload: Mapping[str, Any]) -> tuple[str
     for target in (gpx.with_suffix(".claims.json"), gpx.parent / f"{gpx.stem}.claims.{digest[:12]}.json"):
         try:
             if target.exists():
-                if target.read_text(encoding="utf-8") == text:
+                try:
+                    same = target.read_text(encoding="utf-8") == text
+                except ValueError:  # 壊れた/別エンコーディングの既存ファイル — 上書きはしない
+                    same = False
+                if same:
                     return str(target), ""  # 同じ状態 — 書き直さない
                 continue  # 中身が違う — 上書きしない
             with target.open("x", encoding="utf-8") as fh:  # 競合しても上書きしない
@@ -74,11 +81,15 @@ def read_claims_sidecar(gpx_path: str) -> dict[str, Any] | None:
         digest = _sha256(gpx)
     except OSError:
         return None
-    for candidate in sidecar_candidates(gpx_path):
+    # 同じ gpx に一致する sidecar が複数ある (同じ gpx を相の指定や収束確認を変えて評価し直した)
+    #   ときは**最も新しい**ものを採る — 既定名 (= 最初に書いた方) を採ると古い状態を返す。
+    matches: list[tuple[float, int, dict[str, Any]]] = []
+    for order, candidate in enumerate(sidecar_candidates(gpx_path)):
         try:
             body = json.loads(candidate.read_text(encoding="utf-8"))
+            mtime = candidate.stat().st_mtime
         except (OSError, ValueError):
             continue
         if isinstance(body, dict) and body.get("gpx_sha256") == digest:
-            return body
-    return None
+            matches.append((mtime, order, body))  # 時刻が同じなら後に書いた名前 (ハッシュ付き) を採る
+    return max(matches, key=lambda m: (m[0], m[1]))[2] if matches else None

@@ -334,9 +334,12 @@ def _attach_claims(
         "claims_version", "claims", "judgment_requests", "publishable_values",
     )})
     payload["claims_policy"] = body["policy"]
-    path, reason = ("", "") if not payload.get("gpx_path") else write_claims_sidecar(
-        str(payload["gpx_path"]), body,
-    )
+    try:
+        path, reason = ("", "") if not payload.get("gpx_path") else write_claims_sidecar(
+            str(payload["gpx_path"]), body,
+        )
+    except Exception as exc:  # noqa: BLE001 — sidecar の失敗でフィット結果を落とさない
+        path, reason = "", f"{type(exc).__name__}: {exc}"
     payload["claims_sidecar"] = path
     payload["claims_sidecar_reason"] = reason
 
@@ -1105,25 +1108,31 @@ def list_refinement_backends() -> dict:
         return {"error": str(exc), "error_type": type(exc).__name__}
 
 
-def export_claims_csv(claims: "Mapping[str, object] | None", path: str) -> dict:
-    """出版状態 (`claims`) を値ごとに状態の列付きで CSV に書く (fit-then-judge 1A)。
+def export_claims_csv(gpx_path: str, path: str) -> dict:
+    """精密化済み gpx の出版状態を、値ごとに状態の列付きで CSV に書く (fit-then-judge 1A)。
 
-    :param claims: ``auto_rietveld`` / ``refine_with_revisions`` の出力の ``claims`` そのもの
-        (§4.5 到達可能性)。``null`` (出版状態を作れなかった)・空・状態を持たない値は error dict
+    出版状態は**gpx の隣の sidecar (内容ハッシュ照合済み) から読む** — ③ が手で渡した ``claims`` は
+    受けない (書き換えた ``gate``/``checks`` で「出版可」の行を作れてしまうため)。
+
+    :param gpx_path: ``auto_rietveld`` / ``refine_with_revisions`` の出力の ``gpx_path`` そのもの
+        (§4.5 到達可能性)。sidecar が無い・gpx の中身と一致しない (上書きされた) ときは error dict
+        (= 出版状態が不明。``save_gpx=false`` で回した結果は gpx も sidecar も無いので出せない)
     :param path: 出力先の**絶対パス** (相対パスはサーバの作業ディレクトリに化けるので受けない)。
         既存ファイルは上書きしない (error dict)。置き場所の目安は ``claims_sidecar`` と同じ run ディレクトリ
-    :returns: ``{"path", "n_rows", "n_publishable"}``。全行が ``publishable``・``determinacy``・
-        ``provenance``・``scope``・``checks``・``gate`` の列を持つ — 出版不可の行も消さずに状態で示す
+    :returns: ``{"path", "n_rows", "n_publishable"}``。全行が ``publishable``・
+        ``determinacy``・``provenance``・``scope``・``checks``・``gate`` の列を持つ — 出版不可の行も
+        消さずに状態で示す
     """
     from pathlib import Path
 
     from ..claims.export import write_claims_csv
     from ..claims.model import Claim
+    from ..claims.sidecar import read_claims_sidecar
 
-    if not isinstance(claims, Mapping) or not claims:
+    if not isinstance(gpx_path, str) or not gpx_path or not isinstance(path, str):
         return {
-            "error": "claims が空か null です (auto_rietveld の出力の claims をそのまま渡してください。"
-                     "null は出版状態を作れなかったことを意味し、書ける値がありません)",
+            "error": "gpx_path と path は文字列で指定してください (gpx_path は auto_rietveld の出力の"
+                     "gpx_path そのもの)",
             "error_type": "ValueError",
         }
     if not Path(path).is_absolute():
@@ -1132,8 +1141,17 @@ def export_claims_csv(claims: "Mapping[str, object] | None", path: str) -> dict:
                      "ディレクトリに解決され、意図しない場所に書かれます)",
             "error_type": "ValueError",
         }
+    body = read_claims_sidecar(gpx_path)
+    claims = body.get("claims") if body else None
+    if not isinstance(claims, Mapping) or not claims:
+        return {
+            "error": f"{gpx_path!r} の出版状態 (sidecar) が見つからないか、gpx の中身と一致しません "
+                     "(状態不明 — 出版できる値はありません)。結果の claims_sidecar / "
+                     "claims_sidecar_reason を確かめてください",
+            "error_type": "FileNotFoundError",
+        }
     try:
-        parsed = {str(k): Claim.from_dict(v) for k, v in claims.items()}  # type: ignore[arg-type]
+        parsed = {str(k): Claim.from_dict(v) for k, v in claims.items()}
         out = write_claims_csv(parsed, path)
     except (OSError, TypeError, ValueError, KeyError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}

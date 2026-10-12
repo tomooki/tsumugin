@@ -19,7 +19,7 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 | `propose_data_preprocessing` | 計器 (提案) | 観測ファイルパス → **データレンジ / 背景項数 / 除外領域候補** (下記「精密化する前に」) |
 | `propose_next_actions` | 計器 (診断) | 直前結果 + 残差シグネチャ → `ActionProposal[]` (rationale/priority/**safe**) |
 | `refine_with_revisions` | アクチュエータ | spec + あなたが決めた `AnalysisAction[]` → 改訂適用して再実行。`stages`/`max_cyc`/`backend` も同様に渡せる |
-| `export_claims_csv` | 出力 | 結果の `claims` + 出力先の絶対パス → 値ごとに**出版状態の列付き**の CSV (下記「出版状態」) |
+| `export_claims_csv` | 出力 | 結果の `gpx_path` + 出力先の絶対パス → gpx の隣の出版状態から、値ごとに**出版状態の列付き**の CSV (下記「出版状態」) |
 | `list_refinement_backends` | 計器 (可用性) | (引数なし) → 各精密化エンジンの `available` と解決パス。`backend` を渡す**前に**呼ぶ |
 
 閉ループ丸ごと (agentic_analyze) は MCP に**無い**。回すのはあなた。
@@ -65,8 +65,8 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 
 | キー | 中身 |
 |---|---|
-| `publishable_values` | **出版してよい値だけ** `{キー: {value, esd, unit}}`。キーは `cell:<相>.a`・`coord:<相>.<原子>.x`・`uiso:<相>.<原子>`・`occupancy:…`・`weight_fraction:<相>.wt`・`microstructure:…`・`profile:hist0.U` |
-| `claims` | 全値の状態。`determinacy` (`exact`/`determined`/`esd_only`/`undetermined_esd`/`initial_value_dependent`/`unconverged`)・`provenance` (`refined`/`symmetry`/`input`/`pruned`)・`checks` (検査ごとに `pass`/`fail`/`unevaluated`)・`gate` (止めている判断要求)・`witnesses` (根拠)・`publishable` |
+| `publishable_values` | **出版してよい値だけ** `{キー: {value, esd, unit, scope, determinacy}}`。⚠ `scope` が `relative_within_sample` の値 (内部標準の宣言が無い格子) は**同じ試料・同じ測定の中の比・差にだけ**有効 — 絶対値として報告しない。キーは `cell:<相>.a`・`coord:<相>.<原子>.x`・`uiso:<相>.<原子>`・`occupancy:…`・`weight_fraction:<相>.wt`・`microstructure:…`・`profile:hist0.U` |
+| `claims` | 全値の状態。`determinacy` (`exact`/`determined`/`esd_only`/`undetermined_esd`/`initial_value_dependent`/`unconverged`)・`provenance` (`refined`/`symmetry`/`input`/`pruned`。**空 `[]` は出自不明** — TOPAS 経路など、最終の共分散が無い)・`checks` (検査ごとに `pass`/`fail`/`unevaluated`)・`gate` (止めている判断要求)・`witnesses` (根拠)・`publishable` |
 | `judgment_requests` | 決まらなかったこと・検査できなかったこと。`blocking`・`blocks` (止めた値)・`trigger`・`evidence`・`default` (既定ポリシー D の回答 = 常に `hold`) |
 | `claims_sidecar` | 精密化済み gpx の隣に書いた `<名前>.claims.json` (gpx の内容ハッシュ付き)。書かなかったときは `claims_sidecar_reason` に理由 |
 
@@ -77,13 +77,14 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
   「相集合の完全性を検査できなかった — `phase_set_completeness: unevaluated`」)。
 - `judgment_requests` を報告に並べる (`blocking: true` を先に)。**あなたが閉じてはならない** —
   止めが外れるのはデータが決めたとき (要求がそもそも出ない) だけで、人が回答する経路はまだ無い。
-- 表で渡すときは **`export_claims_csv(claims, path)`** を使う (`claims` は返り値のそれをそのまま、
-  `path` は絶対パス。既存ファイルは上書きしない)。全行が状態の列を持つので、出版不可の値が
+- 表で渡すときは **`export_claims_csv(gpx_path, path)`** を使う (`gpx_path` は返り値のそれをそのまま、
+  `path` は絶対パス。既存ファイルは上書きしない)。出版状態は gpx の隣の sidecar (gpx の中身のハッシュで
+  照合) から読むので、`save_gpx=false` で回した結果や上書きされた gpx からは作れない (error が返る)。全行が状態の列を持つので、出版不可の値が
   素の数値として紛れ込まない。
 - ⛔ `refined_cells`・`atom_coords`・`cell_esd` などの**平文のフィールドは互換のために残っているだけ**で、
   そこから数値を拾って報告・出版してはならない (状態が落ちる)。
 - `determined` は**収束確認 (`multistart`) を回したときだけ**付く (全開始点が kσ 以内で一致した値)。
-  単発・`search` の値は最良でも `esd_only` — それ自体は出版を止めない。
+  単発・`search` では、対称性で決まる値 (`exact`) を除き最良でも `esd_only` — それ自体は出版を止めない。
 - 結晶化学の検査 (短すぎる結合・結合原子価和・電荷中性) は pymatgen が要る。無い・構造を組めない
   ときは `unevaluated` で、構造の値 (座標・Uiso・占有率) は出版されない — 黙って通す経路は無い。
 - `claims` が `null` のときは出版状態を作れなかった (理由は `warnings`)。`publishable_values` は空で、

@@ -211,3 +211,30 @@ def test_provenance_that_differs_between_starts_is_initial_value_dependent():
 def test_no_convergence_report_leaves_claims_unchanged(ms):
     base = base_claims(_result())
     assert with_convergence(base, ms) == base
+
+
+def test_coordinates_are_not_witnessed_when_the_jitter_moved_nothing():
+    """座標の摂動を頼んだのに 1 軸も動かなかった (高対称・全原子凍結) — 座標は試験していない。
+    格子は振ったので格子は証人になる (レビュー L5: multistart 自身の傍証条件と揃える)。"""
+    starts = tuple(
+        MultistartStart(
+            index=i,
+            perturbation=StartPerturbation(cell_scale={"P": (s,) * 3}, coord_jitter_ang=0.05,
+                                           jitter_seed=i),
+            result=_result(), n_axes_jittered=0,
+        )
+        for i, s in enumerate((0.993, 1.0, 1.007))
+    )
+    ms = RietveldMultistartResult(
+        best=starts[0].result, best_index=0, starts=starts, n_starts=3, n_diverged=0,
+        n_basins=1, is_global_corroborated=False,
+    )
+    claims = with_convergence(base_claims(_result()), ms)
+    assert claims["cell:P.a"].determinacy is Determinacy.DETERMINED
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_the_agreement_witness_records_its_tolerance():
+    claims = with_convergence(base_claims(_result()), _ms([_result()] * 3))
+    (w,) = claims["cell:P.a"].witnesses
+    assert w.detail["k_esd"] == 3.0

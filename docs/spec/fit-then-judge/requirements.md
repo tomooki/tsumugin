@@ -54,8 +54,11 @@ operando 系列 / 入力宣言の受け口 (1B §4.1。1A は「宣言なし」�
 
 - **REQ-FTJ-1A-401** `determined` の証人は「Phase B の全開始点の対で、その値が kσ 以内 (または floor 以内) に
   一致した」こと。摂動が何も動かさなかった収束確認は証人にならない。
-- **REQ-FTJ-1A-402** 相集合の完全性の証人は、最終 fit の計算反射位置から離れた窓の残差 S/N で決める。
-  計算できないときは `unevaluated` (既定値 0.0 で「計算して 0」と混同しない)。`check_phase_set` は使わない。
+- **REQ-FTJ-1A-402** 相集合の完全性の証人は、最終 fit の計算反射位置 (Kα2 を含む) から離れた窓の残差 S/N で
+  決める。坂 (既知相の裾・背景) を山と取り違えない検出器にする。計算できないとき・窓が残差の一部しか覆えない
+  とき・**複数ヒストグラム (joint) のとき**は `unevaluated` (既定値 0.0 で「計算して 0」と混同しない)。
+  `check_phase_set` は使わない。単一の CW ヒストグラムなら X 線・中性子とも検査する (TOF は幅の式が無いので
+  `unevaluated`)。
 - **REQ-FTJ-1A-403** 結晶化学検査器は相ごとに三値 (pass/fail/unevaluated) を返す新しい関数とする
   (既存 `check_bond_validity` の bool は M10 が依存するので変えない)。少なくとも粗大誤差 (短すぎる結合)・
   結合原子価和の GII・電荷中性を見る。pymatgen が無い・構造を組めない・酸化数を決められないときは `unevaluated`。
@@ -66,12 +69,14 @@ operando 系列 / 入力宣言の受け口 (1B §4.1。1A は「宣言なし」�
 
 - **REQ-FTJ-1A-501** ② `auto_rietveld` (単発・探索・収束確認) と `refine_with_revisions` の結果に、既存キーを
   残したまま `claims`・`judgment_requests`・`publishable_values`・`claims_version` を足す。値は JSON 安全
-  (NaN/inf を出さない)。
+  (NaN/inf を出さない)。`publishable_values` の各値は `scope` と `determinacy` を持つ (値だけにすると相対値の
+  格子が絶対値として報告される)。
 - **REQ-FTJ-1A-502** 精密化済み gpx があるとき、その隣に sidecar `<gpx の stem>.claims.json` を置く。
   gpx の内容ハッシュを記録し、**読み手はハッシュが一致する sidecar だけを採る** (一致しなければ「状態不明」=
   出版不可)。既存の sidecar は上書きしない。
 - **REQ-FTJ-1A-503** 表形式の出力 (CSV) は値ごとに出版状態の列を必ず持つ。出版不可の値を素の数値だけで
-  書かない。② から呼べる。
+  書かない。② から呼べる。出版状態は**ハッシュ照合済みの sidecar から**読み、呼び手が渡した状態は受けない
+  (書き換えた `gate`/`checks` で出版可の行を作らせない)。
 - **REQ-FTJ-1A-504** ③ の手順書 (`skills/analyze`) は報告に `publishable_values` を使い、出版不可の値は
   状態を添えて報告するよう書き換え、ガードテストで固定する。⚠ 平文のフィールドは互換のため残るので、
   ② だけでは強制できない (既知の限界)。

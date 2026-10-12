@@ -249,7 +249,7 @@ report = optimize_then_confirm(histograms, phases, n_starts=5, coord_jitter_ang=
 `publishable_values` が付く。報告・出版に数値として載せるのは `publishable_values` の値だけで、
 それ以外は `claims[キー]` の `determinacy`・`gate`・`checks` を添えて「決まっていない / 検査
 できなかった」と書く。`judgment_requests` は報告に並べ、エージェントが閉じてはならない
-(既定ポリシー D は常に `hold`)。表で渡すときは `export_claims_csv(claims, 絶対パス)`。
+(既定ポリシー D は常に `hold`)。表で渡すときは `export_claims_csv(gpx_path, 絶対パス)`。
 ⛔ `refined_cells` などの平文フィールドから数値を拾って出版しない (互換のために残っているだけ)。
 詳細は `plugins/tsumugin/skills/analyze/SKILL.md`「出版状態」。
 

@@ -75,29 +75,60 @@ def test_flattened_values_are_refused(tmp_path):
         write_claims_csv({"cell:P.a": 5.0}, tmp_path / "c.csv")  # type: ignore[dict-item]
 
 
-def test_the_layer_two_tool_writes_from_the_auto_rietveld_output(tmp_path):
+def _saved(tmp_path, claims=None):
+    """精密化済み gpx と、その隣の sidecar (② が書くのと同じ形)。"""
+    from tsumugin.claims.sidecar import write_claims_sidecar
+
+    gpx = tmp_path / "fit.gpx"
+    gpx.write_bytes(b"gpx")
+    write_claims_sidecar(str(gpx), {"claims": _claims() if claims is None else claims})
+    return str(gpx)
+
+
+def test_the_layer_two_tool_reads_the_state_from_the_hash_checked_sidecar(tmp_path):
     from tsumugin.mcp.rietveld_tools import export_claims_csv
 
-    out = export_claims_csv(_claims(), str(tmp_path / "claims.csv"))
+    out = export_claims_csv(_saved(tmp_path), str(tmp_path / "claims.csv"))
     assert out == {"path": str(tmp_path / "claims.csv"), "n_rows": 2, "n_publishable": 1}
     json.dumps(out)
 
 
-@pytest.mark.parametrize(
-    ("claims", "path"),
-    [
-        (None, "ABS"),  # auto_rietveld が claims を作れなかった (null)
-        ({}, "ABS"),  # 空 — 「何も無い CSV」を黙って書かない
-        ("CLAIMS", "relative.csv"),  # 相対パスはサーバの作業ディレクトリに化ける
-        ({"cell:P.a": 5.0}, "ABS"),
-    ],
-)
-def test_the_layer_two_tool_returns_an_error_dict_not_an_exception(tmp_path, claims, path):
+def test_the_layer_two_tool_does_not_take_state_from_the_caller(tmp_path):
+    """③ が書き換えた claims (gate を空に等) を受け取る経路が無い — 出版状態は sidecar からだけ。"""
+    import inspect
+
     from tsumugin.mcp.rietveld_tools import export_claims_csv
 
-    claims = _claims() if claims == "CLAIMS" else claims
+    assert list(inspect.signature(export_claims_csv).parameters) == ["gpx_path", "path"]
+
+
+def test_an_overwritten_gpx_has_no_exportable_state(tmp_path):
+    """gpx の中身が sidecar と一致しない = 状態不明 — 古い状態を CSV にしない。"""
+    from tsumugin.mcp.rietveld_tools import export_claims_csv
+
+    gpx = _saved(tmp_path)
+    open(gpx, "wb").write(b"other")
+    out = export_claims_csv(gpx, str(tmp_path / "c.csv"))
+    assert out["error_type"] == "FileNotFoundError"
+    assert not (tmp_path / "c.csv").exists()
+
+
+@pytest.mark.parametrize(
+    ("gpx", "path"),
+    [
+        ("SAVED", "relative.csv"),  # 相対パスはサーバの作業ディレクトリに化ける
+        ("SAVED", None),  # 型違い — 例外にしない (レビュー M6)
+        (None, "ABS"),
+        ("", "ABS"),  # save_gpx=false の結果 (gpx も sidecar も無い)
+        ("MISSING", "ABS"),
+    ],
+)
+def test_the_layer_two_tool_returns_an_error_dict_not_an_exception(tmp_path, gpx, path):
+    from tsumugin.mcp.rietveld_tools import export_claims_csv
+
+    gpx = {"SAVED": _saved(tmp_path), "MISSING": str(tmp_path / "none.gpx")}.get(gpx, gpx)
     path = str(tmp_path / "c.csv") if path == "ABS" else path
-    out = export_claims_csv(claims, path)  # type: ignore[arg-type]
+    out = export_claims_csv(gpx, path)  # type: ignore[arg-type]
     assert set(out) == {"error", "error_type"}
 
 
@@ -106,6 +137,6 @@ def test_the_layer_two_tool_refuses_to_overwrite(tmp_path):
 
     target = tmp_path / "c.csv"
     target.write_text("keep", encoding="utf-8")
-    out = export_claims_csv(_claims(), str(target))
+    out = export_claims_csv(_saved(tmp_path), str(target))
     assert out["error_type"] == "FileExistsError"
     assert target.read_text(encoding="utf-8") == "keep"

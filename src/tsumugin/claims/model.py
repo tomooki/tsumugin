@@ -285,9 +285,6 @@ class Claim:
     def with_gate(self, *request_ids: str) -> "Claim":
         return replace(self, gate=self.gate | frozenset(request_ids))
 
-    def with_correlations(self, keys: frozenset[str]) -> "Claim":
-        return replace(self, correlations=self.correlations | frozenset(keys))
-
     def weakened_to(self, determinacy: Determinacy, *witnesses: Witness) -> "Claim":
         """決定性を弱い方へだけ動かす (強くするのは `strengthened_to`)。"""
         return replace(

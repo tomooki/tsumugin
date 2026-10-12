@@ -136,3 +136,43 @@ def test_the_tail_of_a_known_peak_just_outside_the_exclusion_is_not_a_phase():
     ramp = np.where((_TT > 29.2) & (_TT < 30.29), 8.0 * np.exp((_TT - 30.29) / 0.4), 0.0)
     check, witness = _run(resid + ramp, sigma)
     assert check is Check.PASS, witness.detail
+
+
+def test_a_witness_that_covered_too_little_of_the_pattern_is_unevaluated():
+    """反射の隙間が低角に少ししか無い — 数個の窓だけで「欠落相なし」とは言えない (レビュー M1)。"""
+    resid, sigma = _noise()
+    dense_high = tuple(np.arange(14.0, 80.0, 0.5))  # 10–13° だけが反射から離れる
+    check, witness = _run(resid, sigma, refl=dense_high)
+    assert check is Check.UNEVALUATED
+    assert witness.detail["reason"] == "insufficient_coverage"
+
+
+def test_multiple_histograms_are_out_of_scope():
+    """joint は先頭ヒストグラムだけを見ても相集合の完全性は言えない (第 1 期は単一ヒストグラム)。"""
+    from types import SimpleNamespace
+
+    from tsumugin.claims.requests import _phase_set_witness
+
+    resid, sigma = _noise()
+    result = SimpleNamespace(
+        residual_two_theta=tuple(_TT), residual_intensity=tuple(resid),
+        residual_sigma=tuple(sigma), reflection_two_theta=_REFL,
+        hist_profile=(_PROFILE, _PROFILE),
+    )
+    check, witness = _phase_set_witness(result)
+    assert check is Check.UNEVALUATED
+    assert witness.detail["reason"] == "multiple_histograms"
+
+
+def test_kalpha2_satellites_are_excluded_too():
+    """Kα1+Kα2 の装置では Kα2 の位置も計算反射 — 高角でずれる Kα2 の合わなさを欠落相と読まない。"""
+    lam1, lam2 = 1.540593, 1.544414
+    th = np.radians(73.0 / 2.0)
+    k2 = float(np.degrees(2.0 * np.arcsin(lam2 / lam1 * np.sin(th))))
+    # 幅を狭くして Kα2 (73° で +0.21°) が Kα1 の除外域 (3 FWHM ≈ 0.1°) の外に出るようにする
+    narrow = {**_PROFILE, "W": 2.0}
+    resid, sigma = _noise()
+    misfit = resid + _peak(k2, 8.0, fwhm=0.033)
+    assert _run(misfit, sigma, profile=narrow)[0] is Check.FAIL, "前提: Kα1 だけでは拾ってしまう"
+    check, _ = _run(misfit, sigma, profile={**narrow, "Lam1": lam1, "Lam2": lam2})
+    assert check is Check.PASS

@@ -165,7 +165,7 @@ def test_a_frozen_cell_blocks_the_weight_fraction_of_that_phase(checks_pass):
     phases = (PhaseSpec("p.cif", "P"), PhaseSpec("q.cif", "Q", refine_cell=False))
     a = rq.assess(_result(), phases)
     assert "frozen_cell:Q" in a.claims["weight_fraction:Q.wt"].gate
-    assert not a.claims["weight_fraction:P.wt"].gate
+    assert not a.claims["cell:P.a"].gate  # 止めるのは分率だけ (格子・構造は止めない)
 
 
 def test_a_coordinate_freedom_mismatch_blocks_that_atoms_coordinates(checks_pass):
@@ -192,7 +192,8 @@ def test_assessment_serializes_without_dropping_state(checks_pass):
     assert set(d["claims"]) == set(a.claims)
     assert set(d["publishable_values"]) == {k for k, c in a.claims.items() if c.publishable}
     for key, entry in d["publishable_values"].items():
-        assert set(entry) == {"value", "esd", "unit"}
+        assert set(entry) == {"value", "esd", "unit", "scope", "determinacy"}
+    assert d["publishable_values"]["cell:P.a"]["scope"] == "relative_within_sample"
     assert [r["id"] for r in d["judgment_requests"]] == [r.id for r in a.requests]
 
 
@@ -212,3 +213,51 @@ def test_a_check_for_an_unknown_phase_is_not_attributed_to_a_prefix_phase(checks
     validity = ValidityReport(passed=False, checks=(("lattice_PX_a", False, "dev"),))
     a = rq.assess(_result(validity=validity), _PHASES)
     assert a.claims["cell:Q.a"].gate, "相を引けない違反は全値を止める"
+
+
+def test_propagation_stops_at_direct_partners_along_a_chain(checks_pass):
+    """A–B と B–C が相関していても、A が割れたとき止めるのは B まで (推移閉包をとらない — レビュー L10)。"""
+    cov = CovarianceRecord(
+        vary_list=_VARY, dependent=(),
+        correlations=(CorrelatedPair("0::dAx:1", "0::AUiso:1", 0.95),
+                      CorrelatedPair("0::AUiso:1", "0::AUiso:0", 0.95)),
+    )
+    claims = rq.assess(_result(final_covariance=cov), _PHASES).claims
+    split = claims["coord:P.O1.x"].weakened_to(
+        Determinacy.INITIAL_VALUE_DEPENDENT, Witness("multistart_disagreement", {"z": 9.0}),
+    )
+    a = rq.assess_claims({**claims, "coord:P.O1.x": split}, _result(final_covariance=cov), _PHASES)
+    (req,) = [r for r in a.requests if r.kind == "initial_value_dependence"]
+    assert "uiso:P.O1" in req.blocks and "uiso:P.Pb" not in req.blocks
+
+
+def test_a_split_value_correlated_through_a_constraint_blocks_its_whole_phase(checks_pass):
+    """混合占有の和の拘束は varyList で ``::constrN`` に置き換わり、相手の値を引けない (実 GSAS で確認)。
+    相手が分からない割れた値は、その相の全値を止める (止めすぎる側に倒す — レビュー M5)。"""
+    cov = CovarianceRecord(
+        vary_list=_VARY + ("::constr0",), dependent=("0::Afrac:1",),
+        correlations=(CorrelatedPair("0::AUiso:1", "::constr0", 0.97),),
+    )
+    claims = rq.assess(_result(final_covariance=cov), _PHASES).claims
+    split = claims["uiso:P.O1"].weakened_to(
+        Determinacy.INITIAL_VALUE_DEPENDENT, Witness("multistart_disagreement", {"z": 9.0}),
+    )
+    a = rq.assess_claims({**claims, "uiso:P.O1": split}, _result(final_covariance=cov), _PHASES)
+    (req,) = [r for r in a.requests if r.kind == "initial_value_dependence"]
+    assert "occupancy:P.O1" in req.blocks and "cell:P.a" in req.blocks
+    assert "cell:Q.a" not in req.blocks  # 他の相までは止めない
+    assert req.evidence["unmapped_partners"] == ["::constr0"]
+
+
+def test_a_pruned_cell_is_a_frozen_cell(checks_pass):
+    """剪定で凍結された格子も凍結 (レビュー L3)。"""
+    res = _result(frozen_parameters=("1::A0",))
+    a = rq.assess(res, _PHASES)
+    assert "frozen_cell:Q" in _ids(a)
+
+
+def test_a_frozen_cell_blocks_every_weight_fraction(checks_pass):
+    """分率の和は 1 — 凍結した相の誤差は他相の分率にも同じだけ移る (レビュー L4)。"""
+    phases = (PhaseSpec("p.cif", "P"), PhaseSpec("q.cif", "Q", refine_cell=False))
+    a = rq.assess(_result(), phases)
+    assert "frozen_cell:Q" in a.claims["weight_fraction:P.wt"].gate

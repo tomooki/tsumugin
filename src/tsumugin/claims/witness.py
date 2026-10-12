@@ -33,7 +33,7 @@ from .model import Check, Witness
 __all__ = ["WITNESS_VERSION", "cw_fwhm_deg", "residual_window_witness"]
 
 #: 証人の規則の版 (閾値・除外幅を変えたら上げる)。
-WITNESS_VERSION = "residual-window/2"
+WITNESS_VERSION = "residual-window/3"
 
 _GAUSS_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))  # σ → FWHM
 #: GSAS の getFWHM と同じくガウス分散の下限 (centideg²) — 負の U,V,W で幅が虚数にならない。
@@ -75,13 +75,17 @@ def residual_window_witness(
     exclusion_fwhm: float = 3.0,
     snr_threshold: float = 5.0,
     background_fwhm: float = 5.0,
+    min_center_fraction: float = 0.05,
 ) -> tuple[Check, Witness]:
     """相集合の完全性の検査結果と、その証人 (`Witness`) を返す。
 
     :param residual: ``obs − calc`` (`AutoRietveldResult.residual_intensity`)
     :param sigma: 各点の σ (重み 0 の点は inf — 使わない)
     :param reflections: 計算反射の 2θ (`AutoRietveldResult.reflection_two_theta`)。None = 計測していない
-    :param profile: 先頭ヒストグラムの装置プロファイル (`AutoRietveldResult.hist_profile[0]`)
+    :param profile: 先頭ヒストグラムの装置プロファイル (`AutoRietveldResult.hist_profile[0]`)。
+        ``Lam1``・``Lam2`` があれば Kα2 の位置も計算反射として除外する
+    :param min_center_fraction: 窓の中心になれた点の割合の下限。これを下回れば ``unevaluated``
+        (反射の隙間が少ししか無いパターンで、数個の窓だけから「欠落相なし」と言わない)
     """
     tt = np.asarray(two_theta, dtype=float)
     r = np.asarray(residual, dtype=float)
@@ -98,8 +102,14 @@ def residual_window_witness(
         return _unevaluated("no_profile")
 
     usable = np.isfinite(tt) & np.isfinite(r) & np.isfinite(s) & (s > 0.0)
-    refl = np.sort(np.asarray(reflections, dtype=float))
+    refl = np.asarray(reflections, dtype=float)
     refl = refl[np.isfinite(refl)]
+    lam1, lam2 = (profile or {}).get("Lam1"), (profile or {}).get("Lam2")
+    if lam1 and lam2 and refl.size:
+        # Kα2 も計算反射 (GSAS は Kα1 の位置だけを反射リストに持つ) — 高角では Kα1 から数 FWHM 離れる
+        s2 = (float(lam2) / float(lam1)) * np.sin(np.radians(refl / 2.0))
+        refl = np.concatenate([refl, 2.0 * np.degrees(np.arcsin(s2[s2 < 1.0]))])
+    refl = np.sort(refl)
     if refl.size:
         pos = np.searchsorted(refl, tt)
         left = np.abs(tt - refl[np.clip(pos - 1, 0, refl.size - 1)])
@@ -163,6 +173,8 @@ def residual_window_witness(
                 best_window = (float(x[ci]), float(x[cj - 1]))
     if n_windows == 0:
         return _unevaluated("no_window")
+    if n_windows / tt.size < min_center_fraction:
+        return _unevaluated("insufficient_coverage")
 
     check = Check.FAIL if best_snr > snr_threshold else Check.PASS
     return check, Witness("residual_window_snr", {

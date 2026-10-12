@@ -90,9 +90,16 @@ class Assessment:
     policy: str = DEFAULT_POLICY
 
     def publishable_values(self) -> dict[str, dict[str, Any]]:
-        """出版してよい値だけ (``{キー: {value, esd, unit}}``)。"""
+        """出版してよい値だけ (``{キー: {value, esd, unit, scope, determinacy}}``)。
+
+        ``scope`` を落とさない — 格子は 1A では常に ``relative_within_sample`` (内部標準の宣言が無い) で、
+        値だけを渡すと ③ は絶対値として報告する (状態を落とす変換の禁止)。
+        """
         return {
-            key: {"value": c.value, "esd": c.esd, "unit": c.unit}
+            key: {
+                "value": c.value, "esd": c.esd, "unit": c.unit,
+                "scope": c.scope.value, "determinacy": c.determinacy.value,
+            }
             for key, c in sorted(self.claims.items()) if c.publishable
         }
 
@@ -111,6 +118,12 @@ class Assessment:
 
 def _phase_set_witness(result: object) -> tuple[Check, Witness]:
     profiles = getattr(result, "hist_profile", ())
+    if len(profiles) > 1:
+        # 残差・反射位置は先頭ヒストグラムのものだけ — joint で他のヒストグラムにしか見えない相を
+        #   見落とすので、第 1 期の範囲 (単一ヒストグラム) の外は検査しない
+        return Check.UNEVALUATED, Witness(
+            "residual_window_snr", {"reason": "multiple_histograms", "n_histograms": len(profiles)},
+        )
     return residual_window_witness(
         getattr(result, "residual_two_theta", ()),
         getattr(result, "residual_intensity", ()),
@@ -167,11 +180,44 @@ def _frozen_cell_phases(claims: Mapping[str, Claim], phases: Sequence[object] | 
         if c.param_class == "cell" and c.phase is not None:
             cells.setdefault(c.phase, []).append(c)
     for phase, cell in cells.items():
-        if any("input" in c.provenance for c in cell) and not any(
+        if any(("input" in c.provenance or "pruned" in c.provenance) for c in cell) and not any(
             "refined" in c.provenance for c in cell
         ):
             frozen.add(phase)
     return frozen
+
+
+def _unmapped_partners(
+    split: set[str], claims: Mapping[str, Claim], result: object
+) -> tuple[set[str], set[str]]:
+    """割れた値の相関の相手のうち、値のキーに引けない変数と、そのせいで相手が分からない相。
+
+    GSAS は拘束 (混合占有の和など) を varyList で ``::constrN`` に置き換えるので、その変数との相関は
+    どの値の相手かを引けない (実 GSAS の garnet で確認)。拘束の従属側だけで動く値 (varyList に無く
+    ``depSigDict`` にだけある) も相関を持てない。どちらも「相手が無い」ではなく「分からない」なので、
+    その値の相の全値を止める (止めすぎる側に倒す)。
+    """
+    cov = getattr(result, "final_covariance", None)
+    variables: Mapping[str, tuple[str, ...]] = getattr(result, "claim_variables", None) or {}
+    if cov is None:
+        return set(), set()
+    mapped = {v for names in variables.values() for v in names}
+    vary = set(cov.vary_list)
+    dependent = set(cov.dependent)
+    unmapped: set[str] = set()
+    blind: set[str] = set()
+    for key in split:
+        names = set(variables.get(key, ()))
+        if names and not names & vary and names & dependent:
+            unmapped.add(f"<dependent:{key}>")
+            blind.add(claims[key].phase)
+        for pair in cov.correlations:
+            for mine, other in ((pair.a, pair.b), (pair.b, pair.a)):
+                if mine in names and other not in mapped and other.startswith("::constr"):
+                    unmapped.add(other)
+                    blind.add(claims[key].phase)
+    blind.discard(None)  # type: ignore[arg-type]
+    return unmapped, blind
 
 
 def _issue(
@@ -219,17 +265,21 @@ def _issue(
     split = {k for k, c in claims.items() if c.determinacy is Determinacy.INITIAL_VALUE_DEPENDENT}
     if split:
         partners = {p for k in split for p in claims[k].correlations if p in claims}
+        unmapped, blind_phases = _unmapped_partners(split, claims, result)
+        partners |= {k for k, c in claims.items() if c.phase in blind_phases}
         out.append(JudgmentRequest(
             id="initial_value_dependence", kind="initial_value_dependence", blocking=True,
             blocks=frozenset(split | partners),
             trigger="開始点間で値が kσ を超えて割れた (+ 直接の |ρ| の相手)",
-            evidence={"split": sorted(split), "partners": sorted(partners - split)},
+            evidence={"split": sorted(split), "partners": sorted(partners - split),
+                      "unmapped_partners": sorted(unmapped)},
             candidates=("hold", "fix_parameter", "remeasure"), priority=0.9,
         ))
     for phase in sorted(_frozen_cell_phases(claims, phases)):
         out.append(JudgmentRequest(
             id=f"frozen_cell:{phase}", kind="frozen_cell", blocking=True,
-            blocks=_keys(claims, param_class="weight_fraction", phase=phase),
+            # 分率の和は 1 — 凍結した相の誤差は他相の分率にも同じだけ移るので全相の分率を止める
+            blocks=_keys(claims, param_class="weight_fraction"),
             trigger=f"相 {phase} の格子を凍結した (相分率は格子の誤差を吸収しうる)",
             evidence={"phase": phase}, candidates=("hold", "release_cell"), priority=0.6,
         ))

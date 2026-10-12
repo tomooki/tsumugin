@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 from typing import Mapping
 
-from ..autorietveld.agreement import is_agreement, parameter_agreements
+from ..autorietveld.agreement import AgreementTolerances, is_agreement, parameter_agreements
 from ..autorietveld.model import AutoRietveldResult
 from .model import Check, Claim, Determinacy, Scope, Witness, compose, weaker_determinacy
 
@@ -211,13 +211,22 @@ def with_convergence(
     valid = [r for r in results if _usable(r)]
     all_valid = len(starts) >= 2 and len(valid) == len(starts)
     witness_ok = all_valid and bool(getattr(multistart, "perturbation_applied", False))
+    # 座標の摂動を頼んだのに 1 軸も動かなかった (高対称・全原子凍結) なら座標は試験していない
+    #   (multistart の傍証条件 `perturbation_had_no_effect` と同じ)。格子だけ振った一致は座標の証人にしない。
+    jitter_requested = any(
+        float(getattr(s.perturbation, "coord_jitter_ang", 0.0)) > 0.0 for s in starts
+    )
+    coords_tested = not jitter_requested or any(
+        int(getattr(s, "n_axes_jittered", 0)) > 0 for s in starts
+    )
+    tolerances = AgreementTolerances()
 
     verdicts: dict[str, list[tuple[str, float | None, int, int]]] = {}
     pairs = 0
     for i in range(len(valid)):
         for j in range(i + 1, len(valid)):
             pairs += 1
-            for cls, items in parameter_agreements(valid[i], valid[j]).items():
+            for cls, items in parameter_agreements(valid[i], valid[j], tolerances).items():
                 for it in items:
                     verdicts.setdefault(f"{cls}:{it.key}", []).append((it.verdict, it.z, i, j))
 
@@ -237,12 +246,13 @@ def with_convergence(
             witness_ok and pairs > 0 and len(found) == pairs
             and all(is_agreement(v[0]) for v in found)
             and claim.determinacy is Determinacy.ESD_ONLY
+            and (coords_tested or claim.param_class != "coord")
         ):
             zs = [v[1] for v in found if v[1] is not None]
             out[key] = claim.strengthened_to(
                 Determinacy.DETERMINED,
                 Witness("multistart_agreement", {
-                    "n_starts": len(starts), "n_pairs": pairs,
+                    "n_starts": len(starts), "n_pairs": pairs, "k_esd": tolerances.k_esd,
                     "max_z": max(zs) if zs else None,
                 }),
             )
