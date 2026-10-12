@@ -118,3 +118,48 @@ def test_a_non_finite_position_does_not_drop_every_kalpha2_line():
 
     got = kalpha2_positions([float("inf"), 120.0, float("nan")], 1.540593, 1.544414)
     assert len(got) == 1 and got[0] > 120.0
+
+
+# ---------------- 格子の各軸が依存する計量テンソル項 (ユーザー指摘: 全 6 項は止めすぎ) ----------------
+
+
+def _terms(cell):
+    from tsumugin.autorietveld.claim_variables import cell_axis_terms
+
+    return cell_axis_terms(cell)
+
+
+def test_orthorhombic_axes_depend_only_on_their_own_term():
+    t = _terms((5.0, 6.0, 7.0, 90.0, 90.0, 90.0))
+    assert t["a"] == (0,) and t["b"] == (1,) and t["c"] == (2,)
+
+
+def test_monoclinic_b_unique_couples_a_c_and_beta_only():
+    t = _terms((5.0, 6.0, 7.0, 90.0, 105.0, 90.0))
+    assert t["b"] == (1,)
+    assert t["a"] == (0, 2, 4) and t["c"] == (0, 2, 4) and t["beta"] == (0, 2, 4)
+
+
+def test_hexagonal_c_is_independent_of_the_basal_terms():
+    t = _terms((3.0, 3.0, 5.0, 90.0, 90.0, 120.0))
+    assert t["c"] == (2,)
+    assert set(t["a"]) == {0, 1, 3}
+
+
+def test_triclinic_axes_depend_on_everything():
+    t = _terms((5.0, 6.0, 7.0, 80.0, 95.0, 110.0))
+    assert all(t[axis] == (0, 1, 2, 3, 4, 5) for axis in ("a", "b", "c"))
+
+
+def test_claim_variables_use_the_cell_when_it_is_known():
+    got = claim_variable_names(
+        [PhaseVariables(name="P", pid=0, labels=(), cell=(5.0, 6.0, 7.0, 90.0, 90.0, 90.0))],
+        [HistogramVariables(index=0, hid=0, profile_keys=())],
+    )
+    assert got["cell:P.c"] == ("0::A2",)
+
+
+def test_without_the_cell_every_axis_still_depends_on_all_terms():
+    """格子が分からなければ従来どおり全項 (止めすぎる側) に倒す。"""
+    got = claim_variable_names([_phase()], [HistogramVariables(index=0, hid=0, profile_keys=())])
+    assert got["cell:P.a"] == tuple(f"0::A{i}" for i in range(6))

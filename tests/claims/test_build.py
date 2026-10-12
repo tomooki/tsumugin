@@ -238,3 +238,20 @@ def test_the_agreement_witness_records_its_tolerance():
     claims = with_convergence(base_claims(_result()), _ms([_result()] * 3))
     (w,) = claims["cell:P.a"].witnesses
     assert w.detail["k_esd"] == 3.0
+
+
+def test_pruning_one_cell_term_demotes_only_the_axes_that_depend_on_it():
+    """直方晶で c の項 (A2) だけ剪定 — a, b は精密化した値のまま (以前は 6 軸とも止まっていた)。"""
+    variables = claim_variable_names(
+        [PhaseVariables(name="P", pid=0, labels=("Pb", "O1"),
+                        cell=(5.0, 6.0, 7.0, 90.0, 90.0, 90.0))],
+        [HistogramVariables(index=0, hid=0, profile_keys=("U",))],
+    )
+    cov = CovarianceRecord(vary_list=("0::A0", "0::A1", "0::A2"), dependent=(), correlations=())
+    claims = base_claims(_result(
+        refined_cells={"P": (5.0, 6.0, 7.0, 90.0, 90.0, 90.0)}, claim_variables=variables,
+        final_covariance=cov, frozen_parameters=("0::A2",),
+    ))
+    assert claims["cell:P.c"].provenance == {"pruned"}
+    assert claims["cell:P.a"].provenance == {"refined"}
+    assert claims["cell:P.b"].provenance == {"refined"}

@@ -3445,6 +3445,7 @@ def _claim_variables(g2phases, g2hists) -> "dict[str, tuple[str, ...]] | None":
             PhaseVariables(
                 name=ph.name, pid=int(ph.id),
                 labels=tuple(atom_labels(ph.data["Atoms"], ph.data["General"]["AtomPtrs"])),
+                cell=_phase_cell(ph),
             )
             for ph in g2phases
         ]
@@ -3454,6 +3455,17 @@ def _claim_variables(g2phases, g2hists) -> "dict[str, tuple[str, ...]] | None":
             keys = tuple(k for k in _PROFILE_INTROSPECT_KEYS if k in inst)
             hists.append(HistogramVariables(index=i, hid=int(h.id), profile_keys=keys))
         return claim_variable_names(phases, hists)
+    except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
+        return None
+
+
+def _phase_cell(ph) -> "tuple[float, float, float, float, float, float] | None":
+    """相の今の格子 (a,b,c,α,β,γ)。読めなければ None (格子の各軸は全項に依存させる側へ)。"""
+    try:
+        cell = ph.get_cell()
+        return tuple(float(cell[k]) for k in (  # type: ignore[return-value]
+            "length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma",
+        ))
     except Exception:  # noqa: BLE001 — 観測の失敗でフィットを落とさない
         return None
 
