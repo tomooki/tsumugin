@@ -46,6 +46,7 @@ FastAPI 自身のリクエスト検証エラー (例: body が dict でない) �
   "phases":    [{ "id": "p1", "name": "cubic K2Mn[Fe(CN)6]", "swatch": "accent",
                   "space_group": "Fm-3m", "mp_id": "mp-583814", "wt_frac": "62.1(4) %",
                   "structure_path": "data/alpha.cif", "refine_cell": true,
+                  // 相のメタデータ (どのエンジンも読まない。温度差は histograms[].temperature)
                   "temperature": null,
                   // 精密化後の実格子 (未精密化は null)。esd は揃っていれば併記。
                   "cell": { "a": "9.3721(3)", "b": "9.3721(3)", "c": "6.8861(4)",

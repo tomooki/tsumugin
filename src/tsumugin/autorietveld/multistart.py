@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
 from .._json import finite_or_none
+from ..errors import InvalidPhaseSpecError
 from ..gpxstore import group_context, reject_single_keep
 from ..multistart.perturb import MultistartConfig
 from ..store import Ledger
@@ -62,10 +63,14 @@ class StartPerturbation:
         )
 
     @property
+    def moves_lattice(self) -> bool:
+        """格子を倍率 ≠ 1.0 で振るか。``refine_cell=False`` の相は倍率を記録しない
+        (`run_multistart_rietveld`) ので、凍結相しか無ければ False。"""
+        return any(tuple(v) != (1.0, 1.0, 1.0) for v in self.cell_scale.values())
+
+    @property
     def is_unperturbed(self) -> bool:
-        return all(
-            v == (1.0, 1.0, 1.0) for v in self.cell_scale.values()
-        ) and self.coord_jitter_ang == 0.0
+        return not self.moves_lattice and self.coord_jitter_ang == 0.0
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,17 @@ class RietveldMultistartResult:
     #: ことはできる。`undetermined_parameters` と同じ規律 (所見であって失敗ではない)。
     initial_value_dependent: tuple[str, ...] = ()
 
+    @property
+    def perturbation_applied(self) -> bool:
+        """実行できた開始点のどれかが初期値を**実際に**動かしたか (格子倍率 ≠ 1.0 か座標 1 軸以上)。
+
+        False なら全開始点が同じ入力であり、**どのクラスの AGREE も空虚**である (同じ入力は
+        同じ解へ行く)。全相 ``refine_cell=False`` で倍率が記録されず、座標摂動も無い場合に起きる。
+        実行できた開始点が無いときも False (確かめようがない — 理由は失敗の warnings が述べる)。
+        `confirm.ConvergenceReport.structure_is_corroborated` がこれを要求する。
+        """
+        return _perturbation_applied(self.starts, self.n_axes_jittered)
+
     def to_dict(self) -> dict[str, object]:
         return {
             "best_index": self.best_index,
@@ -139,6 +155,7 @@ class RietveldMultistartResult:
             "is_global_corroborated": self.is_global_corroborated,
             "corroboration_reason": self.corroboration_reason,
             "n_axes_jittered": self.n_axes_jittered,
+            "perturbation_applied": self.perturbation_applied,
             "rwp_spread": finite_or_none(self.rwp_spread),
             "class_convergence": dict(self.class_convergence),
             "initial_value_dependent": list(self.initial_value_dependent),
@@ -317,9 +334,12 @@ def summarize_multistart(
         warnings.extend(f"一致判定: {w}" for w in report.warnings)
 
     # 【傍証の条件】: 単一ベイスン ∧ valid ≥2 ∧ 発散なし ∧ **摂動が実際に効いた**。
-    #   最後の条件が要点 — 座標摂動を要求したのに全軸が対称固定で 1 つも動かなかった場合、
-    #   開始点は実質同じものになる。それを傍証と呼ぶのは `n_basins == 1` の空虚な True と同型。
+    #   最後の条件が要点 — 座標摂動を要求したのに全軸が対称固定 (または凍結原子) で 1 つも
+    #   動かなかった場合、開始点は実質同じものになる。それを傍証と呼ぶのは `n_basins == 1` の
+    #   空虚な True と同型。格子だけの試験でも同じで、どの開始点も倍率 1.0 (格子を精密化する相が
+    #   無い = 全相 ``refine_cell=False`` で倍率が記録されない場合を含む) なら全開始点が同じ入力である。
     jitter_requested = any(s.perturbation.coord_jitter_ang > 0.0 for s in starts)
+    had_effect = n_axes > 0 if jitter_requested else _lattice_moved(executed)
     rwps = [s.result.final_rwp for s in valid]  # type: ignore[union-attr]
     rwp_spread = (max(rwps) - min(rwps)) if len(rwps) >= 2 else 0.0
     conditions = (
@@ -327,7 +347,7 @@ def summarize_multistart(
         ("insufficient_valid_starts", len(valid) >= 2),
         ("diverged_starts", n_diverged == 0),
         ("multiple_basins", n_basins == 1),
-        ("perturbation_had_no_effect", (not jitter_requested) or n_axes > 0),
+        ("perturbation_had_no_effect", had_effect),
     )
     reason = next((name for name, ok in conditions if not ok), "corroborated")
     corroborated = all(ok for _, ok in conditions)
@@ -347,9 +367,18 @@ def summarize_multistart(
             "解が割れているのではなく当てはめの良し悪しである。恒常的なら装置分解能の固定 "
             "(instrument_profile) を検討する材料になる"
         )
-    if reason == "perturbation_had_no_effect":
+    # 【「何も試験していない」は 1 箇所で言う】: confirm はこの warnings を転送するだけで、
+    #   同じ診断を重ねて出さない。実行できた開始点が無いときは「動かなかった」ではなく
+    #   「不明」なので言わない (失敗の理由は上で述べてある)。
+    if executed and not _perturbation_applied(starts, n_axes):
         warnings.append(
-            "座標摂動を要求したが動かせた軸が 0 (全軸が対称拘束で固定) — "
+            "どの開始点も初期値を動かしていない (格子倍率が全て 1.0 か格子を精密化する相が無く、"
+            "座標も 1 軸も動いていない) — 全開始点が同じ入力なので**何も試験していない**。"
+            "傍証にも構造の採用判断 (structure_is_corroborated) にも使えない"
+        )
+    elif reason == "perturbation_had_no_effect":
+        warnings.append(
+            "座標摂動を要求したが動かせた軸が 0 (全軸が対称拘束で固定か凍結原子) — "
             "**この軸では試験していない**ので傍証にはならない"
         )
 
@@ -395,6 +424,21 @@ def summarize_multistart(
 
 def _is_valid_or_finite(result: AutoRietveldResult) -> bool:
     return math.isfinite(result.final_rwp)
+
+
+def _lattice_moved(starts: Sequence[MultistartStart]) -> bool:
+    """どれかの開始点が格子を倍率 ≠ 1.0 で振ったか (`StartPerturbation.moves_lattice`)。"""
+    return any(s.perturbation.moves_lattice for s in starts)
+
+
+def _perturbation_applied(starts: Sequence[MultistartStart], n_axes: int) -> bool:
+    """**実行できた**開始点のどれかが初期値を動かしたか (格子 or 座標)。
+
+    座標軸数 ``n_axes`` は engine が実際に動かした数の総和 (失敗した開始点は 0) なので、
+    格子も実行できた開始点だけで見る — 失敗した開始点の倍率は「試験した」証拠にならない。
+    """
+    executed = [s for s in starts if s.result is not None]
+    return n_axes > 0 or _lattice_moved(executed)
 
 
 #: BLAS/OpenMP のスレッド数を縛る環境変数 (実装により名前が違うので全部立てる)。
@@ -461,33 +505,17 @@ def _run_one_start(payload: tuple) -> tuple:
             jitter_seed=perturbation.jitter_seed,
             **run_kwargs,
         )
+    except InvalidPhaseSpecError:
+        # 【相の指定の誤りは発散ではない】: 精密化の前に engine が止めた入力の誤りで、どの開始点でも
+        #   同じになる。発散に畳むと「初期値で解が割れた」と読まれ、③ は綴りではなく構造を疑う。
+        #   原子ラベルの重複 (`DuplicateAtomLabelError`) もこの子クラスとして同じく送出する。
+        raise
     except Exception as exc:  # noqa: BLE001 — 実行失敗は発散扱いで継続 (pickle 可能な文字列へ)
         return (index, None, 0, repr(exc)[:200])
-    # 摂動を要求していないときは 0 (自由軸の本数ではなく**動かした軸数**である)。
-    n_axes = _count_jittered_axes(result) if jitter is not None else 0
+    # engine が**実際に動かした**軸数を読む (数え直さない — 凍結原子・読めなかった相を
+    #   「試験した」と数える余地を作らない)。摂動を要求していなければ engine も 0 を返す。
+    n_axes = int(result.coord_jitter_axes_moved) if jitter is not None else 0
     return (index, result, n_axes, "")
-
-
-def _count_jittered_axes(result: AutoRietveldResult) -> int:
-    """結果から「座標摂動で**動かせた**軸数」を数える (engine が ledger に残した値の代替)。
-
-    ⚠ 呼び出し側は**摂動を要求したときだけ**呼ぶこと — 本関数が数えるのは「自由軸の本数」で
-    あり、摂動していなければそれは動いた軸ではない。
-
-    ledger はワーカー内に閉じており親へ返さないので、**自由度指標から数え直す** —
-    ``atom_coord_free_index`` の各原子について、``0`` でなく三つ組内で最初に現れる正値の
-    軸数が「動かせた軸」である (`engine._apply_coord_jitter` と同じ規則)。
-    """
-    total = 0
-    for atoms in result.atom_coord_free_index.values():
-        for free in atoms.values():
-            seen: set[int] = set()
-            for fid in free:
-                if fid == 0 or fid in seen:
-                    continue
-                seen.add(fid)
-                total += 1
-    return total
 
 
 def run_multistart_rietveld(
@@ -515,6 +543,13 @@ def run_multistart_rietveld(
 
     ⚠ 決定論のため、結果は**完了順ではなく開始点 index 順**に並べ、**ledger も join 後に
     列挙順で再発行**する (`Ledger` はハッシュ鎖 / NFR-102。完了順の追記はビット同一性を壊す)。
+
+    開始点の実行失敗は例外にせず ``starts[i].error`` と warnings に残す。**開始点の実行から送出
+    するのは相の指定の誤りだけ** (どの開始点でも同じ入力の誤りなので、発散に畳むと「初期値で解が
+    割れた」と読まれる)。
+
+    :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル等を名指すとき
+        (`model.check_phase_spec_labels`)。直列でも並列 (``pool.map`` が親で送出し直す) でも同じ
     """
     import os
     from concurrent.futures import ProcessPoolExecutor
@@ -523,7 +558,12 @@ def run_multistart_rietveld(
     reject_single_keep(run_kwargs, entry="run_multistart_rietveld")
     config = config if config is not None else MultistartConfig()
     ledger = ledger if ledger is not None else Ledger()
-    phase_names = [p.phase_name for p in phases]
+    # 【格子を精密化しない相は振らない】: ``refine_cell=False`` の相 (Issue #47 の副相格子固定) は
+    #   cell 段が Cell を解放しないので、摂動した格子が**そのまま最終格子**になる — 開始点ごとに
+    #   違う値で固定され、偽のベイスン分岐と副相フィットの劣化を生む。engine も同じ規則で
+    #   掛けない (`_apply_initial_cell_scale`) が、ここで外すのは**記録を実際と一致させる**ため
+    #   (start_key / ledger の ``scale`` / 空虚な傍証の判定がこの値を読む)。
+    phase_names = [p.phase_name for p in phases if p.refine_cell]
     perturbations = generate_perturbations(
         phase_names, config, coord_jitter_ang=coord_jitter_ang, seed=seed
     )
@@ -571,7 +611,8 @@ def run_multistart_rietveld(
                     for got in pool.map(_run_one_start, payloads):
                         raw[got[0]] = got
             except BrokenProcessPool as exc:
-                # 【子の即死は例外にしない】: `_run_one_start` は自分の中の例外を捕まえるが、
+                # 【子の即死は例外にしない】: `_run_one_start` は自分の中の例外を捕まえるが
+                #   (構造の誤り `DuplicateAtomLabelError` だけは再送出され、ここを素通りする)、
                 #   worker が OOM/segfault で落ちると `pool.map` 自身が投げる。これを通すと
                 #   ② の境界を例外が越える (③ は LLM なので回復不能)。「全開始点が失敗」に
                 #   畳んで既存の warnings/`no_valid_start` 経路へ載せる — バックエンドの失敗を

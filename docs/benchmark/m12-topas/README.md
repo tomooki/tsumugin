@@ -302,6 +302,7 @@ Rwp を見ても原因に辿り着けないので、当たりを付けて実験�
 | 14 | **空間群名の `/` は `Sg/` のファイル名で `o` になる** (P63/m → p63om.sg) | 対称操作が引けず座標段が黙って no-op |
 | 15 | **段の間で精密化値を引き継いでいなかった** (#218)。毎段 CIF の出発値から累積フラグで解き直し、revert も直前の受理状態へ戻っていなかった | T4 既定 67.6% → 33.0% (validity は CaF2 Uiso<0 が表に出て fail) |
 | 16 | **`Sg/` 生成の探査 INP に `lam` が無く必ず異常終了**し、例外を握りつぶして座標を全凍結していた (#219)。結果が「その空間群を過去に回した機械か」で変わる | 対称操作の無い CIF (T1/T2 がそう) が環境依存 |
+| 17 | **相の指定 (`PhaseSpec`) の大半を参照していなかった** (2026-10-09)。`refine_cell` / `frozen_coord_labels` / `free_uiso_labels` / `frozen_uiso_labels` / `occupancy_equiv_groups` / `position_equiv_groups` を渡しても何もせずに完走し、`occupancy_sum_groups` は GSAS の「親 = Σ子」ではなく混合占有の「和 = 1」で張っていた。凍結した格子の `cell_esd` も 0.0 (実 tc.exe が書く値) を返していた | T4 で少数相 CaF2 の Uiso 凍結 (`free_uiso_labels=[]`) が効かず validity ❌ のまま → 効いて ✅ (既定 32.95% → 21.84%。ただし**差の大半は凍結の効果ではない** — S9 size_strain が既定の軌跡では revert、凍結の軌跡では受理された。CS_L は上限 10000 に張り付き) |
 
 ## 実行して確かめないと分からなかった TOPAS の仕様
 
