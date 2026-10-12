@@ -197,6 +197,36 @@ def test_polar_origin_is_held_on_a_real_gsas_refinement(tmp_path, monkeypatch):
     assert abs(o[2] - 0.382) < 0.003, f"O の z が真値へ戻らない: {o}"
 
 
+@pytest.mark.gsas
+def test_jittered_starts_keep_the_origin_on_a_real_gsas_refinement(tmp_path, monkeypatch):
+    """原点固定 + 座標の摂動 (収束確認の構造軸) が実 GSAS で正しく動く (P1-1B)。
+
+    原点を決める Zn は摂動されず (z=0 のまま hold)、O だけが振られて真値へ戻る。
+    """
+    from tsumugin.autorietveld import Geometry, HistogramSpec, Radiation
+    from tsumugin.autorietveld.engine import run_auto_rietveld
+    from tsumugin.store.ledger import Ledger
+
+    monkeypatch.setenv("TSUMUGIN_GPX_DIR", str(tmp_path / "gpx"))
+    xye, instprm, start = _synthetic_zno(tmp_path)
+    hist = HistogramSpec(
+        data_path=str(xye), instrument_path=str(instprm),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.DEBYE_SCHERRER, data_format="XYE",
+    )
+    phase = PhaseSpec(str(start), "ZnO", fix_polar_origin=True)
+    ledger = Ledger()
+    result = run_auto_rietveld(
+        [hist], [phase], ledger=ledger, initial_coord_jitter={"ZnO": 0.05}, jitter_seed=3
+    )
+    jit = next(e.payload for e in ledger.entries if e.kind == "m7_coord_jitter")
+    assert jit["polar_origin_atoms_not_jittered"] == {"ZnO": ["Zn1"]}
+    assert jit["n_axes_moved"] == 1  # O1 の z だけ
+    zn = result.atom_coords["ZnO"]["Zn1"]
+    o = result.atom_coords["ZnO"]["O1"]
+    assert zn[2] == 0.0, f"原点を決める Zn が動いた: {zn}"
+    assert abs(o[2] - 0.382) < 0.003, f"O の z が真値へ戻らない: {o}"
+
+
 def test_polar_origin_with_element_ranked_coords_stages_is_refused():
     """元素ランクの座標段では原点は既に決まっている — 静的な固定と組み合わせない (M6)。"""
     from tsumugin.autorietveld.constraint_groups import refuse_polar_origin_with_ranked_coords
@@ -213,35 +243,45 @@ def test_polar_origin_with_element_ranked_coords_stages_is_refused():
     refuse_polar_origin_with_ranked_coords([_spec()], ranked)
 
 
-def test_polar_origin_with_coordinate_jitter_is_refused():
-    """摂動が原点固定より先に掛かり、極性方向へずれた解になる — P1-1B まで組み合わせない (L9)。"""
-    from tsumugin.autorietveld.constraint_groups import refuse_polar_origin_with_coord_jitter
-    from tsumugin.errors import InvalidPhaseSpecError
+def test_the_origin_fixing_atom_is_not_jittered():
+    """原点を決める原子は座標の摂動から外す (P1-1B — 以前は組み合わせを拒否していた)。
 
-    with pytest.raises(InvalidPhaseSpecError, match="摂動"):
-        refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": 0.05})
-    # 摂動幅 0・別の相への摂動・原点固定なしは可
-    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": 0.0})
-    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"other": 0.05})
-    refuse_polar_origin_with_coord_jitter([_spec()], {"w": 0.05})
-    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], None)
+    hold した座標を摂動すると開始点ごとに原点がずれ、極性方向の座標が「初期値依存」と誤判定される。
+    """
+    from tsumugin.autorietveld.engine import _coord_jitter_skips, polar_origin_atoms
+
+    ph = _Phase("z", [("O1", "O", "3m(z)"), ("Zn1", "Zn", "3m(z)")])
+    spec = _spec(fix_polar_origin=True, frozen_coord_labels=())
+    assert polar_origin_atoms([ph], [spec], _getcsxinel) == {"w": {"Zn1"}}
+    skip, origin = _coord_jitter_skips([ph], [spec], _getcsxinel)
+    assert skip == {"w": ("Zn1",)} and origin == {"w": {"Zn1"}}
 
 
-def test_standard_route_refuses_polar_origin_with_jitter_before_phase_a():
-    """規定の収束確認は Phase A の前に止める — 後で Phase B が全滅して警告に埋もれない (3 巡目 B)。"""
+def test_without_the_origin_flag_only_frozen_atoms_are_skipped():
+    from tsumugin.autorietveld.engine import _coord_jitter_skips
+
+    ph = _Phase("z", [("O1", "O", "3m(z)"), ("Zn1", "Zn", "3m(z)")])
+    skip, origin = _coord_jitter_skips([ph], [_spec(frozen_coord_labels=("O1",))], _getcsxinel)
+    assert skip == {"w": ("O1",)} and origin == {}
+
+
+def test_the_standard_route_accepts_polar_origin_with_jitter():
+    """原点固定と座標の摂動が組み合わせられる — Phase A が走る (以前は入口で拒否していた)。"""
     from tsumugin.autorietveld.confirm import optimize_then_confirm
-    from tsumugin.errors import InvalidPhaseSpecError
 
-    def search_must_not_run(*args, **kwargs):
-        raise AssertionError("Phase A が走った")
+    calls = []
 
-    with pytest.raises(InvalidPhaseSpecError, match="摂動"):
-        optimize_then_confirm(
-            [], [_spec(fix_polar_origin=True)], search_runner=search_must_not_run,
-        )
+    def search_runner(cand):
+        calls.append(cand.name)
+        raise RuntimeError("stop here")
+
+    from tsumugin.autorietveld.model import Geometry, HistogramSpec, Radiation
+
+    h = HistogramSpec("d.xye", "i.instprm", Radiation.XRAY_LAB, Geometry.BRAGG_BRENTANO)
+    optimize_then_confirm(
+        [h], [_spec(fix_polar_origin=True)], candidates=["default"],
+        search_runner=search_runner, save_gpx=False,
+    )
+    assert calls
 
 
-def test_jitter_mapping_with_none_values_is_not_a_type_error():
-    from tsumugin.autorietveld.constraint_groups import refuse_polar_origin_with_coord_jitter
-
-    refuse_polar_origin_with_coord_jitter([_spec(fix_polar_origin=True)], {"w": None})

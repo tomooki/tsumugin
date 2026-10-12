@@ -80,7 +80,6 @@ from .constraint_groups import (
     merge_equiv_groups,
     partially_released_groups,
     polar_origin_constraints,
-    refuse_polar_origin_with_coord_jitter,
     refuse_polar_origin_with_ranked_coords,
     unknown_labels,
 )
@@ -1527,21 +1526,20 @@ def _atomic_number(raw: str) -> int:
     return _Z_ORDER.get(sym, _Z_ORDER.get(sym[:1].upper(), 0))
 
 
-def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
-    """`PhaseSpec.fix_polar_origin` の相に、極性方向の原点固定を登録する (fit-then-judge P1a)。
+def _polar_origin_plan(g2phases, specs, getcsxinel=None) -> list[tuple]:
+    """`fix_polar_origin` の相ごとに、原点固定の拘束を**決める** (登録はしない)。
 
-    精密化する原子の判定は `_phase_atom_info` と同じ規則 (自由座標を持つ原子 −
-    `frozen_coord_labels`)。site symmetry を解釈できない原子は engine が座標を凍結するので、
-    「動けるが凍結された原子」(= 原点を決めている) として扱う (その原子は
-    `coordinate_freedom_mismatches` に現れる)。
+    原子の選び方は座標の値に依らない (散乱能・site symmetry・凍結の有無だけ) ので、座標の初期摂動の
+    前に決めても後に決めても同じ。摂動 (`_apply_coord_jitter`) はこれで原点を決める原子を知り、
+    その原子を動かさない (fit-then-judge P1-1B)。
 
-    :param getcsxinel: site symmetry → `GetCSxinel` の戻り値 (テスト注入用。None なら GSAS)。
-    :returns: 登録した固定の記録 (ledger 用)。
+    :returns: ``(相, spec, polax, 拘束の列, ラベル→原子行の添字)`` の列
+    :raises InvalidPhaseSpecError: 原点を固定できない (`polar_origin_constraints` の ValueError)
     """
-    applied: list[dict] = []
+    plan: list[tuple] = []
     targets = [(ph, spec) for ph, spec in zip(g2phases, specs) if spec.fix_polar_origin]
     if not targets:
-        return applied
+        return plan
     if getcsxinel is None:
         from GSASII import GSASIIspc as G2spc
 
@@ -1580,6 +1578,48 @@ def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
             raise InvalidPhaseSpecError(
                 f"相 {spec.phase_name!r} の極性原点を固定できません: {exc}"
             ) from exc
+        plan.append((ph, spec, polax, constraints, index_of))
+    return plan
+
+
+def polar_origin_atoms(g2phases, specs, getcsxinel=None) -> dict[str, set[str]]:
+    """相名 → 極性原点を決める (固定される) 原子ラベル。座標の摂動から外すのに使う。"""
+    out: dict[str, set[str]] = {}
+    for _ph, spec, _polax, constraints, _index in _polar_origin_plan(g2phases, specs, getcsxinel):
+        if constraints:
+            out.setdefault(spec.phase_name, set()).update(label for label, _ in constraints)
+    return out
+
+
+def _coord_jitter_skips(
+    g2phases, specs, getcsxinel=None
+) -> "tuple[dict[str, tuple[str, ...]], dict[str, set[str]]]":
+    """座標の初期摂動で動かさない原子: 凍結した原子 + 極性原点を決める原子 (fit-then-judge P1-1B)。
+
+    :returns: (相名 → 動かさないラベル, 相名 → そのうち極性原点を決める原子)
+    """
+    origin_atoms = polar_origin_atoms(g2phases, specs, getcsxinel)
+    skip = {
+        p.phase_name: tuple(p.frozen_coord_labels)
+        + tuple(sorted(origin_atoms.get(p.phase_name, set()) - set(p.frozen_coord_labels)))
+        for p in specs
+    }
+    return skip, origin_atoms
+
+
+def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
+    """`PhaseSpec.fix_polar_origin` の相に、極性方向の原点固定を登録する (fit-then-judge P1a)。
+
+    精密化する原子の判定は `_phase_atom_info` と同じ規則 (自由座標を持つ原子 −
+    `frozen_coord_labels`)。site symmetry を解釈できない原子は engine が座標を凍結するので、
+    「動けるが凍結された原子」(= 原点を決めている) として扱う (その原子は
+    `coordinate_freedom_mismatches` に現れる)。拘束の決め方は `_polar_origin_plan` (摂動と共用)。
+
+    :param getcsxinel: site symmetry → `GetCSxinel` の戻り値 (テスト注入用。None なら GSAS)。
+    :returns: 登録した固定の記録 (ledger 用)。
+    """
+    applied: list[dict] = []
+    for ph, spec, polax, constraints, index_of in _polar_origin_plan(g2phases, specs, getcsxinel):
         for label, terms in constraints:
             idx = index_of[label]
             names = [f"{ph.id}::dA{axis}:{idx}" for axis, _ in terms]
@@ -2596,7 +2636,6 @@ def run_auto_rietveld(
         stages = build_recipe(histograms, phases)
     refuse_polar_origin_with_ranked_coords(phases, stages)
     check_phase_scoped_flags(stages, phases)
-    refuse_polar_origin_with_coord_jitter(phases, initial_coord_jitter)
     # 検証は GSAS の解決より**前**に済ませる — 不正なレシピは GSAS が無い環境でも同じ
     # ``CorrelationGroupViolation`` で落ちるべきであり (入力の誤りは backend の有無と無関係)、
     # そうしないと本検証のテストが GSAS 導入環境でしか回らなくなる。
@@ -2738,18 +2777,24 @@ def run_auto_rietveld(
         #     「摂動しても動かなかった」ではない。
         n_jittered = 0
         if initial_coord_jitter:
+            # 【極性原点を決める原子は動かさない (fit-then-judge P1-1B)】: その原子の極性方向の座標は
+            #   後で hold されるので、動かすと開始点ごとに原点がずれ、構造全体が極性方向へ並進した解に
+            #   なる (agreement が偽の「初期値依存」を報告する)。原点の選び方は座標に依らないので
+            #   ここで先に決めて共用する。
+            skip, origin_atoms = _coord_jitter_skips(g2phases, phases)
             n_jittered = _apply_coord_jitter(
-                g2phases, initial_coord_jitter, jitter_seed,
-                frozen={p.phase_name: p.frozen_coord_labels for p in phases},
+                g2phases, initial_coord_jitter, jitter_seed, frozen=skip,
             )
-            ledger.append(
-                "m7_coord_jitter",
-                {
-                    "seed": int(jitter_seed),
-                    "amplitude_ang": {k: float(v) for k, v in initial_coord_jitter.items()},
-                    "n_axes_moved": n_jittered,
-                },
-            )
+            entry = {
+                "seed": int(jitter_seed),
+                "amplitude_ang": {k: float(v) for k, v in initial_coord_jitter.items()},
+                "n_axes_moved": n_jittered,
+            }
+            if origin_atoms:
+                entry["polar_origin_atoms_not_jittered"] = {
+                    k: sorted(v) for k, v in sorted(origin_atoms.items())
+                }
+            ledger.append("m7_coord_jitter", entry)
 
         # --- 初期 Uiso 妥当性 + 占有率/Uiso 結合の事前警告 (FR-318 / REQ-318-005) ---
         # **FR-318 の入力 (シーダー/組成拘束/分率拘束/明示フラグ) があるときのみ**検査する。

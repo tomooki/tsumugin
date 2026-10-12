@@ -169,15 +169,6 @@ def optimize_then_confirm(
     # 【入口で拒む】: Phase A (`run_recipe_search`) も拒むが、そこに頼ると本関数が Phase A より
     #   前にディスクへ触る変更 (run ディレクトリの解決など) をしたとき空の痕跡が残る。
     reject_single_keep(run_kwargs, entry="optimize_then_confirm")
-    # 【入力の誤りは Phase A の前に止める】: 極性原点を固定した相への座標の摂動は engine が拒否する
-    #   (`constraint_groups.refuse_polar_origin_with_coord_jitter`) が、ここで止めないと高価な Phase A が完走
-    #   した後に Phase B の全開始点が失敗し、「収束確認が失敗した」警告に埋もれて黙って Phase A
-    #   だけの結果に縮む (セルフレビュー 3 巡目)。
-    from .constraint_groups import refuse_polar_origin_with_coord_jitter
-
-    refuse_polar_origin_with_coord_jitter(
-        phases, {p.phase_name: coord_jitter_ang for p in phases} if coord_jitter_ang > 0 else None
-    )
     ledger = ledger if ledger is not None else Ledger()
     # 【1 実行 = 1 run ディレクトリ (gpx-retention 設計 §3)】: Phase A (`run_recipe_search`) と
     #   Phase B (`run_multistart_rietveld`) はそれぞれ `group_context` で根から run を解決する

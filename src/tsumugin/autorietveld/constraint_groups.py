@@ -12,7 +12,7 @@ GSAS-II の等値拘束 (`add_EquivConstr`) は、同じ変数を 2 つの組に
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 from ..errors import InvalidPhaseSpecError
@@ -23,7 +23,6 @@ __all__ = [
     "merge_equiv_groups",
     "partially_released_groups",
     "polar_origin_constraints",
-    "refuse_polar_origin_with_coord_jitter",
     "refuse_polar_origin_with_ranked_coords",
     "unknown_labels",
 ]
@@ -228,32 +227,4 @@ def refuse_polar_origin_with_ranked_coords(phases: Sequence, stages: Sequence) -
             f"fix_polar_origin は元素ランクで座標を一部だけ解放する段 {ranked} と組み合わせられません"
             " (その段では原点は既に決まっており、固定が実在の自由度を消す)。coords: true の段を"
             "使うか、fix_polar_origin を外してください"
-        )
-
-
-def refuse_polar_origin_with_coord_jitter(
-    phases: Sequence, jitter: "Mapping[str, float | None] | None"
-) -> None:
-    """`fix_polar_origin` の相への座標の初期摂動 (マルチスタートの構造軸) を拒否する (P1a)。
-
-    摂動 (engine `_apply_coord_jitter`) は原点固定 (engine `_apply_polar_origin`) より**先に**掛かるので、hold した
-    原子の極性方向の座標は摂動された値のまま固定され、構造全体が極性方向へずれた解になる。開始点
-    ごとに原点がずれるので、極性方向の座標が「初期値依存」と誤判定される (セルフレビュー 2 巡目)。
-    hold した座標を摂動から外す/極性方向の並進を除いて比べる対応は設計 §4.5 で P1-1B に予定
-    しているので、それまでは組み合わせを大声で止める。
-
-    :raises InvalidPhaseSpecError: 原点固定の相に正の摂動幅が与えられたとき
-    """
-    if not jitter:
-        return
-    bad = [
-        p.phase_name
-        for p in phases
-        if getattr(p, "fix_polar_origin", False) and float(jitter.get(p.phase_name) or 0.0) > 0.0
-    ]
-    if bad:
-        raise InvalidPhaseSpecError(
-            f"fix_polar_origin の相 {bad} には座標の初期摂動を掛けられません (摂動が原点固定より先に"
-            "掛かり、構造全体が極性方向へずれた解になる)。マルチスタートでは原点固定を外すか、"
-            "座標の摂動幅を 0 にしてください"
         )
