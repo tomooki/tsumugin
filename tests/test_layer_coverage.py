@@ -71,6 +71,11 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "出版状態の型 `Claim`。② の `auto_rietveld`/`refine_with_revisions` の出力の `claims`・"
         "`judgment_requests`・`publishable_values` と CSV (`export_claims_csv`) で到達する",
     ),
+    "template (fit-then-judge 1B)": (
+        "auto_rietveld",
+        "テンプレート (pass 1 → 静的コンパイル)。② `auto_rietveld(search=[..., \"template\"], "
+        "template={宣言})` の探索候補として到達する (別ツールは作らない — proposal §4.4)",
+    ),
     "autorietveld (M7)": (
         "auto_rietveld",
         "実構造 Rietveld。Issue #101 解決: 段階解放レシピの追加段階 (`stages` →"
@@ -301,6 +306,7 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "instprm": "instprm (FR-502)",
     "gpxstore": "gpx artifact retention (規定 2026-08-20)",
     "claims": "claims (fit-then-judge 1A)",
+    "template": "template (fit-then-judge 1B)",
     "operando": "echem sync (M3/FR-311)",  # ← Issue #99: これまで宣言リストに 1 行も無かった
     # --- 基盤 (③ に露出する独立能力ではない — 露出済みツールが内部で使うインフラ) ---
     "model": (FOUNDATIONAL, "不変 dataclass 群 (§4)。全層が共有する型であり単独能力ではない"),

@@ -369,7 +369,7 @@ def test_repeated_summaries_are_bit_identical():
 def test_candidate_names_are_an_explicit_tuple_not_a_sorted_set():
     # 【目的】: 列挙順が実装都合 (辞書順/集合順) で変わらないこと (S5)。
     assert CANDIDATE_NAMES == (
-        "default", "sizestrain_last", "polish", "serious1", "serious", "adaptive",
+        "default", "sizestrain_last", "polish", "serious1", "serious", "adaptive", "template",
     )
     # ★既定で回るのは**実測で選んだ集合**であり「選べる名前」全部ではない。
     #   両者を分けているのは、測定で支配された `serious` (2 周) を既定から外しつつ
@@ -378,6 +378,7 @@ def test_candidate_names_are_an_explicit_tuple_not_a_sorted_set():
         "default", "sizestrain_last", "polish", "serious1", "adaptive",
     )
     assert set(DEFAULT_CANDIDATES) <= set(CANDIDATE_NAMES)
+    assert "template" not in DEFAULT_CANDIDATES, "テンプレートは第 1 期に既定を変えない (P2 で効果を測るまで)"
     assert DEFAULT_CANDIDATES[0] == "default", (
         "既定の先頭は observation_groups の観測集合基準になるので動かさない"
     )
