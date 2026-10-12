@@ -61,6 +61,8 @@ KNOWN_STAGE_FLAGS = frozenset(
         "absorption",
         "background",
         "cell",
+        # 格子/選択配向を解放する相を絞る (fit-then-judge P1-1B のテンプレートが使う)。値は相名の列。
+        "cell_phases",
         "coords",
         "displacement",
         # 段の適用前に既存の解放を落とす (`engine._apply_stage` の `flags.get("freeze_others")`)。
@@ -71,6 +73,7 @@ KNOWN_STAGE_FLAGS = frozenset(
         "occupancy",
         "phase_fraction_sum",
         "preferred_orientation",
+        "preferred_orientation_phases",
         "profile",
         "profile_asymmetry",
         "profile_lorentzian",
@@ -130,6 +133,18 @@ def _check_flag_value(label: str, name: str, value: object) -> None:
         raise ValueError(
             f"stage.flags['profile_lorentzian'] は bool か {sorted(allowed)} の非空部分集合の列"
             f" である必要があります ({label!r}): {value!r}"
+        )
+    if name in ("cell_phases", "preferred_orientation_phases"):
+        # 相名の非空の列。相に実在するか・対象の解放がある段かは engine 入口
+        # (`recipe.check_phase_scoped_flags`) が相の一覧と照合する (ここでは相を知らない)。
+        if (
+            isinstance(value, (list, tuple))
+            and value
+            and all(isinstance(v, str) and v for v in value)
+        ):
+            return
+        raise ValueError(
+            f"stage.flags[{name!r}] は相名 (str) の非空の列である必要があります ({label!r}): {value!r}"
         )
     if name == "zero_offset":
         if isinstance(value, bool):

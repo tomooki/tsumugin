@@ -64,6 +64,12 @@ FEATURE_TOKENS = (
     "final_covariance",
     "read_covariance_record",
     "reflection_two_theta",
+    # P1-1B (テンプレート)
+    "tsumugin.template",
+    "evidence.fitstats",
+    "cell_phases",
+    "preferred_orientation_phases",
+    "check_phase_scoped_flags",
 )
 
 #: (準) hold-out の参照 (パスらしい文字列の中で照合する)。大文字小文字を区別しない。

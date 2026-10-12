@@ -72,7 +72,7 @@ from .model import (
     check_unique_atom_labels,
     resolve_uiso_targets,
 )
-from .recipe import build_recipe, validate_correlation_groups
+from .recipe import build_recipe, check_phase_scoped_flags, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
 from .constraint_groups import (
     AtomSite,
@@ -1086,7 +1086,13 @@ def _apply_stage(
                 fraction_map = _phase_fraction_map(phases, hists)
             except Exception:  # noqa: BLE001 — 分率抽出不能は fail open (凍結しない)
                 fraction_map = None
+        # 【相を絞る (fit-then-judge P1-1B)】: ``cell_phases`` があれば名前の合う相だけ。手動/自動の
+        #   凍結には勝たない (`_should_refine_cell` の判定はそのまま通す)。
+        only = flags.get("cell_phases")
+        scope = set(only) if isinstance(only, (list, tuple)) else None
         for ph, info in zip(phases, phase_infos):
+            if scope is not None and ph.name not in scope:
+                continue
             fraction = fraction_map.get(ph.name) if fraction_map else None
             if _should_refine_cell(info, fraction, auto_freeze_minor_cells):
                 ph.set_refinements({"Cell": True})
@@ -1133,7 +1139,11 @@ def _apply_stage(
         # 系統的ピーク強度ズレ (obs>calc) を配向分布で吸収する。悪化時は本段階ごと revert。
         val = flags["preferred_orientation"]
         order = 4 if val is True else int(val)
+        po_only = flags.get("preferred_orientation_phases")
+        po_scope = set(po_only) if isinstance(po_only, (list, tuple)) else None
         for ph in phases:
+            if po_scope is not None and ph.name not in po_scope:
+                continue
             try:
                 ph.HAPvalue("Pref.Ori.", order)
             except Exception:
@@ -2572,6 +2582,7 @@ def run_auto_rietveld(
     else:
         stages = build_recipe(histograms, phases)
     refuse_polar_origin_with_ranked_coords(phases, stages)
+    check_phase_scoped_flags(stages, phases)
     refuse_polar_origin_with_coord_jitter(phases, initial_coord_jitter)
     # 検証は GSAS の解決より**前**に済ませる — 不正なレシピは GSAS が無い環境でも同じ
     # ``CorrelationGroupViolation`` で落ちるべきであり (入力の誤りは backend の有無と無関係)、
