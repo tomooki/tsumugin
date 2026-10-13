@@ -275,3 +275,17 @@ def test_a_user_phase_spec_error_in_pass1_propagates_from_the_search():
             [_hist()], [A], names=["template"], runner=CandidateFake(),
             template_pass1_runner=pass1, save_gpx=False,
         )
+
+
+def test_a_compile_side_flag_error_is_a_template_failure_not_a_user_error(monkeypatch):
+    """コンパイルが組んだ段の誤りは探索全体を止めない (L-c)。"""
+    import tsumugin.template.compile as compile_mod
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def broken(*a, **k):
+        raise InvalidPhaseSpecError("段 'T1' の cell_phases は相名の非空の列")
+
+    monkeypatch.setattr(compile_mod, "compile_template", broken)
+    out, _, cands = _search()
+    assert [c.name for c in cands.seen] == ["default"]
+    assert any("コンパイル" in w for w in out.warnings)

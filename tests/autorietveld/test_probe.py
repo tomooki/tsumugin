@@ -294,3 +294,12 @@ def test_both_probes_use_the_same_directions_with_opposite_signs(tmp_path):
 def test_a_coordinate_displacement_within_the_floor_is_refused(jitter):
     with pytest.raises(ValueError, match="許容幅"):
         ProbeConfig.from_dict({"coord_jitter_ang": jitter})
+
+
+def test_the_split_witness_names_the_original_probe():
+    """収束しなかった開始点を飛ばしても、割れた開始点の元の添字を記録する (L-a)。"""
+    base = _result()
+    bad = _result(stage_results=(StageResult("probe", 10.0, 1.2, 5, False),))
+    moved = _result(o1=(0.30, 0.1, 0.3))
+    claims = with_probe(base_claims(base), base, _outcome(bad, moved))
+    assert claims["coord:P.O1.x"].witnesses[-1].detail["probe"] == 1

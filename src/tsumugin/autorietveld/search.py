@@ -1053,9 +1053,14 @@ def _template_candidate(
             histograms, phases, declarations, runner=pass1_runner or default_pass1,
             background_coeffs=background_coeffs, ledger=ledger,
         )
-        compiled = compile_template(
-            histograms, phases, outcome.decisions, evidence=outcome.evidence
-        )
+        try:
+            compiled = compile_template(
+                histograms, phases, outcome.decisions, evidence=outcome.evidence
+            )
+        except InvalidPhaseSpecError as exc:
+            # コンパイルが組んだ段フラグの誤りはテンプレート側の不具合 — 呼び手の指定の誤りとして
+            #   探索全体を止めず、「組めない」に畳む (L-c)
+            raise Pass1Error(f"テンプレートのコンパイルが不正な段を組んだ: {exc}") from exc
     except InvalidPhaseSpecError:
         raise  # 呼び手の相の指定の誤り — 「テンプレートを組めない」に畳まない (探索の契約と同じ。N4)
     except (Pass1Error, ValueError) as exc:

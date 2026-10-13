@@ -326,7 +326,9 @@ def with_probe(
             return claim.key in moved_coords and coord_displacement_resolvable(claim)
         return False
     found: dict[str, list[tuple[str, float | None, int]]] = {}
-    for i, probe in enumerate(converged):
+    for i, probe in enumerate(probes):  # 元の添字で記録する (L-a)
+        if probe not in converged:
+            continue
         for cls, items in parameter_agreements(base, probe, tolerances).items():
             for it in items:
                 found.setdefault(f"{cls}:{it.key}", []).append((it.verdict, it.z, i))

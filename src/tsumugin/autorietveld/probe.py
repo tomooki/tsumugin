@@ -16,12 +16,13 @@ from typing import Callable, Mapping
 
 from .._config_spec import check_float, check_int, spec_value
 from .._json import finite_or_none
+from .agreement import AgreementTolerances
 from .model import AutoRietveldResult
 
 __all__ = ["ProbeConfig", "ProbeOutcome", "Prober", "run_initial_value_probe"]
 
 #: 座標の一致の許容幅 (`agreement.AgreementTolerances.coord_dist_floor_ang`)。これ以下の変位は証人にならない。
-_COORD_FLOOR_ANG = 0.02
+_COORD_FLOOR_ANG = AgreementTolerances().coord_dist_floor_ang  # 写しを持たない (L-b)
 
 #: ``prober(gpx_path, *, cell_frac, coord_jitter_ang, sign, seed, max_cyc, blas_threads)``
 Prober = Callable[..., AutoRietveldResult]
