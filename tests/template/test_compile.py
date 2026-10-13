@@ -49,7 +49,7 @@ def _flags(compiled, name: str) -> dict:
 def test_single_phase_bragg_brentano_uncalibrated_stage_list():
     c = compile_template([_hist()], [A], _decisions())
     assert _labels(c) == [
-        "scale+background", "lattice+offset", "width-1", "width-2", "asym",
+        "scale+background", "lattice+offset", "width-1", "width-2", "asym", "lattice-retry",
         "coords", "B", "pref", "struct-retry", "final",
     ]
     assert _flags(c, "lattice+offset") == {"cell": True, "displacement": {0: ["Shift"]}}
@@ -82,9 +82,11 @@ def test_when_every_cell_is_frozen_stage_one_releases_only_the_offset():
     assert _flags(c, "lattice-retry") == {"cell": True}
 
 
-def test_no_lattice_retry_without_frozen_cells():
+def test_the_lattice_retry_is_always_there():
+    """段 1 が pass 2 で棄却されても格子がもう一度試される (セルフレビュー H2)。"""
     c = compile_template([_hist()], [A, B], _decisions())
-    assert "lattice-retry" not in _labels(c)
+    assert _flags(c, "lattice-retry") == {"cell": True}
+    assert NO_NEW_DOF in next(s.note for s in c.stages if s.label.endswith("lattice-retry"))
     assert "cell_phases" not in _flags(c, "lattice+offset")
 
 

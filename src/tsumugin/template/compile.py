@@ -13,7 +13,7 @@ pass 1 が決めた判断 (`TemplateDecisions`) を、**静的な `RefinementSta
 | 2 | width-1 | 較正なし U,V,W / 較正あり Size+Mustrain |
 | 3 | width-2 | 較正なし X,Y (Zero を束ねない) |
 | 4 | asym | 較正なしのときだけ SH/L |
-| R | lattice-retry | pass 1 で格子を凍結した相があるときだけ全相の格子 |
+| R | lattice-retry | 全相の格子 (pass 1 で凍結した相の再試行 + 段 1 が棄却されたときの再試行) |
 | 5 | coords | 対象相の自由座標 (非対象相は凍結・極性群は原点固定) |
 | 6 | B | 対象相の Uiso (まとめ方は pass 1 の規則) |
 | 7 | occupancy | 対象相に混合占有・部分占有があるときだけ |
@@ -213,13 +213,17 @@ def compile_template(
         histograms, new_phases, background_coeffs=decisions.background_coeffs,
         calibrated=decisions.calibrated, cell_phases=released if frozen else None,
     )
-    if frozen:
-        stages.append(
-            RefinementStage(
-                "TR lattice-retry", {"cell": True},
-                f"pass 1 で凍結した相 {frozen} の格子をもう一度 (他の相は {NO_NEW_DOF})",
-            )
+    # 【段 R は常に置く (セルフレビュー H2)】: pass 1 で凍結した相の格子をもう一度試すだけでなく、pass 2 の
+    #   段 1 が (開始点・収束判定の都合で) 棄却されたときの再試行にもなる。置かないと、段 1 が棄却された
+    #   fit は格子を一度も精密化しないまま完走し、それは `reverted` 1 つにしか現れない。段 1 が受理済みなら
+    #   同じ解放の回し直し (新しい自由度 0)。
+    stages.append(
+        RefinementStage(
+            "TR lattice-retry", {"cell": True},
+            (f"pass 1 で凍結した相 {frozen} の格子をもう一度 (他の相は {NO_NEW_DOF})" if frozen
+             else f"段 1 が棄却されたときの格子の再試行 (受理済みなら {NO_NEW_DOF})"),
         )
+    )
     target = decisions.target_phase
     stages.append(RefinementStage("T5 coords", {"coords": True}, f"対象相 {target} の自由座標"))
     stages.append(RefinementStage("T6 B", {"uiso": True}, f"対象相 {target} の Uiso"))

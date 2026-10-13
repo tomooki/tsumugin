@@ -213,3 +213,23 @@ def test_the_internal_standard_keeps_its_certified_lattice():
     std = next(p for p in tmpl.phases if p.phase_name == "A")
     assert std.refine_cell is False
     assert tmpl.derivation["decisions"]["target_phase"] == "B"
+
+
+def test_pass1_runs_with_the_same_acceptance_rules_as_pass2(monkeypatch):
+    """pass 1 と pass 2 で段の受理規則 (収束判定) を揃える (セルフレビュー H2)。"""
+    import tsumugin.autorietveld.engine as engine
+
+    seen = []
+
+    def fake_run(hists, phases, *, recipe, **kw):
+        seen.append(kw)
+        return _result(recipe, phases)
+
+    monkeypatch.setattr(engine, "run_auto_rietveld", fake_run)
+    out = run_recipe_search(
+        [_hist()], [A, B], names=["template"], runner=CandidateFake(), save_gpx=False,
+    )
+    assert out.outcomes and seen
+    tmpl = out.outcomes[0].candidate
+    assert all(kw["stability"] == tmpl.stability for kw in seen)
+    assert all(kw["blas_threads"] == 1 for kw in seen)

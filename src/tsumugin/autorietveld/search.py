@@ -1037,7 +1037,11 @@ def _template_candidate(
     def default_pass1(trial, hists, phs, stages):  # type: ignore[no-untyped-def]
         from .engine import run_auto_rietveld
 
-        kwargs = {k: v for k, v in run_kwargs.items() if k != "stability"}
+        # 【pass 2 と同じ受理規則で回す (セルフレビュー H2)】: pass 1 は「pass 2 と同じ段 0–4」を回して判断を
+        #   決める (REQ-FTJ-1B-301)。受理規則 (収束判定) が違うと、pass 1 で受理された段 1 が pass 2 で
+        #   棄却され、格子の再試行が要るかの判断が別の軌跡の上で下されたことになる。
+        kwargs = dict(run_kwargs)
+        kwargs["stability"] = _TEMPLATE_STABILITY
         kwargs["blas_threads"] = 1
         with gpx_context(group.child(role="template_pass1", label=trial)):  # type: ignore[attr-defined]
             return run_auto_rietveld(
