@@ -1,6 +1,6 @@
 # fit-then-judge P1-1B — 設計 (テンプレート: pass 1 → 静的コンパイル → 候補 `"template"`)
 
-- **状態**: 実装中 (branch `milestone/fit-then-judge-1b`)
+- **状態**: 実装済み (branch `milestone/fit-then-judge-1b`)。実装で変えたことは作業計画の「設計からの差分」
 - **上位**: [proposal.md](proposal.md) v5 §4 (決定 1B)・§5 (統計の規約)。要件は
   [`docs/spec/fit-then-judge/requirements-1b.md`](../../spec/fit-then-judge/requirements-1b.md)、作業計画は
   [`docs/tasks/fit-then-judge/p1-1b.md`](../../tasks/fit-then-judge/p1-1b.md)
@@ -17,7 +17,7 @@
 | `template.compile` | 判断 (`TemplateDecisions`) → 静的な段列・`PhaseSpec`・ヒストグラム (純関数)。pass 1 の段列もここで作る | `autorietveld.model`/`recipe` |
 | `template.pass1` | pass 1 の進行 (runner を注入) と判断の決定 | `evidence.fitstats`、`template.compile` |
 | `template.uiso` | Uiso のまとめ方の規則 ((元素, 配位数) でまとめる) | pymatgen を**遅延 import** (無ければ `unevaluated`) |
-| `template.probe` | 初期値プローブの判定 (プローブ結果 → 値ごとの戻り/割れ) | `autorietveld.agreement` |
+| `autorietveld.probe` / `claims.build.with_probe` | 初期値プローブの進行 / 判定 (実装で置き場所を変えた — §7) | `autorietveld.agreement` |
 | `autorietveld.engine` | 段フラグ `cell_phases`・`blas_threads`・保存した gpx からのプローブ (`probe_from_gpx`) | GSAS 遅延 import |
 
 `autorietveld` の中に置かないのは、テンプレートが「engine の部品を組み合わせて使う手続き」で、engine の外から
@@ -170,7 +170,8 @@ run_template_pass1(histograms, phases, declarations, *, runner, config, ledger) 
   gpx を一時ディレクトリへ複製して開き、**その時点で精密化フラグが立っている**格子 (相の `Cell` フラグ) と座標 (原子の `X` フラグ) にだけ
   ±δ を掛け、フラグを変えずに精密化して、`run_auto_rietveld` と同じ抽出で結果を作る。保存した gpx は書き換えない。
   抽出は `run_auto_rietveld` の末尾の組み立てを関数に切り出して共用する (2 箇所で別に組み立てると食い違う)。
-- `template.probe.probe_witness(base, plus, minus, tolerances) -> dict[key, "returned" | "split"]` は `parameter_agreements` を使う。
+- (実装で変更) 判定は `claims.build.with_probe(claims, base, outcome)`、±δ の進行は `autorietveld.probe.run_initial_value_probe` に置いた
+  (テンプレート専用ではなく単発・探索・収束確認のどの経路でも頼めるため)。判定は `parameter_agreements` を使う。
   `claims.build.with_probe(claims, verdicts)` が `esd_only` → `locally_stable` (証人 `initial_value_probe`) と `split` → `initial_value_dependent`
   を付ける。合成は最小なので `determined` の値は戻れば変わらず、割れれば落ちる。
 - ②: `auto_rietveld(initial_value_probe={"cell_frac": 0.003, "coord_jitter_ang": 0.02})` (null で回さない)。gpx を保存しない呼び出しでは
