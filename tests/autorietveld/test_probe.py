@@ -28,7 +28,7 @@ _VARS = claim_variable_names(
 )
 
 
-def _result(o1=(0.25, 0.1, 0.3), a=5.0, axes=1, **kw) -> AutoRietveldResult:
+def _result(o1=(0.25, 0.1, 0.3), a=5.0, axes=2, moved=("P.O1.x", "P.O1.y"), **kw) -> AutoRietveldResult:
     base = dict(
         stage_results=(StageResult("S0", 10.0, 1.2, 5, True),),
         final_rwp=10.0, final_gof=1.2,
@@ -53,6 +53,7 @@ def _result(o1=(0.25, 0.1, 0.3), a=5.0, axes=1, **kw) -> AutoRietveldResult:
         ),
         claim_variables=_VARS,
         coord_jitter_axes_moved=axes,
+        coord_jitter_moved=moved,
     )
     base.update(kw)
     return AutoRietveldResult(**base)
@@ -65,9 +66,40 @@ def _outcome(*probes, cfg=ProbeConfig()) -> ProbeOutcome:
 def test_values_that_came_back_in_both_probes_are_locally_stable():
     base = _result()
     claims = with_probe(base_claims(base), base, _outcome(_result(), _result()))
-    for key in ("cell:P.a", "coord:P.O1.x", "uiso:P.Pb"):
+    for key in ("cell:P.a", "coord:P.O1.x"):
         assert claims[key].determinacy is Determinacy.LOCALLY_STABLE, key
         assert claims[key].witnesses[-1].kind == "initial_value_probe"
+
+
+def test_classes_the_probe_did_not_perturb_get_no_witness():
+    """Uiso・占有率・プロファイル等は振っていない — 戻ったのは当然 (レビュー H1)。"""
+    base = _result()
+    claims = with_probe(base_claims(base), base, _outcome(_result(), _result()))
+    assert claims["uiso:P.Pb"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_a_coordinate_that_was_not_moved_in_both_probes_gets_no_witness():
+    base = _result()
+    claims = with_probe(
+        base_claims(base), base, _outcome(_result(), _result(moved=("P.O1.y",)))
+    )
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.ESD_ONLY
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.LOCALLY_STABLE
+
+
+def test_a_displacement_within_the_agreement_floor_is_no_witness():
+    """許容幅 (0.02 Å) 以下しか振らないで「戻った」は空虚 (レビュー H1)。"""
+    base = _result()
+    cfg = ProbeConfig(cell_frac=0.0, coord_jitter_ang=0.02)
+    claims = with_probe(base_claims(base), base, _outcome(_result(), _result(), cfg=cfg))
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_an_unconverged_probe_is_no_witness():
+    base = _result()
+    bad = _result(stage_results=(StageResult("probe", 10.0, 1.2, 5, False),))
+    claims = with_probe(base_claims(base), base, _outcome(_result(), bad))
+    assert claims == base_claims(base)
     json.dumps({k: c.to_dict() for k, c in claims.items()})
 
 
@@ -93,14 +125,14 @@ def test_an_incomplete_probe_leaves_the_base_state():
 
 def test_coordinates_get_no_witness_when_no_axis_moved():
     base = _result()
-    claims = with_probe(base_claims(base), base, _outcome(_result(axes=0), _result(axes=0)))
+    claims = with_probe(base_claims(base), base, _outcome(_result(axes=0, moved=()), _result(axes=0, moved=())))
     assert claims["coord:P.O1.x"].determinacy is Determinacy.ESD_ONLY
     assert claims["cell:P.a"].determinacy is Determinacy.LOCALLY_STABLE
 
 
 def test_lattices_get_no_witness_when_the_cell_was_not_perturbed():
     base = _result()
-    cfg = ProbeConfig(cell_frac=0.0, coord_jitter_ang=0.02)
+    cfg = ProbeConfig(cell_frac=0.0, coord_jitter_ang=0.05)
     claims = with_probe(base_claims(base), base, _outcome(_result(), _result(), cfg=cfg))
     assert claims["cell:P.a"].determinacy is Determinacy.ESD_ONLY
     assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE
@@ -216,13 +248,14 @@ def test_probes_from_a_saved_fit_come_back_and_leave_the_gpx_untouched(tmp_path,
 
     # 座標だけを振る (格子の摂動は下の別テスト)。
     outcome = run_initial_value_probe(
-        base.gpx_path, ProbeConfig(cell_frac=0.0, coord_jitter_ang=0.02)
+        base.gpx_path, ProbeConfig(cell_frac=0.0, coord_jitter_ang=0.05)
     )
     assert outcome.complete, outcome.errors
     assert hashlib.sha256(open(base.gpx_path, "rb").read()).hexdigest() == digest
     for probe in outcome.probes:
         # O1 の z だけ — Zn の z は座標フラグが立っているが極性原点の hold に入っている
         assert probe.coord_jitter_axes_moved == 1
+        assert probe.coord_jitter_moved == ("ZnO.O1.z",)
         assert abs(probe.final_rwp - base.final_rwp) < 0.01 * base.final_rwp
 
     claims = with_probe(base_claims(base), base, outcome)

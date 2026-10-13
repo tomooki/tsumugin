@@ -1583,28 +1583,36 @@ def _polar_origin_plan(g2phases, specs, getcsxinel=None) -> list[tuple]:
 
 
 def polar_origin_atoms(g2phases, specs, getcsxinel=None) -> dict[str, set[str]]:
-    """相名 → 極性原点を決める (固定される) 原子ラベル。座標の摂動から外すのに使う。"""
-    out: dict[str, set[str]] = {}
+    """相名 → 極性原点を決める (固定される) 原子ラベル。"""
+    return {
+        phase: set(atoms) for phase, atoms in polar_origin_axes(g2phases, specs, getcsxinel).items()
+    }
+
+
+def polar_origin_axes(g2phases, specs, getcsxinel=None) -> dict[str, dict[str, set[int]]]:
+    """相名 → 極性原点を決める原子 → 固定される座標の軸 (0=x,1=y,2=z)。座標の摂動から外すのに使う。"""
+    out: dict[str, dict[str, set[int]]] = {}
     for _ph, spec, _polax, constraints, _index in _polar_origin_plan(g2phases, specs, getcsxinel):
-        if constraints:
-            out.setdefault(spec.phase_name, set()).update(label for label, _ in constraints)
+        for label, terms in constraints:
+            axes = out.setdefault(spec.phase_name, {}).setdefault(label, set())
+            axes.update("xyz".index(axis) for axis, _ in terms)
     return out
 
 
 def _coord_jitter_skips(
     g2phases, specs, getcsxinel=None
-) -> "tuple[dict[str, tuple[str, ...]], dict[str, set[str]]]":
-    """座標の初期摂動で動かさない原子: 凍結した原子 + 極性原点を決める原子 (fit-then-judge P1-1B)。
+) -> "tuple[dict[str, tuple[str, ...]], dict[str, dict[str, set[int]]]]":
+    """座標の初期摂動で動かさないもの (fit-then-judge P1-1B)。
 
-    :returns: (相名 → 動かさないラベル, 相名 → そのうち極性原点を決める原子)
+    - 凍結した原子 (``frozen_coord_labels``) は原子ごと
+    - 極性原点を決める原子は**固定される軸だけ** (その原子の他の自由軸は振る — 原子ごと外すと試験して
+      いない軸を「試験した」と数える)
+
+    :returns: (相名 → 動かさないラベル, 相名 → 原点を決める原子 → 動かさない軸)
     """
-    origin_atoms = polar_origin_atoms(g2phases, specs, getcsxinel)
-    skip = {
-        p.phase_name: tuple(p.frozen_coord_labels)
-        + tuple(sorted(origin_atoms.get(p.phase_name, set()) - set(p.frozen_coord_labels)))
-        for p in specs
-    }
-    return skip, origin_atoms
+    origin_axes = polar_origin_axes(g2phases, specs, getcsxinel)
+    skip = {p.phase_name: tuple(p.frozen_coord_labels) for p in specs}
+    return skip, origin_axes
 
 
 def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
@@ -1673,6 +1681,10 @@ def _apply_coord_jitter(
     getcsxinel=None,
     *,
     frozen: "Mapping[str, Iterable[str]] | None" = None,
+    frozen_axes: "Mapping[str, Mapping[str, Iterable[int]]] | None" = None,
+    fixed_magnitude: bool = False,
+    sign: int = 1,
+    moved: "list[str] | None" = None,
 ) -> int:
     """原子座標に**対称性を壊さない**初期摂動を掛ける (マルチスタートの構造軸)。
 
@@ -1696,6 +1708,14 @@ def _apply_coord_jitter(
     :param frozen: 相名 → 動かさない原子ラベル (``PhaseSpec.frozen_coord_labels``)。
         凍結原子は乱数を消費しない。凍結の無い入力は従来とビット同一だが、乱数列は全相で
         1 本なので、凍結原子を持つ相より**後ろの相**は引く値がずれる (決定論は保たれる)
+    :param frozen_axes: 相名 → 原子ラベル → 動かさない軸 (0=x,1=y,2=z)。極性原点の hold のように
+        **軸単位で**固定された座標を外す (原子ごと外すと、その原子の他の自由軸を試験しないまま
+        「試験した」と数えることになる — fit-then-judge P1-1B)
+    :param fixed_magnitude: 真なら変位の大きさを ``amp`` に固定し、向きだけを乱数で決める
+        (初期値プローブ用: 一様乱数だと一致の許容幅より小さい変位が混ざり「戻った」が空虚になる)
+    :param sign: ``fixed_magnitude`` のとき全変位に掛ける向き (±δ の 2 開始点)
+    :param moved: 与えると、動かした座標のキー ``"<相>.<ラベル>.<x|y|z>"`` を追記する (結束軸の従属側を
+        含む — 代表軸と一緒に動く)。値ごとの証人 (`claims`) が「この座標は試験した」を判定するのに使う
     :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
         呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
     """
@@ -1709,7 +1729,7 @@ def _apply_coord_jitter(
         except Exception:  # noqa: BLE001 — GSAS 無しは「動かさない」へ縮退 (fail open)
             return 0
     rng = np.random.default_rng(seed)
-    moved = 0
+    n_moved = 0
     for ph in g2phases:
         amp = jitter_ang.get(ph.name)
         if not amp or not math.isfinite(float(amp)) or float(amp) <= 0.0:
@@ -1725,21 +1745,38 @@ def _apply_coord_jitter(
         except Exception:  # noqa: BLE001 — 構造が読めない相はスキップ
             continue
         skip = {str(lab) for lab in (frozen or {}).get(ph.name, ())}
+        skip_axes = {
+            str(lab): {int(a) for a in axes}
+            for lab, axes in ((frozen_axes or {}).get(ph.name, {}) or {}).items()
+        }
         for row in atoms:
-            if skip and str(row[ct - 1]) in skip:
+            label = str(row[ct - 1])
+            if skip and label in skip:
                 continue
             free = free_index_from_site_symmetry(getcsxinel, row[cs])
             # 0 = 対称固定 / 結束軸の従属側は動かさない (代表軸だけ動かす)
             for axis in independent_axes(free):
+                if axis in skip_axes.get(label, ()):
+                    continue
                 length = lengths[axis] if lengths[axis] > 0 else 1.0
-                # Å の変位を当該軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
-                delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
+                if fixed_magnitude:
+                    # 大きさは amp に固定、向きだけ乱数 (± の 2 開始点で sign が反転する)
+                    unit = 1.0 if float(rng.uniform(-1.0, 1.0)) >= 0.0 else -1.0
+                    delta = sign * unit * float(amp) / length
+                else:
+                    # Å の変位を当該軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
+                    delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
                 try:
                     row[cx + axis] = float(row[cx + axis]) + delta
                 except Exception:  # noqa: BLE001 — 書けない行はスキップ
                     continue
-                moved += 1
-    return moved
+                n_moved += 1
+                if moved is not None:
+                    fid = free[axis]
+                    for a in range(3):
+                        if a == axis or (fid and free[a] == fid):
+                            moved.append(f"{ph.name}.{label}.{'xyz'[a]}")
+    return n_moved
 
 
 def _apply_initial_occupancies(g2phases, occupancies: Mapping[str, Mapping[str, float]]) -> None:
@@ -2776,23 +2813,26 @@ def run_auto_rietveld(
         #     動かせた軸数は ledger に残す — 0 なら「この軸では試験していない」であって
         #     「摂動しても動かなかった」ではない。
         n_jittered = 0
+        jitter_moved: list[str] = []
         if initial_coord_jitter:
             # 【極性原点を決める原子は動かさない (fit-then-judge P1-1B)】: その原子の極性方向の座標は
             #   後で hold されるので、動かすと開始点ごとに原点がずれ、構造全体が極性方向へ並進した解に
             #   なる (agreement が偽の「初期値依存」を報告する)。原点の選び方は座標に依らないので
             #   ここで先に決めて共用する。
-            skip, origin_atoms = _coord_jitter_skips(g2phases, phases)
+            skip, origin_axes = _coord_jitter_skips(g2phases, phases)
             n_jittered = _apply_coord_jitter(
                 g2phases, initial_coord_jitter, jitter_seed, frozen=skip,
+                frozen_axes=origin_axes, moved=jitter_moved,
             )
             entry = {
                 "seed": int(jitter_seed),
                 "amplitude_ang": {k: float(v) for k, v in initial_coord_jitter.items()},
                 "n_axes_moved": n_jittered,
             }
-            if origin_atoms:
-                entry["polar_origin_atoms_not_jittered"] = {
-                    k: sorted(v) for k, v in sorted(origin_atoms.items())
+            if origin_axes:
+                entry["polar_origin_axes_not_jittered"] = {
+                    phase: {lab: sorted("xyz"[a] for a in axes) for lab, axes in sorted(atoms.items())}
+                    for phase, atoms in sorted(origin_axes.items())
                 }
             ledger.append("m7_coord_jitter", entry)
 
@@ -3495,6 +3535,7 @@ def run_auto_rietveld(
         #   返らないことがある (② 単発) ので、理由は結果にも載せる (設計 §5)。
         artifact_fallback_reason=plan.fallback_reason if out_gpx else "",
         coord_jitter_axes_moved=int(n_jittered),
+        coord_jitter_moved=tuple(jitter_moved),
         final_covariance=_final_covariance(gpx),
         claim_variables=_claim_variables(g2phases, g2hists),
         reflection_two_theta=_reflection_two_theta(g2hists, histograms),
@@ -3513,33 +3554,36 @@ def _refined_coord_free_labels(ph) -> set[str]:
     return out
 
 
-def _coord_constrained_labels(gpx, ph) -> set[str]:
-    """座標のシフト (``dAx/dAy/dAz``) が**拘束に入っている**原子のラベル (= プローブで摂動しない原子)。
+def _coord_constrained_axes(gpx, ph) -> dict[str, set[int]]:
+    """座標のシフト (``dAx/dAy/dAz``) が**拘束に入っている**原子 → その軸 (= プローブで摂動しない)。
 
-    極性原点の hold・座標の等値などは「動かない/一緒に動く」ことを拘束が決めているので、初期値を
-    振ると拘束が摂動値のまま固定する (原点ごと並進した解になる)。拘束の変数は `G2VarObj` で、
-    原子はランダム ID (`ranId`) で指す (名前ではない — 読み込み前の str は ``?::dAz:?``)。
+    - hold (極性原点など): その軸だけ (値が初期値に固定されるので、振ると原点ごと並進した解になる)
+    - それ以外 (等値・一次結合): その原子の 3 軸すべて (別々に振ると拘束が結ぶ関係を壊す)
+
+    拘束の変数は `G2VarObj` で、原子はランダム ID (`ranId`) で指す (名前ではない — 読み込み前の str は
+    ``?::dAz:?``)。**読めなければ例外** — 黙って「拘束なし」とすると hold した原子を振り、偽の
+    「初期値依存」を作る (呼び手のプローブは失敗として扱い、証人を付けない)。
     """
-    try:
-        phase_rid = ph.data["ranId"]
-        cia = int(ph.data["General"]["AtomPtrs"][3])
-        by_rid = {row[cia + 8]: str(row[ph.data["General"]["AtomPtrs"][1] - 1])
-                  for row in ph.data["Atoms"]}
-        constraints = gpx.data["Constraints"]["data"].get("Phase", [])
-    except Exception:  # noqa: BLE001 — 読めなければ拘束なしとして扱う (呼び手は全フラグを見る)
-        return set()
-    out: set[str] = set()
+    phase_rid = ph.data["ranId"]
+    cia = int(ph.data["General"]["AtomPtrs"][3])
+    ct = int(ph.data["General"]["AtomPtrs"][1])
+    by_rid = {row[cia + 8]: str(row[ct - 1]) for row in ph.data["Atoms"]}
+    constraints = gpx.data["Constraints"]["data"].get("Phase", [])
+    out: dict[str, set[int]] = {}
     for item in constraints:
+        kind = item[-1] if item and isinstance(item[-1], str) else ""
         for term in item:
             if not isinstance(term, (list, tuple)) or len(term) < 2:
                 continue
             var = term[1]
+            name = str(getattr(var, "name", ""))
             if (
                 getattr(var, "phase", None) == phase_rid
-                and str(getattr(var, "name", "")).startswith("dA")
+                and name in ("dAx", "dAy", "dAz")
                 and getattr(var, "atom", None) in by_rid
             ):
-                out.add(by_rid[var.atom])
+                axes = out.setdefault(by_rid[var.atom], set())
+                axes.update({"xyz".index(name[-1])} if kind == "h" else {0, 1, 2})
     return out
 
 
@@ -3559,9 +3603,10 @@ def probe_from_gpx(
 
     `run_auto_rietveld` は毎回 CIF から組み立てるので「最終状態の近く」から始められない。本関数は gpx を
     一時ディレクトリへ**複製して**開き (保存した成果物は書き換えない)、**その時点で精密化フラグが立っている**
-    格子 (varyList に A 項がある相) の a,b,c を ``1 + sign·cell_frac`` 倍、座標フラグ ``X`` が立っていて座標が
-    拘束に入っていない原子 (極性原点の hold 等は除く — `_coord_constrained_labels`) の対称性が自由な軸を
-    ``coord_jitter_ang`` Å の一様乱数で動かし、フラグを変えずに精密化する。
+    格子 (varyList に A 項がある相) の a,b,c を ``1 + sign·cell_frac`` 倍、座標フラグ ``X`` が立っている原子の
+    対称性が自由な軸 (拘束に入った座標は除く — `_coord_constrained_axes`) を**大きさ ``coord_jitter_ang`` Å・
+    向きは乱数 (sign で反転)** で動かし、フラグを変えずに精密化する (一様乱数だと一致の許容幅より小さい変位が
+    混ざり「戻った」が空虚になる)。動かした座標は結果の ``coord_jitter_moved``。
     凍結した値を振らない (振ると摂動値がそのまま最終値になり、偽の「割れ」になる — PR #226 と同じ理由)。
 
     結果は値の比較 (`agreement.parameter_agreements`) に要るフィールドだけを持つ `AutoRietveldResult`
@@ -3588,15 +3633,13 @@ def probe_from_gpx(
                     _perturb_initial_cell(ph, (f, f, f))
                     moved_cells.append(ph.name)
         n_axes = 0
+        moved: list[str] = []
         if coord_jitter_ang > 0.0:
             n_axes = _apply_coord_jitter(
                 g2phases, {ph.name: coord_jitter_ang for ph in g2phases}, seed,
-                frozen={
-                    ph.name: tuple(sorted(
-                        _refined_coord_free_labels(ph) | _coord_constrained_labels(gpx, ph)
-                    ))
-                    for ph in g2phases
-                },
+                frozen={ph.name: tuple(sorted(_refined_coord_free_labels(ph))) for ph in g2phases},
+                frozen_axes={ph.name: _coord_constrained_axes(gpx, ph) for ph in g2phases},
+                fixed_magnitude=True, sign=sign, moved=moved,
             )
         gpx.data["Controls"]["data"]["max cyc"] = max_cyc
         _refine_once(gpx)
@@ -3639,6 +3682,7 @@ def probe_from_gpx(
             hap_size_esd=micro[2],
             hap_mustrain_esd=micro[3],
             coord_jitter_axes_moved=int(n_axes),
+            coord_jitter_moved=tuple(moved),
             final_covariance=_final_covariance(gpx),
         )
     return result

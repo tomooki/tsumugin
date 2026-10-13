@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping
 
 from .._config_spec import check_float, check_int, spec_value
+from .._json import finite_or_none
 from .model import AutoRietveldResult
 
 __all__ = ["ProbeConfig", "ProbeOutcome", "Prober", "run_initial_value_probe"]
@@ -25,20 +26,26 @@ Prober = Callable[..., AutoRietveldResult]
 
 @dataclass(frozen=True)
 class ProbeConfig:
-    """±δ の大きさ。格子は相対 (a,b,c を 1±cell_frac 倍)、座標は Å。値は P1.5 で調整する。"""
+    """±δ の大きさ。格子は相対 (a,b,c を 1±cell_frac 倍)、座標は Å (大きさ固定・向きは乱数)。
+
+    **一致の許容幅 (`AgreementTolerances`: 格子 1e-4・座標 0.02 Å) を超える値でなければ証人にならない**
+    (許容幅より小さく振って「戻った」と言うのは空虚)。値は P1.5 で調整する。
+    """
 
     cell_frac: float = 0.001
-    coord_jitter_ang: float = 0.02
+    coord_jitter_ang: float = 0.05
     seed: int = 0
     max_cyc: int = 12
 
     @classmethod
     def from_dict(cls, d: "Mapping[str, object] | None") -> "ProbeConfig":
         """JSON から (未知キー・型違いは ValueError)。"""
-        if not d:
+        if d is None:
             return cls()
         if not isinstance(d, Mapping):
             raise ValueError(f"initial_value_probe は dict です: {type(d).__name__}")
+        if not d:
+            return cls()
         known = {"cell_frac", "coord_jitter_ang", "seed", "max_cyc"}
         unknown = sorted(set(d) - known)
         if unknown:
@@ -46,7 +53,7 @@ class ProbeConfig:
         s = "initial_value_probe"
         cfg = cls(
             cell_frac=spec_value(d, "cell_frac", s, 0.001, check_float),
-            coord_jitter_ang=spec_value(d, "coord_jitter_ang", s, 0.02, check_float),
+            coord_jitter_ang=spec_value(d, "coord_jitter_ang", s, 0.05, check_float),
             seed=spec_value(d, "seed", s, 0, check_int),
             max_cyc=spec_value(d, "max_cyc", s, 12, check_int),
         )
@@ -80,7 +87,7 @@ class ProbeOutcome:
             "config": self.config.to_dict(),
             "n_probes": len(self.probes),
             "complete": self.complete,
-            "rwp": [p.final_rwp if p is not None else None for p in self.probes],
+            "rwp": [finite_or_none(p.final_rwp) if p is not None else None for p in self.probes],
             "errors": list(self.errors),
             "reason": self.reason,
         }

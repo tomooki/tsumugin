@@ -649,6 +649,11 @@ AUTORIETVELD_RESULT_FIELDS: dict[str, tuple[str, str]] = {
     "undetermined_exempt": ("undetermined_exempt", ""),
     "frozen_parameters": ("frozen_parameters", ""),
     "final_polish": ("final_polish", ""),
+    "coord_jitter_moved": (
+        UNEXPOSED,
+        "意図的 (fit-then-judge P1-1B): 値ごとの証人の入力 (どの座標を振ったか)。② には加工後の "
+        "`claims` (`determined`/`locally_stable` の有無) として出る",
+    ),
     "coord_jitter_axes_moved": (
         UNEXPOSED,
         "意図的: マルチスタートの開始点ごとの摂動記録。単発の ② `auto_rietveld` では摂動しないので"

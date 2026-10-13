@@ -219,6 +219,12 @@ def with_convergence(
     coords_tested = not jitter_requested or any(
         int(getattr(s, "n_axes_jittered", 0)) > 0 for s in starts
     )
+    # どの座標を振ったか (engine が記録)。記録があれば座標の証人はそれに限る — 件数だけだと、極性原点の
+    #   hold や凍結で振っていない座標まで「試験した」と数える (fit-then-judge P1-1B)
+    moved_coords = {
+        f"coord:{k}" for r in results if r is not None
+        for k in getattr(r, "coord_jitter_moved", ())
+    }
     tolerances = AgreementTolerances()
 
     verdicts: dict[str, list[tuple[str, float | None, int, int]]] = {}
@@ -247,7 +253,10 @@ def with_convergence(
             and all(is_agreement(v[0]) for v in found)
             and claim.determinacy is Determinacy.ESD_ONLY
             and "refined" in claim.provenance  # 解放しなかった入力値は「決まった」のではない
-            and (coords_tested or claim.param_class != "coord")
+            and (
+                claim.param_class != "coord"
+                or (coords_tested and (not moved_coords or key in moved_coords))
+            )
         ):
             zs = [v[1] for v in found if v[1] is not None]
             out[key] = claim.strengthened_to(
@@ -268,22 +277,34 @@ def with_probe(
     - どちらかの開始点で割れた値 (DISAGREE) は `initial_value_dependent`
     - 両方で戻った `esd_only` の値は `locally_stable` (証人付き)。`determined` 等は変えない
       (合成は最小 — 割れたときだけ落ちる)
-    - 2 開始点とも回っていなければ何もしない (回らなかった・省いた値は基底状態のまま)
-    - 座標の摂動を頼んだのに 1 軸も動かなかったら、座標には証人を付けない
+    - 2 開始点とも回り、**収束し**、使える結果でなければ何もしない (回らなかった・省いた値は基底状態のまま)
+    - **振った値にだけ** `locally_stable` を付ける: 格子は ``cell_frac`` が一致の許容幅を超えるとき、座標は
+      両方の開始点で実際に動かした座標 (`coord_jitter_moved`) で、かつ変位が一致の許容幅を超えるとき。
+      Uiso・占有率・プロファイル・分率・微細構造は振っていないので、戻っても証人にしない
+      (割れたら `initial_value_dependent` には落とす — 割れたこと自体は情報)
     """
     out = dict(claims)
     if outcome is None or not getattr(outcome, "complete", False):
         return out
     probes = tuple(getattr(outcome, "probes", ()))
+    if not all(_usable(p) and all(st.converged for st in p.stage_results) for p in probes):
+        return out  # 収束していない開始点の「戻った」は証人にならない
     config = getattr(outcome, "config", None)
+    tolerances = AgreementTolerances()
     jitter = float(getattr(config, "coord_jitter_ang", 0.0) or 0.0)
     cell_frac = float(getattr(config, "cell_frac", 0.0) or 0.0)
-    coords_tested = jitter > 0.0 and all(int(p.coord_jitter_axes_moved) > 0 for p in probes)
-    if not coords_tested and cell_frac <= 0.0:
-        return out  # 何も振っていない — 戻ったのは当然で証人にならない
-    # 振らなかった種類の値には証人を付けない (格子を振らずに「格子が戻った」と言わない)。
-    untested = ({"coord"} if not coords_tested else set()) | ({"cell"} if cell_frac <= 0.0 else set())
-    tolerances = AgreementTolerances()
+    cell_tested = cell_frac > tolerances.cell_rel_floor
+    moved_coords: set[str] = set()
+    if jitter > tolerances.coord_dist_floor_ang:
+        moved_sets = [set(p.coord_jitter_moved) for p in probes]
+        moved_coords = {f"coord:{k}" for k in set.intersection(*moved_sets)} if moved_sets else set()
+
+    def tested(claim: Claim) -> bool:
+        if claim.param_class == "cell":
+            return cell_tested
+        if claim.param_class == "coord":
+            return claim.key in moved_coords
+        return False
     found: dict[str, list[tuple[str, float | None, int]]] = {}
     for i, probe in enumerate(probes):
         for cls, items in parameter_agreements(base, probe, tolerances).items():
@@ -312,7 +333,7 @@ def with_probe(
             and all(is_agreement(v[0]) for v in verdicts)
             and claim.determinacy is Determinacy.ESD_ONLY
             and "refined" in claim.provenance  # 解放しなかった入力値は戻って当然 (証人にならない)
-            and claim.param_class not in untested
+            and tested(claim)
         ):
             zs = [v[1] for v in verdicts if v[1] is not None]
             out[key] = claim.strengthened_to(

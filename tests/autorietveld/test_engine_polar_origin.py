@@ -219,12 +219,13 @@ def test_jittered_starts_keep_the_origin_on_a_real_gsas_refinement(tmp_path, mon
         [hist], [phase], ledger=ledger, initial_coord_jitter={"ZnO": 0.05}, jitter_seed=3
     )
     jit = next(e.payload for e in ledger.entries if e.kind == "m7_coord_jitter")
-    assert jit["polar_origin_atoms_not_jittered"] == {"ZnO": ["Zn1"]}
+    assert jit["polar_origin_axes_not_jittered"] == {"ZnO": {"Zn1": ["z"]}}
     assert jit["n_axes_moved"] == 1  # O1 の z だけ
     zn = result.atom_coords["ZnO"]["Zn1"]
     o = result.atom_coords["ZnO"]["O1"]
     assert zn[2] == 0.0, f"原点を決める Zn が動いた: {zn}"
     assert abs(o[2] - 0.382) < 0.003, f"O の z が真値へ戻らない: {o}"
+    assert result.coord_jitter_moved == ("ZnO.O1.z",)
 
 
 def test_polar_origin_with_element_ranked_coords_stages_is_refused():
@@ -254,7 +255,32 @@ def test_the_origin_fixing_atom_is_not_jittered():
     spec = _spec(fix_polar_origin=True, frozen_coord_labels=())
     assert polar_origin_atoms([ph], [spec], _getcsxinel) == {"w": {"Zn1"}}
     skip, origin = _coord_jitter_skips([ph], [spec], _getcsxinel)
-    assert skip == {"w": ("Zn1",)} and origin == {"w": {"Zn1"}}
+    # 原子ごとではなく固定される軸 (z) だけを外す (レビュー M7)
+    assert skip == {"w": ()} and origin == {"w": {"Zn1": {2}}}
+
+
+def test_only_the_held_axis_of_the_origin_atom_is_skipped_and_moves_are_recorded():
+    """一般位置の原点原子は z だけ hold — x,y は振って「試験した座標」として記録する。"""
+    from tsumugin.autorietveld.engine import _apply_coord_jitter
+
+    class _Ph(_Phase):
+        name = "w"
+
+        def get_cell(self):
+            return {"length_a": 5.0, "length_b": 5.0, "length_c": 5.0}
+
+    ph = _Ph("z", [("Bi1", "Bi", "1"), ("O1", "O", "3m(z)")])
+    before = [list(r) for r in ph.data["Atoms"]]
+    moved: list[str] = []
+    n = _apply_coord_jitter(
+        [ph], {"w": 0.05}, 0, _getcsxinel, frozen_axes={"w": {"Bi1": {2}}}, moved=moved,
+        fixed_magnitude=True, sign=-1,
+    )
+    assert n == 3 and sorted(moved) == ["w.Bi1.x", "w.Bi1.y", "w.O1.z"]
+    bi_after, bi_before = ph.data["Atoms"][0], before[0]
+    assert bi_after[2 + 2] == bi_before[2 + 2]  # z は hold — 動かない
+    for axis in (0, 1):  # 大きさは固定 (0.05 Å / 5 Å = 0.01)
+        assert abs(abs(bi_after[2 + axis] - bi_before[2 + axis]) - 0.01) < 1e-12
 
 
 def test_without_the_origin_flag_only_frozen_atoms_are_skipped():
