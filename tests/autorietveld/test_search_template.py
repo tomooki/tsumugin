@@ -105,7 +105,7 @@ def test_the_template_candidate_runs_pass1_and_carries_its_compiled_model():
     assert tmpl.phases[1].frozen_coord_labels == ("B1",)  # 非対象相の構造凍結
     d = tmpl.to_dict()
     assert d["template_version"] == "fit-then-judge/1B/1"
-    json.dumps(d)
+    json.dumps(d, allow_nan=False)
     assert d["derivation"]["decisions"]["target_phase"] == "A"
     assert "target_phase_ambiguous" in d["derivation"]
     # 他の候補と同じ表で比べられる
@@ -233,3 +233,31 @@ def test_pass1_runs_with_the_same_acceptance_rules_as_pass2(monkeypatch):
     tmpl = out.outcomes[0].candidate
     assert all(kw["stability"] == tmpl.stability for kw in seen)
     assert all(kw["blas_threads"] == 1 for kw in seen)
+
+
+def test_an_engine_refusal_of_the_compiled_phases_fails_only_the_template_candidate():
+    """テンプレートがコンパイルした相の指定の誤りで他の候補の結果ごと失わない (セルフレビュー M4)。"""
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def runner(cand):
+        if cand.name == "template":
+            raise InvalidPhaseSpecError("極性原点を固定できません")
+        return _result(cand.stages, (A, B))
+
+    out = run_recipe_search(
+        [_hist()], [A, B], names=["default", "template"], runner=runner,
+        template_pass1_runner=Pass1Fake(), save_gpx=False,
+    )
+    tmpl = next(o for o in out.outcomes if o.candidate.name == "template")
+    assert tmpl.result is None and "極性原点" in tmpl.error
+    assert out.selected is not None and out.selected.candidate.name == "default"
+
+
+def test_a_user_phase_spec_error_still_propagates_from_ordinary_candidates():
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def runner(cand):
+        raise InvalidPhaseSpecError("相に無いラベル")
+
+    with pytest.raises(InvalidPhaseSpecError):
+        run_recipe_search([_hist()], [A], names=["default"], runner=runner, save_gpx=False)

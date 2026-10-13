@@ -31,7 +31,9 @@ from .model import Check, Claim, Determinacy, Scope, Witness, compose, weaker_de
 __all__ = ["CLAIMS_VERSION", "base_claims", "with_convergence", "with_probe"]
 
 #: claims の写像規則の版 (② の出力・sidecar に記録する)。
-CLAIMS_VERSION = "fit-then-judge/1A/1"
+# 1B/1: 入力値を昇格しない・`locally_stable` (初期値プローブ)・座標の証人は動かした座標だけ・
+#   テンプレートの判断要求と `declared:*` の出自 (fit-then-judge P1-1B)。
+CLAIMS_VERSION = "fit-then-judge/1B/1"
 
 _CELL_AXES = ("a", "b", "c", "alpha", "beta", "gamma")
 #: esd ≥ |値| を「決まっていない」とする種類 (格子・座標・プロファイルは値の原点が任意なので除く)。

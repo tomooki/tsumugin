@@ -53,6 +53,7 @@ def _derivation(**kw) -> dict:
         "declarations": {},
         "target_phase_ambiguous": False,
         "zero_offset_significant": False,
+        "offset": "shift",
     }
     d.update(kw)
     return d
@@ -96,7 +97,7 @@ def test_an_ambiguous_target_blocks_every_structure_value():
     assert "coord:P.O1.x" in req.blocks and "uiso:P.Pb" in req.blocks
     assert "cell:P.a" not in req.blocks
     assert "target_phase_ambiguous" in body.claims["coord:P.O1.x"].gate
-    json.dumps(body.to_dict())
+    json.dumps(body.to_dict(), allow_nan=False)
 
 
 def test_declarations_are_carried_into_provenance():
@@ -111,3 +112,26 @@ def test_declarations_are_carried_into_provenance():
 def test_assess_without_template_inputs_is_unchanged():
     result = _result()
     assert assess(result, None).to_dict() == assess(result, None, derivation=None, probe=None).to_dict()
+
+
+def test_an_unevaluated_zero_test_keeps_lattices_relative_even_with_a_standard():
+    """Zero を検定できなかった (None) なら既定側 (relative) — REQ-FTJ-1B-302 (セルフレビュー M1)。"""
+    claims = base_claims(_result())
+    out, _ = template_adjustments(
+        claims, _derivation(declarations={"internal_standard": "Si"},
+                            zero_offset_significant=None, offset="shift"),
+    )
+    assert out["cell:P.a"].scope is Scope.RELATIVE_WITHIN_SAMPLE
+    ds, _ = template_adjustments(
+        claims, _derivation(declarations={"internal_standard": "Si"},
+                            zero_offset_significant=None, offset="zero"),
+    )
+    assert ds["cell:P.a"].scope is Scope.ABSOLUTE  # Debye-Scherrer は Zero を解放している
+
+
+def test_a_zero_calibration_declaration_marks_the_lattice():
+    claims = base_claims(_result())
+    out, _ = template_adjustments(
+        claims, _derivation(declarations={"zero_calibrated": True}, offset="shift")
+    )
+    assert "declared:zero_calibrated" in out["cell:P.a"].provenance

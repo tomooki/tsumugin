@@ -62,6 +62,13 @@ def with_blas_threads(fn: F) -> F:
         _check(n)
         from threadpoolctl import threadpool_limits
 
+        # threadpool_limits は**読み込み済み**のライブラリにしか効かない。制限の中で初めて読み込まれる
+        #   BLAS (GSAS が import する SciPy の BLAS など) を取りこぼさないよう先に読み込む (セルフレビュー L1)
+        try:
+            import scipy.linalg  # noqa: F401
+        except ImportError:  # pragma: no cover — scipy は gsas extra
+            pass
+
         with threadpool_limits(limits=n, user_api="blas"):
             return fn(*args, **kwargs)
 

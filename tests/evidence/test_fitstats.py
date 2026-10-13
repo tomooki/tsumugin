@@ -75,7 +75,7 @@ def test_an_invalid_dof_ratio_is_refused(ratio):
 def test_the_result_is_json_safe():
     import json
 
-    json.dumps(hamilton_test(1100.0, 1000.0, 1.0, 2, alpha=0.05).to_dict())
+    json.dumps(hamilton_test(1100.0, 1000.0, 1.0, 2, alpha=0.05).to_dict(), allow_nan=False)
 
 
 def test_chi2_is_recovered_from_gsas_stage_values():
@@ -199,7 +199,11 @@ def test_an_invalid_effective_dof_ratio_is_refused(ratio):
 # ---------------------------------------------------------------------------
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "tsumugin"
-_FORBIDDEN = re.compile(r"sqrt\(\s*2(?:\.0)?\s*\*\s*\(?\s*[\w.]*(?:dof|n_obs|nobs|n\b)", re.I)
+_FORBIDDEN = re.compile(
+    r"(?:sqrt\(\s*2(?:\.0)?\s*\*\s*\(?\s*[\w.]*(?:dof|n_obs|nobs|n_points|npts|n\b)"
+    r"|\(\s*2(?:\.0)?\s*\*\s*[\w.]*(?:dof|n_obs|nobs|n_points|npts)[^)]*\)\s*\*\*\s*0?\.5)",
+    re.I,
+)
 
 
 def test_sigma_chi2_from_the_degrees_of_freedom_is_not_used():
@@ -214,6 +218,7 @@ def test_sigma_chi2_from_the_degrees_of_freedom_is_not_used():
 
 def test_the_forbidden_pattern_detects_the_idiom():
     """ガード自身の検査 — 典型的な書き方を検出できること。"""
-    for line in ("s = math.sqrt(2 * dof)", "np.sqrt(2.0*(n_obs - p))", "sqrt(2 * self.dof)"):
+    for line in ("s = math.sqrt(2 * dof)", "np.sqrt(2.0*(n_obs - p))", "sqrt(2 * self.dof)",
+                 "(2 * dof) ** 0.5", "math.sqrt(2*n_points)", "(2.0*n_obs - k)**.5"):
         assert _FORBIDDEN.search(line), line
     assert not _FORBIDDEN.search("math.sqrt(2.0 * math.log(2.0))")

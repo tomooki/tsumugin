@@ -169,7 +169,7 @@ def test_unknown_names_and_missing_labels_are_refused():
 def test_the_result_carries_version_and_a_json_safe_derivation():
     c = compile_template([_hist()], [A, B], _decisions(), evidence={"background": {"n": 6}})
     assert c.template_version == TEMPLATE_VERSION
-    d = json.loads(json.dumps(c.derivation))
+    d = json.loads(json.dumps(c.derivation, allow_nan=False))
     assert d["template_version"] == TEMPLATE_VERSION
     assert d["decisions"]["target_phase"] == "A"
     assert d["evidence"] == {"background": {"n": 6}}

@@ -100,7 +100,7 @@ def test_an_unconverged_probe_is_no_witness():
     bad = _result(stage_results=(StageResult("probe", 10.0, 1.2, 5, False),))
     claims = with_probe(base_claims(base), base, _outcome(_result(), bad))
     assert claims == base_claims(base)
-    json.dumps({k: c.to_dict() for k, c in claims.items()})
+    json.dumps({k: c.to_dict() for k, c in claims.items()}, allow_nan=False)
 
 
 def test_a_value_that_did_not_come_back_is_initial_value_dependent():
@@ -181,7 +181,7 @@ def test_the_probe_runs_plus_and_minus_from_the_saved_gpx(tmp_path):
     assert [c[1]["sign"] for c in calls] == [1, -1]
     assert [c[1]["seed"] for c in calls] == [5, 6]
     assert all(c[1]["blas_threads"] == 1 and c[1]["cell_frac"] == 0.01 for c in calls)
-    json.dumps(out.to_dict())
+    json.dumps(out.to_dict(), allow_nan=False)
 
 
 def test_without_a_saved_gpx_the_probe_does_not_run():

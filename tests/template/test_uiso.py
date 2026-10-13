@@ -73,3 +73,9 @@ def test_mixed_occupancy_sites_are_left_to_the_engine(tmp_path):
     g = uiso_groups_from_cif(str(path))
     assert g.status == "pass"
     assert not any(lab in ("M1", "M2") for grp in g.groups for lab in grp)
+
+
+def test_labels_missing_from_the_cif_are_unevaluated(tmp_path):
+    """GSAS のラベルが CIF に無い = 規則を適用できなかった (「組が無かった」と混同しない。M6)。"""
+    g = uiso_groups_from_cif(_rocksalt_p1(tmp_path), labels=("Na1", "Q9"))
+    assert g.status == "unevaluated" and "Q9" in g.reason

@@ -176,10 +176,17 @@ def test_a_close_second_phase_is_ambiguous():
 
 def test_a_declaration_sets_the_target_but_does_not_silence_the_detector():
     decl = TemplateDeclarations(target_phase="B")
-    out, _ = _run(phases=(A, B), decl=decl, fake={"intensity": {"A": (100.0,), "B": (20.0,)}})
+    out, _ = _run(phases=(A, B), decl=decl, fake={"intensity": {"A": (100.0,), "B": (90.0,)}})
     assert out.decisions.target_phase == "B"
-    assert out.target_phase_ambiguous  # データは A を推す — 宣言で判断要求を閉じない
-    assert out.evidence["target_phase"]["largest"] == "A"
+    assert out.target_phase_ambiguous  # 僅差 — 宣言しても判断要求は出る
+
+
+def test_declaring_a_minority_phase_is_not_ambiguity():
+    """少数相を対象に宣言する研究で閉じられない止めを作らない (セルフレビュー M8)。"""
+    decl = TemplateDeclarations(target_phase="B")
+    out, _ = _run(phases=(A, B), decl=decl, fake={"intensity": {"A": (100.0,), "B": (10.0,)}})
+    assert out.decisions.target_phase == "B" and not out.target_phase_ambiguous
+    assert out.evidence["target_phase"]["declared_differs_from_largest"] is True
 
 
 def test_unmeasured_intensity_is_unevaluated_and_ambiguous():
@@ -284,7 +291,7 @@ def test_labels_come_from_the_base_fit():
 def test_the_evidence_is_json_safe_and_recorded():
     ledger = Ledger()
     out, _ = _run(phases=(A, B), ledger=ledger)
-    json.dumps(out.evidence)
+    json.dumps(out.evidence, allow_nan=False)
     kinds = [e.kind for e in ledger.entries]
     assert kinds.count("template_pass1_trial") == 2 and kinds[-1] == "template_pass1"
 
@@ -309,3 +316,19 @@ def test_the_internal_standard_is_never_chosen_as_the_target():
     decl = TemplateDeclarations(internal_standard="A")
     out, _ = _run(phases=(A, B), decl=decl, fake={"intensity": {"A": (100.0,), "B": (20.0,)}})
     assert out.decisions.target_phase == "B"
+
+
+def test_a_phase_spec_error_in_pass1_is_raised_not_hidden():
+    """呼び手の相の指定の誤りを「テンプレートを組めない」に畳まない (セルフレビュー M5)。"""
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def runner(trial, h, p, s):
+        raise InvalidPhaseSpecError("相に無いラベル")
+
+    with pytest.raises(InvalidPhaseSpecError):
+        run_template_pass1([_hist()], [A], TemplateDeclarations(), runner=runner)
+
+
+def test_the_failure_cause_is_in_the_pass1_error():
+    with pytest.raises(Pass1Error, match="GSAS failed"):
+        _run(fake={"fail": {"A"}})

@@ -42,6 +42,7 @@
   Bérar–Lelann の esd 補正は同じ ρ からの因子で、esd には掛けない (proposal §5「esd に GOF を掛け直さない」と同じ理由で、
   1B の判定量にだけ使う)。
 - `RefinementMetrics.effective_dof_ratio` (None 既定) — `evidence.ic` の BIC/AIC で `n` を `n·ratio` に、χ² を `χ²·ratio` にする。
+  **埋める経路は作らない (非露出)** — BIC 実装の統合 (別作業) で配線する。
   `noise_scale` との同時指定は `ValueError`。None なら計算に触れない (既存 BIC のビット同一をテストで縛る)。
 
 **σ(χ²)=√(2·dof) をコードに書かない** — `src/` を走査するガード (`2 * dof`/`2.0 * dof` と `sqrt` の組) で縛る。
@@ -87,7 +88,7 @@ pass1_stages(histograms, phases, declarations, *, background_coeffs, cell_phases
 | 2 | `width-1` | 較正なし `profile: ["U","V","W"]` / 較正あり `size_strain: "isotropic"` |
 | 3 | `width-2` | 較正なし `profile_lorentzian: ["X","Y"]` (Zero を束ねない) / 較正あり — (異方性幅は v1 では出さない。§9) |
 | 4 | `asym` | 較正なしのときだけ `profile_asymmetry: True` |
-| R | `lattice-retry` | 凍結相があるときだけ `cell: True` (全相) |
+| R | `lattice-retry` | 常に `cell: True` (全相)。凍結相の再試行 + pass 2 の段 1 が棄却されたときの再試行 (セルフレビュー H2) |
 | 5 | `coords` | `coords: True` (非対象相は `frozen_coord_labels` で凍結済み) |
 | 6 | `B` | `uiso: True` (まとめ方は対象相の `uiso_equiv_groups`) |
 | 7 | `occupancy` | 混合占有・部分占有があるときだけ `occupancy: True` |
@@ -166,7 +167,7 @@ run_template_pass1(histograms, phases, declarations, *, runner, config, ledger) 
 
 ## 7. 初期値プローブ
 
-- engine `probe_from_gpx(gpx_path, histograms, phases, *, cell_frac, coord_jitter_ang, sign, seed, max_cyc) -> AutoRietveldResult`:
+- engine `probe_from_gpx(gpx_path, *, cell_frac, coord_jitter_ang, sign, seed, max_cyc, blas_threads) -> AutoRietveldResult`:
   gpx を一時ディレクトリへ複製して開き、**その時点で精密化フラグが立っている**格子 (相の `Cell` フラグ) と座標 (原子の `X` フラグ) にだけ
   ±δ を掛け、フラグを変えずに精密化して、`run_auto_rietveld` と同じ抽出で結果を作る。保存した gpx は書き換えない。
   抽出は `run_auto_rietveld` の末尾の組み立てを関数に切り出して共用する (2 箇所で別に組み立てると食い違う)。
@@ -174,8 +175,8 @@ run_template_pass1(histograms, phases, declarations, *, runner, config, ledger) 
   (テンプレート専用ではなく単発・探索・収束確認のどの経路でも頼めるため)。判定は `parameter_agreements` を使う。
   `claims.build.with_probe(claims, verdicts)` が `esd_only` → `locally_stable` (証人 `initial_value_probe`) と `split` → `initial_value_dependent`
   を付ける。合成は最小なので `determined` の値は戻れば変わらず、割れれば落ちる。
-- ②: `auto_rietveld(initial_value_probe={"cell_frac": 0.003, "coord_jitter_ang": 0.02})` (null で回さない)。gpx を保存しない呼び出しでは
-  `initial_value_probe_reason` に理由を返して回さない。
+- ②: `auto_rietveld(initial_value_probe={"cell_frac": 0.001, "coord_jitter_ang": 0.05})` (null で回さない)。gpx を保存しない呼び出しでは
+  `initial_value_probe.reason` に理由を返して回さない。
 
 ## 8. ② と ③
 

@@ -321,7 +321,10 @@ def template_adjustments(
     decisions = dict(derivation.get("decisions") or {})
     zero_sig = derivation.get("zero_offset_significant")
     cells = [k for k, c in out.items() if c.param_class == "cell"]
-    if decl.get("internal_standard") and zero_sig is not True:
+    # Zero の検定が「有意でない」と判定できた (Bragg-Brentano) か、Zero を解放する幾何 (Debye-Scherrer) の
+    #   ときだけ。検定できなかった (None) ときは既定側 (relative) — REQ-FTJ-1B-302 (セルフレビュー M1)
+    zero_settled = zero_sig is False or derivation.get("offset") == "zero"
+    if decl.get("internal_standard") and zero_settled:
         for k in cells:
             c = out[k]
             if "refined" in c.provenance:
@@ -356,6 +359,12 @@ def template_adjustments(
         for k, c in list(out.items()):
             if c.phase == target and c.param_class in _STRUCTURE_CLASSES:
                 out[k] = replace(c, provenance=c.provenance | {"declared:target_phase"})
+    if decl.get("zero_calibrated") and derivation.get("offset") == "shift":
+        # Bragg-Brentano では Zero を装置値に固定する — 格子はその値に依存する (セルフレビュー M9)
+        for k in cells:
+            c = out[k]
+            if "refined" in c.provenance:
+                out[k] = replace(c, provenance=c.provenance | {"declared:zero_calibrated"})
     if decl.get("instrument_calibrated"):
         for k, c in list(out.items()):
             if c.param_class == "microstructure":

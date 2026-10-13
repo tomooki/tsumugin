@@ -67,7 +67,7 @@ def _call(**kw):
 def test_the_template_is_reachable_and_its_derivation_is_reported():
     out = _call()
     assert "error" not in out, out
-    json.dumps(out)
+    json.dumps(out, allow_nan=False)
     assert out["template_version"] == "fit-then-judge/1B/1"
     assert out["template_derivation"]["decisions"]["target_phase"] == "A"
     tmpl = next(
@@ -170,7 +170,7 @@ def test_the_probe_runs_from_the_returned_gpx(tmp_path):
     a = out["claims"]["cell:A.a"]
     assert a["determinacy"] == "locally_stable"
     assert a["witnesses"][-1]["kind"] == "initial_value_probe"
-    json.dumps(out)
+    json.dumps(out, allow_nan=False)
 
 
 @pytest.mark.parametrize("bad", [{"cell_frc": 0.1}, {"cell_frac": -1.0}, [1]])

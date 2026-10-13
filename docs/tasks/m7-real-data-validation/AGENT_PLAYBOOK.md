@@ -260,7 +260,7 @@ CW X 線・ヒストグラム 1 本・GSAS-II だけで、範囲外は `Template
 (blocking) / `zero_offset_significant` (非 blocking) を閉じない。返った `specs.phases` は目印
 `template_version` 付きで、`refine_with_revisions` に渡せない (改訂は元の phases で回し直す)。
 
-**初期値プローブ**: `initial_value_probe: {"cell_frac": 0.001, "coord_jitter_ang": 0.02}` で、返した fit の
+**初期値プローブ**: `initial_value_probe: {"cell_frac": 0.001, "coord_jitter_ang": 0.05}` で、返した fit の
 保存済み gpx から ±δ の 2 開始点を回し、戻った値に `locally_stable` を付ける (gpx を保存しない呼び出しでは
 回さない)。収束確認 (`multistart` → `determined`) の代わりではない。
 

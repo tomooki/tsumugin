@@ -254,6 +254,9 @@ def compile_template(
         "template_version": TEMPLATE_VERSION,
         "decisions": decisions.to_dict(),
         "offset": "shift" if geometry is Geometry.BRAGG_BRENTANO else "zero",
+        # 対象相には常に `fix_polar_origin=True` を付け、極性かどうかは engine が空間群 (SGPolax) で決める
+        #   (極性でなければ何もしない)。固定した原子は ledger `m7_polar_origin`。
+        "polar_origin": "fix_polar_origin on target; engine decides from SGPolax",
         "stages": [s.label for s in out],
     }
     if evidence:

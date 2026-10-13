@@ -20,7 +20,8 @@ BIC 実装の統合 (別作業)。
 ## 1. 統計の規約 (REQ-FTJ-1B-1xx, proposal §5)
 
 - **REQ-FTJ-1B-101** 入れ子のモデル (k 個の母数を足す) の比較は Hamilton の R 比検定 ≒ 尤度比: `Δχ²/GOF²_big` を
-  自由度 k の χ² 分位点と比べる。Δχ² ≤ 0 は有意でない。入力が非有限・k < 1・観測集合が違うときは**判定しない** (None)。
+  自由度 k の χ² 分位点と比べる。Δχ² ≤ 0 は有意でない。入力が非有限・k < 1 のときは**判定しない** (None)。
+  **観測集合が同じことは呼び手が保証する** (関数は観測集合を受け取らない。pass 1 は 1 つの fit の中の隣り合う段だけを比べる)。
 - **REQ-FTJ-1B-102** 母数の数が同じ 2 解の比較は計算値の差 `S = Σ((m₁−m₂)/σ)²` を使い、`S/GOF²` が χ²₁ の分位点未満なら
   「区別できない」、それ以外は `z = Δχ²/(2·GOF·√S)` を返す。
 - **REQ-FTJ-1B-103** 「同じ解か」はパラメータ差がそれぞれ kσ 以内 (esd は GSAS の値をそのまま — GOF を掛け直さない) で決め、
@@ -28,6 +29,8 @@ BIC 実装の統合 (別作業)。
 - **REQ-FTJ-1B-104** σ(χ²)=√(2·dof) を同一データ上の比較に使わない (コードに現れないことをガードで縛る)。
 - **REQ-FTJ-1B-105** 実効自由度: 残差の系列相関 (Durbin–Watson 統計) から `n_eff/n` を推定する純関数を持つ。
   `RefinementMetrics` に None 既定の `effective_dof_ratio` を足し (None ならビット同一)、`noise_scale` との同時指定はエラー。
+  ⚠ **このフィールドを埋める経路は P1-1B では作らない** (非露出の宣言): BIC の実装は 6 箇所に分かれており、その統合は別作業
+  (proposal §5)。1B の判定量 (pass 1 の Hamilton 検定) は `fitstats` を直接使う。
   テンプレートの検定は**常に**基準モデル (入れ子なら小さい方) の残差から 1 回計算した比を両方に使う。
 
 ## 2. 入力宣言と範囲 (REQ-FTJ-1B-2xx, proposal §4.1・§3.5)
@@ -35,7 +38,8 @@ BIC 実装の統合 (別作業)。
 - **REQ-FTJ-1B-201** 宣言は JSON から作れる不変の型 (`TemplateDeclarations`) で受け、未知のキー・型違いは `ValueError`
   (② は error dict)。宣言しないことは「宣言なし」として扱い、各項目の既定は proposal §4.1 の表に従う。
 - **REQ-FTJ-1B-202** 宣言は fit の設定を変えるが、**検出器を黙らせず、判断要求も閉じない**。宣言に依存した値は
-  `provenance` に `declared(<id>)` を持つ。宣言は `actor = caller_unverified` として ledger に記録する。
+  `provenance` に `declared:<キー>` を持つ (`Claim` の語彙。proposal の `declared(id)` と同じもの)。宣言は
+  `actor = caller_unverified` として ledger に記録する。
 - **REQ-FTJ-1B-203** 範囲の検査 (CW X 線・ヒストグラム 1 本・GSAS-II) は**精密化の前に**行い、外れたら
   `TemplateScopeError` (Tsumugin のドメインエラー)。`"template"` を含む探索・収束確認はこの 1 件で呼び出し全体が失敗する。
 
@@ -50,7 +54,8 @@ BIC 実装の統合 (別作業)。
   - **Uiso のまとめ方**: 対象相の原子を (元素, 配位数) でまとめる規則。配位数を計算できないときは原子ごと (まとめない) とし、
     `derivation` に `unevaluated` と記録する。
   - **オフセット**: Bragg-Brentano は `Shift` を解放し Zero は装置値 (= D の既定)。pass 1 で `Shift` のみ vs `Shift + Zero` を
-    Hamilton 検定し、有意なら格子に `correlations = {Shift, Zero}` と非 blocking な判断要求を付ける。Debye-Scherrer は `Zero`
+    Hamilton 検定し、有意なら格子に Zero との相関 (Shift は `Claim` の値ではないので判断要求の evidence に記す) と非 blocking な
+    判断要求を付ける。Debye-Scherrer は `Zero`
     (偏心は解放しない)。
 - **REQ-FTJ-1B-302** pass 1 の検定の fit が失敗・発散したら、その判断は「反証なし」ではなく `unevaluated` にして既定側を採る。
 - **REQ-FTJ-1B-303** pass 1 の成果物は gpxstore に役割名 `template_pass1` で全保存する (規定 2026-08-20)。
@@ -83,7 +88,8 @@ BIC 実装の統合 (別作業)。
 
 - **REQ-FTJ-1B-601** 保存した精密化済み gpx から開始し、**最終状態で解放されているパラメータだけ**を ±δ 摂動して
   同じ解放集合のまま精密化し直す engine の部品を作る。gpx は書き換えない (複製して使う)。
-- **REQ-FTJ-1B-602** ±δ の 2 開始点の両方で値が kσ 以内に戻った値に `locally_stable` の証人を付ける。戻らなかった値は
+- **REQ-FTJ-1B-602** ±δ の 2 開始点の両方で値が kσ 以内に戻った値に `locally_stable` の証人を付ける。**振った値 (格子・実際に
+  動かした座標) だけ**が対象で、摂動は一致の許容幅を超え、両開始点とも収束していること。戻らなかった値は
   `initial_value_dependent`。プローブを回さなかった・失敗した値は基底状態のまま (強いラベルを残さない)。
   `determined` の証人 (収束確認) がある値は降格しない (合成は最小 — 割れたときだけ落ちる)。
 - **REQ-FTJ-1B-603** ② から JSON で要求できる。gpx を保存しない呼び出しでは回さず、理由を返す。

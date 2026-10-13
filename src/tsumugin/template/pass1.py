@@ -37,7 +37,8 @@ from ..autorietveld.model import (
     StageResult,
 )
 from ..evidence.fitstats import chi2_from_stage, effective_dof_ratio, hamilton_test
-from ..errors import TsumuginError
+from .._json import finite_or_none
+from ..errors import InvalidPhaseSpecError, TsumuginError
 from .compile import TemplateDecisions, pass1_stages
 from .declarations import TemplateDeclarations
 from .uiso import uiso_groups_from_cif
@@ -157,11 +158,14 @@ def _decide_target(
     top, second = ranked[0], ranked[1]
     ratio = intensity[second] / intensity[top] if intensity[top] else math.inf  # type: ignore[operator]
     target = declared or top
-    ambiguous = bool(ratio >= tie_ratio) or (declared is not None and declared != top)
+    # 「近い相があれば」(REQ-FTJ-1B-301)。宣言は検出器を黙らせない (宣言しても比は測る) が、宣言が最強の相と
+    #   違うこと自体は僅差ではない — 少数相を対象にする研究で閉じられない止めを作らない (セルフレビュー M8)。
+    ambiguous = bool(ratio >= tie_ratio)
     return target, ambiguous, {
         "decision": target, "basis": "declared" if declared else "integrated_intensity",
         "status": "pass", "intensity": intensity, "ratio": ratio if math.isfinite(ratio) else None,
         "tie_ratio": tie_ratio, "largest": top, "declared": declared, "ambiguous": ambiguous,
+        "declared_differs_from_largest": declared is not None and declared != top,
     }
 
 
@@ -265,12 +269,16 @@ def run_template_pass1(
     calibrated, calibrated_basis = _calibrated(histograms, declarations)
     names = [p.phase_name for p in phases]
     results: dict[str, "AutoRietveldResult | None"] = {}
+    errors: dict[str, str] = {}
 
     def trial(label: str, stages: tuple[RefinementStage, ...]) -> "AutoRietveldResult | None":
         try:
             res = runner(label, histograms, phases, stages)
+        except InvalidPhaseSpecError:
+            raise  # 呼び手の相の指定の誤り — 候補の失敗に畳まない (探索の契約と同じ。M5)
         except Exception as exc:  # noqa: BLE001 — 試行の失敗は判断の unevaluated に畳む
             results[label] = None
+            errors[label] = repr(exc)[:200]
             if ledger is not None:
                 ledger.append("template_pass1_trial", {"trial": label, "error": repr(exc)[:200]})  # type: ignore[attr-defined]
             return None
@@ -278,8 +286,9 @@ def run_template_pass1(
         if ledger is not None:
             ledger.append(  # type: ignore[attr-defined]
                 "template_pass1_trial",
-                {"trial": label, "final_rwp": res.final_rwp,
-                 "stages": [[s.label, s.rwp, s.n_params, s.reverted] for s in res.stage_results]},
+                {"trial": label, "final_rwp": finite_or_none(res.final_rwp),
+                 "stages": [[s.label, finite_or_none(s.rwp), s.n_params, s.reverted]
+                            for s in res.stage_results]},
             )
         return res
 
@@ -292,7 +301,7 @@ def run_template_pass1(
     # --- A: 段 0–4 ----------------------------------------------------------------
     base = trial("A", head(None))
     if base is None:
-        raise Pass1Error("pass 1 の基準の fit (段 0–4) が回りませんでした")
+        raise Pass1Error(f"pass 1 の基準の fit (段 0–4) が回りませんでした: {errors.get('A', '')}")
     frozen: list[str] = []
     cell_ev: dict[str, object] = {"status": "pass", "trials": []}
     s1 = _stage(base, "T1")
@@ -307,11 +316,11 @@ def run_template_pass1(
                 res = trial(f"A-cell-without-{p}", head(others))
                 st = _stage(res, "T1") if res is not None else None
                 accepted = st is not None and not st.reverted
-                rwp = res.final_rwp if res is not None else None
+                rwp = finite_or_none(res.final_rwp) if res is not None else None
                 cell_ev["trials"].append(  # type: ignore[union-attr]
                     {"without": p, "stage1_accepted": accepted, "final_rwp": rwp}
                 )
-                if accepted and rwp is not None and math.isfinite(rwp):
+                if accepted and rwp is not None:
                     if best is None or rwp < best[0]:
                         best = (rwp, p)
             frozen = [best[1]] if best is not None else list(names)
@@ -319,7 +328,9 @@ def run_template_pass1(
         released = [n for n in names if n not in frozen]
         redo = trial("A-refrozen", head(released))
         if redo is None:
-            raise Pass1Error("格子を凍結した pass 1 の fit が回りませんでした")
+            raise Pass1Error(
+                f"格子を凍結した pass 1 の fit が回りませんでした: {errors.get('A-refrozen', '')}"
+            )
         base = redo
     else:
         cell_ev["basis"] = "stage1_accepted" if s1 is not None else "stage1_missing"
@@ -335,7 +346,12 @@ def run_template_pass1(
     )
     resid = _weighted_residual(base)
     dof_ratio = effective_dof_ratio(resid) if resid is not None else None
-    dof_ev = {"dof_ratio": dof_ratio, "status": "pass" if dof_ratio is not None else "unevaluated"}
+    dof_ev = {
+        "dof_ratio": dof_ratio, "status": "pass" if dof_ratio is not None else "unevaluated",
+        # 基準は試行 A (段 0–4・背景は初期項数) の残差。背景の段・Zero の検定の両方に使う (近似 —
+        #   各比較の小さい方のモデルで測るのが正。背景の不足を含む残差なので背景の検定には保守側に効く)
+        "basis": "trial A (stages 0-4, initial background)",
+    }
     ratio = dof_ratio if dof_ratio is not None else 1.0
 
     # --- B: 背景の項数 + Zero -------------------------------------------------------

@@ -1172,11 +1172,15 @@ def run_recipe_search(
             with gpx_context(group.child(role="candidate", label=cand.name)):
                 result: "AutoRietveldResult | None" = run(cand)
             error = ""
-        except InvalidPhaseSpecError:
+        except InvalidPhaseSpecError as exc:
             # 【相の指定の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
             #   どの候補でも同じになる。候補の失敗に畳むと「立つ手順が無い」と読まれる。
             #   原子ラベルの重複 (`DuplicateAtomLabelError`) もこの子クラスとして同じく送出する。
-            raise
+            #   ⚠ **テンプレート候補は例外**: 相の指定 (極性原点の固定・非対象相の凍結) はテンプレートが
+            #   コンパイルしたもので呼び手が書いたものではない。送出すると他の候補の結果ごと失う (M4)。
+            if cand.origin != "template":
+                raise
+            result, error = None, f"テンプレートがコンパイルした相の指定を engine が拒否: {exc!r}"[:300]
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]
         outcome = CandidateOutcome(index=i, candidate=cand, result=result, error=error)

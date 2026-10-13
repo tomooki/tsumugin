@@ -35,6 +35,10 @@ class UisoGrouping:
         }
 
 
+def _labels_of(structure: object) -> list[str]:
+    return [str(getattr(site, "label", "") or "") for site in structure]  # type: ignore[attr-defined]
+
+
 def uiso_groups_from_cif(
     cif_path: str,
     *,
@@ -56,6 +60,11 @@ def uiso_groups_from_cif(
         return UisoGrouping((), "unevaluated", reason=f"構造を読めない: {exc!r}"[:300])
 
     wanted = set(labels) if labels is not None else None
+    if wanted is not None:
+        missing = sorted(wanted - set(_labels_of(structure)))
+        if missing:
+            # GSAS のラベルと CIF のラベルが合わない — 「まとめる組が無かった」と混同しない (M6)
+            return UisoGrouping((), "unevaluated", reason=f"CIF に無いラベル: {missing}")
     first_site: dict[str, int] = {}
     for i, site in enumerate(structure):
         label = getattr(site, "label", None) or ""
