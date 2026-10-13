@@ -106,3 +106,63 @@ def test_a_path_with_a_nul_character_is_state_unknown_not_an_exception(tmp_path)
     assert read_claims_sidecar(str(tmp_path / "a\x00b.gpx")) is None
     path, reason = write_claims_sidecar(str(tmp_path / "a\x00b.gpx"), _PAYLOAD)
     assert path == "" and reason
+
+
+def test_every_distinct_state_of_one_gpx_is_kept_and_the_latest_is_read(tmp_path):
+    """同じ gpx を 3 回以上違う入力で評価しても書け、最後に書いた状態を読む (/code-review #241)。"""
+    from tsumugin.claims.sidecar import find_claims_sidecar, write_claims_sidecar
+
+    gpx = tmp_path / "fit.gpx"
+    gpx.write_bytes(b"gpx")
+    paths = []
+    for n in range(4):
+        path, reason = write_claims_sidecar(str(gpx), {"claims": {"n": n}})
+        assert path and not reason
+        paths.append(path)
+    assert len(set(paths)) == 4
+    assert find_claims_sidecar(str(gpx))[1]["claims"] == {"n": 3}
+    # 同じ状態をもう一度書くのは何もしない
+    assert write_claims_sidecar(str(gpx), {"claims": {"n": 1}})[0] == paths[1]
+
+
+def test_the_reader_orders_by_the_recorded_write_time_not_mtime(tmp_path):
+    """コピーや復元で mtime が入れ替わっても、中身に記録した書いた順で選ぶ (/code-review #241)。"""
+    import os
+
+    from tsumugin.claims.sidecar import find_claims_sidecar, write_claims_sidecar
+
+    gpx = tmp_path / "fit.gpx"
+    gpx.write_bytes(b"gpx")
+    first, _ = write_claims_sidecar(str(gpx), {"claims": {"n": 0}})
+    second, _ = write_claims_sidecar(str(gpx), {"claims": {"n": 1}})
+    os.utime(first, (2_000_000_000, 2_000_000_000))  # 古い方の mtime を未来に
+    assert find_claims_sidecar(str(gpx))[1]["claims"] == {"n": 1}
+
+
+def test_the_sidecar_bytes_are_deterministic(tmp_path):
+    """同じ解析を回し直せば同じ sidecar になる (書いた時刻を中身に入れない。/code-review #245)。"""
+    from tsumugin.claims.sidecar import write_claims_sidecar
+
+    outs = []
+    for d in ("a", "b"):
+        gpx = tmp_path / d / "fit.gpx"
+        gpx.parent.mkdir()
+        gpx.write_bytes(b"gpx")
+        write_claims_sidecar(str(gpx), {"claims": {"n": 0}})
+        path, _ = write_claims_sidecar(str(gpx), {"claims": {"n": 1}})
+        outs.append(open(path, "rb").read())
+    assert outs[0] == outs[1]
+
+
+def test_a_deleted_sidecar_does_not_make_sequences_collide(tmp_path):
+    """消したあとの書き込みが既存の番号と重ならず、最後に書いた状態が読まれる (/code-review #245)。"""
+    import os
+
+    from tsumugin.claims.sidecar import find_claims_sidecar, write_claims_sidecar
+
+    gpx = tmp_path / "fit.gpx"
+    gpx.write_bytes(b"gpx")
+    paths = [write_claims_sidecar(str(gpx), {"claims": {"n": n}})[0] for n in range(3)]
+    os.remove(paths[0])  # 既定名が空く — 新しい状態はそこに書かれ、名前の順では最も前になる
+    write_claims_sidecar(str(gpx), {"claims": {"n": 9}})
+    assert find_claims_sidecar(str(gpx))[1]["claims"] == {"n": 9}

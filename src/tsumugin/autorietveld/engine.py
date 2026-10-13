@@ -18,6 +18,7 @@ import math
 import shutil
 import tempfile
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -25,6 +26,7 @@ import numpy as np
 
 from .._json import finite_or_none
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
+from ..gpxstore import read_manifest
 from ..gpxstore import record_artifact as _record_artifact
 from ..gpxstore import sanitize_label as _sanitize_label
 from ..store import Ledger
@@ -72,14 +74,14 @@ from .model import (
     check_unique_atom_labels,
     resolve_uiso_targets,
 )
-from .recipe import build_recipe, validate_correlation_groups
+from .blas import blas_thread_report, with_blas_threads
+from .recipe import build_recipe, check_phase_scoped_flags, validate_correlation_groups
 from .restraint_dlg import RefineProgressStub
 from .constraint_groups import (
     AtomSite,
     merge_equiv_groups,
     partially_released_groups,
     polar_origin_constraints,
-    refuse_polar_origin_with_coord_jitter,
     refuse_polar_origin_with_ranked_coords,
     unknown_labels,
 )
@@ -1086,7 +1088,13 @@ def _apply_stage(
                 fraction_map = _phase_fraction_map(phases, hists)
             except Exception:  # noqa: BLE001 — 分率抽出不能は fail open (凍結しない)
                 fraction_map = None
+        # 【相を絞る (fit-then-judge P1-1B)】: ``cell_phases`` があれば名前の合う相だけ。手動/自動の
+        #   凍結には勝たない (`_should_refine_cell` の判定はそのまま通す)。
+        only = flags.get("cell_phases")
+        scope = set(only) if isinstance(only, (list, tuple)) else None
         for ph, info in zip(phases, phase_infos):
+            if scope is not None and ph.name not in scope:
+                continue
             fraction = fraction_map.get(ph.name) if fraction_map else None
             if _should_refine_cell(info, fraction, auto_freeze_minor_cells):
                 ph.set_refinements({"Cell": True})
@@ -1133,7 +1141,11 @@ def _apply_stage(
         # 系統的ピーク強度ズレ (obs>calc) を配向分布で吸収する。悪化時は本段階ごと revert。
         val = flags["preferred_orientation"]
         order = 4 if val is True else int(val)
+        po_only = flags.get("preferred_orientation_phases")
+        po_scope = set(po_only) if isinstance(po_only, (list, tuple)) else None
         for ph in phases:
+            if po_scope is not None and ph.name not in po_scope:
+                continue
             try:
                 ph.HAPvalue("Pref.Ori.", order)
             except Exception:
@@ -1215,8 +1227,15 @@ def _apply_stage(
         for ph in phases:
             ph.set_HAP_refinements({"Scale": True}, histograms=list(hists))
     # 原子フラグ (per-atom, 累積)
+    # 【占有率を解放する相を絞る (fit-then-judge P1-1B)】: ``occupancy_phases`` に無い相には
+    #   ``occupancy`` を見せない (座標/Uiso は相の `frozen_*_labels` で絞れるが占有率には凍結の欄が無い)。
+    occ_only = flags.get("occupancy_phases")
+    occ_scope = set(occ_only) if isinstance(occ_only, (list, tuple)) else None
     for ph, info, fmap in zip(phases, phase_infos, atom_flag_maps):
-        if _update_atom_flags(fmap, info, flags):
+        phase_flags = flags
+        if occ_scope is not None and ph.name not in occ_scope and "occupancy" in flags:
+            phase_flags = {k: v for k, v in flags.items() if k != "occupancy"}
+        if _update_atom_flags(fmap, info, phase_flags):
             active = {lab: fl for lab, fl in fmap.items() if fl}
             if active:
                 ph.set_refinements({"Atoms": active})
@@ -1509,21 +1528,20 @@ def _atomic_number(raw: str) -> int:
     return _Z_ORDER.get(sym, _Z_ORDER.get(sym[:1].upper(), 0))
 
 
-def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
-    """`PhaseSpec.fix_polar_origin` の相に、極性方向の原点固定を登録する (fit-then-judge P1a)。
+def _polar_origin_plan(g2phases, specs, getcsxinel=None) -> list[tuple]:
+    """`fix_polar_origin` の相ごとに、原点固定の拘束を**決める** (登録はしない)。
 
-    精密化する原子の判定は `_phase_atom_info` と同じ規則 (自由座標を持つ原子 −
-    `frozen_coord_labels`)。site symmetry を解釈できない原子は engine が座標を凍結するので、
-    「動けるが凍結された原子」(= 原点を決めている) として扱う (その原子は
-    `coordinate_freedom_mismatches` に現れる)。
+    原子の選び方は座標の値に依らない (散乱能・site symmetry・凍結の有無だけ) ので、座標の初期摂動の
+    前に決めても後に決めても同じ。摂動 (`_apply_coord_jitter`) はこれで原点を決める原子を知り、
+    その原子を動かさない (fit-then-judge P1-1B)。
 
-    :param getcsxinel: site symmetry → `GetCSxinel` の戻り値 (テスト注入用。None なら GSAS)。
-    :returns: 登録した固定の記録 (ledger 用)。
+    :returns: ``(相, spec, polax, 拘束の列, ラベル→原子行の添字)`` の列
+    :raises InvalidPhaseSpecError: 原点を固定できない (`polar_origin_constraints` の ValueError)
     """
-    applied: list[dict] = []
+    plan: list[tuple] = []
     targets = [(ph, spec) for ph, spec in zip(g2phases, specs) if spec.fix_polar_origin]
     if not targets:
-        return applied
+        return plan
     if getcsxinel is None:
         from GSASII import GSASIIspc as G2spc
 
@@ -1562,6 +1580,56 @@ def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
             raise InvalidPhaseSpecError(
                 f"相 {spec.phase_name!r} の極性原点を固定できません: {exc}"
             ) from exc
+        plan.append((ph, spec, polax, constraints, index_of))
+    return plan
+
+
+def polar_origin_atoms(g2phases, specs, getcsxinel=None) -> dict[str, set[str]]:
+    """相名 → 極性原点を決める (固定される) 原子ラベル。"""
+    return {
+        phase: set(atoms) for phase, atoms in polar_origin_axes(g2phases, specs, getcsxinel).items()
+    }
+
+
+def polar_origin_axes(g2phases, specs, getcsxinel=None) -> dict[str, dict[str, set[int]]]:
+    """相名 → 極性原点を決める原子 → 固定される座標の軸 (0=x,1=y,2=z)。座標の摂動から外すのに使う。"""
+    out: dict[str, dict[str, set[int]]] = {}
+    for _ph, spec, _polax, constraints, _index in _polar_origin_plan(g2phases, specs, getcsxinel):
+        for label, terms in constraints:
+            axes = out.setdefault(spec.phase_name, {}).setdefault(label, set())
+            axes.update("xyz".index(axis) for axis, _ in terms)
+    return out
+
+
+def _coord_jitter_skips(
+    g2phases, specs, getcsxinel=None
+) -> "tuple[dict[str, tuple[str, ...]], dict[str, dict[str, set[int]]]]":
+    """座標の初期摂動で動かさないもの (fit-then-judge P1-1B)。
+
+    - 凍結した原子 (``frozen_coord_labels``) は原子ごと
+    - 極性原点を決める原子は**固定される軸だけ** (その原子の他の自由軸は振る — 原子ごと外すと試験して
+      いない軸を「試験した」と数える)
+
+    :returns: (相名 → 動かさないラベル, 相名 → 原点を決める原子 → 動かさない軸)
+    """
+    origin_axes = polar_origin_axes(g2phases, specs, getcsxinel)
+    skip = {p.phase_name: tuple(p.frozen_coord_labels) for p in specs}
+    return skip, origin_axes
+
+
+def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
+    """`PhaseSpec.fix_polar_origin` の相に、極性方向の原点固定を登録する (fit-then-judge P1a)。
+
+    精密化する原子の判定は `_phase_atom_info` と同じ規則 (自由座標を持つ原子 −
+    `frozen_coord_labels`)。site symmetry を解釈できない原子は engine が座標を凍結するので、
+    「動けるが凍結された原子」(= 原点を決めている) として扱う (その原子は
+    `coordinate_freedom_mismatches` に現れる)。拘束の決め方は `_polar_origin_plan` (摂動と共用)。
+
+    :param getcsxinel: site symmetry → `GetCSxinel` の戻り値 (テスト注入用。None なら GSAS)。
+    :returns: 登録した固定の記録 (ledger 用)。
+    """
+    applied: list[dict] = []
+    for ph, spec, polax, constraints, index_of in _polar_origin_plan(g2phases, specs, getcsxinel):
         for label, terms in constraints:
             idx = index_of[label]
             names = [f"{ph.id}::dA{axis}:{idx}" for axis, _ in terms]
@@ -1615,6 +1683,10 @@ def _apply_coord_jitter(
     getcsxinel=None,
     *,
     frozen: "Mapping[str, Iterable[str]] | None" = None,
+    frozen_axes: "Mapping[str, Mapping[str, Iterable[int]]] | None" = None,
+    fixed_magnitude: bool = False,
+    sign: int = 1,
+    moved: "list[str] | None" = None,
 ) -> int:
     """原子座標に**対称性を壊さない**初期摂動を掛ける (マルチスタートの構造軸)。
 
@@ -1641,6 +1713,15 @@ def _apply_coord_jitter(
     :param frozen: 相名 → 動かさない原子ラベル (``PhaseSpec.frozen_coord_labels``)。
         凍結原子は乱数を消費しない。凍結の無い入力は従来とビット同一だが、乱数列は全相で
         1 本なので、凍結原子を持つ相より**後ろの相**は引く値がずれる (決定論は保たれる)
+    :param frozen_axes: 相名 → 原子ラベル → 動かさない軸 (0=x,1=y,2=z)。極性原点の hold のように
+        **軸単位で**固定された座標を外す (原子ごと外すと、その原子の他の自由軸を試験しないまま
+        「試験した」と数えることになる — fit-then-judge P1-1B)
+    :param fixed_magnitude: 真なら変位の大きさを ``amp`` に固定し、向きだけを乱数で決める
+        (初期値プローブ用: 一様乱数だと一致の許容幅より小さい変位が混ざり「戻った」が空虚になる)
+    :param sign: ``fixed_magnitude`` のとき全変位に掛ける向き (±δ の 2 開始点)
+    :param moved: 与えると、動かした座標のキー ``"<相>.<ラベル>.<x|y|z>"`` を追記する (結束の組は
+        従属側も含めて全軸 — 初期値を一緒に書き換えたので試験している)。値ごとの証人 (`claims`) が
+        「この座標は試験した」を判定するのに使う。``fixed_magnitude`` (プローブ) では結束した組は動かさない
     :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
         呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
     """
@@ -1654,7 +1735,7 @@ def _apply_coord_jitter(
         except Exception:  # noqa: BLE001 — GSAS 無しは「動かさない」へ縮退 (fail open)
             return 0
     rng = np.random.default_rng(seed)
-    moved = 0
+    n_moved = 0
     for ph in g2phases:
         amp = jitter_ang.get(ph.name)
         if not amp or not math.isfinite(float(amp)) or float(amp) <= 0.0:
@@ -1670,27 +1751,49 @@ def _apply_coord_jitter(
         except Exception:  # noqa: BLE001 — 構造が読めない相はスキップ
             continue
         skip = {str(lab) for lab in (frozen or {}).get(ph.name, ())}
+        skip_axes = {
+            str(lab): {int(a) for a in axes}
+            for lab, axes in ((frozen_axes or {}).get(ph.name, {}) or {}).items()
+        }
         for row in atoms:
-            if skip and str(row[ct - 1]) in skip:
+            label = str(row[ct - 1])
+            if skip and label in skip:
                 continue
             # 0 = 対称固定は触らない / 結束軸は代表の乱数 1 回ぶんを係数どおり従属軸にも掛ける
             #   (GSAS は精密化前に従属座標を揃え直さないので、代表だけ動かすと結束が壊れたまま残る)
             for _rep, members in tied_axis_groups(getcsxinel, row[cs]):
-                # Å の変位を分率へ直す。一様 [-amp, +amp] で、**どの軸の変位も amp Å 以下**:
-                #   組の中で |倍率|·軸長 が最大の軸で割る ((x,2x,z) の y は x の 2 倍動くので)。
-                #   組が 1 軸なら代表の軸長で割るのと同じ (結束の無い構造はビット同一)
+                held = skip_axes.get(label, ())
+                if any(m in held for m, _ in members):
+                    # 軸単位で固定された座標 (極性原点の hold 等) を含む組は動かさない — 結束の組は
+                    #   1 変数なので、一部の軸だけ動かすと結束が壊れる
+                    continue
+                if fixed_magnitude and len(members) > 1:
+                    # プローブでは結束した組を振らない (P1-1B の範囲)。収束確認は組ごと動かす
+                    continue
+                # Å の変位を分率へ直す。**どの軸の変位も amp Å 以下**: 組の中で |倍率|·軸長 が最大の
+                #   軸で割る ((x,2x,z) の y は x の 2 倍動くので)。組が 1 軸なら代表の軸長で割るのと
+                #   同じ (結束の無い構造はビット同一)
                 span = max(
                     abs(ratio) * (lengths[m] if lengths[m] > 0 else 1.0) for m, ratio in members
                 )
-                delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / span
+                if fixed_magnitude:
+                    # 大きさは amp に固定、向きだけ乱数 (± の 2 開始点で sign が反転する)
+                    unit = 1.0 if float(rng.uniform(-1.0, 1.0)) >= 0.0 else -1.0
+                    delta = sign * unit * float(amp) / span
+                else:
+                    # 一様 [-amp, +amp]
+                    delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / span
                 try:
                     shifted = [(m, float(row[cx + m]) + ratio * delta) for m, ratio in members]
                 except Exception:  # noqa: BLE001 — 読めない行はスキップ
                     continue
                 for m, value in shifted:
                     row[cx + m] = value
-                moved += 1
-    return moved
+                n_moved += 1
+                if moved is not None:
+                    # 書き換えた座標を全部記録する (結束の従属側も初期値を一緒に動かしたので試験した)
+                    moved.extend(f"{ph.name}.{label}.{'xyz'[m]}" for m, _ in members)
+    return n_moved
 
 
 def _apply_initial_occupancies(g2phases, occupancies: Mapping[str, Mapping[str, float]]) -> None:
@@ -2445,6 +2548,7 @@ def _save_gpx_artifact(
     return plan.path
 
 
+@with_blas_threads
 def run_auto_rietveld(
     histograms: Sequence[HistogramSpec],
     phases: Sequence[PhaseSpec],
@@ -2471,6 +2575,7 @@ def run_auto_rietveld(
     check_occupancy_uiso: bool = False,
     stability: StabilityOptions | None = None,
     export_cif_dir: str | None = None,
+    blas_threads: int | None = None,
 ) -> AutoRietveldResult:
     """実構造 Rietveld を段階解放で自動実行する (単相/単一ヒストグラムから対応)。
 
@@ -2556,6 +2661,9 @@ def run_auto_rietveld(
         ⚠ 拘束で従属させたパラメータ (等値の組の従属側など) の esd は保証しない — 最終段が
         revert されると GSAS の制約写像が巻き戻した試行のまま残り得る (未検証)。構造の検査には
         使えるが、esd を出版に使う前に確かめること。既定 None (書き出さない)。
+    :param blas_threads: BLAS のスレッド数をこの数に固定して精密化する (fit-then-judge P1-1B, NFR-102 —
+        悪条件の最小二乗は総和順序で結果が揺れる)。⚠ **プロセス全体に効く** (同じプロセスで並行に走る
+        精密化も制限を受ける)。実際のスレッド数を ledger ``m7_blas_threads`` に残す。既定 None (触らない)。
     :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル・相の中で 2 原子以上を指すラベル・
         異なる 2 原子に満たない組を名指すとき (`model.check_phase_spec_labels`)。GSAS が相を読んで
         ラベルが分かった直後、**精密化の前に**送出する (② は error dict へ縮退する)
@@ -2581,13 +2689,17 @@ def run_auto_rietveld(
     else:
         stages = build_recipe(histograms, phases)
     refuse_polar_origin_with_ranked_coords(phases, stages)
-    refuse_polar_origin_with_coord_jitter(phases, initial_coord_jitter)
+    check_phase_scoped_flags(stages, phases)
     # 検証は GSAS の解決より**前**に済ませる — 不正なレシピは GSAS が無い環境でも同じ
     # ``CorrelationGroupViolation`` で落ちるべきであり (入力の誤りは backend の有無と無関係)、
     # そうしないと本検証のテストが GSAS 導入環境でしか回らなくなる。
     g2sc = _g2sc()
     ledger = ledger if ledger is not None else Ledger()
     radiations = [h.radiation for h in histograms]
+    if blas_threads is not None:
+        # 制限は `with_blas_threads` が関数全体に張っている。ここでは実際の数を記録するだけ
+        # (検出できなかった・数が違うときに「固定した」と黙って主張しない)。
+        ledger.append("m7_blas_threads", blas_thread_report(blas_threads))
 
     with tempfile.TemporaryDirectory(prefix="tsumugin-m7-") as tmp:
         tmp_path = Path(tmp)
@@ -2718,19 +2830,28 @@ def run_auto_rietveld(
         #     動かせた軸数は ledger に残す — 0 なら「この軸では試験していない」であって
         #     「摂動しても動かなかった」ではない。
         n_jittered = 0
+        jitter_moved: list[str] = []
         if initial_coord_jitter:
+            # 【極性原点を決める原子は動かさない (fit-then-judge P1-1B)】: その原子の極性方向の座標は
+            #   後で hold されるので、動かすと開始点ごとに原点がずれ、構造全体が極性方向へ並進した解に
+            #   なる (agreement が偽の「初期値依存」を報告する)。原点の選び方は座標に依らないので
+            #   ここで先に決めて共用する。
+            skip, origin_axes = _coord_jitter_skips(g2phases, phases)
             n_jittered = _apply_coord_jitter(
-                g2phases, initial_coord_jitter, jitter_seed,
-                frozen={p.phase_name: p.frozen_coord_labels for p in phases},
+                g2phases, initial_coord_jitter, jitter_seed, frozen=skip,
+                frozen_axes=origin_axes, moved=jitter_moved,
             )
-            ledger.append(
-                "m7_coord_jitter",
-                {
-                    "seed": int(jitter_seed),
-                    "amplitude_ang": {k: float(v) for k, v in initial_coord_jitter.items()},
-                    "n_axes_moved": n_jittered,
-                },
-            )
+            entry = {
+                "seed": int(jitter_seed),
+                "amplitude_ang": {k: float(v) for k, v in initial_coord_jitter.items()},
+                "n_axes_moved": n_jittered,
+            }
+            if origin_axes:
+                entry["polar_origin_axes_not_jittered"] = {
+                    phase: {lab: sorted("xyz"[a] for a in axes) for lab, axes in sorted(atoms.items())}
+                    for phase, atoms in sorted(origin_axes.items())
+                }
+            ledger.append("m7_coord_jitter", entry)
 
         # --- 初期 Uiso 妥当性 + 占有率/Uiso 結合の事前警告 (FR-318 / REQ-318-005) ---
         # **FR-318 の入力 (シーダー/組成拘束/分率拘束/明示フラグ) があるときのみ**検査する。
@@ -3431,10 +3552,194 @@ def run_auto_rietveld(
         #   返らないことがある (② 単発) ので、理由は結果にも載せる (設計 §5)。
         artifact_fallback_reason=plan.fallback_reason if out_gpx else "",
         coord_jitter_axes_moved=int(n_jittered),
+        coord_jitter_moved=tuple(jitter_moved),
         final_covariance=_final_covariance(gpx),
         claim_variables=_claim_variables(g2phases, g2hists),
         reflection_two_theta=_reflection_two_theta(g2hists, histograms),
     )
+
+
+def _refined_coord_free_labels(ph) -> set[str]:
+    """座標の精密化フラグ (``X``) が**立っていない**原子のラベル (= 摂動しない原子)。"""
+    general = ph.data["General"]
+    _cx, ct, _cs, _cia = general["AtomPtrs"]
+    out: set[str] = set()
+    for row in ph.data["Atoms"]:
+        flags = str(row[ct + 1]) if len(row) > ct + 1 else ""
+        if "X" not in flags:
+            out.add(str(row[ct - 1]))
+    return out
+
+
+def _coord_constrained_axes(gpx, ph) -> dict[str, set[int]]:
+    """座標のシフト (``dAx/dAy/dAz``) が**拘束に入っている**原子 → その軸 (= プローブで摂動しない)。
+
+    - hold (極性原点など): その軸だけ (値が初期値に固定されるので、振ると原点ごと並進した解になる)
+    - それ以外 (等値・一次結合): その原子の 3 軸すべて (別々に振ると拘束が結ぶ関係を壊す)
+
+    拘束の変数は `G2VarObj` で、原子はランダム ID (`ranId`) で指す (名前ではない — 読み込み前の str は
+    ``?::dAz:?``)。**読めなければ例外** — 黙って「拘束なし」とすると hold した原子を振り、偽の
+    「初期値依存」を作る (呼び手のプローブは失敗として扱い、証人を付けない)。
+    """
+    phase_rid = ph.data["ranId"]
+    cia = int(ph.data["General"]["AtomPtrs"][3])
+    ct = int(ph.data["General"]["AtomPtrs"][1])
+    by_rid = {row[cia + 8]: str(row[ct - 1]) for row in ph.data["Atoms"]}
+    constraints = gpx.data["Constraints"]["data"].get("Phase", [])
+    out: dict[str, set[int]] = {}
+    for item in constraints:
+        kind = item[-1] if item and isinstance(item[-1], str) else ""
+        for term in item:
+            if not isinstance(term, (list, tuple)) or len(term) < 2:
+                continue
+            var = term[1]
+            name = str(getattr(var, "name", ""))
+            if (
+                getattr(var, "phase", None) == phase_rid
+                and name in ("dAx", "dAy", "dAz")
+                and getattr(var, "atom", None) in by_rid
+            ):
+                axes = out.setdefault(by_rid[var.atom], set())
+                axes.update({"xyz".index(name[-1])} if kind == "h" else {0, 1, 2})
+    return out
+
+
+@with_blas_threads
+def probe_from_gpx(
+    gpx_path: str,
+    *,
+    cell_frac: float,
+    coord_jitter_ang: float,
+    sign: int,
+    seed: int = 0,
+    max_cyc: int = 12,
+    blas_threads: int | None = None,
+    save: bool = True,
+) -> AutoRietveldResult:
+    """保存した精密化済み gpx から開始し、解放されているパラメータだけを摂動して精密化し直す
+    (fit-then-judge P1-1B, proposal §4.5 の初期値プローブ)。
+
+    `run_auto_rietveld` は毎回 CIF から組み立てるので「最終状態の近く」から始められない。本関数は gpx を
+    一時ディレクトリへ**複製して**開き (保存した成果物は書き換えない)、**その時点で精密化フラグが立っている**
+    格子 (varyList に A 項がある相) の a,b,c を ``1 + sign·cell_frac`` 倍、座標フラグ ``X`` が立っている原子の
+    対称性が自由な軸 (拘束に入った座標は除く — `_coord_constrained_axes`) を**大きさ ``coord_jitter_ang`` Å・
+    向きは乱数 (sign で反転)** で動かし、フラグを変えずに精密化する (一様乱数だと一致の許容幅より小さい変位が
+    混ざり「戻った」が空虚になる)。動かした座標は結果の ``coord_jitter_moved``。
+    凍結した値を振らない (振ると摂動値がそのまま最終値になり、偽の「割れ」になる — PR #226 と同じ理由)。
+
+    結果は値の比較 (`agreement.parameter_agreements`) に要るフィールドだけを持つ `AutoRietveldResult`
+    (段は 1 つ ``probe``)。精密化の失敗は `RefinementFailedError` として送出する (呼び手が「回らなかった
+    = 証人なし」に畳む — 「戻った」とは数えない)。
+
+    :param sign: 格子の摂動の向き (+1 / -1)。±δ の 2 開始点で使う
+    :param save: **規定どおり成果物を残す** (2026-08-20「全解析で保存する」)。元の gpx と同じディレクトリに
+        ``<元の名前>.probe-plus.gpx`` / ``.probe-minus.gpx`` (既にあれば連番) を書き、結果の ``gpx_path`` に載せる。
+        書けなくてもプローブは落とさない (``gpx_path`` が空)
+    """
+    if sign not in (1, -1):
+        raise ValueError(f"sign は +1 か -1 です: {sign!r}")
+    if not (math.isfinite(cell_frac) and cell_frac >= 0.0):
+        raise ValueError(f"cell_frac は 0 以上の有限値です: {cell_frac!r}")
+    g2sc = _g2sc()
+    with tempfile.TemporaryDirectory(prefix="tsumugin-probe-") as tmp:
+        copy = Path(tmp) / "probe.gpx"
+        shutil.copyfile(gpx_path, copy)
+        gpx = g2sc.G2Project(gpxfile=str(copy))
+        g2phases, g2hists = gpx.phases(), gpx.histograms()
+        moved_cells: list[str] = []
+        if cell_frac > 0.0:
+            for ph in g2phases:
+                if _cell_was_refined(ph):
+                    f = 1.0 + sign * cell_frac
+                    _perturb_initial_cell(ph, (f, f, f))
+                    moved_cells.append(ph.name)
+        n_axes = 0
+        moved: list[str] = []
+        if coord_jitter_ang > 0.0:
+            n_axes = _apply_coord_jitter(
+                g2phases, {ph.name: coord_jitter_ang for ph in g2phases}, seed,
+                frozen={ph.name: tuple(sorted(_refined_coord_free_labels(ph))) for ph in g2phases},
+                frozen_axes={ph.name: _coord_constrained_axes(gpx, ph) for ph in g2phases},
+                fixed_magnitude=True, sign=sign, moved=moved,
+            )
+        gpx.data["Controls"]["data"]["max cyc"] = max_cyc
+        _refine_once(gpx)
+        rwp, gof, nvar = _rvals(gpx)
+        g2phases, g2hists = gpx.phases(), gpx.histograms()
+        refined_cells, _uiso, _occ = _extract_state(g2phases)
+        atom_maps = _atom_result_maps(g2phases)
+        micro = _microstructure_maps(g2phases, g2hists)
+        wt_fracs, wt_frac_esd = _weight_fraction_maps(g2phases, g2hists)
+        prof_full = _extract_profile(g2hists)
+        result = AutoRietveldResult(
+            stage_results=(
+                StageResult(
+                    "probe", rwp, gof, nvar, _converged(gpx),
+                    note=f"sign={sign} cell_frac={cell_frac} coord_jitter_ang={coord_jitter_ang}"
+                    f" cells={moved_cells} axes={n_axes}",
+                ),
+            ),
+            final_rwp=rwp,
+            final_gof=gof,
+            refined_cells=refined_cells,
+            validity=ValidityReport(passed=True),
+            n_obs=_nobs(gpx),
+            cell_esd=_cell_esd_map(g2phases),
+            phase_weight_fractions=wt_fracs,
+            phase_weight_fraction_esd=wt_frac_esd,
+            atom_uiso=atom_maps.uiso,
+            atom_occupancy=atom_maps.occupancy,
+            atom_multiplicity=atom_maps.multiplicity,
+            atom_occupancy_esd=atom_maps.occupancy_esd,
+            atom_coords=atom_maps.coords,
+            atom_coord_esd=atom_maps.coord_esd,
+            atom_coord_free_index=atom_maps.coord_free_index,
+            atom_uiso_esd=atom_maps.uiso_esd,
+            hist_profile=tuple({k: v for k, (v, _) in d.items()} for d in prof_full),
+            hist_profile_refined=tuple({k: bool(r) for k, (_, r) in d.items()} for d in prof_full),
+            hist_profile_esd=_profile_esd_map(g2hists),
+            hap_size=micro[0],
+            hap_mustrain=micro[1],
+            hap_size_esd=micro[2],
+            hap_mustrain_esd=micro[3],
+            coord_jitter_axes_moved=int(n_axes),
+            coord_jitter_moved=tuple(moved),
+            final_covariance=_final_covariance(gpx),
+        )
+        if save:
+            # 【プローブの fit も残す (規定 2026-08-20)】: 割れた・戻らなかった判定の根拠の fit を検算できる
+            #   ようにする。元の gpx の隣に、上書きせず書く。
+            try:
+                gpx.save()
+                src = Path(gpx_path)
+                target = _unique_path(
+                    src.parent, f"{src.stem}.probe-{'plus' if sign > 0 else 'minus'}", ".gpx"
+                )
+                shutil.copyfile(copy, target)
+                result = _dc_replace(result, gpx_path=str(target))
+                # 索引 (manifest.jsonl) にも載せる — 「全部保存する」は「後から探せる」まで (gpxstore)
+                # データは元の fit の索引の行から引く (どのデータの精密化かを 1 行で残す — gpxstore)
+                source_rows = [
+                    row for row in read_manifest(str(src.parent))
+                    if Path(str(row.get("path", ""))).name == src.name
+                ]
+                data_paths = tuple(source_rows[-1].get("data_paths", ())) if source_rows else ()
+                _record_artifact(
+                    str(src.parent),
+                    ManifestEntry(
+                        path=str(target), role="probe", label="plus" if sign > 0 else "minus",
+                        index=None, data_paths=tuple(str(d) for d in data_paths),
+                        phases=tuple(result.refined_cells), rwp=rwp, gof=gof,
+                        extra={"source_gpx": str(src)},
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — 保存の失敗でプローブを落とさない
+                # 黙って保存を諦めない: 成果物の理由の欄 (`artifact_fallback_reason`) に残す (gpx_path は空)
+                result = _dc_replace(
+                    result, gpx_path="",
+                    artifact_fallback_reason=f"プローブの成果物を保存できない: {type(exc).__name__}: {exc}"[:300],
+                )
+    return result
 
 
 def _final_covariance(gpx) -> "CovarianceRecord | None":

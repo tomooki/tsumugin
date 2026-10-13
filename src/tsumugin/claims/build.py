@@ -28,10 +28,12 @@ from ..autorietveld.agreement import AgreementTolerances, is_agreement, paramete
 from ..autorietveld.model import AutoRietveldResult
 from .model import Check, Claim, Determinacy, Scope, Witness, compose, weaker_determinacy
 
-__all__ = ["CLAIMS_VERSION", "base_claims", "with_convergence"]
+__all__ = ["CLAIMS_VERSION", "base_claims", "with_convergence", "with_probe"]
 
 #: claims の写像規則の版 (② の出力・sidecar に記録する)。
-CLAIMS_VERSION = "fit-then-judge/1A/1"
+# 1B/1: 入力値を昇格しない・`locally_stable` (初期値プローブ)・座標の証人は動かした座標だけ・
+#   テンプレートの判断要求と `declared:*` の出自 (fit-then-judge P1-1B)。
+CLAIMS_VERSION = "fit-then-judge/1B/1"
 
 _CELL_AXES = ("a", "b", "c", "alpha", "beta", "gamma")
 #: esd ≥ |値| を「決まっていない」とする種類 (格子・座標・プロファイルは値の原点が任意なので除く)。
@@ -219,6 +221,13 @@ def with_convergence(
     coords_tested = not jitter_requested or any(
         int(getattr(s, "n_axes_jittered", 0)) > 0 for s in starts
     )
+    # どの座標を振ったか (engine が記録)。記録があれば座標の証人はそれに限る — 件数だけだと、極性原点の
+    #   hold や凍結で振っていない座標まで「試験した」と数える (fit-then-judge P1-1B)
+    #   記録が 1 つも無い (TOPAS 等の engine は記録しない) ときだけ件数の規則へ戻る。使える開始点だけを数える (N9)
+    moved_coords = {
+        f"coord:{k}" for r in results if _usable(r)
+        for k in getattr(r, "coord_jitter_moved", ())
+    }
     tolerances = AgreementTolerances()
 
     verdicts: dict[str, list[tuple[str, float | None, int, int]]] = {}
@@ -246,7 +255,11 @@ def with_convergence(
             witness_ok and pairs > 0 and len(found) == pairs
             and all(is_agreement(v[0]) for v in found)
             and claim.determinacy is Determinacy.ESD_ONLY
-            and (coords_tested or claim.param_class != "coord")
+            and "refined" in claim.provenance  # 解放しなかった入力値は「決まった」のではない
+            and (
+                claim.param_class != "coord"
+                or (coords_tested and (not moved_coords or key in moved_coords))
+            )
         ):
             zs = [v[1] for v in found if v[1] is not None]
             out[key] = claim.strengthened_to(
@@ -255,5 +268,100 @@ def with_convergence(
                     "n_starts": len(starts), "n_pairs": pairs, "k_esd": tolerances.k_esd,
                     "max_z": max(zs) if zs else None,
                 }),
+            )
+    return out
+
+
+def with_probe(
+    claims: Mapping[str, Claim], base: AutoRietveldResult, outcome: object | None
+) -> dict[str, Claim]:
+    """初期値プローブ (±δ の 2 開始点) で値ごとに「戻ったか」を見る (REQ-FTJ-1B-602)。
+
+    - どちらかの開始点で割れた値 (DISAGREE) は `initial_value_dependent`
+    - 両方で戻った `esd_only` の値は `locally_stable` (証人付き)。`determined` 等は変えない
+      (合成は最小 — 割れたときだけ落ちる)
+    - 2 開始点とも回り、**収束し**、使える結果でなければ何もしない (回らなかった・省いた値は基底状態のまま)
+    - **振った値にだけ** `locally_stable` を付ける: 格子は ``cell_frac`` が一致の許容幅を超えるとき、座標は
+      両方の開始点で実際に動かした座標 (`coord_jitter_moved`) で、かつ変位が一致の許容幅を超えるとき。
+      Uiso・占有率・プロファイル・分率・微細構造は振っていないので、戻っても証人にしない
+      (割れたら `initial_value_dependent` には落とす — 割れたこと自体は情報)
+    """
+    out = dict(claims)
+    if outcome is None or not getattr(outcome, "complete", False):
+        return out
+    probes = tuple(getattr(outcome, "probes", ()))
+    # 収束した使える開始点だけで判定する。**割れ**はそこから落とす (収束した開始点がはっきり割れたことは情報)。
+    #   **昇格**は両開始点とも収束したときだけ (収束していない開始点の「戻った」は証人にならない。N7)
+    converged_idx = {
+        i for i, p in enumerate(probes)
+        if _usable(p) and all(st.converged for st in p.stage_results)
+    }
+    all_converged = len(converged_idx) == len(probes)
+    if not converged_idx:
+        return out
+    config = getattr(outcome, "config", None)
+    tolerances = AgreementTolerances()
+    jitter = float(getattr(config, "coord_jitter_ang", 0.0) or 0.0)
+    cell_frac = float(getattr(config, "cell_frac", 0.0) or 0.0)
+    cell_tested = cell_frac > tolerances.cell_rel_floor
+    moved_coords: set[str] = set()
+    if jitter > tolerances.coord_dist_floor_ang:
+        moved_sets = [set(p.coord_jitter_moved) for p in probes]
+        moved_coords = {f"coord:{k}" for k in set.intersection(*moved_sets)} if moved_sets else set()
+
+    def coord_displacement_resolvable(claim: Claim) -> bool:
+        """変位が一致の kσ 帯を超えるか (N3: σ の大きい座標は 0.05 Å 振っても「戻った」と区別できない)。"""
+        cell = (base.refined_cells or {}).get(claim.phase or "")
+        if claim.esd is None or cell is None or claim.axis not in ("x", "y", "z"):
+            return False
+        length = float(cell["xyz".index(claim.axis)])
+        if not (length > 0.0):
+            return False
+        band = tolerances.k_esd * math.sqrt(2.0) * float(claim.esd)  # 分率
+        return jitter / length > band
+
+    def tested(claim: Claim) -> bool:
+        if claim.param_class == "cell":
+            return cell_tested
+        if claim.param_class == "coord":
+            return claim.key in moved_coords and coord_displacement_resolvable(claim)
+        return False
+    found: dict[str, list[tuple[str, float | None, int]]] = {}
+    for i, probe in enumerate(probes):  # 元の添字で記録する (L-a)
+        if i not in converged_idx:
+            continue
+        for cls, items in parameter_agreements(base, probe, tolerances).items():
+            for it in items:
+                found.setdefault(f"{cls}:{it.key}", []).append((it.verdict, it.z, i))
+    detail_base = {
+        "n_probes": len(probes),
+        "cell_frac": getattr(config, "cell_frac", None),
+        "coord_jitter_ang": jitter,
+        "k_esd": tolerances.k_esd,
+    }
+    for key, claim in list(out.items()):
+        verdicts = found.get(key, [])
+        split = [v for v in verdicts if v[0] == "DISAGREE"]
+        if split:
+            worst = max(split, key=lambda v: v[1] if v[1] is not None else math.inf)
+            out[key] = claim.weakened_to(
+                Determinacy.INITIAL_VALUE_DEPENDENT,
+                Witness("initial_value_probe_split", {
+                    **detail_base, "probe": worst[2], "z": worst[1],
+                }),
+            )
+            continue
+        if (
+            all_converged
+            and len(verdicts) == len(probes)
+            and all(is_agreement(v[0]) for v in verdicts)
+            and claim.determinacy is Determinacy.ESD_ONLY
+            and "refined" in claim.provenance  # 解放しなかった入力値は戻って当然 (証人にならない)
+            and tested(claim)
+        ):
+            zs = [v[1] for v in verdicts if v[1] is not None]
+            out[key] = claim.strengthened_to(
+                Determinacy.LOCALLY_STABLE,
+                Witness("initial_value_probe", {**detail_base, "max_z": max(zs) if zs else None}),
             )
     return out

@@ -66,7 +66,7 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 | キー | 中身 |
 |---|---|
 | `publishable_values` | **出版してよい値だけ** `{キー: {value, esd, unit, scope, determinacy}}`。⚠ `scope` が `relative_within_sample` の値 (内部標準の宣言が無い格子) は**同じ試料・同じ測定の中の比・差にだけ**有効 — 絶対値として報告しない。キーは `cell:<相>.a`・`coord:<相>.<原子>.x`・`uiso:<相>.<原子>`・`occupancy:…`・`weight_fraction:<相>.wt`・`microstructure:…`・`profile:hist0.U` |
-| `claims` | 全値の状態。`determinacy` (`exact`/`determined`/`esd_only`/`undetermined_esd`/`initial_value_dependent`/`unconverged`)・`provenance` (`refined`/`symmetry`/`input`/`pruned`。**空 `[]` は出自不明** — TOPAS 経路など、最終の共分散が無い)・`checks` (検査ごとに `pass`/`fail`/`unevaluated`)・`gate` (止めている判断要求)・`witnesses` (根拠)・`publishable` |
+| `claims` | 全値の状態。`determinacy` (`exact`/`determined`/`locally_stable`/`esd_only`/`undetermined_esd`/`initial_value_dependent`/`unconverged`)・`provenance` (`refined`/`symmetry`/`input`/`pruned`。**空 `[]` は出自不明** — TOPAS 経路など、最終の共分散が無い)・`checks` (検査ごとに `pass`/`fail`/`unevaluated`)・`gate` (止めている判断要求)・`witnesses` (根拠)・`publishable` |
 | `judgment_requests` | 決まらなかったこと・検査できなかったこと。`blocking`・`blocks` (止めた値)・`trigger`・`evidence`・`default` (既定ポリシー D の回答 = 常に `hold`) |
 | `claims_sidecar` | 精密化済み gpx の隣に書いた `<名前>.claims.json` (gpx の内容ハッシュ付き)。書かなかったときは `claims_sidecar_reason` に理由 |
 
@@ -84,7 +84,9 @@ description: 粉末回折 (X線/中性子) の全自動 Rietveld 解析を閉ル
 - ⛔ `refined_cells`・`atom_coords`・`cell_esd` などの**平文のフィールドは互換のために残っているだけ**で、
   そこから数値を拾って報告・出版してはならない (状態が落ちる)。
 - `determined` は**収束確認 (`multistart`) を回したときだけ**付く (全開始点が kσ 以内で一致した値)。
-  単発・`search` では、対称性で決まる値 (`exact`) を除き最良でも `esd_only` — それ自体は出版を止めない。
+  `locally_stable` は**初期値プローブ (`initial_value_probe`) を回したときだけ**付く (最終状態から ±δ の
+  2 開始点で戻った値。「近くからは戻る」であって大域的に決まったとは言わない — `determined` より弱い)。
+  どちらも回していなければ、対称性で決まる値 (`exact`) を除き最良でも `esd_only` — それ自体は出版を止めない。
 - 結晶化学の検査 (短すぎる結合・結合原子価和・電荷中性) は pymatgen が要る。無い・構造を組めない
   ときは `unevaluated` で、構造の値 (座標・Uiso・占有率) は出版されない — 黙って通す経路は無い。
 - `claims` が `null` のときは出版状態を作れなかった (理由は `warnings`)。`publishable_values` は空で、
@@ -188,6 +190,8 @@ operando 経路 (`sequential_rietveld` / `anchored_sequential`) は GSAS-II 固�
   X,Y,Zero) ことにも注意。**`profile_lorentzian` のキー列** (例 `["X","Y"]`) も TOPAS では
   未対応で、true/false のみ。キー列を渡すと**精密化の前に呼び出し全体が拒否され** error dict が
   返る (段が失敗する `zero_offset` とは現れ方が違う)。
+- **`cell_phases` は未対応**・**`preferred_orientation_phases` は未対応**・**`occupancy_phases` は未対応** — 格子/選択配向/占有率を解放する相を
+  絞る GSAS 経路のフラグ (テンプレートの部品)。TOPAS では未翻訳で、指定すると段が明示的に失敗する。
 - `preferred_orientation` (球面調和) と `absorption` は**既定レシピに入っていない** opt-in 段。
   残差にまだ系統的なピーク強度ズレが残るときだけ `stages` に足す。
 - **段は直前に受理した段の精密化値から始まる** (GSAS 経路で gpx が値を持ち越すのと同じ)。
@@ -493,6 +497,65 @@ Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より
 ⚠ `profile` と `uiso` の不一致は既定では `SAME_SOLUTION` を妨げない。U/V/W はほぼ平坦な相関谷に
 あり (実測 `V×W r=−0.959`)、手順ごとに谷の別の点へ落ちるのが正常だからである。**構造が同じで
 プロファイルだけ違うのは矛盾ではない**ので、そう報告すること。
+
+## テンプレートを候補に加える (`"template"`, fit-then-judge 1B)
+
+**固定順のテンプレート**を探索の 1 候補として回す。pass 1 (段 0–4 の前処理 fit) で判断を決め
+(格子を凍結する相・背景の項数・対象相・Uiso のまとめ方・オフセット)、**静的なレシピと相の指定に
+コンパイル**して本番の fit (pass 2) を回す。他の候補と**同じ選択規則**で比べられ、勝ったときだけ採用される。
+
+```json
+{"search": ["default", "polish", "serious1", "template"], "template": {}}
+```
+
+⚠ **既定の集合 (`"search": true`) には入っていない** — 効果をまだ測っていない (P2)。名指しで加える。
+
+| いつ使うか | いつ使わないか |
+|---|---|
+| 既定の候補が**共通に**破綻するとき (副相の格子が発散する・座標が暴走する) / 比較のための 1 候補として | **範囲外**: 中性子 (CW/TOF)・joint (ヒストグラム 2 本以上)・`backend: "topas"`・operando。呼び出し全体が `error_type: "TemplateScopeError"` になる |
+
+**宣言** (`template`。すべて省略可 = 宣言なし。綴り違い・型違いは error dict):
+
+| キー | 効くもの | 宣言しないと |
+|---|---|---|
+| `instrument_calibrated` | 装置関数 (U,V,W,X,Y・非対称) が標準試料由来なら幅を試料広がり (Size/Mustrain) として読む | 幅は装置関数込みで精密化し、試料広がりは解放しない |
+| `internal_standard` | 同一試料内の内部標準の相名。標準の格子を固定し、対象相から外し、精密化した格子を `scope: absolute` にする (Bragg-Brentano では **Zero が有意でないと検定できたときだけ** — 有意・検定できなかったときは relative のまま。Debye-Scherrer は Zero を精密化するので常に) | 格子は `relative_within_sample` |
+| `target_phase` | 構造を精密化する相 | 積分計算強度が最大の相 |
+| `zero_calibrated` | 装置ファイルの Zero が較正値か。Bragg-Brentano では Zero を装置値に固定するので、格子に `declared:zero_calibrated` が付く | — |
+
+宣言は fit の設定を変えるが**判断要求を閉じない** — 対象相を宣言しても、強度が僅差なら
+`target_phase_ambiguous` が出る。宣言に依存した値は `provenance` に `declared:<キー>` が付く。
+
+**返り値の読み方** (テンプレートが採用されたとき):
+- `template_version` と `template_derivation` — pass 1 が**何を見てどう決めたか** (`evidence` の
+  `cell`・`target_phase`・`background` (Hamilton 検定の表)・`zero_offset`・`uiso`・`effective_dof`)。
+  `status: "unevaluated"` の項目は判断できずに既定側を採った (検定の fit が回らなかった等) — そう報告する。
+- 判断要求 `target_phase_ambiguous` (blocking: 全相の構造値を止める) と `zero_offset_significant`
+  (非 blocking: Shift だけでは足りず Zero が効いている。格子は相対値のまま) — **閉じてはならない**。
+- `specs.phases` は**テンプレートがコンパイルした相の指定** (非対象相の構造凍結・Uiso の組・極性原点) で、
+  目印 `template_version` が付く。⛔ `refine_with_revisions` や再度の `auto_rietveld` に**渡せない**
+  (error dict になる — テンプレートの段列と切り離すと別の手順になる)。改訂するなら**元の phases** で
+  `auto_rietveld(search=[..., "template"])` を回し直す。
+- `stages` (追加段階) とは併用できない (テンプレートは段列そのものをコンパイルする)。
+
+## 初期値プローブ (`initial_value_probe`) — 「近くから戻るか」を安く確かめる
+
+```json
+{"initial_value_probe": {"cell_frac": 0.001, "coord_jitter_ang": 0.05}}
+```
+
+返した fit の**保存済み gpx** から、解放されている格子と座標だけを ±δ 振った 2 開始点で精密化し直し、
+両方で kσ 以内に戻った値に `locally_stable` を付ける (割れた値は `initial_value_dependent`)。
+単発・`search`・`multistart` のどの経路でも頼める。結果は返り値の `initial_value_probe`
+(`complete`・`rwp`・`errors`・`reason`)。
+
+- `save_gpx: false` の呼び出しでは回さない (`reason` に理由)。回らなかった・失敗した開始点があれば
+  証人は付かない (`complete: false`) — 「戻った」とは数えない。
+- **振った値にだけ**証人が付く: 格子 (`cell_frac` が 0 なら付かない) と実際に動かした座標。Uiso・占有率・プロファイル・
+  分率は振っていないので `locally_stable` にならない (割れたら `initial_value_dependent` には落ちる)。座標の変位は
+  一致の許容幅を超えていないと証人にならない (`coord_jitter_ang` は 0 か 0.02 Å より大きい値 — 間は error dict)。
+  esd が大きく 3σ の帯が変位を超える座標にも付かない。結束した座標 (例 (x,x,x)) は振らない。両方の開始点が収束していることも要る。
+- 収束確認 (`multistart`) の代わりではない — あちらは遠くから同じ答えに来るかを見る (`determined`)。
 
 ## 収束を確認する (`multistart`) — **規定の標準経路**
 

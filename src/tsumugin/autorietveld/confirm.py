@@ -142,6 +142,8 @@ def optimize_then_confirm(
     ledger: "Ledger | None" = None,
     search_runner: "Any | None" = None,
     multistart_runner: "Any | None" = None,
+    template_declarations: "Any | None" = None,
+    template_pass1_runner: "Any | None" = None,
     **run_kwargs: object,
 ) -> ConvergenceReport:
     """手順を最適化してから初期値を振って収束を確認する (標準経路)。
@@ -156,6 +158,10 @@ def optimize_then_confirm(
     :param search_runner: Phase A の候補実行 callable (**テスト注入専用のシーム**)。
         実運用経路は JSON spec であり ③ はここへ callable を送れない (CLAUDE.md §4.5)
     :param multistart_runner: Phase B の実行 callable (同上)
+    :param template_declarations: 候補 ``"template"`` の入力宣言 (`template.TemplateDeclarations`)。
+        Phase A (`run_recipe_search`) へ渡す。採用候補がテンプレートなら Phase B はその**相の指定**
+        (`RecipeCandidate.phases`) と BLAS の固定で回す
+    :param template_pass1_runner: テンプレートの pass 1 の実行 callable (**テスト注入専用のシーム**)
     :param run_kwargs: Phase A / B の各精密化へ透過する追加引数。⚠ ``keep_gpx`` /
         ``keep_project`` は不可 — 何も回す前に ValueError (`gpxstore.reject_single_keep`)。
         置き場所は ``gpx_dir``
@@ -163,15 +169,6 @@ def optimize_then_confirm(
     # 【入口で拒む】: Phase A (`run_recipe_search`) も拒むが、そこに頼ると本関数が Phase A より
     #   前にディスクへ触る変更 (run ディレクトリの解決など) をしたとき空の痕跡が残る。
     reject_single_keep(run_kwargs, entry="optimize_then_confirm")
-    # 【入力の誤りは Phase A の前に止める】: 極性原点を固定した相への座標の摂動は engine が拒否する
-    #   (`constraint_groups.refuse_polar_origin_with_coord_jitter`) が、ここで止めないと高価な Phase A が完走
-    #   した後に Phase B の全開始点が失敗し、「収束確認が失敗した」警告に埋もれて黙って Phase A
-    #   だけの結果に縮む (セルフレビュー 3 巡目)。
-    from .constraint_groups import refuse_polar_origin_with_coord_jitter
-
-    refuse_polar_origin_with_coord_jitter(
-        phases, {p.phase_name: coord_jitter_ang for p in phases} if coord_jitter_ang > 0 else None
-    )
     ledger = ledger if ledger is not None else Ledger()
     # 【1 実行 = 1 run ディレクトリ (gpx-retention 設計 §3)】: Phase A (`run_recipe_search`) と
     #   Phase B (`run_multistart_rietveld`) はそれぞれ `group_context` で根から run を解決する
@@ -193,7 +190,9 @@ def optimize_then_confirm(
         search = run_recipe_search(
             list(histograms), list(phases),
             names=tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES,
-            config=search_config, ledger=ledger, runner=search_runner, **run_kwargs,
+            config=search_config, ledger=ledger, runner=search_runner,
+            template_declarations=template_declarations,
+            template_pass1_runner=template_pass1_runner, **run_kwargs,
         )
         selected = search.selected
         if selected is None or selected.result is None:
@@ -215,6 +214,12 @@ def optimize_then_confirm(
         confirm_kwargs.pop("background_coeffs", None)
         if cand.stability is not None:
             confirm_kwargs["stability"] = cand.stability
+        if cand.blas_threads is not None:
+            confirm_kwargs["blas_threads"] = cand.blas_threads
+        # 【候補の相の指定ごと固定する (fit-then-judge P1-1B)】: テンプレートは非対象相の構造凍結・
+        #   Uiso の組・極性原点まで**相の指定**にコンパイルしている。元の phases で Phase B を回すと
+        #   採用した手順と別のモデルの収束を確かめたことになる。
+        confirm_phases = list(cand.phases) if cand.phases is not None else list(phases)
         ledger.append(
             "convergence_phase_a",
             {
@@ -227,7 +232,7 @@ def optimize_then_confirm(
 
         run_confirm = multistart_runner or run_multistart_rietveld
         multistart = run_confirm(
-            list(cand.histograms), list(phases),
+            list(cand.histograms), confirm_phases,
             config=MultistartConfig(
                 n_starts=n_starts, spec=PerturbationSpec(lattice_frac=lattice_frac)
             ),

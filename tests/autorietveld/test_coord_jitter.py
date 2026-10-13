@@ -213,3 +213,46 @@ def test_frozen_labels_are_scoped_to_their_own_phase():
     )
     assert n == 3
     assert tuple(atoms[0][3:6]) != (0.25, 0.5, 0.125)
+
+
+# ---------------------------------------------------------------------------
+# 結束の組と P1-1B の機能 (軸単位の固定・記録・プローブ) の組み合わせ
+# ---------------------------------------------------------------------------
+
+
+def test_moved_records_every_axis_of_a_tied_group():
+    """結束の組は従属側も初期値を一緒に書き換えたので、記録 (claims の証人の範囲) に全軸を載せる。"""
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("Ca1", (0.0, 0.0, 0.3), "0 0 z")]
+    moved: list[str] = []
+    n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel, moved=moved)
+    assert n == 2
+    assert moved == ["p.S1.x", "p.S1.y", "p.S1.z", "p.Ca1.z"]
+
+
+def test_a_held_axis_freezes_its_whole_tied_group():
+    """★軸単位の固定 (極性原点の hold) が組の 1 軸に掛かっていれば組ごと動かさない。
+
+    非トートロジー: 組は GSAS では 1 変数 — 固定されていない軸だけを動かすと結束が壊れ、
+    固定された軸に追随しない従属側のずれが最終座標に残る。
+    """
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("O1", (0.25, 0.5, 0.125))]
+    moved: list[str] = []
+    n = _apply_coord_jitter(
+        [_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel,
+        frozen_axes={"p": {"S1": [1]}}, moved=moved,
+    )
+    assert tuple(atoms[0][3:6]) == (0.38, 0.38, 0.38), "組の y が固定 → x,z も動かさない"
+    assert n == 3 and moved == ["p.O1.x", "p.O1.y", "p.O1.z"]
+
+
+def test_probe_leaves_tied_groups_alone_but_keeps_the_fixed_magnitude():
+    """プローブ (fixed_magnitude) は P1-1B どおり結束した組を振らず、単独軸は ±amp Å ちょうど動かす。"""
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("Ca1", (0.0, 0.0, 0.3), "0 0 z")]
+    moved: list[str] = []
+    n = _apply_coord_jitter(
+        [_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel,
+        fixed_magnitude=True, sign=-1, moved=moved,
+    )
+    assert tuple(atoms[0][3:6]) == (0.38, 0.38, 0.38)
+    assert n == 1 and moved == ["p.Ca1.z"]
+    assert abs(atoms[1][5] - 0.3) * 10.0 == pytest.approx(0.05, abs=1e-12)

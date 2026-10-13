@@ -42,6 +42,11 @@ def _scaled_chi2_term(metrics: RefinementMetrics) -> tuple[float, float]:
       両方を判定基準にすることで「s=1 で既定式に厳密一致」の保証を壊れた s 値からも守る。
     🔵 信頼性レベル: モジュール docstring の式に直接対応 (ガード対象は Issue #64 レビュー対応)。
     """
+    r = metrics.effective_dof_ratio
+    if r is not None:
+        # 【実効自由度 (fit-then-judge P1-1B)】: 系列相関した残差は独立な点を過大に数える。χ² と n を
+        #   同じ比で縮める (`RefinementMetrics` が noise_scale との併用と (0,1] の外を拒否済み)。
+        return metrics.chi2 * r, 0.0
     s = metrics.noise_scale
     if s is None or not math.isfinite(s) or s <= 0.0:
         return metrics.chi2, 0.0
@@ -51,13 +56,19 @@ def _scaled_chi2_term(metrics: RefinementMetrics) -> tuple[float, float]:
     return metrics.chi2 / s2, metrics.n_obs * math.log(s2)
 
 
+def _n_eff(metrics: RefinementMetrics) -> float:
+    """BIC の罰則の n。実効自由度の比が無ければ ``n_obs`` そのもの (int のまま — ビット同一)。"""
+    r = metrics.effective_dof_ratio
+    return metrics.n_obs if r is None else metrics.n_obs * r
+
+
 class BICBackend:
     name = "bic"
 
     def score(self, metrics: RefinementMetrics) -> EvidenceResult:
         # n_obs=0 (空パターン等の縮退) は log(1)=0 として非例外化する
         chi2_term, scale_term = _scaled_chi2_term(metrics)
-        value = chi2_term + scale_term + metrics.n_params * math.log(max(metrics.n_obs, 1))
+        value = chi2_term + scale_term + metrics.n_params * math.log(max(_n_eff(metrics), 1))
         return EvidenceResult(backend=self.name, value=value)
 
 

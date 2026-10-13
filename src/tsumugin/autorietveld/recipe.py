@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import Mapping, Sequence
 
-from ..errors import TsumuginError
+from ..errors import InvalidPhaseSpecError, TsumuginError
 from .model import Geometry, HistogramSpec, PhaseSpec, RefinementStage
 
 # ---------------------------------------------------------------------------
@@ -232,6 +232,50 @@ def validate_correlation_groups(
             f"相関群が部分解放のまま段列が終わっています ({detail})。"
             "群は最後に必ず丸ごと解放すること — 一部だけ凍結された解は物理的に誤りである"
         )
+
+
+#: 相を絞る段フラグ → それが絞る解放フラグ (fit-then-judge P1-1B)。値は相名の非空の列。
+PHASE_SCOPED_FLAGS: dict[str, str] = {
+    "cell_phases": "cell",
+    "preferred_orientation_phases": "preferred_orientation",
+    "occupancy_phases": "occupancy",
+}
+
+
+def check_phase_scoped_flags(
+    stages: Sequence[RefinementStage], phases: Sequence[PhaseSpec]
+) -> None:
+    """相を絞る段フラグ (`PHASE_SCOPED_FLAGS`) の誤用を精密化の前に止める。
+
+    engine は名前の合わない相を黙って解放しないだけなので、綴り違い・空の列・絞る対象の解放が無い段は
+    「格子を解放したつもりで何も解放していない」段になり、Rwp からは読めない。
+
+    :raises InvalidPhaseSpecError: 相に無い名前・空の列・文字列 (文字の列に化ける)・対象の解放が無い段
+    """
+    known = {p.phase_name for p in phases}
+    for st in stages:
+        for name, target in PHASE_SCOPED_FLAGS.items():
+            if name not in st.flags:
+                continue
+            value = st.flags[name]
+            if (
+                not isinstance(value, (list, tuple))
+                or not value
+                or not all(isinstance(v, str) for v in value)
+            ):
+                raise InvalidPhaseSpecError(
+                    f"段 {st.label!r} の {name} は相名の非空の列である必要があります: {value!r}"
+                )
+            unknown = sorted(set(value) - known)
+            if unknown:
+                raise InvalidPhaseSpecError(
+                    f"段 {st.label!r} の {name} に相に無い名前 {unknown} があります (相: {sorted(known)})"
+                )
+            released = st.flags.get(target)
+            if released is None or released is False:
+                raise InvalidPhaseSpecError(
+                    f"段 {st.label!r} の {name} は {target!r} を解放する段でしか意味を持ちません"
+                )
 
 
 def _finalize(

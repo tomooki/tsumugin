@@ -28,9 +28,9 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
-from .build import CLAIMS_VERSION, base_claims, with_convergence
+from .build import CLAIMS_VERSION, base_claims, with_convergence, with_probe
 from .chemistry import crystal_chemistry
-from .model import Check, Claim, Determinacy, Witness, _json_value
+from .model import Check, Claim, Determinacy, Scope, Witness, _json_value
 from .witness import residual_window_witness
 
 __all__ = [
@@ -298,10 +298,89 @@ def _issue(
 # ---------------------------------------------------------------- 入口
 
 
+def template_adjustments(
+    claims: Mapping[str, Claim], derivation: "Mapping[str, Any] | None"
+) -> tuple[dict[str, Claim], list[JudgmentRequest]]:
+    """テンプレートの判断 (`RecipeCandidate.derivation`) を出版状態に写す (fit-then-judge 1B)。
+
+    - **内部標準を宣言した** (かつ Zero が有意でない): 格子は ``scope = absolute``、出自に
+      ``declared:internal_standard`` (宣言でしか閉じない根拠なので、宣言に依存したことを残す)
+    - **Zero が有意** (Bragg-Brentano で Shift だけでは足りない): 格子は ``relative_within_sample`` のまま
+      Zero の値と相関に結び、非 blocking の判断要求 ``zero_offset_significant`` (pass 2 は Zero を装置値に
+      固定している = D の既定)
+    - **対象相が僅差・宣言と食い違う・計測できない**: blocking の ``target_phase_ambiguous`` で全相の構造値
+      (座標・Uiso・占有率) を止める (構造を精密化した相の選択そのものが決まっていない)
+    - 対象相を宣言したら対象相の構造値に、装置の較正を宣言したら微細構造の値に ``declared:<キー>``
+    """
+    out = dict(claims)
+    requests: list[JudgmentRequest] = []
+    if not derivation:
+        return out, requests
+    decl = dict(derivation.get("declarations") or {})
+    evidence = dict(derivation.get("evidence") or {})
+    decisions = dict(derivation.get("decisions") or {})
+    zero_sig = derivation.get("zero_offset_significant")
+    cells = [k for k, c in out.items() if c.param_class == "cell"]
+    # Zero の検定が「有意でない」と判定できた (Bragg-Brentano) か、Zero を解放する幾何 (Debye-Scherrer) の
+    #   ときだけ。検定できなかった (None) ときは既定側 (relative) — REQ-FTJ-1B-302 (セルフレビュー M1)
+    zero_settled = zero_sig is False or derivation.get("offset") == "zero"
+    if decl.get("internal_standard") and zero_settled:
+        for k in cells:
+            c = out[k]
+            if "refined" in c.provenance:
+                out[k] = replace(
+                    c, scope=Scope.ABSOLUTE,
+                    provenance=c.provenance | {"declared:internal_standard"},
+                )
+    if zero_sig is True:
+        zero_keys = {k for k, c in out.items() if c.param_class == "profile" and c.axis == "Zero"}
+        for k in cells:
+            c = out[k]
+            out[k] = replace(
+                c, scope=Scope.RELATIVE_WITHIN_SAMPLE, correlations=c.correlations | zero_keys,
+            )
+        requests.append(JudgmentRequest(
+            id="zero_offset_significant", kind="zero_offset_significant", blocking=False,
+            blocks=frozenset(),
+            trigger="pass 1 で Shift + Zero が Shift だけより有意に良い (Zero は装置値に固定した)",
+            evidence={"zero_offset": evidence.get("zero_offset"), "correlated": ["Shift", "Zero"]},
+            candidates=("hold", "release_zero", "calibrate_instrument"), priority=0.4,
+        ))
+    if derivation.get("target_phase_ambiguous"):
+        requests.append(JudgmentRequest(
+            id="target_phase_ambiguous", kind="target_phase_ambiguous", blocking=True,
+            blocks=frozenset(k for k, c in out.items() if c.param_class in _STRUCTURE_CLASSES),
+            trigger="対象相 (構造を精密化する相) が積分強度で決まらない・宣言と食い違う・計測できない",
+            evidence={"target_phase": evidence.get("target_phase")},
+            candidates=("hold", "declare_target_phase"), priority=0.85,
+        ))
+    target = decisions.get("target_phase")
+    if decl.get("target_phase") and target:
+        for k, c in list(out.items()):
+            if c.phase == target and c.param_class in _STRUCTURE_CLASSES:
+                out[k] = replace(c, provenance=c.provenance | {"declared:target_phase"})
+    if decl.get("zero_calibrated") and derivation.get("offset") == "shift":
+        # Bragg-Brentano では Zero を装置値に固定する — 格子はその値に依存する (セルフレビュー M9)
+        for k in cells:
+            c = out[k]
+            if "refined" in c.provenance:
+                out[k] = replace(c, provenance=c.provenance | {"declared:zero_calibrated"})
+    if decl.get("instrument_calibrated"):
+        for k, c in list(out.items()):
+            if c.param_class == "microstructure":
+                out[k] = replace(c, provenance=c.provenance | {"declared:instrument_calibrated"})
+    return out, requests
+
+
 def assess_claims(
-    claims: Mapping[str, Claim], result: object, phases: Sequence[object] | None
+    claims: Mapping[str, Claim], result: object, phases: Sequence[object] | None,
+    extra_requests: Sequence[JudgmentRequest] = (),
 ) -> Assessment:
-    """写像済みの `Claim` に検査器・判断要求・D を掛ける (`assess` の後半)。"""
+    """写像済みの `Claim` に検査器・判断要求・D を掛ける (`assess` の後半)。
+
+    :param extra_requests: 写像の外で発行した判断要求 (テンプレートの判断など)。同じく D の既定回答を
+        受け、blocking なら止める
+    """
     phase_set = _phase_set_witness(result)
     paths = {getattr(p, "phase_name"): getattr(p, "structure_path") for p in phases or ()}
     chem: dict[str, tuple[Check, Witness]] = {}
@@ -321,7 +400,8 @@ def assess_claims(
         checked[key] = c
 
     requests = [
-        replace(r, default=_HOLD) for r in _issue(checked, result, phases, phase_set, chem)
+        replace(r, default=_HOLD)
+        for r in [*_issue(checked, result, phases, phase_set, chem), *extra_requests]
     ]
     gated = dict(checked)
     for r in requests:
@@ -332,12 +412,19 @@ def assess_claims(
 
 
 def assess(
-    result: object, phases: Sequence[object] | None = None, multistart: object | None = None
+    result: object, phases: Sequence[object] | None = None, multistart: object | None = None,
+    *,
+    derivation: "Mapping[str, Any] | None" = None,
+    probe: object | None = None,
 ) -> Assessment:
-    """結果 (+ 相の指定・収束確認) から出版状態を決める (fit-then-judge 1A の唯一の入口)。
+    """結果 (+ 相の指定・収束確認) から出版状態を決める (fit-then-judge の唯一の入口)。
 
     :param phases: `PhaseSpec` の列 (結晶化学検査の入力構造と、格子を凍結した相)。None なら
         結晶化学は ``unevaluated``
     :param multistart: `RietveldMultistartResult` (収束確認)。None なら `determined` は付かない
+    :param derivation: テンプレートの判断 (1B)。None なら何もしない
+    :param probe: 初期値プローブ (`autorietveld.probe.ProbeOutcome`, 1B)。None なら `locally_stable` は付かない
     """
-    return assess_claims(with_convergence(base_claims(result), multistart), result, phases)
+    claims = with_probe(with_convergence(base_claims(result), multistart), result, probe)
+    claims, extra = template_adjustments(claims, derivation)
+    return assess_claims(claims, result, phases, extra)

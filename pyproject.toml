@@ -18,6 +18,9 @@ gsas = [
     "scipy>=1.11",
     "pycifrw>=4.4",
     "requests>=2.31",
+    # BLAS のスレッド数の固定 (`run_auto_rietveld(blas_threads=)`, fit-then-judge P1-1B)。
+    # 総和順序がスレッド割り当てで変わると悪条件の最小二乗の結果が揺れる (NFR-102)。
+    "threadpoolctl>=3.1",
 ]
 # M1 Web UI 最小版 (read-only): FastAPI アプリ + uvicorn 起動。
 # python-multipart は V2a workbench の POST /api/project/upload (multipart フォーム) に必要

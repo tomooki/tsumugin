@@ -145,26 +145,25 @@ def residual_window_witness(
         c_hi = np.searchsorted(x, x + w / 2.0, side="right")
         s_lo = np.searchsorted(x, x - w)
         s_hi = np.searchsorted(x, x + w, side="right")
-        for k in range(x.size):
-            ci, cj, si, sj = c_lo[k], c_hi[k], s_lo[k], s_hi[k]
-            n_center, n_side = cj - ci, (ci - si) + (sj - cj)
-            # 両側の帯が区間の端で切れていない (= 中心から ±1 FWHM の点がある) 窓だけ
-            if n_center < 3 or ci - si < 2 or sj - cj < 2:
-                continue
-            if x[si] > x[k] - 0.9 * w[k] or x[sj - 1] < x[k] + 0.9 * w[k]:
-                continue
-            side_weight = n_center / n_side  # 中央 +1、両側 −n_center/n_side で和 0
-            num = (cs_r[cj] - cs_r[ci]) - side_weight * (
-                (cs_r[ci] - cs_r[si]) + (cs_r[sj] - cs_r[cj])
-            )
-            var = (cs_v[cj] - cs_v[ci]) + side_weight**2 * (
-                (cs_v[ci] - cs_v[si]) + (cs_v[sj] - cs_v[cj])
-            )
-            n_windows += 1
-            snr = num / (noise_scale * math.sqrt(var))
-            if snr > best_snr:
-                best_snr = snr
-                best_window = (float(x[ci]), float(x[cj - 1]))
+        # 全点の窓を配列で一度に評価する (以前は点ごとの Python ループ — 数万点で数秒かかった)。
+        n_center = c_hi - c_lo
+        ok = (n_center >= 3) & (c_lo - s_lo >= 2) & (s_hi - c_hi >= 2)
+        sj_last = np.maximum(s_hi - 1, 0)
+        ok &= (x[s_lo] <= x - 0.9 * w) & (x[sj_last] >= x + 0.9 * w)
+        if not ok.any():
+            continue
+        ci, cj, si, sj = c_lo[ok], c_hi[ok], s_lo[ok], s_hi[ok]
+        side_weight = (cj - ci) / ((ci - si) + (sj - cj))  # 中央 +1、両側 −n_center/n_side で和 0
+        num = (cs_r[cj] - cs_r[ci]) - side_weight * ((cs_r[ci] - cs_r[si]) + (cs_r[sj] - cs_r[cj]))
+        var = (cs_v[cj] - cs_v[ci]) + side_weight**2 * (
+            (cs_v[ci] - cs_v[si]) + (cs_v[sj] - cs_v[cj])
+        )
+        snr = num / (noise_scale * np.sqrt(var))
+        n_windows += int(ok.sum())
+        k = int(np.argmax(snr))  # 同点は先頭 (以前のループと同じ)
+        if snr[k] > best_snr:
+            best_snr = float(snr[k])
+            best_window = (float(x[ci[k]]), float(x[cj[k] - 1]))
     if n_windows == 0:
         return _unevaluated("no_window")
     # 見つけた山は覆えた範囲が狭くても fail として返す (unevaluated に畳むと位置と S/N が根拠から消える)。
