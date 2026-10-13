@@ -1289,6 +1289,10 @@ class AutoRietveldResult:
     #   マルチスタートはこれを傍証の条件 (`perturbation_had_no_effect`) に使う — 結果の自由度指標
     #   から数え直すと、engine が動かさなかった軸を「試験した」と数える余地が残る。
     coord_jitter_axes_moved: int = 0
+    # 【座標ジッタ/プローブで実際に動かした座標のキー】(fit-then-judge P1-1B): ``"<相>.<ラベル>.<x|y|z>"``。
+    #   結束軸の従属側を含む。値ごとの証人 (`claims`) が「この座標は試験した」を判定する — 件数だけでは
+    #   「どの軸を試験したか」が分からず、振っていない軸まで `determined`/`locally_stable` にしうる。
+    coord_jitter_moved: tuple[str, ...] = ()
     # 【最終の共分散の記録】(fit-then-judge P1-1A): 最終段の varyList・従属変数・|ρ|≥0.9 の対。
     #   値の出自 (`claims`) の典拠 — esd の三状態は「未解放・revert・共分散なし」を区別しない。
     #   **None = 共分散が無い/計測していない** (TOPAS 経路・精密化の失敗)。観測のみ。

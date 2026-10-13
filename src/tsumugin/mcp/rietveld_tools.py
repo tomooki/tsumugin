@@ -25,6 +25,7 @@ import。runner は注入可能 (既定 GSAS 駆動; テストは決定論スタ
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
 
 from .._json import finite_or_none
@@ -284,7 +285,9 @@ def _result_to_dict(result: AutoRietveldResult, inp: AnalysisInput) -> dict[str,
     }
 
 
-def _run_degrading_domain_errors(run: "Callable[[AnalysisInput], AutoRietveldResult]", inp) -> dict:
+def _run_degrading_domain_errors(
+    run: "Callable[[AnalysisInput], AutoRietveldResult]", inp, probe: "_ProbeRequest | None" = None,
+) -> dict:
     """runner を実行し、Tsumugin の**ドメインエラー**だけを ``{"error","error_type"}`` へ縮退する。
 
     精密化の前に engine が送出する入力仕様の誤り (`errors.InvalidPhaseSpecError`: 相に無い
@@ -297,13 +300,71 @@ def _run_degrading_domain_errors(run: "Callable[[AnalysisInput], AutoRietveldRes
     except TsumuginError as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
     payload = _result_to_dict(result, inp)
-    _attach_claims(payload, result, inp.phases)
+    _attach_claims(payload, result, inp.phases, probe=_run_probe(payload, probe))
     return payload
+
+
+@dataclass(frozen=True)
+class _ProbeRequest:
+    """② から頼まれた初期値プローブ (fit-then-judge 1B)。``prober`` はテスト注入専用。"""
+
+    config: object
+    prober: "Callable[..., AutoRietveldResult] | None" = None
+
+
+def _probe_request(
+    spec: "Mapping[str, object] | None", prober: "Callable[..., AutoRietveldResult] | None"
+) -> "_ProbeRequest | None":
+    """``initial_value_probe`` spec を検証する (null = 回さない。不正なキー・値は ValueError)。"""
+    if spec is None:
+        return None
+    from ..autorietveld.probe import ProbeConfig
+
+    if not isinstance(spec, Mapping):
+        raise ValueError(f"initial_value_probe は dict です: {type(spec).__name__}")
+    return _ProbeRequest(ProbeConfig.from_dict(spec) if spec else ProbeConfig(), prober)
+
+
+def _run_probe(payload: dict, request: "_ProbeRequest | None") -> object | None:
+    """保存した gpx から ±δ のプローブを回し、結果を ``initial_value_probe`` に載せる。
+
+    gpx を保存しなかった呼び出しでは回さず理由を載せる (回さなかった値は基底状態のまま)。
+    例外にしない (プローブの失敗は「戻った」と数えないだけ)。
+    """
+    if request is None:
+        return None
+    from ..autorietveld.probe import run_initial_value_probe
+
+    outcome = run_initial_value_probe(
+        str(payload.get("gpx_path") or ""), request.config,  # type: ignore[arg-type]
+        prober=request.prober,
+    )
+    payload["initial_value_probe"] = outcome.to_dict()
+    return outcome
+
+
+def _template_derivation(candidate: object) -> "Mapping[str, object] | None":
+    """採用候補がテンプレートならその判断 (``derivation``)、それ以外は None。"""
+    return getattr(candidate, "derivation", None)
+
+
+def _mark_template_specs(payload: dict, derivation: "Mapping[str, object] | None") -> None:
+    """テンプレートの結果の ``specs`` の相に版の目印を付ける (`_build_input` が再利用を断る)。"""
+    if not derivation:
+        return
+    version = derivation.get("template_version")
+    for ph in (payload.get("specs") or {}).get("phases", []):
+        ph["template_version"] = version
+    payload["template_version"] = version
+    payload["template_derivation"] = dict(derivation)
 
 
 def _attach_claims(
     payload: dict, result: AutoRietveldResult, phases: "Sequence[object]",
     multistart: object | None = None,
+    *,
+    derivation: "Mapping[str, object] | None" = None,
+    probe: object | None = None,
 ) -> None:
     """② の結果に出版状態を**足す** (fit-then-judge 1A。既存キーは変えない)。
 
@@ -322,7 +383,7 @@ def _attach_claims(
 
     warnings = payload.setdefault("warnings", [])
     try:
-        body = assess(result, phases, multistart).to_dict()
+        body = assess(result, phases, multistart, derivation=derivation, probe=probe).to_dict()
     except Exception as exc:  # noqa: BLE001 — 出版状態の失敗でフィット結果を落とさない
         payload.update({
             "claims_version": CLAIMS_VERSION, "claims": None, "judgment_requests": [],
@@ -381,6 +442,17 @@ def _build_input(
         への到達口)。不正な段階 spec は `stages_from_dicts` が ``ValueError`` を送出する
         (呼び出し側が error dict へ縮退する)。
     """
+    # 【テンプレートがコンパイルした相の指定を再利用させない (fit-then-judge 1B)】: 非対象相の構造凍結・
+    #   Uiso の組・極性原点はテンプレートの段列とセットで意味を持つ。既定レシピや改訂で回すと
+    #   「テンプレートの結果」と読める別の手順になる (`PhaseSpec.from_dict` は目印を黙って捨てる)。
+    marked = [
+        p.get("phase_name") for p in phases if isinstance(p, Mapping) and "template_version" in p
+    ]
+    if marked:
+        raise ValueError(
+            f"相 {marked} はテンプレートがコンパイルした指定 (template_version 付き) です。"
+            "再利用できません — 元の phases で auto_rietveld(search=[..., 'template']) を回してください"
+        )
     return AnalysisInput(
         histograms=tuple(HistogramSpec.from_dict(h) for h in histograms),
         phases=tuple(PhaseSpec.from_dict(p) for p in phases),
@@ -399,6 +471,9 @@ def _run_search(
     *,
     gpx_dir: str | None,
     save_gpx: bool,
+    template: object | None = None,
+    template_pass1_runner: object | None = None,
+    probe: "_ProbeRequest | None" = None,
 ) -> dict:
     """レシピ探索を実行し「採用候補の結果 + 候補表」を返す (REQ-SAR-500/501)。
 
@@ -409,6 +484,12 @@ def _run_search(
     """
     from dataclasses import replace as _replace
 
+    if inp.extra_stages and "template" in names:
+        # テンプレートは段列をコンパイルする — 追加段階を足すと「テンプレートの結果」ではなくなる。
+        raise ValueError(
+            "stages (追加段階) と候補 'template' は同時に指定できません "
+            "(テンプレートは段列そのものをコンパイルする)"
+        )
     summary = run_recipe_search(
         inp.histograms,
         inp.phases,
@@ -425,6 +506,8 @@ def _run_search(
         #   無視され**、全候補が既定 (env → データ隣接) へ書かれる。Rwp には現れない。
         gpx_dir=gpx_dir,
         save_gpx=save_gpx,
+        template_declarations=template,  # type: ignore[arg-type]
+        template_pass1_runner=template_pass1_runner,  # type: ignore[arg-type]
     )
     selected = summary.selected
     if selected is None or selected.result is None:
@@ -440,9 +523,16 @@ def _run_search(
         inp,
         histograms=selected.candidate.histograms,
         background_coeffs=selected.candidate.background_coeffs,
+        # テンプレートは相の指定もコンパイルしている (非対象相の構造凍結・Uiso の組)
+        phases=selected.candidate.phases or inp.phases,
     )
     payload = _result_to_dict(selected.result, chosen)
-    _attach_claims(payload, selected.result, chosen.phases)
+    derivation = _template_derivation(selected.candidate)
+    _mark_template_specs(payload, derivation)
+    _attach_claims(
+        payload, selected.result, chosen.phases, derivation=derivation,
+        probe=_run_probe(payload, probe),
+    )
     payload["search"] = summary.to_dict()
     _lift_fallback_warnings(payload, summary.warnings)
     return payload
@@ -465,6 +555,10 @@ def _run_convergence(
     *,
     gpx_dir: str | None,
     save_gpx: bool,
+    template: object | None = None,
+    template_pass1_runner: object | None = None,
+    probe: "_ProbeRequest | None" = None,
+    multistart_runner: object | None = None,
 ) -> dict:
     """規定の標準経路 (手順最適化 → 収束確認) を実行する。
 
@@ -503,6 +597,9 @@ def _run_convergence(
         max_cyc=max_cyc,
         stability=opts,
         search_runner=search_runner,
+        multistart_runner=multistart_runner,
+        template_declarations=template,
+        template_pass1_runner=template_pass1_runner,
         # 探索と同じ理由で明示的に運ぶ (Phase A の候補と Phase B の開始点の両方へ届く)。
         gpx_dir=gpx_dir,
         save_gpx=save_gpx,
@@ -519,14 +616,21 @@ def _run_convergence(
         return failed
     selected = report.search.selected if report.search is not None else None
     chosen = inp
+    derivation = None
     if selected is not None:
         chosen = _replace(
             inp,
             histograms=selected.candidate.histograms,
             background_coeffs=selected.candidate.background_coeffs,
+            phases=selected.candidate.phases or inp.phases,
         )
+        derivation = _template_derivation(selected.candidate)
     payload = _result_to_dict(report.best, chosen)
-    _attach_claims(payload, report.best, chosen.phases, report.multistart)
+    _mark_template_specs(payload, derivation)
+    _attach_claims(
+        payload, report.best, chosen.phases, report.multistart, derivation=derivation,
+        probe=_run_probe(payload, probe),
+    )
     if report.search is not None:
         payload["search"] = report.search.to_dict()
     payload["convergence"] = report.to_dict()
@@ -617,8 +721,13 @@ def auto_rietveld(
     seed_profile: bool = False,
     gpx_dir: str | None = None,
     save_gpx: bool = True,
+    template: Mapping[str, object] | None = None,
+    initial_value_probe: Mapping[str, object] | None = None,
     runner: Runner | None = None,
     search_runner: SearchRunner | None = None,
+    template_pass1_runner: "object | None" = None,
+    multistart_runner: "object | None" = None,
+    prober: "Callable[..., AutoRietveldResult] | None" = None,
 ) -> dict:
     """spec (JSON) を精密化エンジンで実行し段階別/最終メトリクスを構造化して返す (計器)。
 
@@ -735,17 +844,52 @@ def auto_rietveld(
         返す。返り値の ``convergence.structure_is_corroborated`` が解の採用可否、
         ``convergence.undetermined_by_initial_values`` が**出版してはならない値**である。
         引数はすべてスカラなので他ツールの出力を要しない (§4.5 到達可能性)
+    :param template: **テンプレートの入力宣言** (fit-then-judge 1B)。``search`` に ``"template"`` を
+        含めたときだけ意味を持つ (含めずに渡したら error dict)。``{"instrument_calibrated": bool,
+        "internal_standard": 相名, "target_phase": 相名, "zero_calibrated": bool}`` (すべて省略可 =
+        宣言なし)。宣言は fit の設定を変えるが**判断要求を閉じない** (例: 対象相を宣言しても強度が
+        僅差なら ``target_phase_ambiguous`` が出る)。テンプレートは**範囲外 (中性子・TOF・joint・
+        TOPAS) では呼び出し全体が error dict** (``error_type: "TemplateScopeError"``)。
+        テンプレート候補が採用されると返り値に ``template_version``・``template_derivation``
+        (pass 1 が何を見てどう決めたか) が付き、``specs.phases`` は**テンプレートがコンパイルした
+        相の指定** (目印 ``template_version`` 付き — `refine_with_revisions` や再度の
+        `auto_rietveld` には渡せない。改訂するなら元の phases で回し直す)
+    :param initial_value_probe: **初期値プローブ** (fit-then-judge 1B)。``{"cell_frac": 0.001,
+        "coord_jitter_ang": 0.05, "seed": 0, "max_cyc": 12}`` (``{}`` で既定値。``coord_jitter_ang`` は
+        一致の許容幅 0.02 Å より大きくないと座標の証人にならないので、0 < 値 ≤ 0.02 は error dict)。返した fit の
+        保存済み gpx から ±δ の 2 開始点で精密化し直し、両方で kσ 以内に戻った値に
+        ``locally_stable`` の証人を付ける (割れたら ``initial_value_dependent``)。結果は返り値の
+        ``initial_value_probe``。gpx を保存しない呼び出し (``save_gpx: false``) では回さず
+        ``initial_value_probe.reason`` に理由。既定 None (回さない)
     :param seed: 既定 GSAS runner 用乱数種
     :param runner: 注入 runner (None なら GSAS 駆動)。テスト用の内部シーム
     :param search_runner: 探索用の候補ランナー注入 (テスト用の内部シーム)。``search`` 指定時に
         ``runner`` ではなくこちらが使われる — 候補はレシピもレンジも変えるため
         ``AnalysisInput`` では表現できない
+    :param template_pass1_runner: テンプレートの pass 1 の注入 (テスト用の内部シーム)
+    :param multistart_runner: 収束確認 (Phase B) の注入 (テスト用の内部シーム)
+    :param prober: 初期値プローブの注入 (テスト用の内部シーム)
     """
     try:
         # 【保存指定の型を先に検査】: 型違いは黙って別の意味になる (`_gpx_spec` 参照)。
         gpx_dir, save_gpx = gpx_args(gpx_dir, save_gpx)
         inp = _build_input(histograms, phases, background_coeffs, stages)
         opts = StabilityOptions.from_dict(stability)
+        probe = _probe_request(initial_value_probe, prober)
+        template_decl = None
+        if template is not None:
+            from ..template.declarations import TemplateDeclarations
+
+            template_decl = TemplateDeclarations.from_dict(template)
+            requested = (
+                () if search in (None, False) else
+                (DEFAULT_CANDIDATES if search is True else _search_names(search))
+            )
+            if "template" not in requested:
+                raise ValueError(
+                    "template (宣言) は search に 'template' を含めたときだけ意味を持ちます "
+                    "— 黙って無視しません"
+                )
         # 【探索経路は backend を運べない】: `_run_search`/`_run_convergence` は候補ごとに
         #   GSAS 駆動 runner を組むため、ここで backend を黙って落とすと**頼んだのと違う
         #   エンジンで回った結果**が `backend` キーだけ正しく見えてしまう。明示的に断る。
@@ -784,12 +928,15 @@ def auto_rietveld(
             names = _search_names(search) if search not in (None, False) else DEFAULT_CANDIDATES
             return _run_convergence(
                 inp, names, search_config, multistart, max_cyc, opts, search_runner,
-                gpx_dir=gpx_dir, save_gpx=save_gpx,
+                gpx_dir=gpx_dir, save_gpx=save_gpx, template=template_decl,
+                template_pass1_runner=template_pass1_runner, probe=probe,
+                multistart_runner=multistart_runner,
             )
         if search is not None and search is not False:
             return _run_search(
                 inp, _search_names(search), search_config, max_cyc, opts, search_runner,
-                gpx_dir=gpx_dir, save_gpx=save_gpx,
+                gpx_dir=gpx_dir, save_gpx=save_gpx, template=template_decl,
+                template_pass1_runner=template_pass1_runner, probe=probe,
             )
     except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         return {"error": str(exc), "error_type": type(exc).__name__}
@@ -802,7 +949,7 @@ def auto_rietveld(
         # 未知バックエンド名 / エンジン未導入 / バックエンド専用引数の誤用。
         # **② は例外を送出しない** (③ は LLM なので例外は回復不能なハード失敗になる)。
         return {"error": str(exc), "error_type": type(exc).__name__}
-    return _run_degrading_domain_errors(run, inp)
+    return _run_degrading_domain_errors(run, inp, probe)
 
 
 def propose_next_actions(

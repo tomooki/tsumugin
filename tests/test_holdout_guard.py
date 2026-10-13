@@ -53,7 +53,8 @@ FEATURE_TOKENS = (
     "partially_released_groups",
     "polar_origin_constraints",
     "refuse_polar_origin_with_ranked_coords",
-    "refuse_polar_origin_with_coord_jitter",
+    "_coord_jitter_skips",
+    "polar_origin_atoms",
     "_apply_polar_origin",
     "_integrated_intensity",
     "_checked_uiso_groups",
@@ -64,6 +65,17 @@ FEATURE_TOKENS = (
     "final_covariance",
     "read_covariance_record",
     "reflection_two_theta",
+    # P1-1B (テンプレート)
+    "tsumugin.template",
+    "evidence.fitstats",
+    "cell_phases",
+    "preferred_orientation_phases",
+    "occupancy_phases",
+    "check_phase_scoped_flags",
+    "probe_from_gpx",
+    "run_initial_value_probe",
+    "with_probe",
+    "autorietveld.probe",
 )
 
 #: (準) hold-out の参照 (パスらしい文字列の中で照合する)。大文字小文字を区別しない。

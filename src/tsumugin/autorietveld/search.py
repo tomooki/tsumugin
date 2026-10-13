@@ -79,7 +79,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from typing import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 from .._config_spec import check_bool, check_float, spec_value
 from .._json import finite_or_none
@@ -94,6 +94,10 @@ from .model import (
     StabilityOptions,
     StageResult,
 )
+if TYPE_CHECKING:
+    from ..template.declarations import TemplateDeclarations
+    from ..template.pass1 import Pass1Runner
+
 from .agreement import (
     CorroborationReport,
     ProcedureProvenance,
@@ -130,6 +134,10 @@ CANDIDATE_NAMES: tuple[str, ...] = (
     "serious1",
     "serious",
     "adaptive",
+    # fit-then-judge 1B のテンプレート (pass 1 → 静的コンパイル)。**既定の集合には入れない**
+    # (`DEFAULT_CANDIDATES`)。範囲 (CW X 線・ヒストグラム 1 本・GSAS-II) の外で要求されたら、
+    # 何も回す前に `template.declarations.TemplateScopeError` で呼び出し全体を失敗させる。
+    "template",
 )
 
 #: ``search=true`` が実際に回す集合 = **実測で選んだ手順** (2026-07-30, 10 案 × 4 データ)。
@@ -260,9 +268,17 @@ class RecipeCandidate:
     #   「手順」は `StabilityOptions` 側にあるため、候補が自分の実行設定を持つ必要がある。
     #   None は「既定の実行設定 (= 呼び出し側の `run_kwargs` のまま)」を意味する。
     stability: "StabilityOptions | None" = None
+    # 【末尾追加・既定 None で後方互換 (fit-then-judge P1-1B)】: テンプレートは段列だけでなく
+    #   **相の指定** (非対象相の構造凍結・Uiso の組・極性原点) もコンパイルする。None は「呼び出し側の
+    #   phases のまま」。候補の実行と収束確認 (Phase B) は持っていればこちらを使う。
+    phases: "tuple[PhaseSpec, ...] | None" = None
+    #: テンプレートの判断と根拠 (pass 1 の evidence・版)。② の探索表に載せる。
+    derivation: "Mapping[str, object] | None" = None
+    #: BLAS のスレッド数の固定 (`run_auto_rietveld(blas_threads=)`)。None は触らない。
+    blas_threads: "int | None" = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "name": self.name,
             "origin": self.origin,
             "n_stages": len(self.stages),
@@ -273,6 +289,11 @@ class RecipeCandidate:
             ],
             "note": self.note,
         }
+        # 既存候補の ② 出力を変えない — テンプレート由来のときだけキーを足す。
+        if self.derivation is not None:
+            out["template_version"] = self.derivation.get("template_version")
+            out["derivation"] = dict(self.derivation)
+        return out
 
 
 @dataclass(frozen=True)
@@ -924,6 +945,8 @@ def build_candidates(
     wanted = [n for n in CANDIDATE_NAMES if n in set(requested)]
     out: list[RecipeCandidate] = []
     for name in wanted:
+        if name == "template":
+            continue  # pass 1 (GSAS) を回して組むので `run_recipe_search` が作る
         if name != "adaptive":
             out.append(_fixed_candidate(name, histograms, phases, background_coeffs))
             continue
@@ -965,14 +988,102 @@ def _default_candidate_runner(
             # 候補が自分の実行設定を持つときはそれを使う (呼び出し側指定より候補が優先 —
             # 候補の定義そのものだから)。持たない候補は run_kwargs のまま。
             kwargs["stability"] = candidate.stability
+        if candidate.blas_threads is not None:
+            kwargs["blas_threads"] = candidate.blas_threads
         return run_auto_rietveld(
             list(candidate.histograms),
-            list(phases),
+            list(candidate.phases if candidate.phases is not None else phases),
             recipe=candidate.stages,
             **kwargs,  # type: ignore[arg-type]
         )
 
     return runner
+
+
+#: テンプレート候補の実行設定 (proposal §4.2 段 9: 収束確認の追加サイクル。no-op は記録のみ)。
+_TEMPLATE_STABILITY = StabilityOptions(
+    require_convergence=True, extra_cycles=2, detect_noop_stages=True
+)
+
+
+def _template_candidate(
+    histograms: Sequence[HistogramSpec],
+    phases: Sequence[PhaseSpec],
+    declarations: "TemplateDeclarations",
+    *,
+    group: object,
+    ledger: Ledger,
+    pass1_runner: "Pass1Runner | None",
+    background_coeffs: int,
+    run_kwargs: Mapping[str, object],
+) -> "tuple[RecipeCandidate | None, str]":
+    """pass 1 を回してテンプレート候補を組む (fit-then-judge 1B)。立たなければ (None, 理由)。
+
+    pass 1 の各試行は役割名 ``template_pass1`` の成果物として同じ run ディレクトリに残す (規定 2026-08-20)。
+    """
+    from ..template.compile import compile_template
+    from ..template.declarations import record_declarations
+    from ..template.pass1 import Pass1Error, run_template_pass1
+
+    record_declarations(ledger, declarations)
+    # 【内部標準の格子は既知の値に固定する】: 標準の格子で 2θ の目盛りを決めるのが内部標準の意味。
+    #   pass 1 から固定し、コンパイル結果にも残す (`refine_cell=False` は段フラグで覆せない)。
+    if declarations.internal_standard is not None:
+        phases = tuple(
+            replace(p, refine_cell=False) if p.phase_name == declarations.internal_standard else p
+            for p in phases
+        )
+
+    def default_pass1(trial, hists, phs, stages):  # type: ignore[no-untyped-def]
+        from .engine import run_auto_rietveld
+
+        # 【pass 2 と同じ受理規則で回す (セルフレビュー H2)】: pass 1 は「pass 2 と同じ段 0–4」を回して判断を
+        #   決める (REQ-FTJ-1B-301)。受理規則 (収束判定) が違うと、pass 1 で受理された段 1 が pass 2 で
+        #   棄却され、格子の再試行が要るかの判断が別の軌跡の上で下されたことになる。
+        kwargs = dict(run_kwargs)
+        kwargs["stability"] = _TEMPLATE_STABILITY
+        kwargs["blas_threads"] = 1
+        with gpx_context(group.child(role="template_pass1", label=trial)):  # type: ignore[attr-defined]
+            return run_auto_rietveld(
+                list(hists), list(phs), recipe=stages, **kwargs  # type: ignore[arg-type]
+            )
+
+    try:
+        outcome = run_template_pass1(
+            histograms, phases, declarations, runner=pass1_runner or default_pass1,
+            background_coeffs=background_coeffs, ledger=ledger,
+        )
+        try:
+            compiled = compile_template(
+                histograms, phases, outcome.decisions, evidence=outcome.evidence
+            )
+        except InvalidPhaseSpecError as exc:
+            # コンパイルが組んだ段フラグの誤りはテンプレート側の不具合 — 呼び手の指定の誤りとして
+            #   探索全体を止めず、「組めない」に畳む (L-c)
+            raise Pass1Error(f"テンプレートのコンパイルが不正な段を組んだ: {exc}") from exc
+    except InvalidPhaseSpecError:
+        raise  # 呼び手の相の指定の誤り — 「テンプレートを組めない」に畳まない (探索の契約と同じ。N4)
+    except (Pass1Error, ValueError) as exc:
+        ledger.append("template_not_built", {"reason": repr(exc)[:300]})
+        return None, f"テンプレートを組めない: {exc}"[:300]
+    derivation = dict(compiled.derivation)
+    derivation["target_phase_ambiguous"] = outcome.target_phase_ambiguous
+    derivation["zero_offset_significant"] = outcome.zero_offset_significant
+    derivation["declarations"] = declarations.to_dict()
+    frozen = list(outcome.decisions.frozen_cell_phases) or "なし"
+    return (
+        RecipeCandidate(
+            name="template", stages=compiled.stages, origin="template",
+            histograms=compiled.histograms, background_coeffs=compiled.background_coeffs,
+            note=(
+                f"テンプレート {compiled.template_version} (対象相 {outcome.decisions.target_phase}・"
+                f"背景 {compiled.background_coeffs} 項・格子凍結 {frozen})"
+            ),
+            stability=_TEMPLATE_STABILITY, phases=compiled.phases,
+            derivation=derivation, blas_threads=1,
+        ),
+        "",
+    )
 
 
 def run_recipe_search(
@@ -985,6 +1096,8 @@ def run_recipe_search(
     config: "SearchConfig | None" = None,
     runner: "CandidateRunner | None" = None,
     ledger: "Ledger | None" = None,
+    template_declarations: "TemplateDeclarations | None" = None,
+    template_pass1_runner: "Pass1Runner | None" = None,
     **run_kwargs: object,
 ) -> RecipeSearchResult:
     """レシピ候補を独立に実行し、S1 の規則で最良を選ぶ (REQ-SAR-500)。
@@ -997,6 +1110,10 @@ def run_recipe_search(
     :param config: 判定閾値 (None で既定)
     :param runner: 候補 1 つの実行関数 (None なら GSAS 駆動)。**注入はテスト/並列化のシーム**
     :param ledger: 追記台帳 (None なら内部生成)。候補ごと + 選択を追記する
+    :param template_declarations: 候補 ``"template"`` の入力宣言 (fit-then-judge 1B)。``"template"`` を
+        要求しないときに渡したら ValueError (黙って無視しない)
+    :param template_pass1_runner: テンプレートの pass 1 の実行関数 (**テスト注入専用のシーム**。
+        None なら `run_auto_rietveld(recipe=…)` を役割名 ``template_pass1`` の成果物付きで回す)
     :param run_kwargs: `run_auto_rietveld` へ透過する追加引数 (``max_cyc``/``stability`` 等)
     :returns: RecipeSearchResult
 
@@ -1006,6 +1123,7 @@ def run_recipe_search(
     どの候補でも同じになるため、候補の失敗に畳まず送出する。
 
     :raises ValueError: 未知の候補名 (`build_candidates`、候補を回す前)
+    :raises TemplateScopeError: ``"template"`` を範囲外の入力に要求したとき (何も回す前)
     :raises InvalidPhaseSpecError: 相の指定が相に無い原子ラベル等を名指すとき
         (`model.check_phase_spec_labels`)
     """
@@ -1013,6 +1131,17 @@ def run_recipe_search(
     config = config or SearchConfig()
     ledger = ledger if ledger is not None else Ledger()
     requested = tuple(names) if names is not None else DEFAULT_CANDIDATES
+    wants_template = candidates is None and "template" in requested
+    if template_declarations is not None and not wants_template:
+        raise ValueError(
+            "template (宣言) は候補 'template' を要求したときだけ意味を持ちます — 黙って無視しません"
+        )
+    if wants_template:
+        from ..template.declarations import TemplateDeclarations, check_template_scope
+
+        check_template_scope(histograms, phases)
+        template_declarations = template_declarations or TemplateDeclarations()
+        template_declarations.check_phases(phases)
     if candidates is None:
         cands = build_candidates(
             histograms, phases, background_coeffs=background_coeffs, names=requested
@@ -1034,17 +1163,31 @@ def run_recipe_search(
     if gpx_fallback:
         ledger.append("m7_gpx_fallback", {"run_dir": group.run_dir, "reason": gpx_fallback})
 
+    template_warning = ""
+    if wants_template:
+        template_cand, template_warning = _template_candidate(
+            histograms, phases, template_declarations,  # type: ignore[arg-type]
+            group=group, ledger=ledger, pass1_runner=template_pass1_runner,
+            background_coeffs=background_coeffs, run_kwargs=run_kwargs,
+        )
+        if template_cand is not None:
+            cands = cands + (template_cand,)
+
     outcomes: list[CandidateOutcome] = []
     for i, cand in enumerate(cands):
         try:
             with gpx_context(group.child(role="candidate", label=cand.name)):
                 result: "AutoRietveldResult | None" = run(cand)
             error = ""
-        except InvalidPhaseSpecError:
+        except InvalidPhaseSpecError as exc:
             # 【相の指定の誤りは候補の失敗ではない】: 精密化の前に engine が止めた入力の誤りで、
             #   どの候補でも同じになる。候補の失敗に畳むと「立つ手順が無い」と読まれる。
             #   原子ラベルの重複 (`DuplicateAtomLabelError`) もこの子クラスとして同じく送出する。
-            raise
+            #   ⚠ **テンプレート候補は例外**: 相の指定 (極性原点の固定・非対象相の凍結) はテンプレートが
+            #   コンパイルしたもので呼び手が書いたものではない。送出すると他の候補の結果ごと失う (M4)。
+            if cand.origin != "template":
+                raise
+            result, error = None, f"テンプレートがコンパイルした相の指定を engine が拒否: {exc!r}"[:300]
         except Exception as exc:  # noqa: BLE001 — 失敗は結果へ縮退させる (不変条件)
             result, error = None, repr(exc)[:200]
         outcome = CandidateOutcome(index=i, candidate=cand, result=result, error=error)
@@ -1063,7 +1206,10 @@ def run_recipe_search(
                 warnings=summary.warnings
                 + tuple(
                     f"候補 {n!r} は立ちませんでした "
-                    "(観測パターンを読めない/自動判定が固定候補と同一)"
+                    + (
+                        f"({template_warning})" if n == "template" and template_warning
+                        else "(観測パターンを読めない/自動判定が固定候補と同一)"
+                    )
                     for n in missing
                 ),
             )

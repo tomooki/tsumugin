@@ -253,6 +253,17 @@ report = optimize_then_confirm(histograms, phases, n_starts=5, coord_jitter_ang=
 ⛔ `refined_cells` などの平文フィールドから数値を拾って出版しない (互換のために残っているだけ)。
 詳細は `plugins/tsumugin/skills/analyze/SKILL.md`「出版状態」。
 
+**テンプレート (fit-then-judge 1B)**: `auto_rietveld(search=[..., "template"], template={宣言})` で
+固定順のテンプレートを探索の 1 候補として回せる (既定の集合には入っていない — 効果は未測定)。範囲は
+CW X 線・ヒストグラム 1 本・GSAS-II だけで、範囲外は `TemplateScopeError` の error dict。採用されたら
+`template_derivation` (pass 1 の判断と根拠) を報告に書き、判断要求 `target_phase_ambiguous`
+(blocking) / `zero_offset_significant` (非 blocking) を閉じない。返った `specs.phases` は目印
+`template_version` 付きで、`refine_with_revisions` に渡せない (改訂は元の phases で回し直す)。
+
+**初期値プローブ**: `initial_value_probe: {"cell_frac": 0.001, "coord_jitter_ang": 0.05}` で、返した fit の
+保存済み gpx から ±δ の 2 開始点を回し、戻った値に `locally_stable` を付ける (gpx を保存しない呼び出しでは
+回さない)。収束確認 (`multistart` → `determined`) の代わりではない。
+
 ## 6. 失敗時の対処 (エージェントの意思決定)
 
 | 症状 | 原因候補 | 対処 |
