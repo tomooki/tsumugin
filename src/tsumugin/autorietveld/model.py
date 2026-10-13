@@ -1304,7 +1304,7 @@ class AutoRietveldResult:
     coord_jitter_moved: tuple[str, ...] = ()
     # 【各座標を実際に何だけ動かしたか】(分率の絶対値; キーは ``coord_jitter_moved`` と同じ)。結束の組の
     #   従属軸は係数比ぶんしか動かない ((x,2x,z) のプローブでは x は amp の半分) ので、claims は「振った量が
-    #   一致の許容幅を超えたか」を**軸ごとにこの値で**判定する。空 = 記録なし (TOPAS 等) — 軸長から推す従来の規則
+    #   一致の許容幅を超えたか」を**軸ごとにこの値で**判定する。記録の無い座標には証人を付けない (fail closed)
     coord_jitter_shift: Mapping[str, float] = field(default_factory=dict)
     # 【最終の共分散の記録】(fit-then-judge P1-1A): 最終段の varyList・従属変数・|ρ|≥0.9 の対。
     #   値の出自 (`claims`) の典拠 — esd の三状態は「未解放・revert・共分散なし」を区別しない。

@@ -311,13 +311,12 @@ def with_probe(
         moved_coords = {f"coord:{k}" for k in set.intersection(*moved_sets)} if moved_sets else set()
     # 軸ごとの実際の変位 (分率)。結束の組の従属軸は係数比ぶんしか動かない ((x,2x,z) の x は amp の半分) —
     #   全軸が jitter Å 動いた前提で数えると、許容幅の内側しか動いていない軸に空虚な証人を付ける。
-    #   2 開始点の小さい方で判定する。記録が無い開始点 (TOPAS 等) があれば軸長から推す従来の規則
+    #   2 開始点の小さい方で判定する。**記録が無ければ証人にしない** (fail closed): 動かした座標を記録する
+    #   engine (GSAS のプローブ) は変位も必ず記録する — 片方だけ欠けるのは配線漏れで、そのとき軸長から推すと
+    #   従属軸に空虚な証人を付ける規則へ黙って戻る
     shift_maps = [getattr(p, "coord_jitter_shift", None) or {} for p in probes]
-    recorded_shifts = all(shift_maps)
 
-    def axis_shift(claim: Claim, length: float) -> "float | None":
-        if not recorded_shifts:
-            return jitter / length
+    def axis_shift(claim: Claim) -> "float | None":
         key = claim.key.removeprefix("coord:")
         vals = [m.get(key) for m in shift_maps]
         if any(v is None for v in vals):
@@ -333,7 +332,7 @@ def with_probe(
         length = float(cell["xyz".index(claim.axis)])
         if not (length > 0.0):
             return False
-        shift = axis_shift(claim, length)  # 分率
+        shift = axis_shift(claim)  # 分率
         if shift is None or not (shift * length > tolerances.coord_dist_floor_ang):
             return False
         band = tolerances.k_esd * math.sqrt(2.0) * float(claim.esd)  # 分率

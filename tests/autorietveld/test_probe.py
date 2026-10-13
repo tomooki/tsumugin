@@ -29,7 +29,10 @@ _VARS = claim_variable_names(
 )
 
 
-def _result(o1=(0.25, 0.1, 0.3), a=5.0, axes=2, moved=("P.O1.x", "P.O1.y"), **kw) -> AutoRietveldResult:
+def _result(o1=(0.25, 0.1, 0.3), a=5.0, axes=2, moved=("P.O1.x", "P.O1.y"), shift=None, **kw) -> AutoRietveldResult:
+    # 既定の変位 = 既定のプローブ (0.05 Å) を a=5 Å の各軸に掛けた分率 (engine は moved と同じキーで必ず記録する)
+    if "coord_jitter_shift" not in kw:
+        kw["coord_jitter_shift"] = {k: 0.05 / a for k in moved} if shift is None else shift
     base = dict(
         stage_results=(StageResult("S0", 10.0, 1.2, 5, True),),
         final_rwp=10.0, final_gof=1.2,
@@ -328,6 +331,17 @@ def test_the_smaller_shift_of_the_two_probes_decides():
         _outcome(_result(coord_jitter_shift={"P.O1.x": 0.01, "P.O1.y": 0.01}),
                  _result(coord_jitter_shift={"P.O1.x": 0.01, "P.O1.y": 0.005})),
     )
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_a_moved_coordinate_without_a_recorded_shift_is_no_witness():
+    """★記録の無い変位は「振った」と推さない (fail closed): 軸長から推すと従属軸に空虚な証人を付けうる。"""
+    base = _result()
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(), _result(coord_jitter_shift={"P.O1.x": 0.01})),
+    )
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE
     assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
 
 
