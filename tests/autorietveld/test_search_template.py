@@ -261,3 +261,17 @@ def test_a_user_phase_spec_error_still_propagates_from_ordinary_candidates():
 
     with pytest.raises(InvalidPhaseSpecError):
         run_recipe_search([_hist()], [A], names=["default"], runner=runner, save_gpx=False)
+
+
+def test_a_user_phase_spec_error_in_pass1_propagates_from_the_search():
+    """search=["template"] 単独でも呼び手の指定の誤りは警告に畳まない (セルフレビュー N4)。"""
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    def pass1(trial, h, p, s):
+        raise InvalidPhaseSpecError("相に無いラベル")
+
+    with pytest.raises(InvalidPhaseSpecError):
+        run_recipe_search(
+            [_hist()], [A], names=["template"], runner=CandidateFake(),
+            template_pass1_runner=pass1, save_gpx=False,
+        )

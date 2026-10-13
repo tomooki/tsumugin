@@ -20,6 +20,9 @@ from .model import AutoRietveldResult
 
 __all__ = ["ProbeConfig", "ProbeOutcome", "Prober", "run_initial_value_probe"]
 
+#: 座標の一致の許容幅 (`agreement.AgreementTolerances.coord_dist_floor_ang`)。これ以下の変位は証人にならない。
+_COORD_FLOOR_ANG = 0.02
+
 #: ``prober(gpx_path, *, cell_frac, coord_jitter_ang, sign, seed, max_cyc, blas_threads)``
 Prober = Callable[..., AutoRietveldResult]
 
@@ -59,6 +62,11 @@ class ProbeConfig:
         )
         if cfg.cell_frac < 0 or cfg.coord_jitter_ang < 0 or cfg.max_cyc < 1:
             raise ValueError(f"initial_value_probe の値が範囲外です: {cfg}")
+        if 0.0 < cfg.coord_jitter_ang <= _COORD_FLOOR_ANG:
+            raise ValueError(
+                f"initial_value_probe.coord_jitter_ang={cfg.coord_jitter_ang} は一致の許容幅 "
+                f"{_COORD_FLOOR_ANG} Å 以下 — 振っても座標の証人にならない (0 か、それより大きい値)"
+            )
         if cfg.cell_frac == 0 and cfg.coord_jitter_ang == 0:
             raise ValueError("initial_value_probe: 何も摂動しないプローブは証人になりません")
         return cfg
@@ -107,12 +115,13 @@ def run_initial_value_probe(
         from .engine import probe_from_gpx as prober  # type: ignore[assignment]
     probes: list["AutoRietveldResult | None"] = []
     errors: list[str] = []
-    for i, sign in enumerate((1, -1)):
+    for sign in (1, -1):
         try:
             probes.append(
                 prober(  # type: ignore[misc]
                     gpx_path, cell_frac=cfg.cell_frac, coord_jitter_ang=cfg.coord_jitter_ang,
-                    sign=sign, seed=cfg.seed + i, max_cyc=cfg.max_cyc, blas_threads=1,
+                    # 同じ種 = 同じ向きのベクトルを ± で反転 (± が本当に対称な 2 開始点になる。N6)
+                    sign=sign, seed=cfg.seed, max_cyc=cfg.max_cyc, blas_threads=1,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — 回らなかった開始点は「戻った」と数えない

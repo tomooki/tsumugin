@@ -1056,6 +1056,8 @@ def _template_candidate(
         compiled = compile_template(
             histograms, phases, outcome.decisions, evidence=outcome.evidence
         )
+    except InvalidPhaseSpecError:
+        raise  # 呼び手の相の指定の誤り — 「テンプレートを組めない」に畳まない (探索の契約と同じ。N4)
     except (Pass1Error, ValueError) as exc:
         ledger.append("template_not_built", {"reason": repr(exc)[:300]})
         return None, f"テンプレートを組めない: {exc}"[:300]

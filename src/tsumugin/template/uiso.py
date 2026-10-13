@@ -35,8 +35,21 @@ class UisoGrouping:
         }
 
 
-def _labels_of(structure: object) -> list[str]:
-    return [str(getattr(site, "label", "") or "") for site in structure]  # type: ignore[attr-defined]
+def _cif_labels(cif_path: str, structure: object) -> set[str]:
+    """CIF の ``_atom_site_label`` (pymatgen が同じ位置の行を 1 サイトにまとめる前の全ラベル。N2)。"""
+    labels = {str(getattr(site, "label", "") or "") for site in structure}  # type: ignore[attr-defined]
+    try:
+        from pymatgen.io.cif import CifParser
+
+        for block in CifParser(cif_path).as_dict().values():
+            raw = block.get("_atom_site_label")
+            if isinstance(raw, list):
+                labels.update(str(x) for x in raw)
+            elif raw:
+                labels.add(str(raw))
+    except Exception:  # noqa: BLE001 — 読めなければ pymatgen のサイトのラベルだけで照合する
+        pass
+    return labels
 
 
 def uiso_groups_from_cif(
@@ -61,7 +74,7 @@ def uiso_groups_from_cif(
 
     wanted = set(labels) if labels is not None else None
     if wanted is not None:
-        missing = sorted(wanted - set(_labels_of(structure)))
+        missing = sorted(wanted - _cif_labels(cif_path, structure))
         if missing:
             # GSAS のラベルと CIF のラベルが合わない — 「まとめる組が無かった」と混同しない (M6)
             return UisoGrouping((), "unevaluated", reason=f"CIF に無いラベル: {missing}")

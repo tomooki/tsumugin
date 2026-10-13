@@ -855,7 +855,8 @@ def auto_rietveld(
         相の指定** (目印 ``template_version`` 付き — `refine_with_revisions` や再度の
         `auto_rietveld` には渡せない。改訂するなら元の phases で回し直す)
     :param initial_value_probe: **初期値プローブ** (fit-then-judge 1B)。``{"cell_frac": 0.001,
-        "coord_jitter_ang": 0.02, "seed": 0, "max_cyc": 12}`` (``{}`` で既定値)。返した fit の
+        "coord_jitter_ang": 0.05, "seed": 0, "max_cyc": 12}`` (``{}`` で既定値。``coord_jitter_ang`` は
+        一致の許容幅 0.02 Å より大きくないと座標の証人にならないので、0 < 値 ≤ 0.02 は error dict)。返した fit の
         保存済み gpx から ±δ の 2 開始点で精密化し直し、両方で kσ 以内に戻った値に
         ``locally_stable`` の証人を付ける (割れたら ``initial_value_dependent``)。結果は返り値の
         ``initial_value_probe``。gpx を保存しない呼び出し (``save_gpx: false``) では回さず

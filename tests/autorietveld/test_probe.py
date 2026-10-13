@@ -99,7 +99,7 @@ def test_an_unconverged_probe_is_no_witness():
     base = _result()
     bad = _result(stage_results=(StageResult("probe", 10.0, 1.2, 5, False),))
     claims = with_probe(base_claims(base), base, _outcome(_result(), bad))
-    assert claims == base_claims(base)
+    assert not any(c.determinacy is Determinacy.LOCALLY_STABLE for c in claims.values())
     json.dumps({k: c.to_dict() for k, c in claims.items()}, allow_nan=False)
 
 
@@ -179,7 +179,7 @@ def test_the_probe_runs_plus_and_minus_from_the_saved_gpx(tmp_path):
     out = run_initial_value_probe(str(gpx), ProbeConfig(cell_frac=0.01, seed=5), prober=prober)
     assert out.complete and out.reason == ""
     assert [c[1]["sign"] for c in calls] == [1, -1]
-    assert [c[1]["seed"] for c in calls] == [5, 6]
+    assert [c[1]["seed"] for c in calls] == [5, 5]
     assert all(c[1]["blas_threads"] == 1 and c[1]["cell_frac"] == 0.01 for c in calls)
     json.dumps(out.to_dict(), allow_nan=False)
 
@@ -262,3 +262,35 @@ def test_probes_from_a_saved_fit_come_back_and_leave_the_gpx_untouched(tmp_path,
     assert claims["coord:ZnO.O1.z"].determinacy is Determinacy.LOCALLY_STABLE
     # 格子は振っていない — 「戻った」と数えない
     assert claims["cell:ZnO.a"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_a_poorly_determined_coordinate_gets_no_witness():
+    """σ が大きく kσ 帯が変位を超える座標は「戻った」と区別できない (セルフレビュー N3)。"""
+    base = _result(atom_coord_esd={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.001, 0.004, None)}})
+    claims = with_probe(base_claims(base), base, _outcome(base, base))
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE  # 3√2·0.001 < 0.01
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY  # 3√2·0.004 > 0.01
+
+
+def test_a_converged_probe_that_split_still_downgrades_when_the_other_did_not_converge():
+    """収束した開始点がはっきり割れたことは情報 — 片方が収束しなくても落とす。昇格はしない (N7)。"""
+    base = _result()
+    moved = _result(o1=(0.30, 0.1, 0.3))
+    bad = _result(stage_results=(StageResult("probe", 10.0, 1.2, 5, False),))
+    claims = with_probe(base_claims(base), base, _outcome(moved, bad))
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.INITIAL_VALUE_DEPENDENT
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_both_probes_use_the_same_directions_with_opposite_signs(tmp_path):
+    gpx = tmp_path / "fit.gpx"
+    gpx.write_bytes(b"gpx")
+    calls = []
+    run_initial_value_probe(str(gpx), ProbeConfig(seed=7), prober=lambda p, **kw: calls.append(kw) or _result())
+    assert [(c["sign"], c["seed"]) for c in calls] == [(1, 7), (-1, 7)]
+
+
+@pytest.mark.parametrize("jitter", [0.01, 0.02])
+def test_a_coordinate_displacement_within_the_floor_is_refused(jitter):
+    with pytest.raises(ValueError, match="許容幅"):
+        ProbeConfig.from_dict({"coord_jitter_ang": jitter})

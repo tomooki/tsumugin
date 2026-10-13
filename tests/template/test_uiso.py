@@ -79,3 +79,21 @@ def test_labels_missing_from_the_cif_are_unevaluated(tmp_path):
     """GSAS のラベルが CIF に無い = 規則を適用できなかった (「組が無かった」と混同しない。M6)。"""
     g = uiso_groups_from_cif(_rocksalt_p1(tmp_path), labels=("Na1", "Q9"))
     assert g.status == "unevaluated" and "Q9" in g.reason
+
+
+def test_co_located_rows_merged_by_pymatgen_still_count_as_present(tmp_path):
+    """同じ位置の 2 行 (Fe1/Al1) は pymatgen が 1 サイトにまとめる — ラベルが「無い」とは言わない (N2)。"""
+    lines = [
+        "data_mix", "_cell_length_a 5.0", "_cell_length_b 5.0", "_cell_length_c 5.0",
+        "_cell_angle_alpha 90", "_cell_angle_beta 90", "_cell_angle_gamma 90",
+        "_symmetry_space_group_name_H-M 'P 1'", "loop_", "_symmetry_equiv_pos_as_xyz", "x,y,z",
+        "loop_", "_atom_site_label", "_atom_site_type_symbol", "_atom_site_fract_x",
+        "_atom_site_fract_y", "_atom_site_fract_z", "_atom_site_occupancy",
+        "Fe1 Fe 0 0 0 0.5", "Al1 Al 0 0 0 0.5", "O1 O 0.5 0 0 1", "O2 O 0 0.5 0 1",
+        "O3 O 0 0 0.5 1",
+    ]
+    cif = tmp_path / "mix.cif"
+    cif.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+    g = uiso_groups_from_cif(str(cif), labels=("Fe1", "Al1", "O1", "O2", "O3"))
+    assert g.status == "pass", g.reason
+    assert ("O1", "O2", "O3") in g.groups

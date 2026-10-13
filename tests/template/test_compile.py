@@ -73,19 +73,19 @@ def test_frozen_cells_are_left_out_of_stage_one_and_retried():
     c = compile_template([_hist()], [A, B], _decisions(frozen_cell_phases=("B",)))
     assert _flags(c, "lattice+offset")["cell_phases"] == ["A"]
     assert _labels(c).index("lattice-retry") == _labels(c).index("asym") + 1
-    assert _flags(c, "lattice-retry") == {"cell": True}
+    assert _flags(c, "lattice-retry") == {"cell": True, "displacement": {0: ["Shift"]}}
 
 
 def test_when_every_cell_is_frozen_stage_one_releases_only_the_offset():
     c = compile_template([_hist()], [A, B], _decisions(frozen_cell_phases=("A", "B")))
     assert _flags(c, "lattice+offset") == {"displacement": {0: ["Shift"]}}
-    assert _flags(c, "lattice-retry") == {"cell": True}
+    assert _flags(c, "lattice-retry") == {"cell": True, "displacement": {0: ["Shift"]}}
 
 
 def test_the_lattice_retry_is_always_there():
     """段 1 が pass 2 で棄却されても格子がもう一度試される (セルフレビュー H2)。"""
     c = compile_template([_hist()], [A, B], _decisions())
-    assert _flags(c, "lattice-retry") == {"cell": True}
+    assert _flags(c, "lattice-retry") == {"cell": True, "displacement": {0: ["Shift"]}}
     assert NO_NEW_DOF in next(s.note for s in c.stages if s.label.endswith("lattice-retry"))
     assert "cell_phases" not in _flags(c, "lattice+offset")
 
@@ -194,3 +194,11 @@ def test_pass1_can_leave_phases_out_of_the_lattice_stage():
         [_hist()], [A, B], background_coeffs=6, calibrated=False, cell_phases=["B"]
     )
     assert head[1].flags["cell_phases"] == ["B"]
+
+
+def test_the_lattice_retry_releases_the_offset_with_the_lattice():
+    """格子だけを戻すとオフセットが初期値のまま格子が吸収する (セルフレビュー N1)。"""
+    bb = compile_template([_hist()], [A], _decisions())
+    assert _flags(bb, "lattice-retry") == {"cell": True, "displacement": {0: ["Shift"]}}
+    ds = compile_template([_hist(Geometry.DEBYE_SCHERRER)], [A], _decisions())
+    assert _flags(ds, "lattice-retry") == {"cell": True, "zero_offset": True}

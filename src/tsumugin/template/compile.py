@@ -217,9 +217,16 @@ def compile_template(
     #   段 1 が (開始点・収束判定の都合で) 棄却されたときの再試行にもなる。置かないと、段 1 が棄却された
     #   fit は格子を一度も精密化しないまま完走し、それは `reverted` 1 つにしか現れない。段 1 が受理済みなら
     #   同じ解放の回し直し (新しい自由度 0)。
+    # オフセットも段 1 と同じく一緒に解放する — 格子だけを戻すと Shift/Zero が初期値のまま格子が 2θ の
+    #   オフセットを吸収する (CaTeO3 で実測した病理。N1)。相関群は格子 + Shift / 格子 + Zero を許す。
+    retry_flags: dict[str, object] = {"cell": True}
+    if geometry is Geometry.BRAGG_BRENTANO:
+        retry_flags["displacement"] = {0: ["Shift"]}
+    else:
+        retry_flags["zero_offset"] = True
     stages.append(
         RefinementStage(
-            "TR lattice-retry", {"cell": True},
+            "TR lattice-retry", retry_flags,
             (f"pass 1 で凍結した相 {frozen} の格子をもう一度 (他の相は {NO_NEW_DOF})" if frozen
              else f"段 1 が棄却されたときの格子の再試行 (受理済みなら {NO_NEW_DOF})"),
         )

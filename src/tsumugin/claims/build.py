@@ -223,8 +223,9 @@ def with_convergence(
     )
     # どの座標を振ったか (engine が記録)。記録があれば座標の証人はそれに限る — 件数だけだと、極性原点の
     #   hold や凍結で振っていない座標まで「試験した」と数える (fit-then-judge P1-1B)
+    #   記録が 1 つも無い (TOPAS 等の engine は記録しない) ときだけ件数の規則へ戻る。使える開始点だけを数える (N9)
     moved_coords = {
-        f"coord:{k}" for r in results if r is not None
+        f"coord:{k}" for r in results if _usable(r)
         for k in getattr(r, "coord_jitter_moved", ())
     }
     tolerances = AgreementTolerances()
@@ -289,8 +290,14 @@ def with_probe(
     if outcome is None or not getattr(outcome, "complete", False):
         return out
     probes = tuple(getattr(outcome, "probes", ()))
-    if not all(_usable(p) and all(st.converged for st in p.stage_results) for p in probes):
-        return out  # 収束していない開始点の「戻った」は証人にならない
+    # 収束した使える開始点だけで判定する。**割れ**はそこから落とす (収束した開始点がはっきり割れたことは情報)。
+    #   **昇格**は両開始点とも収束したときだけ (収束していない開始点の「戻った」は証人にならない。N7)
+    converged = tuple(
+        p for p in probes if _usable(p) and all(st.converged for st in p.stage_results)
+    )
+    all_converged = len(converged) == len(probes)
+    if not converged:
+        return out
     config = getattr(outcome, "config", None)
     tolerances = AgreementTolerances()
     jitter = float(getattr(config, "coord_jitter_ang", 0.0) or 0.0)
@@ -301,14 +308,25 @@ def with_probe(
         moved_sets = [set(p.coord_jitter_moved) for p in probes]
         moved_coords = {f"coord:{k}" for k in set.intersection(*moved_sets)} if moved_sets else set()
 
+    def coord_displacement_resolvable(claim: Claim) -> bool:
+        """変位が一致の kσ 帯を超えるか (N3: σ の大きい座標は 0.05 Å 振っても「戻った」と区別できない)。"""
+        cell = (base.refined_cells or {}).get(claim.phase or "")
+        if claim.esd is None or cell is None or claim.axis not in ("x", "y", "z"):
+            return False
+        length = float(cell["xyz".index(claim.axis)])
+        if not (length > 0.0):
+            return False
+        band = tolerances.k_esd * math.sqrt(2.0) * float(claim.esd)  # 分率
+        return jitter / length > band
+
     def tested(claim: Claim) -> bool:
         if claim.param_class == "cell":
             return cell_tested
         if claim.param_class == "coord":
-            return claim.key in moved_coords
+            return claim.key in moved_coords and coord_displacement_resolvable(claim)
         return False
     found: dict[str, list[tuple[str, float | None, int]]] = {}
-    for i, probe in enumerate(probes):
+    for i, probe in enumerate(converged):
         for cls, items in parameter_agreements(base, probe, tolerances).items():
             for it in items:
                 found.setdefault(f"{cls}:{it.key}", []).append((it.verdict, it.z, i))
@@ -331,7 +349,8 @@ def with_probe(
             )
             continue
         if (
-            len(verdicts) == len(probes)
+            all_converged
+            and len(verdicts) == len(probes)
             and all(is_agreement(v[0]) for v in verdicts)
             and claim.determinacy is Determinacy.ESD_ONLY
             and "refined" in claim.provenance  # 解放しなかった入力値は戻って当然 (証人にならない)

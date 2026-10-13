@@ -311,3 +311,26 @@ def test_the_standard_route_accepts_polar_origin_with_jitter():
     assert calls
 
 
+
+
+def test_tied_axes_are_not_moved_by_the_probe_and_only_representatives_are_recorded():
+    """結束軸 (x,x,x) は代表軸だけを書き換えると従属軸とずれる — プローブでは動かさない (N8)。"""
+    from tsumugin.autorietveld.engine import _apply_coord_jitter
+
+    class _Ph(_Phase):
+        name = "w"
+
+        def get_cell(self):
+            return {"length_a": 5.0, "length_b": 5.0, "length_c": 5.0}
+
+    probe_moved: list[str] = []
+    n = _apply_coord_jitter(
+        [_Ph("111", [("Bi1", "Bi", "3m(111)")])], {"w": 0.05}, 0, _getcsxinel,
+        fixed_magnitude=True, moved=probe_moved,
+    )
+    assert n == 0 and probe_moved == []
+    ms_moved: list[str] = []
+    n = _apply_coord_jitter(
+        [_Ph("111", [("Bi1", "Bi", "3m(111)")])], {"w": 0.05}, 0, _getcsxinel, moved=ms_moved,
+    )
+    assert n == 1 and ms_moved == ["w.Bi1.x"]  # 収束確認は従来どおり代表軸を振る — 記録は代表軸だけ

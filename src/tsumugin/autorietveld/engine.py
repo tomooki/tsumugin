@@ -1714,8 +1714,9 @@ def _apply_coord_jitter(
     :param fixed_magnitude: 真なら変位の大きさを ``amp`` に固定し、向きだけを乱数で決める
         (初期値プローブ用: 一様乱数だと一致の許容幅より小さい変位が混ざり「戻った」が空虚になる)
     :param sign: ``fixed_magnitude`` のとき全変位に掛ける向き (±δ の 2 開始点)
-    :param moved: 与えると、動かした座標のキー ``"<相>.<ラベル>.<x|y|z>"`` を追記する (結束軸の従属側を
-        含む — 代表軸と一緒に動く)。値ごとの証人 (`claims`) が「この座標は試験した」を判定するのに使う
+    :param moved: 与えると、動かした座標のキー ``"<相>.<ラベル>.<x|y|z>"`` を追記する (代表軸だけ —
+        結束軸の従属側は初期値を書き換えていないので数えない)。値ごとの証人 (`claims`) が「この座標は試験した」を
+        判定するのに使う。``fixed_magnitude`` (プローブ) では結束軸を持つ軸は動かさない
     :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
         呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
     """
@@ -1758,6 +1759,10 @@ def _apply_coord_jitter(
             for axis in independent_axes(free):
                 if axis in skip_axes.get(label, ()):
                     continue
+                if fixed_magnitude and any(free[a] == free[axis] for a in range(3) if a != axis):
+                    # プローブでは結束軸を動かさない: 代表軸だけを書き換えると従属軸とずれた出発点になり、
+                    #   GSAS が揃え直さなければ偽の「割れ」を作る (N8)。収束確認の摂動は従来どおり
+                    continue
                 length = lengths[axis] if lengths[axis] > 0 else 1.0
                 if fixed_magnitude:
                     # 大きさは amp に固定、向きだけ乱数 (± の 2 開始点で sign が反転する)
@@ -1772,10 +1777,9 @@ def _apply_coord_jitter(
                     continue
                 n_moved += 1
                 if moved is not None:
-                    fid = free[axis]
-                    for a in range(3):
-                        if a == axis or (fid and free[a] == fid):
-                            moved.append(f"{ph.name}.{label}.{'xyz'[a]}")
+                    # 代表軸だけを記録する。結束軸の従属側は初期値を書き換えていない (GSAS が精密化の前に
+                    #   揃え直すかは確かめていない) ので「試験した」と数えない (N8)
+                    moved.append(f"{ph.name}.{label}.{'xyz'[axis]}")
     return n_moved
 
 

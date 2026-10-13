@@ -519,7 +519,7 @@ Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より
 | キー | 効くもの | 宣言しないと |
 |---|---|---|
 | `instrument_calibrated` | 装置関数 (U,V,W,X,Y・非対称) が標準試料由来なら幅を試料広がり (Size/Mustrain) として読む | 幅は装置関数込みで精密化し、試料広がりは解放しない |
-| `internal_standard` | 同一試料内の内部標準の相名。標準の格子を固定し、対象相から外し、精密化した格子を `scope: absolute` にする (**Zero が有意でないと検定できたときだけ** — 有意・検定できなかったときは relative のまま) | 格子は `relative_within_sample` |
+| `internal_standard` | 同一試料内の内部標準の相名。標準の格子を固定し、対象相から外し、精密化した格子を `scope: absolute` にする (Bragg-Brentano では **Zero が有意でないと検定できたときだけ** — 有意・検定できなかったときは relative のまま。Debye-Scherrer は Zero を精密化するので常に) | 格子は `relative_within_sample` |
 | `target_phase` | 構造を精密化する相 | 積分計算強度が最大の相 |
 | `zero_calibrated` | 装置ファイルの Zero が較正値か。Bragg-Brentano では Zero を装置値に固定するので、格子に `declared:zero_calibrated` が付く | — |
 
@@ -553,7 +553,8 @@ Rwp 差 0.361 なのに格子が 0.161% 違う — 精密化された esd より
   証人は付かない (`complete: false`) — 「戻った」とは数えない。
 - **振った値にだけ**証人が付く: 格子 (`cell_frac` が 0 なら付かない) と実際に動かした座標。Uiso・占有率・プロファイル・
   分率は振っていないので `locally_stable` にならない (割れたら `initial_value_dependent` には落ちる)。座標の変位は
-  一致の許容幅 0.02 Å を超えていないと証人にならない。両方の開始点が収束していることも要る。
+  一致の許容幅を超えていないと証人にならない (`coord_jitter_ang` は 0 か 0.02 Å より大きい値 — 間は error dict)。
+  esd が大きく 3σ の帯が変位を超える座標にも付かない。結束した座標 (例 (x,x,x)) は振らない。両方の開始点が収束していることも要る。
 - 収束確認 (`multistart`) の代わりではない — あちらは遠くから同じ答えに来るかを見る (`determined`)。
 
 ## 収束を確認する (`multistart`) — **規定の標準経路**
