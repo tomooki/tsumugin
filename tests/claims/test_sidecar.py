@@ -137,3 +137,18 @@ def test_the_reader_orders_by_the_recorded_write_time_not_mtime(tmp_path):
     second, _ = write_claims_sidecar(str(gpx), {"claims": {"n": 1}})
     os.utime(first, (2_000_000_000, 2_000_000_000))  # 古い方の mtime を未来に
     assert find_claims_sidecar(str(gpx))[1]["claims"] == {"n": 1}
+
+
+def test_the_sidecar_bytes_are_deterministic(tmp_path):
+    """同じ解析を回し直せば同じ sidecar になる (書いた時刻を中身に入れない。/code-review #245)。"""
+    from tsumugin.claims.sidecar import write_claims_sidecar
+
+    outs = []
+    for d in ("a", "b"):
+        gpx = tmp_path / d / "fit.gpx"
+        gpx.parent.mkdir()
+        gpx.write_bytes(b"gpx")
+        write_claims_sidecar(str(gpx), {"claims": {"n": 0}})
+        path, _ = write_claims_sidecar(str(gpx), {"claims": {"n": 1}})
+        outs.append(open(path, "rb").read())
+    assert outs[0] == outs[1]

@@ -113,8 +113,9 @@ def uiso_groups_from_cif(
     groups = tuple(tuple(v) for v in by_key.values() if len(v) >= 2)
     if isolated:
         # 配位数を決められなかった原子がある — 「まとめる組が無かった」と混同しない
+        # unevaluated は「まとめない (原子ごと)」— 一部の組だけ返すと呼び手 (pass 1) がそれを適用してしまう
         return UisoGrouping(
-            groups, "unevaluated", coordination=coordination,
+            (), "unevaluated", coordination=coordination,
             reason=f"{2.0 * search_radius} Å 以内に隣接原子が無い: {isolated}",
         )
     return UisoGrouping(groups, "pass", coordination=coordination)

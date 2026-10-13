@@ -257,6 +257,10 @@ def test_probes_from_a_saved_fit_come_back_and_leave_the_gpx_untouched(tmp_path,
     saved = outcome.to_dict()["gpx_paths"]
     assert [Path(s).name.split(".probe-")[1] for s in saved] == ["plus.gpx", "minus.gpx"]
     assert all(Path(s).is_file() and Path(s).parent == Path(base.gpx_path).parent for s in saved)
+    from tsumugin.gpxstore import read_manifest
+
+    roles = [(e.get("role"), e.get("label")) for e in read_manifest(str(Path(base.gpx_path).parent))]
+    assert ("probe", "plus") in roles and ("probe", "minus") in roles  # 索引にも載る
     for probe in outcome.probes:
         # O1 の z だけ — Zn の z は座標フラグが立っているが極性原点の hold に入っている
         assert probe.coord_jitter_axes_moved == 1
@@ -308,3 +312,17 @@ def test_the_split_witness_names_the_original_probe():
     moved = _result(o1=(0.30, 0.1, 0.3))
     claims = with_probe(base_claims(base), base, _outcome(bad, moved))
     assert claims["coord:P.O1.x"].witnesses[-1].detail["probe"] == 1
+
+
+def test_a_probe_that_could_not_save_its_artifact_says_so(tmp_path):
+    """成果物を保存できなかったことを黙らない (/code-review #245)。"""
+    gpx = tmp_path / "fit.gpx"
+    gpx.write_bytes(b"gpx")
+
+    def prober(path, **kw):
+        r = _result()
+        st = r.stage_results[0]
+        return replace(r, stage_results=(replace(st, note="x save_failed=OSError: denied"),))
+
+    out = run_initial_value_probe(str(gpx), prober=prober)
+    assert out.complete and any("保存できない" in e for e in out.errors)

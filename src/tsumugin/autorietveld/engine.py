@@ -3705,8 +3705,21 @@ def probe_from_gpx(
                 )
                 shutil.copyfile(copy, target)
                 result = _dc_replace(result, gpx_path=str(target))
-            except Exception:  # noqa: BLE001 — 保存の失敗でプローブを落とさない (gpx_path は空のまま)
-                pass
+                # 索引 (manifest.jsonl) にも載せる — 「全部保存する」は「後から探せる」まで (gpxstore)
+                _record_artifact(
+                    str(src.parent),
+                    ManifestEntry(
+                        path=str(target), role="probe", label="plus" if sign > 0 else "minus",
+                        index=None, data_paths=(), phases=tuple(result.refined_cells),
+                        rwp=rwp, gof=gof, extra={"source_gpx": str(src)},
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — 保存の失敗でプローブを落とさない
+                # 黙って保存を諦めない: 理由を段の note に残す (呼び手の ProbeOutcome が errors に載せる)
+                st = result.stage_results[0]
+                result = _dc_replace(result, stage_results=(_dc_replace(
+                    st, note=f"{st.note} save_failed={type(exc).__name__}: {exc}"[:300]
+                ),))
     return result
 
 
