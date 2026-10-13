@@ -18,6 +18,7 @@ from tsumugin.autorietveld.atomrows import (
     coord_esd_states,
     free_index_from_site_symmetry,
     lock_from_free_index,
+    tied_axis_groups,
 )
 
 #: GSAS-II の実既定 `AtomPtrs` (`GSASIIobj.py:191` / `GSASIIElem.py:779`)。
@@ -106,6 +107,17 @@ def test_unknown_site_symmetry_degrades_to_the_general_position_test():
     """
     assert free_index_from_site_symmetry(_getcsxinel, "unknown-sytsym") == (0, 0, 0)
     assert free_index_from_site_symmetry(_getcsxinel, "1 ") == (1, 2, 3)  # 空白は無視
+
+
+def test_tied_axis_groups_carry_the_gsas_coefficient_ratio():
+    """結束の組は代表 + (軸, xCoef[軸]/xCoef[代表]) — GSAS の等値と同じ割り算。"""
+    assert tied_axis_groups(_getcsxinel, "1") == (
+        (0, ((0, 1.0),)), (1, ((1, 1.0),)), (2, ((2, 1.0),)),
+    )
+    assert tied_axis_groups(_getcsxinel, "x -x 0") == ((0, ((0, 1.0), (1, -1.0))),)
+    assert tied_axis_groups(_getcsxinel, "0 0 0") == ()
+    # 未知の sytsym は free_index と同じ保守的縮退 (結束は作らない)
+    assert tied_axis_groups(_getcsxinel, "unknown-sytsym") == ()
 
 
 def test_lock_from_free_index_matches_the_gui_contract():

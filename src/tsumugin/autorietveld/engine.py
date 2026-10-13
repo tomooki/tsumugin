@@ -36,7 +36,7 @@ from .atomrows import (
     atom_row,
     coord_esd_states,
     free_index_from_site_symmetry,
-    independent_axes,
+    tied_axis_groups,
 )
 from .bounds import (
     BoundHit,
@@ -1697,7 +1697,10 @@ def _apply_coord_jitter(
     `GetCSxinel` の 3 状態 (`atomrows.free_index_from_site_symmetry`) を見て:
 
     - ``0`` (対称拘束で固定) の軸は**触らない**
-    - 正値が他軸と一致する (結束) 軸は**代表軸だけ**動かす — 従属軸は GSAS の等値拘束が追随する
+    - 正値が他軸と一致する (結束) 軸は**代表の乱数 1 回ぶんを係数どおり一緒に**動かす
+      (`atomrows.tied_axis_groups`)。GSAS の結束はシフトの等値であり、精密化の前に従属座標を
+      揃え直さない — 代表だけを書き換えると結束が壊れた出発点のずれが最終座標に残り、
+      偽のベイスン分岐になる (実測: `tests/autorietveld/test_coord_jitter_tied_gsas.py`)
 
     **精密化しない原子も動かさない** (``frozen``)。摂動は「精密化が初期値から同じ解へ戻るか」の
     試験であり、coords 段が解放しない原子 (`_phase_atom_info` が除外する `frozen_coord_labels`)
@@ -1716,9 +1719,9 @@ def _apply_coord_jitter(
     :param fixed_magnitude: 真なら変位の大きさを ``amp`` に固定し、向きだけを乱数で決める
         (初期値プローブ用: 一様乱数だと一致の許容幅より小さい変位が混ざり「戻った」が空虚になる)
     :param sign: ``fixed_magnitude`` のとき全変位に掛ける向き (±δ の 2 開始点)
-    :param moved: 与えると、動かした座標のキー ``"<相>.<ラベル>.<x|y|z>"`` を追記する (代表軸だけ —
-        結束軸の従属側は初期値を書き換えていないので数えない)。値ごとの証人 (`claims`) が「この座標は試験した」を
-        判定するのに使う。``fixed_magnitude`` (プローブ) では結束軸を持つ軸は動かさない
+    :param moved: 与えると、動かした座標のキー ``"<相>.<ラベル>.<x|y|z>"`` を追記する (結束の組は
+        従属側も含めて全軸 — 初期値を一緒に書き換えたので試験している)。値ごとの証人 (`claims`) が
+        「この座標は試験した」を判定するのに使う。``fixed_magnitude`` (プローブ) では結束した組は動かさない
     :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
         呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
     """
@@ -1756,32 +1759,40 @@ def _apply_coord_jitter(
             label = str(row[ct - 1])
             if skip and label in skip:
                 continue
-            free = free_index_from_site_symmetry(getcsxinel, row[cs])
-            # 0 = 対称固定 / 結束軸の従属側は動かさない (代表軸だけ動かす)
-            for axis in independent_axes(free):
-                if axis in skip_axes.get(label, ()):
+            # 0 = 対称固定は触らない / 結束軸は代表の乱数 1 回ぶんを係数どおり従属軸にも掛ける
+            #   (GSAS は精密化前に従属座標を揃え直さないので、代表だけ動かすと結束が壊れたまま残る)
+            for _rep, members in tied_axis_groups(getcsxinel, row[cs]):
+                held = skip_axes.get(label, ())
+                if any(m in held for m, _ in members):
+                    # 軸単位で固定された座標 (極性原点の hold 等) を含む組は動かさない — 結束の組は
+                    #   1 変数なので、一部の軸だけ動かすと結束が壊れる
                     continue
-                if fixed_magnitude and any(free[a] == free[axis] for a in range(3) if a != axis):
-                    # プローブでは結束軸を動かさない: 代表軸だけを書き換えると従属軸とずれた出発点になり、
-                    #   GSAS が揃え直さなければ偽の「割れ」を作る (N8)。収束確認の摂動は従来どおり
+                if fixed_magnitude and len(members) > 1:
+                    # プローブでは結束した組を振らない (P1-1B の範囲)。収束確認は組ごと動かす
                     continue
-                length = lengths[axis] if lengths[axis] > 0 else 1.0
+                # Å の変位を分率へ直す。**どの軸の変位も amp Å 以下**: 組の中で |倍率|·軸長 が最大の
+                #   軸で割る ((x,2x,z) の y は x の 2 倍動くので)。組が 1 軸なら代表の軸長で割るのと
+                #   同じ (結束の無い構造はビット同一)
+                span = max(
+                    abs(ratio) * (lengths[m] if lengths[m] > 0 else 1.0) for m, ratio in members
+                )
                 if fixed_magnitude:
                     # 大きさは amp に固定、向きだけ乱数 (± の 2 開始点で sign が反転する)
                     unit = 1.0 if float(rng.uniform(-1.0, 1.0)) >= 0.0 else -1.0
-                    delta = sign * unit * float(amp) / length
+                    delta = sign * unit * float(amp) / span
                 else:
-                    # Å の変位を当該軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
-                    delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
+                    # 一様 [-amp, +amp]
+                    delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / span
                 try:
-                    row[cx + axis] = float(row[cx + axis]) + delta
-                except Exception:  # noqa: BLE001 — 書けない行はスキップ
+                    shifted = [(m, float(row[cx + m]) + ratio * delta) for m, ratio in members]
+                except Exception:  # noqa: BLE001 — 読めない行はスキップ
                     continue
+                for m, value in shifted:
+                    row[cx + m] = value
                 n_moved += 1
                 if moved is not None:
-                    # 代表軸だけを記録する。結束軸の従属側は初期値を書き換えていない (GSAS が精密化の前に
-                    #   揃え直すかは確かめていない) ので「試験した」と数えない (N8)
-                    moved.append(f"{ph.name}.{label}.{'xyz'[axis]}")
+                    # 書き換えた座標を全部記録する (結束の従属側も初期値を一緒に動かしたので試験した)
+                    moved.extend(f"{ph.name}.{label}.{'xyz'[m]}" for m, _ in members)
     return n_moved
 
 

@@ -7,6 +7,9 @@ Rietveld の局所解は主に**構造**にあるので、格子だけ振って�
 
 from __future__ import annotations
 
+import numpy as np
+import pytest
+
 from tsumugin.autorietveld.engine import _apply_coord_jitter
 
 _PTRS = (3, 1, 7, 9)
@@ -17,6 +20,9 @@ _CSXINEL = {
     "1": [[1, 2, 3], [1.0, 1.0, 1.0], [1, 2, 3]],        # X Y Z (一般位置)
     "0 0 z": [[0, 0, 1], [0.0, 0.0, 1.0], [0, 0, 3]],    # 0 0 Z
     "x -x 0": [[1, 1, 0], [1.0, -1.0, 0.0], [1, 1, 0]],  # X -X 0 (x,y 結束・z 固定)
+    "x x x": [[1, 1, 1], [1.0, 1.0, 1.0], [1, 1, 1]],    # X X X (3 回軸上)
+    "2x x z": [[1, 1, 2], [2.0, 1.0, 1.0], [1, 1, 3]],   # 2X X Z (係数 2 の結束)
+    "x 2x z": [[1, 1, 2], [1.0, 2.0, 1.0], [1, 1, 3]],   # X 2X Z (従属軸の倍率 2)
     "0 0 0": [[0, 0, 0], [0.0, 0.0, 0.0], [0, 0, 0]],    # 全固定
 }
 
@@ -60,19 +66,74 @@ def test_symmetry_fixed_axes_are_never_touched():
     assert n == 1
 
 
-def test_tied_axes_move_only_their_representative():
-    """★結束軸 (``x -x 0`` の x,y) は代表だけ動かす — 従属軸は GSAS の等値拘束が追随する。
+def test_tied_axes_move_together_by_the_gsas_coefficients():
+    """★結束軸 (``x -x 0`` の x,y) は**係数どおりに一緒に**動かす — 自由度は 1 つのまま。
 
-    非トートロジー: 両方を独立に動かすと結束関係が壊れ、GSAS が拘束を張り直した瞬間に
-    どちらか一方が捨てられる (= 摂動が意図と違う形で入る)。
+    非トートロジー: GSAS は結束を**シフト**の等値 (``dAy = (cy/cx)·dAx``,
+    `GSASIIstrIO.py:1760-1765`) として張るだけで、精密化の前に座標を揃え直さない (実測:
+    `test_coord_jitter_tied_gsas.py`)。代表軸だけを書き換えると、結束関係を破った出発点の
+    ずれが精密化後の座標にそのまま残り、開始点ごとに違う値になる (偽の割れ)。
     """
     atoms = [_atom("F1", (0.2, -0.2, 0.0), sytsym="x -x 0")]
     n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
 
     assert n == 1, "自由度は 1 つ (x,y が結束・z は固定)"
-    assert atoms[0][3] != 0.2, "代表軸 x は動く"
-    assert atoms[0][4] == -0.2, "従属軸 y は触らない"
+    dx, dy = atoms[0][3] - 0.2, atoms[0][4] - (-0.2)
+    assert dx != 0.0, "代表軸 x は動く"
+    assert dy == pytest.approx(-dx, abs=1e-15), "従属軸 y は係数 -1 で追随する (y = -x のまま)"
     assert atoms[0][5] == 0.0, "z は対称固定"
+
+
+def test_threefold_axis_site_stays_on_the_axis():
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x")]
+    n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
+    assert n == 1
+    assert atoms[0][3] != 0.38
+    assert atoms[0][3] == atoms[0][4] == atoms[0][5], "(x,x,x) のまま"
+
+
+def test_coefficient_is_relative_to_the_representative():
+    """``2x x z``: 代表は x (係数 2)、y は ``dy = (1/2)·dx`` で追随する (GSAS の割り算と同じ)。"""
+    atoms = [_atom("Ni1", (0.34, 0.17, 0.25), sytsym="2x x z")]
+    n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
+    assert n == 2, "自由度は x (y 結束) と z の 2 つ"
+    dx, dy = atoms[0][3] - 0.34, atoms[0][4] - 0.17
+    assert dx != 0.0 and atoms[0][5] != 0.25
+    assert dy == pytest.approx(dx * 0.5, abs=1e-15), "x = 2y のまま"
+
+
+def test_follower_with_ratio_above_one_stays_within_the_angstrom_amplitude():
+    """★``x 2x z``: y は ``dy = 2·dx`` で追随し、**どの軸の変位も amp Å 以下** に収まる。
+
+    非トートロジー: 代表の軸長だけで分率へ直すと y は 2·amp Å 動く — 結束原子だけが
+    指定より強く振られ、構造ごとに摂動の強さが変わる (`test_amplitude_is_in_angstrom_not_fractional`
+    と同じ契約を結束原子にも課す)。
+    """
+    worst = 0.0
+    for seed in range(20):
+        atoms = [_atom("Ni1", (0.17, 0.34, 0.25), sytsym="x 2x z")]
+        n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 1.0}, seed, _getcsxinel)
+        assert n == 2
+        dx, dy = atoms[0][3] - 0.17, atoms[0][4] - 0.34
+        assert dy == pytest.approx(2.0 * dx, abs=1e-15), "y = 2x のまま"
+        assert abs(dy) * 10.0 <= 1.0 + 1e-9, "従属軸 y も amp Å 以下"
+        worst = max(worst, abs(dy) * 10.0)
+    assert worst > 0.5, "上限で潰して動かなくしたのではない (y は amp の近くまで動く)"
+
+
+def test_followers_do_not_consume_random_draws():
+    """★乱数は**独立変数ごとに 1 回**だけ引く — 結束の追随で乱数列がずれない。
+
+    非トートロジー: 追随軸ぶん余計に引くと、結束原子より後ろの一般位置原子の開始点が
+    以前の版と変わる (一般位置しか無い構造の摂動は以前とビット同一であるべき)。
+    """
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("O1", (0.25, 0.5, 0.125))]
+    _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
+    draws = np.random.default_rng(7).uniform(-1.0, 1.0, size=4) * 0.05 / 10.0
+    assert atoms[0][3] == 0.38 + float(draws[0])
+    assert (atoms[1][3], atoms[1][4], atoms[1][5]) == (
+        0.25 + float(draws[1]), 0.5 + float(draws[2]), 0.125 + float(draws[3])
+    )
 
 
 def test_a_fully_fixed_structure_reports_zero_moved_axes():
@@ -152,3 +213,46 @@ def test_frozen_labels_are_scoped_to_their_own_phase():
     )
     assert n == 3
     assert tuple(atoms[0][3:6]) != (0.25, 0.5, 0.125)
+
+
+# ---------------------------------------------------------------------------
+# 結束の組と P1-1B の機能 (軸単位の固定・記録・プローブ) の組み合わせ
+# ---------------------------------------------------------------------------
+
+
+def test_moved_records_every_axis_of_a_tied_group():
+    """結束の組は従属側も初期値を一緒に書き換えたので、記録 (claims の証人の範囲) に全軸を載せる。"""
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("Ca1", (0.0, 0.0, 0.3), "0 0 z")]
+    moved: list[str] = []
+    n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel, moved=moved)
+    assert n == 2
+    assert moved == ["p.S1.x", "p.S1.y", "p.S1.z", "p.Ca1.z"]
+
+
+def test_a_held_axis_freezes_its_whole_tied_group():
+    """★軸単位の固定 (極性原点の hold) が組の 1 軸に掛かっていれば組ごと動かさない。
+
+    非トートロジー: 組は GSAS では 1 変数 — 固定されていない軸だけを動かすと結束が壊れ、
+    固定された軸に追随しない従属側のずれが最終座標に残る。
+    """
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("O1", (0.25, 0.5, 0.125))]
+    moved: list[str] = []
+    n = _apply_coord_jitter(
+        [_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel,
+        frozen_axes={"p": {"S1": [1]}}, moved=moved,
+    )
+    assert tuple(atoms[0][3:6]) == (0.38, 0.38, 0.38), "組の y が固定 → x,z も動かさない"
+    assert n == 3 and moved == ["p.O1.x", "p.O1.y", "p.O1.z"]
+
+
+def test_probe_leaves_tied_groups_alone_but_keeps_the_fixed_magnitude():
+    """プローブ (fixed_magnitude) は P1-1B どおり結束した組を振らず、単独軸は ±amp Å ちょうど動かす。"""
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("Ca1", (0.0, 0.0, 0.3), "0 0 z")]
+    moved: list[str] = []
+    n = _apply_coord_jitter(
+        [_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel,
+        fixed_magnitude=True, sign=-1, moved=moved,
+    )
+    assert tuple(atoms[0][3:6]) == (0.38, 0.38, 0.38)
+    assert n == 1 and moved == ["p.Ca1.z"]
+    assert abs(atoms[1][5] - 0.3) * 10.0 == pytest.approx(0.05, abs=1e-12)

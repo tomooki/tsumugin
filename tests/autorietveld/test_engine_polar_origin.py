@@ -313,8 +313,12 @@ def test_the_standard_route_accepts_polar_origin_with_jitter():
 
 
 
-def test_tied_axes_are_not_moved_by_the_probe_and_only_representatives_are_recorded():
-    """結束軸 (x,x,x) は代表軸だけを書き換えると従属軸とずれる — プローブでは動かさない (N8)。"""
+def test_tied_axes_are_not_moved_by_the_probe_and_phase_b_moves_and_records_the_whole_group():
+    """結束軸 (x,x,x): プローブは振らない (P1-1B の範囲)。収束確認は組ごと動かし、全軸を記録する。
+
+    GSAS は精密化前に従属座標を揃え直さないので、代表軸だけを書き換えると結束が壊れたまま残る
+    (`test_coord_jitter_tied_gsas.py`, PR #244)。従属側も初期値を一緒に動かしたので「試験した」に数える。
+    """
     from tsumugin.autorietveld.engine import _apply_coord_jitter
 
     class _Ph(_Phase):
@@ -329,8 +333,9 @@ def test_tied_axes_are_not_moved_by_the_probe_and_only_representatives_are_recor
         fixed_magnitude=True, moved=probe_moved,
     )
     assert n == 0 and probe_moved == []
+    ph = _Ph("111", [("Bi1", "Bi", "3m(111)")])
     ms_moved: list[str] = []
-    n = _apply_coord_jitter(
-        [_Ph("111", [("Bi1", "Bi", "3m(111)")])], {"w": 0.05}, 0, _getcsxinel, moved=ms_moved,
-    )
-    assert n == 1 and ms_moved == ["w.Bi1.x"]  # 収束確認は従来どおり代表軸を振る — 記録は代表軸だけ
+    n = _apply_coord_jitter([ph], {"w": 0.05}, 0, _getcsxinel, moved=ms_moved)
+    assert n == 1 and ms_moved == ["w.Bi1.x", "w.Bi1.y", "w.Bi1.z"]
+    x, y, z = ph.data["Atoms"][0][2:5]
+    assert x != 0 and x == y == z, "(x,x,x) のまま動く"

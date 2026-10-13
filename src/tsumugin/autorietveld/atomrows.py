@@ -34,6 +34,7 @@ __all__ = [
     "free_index_from_site_symmetry",
     "independent_axes",
     "lock_from_free_index",
+    "tied_axis_groups",
 ]
 
 #: 軸ごとの自由度指標 (`GetCSxinel(sytsym)[0]`)。**3 状態**である:
@@ -107,21 +108,41 @@ def free_index_from_site_symmetry(
 
     :param getcsxinel: `GSASIIspc.GetCSxinel` (テスト/numpy 経路のための関数注入シーム)
     """
+    return _site_terms(getcsxinel, site_symmetry)[0]
+
+
+def _site_terms(
+    getcsxinel: Callable[[str], Sequence[Sequence[object]]], site_symmetry: object
+) -> tuple[FreeIndex, tuple[float, float, float]]:
+    """``GetCSxinel`` を 1 回だけ引き、(`FreeIndex`, 係数 ``xCoef``) を返す。
+
+    自由度と係数を**同じ 1 回の参照**から取るため (別々に引くと縮退経路が食い違い得る)。
+    未知 sytsym の縮退は `free_index_from_site_symmetry` の規則 (``"1"`` なら全独立・それ以外は
+    全固定)。係数だけが読めないときは 1.0 へ縮退する — 自由度は生かす。
+    """
     sym = str(site_symmetry).strip()
     try:
-        raw = getcsxinel(sym)[0]
-        return (int(raw[0]), int(raw[1]), int(raw[2]))
+        raw = getcsxinel(sym)
+        xid = raw[0]
+        free = (int(xid[0]), int(xid[1]), int(xid[2]))
     except Exception:  # noqa: BLE001 — 未知 sytsym は一般位置判定へ縮退 (相を落とさない)
-        return (1, 2, 3) if sym == "1" else (0, 0, 0)
+        return ((1, 2, 3) if sym == "1" else (0, 0, 0)), (1.0, 1.0, 1.0)
+    try:
+        xc = raw[1]
+        coef = (float(xc[0]), float(xc[1]), float(xc[2]))
+    except Exception:  # noqa: BLE001 — 係数が読めないときは倍率 1 (自由度は保つ)
+        coef = (1.0, 1.0, 1.0)
+    return free, coef
 
 
 def independent_axes(free_index: FreeIndex) -> tuple[int, ...]:
     """`FreeIndex` → **独立変数として動かせる軸** (0=x, 1=y, 2=z) の列。
 
     ``0`` (対称固定) の軸を除き、結束軸は**代表 (三つ組内で最初に現れる軸) だけ**を返す —
-    従属軸は GSAS の等値拘束が追随するので、独立に動かすと結束関係が壊れる。
-    座標ジッタ (`engine._apply_coord_jitter`) がどの軸を動かすかの規則であり、動かした軸数は
-    結果の `coord_jitter_axes_moved` に載る (マルチスタートは数え直さずにそれを読む)。
+    GSAS が変数にするのは代表のシフトだけである (`GSASIIstrIO.py:1760-1765`)。座標ジッタ
+    (`engine._apply_coord_jitter`) が数える独立変数の規則であり、その数は結果の
+    `coord_jitter_axes_moved` に載る (マルチスタートは数え直さずにそれを読む)。
+    代表を書き換えるときに従属軸をどう動かすかは `tied_axis_groups`。
     """
     seen: set[int] = set()
     axes: list[int] = []
@@ -131,6 +152,37 @@ def independent_axes(free_index: FreeIndex) -> tuple[int, ...]:
         seen.add(fid)
         axes.append(axis)
     return tuple(axes)
+
+
+def tied_axis_groups(
+    getcsxinel: Callable[[str], Sequence],
+    site_symmetry: str,
+) -> tuple[tuple[int, tuple[tuple[int, float], ...]], ...]:
+    """site symmetry → 独立変数ごとの ``(代表軸, ((軸, 代表に対する倍率), ...))``。
+
+    各組の先頭は代表軸自身 (倍率 1.0)。代表を ``d`` 動かすなら組の各軸を ``倍率·d`` 動かせば
+    結束関係 (``x x x`` / ``x -x 0`` / ``2x x z`` 等) が保たれる。倍率は GSAS が張る等値と同じ
+    ``xCoef[軸] / xCoef[代表]`` (`GSASIIstrIO.py:1760-1765`)。
+
+    **従属軸を一緒に動かす理由**: GSAS の結束は**シフト**の等値であって、精密化の前にも途中にも
+    従属座標を代表へ揃え直さない (実測: `tests/autorietveld/test_coord_jitter_tied_gsas.py`)。
+    代表だけを書き換えた出発点は対称性を破ったまま精密化され、そのずれが最終座標に残る。
+
+    組の順と数は `independent_axes` と同じ。未知 sytsym は `free_index_from_site_symmetry` と同じ
+    縮退で結束を作らない — その原子は engine (`_phase_atom_info`) が座標を解放しないので、
+    動かさないのが正しい (凍結原子を振ると摂動値がそのまま最終解になり偽の割れになる)。
+    """
+    free, coef = _site_terms(getcsxinel, site_symmetry)
+    groups = []
+    for rep in independent_axes(free):
+        # free[rep] > 0 の軸の xCoef は GSAS の表で非 0 (縮退時は 1.0)
+        members = tuple(
+            (axis, 1.0 if axis == rep else coef[axis] / coef[rep])
+            for axis in range(3)
+            if free[axis] == free[rep]
+        )
+        groups.append((rep, members))
+    return tuple(groups)
 
 
 def lock_from_free_index(free_index: FreeIndex) -> dict[str, bool]:
