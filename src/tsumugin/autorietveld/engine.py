@@ -34,7 +34,7 @@ from .atomrows import (
     atom_row,
     coord_esd_states,
     free_index_from_site_symmetry,
-    independent_axes,
+    tied_axis_groups,
 )
 from .bounds import (
     BoundHit,
@@ -1625,7 +1625,10 @@ def _apply_coord_jitter(
     `GetCSxinel` の 3 状態 (`atomrows.free_index_from_site_symmetry`) を見て:
 
     - ``0`` (対称拘束で固定) の軸は**触らない**
-    - 正値が他軸と一致する (結束) 軸は**代表軸だけ**動かす — 従属軸は GSAS の等値拘束が追随する
+    - 正値が他軸と一致する (結束) 軸は**代表の乱数 1 回ぶんを係数どおり一緒に**動かす
+      (`atomrows.tied_axis_groups`)。GSAS の結束はシフトの等値であり、精密化の前に従属座標を
+      揃え直さない — 代表だけを書き換えると結束が壊れた出発点のずれが最終座標に残り、
+      偽のベイスン分岐になる (実測: `tests/autorietveld/test_coord_jitter_tied_gsas.py`)
 
     **精密化しない原子も動かさない** (``frozen``)。摂動は「精密化が初期値から同じ解へ戻るか」の
     試験であり、coords 段が解放しない原子 (`_phase_atom_info` が除外する `frozen_coord_labels`)
@@ -1670,16 +1673,18 @@ def _apply_coord_jitter(
         for row in atoms:
             if skip and str(row[ct - 1]) in skip:
                 continue
-            free = free_index_from_site_symmetry(getcsxinel, row[cs])
-            # 0 = 対称固定 / 結束軸の従属側は動かさない (代表軸だけ動かす)
-            for axis in independent_axes(free):
+            # 0 = 対称固定は触らない / 結束軸は代表の乱数 1 回ぶんを係数どおり従属軸にも掛ける
+            #   (GSAS は精密化前に従属座標を揃え直さないので、代表だけ動かすと結束が壊れたまま残る)
+            for axis, members in tied_axis_groups(getcsxinel, row[cs]):
                 length = lengths[axis] if lengths[axis] > 0 else 1.0
-                # Å の変位を当該軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
+                # Å の変位を代表軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
                 delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
                 try:
-                    row[cx + axis] = float(row[cx + axis]) + delta
-                except Exception:  # noqa: BLE001 — 書けない行はスキップ
+                    shifted = [(m, float(row[cx + m]) + ratio * delta) for m, ratio in members]
+                except Exception:  # noqa: BLE001 — 読めない行はスキップ
                     continue
+                for m, value in shifted:
+                    row[cx + m] = value
                 moved += 1
     return moved
 

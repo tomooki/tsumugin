@@ -7,6 +7,9 @@ Rietveld の局所解は主に**構造**にあるので、格子だけ振って�
 
 from __future__ import annotations
 
+import numpy as np
+import pytest
+
 from tsumugin.autorietveld.engine import _apply_coord_jitter
 
 _PTRS = (3, 1, 7, 9)
@@ -17,6 +20,8 @@ _CSXINEL = {
     "1": [[1, 2, 3], [1.0, 1.0, 1.0], [1, 2, 3]],        # X Y Z (一般位置)
     "0 0 z": [[0, 0, 1], [0.0, 0.0, 1.0], [0, 0, 3]],    # 0 0 Z
     "x -x 0": [[1, 1, 0], [1.0, -1.0, 0.0], [1, 1, 0]],  # X -X 0 (x,y 結束・z 固定)
+    "x x x": [[1, 1, 1], [1.0, 1.0, 1.0], [1, 1, 1]],    # X X X (3 回軸上)
+    "2x x z": [[1, 1, 2], [2.0, 1.0, 1.0], [1, 1, 3]],   # 2X X Z (係数 2 の結束)
     "0 0 0": [[0, 0, 0], [0.0, 0.0, 0.0], [0, 0, 0]],    # 全固定
 }
 
@@ -60,19 +65,55 @@ def test_symmetry_fixed_axes_are_never_touched():
     assert n == 1
 
 
-def test_tied_axes_move_only_their_representative():
-    """★結束軸 (``x -x 0`` の x,y) は代表だけ動かす — 従属軸は GSAS の等値拘束が追随する。
+def test_tied_axes_move_together_by_the_gsas_coefficients():
+    """★結束軸 (``x -x 0`` の x,y) は**係数どおりに一緒に**動かす — 自由度は 1 つのまま。
 
-    非トートロジー: 両方を独立に動かすと結束関係が壊れ、GSAS が拘束を張り直した瞬間に
-    どちらか一方が捨てられる (= 摂動が意図と違う形で入る)。
+    非トートロジー: GSAS は結束を**シフト**の等値 (``dAy = (cy/cx)·dAx``,
+    `GSASIIstrIO.py:1760-1765`) として張るだけで、精密化の前に座標を揃え直さない (実測:
+    `test_coord_jitter_tied_gsas.py`)。代表軸だけを書き換えると、結束関係を破った出発点の
+    ずれが精密化後の座標にそのまま残り、開始点ごとに違う値になる (偽の割れ)。
     """
     atoms = [_atom("F1", (0.2, -0.2, 0.0), sytsym="x -x 0")]
     n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
 
     assert n == 1, "自由度は 1 つ (x,y が結束・z は固定)"
-    assert atoms[0][3] != 0.2, "代表軸 x は動く"
-    assert atoms[0][4] == -0.2, "従属軸 y は触らない"
+    dx, dy = atoms[0][3] - 0.2, atoms[0][4] - (-0.2)
+    assert dx != 0.0, "代表軸 x は動く"
+    assert dy == pytest.approx(-dx, abs=1e-15), "従属軸 y は係数 -1 で追随する (y = -x のまま)"
     assert atoms[0][5] == 0.0, "z は対称固定"
+
+
+def test_threefold_axis_site_stays_on_the_axis():
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x")]
+    n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
+    assert n == 1
+    assert atoms[0][3] != 0.38
+    assert atoms[0][3] == atoms[0][4] == atoms[0][5], "(x,x,x) のまま"
+
+
+def test_coefficient_is_relative_to_the_representative():
+    """``2x x z``: 代表は x (係数 2)、y は ``dy = (1/2)·dx`` で追随する (GSAS の割り算と同じ)。"""
+    atoms = [_atom("Ni1", (0.34, 0.17, 0.25), sytsym="2x x z")]
+    n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
+    assert n == 2, "自由度は x (y 結束) と z の 2 つ"
+    dx, dy = atoms[0][3] - 0.34, atoms[0][4] - 0.17
+    assert dx != 0.0 and atoms[0][5] != 0.25
+    assert dy == pytest.approx(dx * 0.5, abs=1e-15), "x = 2y のまま"
+
+
+def test_followers_do_not_consume_random_draws():
+    """★乱数は**独立変数ごとに 1 回**だけ引く — 結束の追随で乱数列がずれない。
+
+    非トートロジー: 追随軸ぶん余計に引くと、結束原子より後ろの一般位置原子の開始点が
+    以前の版と変わる (一般位置しか無い構造の摂動は以前とビット同一であるべき)。
+    """
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("O1", (0.25, 0.5, 0.125))]
+    _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel)
+    draws = np.random.default_rng(7).uniform(-1.0, 1.0, size=4) * 0.05 / 10.0
+    assert atoms[0][3] == 0.38 + float(draws[0])
+    assert (atoms[1][3], atoms[1][4], atoms[1][5]) == (
+        0.25 + float(draws[1]), 0.5 + float(draws[2]), 0.125 + float(draws[3])
+    )
 
 
 def test_a_fully_fixed_structure_reports_zero_moved_axes():
