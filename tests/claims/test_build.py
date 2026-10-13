@@ -171,6 +171,25 @@ def test_an_input_value_is_not_determined_by_agreeing_starts():
     assert not any(w.kind == "multistart_agreement" for w in c.witnesses)
 
 
+def test_only_coordinates_the_engine_actually_moved_are_determined():
+    """件数でなく、どの座標を振ったかで判定する (極性原点の hold で振らない軸を「試験した」と数えない)。"""
+    from dataclasses import replace
+
+    moved = _result(coord_jitter_axes_moved=1, coord_jitter_moved=("P.O1.y",))
+    starts = tuple(
+        replace(_start(i, moved, s), perturbation=StartPerturbation(
+            cell_scale={"P": (s,) * 3}, jitter_seed=i, coord_jitter_ang=0.05), n_axes_jittered=1)
+        for i, s in enumerate((0.993, 1.0, 1.007))
+    )
+    ms = RietveldMultistartResult(
+        best=moved, best_index=0, starts=starts, n_starts=3, n_diverged=0, n_basins=1,
+        is_global_corroborated=True,
+    )
+    claims = with_convergence(base_claims(_result()), ms)
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.DETERMINED
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.ESD_ONLY
+
+
 def test_a_value_that_split_between_starts_is_initial_value_dependent():
     split = _result(atom_coords={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.35, 0.1, 0.3)}})
     claims = with_convergence(base_claims(_result()), _ms([_result(), _result(), split]))
