@@ -22,6 +22,7 @@ _CSXINEL = {
     "x -x 0": [[1, 1, 0], [1.0, -1.0, 0.0], [1, 1, 0]],  # X -X 0 (x,y 結束・z 固定)
     "x x x": [[1, 1, 1], [1.0, 1.0, 1.0], [1, 1, 1]],    # X X X (3 回軸上)
     "2x x z": [[1, 1, 2], [2.0, 1.0, 1.0], [1, 1, 3]],   # 2X X Z (係数 2 の結束)
+    "x 2x z": [[1, 1, 2], [1.0, 2.0, 1.0], [1, 1, 3]],   # X 2X Z (従属軸の倍率 2)
     "0 0 0": [[0, 0, 0], [0.0, 0.0, 0.0], [0, 0, 0]],    # 全固定
 }
 
@@ -99,6 +100,25 @@ def test_coefficient_is_relative_to_the_representative():
     dx, dy = atoms[0][3] - 0.34, atoms[0][4] - 0.17
     assert dx != 0.0 and atoms[0][5] != 0.25
     assert dy == pytest.approx(dx * 0.5, abs=1e-15), "x = 2y のまま"
+
+
+def test_follower_with_ratio_above_one_stays_within_the_angstrom_amplitude():
+    """★``x 2x z``: y は ``dy = 2·dx`` で追随し、**どの軸の変位も amp Å 以下** に収まる。
+
+    非トートロジー: 代表の軸長だけで分率へ直すと y は 2·amp Å 動く — 結束原子だけが
+    指定より強く振られ、構造ごとに摂動の強さが変わる (`test_amplitude_is_in_angstrom_not_fractional`
+    と同じ契約を結束原子にも課す)。
+    """
+    worst = 0.0
+    for seed in range(20):
+        atoms = [_atom("Ni1", (0.17, 0.34, 0.25), sytsym="x 2x z")]
+        n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 1.0}, seed, _getcsxinel)
+        assert n == 2
+        dx, dy = atoms[0][3] - 0.17, atoms[0][4] - 0.34
+        assert dy == pytest.approx(2.0 * dx, abs=1e-15), "y = 2x のまま"
+        assert abs(dy) * 10.0 <= 1.0 + 1e-9, "従属軸 y も amp Å 以下"
+        worst = max(worst, abs(dy) * 10.0)
+    assert worst > 0.5, "上限で潰して動かなくしたのではない (y は amp の近くまで動く)"
 
 
 def test_followers_do_not_consume_random_draws():

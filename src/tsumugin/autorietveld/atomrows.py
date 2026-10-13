@@ -108,12 +108,31 @@ def free_index_from_site_symmetry(
 
     :param getcsxinel: `GSASIIspc.GetCSxinel` (テスト/numpy 経路のための関数注入シーム)
     """
+    return _site_terms(getcsxinel, site_symmetry)[0]
+
+
+def _site_terms(
+    getcsxinel: Callable[[str], Sequence[Sequence[object]]], site_symmetry: object
+) -> tuple[FreeIndex, tuple[float, float, float]]:
+    """``GetCSxinel`` を 1 回だけ引き、(`FreeIndex`, 係数 ``xCoef``) を返す。
+
+    自由度と係数を**同じ 1 回の参照**から取るため (別々に引くと縮退経路が食い違い得る)。
+    未知 sytsym の縮退は `free_index_from_site_symmetry` の規則 (``"1"`` なら全独立・それ以外は
+    全固定)。係数だけが読めないときは 1.0 へ縮退する — 自由度は生かす。
+    """
     sym = str(site_symmetry).strip()
     try:
-        raw = getcsxinel(sym)[0]
-        return (int(raw[0]), int(raw[1]), int(raw[2]))
+        raw = getcsxinel(sym)
+        xid = raw[0]
+        free = (int(xid[0]), int(xid[1]), int(xid[2]))
     except Exception:  # noqa: BLE001 — 未知 sytsym は一般位置判定へ縮退 (相を落とさない)
-        return (1, 2, 3) if sym == "1" else (0, 0, 0)
+        return ((1, 2, 3) if sym == "1" else (0, 0, 0)), (1.0, 1.0, 1.0)
+    try:
+        xc = raw[1]
+        coef = (float(xc[0]), float(xc[1]), float(xc[2]))
+    except Exception:  # noqa: BLE001 — 係数が読めないときは倍率 1 (自由度は保つ)
+        coef = (1.0, 1.0, 1.0)
+    return free, coef
 
 
 def independent_axes(free_index: FreeIndex) -> tuple[int, ...]:
@@ -149,20 +168,16 @@ def tied_axis_groups(
     従属座標を代表へ揃え直さない (実測: `tests/autorietveld/test_coord_jitter_tied_gsas.py`)。
     代表だけを書き換えた出発点は対称性を破ったまま精密化され、そのずれが最終座標に残る。
 
-    組の順と数は `independent_axes` と同じ。係数が読めなければ倍率 1.0 へ縮退する
-    (`free_index_from_site_symmetry` の縮退先は一般位置か全固定なので結束が無く、倍率は使われない)。
+    組の順と数は `independent_axes` と同じ。未知 sytsym は `free_index_from_site_symmetry` と同じ
+    縮退で結束を作らない — その原子は engine (`_phase_atom_info`) が座標を解放しないので、
+    動かさないのが正しい (凍結原子を振ると摂動値がそのまま最終解になり偽の割れになる)。
     """
-    free = free_index_from_site_symmetry(getcsxinel, site_symmetry)
-    try:
-        raw = getcsxinel(str(site_symmetry).strip())[1]
-        coef = (float(raw[0]), float(raw[1]), float(raw[2]))
-    except Exception:  # noqa: BLE001 — 係数が読めない sytsym は倍率 1 (結束の無い縮退先)
-        coef = (1.0, 1.0, 1.0)
+    free, coef = _site_terms(getcsxinel, site_symmetry)
     groups = []
     for rep in independent_axes(free):
-        rep_coef = coef[rep] if coef[rep] != 0.0 else 1.0
+        # free[rep] > 0 の軸の xCoef は GSAS の表で非 0 (縮退時は 1.0)
         members = tuple(
-            (axis, 1.0 if axis == rep else coef[axis] / rep_coef)
+            (axis, 1.0 if axis == rep else coef[axis] / coef[rep])
             for axis in range(3)
             if free[axis] == free[rep]
         )

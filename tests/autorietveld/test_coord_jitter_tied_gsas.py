@@ -107,6 +107,10 @@ def test_jittered_starts_on_a_threefold_axis_return_to_the_unjittered_solution(
         assert abs(x - y) < 1e-9 and abs(y - z) < 1e-9, (
             f"種 {seed}: 精密化後の S が 3 回軸から外れた ({x}, {y}, {z}) — 結束が壊れた出発点"
         )
+        # 雑音や esd の見積もりに依らない判定: 修正後は摂動なしの x から 5e-7 以内に戻る
+        #   (2026-10-13 実測, 種 1-8)。修正前は種 2 で 2.9e-3・種 3 で 5.1e-3 ずれた
+        #   (種 2 は esd/床の内側なので一致判定だけでは捕まらない)
+        assert abs(x - bx) < 1e-5, f"種 {seed}: 摂動なしの S x={bx} へ戻らない ({x})"
         coords = parameter_agreements(base, jittered)[COORD]
         assert coords, "座標の突き合わせが空 (比較していないのに一致と言わない)"
         split = [(p.key, p.verdict, p.delta) for p in coords if not is_agreement(p.verdict)]

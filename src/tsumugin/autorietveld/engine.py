@@ -1675,10 +1675,14 @@ def _apply_coord_jitter(
                 continue
             # 0 = 対称固定は触らない / 結束軸は代表の乱数 1 回ぶんを係数どおり従属軸にも掛ける
             #   (GSAS は精密化前に従属座標を揃え直さないので、代表だけ動かすと結束が壊れたまま残る)
-            for axis, members in tied_axis_groups(getcsxinel, row[cs]):
-                length = lengths[axis] if lengths[axis] > 0 else 1.0
-                # Å の変位を代表軸の分率へ直す (軸長で割る)。一様 [-amp, +amp]。
-                delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / length
+            for _rep, members in tied_axis_groups(getcsxinel, row[cs]):
+                # Å の変位を分率へ直す。一様 [-amp, +amp] で、**どの軸の変位も amp Å 以下**:
+                #   組の中で |倍率|·軸長 が最大の軸で割る ((x,2x,z) の y は x の 2 倍動くので)。
+                #   組が 1 軸なら代表の軸長で割るのと同じ (結束の無い構造はビット同一)
+                span = max(
+                    abs(ratio) * (lengths[m] if lengths[m] > 0 else 1.0) for m, ratio in members
+                )
+                delta = float(rng.uniform(-1.0, 1.0)) * float(amp) / span
                 try:
                     shifted = [(m, float(row[cx + m]) + ratio * delta) for m, ratio in members]
                 except Exception:  # noqa: BLE001 — 読めない行はスキップ
