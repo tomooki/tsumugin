@@ -18,6 +18,7 @@ import math
 import shutil
 import tempfile
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -25,6 +26,7 @@ import numpy as np
 
 from .._json import finite_or_none
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
+from ..gpxstore import read_manifest
 from ..gpxstore import record_artifact as _record_artifact
 from ..gpxstore import sanitize_label as _sanitize_label
 from ..store import Ledger
@@ -3601,6 +3603,7 @@ def probe_from_gpx(
     seed: int = 0,
     max_cyc: int = 12,
     blas_threads: int | None = None,
+    save: bool = True,
 ) -> AutoRietveldResult:
     """保存した精密化済み gpx から開始し、解放されているパラメータだけを摂動して精密化し直す
     (fit-then-judge P1-1B, proposal §4.5 の初期値プローブ)。
@@ -3618,6 +3621,9 @@ def probe_from_gpx(
     = 証人なし」に畳む — 「戻った」とは数えない)。
 
     :param sign: 格子の摂動の向き (+1 / -1)。±δ の 2 開始点で使う
+    :param save: **規定どおり成果物を残す** (2026-08-20「全解析で保存する」)。元の gpx と同じディレクトリに
+        ``<元の名前>.probe-plus.gpx`` / ``.probe-minus.gpx`` (既にあれば連番) を書き、結果の ``gpx_path`` に載せる。
+        書けなくてもプローブは落とさない (``gpx_path`` が空)
     """
     if sign not in (1, -1):
         raise ValueError(f"sign は +1 か -1 です: {sign!r}")
@@ -3689,6 +3695,39 @@ def probe_from_gpx(
             coord_jitter_moved=tuple(moved),
             final_covariance=_final_covariance(gpx),
         )
+        if save:
+            # 【プローブの fit も残す (規定 2026-08-20)】: 割れた・戻らなかった判定の根拠の fit を検算できる
+            #   ようにする。元の gpx の隣に、上書きせず書く。
+            try:
+                gpx.save()
+                src = Path(gpx_path)
+                target = _unique_path(
+                    src.parent, f"{src.stem}.probe-{'plus' if sign > 0 else 'minus'}", ".gpx"
+                )
+                shutil.copyfile(copy, target)
+                result = _dc_replace(result, gpx_path=str(target))
+                # 索引 (manifest.jsonl) にも載せる — 「全部保存する」は「後から探せる」まで (gpxstore)
+                # データは元の fit の索引の行から引く (どのデータの精密化かを 1 行で残す — gpxstore)
+                source_rows = [
+                    row for row in read_manifest(str(src.parent))
+                    if Path(str(row.get("path", ""))).name == src.name
+                ]
+                data_paths = tuple(source_rows[-1].get("data_paths", ())) if source_rows else ()
+                _record_artifact(
+                    str(src.parent),
+                    ManifestEntry(
+                        path=str(target), role="probe", label="plus" if sign > 0 else "minus",
+                        index=None, data_paths=tuple(str(d) for d in data_paths),
+                        phases=tuple(result.refined_cells), rwp=rwp, gof=gof,
+                        extra={"source_gpx": str(src)},
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — 保存の失敗でプローブを落とさない
+                # 黙って保存を諦めない: 成果物の理由の欄 (`artifact_fallback_reason`) に残す (gpx_path は空)
+                result = _dc_replace(
+                    result, gpx_path="",
+                    artifact_fallback_reason=f"プローブの成果物を保存できない: {type(exc).__name__}: {exc}"[:300],
+                )
     return result
 
 

@@ -98,6 +98,8 @@ class ProbeOutcome:
             "complete": self.complete,
             "rwp": [finite_or_none(p.final_rwp) if p is not None else None for p in self.probes],
             "errors": list(self.errors),
+            # 成果物 (規定 2026-08-20): ±δ の fit そのもの。保存できなかった開始点は空文字
+            "gpx_paths": [p.gpx_path if p is not None else "" for p in self.probes],
             "reason": self.reason,
         }
 
@@ -128,4 +130,8 @@ def run_initial_value_probe(
         except Exception as exc:  # noqa: BLE001 — 回らなかった開始点は「戻った」と数えない
             probes.append(None)
             errors.append(f"sign={sign}: {exc!r}"[:200])
+    for sign, p in zip((1, -1), probes):
+        if p is not None and not p.gpx_path and p.artifact_fallback_reason:
+            # fit は回ったが成果物を残せなかった — 証人には影響しないが黙らない (規定 2026-08-20)
+            errors.append(f"sign={sign}: {p.artifact_fallback_reason}"[:200])
     return ProbeOutcome(cfg, tuple(probes), tuple(errors))

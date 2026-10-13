@@ -97,3 +97,31 @@ def test_co_located_rows_merged_by_pymatgen_still_count_as_present(tmp_path):
     g = uiso_groups_from_cif(str(cif), labels=("Fe1", "Al1", "O1", "O2", "O3"))
     assert g.status == "pass", g.reason
     assert ("O1", "O2", "O3") in g.groups
+
+
+def test_an_atom_without_neighbours_makes_the_rule_unevaluated(tmp_path):
+    """配位数を決められない原子があれば「組が無かった」と言わない (/code-review #243)。"""
+    from pymatgen.core import Lattice, Structure
+    from pymatgen.io.cif import CifWriter
+
+    s = Structure(Lattice.cubic(30.0), ["Na", "Cl"], [(0, 0, 0), (0.5, 0.5, 0.5)],
+                  labels=["Na1", "Cl1"])
+    path = tmp_path / "sparse.cif"
+    CifWriter(s).write_file(str(path))
+    g = uiso_groups_from_cif(str(path))
+    assert g.status == "unevaluated" and "Na1" in g.reason
+    assert g.groups == ()  # unevaluated は「まとめない」— 一部の組も返さない (/code-review #245)
+
+
+def test_an_isolated_atom_withholds_every_group(tmp_path):
+    """組が作れる原子があっても、規則を適用できない原子があれば何もまとめない (/code-review #245)。"""
+    from pymatgen.core import Lattice, Structure
+    from pymatgen.io.cif import CifWriter
+
+    s = Structure(Lattice.cubic(30.0), ["O", "O", "Na"], [(0, 0, 0), (0.1, 0, 0), (0.5, 0.5, 0.5)],
+                  labels=["O1", "O2", "Na1"])
+    path = tmp_path / "part.cif"
+    CifWriter(s).write_file(str(path))
+    g = uiso_groups_from_cif(str(path))
+    assert g.coordination["O1"] == g.coordination["O2"] == 1
+    assert g.status == "unevaluated" and g.groups == ()

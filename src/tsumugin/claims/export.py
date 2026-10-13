@@ -29,6 +29,17 @@ def _cell(value: Any) -> str:
     return "" if value is None else repr(value) if isinstance(value, float) else str(value)
 
 
+def _text(value: str) -> str:
+    """表計算ソフトが数式と読む先頭 (``= + - @`` とタブ・CR) を無害化する (CSV injection 対策)。
+
+    相名・原子ラベルは CIF や ③ の spec から来るので、数式として実行させない。数値の列には使わない。
+    ⚠ ``phase``/``label`` の列は先頭に ``'`` が付くことがある (``key`` 列は元のまま — 突き合わせは ``key`` で)。
+    """
+    if value and value[0] in "=+-@\t\r":
+        return "'" + value
+    return value
+
+
 def write_claims_csv(claims: Mapping[str, Mapping[str, Any] | Claim], path: str | Path) -> Path:
     """`Claim` (または `Claim.to_dict()` の dict) の表を CSV に書く。書いたパスを返す。
 
@@ -40,10 +51,10 @@ def write_claims_csv(claims: Mapping[str, Mapping[str, Any] | Claim], path: str 
         raw = claims[key]
         claim = raw if isinstance(raw, Claim) else Claim.from_dict(raw)
         rows.append({
-            "key": claim.key,
+            "key": claim.key,  # 常に '<class>:' で始まるので無害化しない (JSON のキーと突き合わせられる)
             "param_class": claim.param_class,
-            "phase": _cell(claim.phase),
-            "label": _cell(claim.label),
+            "phase": _text(_cell(claim.phase)),
+            "label": _text(_cell(claim.label)),
             "axis": _cell(claim.axis),
             "value": _cell(claim.value),
             "esd": _cell(claim.esd),
