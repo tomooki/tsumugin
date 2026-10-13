@@ -303,3 +303,9 @@ def test_declared_phase_names_are_checked_first():
 def test_the_config_ladder_is_used():
     out, runner = _run(config=Pass1Config(background_ladder=(9,)), fake={"drops": {"TB9": 900.0}})
     assert out.decisions.background_coeffs == 9
+
+
+def test_the_internal_standard_is_never_chosen_as_the_target():
+    decl = TemplateDeclarations(internal_standard="A")
+    out, _ = _run(phases=(A, B), decl=decl, fake={"intensity": {"A": (100.0,), "B": (20.0,)}})
+    assert out.decisions.target_phase == "B"

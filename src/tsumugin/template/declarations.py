@@ -79,6 +79,11 @@ class TemplateDeclarations:
     def check_phases(self, phases: Sequence[object]) -> None:
         """相名を名指す宣言が相に実在するか (:raises ValueError:)。"""
         known = {getattr(p, "phase_name", None) for p in phases}
+        if self.target_phase is not None and self.target_phase == self.internal_standard:
+            raise ValueError(
+                f"template: 内部標準 {self.internal_standard!r} を対象相にはできません "
+                "(内部標準の格子は既知の値に固定し、構造は精密化しない)"
+            )
         for key in ("target_phase", "internal_standard"):
             name = getattr(self, key)
             if name is not None and name not in known:

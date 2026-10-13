@@ -1026,6 +1026,13 @@ def _template_candidate(
     from ..template.pass1 import Pass1Error, run_template_pass1
 
     record_declarations(ledger, declarations)
+    # 【内部標準の格子は既知の値に固定する】: 標準の格子で 2θ の目盛りを決めるのが内部標準の意味。
+    #   pass 1 から固定し、コンパイル結果にも残す (`refine_cell=False` は段フラグで覆せない)。
+    if declarations.internal_standard is not None:
+        phases = tuple(
+            replace(p, refine_cell=False) if p.phase_name == declarations.internal_standard else p
+            for p in phases
+        )
 
     def default_pass1(trial, hists, phs, stages):  # type: ignore[no-untyped-def]
         from .engine import run_auto_rietveld

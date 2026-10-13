@@ -205,3 +205,11 @@ def test_phase_b_confirms_the_template_with_its_own_phases():
     assert report.adopted_recipe == "template"
     assert captured["phases"][0].fix_polar_origin
     assert captured["kw"]["blas_threads"] == 1
+
+
+def test_the_internal_standard_keeps_its_certified_lattice():
+    _, p1, cands = _search(template_declarations=TemplateDeclarations(internal_standard="A"))
+    tmpl = next(c for c in cands.seen if c.name == "template")
+    std = next(p for p in tmpl.phases if p.phase_name == "A")
+    assert std.refine_cell is False
+    assert tmpl.derivation["decisions"]["target_phase"] == "B"

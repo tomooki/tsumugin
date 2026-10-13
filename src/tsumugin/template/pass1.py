@@ -131,8 +131,13 @@ def _decide_target(
     phases: Sequence[PhaseSpec],
     declared: "str | None",
     tie_ratio: float,
+    *,
+    exclude: "str | None" = None,
 ) -> tuple[str, bool, dict[str, object]]:
-    names = [p.phase_name for p in phases]
+    # 内部標準は対象相にしない (強い散乱体であることが多く、強度で選ぶと標準が選ばれてしまう)
+    names = [p.phase_name for p in phases if p.phase_name != exclude] or [
+        p.phase_name for p in phases
+    ]
     if len(names) == 1:
         return names[0], False, {"decision": names[0], "basis": "single_phase", "status": "pass"}
     pii = result.phase_integrated_intensity
@@ -325,7 +330,8 @@ def run_template_pass1(
 
     # --- 対象相・実効自由度 ----------------------------------------------------------
     target, ambiguous, target_ev = _decide_target(
-        base, phases, declarations.target_phase, cfg.target_tie_ratio
+        base, phases, declarations.target_phase, cfg.target_tie_ratio,
+        exclude=declarations.internal_standard,
     )
     resid = _weighted_residual(base)
     dof_ratio = effective_dof_ratio(resid) if resid is not None else None

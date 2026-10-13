@@ -105,3 +105,8 @@ def test_every_field_is_reachable_from_json():
         typ = bool if "bool" in str(f.type) else str
         d = TemplateDeclarations.from_dict({f.name: samples[typ]})
         assert getattr(d, f.name) == samples[typ], f.name
+
+
+def test_the_internal_standard_cannot_be_the_target():
+    with pytest.raises(ValueError, match="内部標準"):
+        TemplateDeclarations(target_phase="A", internal_standard="A").check_phases(_PHASES)
