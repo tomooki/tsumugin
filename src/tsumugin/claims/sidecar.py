@@ -72,8 +72,17 @@ def write_claims_sidecar(gpx_path: str, payload: Mapping[str, Any]) -> tuple[str
                 return str(legacy), ""
     # 【書いた順を中身に持たせる】: 読み手は同じ gpx の sidecar のうち**最後に書いたもの**を採る。mtime はコピーや
     #   復元で入れ替わるので使わない。時刻ではなく連番 (既存の sidecar の数) にして中身を決定論に保つ。
+    # 連番は既存の最大 + 1 (ファイルの数にすると、消したあとに既存の番号と重なる)
+    seqs = []
+    for c in existing:
+        try:
+            prev_seq = json.loads(c.read_text(encoding="utf-8")).get("sequence")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(prev_seq, int):
+            seqs.append(prev_seq)
     text = json.dumps(
-        {**body, "sequence": sum(1 for c in existing if c.exists())},
+        {**body, "sequence": (max(seqs) + 1) if seqs else sum(1 for c in existing if c.exists())},
         ensure_ascii=False, allow_nan=False, sort_keys=True, indent=1,
     )
     # 【名前は gpx と状態の両方のハッシュで】: gpx のハッシュだけだと、同じ gpx を 3 回以上違う入力で評価したとき

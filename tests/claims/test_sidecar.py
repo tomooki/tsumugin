@@ -152,3 +152,17 @@ def test_the_sidecar_bytes_are_deterministic(tmp_path):
         path, _ = write_claims_sidecar(str(gpx), {"claims": {"n": 1}})
         outs.append(open(path, "rb").read())
     assert outs[0] == outs[1]
+
+
+def test_a_deleted_sidecar_does_not_make_sequences_collide(tmp_path):
+    """消したあとの書き込みが既存の番号と重ならず、最後に書いた状態が読まれる (/code-review #245)。"""
+    import os
+
+    from tsumugin.claims.sidecar import find_claims_sidecar, write_claims_sidecar
+
+    gpx = tmp_path / "fit.gpx"
+    gpx.write_bytes(b"gpx")
+    paths = [write_claims_sidecar(str(gpx), {"claims": {"n": n}})[0] for n in range(3)]
+    os.remove(paths[0])  # 既定名が空く — 新しい状態はそこに書かれ、名前の順では最も前になる
+    write_claims_sidecar(str(gpx), {"claims": {"n": 9}})
+    assert find_claims_sidecar(str(gpx))[1]["claims"] == {"n": 9}

@@ -26,6 +26,7 @@ import numpy as np
 
 from .._json import finite_or_none
 from ..gpxstore import ArtifactPlan, GpxContext, ManifestEntry, active_context, plan_output
+from ..gpxstore import read_manifest
 from ..gpxstore import record_artifact as _record_artifact
 from ..gpxstore import sanitize_label as _sanitize_label
 from ..store import Ledger
@@ -3706,20 +3707,27 @@ def probe_from_gpx(
                 shutil.copyfile(copy, target)
                 result = _dc_replace(result, gpx_path=str(target))
                 # 索引 (manifest.jsonl) にも載せる — 「全部保存する」は「後から探せる」まで (gpxstore)
+                # データは元の fit の索引の行から引く (どのデータの精密化かを 1 行で残す — gpxstore)
+                source_rows = [
+                    row for row in read_manifest(str(src.parent))
+                    if Path(str(row.get("path", ""))).name == src.name
+                ]
+                data_paths = tuple(source_rows[-1].get("data_paths", ())) if source_rows else ()
                 _record_artifact(
                     str(src.parent),
                     ManifestEntry(
                         path=str(target), role="probe", label="plus" if sign > 0 else "minus",
-                        index=None, data_paths=(), phases=tuple(result.refined_cells),
-                        rwp=rwp, gof=gof, extra={"source_gpx": str(src)},
+                        index=None, data_paths=tuple(str(d) for d in data_paths),
+                        phases=tuple(result.refined_cells), rwp=rwp, gof=gof,
+                        extra={"source_gpx": str(src)},
                     ),
                 )
             except Exception as exc:  # noqa: BLE001 — 保存の失敗でプローブを落とさない
-                # 黙って保存を諦めない: 理由を段の note に残す (呼び手の ProbeOutcome が errors に載せる)
-                st = result.stage_results[0]
-                result = _dc_replace(result, stage_results=(_dc_replace(
-                    st, note=f"{st.note} save_failed={type(exc).__name__}: {exc}"[:300]
-                ),))
+                # 黙って保存を諦めない: 成果物の理由の欄 (`artifact_fallback_reason`) に残す (gpx_path は空)
+                result = _dc_replace(
+                    result, gpx_path="",
+                    artifact_fallback_reason=f"プローブの成果物を保存できない: {type(exc).__name__}: {exc}"[:300],
+                )
     return result
 
 

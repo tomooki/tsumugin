@@ -261,6 +261,8 @@ def test_probes_from_a_saved_fit_come_back_and_leave_the_gpx_untouched(tmp_path,
 
     roles = [(e.get("role"), e.get("label")) for e in read_manifest(str(Path(base.gpx_path).parent))]
     assert ("probe", "plus") in roles and ("probe", "minus") in roles  # 索引にも載る
+    rows = [e for e in read_manifest(str(Path(base.gpx_path).parent)) if e.get("role") == "probe"]
+    assert all(r.get("data_paths") for r in rows)  # どのデータの fit かを索引に残す
     for probe in outcome.probes:
         # O1 の z だけ — Zn の z は座標フラグが立っているが極性原点の hold に入っている
         assert probe.coord_jitter_axes_moved == 1
@@ -320,9 +322,7 @@ def test_a_probe_that_could_not_save_its_artifact_says_so(tmp_path):
     gpx.write_bytes(b"gpx")
 
     def prober(path, **kw):
-        r = _result()
-        st = r.stage_results[0]
-        return replace(r, stage_results=(replace(st, note="x save_failed=OSError: denied"),))
+        return replace(_result(), gpx_path="", artifact_fallback_reason="プローブの成果物を保存できない: OSError")
 
     out = run_initial_value_probe(str(gpx), prober=prober)
     assert out.complete and any("保存できない" in e for e in out.errors)

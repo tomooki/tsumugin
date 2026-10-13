@@ -131,8 +131,7 @@ def run_initial_value_probe(
             probes.append(None)
             errors.append(f"sign={sign}: {exc!r}"[:200])
     for sign, p in zip((1, -1), probes):
-        note = p.stage_results[0].note if p is not None and p.stage_results else ""
-        if p is not None and "save_failed=" in note:
+        if p is not None and not p.gpx_path and p.artifact_fallback_reason:
             # fit は回ったが成果物を残せなかった — 証人には影響しないが黙らない (規定 2026-08-20)
-            errors.append(f"sign={sign}: 成果物を保存できない ({note.split('save_failed=', 1)[1]})"[:200])
+            errors.append(f"sign={sign}: {p.artifact_fallback_reason}"[:200])
     return ProbeOutcome(cfg, tuple(probes), tuple(errors))
