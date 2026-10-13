@@ -14,6 +14,7 @@ from __future__ import annotations
 import glob
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -51,19 +52,36 @@ def write_claims_sidecar(gpx_path: str, payload: Mapping[str, Any]) -> tuple[str
         return "", f"gpx を読めない ({type(exc).__name__}: {exc})"
     body = {**dict(payload), "gpx_sha256": digest, "gpx_name": gpx.name}
     try:
-        text = json.dumps(body, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=1)
+        state = json.dumps(body, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=1)
     except (TypeError, ValueError) as exc:
         return "", f"出版状態を JSON にできない ({type(exc).__name__}: {exc})"
-    for target in (gpx.with_suffix(".claims.json"), gpx.parent / f"{gpx.stem}.claims.{digest[:12]}.json"):
+    # 同じ状態をもう一度書くときは何もしない (中身の比較は書いた時刻を除いて行う)
+    for existing in sidecar_candidates(gpx_path):
+        try:
+            prev = json.loads(existing.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(prev, dict):
+            prev.pop("written_at_ns", None)
+            if json.dumps(prev, ensure_ascii=False, sort_keys=True, indent=1) == state:
+                return str(existing), ""
+    # 【書いた順を中身に持たせる】: 読み手は同じ gpx に一致する sidecar のうち**最後に書いたもの**を採る。
+    #   mtime はコピーや復元で入れ替わるので使わない。
+    text = json.dumps(
+        {**body, "written_at_ns": time.time_ns()},
+        ensure_ascii=False, allow_nan=False, sort_keys=True, indent=1,
+    )
+    # 【名前は gpx と状態の両方のハッシュで】: gpx のハッシュだけだと、同じ gpx を 3 回以上違う入力で評価したとき
+    #   3 回目以降を書けず、読み手が古い状態を返していた。
+    body_digest = hashlib.sha256(state.encode("utf-8")).hexdigest()[:8]
+    for target in (
+        gpx.with_suffix(".claims.json"),
+        gpx.parent / f"{gpx.stem}.claims.{digest[:12]}.json",
+        gpx.parent / f"{gpx.stem}.claims.{digest[:12]}.{body_digest}.json",
+    ):
         try:
             if target.exists():
-                try:
-                    same = target.read_text(encoding="utf-8") == text
-                except ValueError:  # 壊れた/別エンコーディングの既存ファイル — 上書きはしない
-                    same = False
-                if same:
-                    return str(target), ""  # 同じ状態 — 書き直さない
-                continue  # 中身が違う — 上書きしない
+                continue  # 中身が違う (同じなら上で返した) — 上書きしない
             with target.open("x", encoding="utf-8") as fh:  # 競合しても上書きしない
                 fh.write(text)
             return str(target), ""
@@ -93,7 +111,10 @@ def find_claims_sidecar(gpx_path: str) -> tuple[str, dict[str, Any]] | None:
         except (OSError, ValueError):
             continue
         if isinstance(body, dict) and body.get("gpx_sha256") == digest:
-            matches.append((mtime, order, str(candidate), body))  # 同時刻なら後に書いた名前を採る
+            # 書いた時刻 (中身) を優先し、無い旧版だけ mtime に戻る
+            written = body.get("written_at_ns")
+            stamp = float(written) / 1e9 if isinstance(written, (int, float)) else mtime
+            matches.append((stamp, order, str(candidate), body))  # 同時刻なら後に書いた名前を採る
     if not matches:
         return None
     _, _, path, body = max(matches, key=lambda m: (m[0], m[1]))

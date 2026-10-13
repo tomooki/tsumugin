@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from dataclasses import replace
 
 import pytest
@@ -252,6 +253,10 @@ def test_probes_from_a_saved_fit_come_back_and_leave_the_gpx_untouched(tmp_path,
     )
     assert outcome.complete, outcome.errors
     assert hashlib.sha256(open(base.gpx_path, "rb").read()).hexdigest() == digest
+    # プローブの fit も成果物として残る (規定 2026-08-20。/code-review #243)
+    saved = outcome.to_dict()["gpx_paths"]
+    assert [Path(s).name.split(".probe-")[1] for s in saved] == ["plus.gpx", "minus.gpx"]
+    assert all(Path(s).is_file() and Path(s).parent == Path(base.gpx_path).parent for s in saved)
     for probe in outcome.probes:
         # O1 の z だけ — Zn の z は座標フラグが立っているが極性原点の hold に入っている
         assert probe.coord_jitter_axes_moved == 1

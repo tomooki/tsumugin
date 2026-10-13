@@ -98,6 +98,8 @@ class ProbeOutcome:
             "complete": self.complete,
             "rwp": [finite_or_none(p.final_rwp) if p is not None else None for p in self.probes],
             "errors": list(self.errors),
+            # 成果物 (規定 2026-08-20): ±δ の fit そのもの。保存できなかった開始点は空文字
+            "gpx_paths": [p.gpx_path if p is not None else "" for p in self.probes],
             "reason": self.reason,
         }
 

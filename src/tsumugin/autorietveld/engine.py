@@ -18,6 +18,7 @@ import math
 import shutil
 import tempfile
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -3601,6 +3602,7 @@ def probe_from_gpx(
     seed: int = 0,
     max_cyc: int = 12,
     blas_threads: int | None = None,
+    save: bool = True,
 ) -> AutoRietveldResult:
     """保存した精密化済み gpx から開始し、解放されているパラメータだけを摂動して精密化し直す
     (fit-then-judge P1-1B, proposal §4.5 の初期値プローブ)。
@@ -3618,6 +3620,9 @@ def probe_from_gpx(
     = 証人なし」に畳む — 「戻った」とは数えない)。
 
     :param sign: 格子の摂動の向き (+1 / -1)。±δ の 2 開始点で使う
+    :param save: **規定どおり成果物を残す** (2026-08-20「全解析で保存する」)。元の gpx と同じディレクトリに
+        ``<元の名前>.probe-plus.gpx`` / ``.probe-minus.gpx`` (既にあれば連番) を書き、結果の ``gpx_path`` に載せる。
+        書けなくてもプローブは落とさない (``gpx_path`` が空)
     """
     if sign not in (1, -1):
         raise ValueError(f"sign は +1 か -1 です: {sign!r}")
@@ -3689,6 +3694,19 @@ def probe_from_gpx(
             coord_jitter_moved=tuple(moved),
             final_covariance=_final_covariance(gpx),
         )
+        if save:
+            # 【プローブの fit も残す (規定 2026-08-20)】: 割れた・戻らなかった判定の根拠の fit を検算できる
+            #   ようにする。元の gpx の隣に、上書きせず書く。
+            try:
+                gpx.save()
+                src = Path(gpx_path)
+                target = _unique_path(
+                    src.parent, f"{src.stem}.probe-{'plus' if sign > 0 else 'minus'}", ".gpx"
+                )
+                shutil.copyfile(copy, target)
+                result = _dc_replace(result, gpx_path=str(target))
+            except Exception:  # noqa: BLE001 — 保存の失敗でプローブを落とさない (gpx_path は空のまま)
+                pass
     return result
 
 

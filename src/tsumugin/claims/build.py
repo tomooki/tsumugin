@@ -292,11 +292,12 @@ def with_probe(
     probes = tuple(getattr(outcome, "probes", ()))
     # 収束した使える開始点だけで判定する。**割れ**はそこから落とす (収束した開始点がはっきり割れたことは情報)。
     #   **昇格**は両開始点とも収束したときだけ (収束していない開始点の「戻った」は証人にならない。N7)
-    converged = tuple(
-        p for p in probes if _usable(p) and all(st.converged for st in p.stage_results)
-    )
-    all_converged = len(converged) == len(probes)
-    if not converged:
+    converged_idx = {
+        i for i, p in enumerate(probes)
+        if _usable(p) and all(st.converged for st in p.stage_results)
+    }
+    all_converged = len(converged_idx) == len(probes)
+    if not converged_idx:
         return out
     config = getattr(outcome, "config", None)
     tolerances = AgreementTolerances()
@@ -327,7 +328,7 @@ def with_probe(
         return False
     found: dict[str, list[tuple[str, float | None, int]]] = {}
     for i, probe in enumerate(probes):  # 元の添字で記録する (L-a)
-        if probe not in converged:
+        if i not in converged_idx:
             continue
         for cls, items in parameter_agreements(base, probe, tolerances).items():
             for it in items:

@@ -442,17 +442,7 @@ def _build_input(
         への到達口)。不正な段階 spec は `stages_from_dicts` が ``ValueError`` を送出する
         (呼び出し側が error dict へ縮退する)。
     """
-    # 【テンプレートがコンパイルした相の指定を再利用させない (fit-then-judge 1B)】: 非対象相の構造凍結・
-    #   Uiso の組・極性原点はテンプレートの段列とセットで意味を持つ。既定レシピや改訂で回すと
-    #   「テンプレートの結果」と読める別の手順になる (`PhaseSpec.from_dict` は目印を黙って捨てる)。
-    marked = [
-        p.get("phase_name") for p in phases if isinstance(p, Mapping) and "template_version" in p
-    ]
-    if marked:
-        raise ValueError(
-            f"相 {marked} はテンプレートがコンパイルした指定 (template_version 付き) です。"
-            "再利用できません — 元の phases で auto_rietveld(search=[..., 'template']) を回してください"
-        )
+    # テンプレートがコンパイルした相の指定 (目印 template_version) は `PhaseSpec.from_dict` が断る (全 ② ツール共通)
     return AnalysisInput(
         histograms=tuple(HistogramSpec.from_dict(h) for h in histograms),
         phases=tuple(PhaseSpec.from_dict(p) for p in phases),

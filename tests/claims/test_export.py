@@ -142,3 +142,14 @@ def test_the_layer_two_tool_refuses_to_overwrite(tmp_path):
     out = export_claims_csv(_saved(tmp_path), str(target))
     assert out["error_type"] == "FileExistsError"
     assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_labels_that_look_like_formulas_are_neutralised(tmp_path):
+    """CIF 由来のラベルを表計算ソフトに数式として実行させない (/code-review #241)。"""
+    from tsumugin.claims.model import Claim
+
+    c = Claim(key="uiso:P.=HYPERLINK(1)", param_class="uiso", value=0.01, esd=0.001, unit="angstrom2",
+              phase="@P", label="=HYPERLINK(1)", provenance=frozenset({"refined"}))
+    rows = _rows(write_claims_csv({c.key: c.to_dict()}, tmp_path / "c.csv"))
+    assert rows[0]["label"] == "'=HYPERLINK(1)" and rows[0]["phase"] == "'@P"
+    assert rows[0]["key"].startswith("uiso:")  # 先頭が安全なら変えない

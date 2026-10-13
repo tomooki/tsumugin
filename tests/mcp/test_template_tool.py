@@ -193,3 +193,19 @@ def test_the_probe_also_runs_on_the_search_route(tmp_path):
                 prober=lambda path, **kw: runner(type("C", (), {"phases": None, "stages": (),
                                                                 "name": "x"})()))
     assert out["initial_value_probe"]["complete"] is True
+
+
+def test_compiled_phase_specs_are_refused_by_every_tool_via_from_dict():
+    """系列・比較のツールにも目印付きの相を渡せない (目印の検査を PhaseSpec.from_dict に集約。/code-review #243)。"""
+    from tsumugin.autorietveld.model import PhaseSpec
+
+    marked = dict(_P[0], template_version="fit-then-judge/1B/1")
+    with pytest.raises(ValueError, match="template_version"):
+        PhaseSpec.from_dict(marked)
+    from tsumugin.mcp.compare_tools import compare_structure_models
+
+    out = compare_structure_models(
+        [_H], [{"name": "a", "phases": [marked]}, {"name": "b", "phases": _P}],
+        runner=lambda inp: None,
+    )
+    assert "error" in out and "template_version" in out["error"]

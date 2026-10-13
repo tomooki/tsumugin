@@ -88,6 +88,7 @@ def uiso_groups_from_cif(
 
     coordination: dict[str, int] = {}
     keys: dict[str, tuple[str, int]] = {}
+    isolated: list[str] = []
     for label, i in first_site.items():
         if wanted is not None and label not in wanted:
             continue
@@ -96,6 +97,9 @@ def uiso_groups_from_cif(
             continue  # 混合占有のサイト — engine が組として扱う
         neighbors = structure.get_neighbors(site, search_radius)
         if not neighbors:
+            neighbors = structure.get_neighbors(site, 2.0 * search_radius)
+        if not neighbors:
+            isolated.append(label)
             continue
         d_min = min(nb.nn_distance for nb in neighbors)
         cn = sum(1 for nb in neighbors if nb.nn_distance <= d_min * tolerance)
@@ -107,4 +111,10 @@ def uiso_groups_from_cif(
         if label in keys:
             by_key.setdefault(keys[label], []).append(label)
     groups = tuple(tuple(v) for v in by_key.values() if len(v) >= 2)
+    if isolated:
+        # 配位数を決められなかった原子がある — 「まとめる組が無かった」と混同しない
+        return UisoGrouping(
+            groups, "unevaluated", coordination=coordination,
+            reason=f"{2.0 * search_radius} Å 以内に隣接原子が無い: {isolated}",
+        )
     return UisoGrouping(groups, "pass", coordination=coordination)
