@@ -245,14 +245,34 @@ def test_a_held_axis_freezes_its_whole_tied_group():
     assert n == 3 and moved == ["p.O1.x", "p.O1.y", "p.O1.z"]
 
 
-def test_probe_leaves_tied_groups_alone_but_keeps_the_fixed_magnitude():
-    """プローブ (fixed_magnitude) は P1-1B どおり結束した組を振らず、単独軸は ±amp Å ちょうど動かす。"""
-    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x"), _atom("Ca1", (0.0, 0.0, 0.3), "0 0 z")]
+def test_probe_moves_tied_groups_together_with_amp_on_the_widest_axis():
+    """★プローブ (fixed_magnitude) も結束した組を組ごと振る。最も大きく動く軸がちょうど amp Å。
+
+    ``x 2x z``: y が x の 2 倍動くので y が amp、x は amp/2。記録 (``shifts``) には軸ごとの
+    **実際の**分率変位を載せる — claims は「振った量が許容幅を超えたか」を軸ごとに判定する
+    (全軸が amp 動いた前提で数えると、amp/2 しか動いていない x に空虚な証人を付ける)。
+    """
+    atoms = [_atom("Ni1", (0.17, 0.34, 0.25), sytsym="x 2x z"), _atom("Ca1", (0.0, 0.0, 0.3), "0 0 z")]
     moved: list[str] = []
+    shifts: dict[str, float] = {}
     n = _apply_coord_jitter(
         [_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel,
-        fixed_magnitude=True, sign=-1, moved=moved,
+        fixed_magnitude=True, sign=-1, moved=moved, shifts=shifts,
     )
-    assert tuple(atoms[0][3:6]) == (0.38, 0.38, 0.38)
-    assert n == 1 and moved == ["p.Ca1.z"]
-    assert abs(atoms[1][5] - 0.3) * 10.0 == pytest.approx(0.05, abs=1e-12)
+    assert n == 3
+    assert moved == ["p.Ni1.x", "p.Ni1.y", "p.Ni1.z", "p.Ca1.z"]
+    dx, dy = atoms[0][3] - 0.17, atoms[0][4] - 0.34
+    assert dy == pytest.approx(2.0 * dx, abs=1e-15), "y = 2x のまま"
+    assert abs(dy) * 10.0 == pytest.approx(0.05, abs=1e-12), "最も動く軸 (y) がちょうど amp Å"
+    assert shifts == pytest.approx({
+        "p.Ni1.x": 0.0025, "p.Ni1.y": 0.005, "p.Ni1.z": 0.005, "p.Ca1.z": 0.005,
+    }, abs=1e-12)
+
+
+def test_shifts_record_the_actual_displacement_in_phase_b_too():
+    atoms = [_atom("S1", (0.38, 0.38, 0.38), sytsym="x x x")]
+    shifts: dict[str, float] = {}
+    _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel, shifts=shifts)
+    d = abs(atoms[0][3] - 0.38)
+    assert set(shifts) == {"p.S1.x", "p.S1.y", "p.S1.z"}
+    assert all(v == pytest.approx(d, abs=1e-15) for v in shifts.values())

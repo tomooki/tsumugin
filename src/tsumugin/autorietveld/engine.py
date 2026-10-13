@@ -1687,6 +1687,7 @@ def _apply_coord_jitter(
     fixed_magnitude: bool = False,
     sign: int = 1,
     moved: "list[str] | None" = None,
+    shifts: "dict[str, float] | None" = None,
 ) -> int:
     """原子座標に**対称性を壊さない**初期摂動を掛ける (マルチスタートの構造軸)。
 
@@ -1721,7 +1722,9 @@ def _apply_coord_jitter(
     :param sign: ``fixed_magnitude`` のとき全変位に掛ける向き (±δ の 2 開始点)
     :param moved: 与えると、動かした座標のキー ``"<相>.<ラベル>.<x|y|z>"`` を追記する (結束の組は
         従属側も含めて全軸 — 初期値を一緒に書き換えたので試験している)。値ごとの証人 (`claims`) が
-        「この座標は試験した」を判定するのに使う。``fixed_magnitude`` (プローブ) では結束した組は動かさない
+        「この座標は試験した」を判定するのに使う
+    :param shifts: 与えると、同じキー → 実際に動かした分率の絶対値を書く。結束の組の従属軸は係数比ぶんしか
+        動かないので、claims は「振った量が許容幅を超えたか」を軸ごとにこれで判定する
     :returns: **実際に動かした軸の総数**。0 は「この軸では試験していない」を意味し、
         呼び出し側はそれを傍証と呼んではならない (高対称構造では全軸が固定され得る)
     """
@@ -1767,9 +1770,6 @@ def _apply_coord_jitter(
                     # 軸単位で固定された座標 (極性原点の hold 等) を含む組は動かさない — 結束の組は
                     #   1 変数なので、一部の軸だけ動かすと結束が壊れる
                     continue
-                if fixed_magnitude and len(members) > 1:
-                    # プローブでは結束した組を振らない (P1-1B の範囲)。収束確認は組ごと動かす
-                    continue
                 # Å の変位を分率へ直す。**どの軸の変位も amp Å 以下**: 組の中で |倍率|·軸長 が最大の
                 #   軸で割る ((x,2x,z) の y は x の 2 倍動くので)。組が 1 軸なら代表の軸長で割るのと
                 #   同じ (結束の無い構造はビット同一)
@@ -1790,9 +1790,13 @@ def _apply_coord_jitter(
                 for m, value in shifted:
                     row[cx + m] = value
                 n_moved += 1
-                if moved is not None:
-                    # 書き換えた座標を全部記録する (結束の従属側も初期値を一緒に動かしたので試験した)
-                    moved.extend(f"{ph.name}.{label}.{'xyz'[m]}" for m, _ in members)
+                for m, ratio in members:
+                    key = f"{ph.name}.{label}.{'xyz'[m]}"
+                    if moved is not None:
+                        # 書き換えた座標を全部記録する (結束の従属側も初期値を一緒に動かしたので試験した)
+                        moved.append(key)
+                    if shifts is not None:
+                        shifts[key] = abs(ratio * delta)
     return n_moved
 
 
@@ -2831,6 +2835,7 @@ def run_auto_rietveld(
         #     「摂動しても動かなかった」ではない。
         n_jittered = 0
         jitter_moved: list[str] = []
+        jitter_shift: dict[str, float] = {}
         if initial_coord_jitter:
             # 【極性原点を決める原子は動かさない (fit-then-judge P1-1B)】: その原子の極性方向の座標は
             #   後で hold されるので、動かすと開始点ごとに原点がずれ、構造全体が極性方向へ並進した解に
@@ -2839,7 +2844,7 @@ def run_auto_rietveld(
             skip, origin_axes = _coord_jitter_skips(g2phases, phases)
             n_jittered = _apply_coord_jitter(
                 g2phases, initial_coord_jitter, jitter_seed, frozen=skip,
-                frozen_axes=origin_axes, moved=jitter_moved,
+                frozen_axes=origin_axes, moved=jitter_moved, shifts=jitter_shift,
             )
             entry = {
                 "seed": int(jitter_seed),
@@ -3553,6 +3558,7 @@ def run_auto_rietveld(
         artifact_fallback_reason=plan.fallback_reason if out_gpx else "",
         coord_jitter_axes_moved=int(n_jittered),
         coord_jitter_moved=tuple(jitter_moved),
+        coord_jitter_shift=dict(jitter_shift),
         final_covariance=_final_covariance(gpx),
         claim_variables=_claim_variables(g2phases, g2hists),
         reflection_two_theta=_reflection_two_theta(g2hists, histograms),
@@ -3624,7 +3630,8 @@ def probe_from_gpx(
     格子 (varyList に A 項がある相) の a,b,c を ``1 + sign·cell_frac`` 倍、座標フラグ ``X`` が立っている原子の
     対称性が自由な軸 (拘束に入った座標は除く — `_coord_constrained_axes`) を**大きさ ``coord_jitter_ang`` Å・
     向きは乱数 (sign で反転)** で動かし、フラグを変えずに精密化する (一様乱数だと一致の許容幅より小さい変位が
-    混ざり「戻った」が空虚になる)。動かした座標は結果の ``coord_jitter_moved``。
+    混ざり「戻った」が空虚になる)。結束した座標は組ごと動かし、最も大きく動く軸がちょうど ``coord_jitter_ang`` Å。
+    動かした座標は結果の ``coord_jitter_moved``、軸ごとの実際の変位は ``coord_jitter_shift``。
     凍結した値を振らない (振ると摂動値がそのまま最終値になり、偽の「割れ」になる — PR #226 と同じ理由)。
 
     結果は値の比較 (`agreement.parameter_agreements`) に要るフィールドだけを持つ `AutoRietveldResult`
@@ -3655,12 +3662,13 @@ def probe_from_gpx(
                     moved_cells.append(ph.name)
         n_axes = 0
         moved: list[str] = []
+        shifts: dict[str, float] = {}
         if coord_jitter_ang > 0.0:
             n_axes = _apply_coord_jitter(
                 g2phases, {ph.name: coord_jitter_ang for ph in g2phases}, seed,
                 frozen={ph.name: tuple(sorted(_refined_coord_free_labels(ph))) for ph in g2phases},
                 frozen_axes={ph.name: _coord_constrained_axes(gpx, ph) for ph in g2phases},
-                fixed_magnitude=True, sign=sign, moved=moved,
+                fixed_magnitude=True, sign=sign, moved=moved, shifts=shifts,
             )
         gpx.data["Controls"]["data"]["max cyc"] = max_cyc
         _refine_once(gpx)
@@ -3704,6 +3712,7 @@ def probe_from_gpx(
             hap_mustrain_esd=micro[3],
             coord_jitter_axes_moved=int(n_axes),
             coord_jitter_moved=tuple(moved),
+            coord_jitter_shift=dict(shifts),
             final_covariance=_final_covariance(gpx),
         )
         if save:

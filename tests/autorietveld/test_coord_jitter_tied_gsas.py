@@ -115,3 +115,44 @@ def test_jittered_starts_on_a_threefold_axis_return_to_the_unjittered_solution(
         assert coords, "座標の突き合わせが空 (比較していないのに一致と言わない)"
         split = [(p.key, p.verdict, p.delta) for p in coords if not is_agreement(p.verdict)]
         assert not split, f"種 {seed}: 摂動なしの解と割れた座標 (偽の割れ): {split}"
+
+
+@pytest.mark.gsas
+def test_the_initial_value_probe_moves_a_tied_site_and_it_comes_back(tmp_path, monkeypatch):
+    """初期値プローブ (±0.05 Å) も結束した組を組ごと振り、S は 3 回軸上のまま戻る → 3 軸とも証人が付く。
+
+    以前のプローブは結束座標を振らなかった (代表だけ振ると結束が壊れるため) ので、高対称構造の
+    結束座標には `locally_stable` が付かなかった。
+    """
+    from tsumugin.autorietveld import Geometry, HistogramSpec, PhaseSpec, Radiation
+    from tsumugin.autorietveld.engine import run_auto_rietveld
+    from tsumugin.autorietveld.probe import ProbeConfig, run_initial_value_probe
+    from tsumugin.claims.build import base_claims, with_probe
+    from tsumugin.claims.model import Determinacy
+
+    monkeypatch.setenv("TSUMUGIN_GPX_DIR", str(tmp_path / "gpx"))
+    xye, instprm, start = _synthetic_pyrite(tmp_path)
+    hist = HistogramSpec(
+        data_path=str(xye), instrument_path=str(instprm),
+        radiation=Radiation.XRAY_LAB, geometry=Geometry.DEBYE_SCHERRER, data_format="XYE",
+    )
+    base = run_auto_rietveld([hist], [PhaseSpec(str(start), "FeS2")])
+    bx = base.atom_coords["FeS2"]["S1"][0]
+
+    outcome = run_initial_value_probe(
+        base.gpx_path, ProbeConfig(cell_frac=0.0, coord_jitter_ang=0.05)
+    )
+    assert outcome.complete, outcome.errors
+    keys = ("FeS2.S1.x", "FeS2.S1.y", "FeS2.S1.z")
+    for probe in outcome.probes:
+        assert probe.coord_jitter_moved == keys, "Fe は全固定・S は組の 3 軸を振る"
+        assert probe.coord_jitter_shift == pytest.approx(
+            {k: 0.05 / 5.417 for k in keys}, rel=1e-3
+        ), "立方晶 (x,x,x) は 3 軸とも amp Å ちょうど"
+        x, y, z = probe.atom_coords["FeS2"]["S1"]
+        assert abs(x - y) < 1e-9 and abs(y - z) < 1e-9, "プローブ後も 3 回軸上"
+        assert abs(x - bx) < 1e-5, f"S x が戻らない: {x} vs {bx}"
+
+    claims = with_probe(base_claims(base), base, outcome)
+    for k in keys:
+        assert claims[f"coord:{k}"].determinacy is Determinacy.LOCALLY_STABLE, k

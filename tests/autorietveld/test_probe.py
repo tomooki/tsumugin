@@ -293,6 +293,44 @@ def test_a_converged_probe_that_split_still_downgrades_when_the_other_did_not_co
     assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
 
 
+def test_witnesses_use_the_actual_displacement_of_each_axis():
+    """★結束の組の従属軸は amp より小さくしか動かない — 実際の変位で許容幅と比べる (#244 の後続)。
+
+    a=5 Å・jitter 0.05 Å なら「全軸が 0.01 (分率) 動いた」前提では y (σ=0.002, 帯 3√2·0.002≈0.0085)
+    も証人の対象になる。実際は y が 0.005 (0.025 Å) しか動いていなければ帯の内側 = 区別できない。
+    """
+    base = _result()
+    shift = {"P.O1.x": 0.01, "P.O1.y": 0.005}
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(coord_jitter_shift=shift), _result(coord_jitter_shift=shift)),
+    )
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_an_axis_moved_less_than_the_angstrom_floor_is_no_witness():
+    """実変位が一致の床 (0.02 Å) 以下の軸は σ が小さくても証人にしない。"""
+    base = _result(atom_coord_esd={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.0001, 0.0001, None)}})
+    shift = {"P.O1.x": 0.01, "P.O1.y": 0.003}  # y は 0.015 Å
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(coord_jitter_shift=shift), _result(coord_jitter_shift=shift)),
+    )
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_the_smaller_shift_of_the_two_probes_decides():
+    base = _result()
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(coord_jitter_shift={"P.O1.x": 0.01, "P.O1.y": 0.01}),
+                 _result(coord_jitter_shift={"P.O1.x": 0.01, "P.O1.y": 0.005})),
+    )
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
 def test_both_probes_use_the_same_directions_with_opposite_signs(tmp_path):
     gpx = tmp_path / "fit.gpx"
     gpx.write_bytes(b"gpx")
