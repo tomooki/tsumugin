@@ -71,8 +71,9 @@ def write_claims_sidecar(gpx_path: str, payload: Mapping[str, Any]) -> tuple[str
             if json.dumps(prev, ensure_ascii=False, sort_keys=True, indent=1) == state:
                 return str(legacy), ""
     # 【書いた順を中身に持たせる】: 読み手は同じ gpx の sidecar のうち**最後に書いたもの**を採る。mtime はコピーや
-    #   復元で入れ替わるので使わない。時刻ではなく連番 (既存の sidecar の数) にして中身を決定論に保つ。
-    # 連番は既存の最大 + 1 (ファイルの数にすると、消したあとに既存の番号と重なる)
+    #   復元で入れ替わるので使わない。時刻ではなく連番にして中身を決定論に保つ。連番は**既存の最大 + 1**
+    #   (ファイルの数にすると、消したあとに既存の番号と重なる)。連番を持たない旧版だけならファイルの数。
+    #   ⚠ そのために既存の sidecar を読む (1 つの gpx あたり数個なので許容)
     seqs = []
     for c in existing:
         try:
