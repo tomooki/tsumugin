@@ -17,6 +17,10 @@ def test_the_limit_is_active_inside_and_released_after():
     threadpoolctl = pytest.importorskip("threadpoolctl")
     import numpy  # noqa: F401 — BLAS を読み込ませる
 
+    # 制限は scipy の BLAS も先に読み込む (読み込み済みのライブラリにしか効かないため)。比較の「前」にも
+    #   同じものを読み込んでおかないと、環境によって (CI) 後だけ BLAS が 1 つ増えて見える
+    pytest.importorskip("scipy.linalg")
+
     seen: list[dict] = []
 
     @with_blas_threads
