@@ -80,6 +80,8 @@ FEATURE_TOKENS = (
     "claims.publication",
     "publication_state",
     "input_publication",
+    # P1.5 (事前登録した評価。P2 以外で (準) hold-out に当てない)
+    "prereg_eval",
 )
 
 #: (準) hold-out の参照 (パスらしい文字列の中で照合する)。大文字小文字を区別しない。
