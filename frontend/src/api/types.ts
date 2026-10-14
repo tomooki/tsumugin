@@ -616,6 +616,46 @@ export interface TranscriptMessage {
   fr?: string;
 }
 
+// — publication state (fit-then-judge P1c, api-contract.md viewmodel.publication) —
+// `determinacy` / `scope` / `kind` are typed as string on purpose: unknown
+// vocabulary must render raw instead of crashing (api-contract.md §語彙).
+export interface PublicationRow {
+  key: string;
+  param_class: string;
+  phase: string | null;
+  label: string | null;
+  axis: string | null;
+  value: number | null;
+  esd: number | null;
+  unit: string;
+  scope: string;
+  determinacy: string;
+  publishable: boolean;
+  gate: string[];
+}
+
+export interface PublicationJudgmentRequest {
+  id: string;
+  kind: string;
+  blocking: boolean;
+  n_blocked: number;
+  trigger: string;
+  candidates: string[];
+  default_answer: string | null;
+}
+
+export interface PublicationViewModel {
+  claims_version: string;
+  policy: string;
+  n_values: number;
+  n_publishable: number;
+  rows: PublicationRow[];
+  judgment_requests: PublicationJudgmentRequest[];
+  sidecar: string;
+  sidecar_reason: string;
+  error: string | null;
+}
+
 export interface ViewModel {
   datasets: DatasetRow[];
   phases: PhaseRow[];
@@ -634,6 +674,9 @@ export interface ViewModel {
   // precedent). Absent/undefined ⇒ ProjectTab renders empty-state tables
   // (empty-state principle, V2_PLAN.md §横断の不変条件 — never fabricate rows).
   project?: ProjectViewModel;
+  // Optional: present only after a project-mode refinement (absent ⇒ no card,
+  // never fabricated — api-contract.md viewmodel.publication).
+  publication?: PublicationViewModel;
 }
 
 // — mutating endpoints —
