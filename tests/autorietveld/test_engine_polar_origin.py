@@ -313,8 +313,8 @@ def test_the_standard_route_accepts_polar_origin_with_jitter():
 
 
 
-def test_tied_axes_are_not_moved_by_the_probe_and_phase_b_moves_and_records_the_whole_group():
-    """結束軸 (x,x,x): プローブは振らない (P1-1B の範囲)。収束確認は組ごと動かし、全軸を記録する。
+def test_probe_and_phase_b_both_move_and_record_the_whole_tied_group():
+    """結束軸 (x,x,x): プローブも収束確認も組ごと動かし、全軸を記録する。
 
     GSAS は精密化前に従属座標を揃え直さないので、代表軸だけを書き換えると結束が壊れたまま残る
     (`test_coord_jitter_tied_gsas.py`, PR #244)。従属側も初期値を一緒に動かしたので「試験した」に数える。
@@ -332,7 +332,7 @@ def test_tied_axes_are_not_moved_by_the_probe_and_phase_b_moves_and_records_the_
         [_Ph("111", [("Bi1", "Bi", "3m(111)")])], {"w": 0.05}, 0, _getcsxinel,
         fixed_magnitude=True, moved=probe_moved,
     )
-    assert n == 0 and probe_moved == []
+    assert n == 1 and probe_moved == ["w.Bi1.x", "w.Bi1.y", "w.Bi1.z"]
     ph = _Ph("111", [("Bi1", "Bi", "3m(111)")])
     ms_moved: list[str] = []
     n = _apply_coord_jitter([ph], {"w": 0.05}, 0, _getcsxinel, moved=ms_moved)

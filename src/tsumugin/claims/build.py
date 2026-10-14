@@ -282,7 +282,8 @@ def with_probe(
       (合成は最小 — 割れたときだけ落ちる)
     - 2 開始点とも回り、**収束し**、使える結果でなければ何もしない (回らなかった・省いた値は基底状態のまま)
     - **振った値にだけ** `locally_stable` を付ける: 格子は ``cell_frac`` が一致の許容幅を超えるとき、座標は
-      両方の開始点で実際に動かした座標 (`coord_jitter_moved`) で、かつ変位が一致の許容幅を超えるとき。
+      両方の開始点で実際に動かした座標 (`coord_jitter_moved`) で、かつ**その軸の実際の変位**
+      (`coord_jitter_shift`, 2 開始点の小さい方) が一致の床と kσ 帯を超えるとき。
       Uiso・占有率・プロファイル・分率・微細構造は振っていないので、戻っても証人にしない
       (割れたら `initial_value_dependent` には落とす — 割れたこと自体は情報)
     """
@@ -308,17 +309,34 @@ def with_probe(
     if jitter > tolerances.coord_dist_floor_ang:
         moved_sets = [set(p.coord_jitter_moved) for p in probes]
         moved_coords = {f"coord:{k}" for k in set.intersection(*moved_sets)} if moved_sets else set()
+    # 軸ごとの実際の変位 (分率)。結束の組の従属軸は係数比ぶんしか動かない ((x,2x,z) の x は amp の半分) —
+    #   全軸が jitter Å 動いた前提で数えると、許容幅の内側しか動いていない軸に空虚な証人を付ける。
+    #   2 開始点の小さい方で判定する。**記録が無ければ証人にしない** (fail closed): 動かした座標を記録する
+    #   engine (GSAS のプローブ) は変位も必ず記録する — 片方だけ欠けるのは配線漏れで、そのとき軸長から推すと
+    #   従属軸に空虚な証人を付ける規則へ黙って戻る
+    shift_maps = [getattr(p, "coord_jitter_shift", None) or {} for p in probes]
+
+    def axis_shift(claim: Claim) -> "float | None":
+        key = claim.key.removeprefix("coord:")
+        vals = [m.get(key) for m in shift_maps]
+        if any(v is None for v in vals):
+            return None
+        return min(abs(float(v)) for v in vals)
 
     def coord_displacement_resolvable(claim: Claim) -> bool:
-        """変位が一致の kσ 帯を超えるか (N3: σ の大きい座標は 0.05 Å 振っても「戻った」と区別できない)。"""
+        """実際の変位が一致の床 (Å) と kσ 帯を超えるか (N3: σ の大きい座標は 0.05 Å 振っても「戻った」と
+        区別できない)。"""
         cell = (base.refined_cells or {}).get(claim.phase or "")
         if claim.esd is None or cell is None or claim.axis not in ("x", "y", "z"):
             return False
         length = float(cell["xyz".index(claim.axis)])
         if not (length > 0.0):
             return False
+        shift = axis_shift(claim)  # 分率
+        if shift is None or not (shift * length > tolerances.coord_dist_floor_ang):
+            return False
         band = tolerances.k_esd * math.sqrt(2.0) * float(claim.esd)  # 分率
-        return jitter / length > band
+        return shift > band
 
     def tested(claim: Claim) -> bool:
         if claim.param_class == "cell":

@@ -29,7 +29,10 @@ _VARS = claim_variable_names(
 )
 
 
-def _result(o1=(0.25, 0.1, 0.3), a=5.0, axes=2, moved=("P.O1.x", "P.O1.y"), **kw) -> AutoRietveldResult:
+def _result(o1=(0.25, 0.1, 0.3), a=5.0, axes=2, moved=("P.O1.x", "P.O1.y"), shift=None, **kw) -> AutoRietveldResult:
+    # 既定の変位 = 既定のプローブ (0.05 Å) を a=5 Å の各軸に掛けた分率 (engine は moved と同じキーで必ず記録する)
+    if "coord_jitter_shift" not in kw:
+        kw["coord_jitter_shift"] = {k: 0.05 / a for k in moved} if shift is None else shift
     base = dict(
         stage_results=(StageResult("S0", 10.0, 1.2, 5, True),),
         final_rwp=10.0, final_gof=1.2,
@@ -290,6 +293,55 @@ def test_a_converged_probe_that_split_still_downgrades_when_the_other_did_not_co
     bad = _result(stage_results=(StageResult("probe", 10.0, 1.2, 5, False),))
     claims = with_probe(base_claims(base), base, _outcome(moved, bad))
     assert claims["coord:P.O1.x"].determinacy is Determinacy.INITIAL_VALUE_DEPENDENT
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_witnesses_use_the_actual_displacement_of_each_axis():
+    """★結束の組の従属軸は amp より小さくしか動かない — 実際の変位で許容幅と比べる (#244 の後続)。
+
+    a=5 Å・jitter 0.05 Å なら「全軸が 0.01 (分率) 動いた」前提では y (σ=0.002, 帯 3√2·0.002≈0.0085)
+    も証人の対象になる。実際は y が 0.005 (0.025 Å) しか動いていなければ帯の内側 = 区別できない。
+    """
+    base = _result()
+    shift = {"P.O1.x": 0.01, "P.O1.y": 0.005}
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(coord_jitter_shift=shift), _result(coord_jitter_shift=shift)),
+    )
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_an_axis_moved_less_than_the_angstrom_floor_is_no_witness():
+    """実変位が一致の床 (0.02 Å) 以下の軸は σ が小さくても証人にしない。"""
+    base = _result(atom_coord_esd={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.0001, 0.0001, None)}})
+    shift = {"P.O1.x": 0.01, "P.O1.y": 0.003}  # y は 0.015 Å
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(coord_jitter_shift=shift), _result(coord_jitter_shift=shift)),
+    )
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_the_smaller_shift_of_the_two_probes_decides():
+    base = _result()
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(coord_jitter_shift={"P.O1.x": 0.01, "P.O1.y": 0.01}),
+                 _result(coord_jitter_shift={"P.O1.x": 0.01, "P.O1.y": 0.005})),
+    )
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
+
+
+def test_a_moved_coordinate_without_a_recorded_shift_is_no_witness():
+    """★記録の無い変位は「振った」と推さない (fail closed): 軸長から推すと従属軸に空虚な証人を付けうる。"""
+    base = _result()
+    claims = with_probe(
+        base_claims(base), base,
+        _outcome(_result(), _result(coord_jitter_shift={"P.O1.x": 0.01})),
+    )
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.LOCALLY_STABLE
     assert claims["coord:P.O1.y"].determinacy is Determinacy.ESD_ONLY
 
 
