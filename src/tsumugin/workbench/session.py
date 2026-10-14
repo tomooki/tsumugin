@@ -16,6 +16,7 @@ L142-153)。同一モードへの切替を no-op (ledger 追記なし) にする
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import math
@@ -238,7 +239,6 @@ def _fmt_rwp(value: Any) -> str:
     return "―" if rwp is None else f"{rwp:.2f}"
 
 
-
 def _build_publication_view(result: "AutoRietveldResult", project: object) -> dict[str, Any]:
     """出版状態を GUI の形に畳む (api-contract.md ``viewmodel.publication``, fit-then-judge P1c)。
 
@@ -291,6 +291,7 @@ def _build_publication_view(result: "AutoRietveldResult", project: object) -> di
         "sidecar_reason": state.get("claims_sidecar_reason", ""),
         "error": state.get("error"),
     }
+
 
 def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -> str:
     """ledger エントリ 1 件の人間可読テキストを kind ごとに組み立てる (LEDGER タブ表示用)。"""
@@ -918,7 +919,8 @@ class WorkbenchSession:
         if project_config is not None:
             vm["project"] = project_config
         with self._lock:
-            publication = self._publication
+            # 内部状態を参照で渡さない (他のキーと同じく呼び手の書き換えから守る)
+            publication = copy.deepcopy(self._publication)
         if not use_seed and publication is not None:
             # 省略 = まだ出版状態が無い (精密化前・demo)。値を偽装しない (empty-state の原則)
             vm["publication"] = publication

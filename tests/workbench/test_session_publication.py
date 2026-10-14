@@ -84,6 +84,13 @@ def test_a_failure_to_assess_is_shown_not_hidden(tmp_path, monkeypatch):
     assert pub["error"] and pub["rows"] == [] and pub["n_publishable"] == 0
 
 
+def test_the_viewmodel_does_not_hand_out_the_internal_state(tmp_path):
+    session = _session(tmp_path)
+    session._on_refine_success(_result())
+    session.viewmodel()["publication"]["rows"].clear()
+    assert session.viewmodel()["publication"]["rows"]
+
+
 def test_a_broken_view_does_not_fail_a_successful_refinement(tmp_path, monkeypatch):
     """表示の組み立て自体が落ちても、成功した精密化は「成功」のまま (エラーは表示に出す)。"""
     import tsumugin.workbench.session as session_module
