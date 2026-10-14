@@ -376,9 +376,10 @@ def test_on_refine_success_updates_session_in_contract_shape(tmp_path, monkeypat
     assert session._site_phase_map["s1"] == "phaseA"
 
     assert len(session.snapshots.snapshots) == before_snaps + 1
-    # 副作用は SnapshotStore.save (snapshot_save) + 明示 "refine_finished" の 2 エントリ
-    assert len(session.ledger.entries) == before_ledger + 2
-    assert session.ledger.entries[-1].kind == "refine_finished"
+    # 副作用は SnapshotStore.save (snapshot_save) + 明示 "refine_finished" + 出版状態の判定
+    #   "publication_assessed" (fit-then-judge P1c) の 3 エントリ
+    assert len(session.ledger.entries) == before_ledger + 3
+    assert [e.kind for e in session.ledger.entries[-2:]] == ["refine_finished", "publication_assessed"]
 
 
 def test_on_refine_success_and_apply_structure_route_colliding_labels_by_id(tmp_path, monkeypatch):

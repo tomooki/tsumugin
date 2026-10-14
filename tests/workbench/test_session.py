@@ -3554,6 +3554,29 @@ class TestRequestMem:
         assert mem["peaks"][0]["assign"] == "Ow1?"  # distance 1.5 >= 1.0 → 未モデル候補マーク
         # 既存キー structure.mem_peaks も同じ実ピークへ差し替わる (契約)。
         assert vm["structure"]["mem_peaks"] == mem["peaks"]
+        # fit-then-judge P1c: 入力の出版状態を捨てない (② の結果にキーが無い = 状態不明)
+        assert mem["input_state"] == {"state": "unknown", "n_held": None, "n_blocking": None}
+
+    def test_success_carries_the_input_publication_state(self, tmp_path, monkeypatch):
+        """② `mem_density` の `input_publication` を畳んで `structure.mem.input_state` に載せる (P1c)。"""
+        session = WorkbenchSession.from_project(_mem_project(tmp_path))
+        import tsumugin.mcp.mem_tools as mem_tools_module
+        import tsumugin.mem.gsas as mem_gsas_module
+
+        monkeypatch.setattr(mem_gsas_module, "resolve_dysnomia_binary", lambda **kw: "fake-binary")
+        pub = {
+            "state": "known", "sidecar": "x.claims.json", "n_values": 5, "n_publishable": 3,
+            "structure_held": ["coord:P.O1.x", "coord:P.O1.z"],
+            "blocking_requests": [{"id": "r", "kind": "initial_value_dependence"}],
+        }
+        monkeypatch.setattr(
+            mem_tools_module, "mem_density",
+            lambda gpx_path, **kw: {**_fake_mem_result(""), "input_publication": pub},
+        )
+        session.request_mem()
+        session._job.join(timeout=5)
+        mem = session.viewmodel()["structure"]["mem"]
+        assert mem["input_state"] == {"state": "known", "n_held": 2, "n_blocking": 1}
 
     def test_failure_records_mem_failed_ledger_entry(self, tmp_path, monkeypatch):
         session = WorkbenchSession.from_project(_mem_project(tmp_path))

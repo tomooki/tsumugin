@@ -9,6 +9,7 @@ import { BlueprintCard, Chip, MetricCard } from "../common";
 import "./FitTab.css";
 import { FIT_LOCAL_STRINGS } from "./FitTab.strings";
 import { HistogramChips } from "./HistogramChips";
+import { PublicationCard } from "./PublicationCard";
 
 const TICK_SWATCHES = [
   "var(--color-accent-700)",
@@ -217,6 +218,8 @@ export function FitTab() {
             <div className="fit-validity__note">{t("fit.validityNote")}</div>
           </div>
         </BlueprintCard>
+
+        <PublicationCard publication={state.viewModel?.publication} />
       </div>
     </div>
   );

@@ -364,6 +364,14 @@
   color: var(--color-neutral-900);
 }
 
+.struct-mem__input-note {
+  margin-bottom: 6px;
+  font-size: 10.5px;
+  color: var(--color-neutral-900);
+  border-left: 2px solid var(--color-neutral-900);
+  padding-left: 6px;
+}
+
 .struct-mem__peaks {
   margin-top: 7px;
   display: flex;

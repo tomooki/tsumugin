@@ -76,6 +76,10 @@ FEATURE_TOKENS = (
     "run_initial_value_probe",
     "with_probe",
     "autorietveld.probe",
+    # P1c (出版状態を GUI と MEM 系ツールへ)
+    "claims.publication",
+    "publication_state",
+    "input_publication",
 )
 
 #: (準) hold-out の参照 (パスらしい文字列の中で照合する)。大文字小文字を区別しない。

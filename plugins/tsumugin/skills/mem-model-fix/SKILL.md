@@ -99,6 +99,23 @@ Dysnomia バイナリ未導入なら `mem_density` は `{"error_type": "MEMUnava
 電荷破綻・非現実的な結合距離を生む編集は**過剰適合/誤モデル**として棄却する。局在した未モデル密度が
 無い (差が背景/プロファイル律速) なら「修正不要」と正しく判定して終了する。
 
+## 入力の出版状態を読む (`input_publication`, fit-then-judge P1c)
+
+`mem_density` と `mem_rietveld_iterate` の結果には、入力 gpx の出版状態 `input_publication` が付く。
+MEM は精密化済みの構造の上で密度を読むので、**入力の構造が決まっていなければ、密度も決まっていない構造の上の診断**になる。
+
+| `input_publication` | 読み方 |
+|---|---|
+| `state: "unknown"` (gpx の隣に一致する sidecar が無い — 旧結果・GUI の精密化・mpf の子 gpx) | 入力の構造の状態が分からない。MEM の結果は**診断の手がかり**にだけ使う |
+| `state: "known"` で `structure_held` が空でない | その構造値 (座標・Uiso・占有率) は出版を止められている。止めの理由は `blocking_requests` |
+| `state: "known"` で `structure_held` が空 | 入力の構造値は出版できる状態 |
+
+- **`state` が `"unknown"`、または `structure_held` が空でないとき、密度から導いた構造の結論 (欠損原子・占有の偏り) を
+  出版値として報告しない**。試行精密化 (edit_cif → refine_with_revisions) の後の結果の `publishable_values` から報告する。
+- MEM を回すこと自体は止めない (MEM は診断であって出版ではない)。
+- `mem_rietveld_iterate` の子 gpx (`cycles[].gpx_path`) は `publication_state: "unknown"` — 出版状態を持たない。
+  子の構造値を報告に使わない。
+
 ## 粉末 MEM の限界 — 候補は「助言」・位置は鵜呑みにしない (重要)
 
 **粉末データの MEM/差フーリエは、単結晶と違い欠損原子の位置を確実には特定できない**。理由:

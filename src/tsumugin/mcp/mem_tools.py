@@ -51,15 +51,22 @@ def mem_density(
 ) -> dict:
     """精密化済み gpx から実 MEM/差フーリエ密度を回し密度統計 + 未モデル密度ピークを返す (計器)。
 
-    :param gpx_path: auto_rietveld が返した gpx ハンドル
+    :param gpx_path: auto_rietveld が返した gpx ハンドル。結果の ``input_publication`` にこの gpx の出版状態
+        (``state``: ``known``/``unknown``・出版不可の構造値・blocking な判断要求) が付く — 状態不明や構造値が
+        止められた fit の密度は「決まっていない構造の上の診断」として読む
     :param phase/hist: 対象相/ヒスト (None は既定選択; joint は density_kind で取り違え防止)
     :param density_kind: ``electron``/``nuclear`` を明示 (None は probe から自動)
     :param map_type: ``"Fobs"`` (Dysnomia MEM 密度・既定) / ``"delt-F"`` (差フーリエ Fo-Fc,
         **欠損原子探索向け**・Dysnomia 不要・高分解能データで有効)。model-fix は delt-F 推奨。
     :returns: 密度統計 + peaks[] の素の型 dict。Dysnomia 未解決は ``{"error", "error_type"}``。
     """
+    from ..claims.publication import input_publication
     from ..mem.gsas import MEMRunConfig, run_dysnomia_mem  # 遅延 (GSAS 境界隔離)
 
+    # 【入力の出版状態を必ず添える (fit-then-judge P1c)】: MEM は精密化済みの構造 (Fcalc) の上で密度を
+    #   読む。構造値が止められた fit・状態の分からない fit (sidecar 無し) からの密度は「決まっていない構造の
+    #   上の診断」— 拒否はしない (MEM は診断であって出版ではない) が、③ が見分けられるようにする。
+    publication = input_publication(gpx_path)
     cfg = MEMRunConfig(
         dmin=dmin, grid_step=grid_step, density_kind=density_kind, cutoff=cutoff,
         top_peaks=top_peaks, map_type=map_type, binary_path=binary_path,
@@ -84,6 +91,7 @@ def mem_density(
             finite_or_none(res.mem_r_factor) if res.mem_r_factor is not None else None
         ),
         "grd_path": res.density_map.path,
+        "input_publication": publication,
         "peaks": [
             {
                 "frac": [finite_or_none(x) for x in p.frac],
@@ -216,10 +224,14 @@ def mem_rietveld_iterate(
     :param phase/hist: 対象相/ヒスト。``dmin``〜``map_type`` は各反復の MEM 設定 (mem_density と同義)
     :param snapshot_dir: 子スナップショット gpx (``mpf_iter{i}.gpx``) の出力先。**呼び出しごとに固有の
         ディレクトリを渡すこと** (再利用すると別実行の gpx を上書きする)
-    :returns: ``cycles[]`` (反復毎の gpx/rwp/密度/未モデルピーク数) + ``stop_reason``
+    :returns: ``input_publication`` (入力 gpx の出版状態 — `mem_density` と同じ。``state: "unknown"`` や
+        ``structure_held`` が空でない入力の構造は決まっていない) + ``cycles[]`` (反復毎の gpx/rwp/密度/
+        未モデルピーク数。各反復の子 gpx は ``publication_state: "unknown"`` — 出版状態を持たないので子の構造値を
+        報告に使わない) + ``stop_reason``
         ("converged"/"max_iter"/"diverged") + ``warnings`` + ``ledger_verified``。GSAS/Dysnomia
         未解決は ``{"error", "error_type"}`` (③ は LLM なので例外は回復不能)
     """
+    from ..claims.publication import input_publication
     from ..errors import GSASUnavailableError
     from ..mem.gsas import MEMRunConfig
     from ..mem.mpf import MPFConfig, run_mem_rietveld_gpx
@@ -241,6 +253,7 @@ def mem_rietveld_iterate(
         unmodeled_distance=float(unmodeled_distance),
     )
     ledger = Ledger()
+    publication = input_publication(gpx_path)  # 回す前の入力の状態 (mem_density と同じ読み方)
     try:
         result = run_mem_rietveld_gpx(
             gpx_path, phase_name=phase, hist_name=hist, config=config,
@@ -263,9 +276,13 @@ def mem_rietveld_iterate(
                     finite_or_none(c.mem_r_factor) if c.mem_r_factor is not None else None
                 ),
                 "n_unmodeled": c.n_unmodeled,
+                # 子 gpx は sidecar を持たない (mpf は AutoRietveldResult を作らないので出版状態の材料が無い)
+                #   = 状態不明・出版不可。黙って出版可にしない (fit-then-judge P1c)
+                "publication_state": "unknown",
             }
             for c in result.cycles
         ],
+        "input_publication": publication,
         "warnings": list(result.warnings),
         "ledger_verified": ledger.verify(),
         "reason": reason,

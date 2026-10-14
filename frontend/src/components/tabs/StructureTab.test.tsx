@@ -441,6 +441,29 @@ describe("StructureTab — MEM DENSITY heatmap (V3b)", () => {
     expect(svg).not.toBeNull();
     expect(svg?.querySelectorAll("rect").length).toBe(4); // nx=2 × ny=2
     expect(screen.getByText(/0\.00 – 3\.00 e·Å⁻³/)).toBeInTheDocument();
+    // no input_state (older fixture) → no note
+    expect(screen.queryByTestId("mem-input-note")).not.toBeInTheDocument();
+  });
+
+  // fit-then-judge P1c: the density sits on the input fit's structure.
+  it.each([
+    [{ state: "unknown", n_held: null, n_blocking: null }, /state unknown/],
+    [{ state: "known", n_held: 2, n_blocking: 1 }, /2 structure value\(s\) of the input fit are held/],
+  ])("warns that the MEM input structure is not settled (%o)", (input_state, text) => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    const mem: MemViewModel = { map: makeMemMap(), peaks: [makeMemPeak()], note: "", input_state };
+    renderTab({ viewModel: makeViewModelWithMem([site], mem) });
+    expect(screen.getByTestId("mem-input-note").textContent).toMatch(text);
+  });
+
+  it("says nothing extra when the MEM input structure is publishable", () => {
+    const site = makeSite({ id: "s1", label: "K1", lock: {} });
+    const mem: MemViewModel = {
+      map: makeMemMap(), peaks: [makeMemPeak()], note: "",
+      input_state: { state: "known", n_held: 0, n_blocking: 0 },
+    };
+    renderTab({ viewModel: makeViewModelWithMem([site], mem) });
+    expect(screen.queryByTestId("mem-input-note")).not.toBeInTheDocument();
   });
 });
 

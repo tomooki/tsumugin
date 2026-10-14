@@ -377,32 +377,18 @@ def _attach_claims(
     - **例外にしない**: 組み立てに失敗したら ``claims: null``・``publishable_values: {}`` (= 何も出版
       できない側) にし、理由を ``warnings`` に載せる (フィット結果は落とさない)
     """
-    from ..claims.build import CLAIMS_VERSION
-    from ..claims.requests import assess
-    from ..claims.sidecar import write_claims_sidecar
+    # 計算と記録はワークベンチと共通の 1 つの関数 (`claims.publication`) — 規則を片方だけずらさない (P1c)
+    from ..claims.publication import publication_state
 
     warnings = payload.setdefault("warnings", [])
-    try:
-        body = assess(result, phases, multistart, derivation=derivation, probe=probe).to_dict()
-    except Exception as exc:  # noqa: BLE001 — 出版状態の失敗でフィット結果を落とさない
-        payload.update({
-            "claims_version": CLAIMS_VERSION, "claims": None, "judgment_requests": [],
-            "publishable_values": {}, "claims_sidecar": "", "claims_sidecar_reason": "",
-        })
-        warnings.append(f"出版状態 (claims) を作れませんでした: {type(exc).__name__}: {exc}")
-        return
-    payload.update({k: body[k] for k in (
-        "claims_version", "claims", "judgment_requests", "publishable_values",
-    )})
-    payload["claims_policy"] = body["policy"]
-    try:
-        path, reason = ("", "") if not payload.get("gpx_path") else write_claims_sidecar(
-            str(payload["gpx_path"]), body,
-        )
-    except Exception as exc:  # noqa: BLE001 — sidecar の失敗でフィット結果を落とさない
-        path, reason = "", f"{type(exc).__name__}: {exc}"
-    payload["claims_sidecar"] = path
-    payload["claims_sidecar_reason"] = reason
+    state = publication_state(
+        result, phases, gpx_path=str(payload.get("gpx_path") or ""), multistart=multistart,
+        derivation=derivation, probe=probe,
+    )
+    error = state.pop("error", None)
+    payload.update(state)
+    if error is not None:
+        warnings.append(f"出版状態 (claims) を作れませんでした: {error}")
 
 
 def _result_from_dict(result: Mapping[str, object]) -> AutoRietveldResult:
