@@ -199,6 +199,8 @@ result = run_auto_rietveld([hx, ht1, ht2], phases)
   (パスは `search.candidates[].gpx_path` / `convergence.multistart.starts[].gpx_path`。
   1 回の呼び出しの成果物は 1 つの run ディレクトリに並び、`gpx_dir`/`save_gpx` は全部に効く)。
   MEM (`mem_density` / `mem_rietveld_iterate`) の入力もこのパスである。
+  MEM の結果の `input_publication` が `state: "unknown"` (sidecar が無い) か `structure_held` が空でないなら、
+  密度から導いた構造の結論を出版値として報告しない (入力の構造が決まっていない — 詳細は `skills/mem-model-fix`)。
 - `result.artifact_fallback_reason`: 置き場所に書けず (読み取り専用ディスク等) 成果物を
   **一時領域へ退避した理由** ("" = 退避していない)。非空なら `gpx_path` は %TEMP% の中で
   OS の掃除で消えうる — 報告に退避と理由を書き、残す成果物は書ける場所へ移す。
