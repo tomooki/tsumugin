@@ -3612,6 +3612,28 @@ def _coord_constrained_axes(gpx, ph) -> dict[str, set[int]]:
 
 
 @with_blas_threads
+def posthoc_shift_esd(gpx_path: str, *, cycles: int = 1, blas_threads: int | None = None) -> float | None:
+    """保存した最終 gpx の**写し**で ``cycles`` サイクルだけ精密化し直し、最終サイクルの ``max |shift|/esd`` を返す
+    (fit-then-judge P0 §1.2 の事後の収束検査)。
+
+    フラグは変えない。経路ごとの収束判定と違い、**全アームの最終状態に同じ物差しを当てる**ためのもの (テンプレートだけが
+    自前の収束確認を持つ非対称を消す)。保存した成果物は書き換えない。共分散が無ければ None。精密化の失敗は
+    `RefinementFailedError` として送出する (呼び手が「未収束 = 失敗」に畳む)。
+    """
+    if cycles < 1:
+        raise ValueError(f"cycles は 1 以上です: {cycles!r}")
+    g2sc = _g2sc()
+    with tempfile.TemporaryDirectory(prefix="tsumugin-posthoc-") as tmp:
+        copy = Path(tmp) / "posthoc.gpx"
+        shutil.copyfile(gpx_path, copy)
+        gpx = g2sc.G2Project(gpxfile=str(copy))
+        gpx.data["Controls"]["data"]["max cyc"] = int(cycles)
+        _refine_once(gpx)
+        value = read_diagnostics(gpx).max_shift_esd
+    return None if value is None else float(value)
+
+
+@with_blas_threads
 def probe_from_gpx(
     gpx_path: str,
     *,
