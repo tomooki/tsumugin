@@ -1730,7 +1730,16 @@ class WorkbenchSession:
         phases_view = _build_phases_view(project, result) if project is not None else []
         # 【出版状態 (fit-then-judge P1c)】: ② と同じ 1 つの関数で計算し、gpx の隣に sidecar を書く。以前の GUI の
         #   精密化は出版状態を一度も作らず、数値はすべて平文だった。重い計算なのでロックの外で。
-        publication = _build_publication_view(result, project) if project is not None else None
+        publication = None
+        if project is not None:
+            try:
+                publication = _build_publication_view(result, project)
+            except Exception as exc:  # noqa: BLE001 — 表示の組み立ての失敗で成功した精密化を「失敗」にしない
+                publication = {
+                    "claims_version": None, "policy": None, "n_values": 0, "n_publishable": 0,
+                    "rows": [], "judgment_requests": [], "sidecar": "", "sidecar_reason": "",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
         snapshot_phases = (
             _phase_instances_from_result(project, result) if project is not None else ()
         )
@@ -2689,9 +2698,21 @@ class WorkbenchSession:
             f"{'yes' if result.get('converged') else 'no'} · "
             f"n_reflections={result.get('n_reflections')}"
         )
+        # 【入力の出版状態 (fit-then-judge P1c)】: ② `mem_density` の `input_publication` を畳んで GUI に運ぶ。
+        #   捨てると GUI の MEM のピークが「決まった構造の上の密度」に見える (② / ③ の経路だけが知っている状態)。
+        pub = result.get("input_publication") or {}
+        held = pub.get("structure_held")
+        blocking = pub.get("blocking_requests")
+        input_state = {
+            "state": str(pub.get("state") or "unknown"),
+            "n_held": len(held) if isinstance(held, list) else None,
+            "n_blocking": len(blocking) if isinstance(blocking, list) else None,
+        }
         with self._lock:
             self._mem_peaks = peaks_view
-            self._mem_view = {"map": map_view, "peaks": list(peaks_view), "note": note}
+            self._mem_view = {
+                "map": map_view, "peaks": list(peaks_view), "note": note, "input_state": input_state,
+            }
             self.ledger.append(
                 "mem_finished",
                 {"n_peaks": len(peaks_view), "converged": bool(result.get("converged"))},

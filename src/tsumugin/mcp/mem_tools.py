@@ -224,7 +224,10 @@ def mem_rietveld_iterate(
     :param phase/hist: 対象相/ヒスト。``dmin``〜``map_type`` は各反復の MEM 設定 (mem_density と同義)
     :param snapshot_dir: 子スナップショット gpx (``mpf_iter{i}.gpx``) の出力先。**呼び出しごとに固有の
         ディレクトリを渡すこと** (再利用すると別実行の gpx を上書きする)
-    :returns: ``cycles[]`` (反復毎の gpx/rwp/密度/未モデルピーク数) + ``stop_reason``
+    :returns: ``input_publication`` (入力 gpx の出版状態 — `mem_density` と同じ。``state: "unknown"`` や
+        ``structure_held`` が空でない入力の構造は決まっていない) + ``cycles[]`` (反復毎の gpx/rwp/密度/
+        未モデルピーク数。各反復の子 gpx は ``publication_state: "unknown"`` — 出版状態を持たないので子の構造値を
+        報告に使わない) + ``stop_reason``
         ("converged"/"max_iter"/"diverged") + ``warnings`` + ``ledger_verified``。GSAS/Dysnomia
         未解決は ``{"error", "error_type"}`` (③ は LLM なので例外は回復不能)
     """

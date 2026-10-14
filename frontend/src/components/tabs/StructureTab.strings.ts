@@ -39,6 +39,14 @@ export const STRUCT_LOCAL_STRINGS = {
   },
   "struct.local.memBusy": { en: "a job is already running", ja: "他のジョブが実行中です" },
   "struct.local.memError": { en: "MEM failed: {message}", ja: "MEM 実行に失敗: {message}" },
+  "struct.local.memInputUnknown": {
+    en: "Input structure state unknown (no publication state for this fit) — read the density as a diagnostic hint only.",
+    ja: "入力の構造の状態が不明です (この fit の出版状態が無い) — 密度は診断の手がかりとしてだけ読んでください。",
+  },
+  "struct.local.memInputHeld": {
+    en: "{n} structure value(s) of the input fit are held — the density sits on an unsettled structure; do not report conclusions from it as publishable.",
+    ja: "入力の fit の構造値 {n} 件が出版を止められています — 密度は決まっていない構造の上の診断です。そこから導いた結論を出版値として報告しないでください。",
+  },
   "struct.local.memPollError": {
     en: "MEM status poll failed: {message}",
     ja: "MEM 状態取得に失敗: {message}",

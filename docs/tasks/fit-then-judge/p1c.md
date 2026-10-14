@@ -29,6 +29,13 @@ branch `milestone/fit-then-judge-1c` (worktree `../tsumugin-ftj-1b`)。タスク
   (`tests/workbench/test_publication_gsas.py`)。
 - 精密化の ledger は `refine_finished` の後に `publication_assessed` (GUARD) が 1 件増える (既存の契約テストを更新)。
 
+## /code-review
+
+- 第 1 巡 (4 件): 直した 3 件 — GUI の MEM が `input_publication` を捨てていた (`structure.mem.input_state` に畳んで
+  STRUCTURE タブに注意書きを出す)・`mem_rietveld_iterate` の説明に新しい出力キーが無かった・出版状態の表示の組み立てが
+  落ちると成功した精密化まで失敗になった (縮退した表示に `error` を出す)。
+  **見送り 1 件**: 精密化のたびに判断要求の検査を同期で回す時間 (数秒)。P1-1B と同じく P1.5 で時間を測ってから決める。
+
 ## 開発に使ったデータ
 
 - 合成 (`S-dev`): wurtzite ZnO — GUI の精密化から sidecar と MEM の入力状態まで。(準) hold-out は参照していない

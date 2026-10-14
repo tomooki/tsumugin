@@ -84,6 +84,21 @@ def test_a_failure_to_assess_is_shown_not_hidden(tmp_path, monkeypatch):
     assert pub["error"] and pub["rows"] == [] and pub["n_publishable"] == 0
 
 
+def test_a_broken_view_does_not_fail_a_successful_refinement(tmp_path, monkeypatch):
+    """表示の組み立て自体が落ちても、成功した精密化は「成功」のまま (エラーは表示に出す)。"""
+    import tsumugin.workbench.session as session_module
+
+    def boom(*a, **k):
+        raise KeyError("rows")
+
+    monkeypatch.setattr(session_module, "_build_publication_view", boom)
+    session = _session(tmp_path)
+    session._on_refine_success(_result())
+    pub = session.viewmodel()["publication"]
+    assert "KeyError" in pub["error"] and pub["rows"] == [] and pub["n_values"] == 0
+    assert any(e.kind == "publication_assessed" for e in session.ledger.entries)
+
+
 def test_changing_the_project_inputs_drops_the_old_publication(tmp_path):
     session = _session(tmp_path)
     session._on_refine_success(_result())

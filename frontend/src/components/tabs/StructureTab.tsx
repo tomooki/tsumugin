@@ -156,6 +156,16 @@ export function StructureTab() {
   const constraints = structure?.constraints ?? [];
   const memPeaks = structure?.mem_peaks ?? [];
   const memMap = structure?.mem?.map ?? null;
+  // fit-then-judge P1c: the density sits on the input fit's structure — say so
+  // when that structure is unknown or held (api-contract.md structure.mem.input_state).
+  const memInput = structure?.mem?.input_state;
+  const memInputNote = !memInput
+    ? null
+    : memInput.state !== "known"
+      ? tl("struct.local.memInputUnknown")
+      : (memInput.n_held ?? 0) > 0
+        ? tl("struct.local.memInputHeld", { n: String(memInput.n_held) })
+        : null;
 
   // V3b (FR-601, api-contract.md §MEM 密度マップ): RUN MEM shares the
   // refine/phaseid/multistart/sequential job slot (kind="mem") — see
@@ -437,6 +447,11 @@ export function StructureTab() {
               </Btn>
             </div>
             {memError && <div className="struct-mem__error">{memError}</div>}
+            {memInputNote && (
+              <div className="struct-mem__input-note" data-testid="mem-input-note">
+                {memInputNote}
+              </div>
+            )}
             <HeatMap map={memMap} emptyLabel={t("struct.memPlaceholder")} />
             <div className="struct-mem__peaks">
               {memPeaks.map((p, i) => (

@@ -474,10 +474,19 @@ export interface MemMap {
   unit: string;
 }
 
+export interface MemInputState {
+  state: string; // "known" | "unknown" — raw display for anything else
+  n_held: number | null;
+  n_blocking: number | null;
+}
+
 export interface MemViewModel {
   map: MemMap | null;
   peaks: MemPeak[];
   note: string;
+  // fit-then-judge P1c: publication state of the MEM input gpx (optional for
+  // fixtures that predate it).
+  input_state?: MemInputState;
 }
 
 export interface StructureViewModel {
