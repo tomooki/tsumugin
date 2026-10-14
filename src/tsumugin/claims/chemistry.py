@@ -30,7 +30,7 @@ from typing import Mapping
 
 from .model import Check, Witness, worse_check
 
-__all__ = ["CHEMISTRY_CHECKS", "CHEMISTRY_VERSION", "crystal_chemistry"]
+__all__ = ["CHEMISTRY_CHECKS", "CHEMISTRY_VERSION", "crystal_chemistry", "short_bonds"]
 
 CHEMISTRY_VERSION = "crystal-chemistry/1"
 CHEMISTRY_CHECKS = ("short_contact", "bvs_gii", "charge_neutrality")
@@ -228,3 +228,64 @@ def _evaluate(phase: str, structure_path: str, result: object) -> dict[str, tupl
             outcome, detail = Check.UNEVALUATED, {"reason": f"{type(exc).__name__}: {exc}"}
         out[name] = (outcome, witness({**detail, "valences": dict(valences)}))
     return out
+
+
+def _cartesian_sigma(esd: object, lattice_lengths: tuple[float, float, float]) -> float:
+    """原子 1 つの位置の esd を、方向によらない 1 次元の σ (Å) に畳む (対角近似)。
+
+    軸ごとの σ_x·|a| を二乗平均して √3 で割る (等方とみなしたときの 1 方向あたりの σ)。精密化しなかった軸は 0。
+    """
+    if not isinstance(esd, (tuple, list)) or len(esd) != 3:
+        return 0.0
+    total = 0.0
+    for s, length in zip(esd, lattice_lengths):
+        if s is not None and math.isfinite(float(s)):
+            total += (float(s) * length) ** 2
+    return math.sqrt(total / 3.0)
+
+
+def short_bonds(phase: str, structure_path: str, result: object) -> tuple[int | None, dict]:
+    """P0 §1.4 の短結合の外れ ``b``: 第一配位圏 (``_NEIGHBOR_CUTOFF`` 以内) の結合のうち
+    ``d + 3σ_d < d_min`` のものの数。``d_min`` は ``short_contact`` と同じ表 (原子半径の和 × 0.7)。
+
+    - σ_d は両端の原子の位置の esd を対角近似で合成する (`_cartesian_sigma`)。格子の esd は入れない。
+    - 対称で等価な結合は 1 本に数える (非対称単位のラベルの対と距離で同一視)。分割サイトの対は除く。
+    - 例外は送出しない。組めなければ ``(None, {"reason": ...})`` (0 にしない)。
+    """
+    try:
+        import pymatgen  # noqa: F401
+        from pymatgen.core.periodic_table import Element
+
+        _, refined = _refined_structure(structure_path, phase, result)
+        pmg = _to_pymatgen(refined, phase)
+    except Exception as exc:  # noqa: BLE001 — 組めなければ数えていない
+        return None, {"reason": f"structure_unavailable: {type(exc).__name__}: {exc}"}
+    esd = getattr(result, "atom_coord_esd", {}).get(phase) or {}
+    lengths = (float(refined.a), float(refined.b), float(refined.c))
+    seen: set[tuple[str, str, float]] = set()
+    bonds: list[dict] = []
+    for i, site in enumerate(pmg):
+        for nb in pmg.get_neighbors(site, _NEIGHBOR_CUTOFF):
+            if nb.index <= i:
+                continue
+            occ_i = sum(site.species.values())
+            occ_j = sum(nb.species.values())
+            if occ_i < 1.0 - 1e-6 and occ_j < 1.0 - 1e-6 and occ_i + occ_j <= 1.0 + 1e-2:
+                continue
+            d = float(nb.nn_distance)
+            li, lj = str(site.label), str(nb.label)
+            sigma_d = math.hypot(_cartesian_sigma(esd.get(li), lengths), _cartesian_sigma(esd.get(lj), lengths))
+            for el_i in site.species:
+                for el_j in nb.species:
+                    ri = Element(el_i.symbol).atomic_radius
+                    rj = Element(el_j.symbol).atomic_radius
+                    if ri is None or rj is None:
+                        continue
+                    d_min = _SHORT_CONTACT_RATIO * (float(ri) + float(rj))
+                    if d + 3.0 * sigma_d < d_min:
+                        labels = sorted((li, lj))
+                        key = (labels[0], labels[1], round(d, 3))
+                        if key not in seen:
+                            seen.add(key)
+                            bonds.append({"labels": labels, "distance": d, "sigma": sigma_d, "d_min": d_min})
+    return len(bonds), {"bonds": bonds, "ratio": _SHORT_CONTACT_RATIO, "version": CHEMISTRY_VERSION}
