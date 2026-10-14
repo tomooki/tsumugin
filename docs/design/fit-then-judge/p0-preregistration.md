@@ -3,7 +3,8 @@
 - **版**: P0 **v1.4** (2026-10-15)。版の識別子は**この文書を含む commit のハッシュ**。対象は [proposal.md](proposal.md) **v5**
 - **位置づけ**: proposal §6 の段階 **P0** の成果物 (「不変の評価プロトコルの事前登録」)。**どの (準) hold-out にも触れる前に** commit する。
   この文書の作成でも (準) hold-out のデータ・既存の結果ファイルは開いていない (数値の根拠は設計文書・コード・公開データの既知値だけ)。
-  例外は v1.3 のゲート確認で触れたもの (§3.2.1-10。準 hold-out の化合物である蛍石の RRUFF のパターン 1 件と COD の CIF を含む)
+  例外は v1.3 のゲート確認で触れたもの (§3.2.1-10。準 hold-out の化合物である蛍石の RRUFF のパターン 1 件と COD の CIF を含む) と、
+  v1.4 の U10 の決定で触れた参照文献の書誌の検索結果 (§3.1。要約に T1・T3 の候補の格子定数が出た)
 - **範囲**: 何を・どう測り・何を合格/反証とみなすか。**テンプレートの閾値・D の回答表・段順は登録しない** (それは P1.5 で凍結する — §0)。
   結晶化学検査器の実装も含まない (P1-1A)。P3 (LLM/人の判断の試験) の事前登録は別文書
 - **関連**: [proposal.md](proposal.md) §3.1 / §5 / §6 / §7 / §9 · [review-response.md](review-response.md) ·
@@ -205,10 +206,12 @@ T1 と CaTeO3 frame 030 で既存経路の指紋を採っている。テンプ�
   | T1 fluoroapatite | Hughes, Cameron & Crowley (1989) *Am. Mineral.* **74**, 870–876 — 単結晶 X 線, フッ素燐灰石の精密化 | Sudarsanan, Mackie & Young (1972) *Mater. Res. Bull.* **7**, 1331 — 単結晶 X 線, **合成試料**の精密化 | P6₃/m。F は特殊位置で自由座標なし |
   | T3 PbSO4 (X 線単独) | Jacobsen, Smyth, Swope & Downs (1998) *Can. Mineral.* **36**, 1053–1060 — 単結晶 X 線, anglesite | Miyake, Minato, Morikawa & Iwai (1978) *Am. Mineral.* **63**, 506–510 — 単結晶 X 線, anglesite | Hill (1992) の Rietveld ラウンドロビン (*J. Appl. Cryst.* **25**) は同じ測定の再精密化なので**使わない** |
   | T4 11-BM (NAC + CaF2) | Courbion & Férey (1988) *J. Solid State Chem.* **76**, 426–431 — Na₂Ca₃Al₂F₁₄ (I2₁3) | なし | CaF2 は全原子が特殊位置で自由座標が無く、格子は `scope = relative` なので比較集合は NAC だけ |
-  | CaTeO3 (frame 030 / 180) | **参照なし → §1.4** | — | 両相 (CaTeO3·H₂O / δ-CaTeO3) の構造は Poupon et al. (2015) *Inorg. Chem.* **54**, 5660–5670 が粉末から初めて決めたもので、出発構造の出所と同じ出版物とみられる。Stöger et al. (2009) *Acta Cryst.* B**65** は別の多形 |
+  | CaTeO3 (frame 030 / 180) | **参照なし → §1.4** | — | 両相 (CaTeO3·H₂O / δ-CaTeO3) の構造は Poupon et al. (2015) *Inorg. Chem.* **54**, 5660–5670 が粉末から初めて決めたもので、出発構造の出所と同じ出版物とみられる。Stöger et al. (2009) *Acta Cryst.* B**65** は別の多形。**出発 CIF を開いて確かめた結果ではなく、ユーザーの決定**として §1.4 に回す。独立した構造が後で見つかっても、足すなら §8 で版を上げる |
 
   - **P1.5 で凍結するもの**: 各候補の書誌・DB ID (esd 付きの項目)・ファイルの sha256・設定と原点の変換・原子の対応表。出発 CIF との
     独立性の機械照合は**スクリプトが判定だけを出す** (一致した/しなかった)。照合のために値を表示しない。
+  - **参照ファイルを開発のコードから読ませない**: 取得した参照ファイルのパスの印を、P1.5 の凍結の作業で `tests/test_holdout_guard.py` の
+    `HOLDOUT_TOKENS` に足す (§3.2.1-9 の RRUFF と同じ扱い)。それまで参照ファイルは取得しない。
   - **決定のために触れたもの** (v1.4): 上の文献の**書誌の検索結果だけ** (Web 検索の要約)。座標・占有率・esd は見ていない。検索結果の要約に
     T1・T3 の候補の**格子定数**が出た (fluoroapatite・anglesite・barite)。準 hold-out の格子は全事例 `scope = relative` で §1.3 の格子比較は
     全事例 `unevaluated` なので比較集合には効かないが、明記しておく。手元の出発 CIF (準 hold-out のディレクトリ) は開いていない。
