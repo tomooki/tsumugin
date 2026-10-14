@@ -311,6 +311,32 @@ MP API キーを**環境変数/.env でなく GUI から**入力できるよう�
 UI: タイトルバー右の歯車 → SETTINGS モーダル (Welcome 画面からも開ける)。入力は `type="password"`、
 保存後は本体を表示せずマスク + 「設定済み (env / settings)」表示と CLEAR ボタン。
 
+## 出版状態 `viewmodel.publication` (fit-then-judge P1c, 2026-10-14)
+
+project モードで精密化した**後だけ**載る (精密化前・demo・none はキーを省略 = 空表示。値を偽装しない)。
+計算と sidecar (`<gpx>.claims.json`) の記録は ② `auto_rietveld` と共通の `claims.publication.publication_state`。
+入力 (histogram/phase/設定) を変えたら消える (前の fit の状態を見せない)。
+
+```jsonc
+"publication": {
+  "claims_version": "fit-then-judge/1B/1", "policy": "D-1A/1",
+  "n_values": 47, "n_publishable": 40,
+  "rows": [{"key": "cell:P.a", "param_class": "cell", "phase": "P", "label": null, "axis": "a",
+            "value": 5.0, "esd": 0.001, "unit": "angstrom", "scope": "relative_within_sample",
+            "determinacy": "esd_only", "publishable": false, "gate": ["phase_set_completeness"]}],
+  "judgment_requests": [{"id": "phase_set_completeness", "kind": "phase_set_completeness",
+            "blocking": true, "n_blocked": 47, "trigger": "…", "candidates": ["hold", "add_phase", "remeasure"],
+            "default_answer": "hold"}],
+  "sidecar": "…/refined.claims.json", "sidecar_reason": "", "error": null
+}
+```
+
+- **数値は必ず状態と一緒に出す** (`publishable`・`determinacy`・`scope`・`gate`)。平文の値だけを出版値として見せない。
+- 判断要求は**表示のみ**。回答・止めの解除の操作は無い (閉じられるのはデータの証人と決定 2 の承認済み回答だけ —
+  proposal §3.5)。既存の承認カード (二択) とは別の種類 (N 択の `candidates` と既定回答 `default_answer`)。
+- `error` が非 null = 出版状態を作れなかった (`rows` は空・何も出版できない側)。
+- ledger: 精密化の後に `publication_assessed` (actor `GUARD`) を 1 件。
+
 ## MEM 密度マップ (V3b — FR-601)
 
 精密化済み gpx から実 Dysnomia MEM を回し、断面を STRUCTURE タブに描く。ジョブ枠は共有
@@ -452,3 +478,6 @@ TestEnumVocabulary` がガード)。フロントは未知語彙を受けても**
 | `fit.validity[].status` | `pass` \| `warn` \| `fail` |
 | `ledger.entries[].actor` | `AGENT ③` \| `MCP ②` \| `CORE ①` \| `HUMAN` \| `GUARD` |
 | `mode` / `final_selection_mode` | `manual`/`auto` ↔ `human`/`agent` (FR-402) |
+| `publication.rows[].determinacy` | `exact` \| `determined` \| `locally_stable` \| `esd_only` \| `undetermined_esd` \| `initial_value_dependent` \| `unconverged` \| `undeterminable` |
+| `publication.rows[].scope` | `absolute` \| `relative_within_sample` |
+| `publication.judgment_requests[].default_answer` | `hold` (既定ポリシー D は常に止める) |

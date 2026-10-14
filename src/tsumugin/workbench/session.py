@@ -103,6 +103,8 @@ _ACTOR_BY_KIND: dict[str, str] = {
     "stage_action": "HUMAN",
     "refine_request": "HUMAN",
     "refine_finished": "CORE ①",
+    # 出版状態の判定 (fit-then-judge P1c)。値を止める判断要求を含むので GUARD (通常進行と色を分ける)。
+    "publication_assessed": "GUARD",
     "refine_failed": "CORE ①",
     "m7_stage": "CORE ①",
     "m7_stage_error": "GUARD",
@@ -236,6 +238,60 @@ def _fmt_rwp(value: Any) -> str:
     return "―" if rwp is None else f"{rwp:.2f}"
 
 
+
+def _build_publication_view(result: "AutoRietveldResult", project: object) -> dict[str, Any]:
+    """出版状態を GUI の形に畳む (api-contract.md ``viewmodel.publication``, fit-then-judge P1c)。
+
+    計算と sidecar の記録は ② と共通の `claims.publication.publication_state`。数値は必ず ``publishable`` と
+    状態 (``determinacy``・``scope``・``gate``) を伴う行として出す — 平文の値だけを出さない。判断要求は表示のみ
+    (回答の受け口は決定 2 — 止めを外す経路をここに作らない)。
+    """
+    from ..claims.publication import publication_state
+
+    phases = getattr(project, "phases", None)
+    state = publication_state(result, phases, gpx_path=str(result.gpx_path or ""))
+    claims = state.get("claims") or {}
+    rows = []
+    for key in sorted(claims):
+        c = claims[key]
+        rows.append({
+            "key": key,
+            "param_class": c.get("param_class"),
+            "phase": c.get("phase"),
+            "label": c.get("label"),
+            "axis": c.get("axis"),
+            "value": finite_or_none(c.get("value")) if c.get("value") is not None else None,
+            "esd": finite_or_none(c.get("esd")) if c.get("esd") is not None else None,
+            "unit": c.get("unit"),
+            "scope": c.get("scope"),
+            "determinacy": c.get("determinacy"),
+            "publishable": bool(c.get("publishable")),
+            "gate": sorted(c.get("gate") or ()),
+        })
+    requests = []
+    for r in state.get("judgment_requests") or ():
+        default = r.get("default") or {}
+        requests.append({
+            "id": r.get("id"),
+            "kind": r.get("kind"),
+            "blocking": bool(r.get("blocking")),
+            "n_blocked": len(r.get("blocks") or ()),
+            "trigger": r.get("trigger"),
+            "candidates": list(r.get("candidates") or ()),
+            "default_answer": default.get("answer"),
+        })
+    return {
+        "claims_version": state.get("claims_version"),
+        "policy": state.get("claims_policy"),
+        "n_values": len(rows),
+        "n_publishable": sum(1 for row in rows if row["publishable"]),
+        "rows": rows,
+        "judgment_requests": requests,
+        "sidecar": state.get("claims_sidecar", ""),
+        "sidecar_reason": state.get("claims_sidecar_reason", ""),
+        "error": state.get("error"),
+    }
+
 def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -> str:
     """ledger エントリ 1 件の人間可読テキストを kind ごとに組み立てる (LEDGER タブ表示用)。"""
     if kind == "selection_set_mode":
@@ -262,6 +318,11 @@ def _text_for_kind(kind: str, payload: dict[str, Any], *, mode_from: str = "") -
         return f"refine finished (rwp={_fmt_rwp(payload.get('rwp'))})"
     if kind == "refine_failed":
         return f"refine failed: {payload.get('error')}"
+    if kind == "publication_assessed":
+        return (
+            f"publication {payload.get('n_publishable')}/{payload.get('n_values')} publishable, "
+            f"{payload.get('n_blocking')} blocking request(s)"
+        )
     if kind == "m7_stage":
         return f"stage {payload.get('stage')} rwp={_fmt_rwp(payload.get('rwp'))}"
     if kind == "m7_stage_error":
@@ -534,6 +595,8 @@ class WorkbenchSession:
         self._phases_view: list[dict[str, Any]] = []
         self._parameters_view: dict[str, Any] = {}
         self._fit: dict[str, Any] = {}
+        # 出版状態 (fit-then-judge P1c)。project モードで精密化した後だけ持つ (None = まだ無い → viewmodel で省略)
+        self._publication: "dict[str, Any] | None" = None
         self._job = RefinementJobManager(last_event=self._last_ledger_text)
         # 【viewmodel 更新系の直列化】: FastAPI sync ハンドラは threadpool 実行 + refine ジョブ
         #   スレッドが並走するため、project モードの完了コールバックはこのロック下で状態を更新する。
@@ -854,6 +917,11 @@ class WorkbenchSession:
         project_config = self._project_config_view()
         if project_config is not None:
             vm["project"] = project_config
+        with self._lock:
+            publication = self._publication
+        if not use_seed and publication is not None:
+            # 省略 = まだ出版状態が無い (精密化前・demo)。値を偽装しない (empty-state の原則)
+            vm["publication"] = publication
         return vm
 
     def _project_config_view(self) -> "dict[str, Any] | None":
@@ -1660,6 +1728,9 @@ class WorkbenchSession:
             limits = [h.two_theta_limits for h in project.histograms]
             plot = curves.extract_curves(result.gpx_path, two_theta_limits=limits)
         phases_view = _build_phases_view(project, result) if project is not None else []
+        # 【出版状態 (fit-then-judge P1c)】: ② と同じ 1 つの関数で計算し、gpx の隣に sidecar を書く。以前の GUI の
+        #   精密化は出版状態を一度も作らず、数値はすべて平文だった。重い計算なのでロックの外で。
+        publication = _build_publication_view(result, project) if project is not None else None
         snapshot_phases = (
             _phase_instances_from_result(project, result) if project is not None else ()
         )
@@ -1696,6 +1767,8 @@ class WorkbenchSession:
                 self._structure_sites = sites_view
                 self._site_phase_map = site_phase_map
             self._apply_hist_profile(result.hist_profile)
+            if publication is not None:
+                self._publication = publication
             self.snapshots.save(snapshot_phases, label="refine finished")
             self.ledger.append(
                 "refine_finished",
@@ -1710,6 +1783,17 @@ class WorkbenchSession:
                     "n_obs": int(result.n_obs),
                 },
             )
+            if publication is not None:
+                self.ledger.append(
+                    "publication_assessed",
+                    {
+                        "n_values": publication["n_values"],
+                        "n_publishable": publication["n_publishable"],
+                        "n_blocking": sum(1 for r in publication["judgment_requests"] if r["blocking"]),
+                        "sidecar": publication["sidecar"],
+                        "error": publication["error"],
+                    },
+                )
 
     def _on_refine_failure(self, exc: BaseException) -> None:
         """精密化失敗時のコールバック (RefinementJobManager が背景スレッドから呼ぶ)。"""
@@ -1773,6 +1857,7 @@ class WorkbenchSession:
             self._phases_view = _initial_phases_view(project)
             self._parameters_view = _initial_parameters_view(project)
             self._fit = _initial_fit_view(project)
+            self._publication = None  # 入力が変わった — 前の fit の出版状態を見せない
             self._stages = _stages_from_recipe(project)
             dataset = f"{len(project.histograms)} histogram(s)"
             if project.frames:
