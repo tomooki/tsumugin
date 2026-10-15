@@ -17,6 +17,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
+    merge_warnings,
     param_name,
 )
 from ..model import PhaseInstance, RefinementMetrics
@@ -60,6 +61,9 @@ class RefinementReport:
     stage_outcomes: tuple[StageOutcome, ...]
     escalated: bool
     free_params: frozenset[str] = field(default_factory=frozenset)
+    # backend の警告 (全精密化 — revert した試行も含む — の RefinementResult.warnings を出現順・
+    # 重複なしで)。GSAS の structure_ref 経路の特殊位置吸着の記録はここにしか残らない。
+    backend_warnings: tuple[str, ...] = ()
 
 
 class StagedRefinementEngine:
@@ -92,6 +96,7 @@ class StagedRefinementEngine:
         two_theta: np.ndarray,
         intensity: np.ndarray,
         weights: np.ndarray | None,
+        backend_warnings: list[str],
     ) -> RefinementResult:
         model = RefinementModel(
             phases=phases,
@@ -100,7 +105,9 @@ class StagedRefinementEngine:
             intensity=intensity,
             weights=weights,
         )
-        return self.backend.refine(model)
+        result = self.backend.refine(model)
+        backend_warnings.extend(result.warnings)
+        return result
 
     def run(
         self,
@@ -113,9 +120,10 @@ class StagedRefinementEngine:
         two_theta = np.asarray(two_theta, dtype=float)
         intensity = np.asarray(intensity, dtype=float)
         n_phases = len(phases)
+        backend_warnings: list[str] = []
 
         # ベースライン: 何も解放せずに現状を評価し、以後のガード/改善比較の基準にする。
-        prev = self._refine(phases, frozenset(), two_theta, intensity, weights)
+        prev = self._refine(phases, frozenset(), two_theta, intensity, weights, backend_warnings)
         current = phases
         free: frozenset[str] = frozenset()
         self.ledger.append(
@@ -138,7 +146,9 @@ class StagedRefinementEngine:
 
             while True:
                 attempt += 1
-                result = self._refine(current, trial_free, two_theta, intensity, weights)
+                result = self._refine(
+                    current, trial_free, two_theta, intensity, weights, backend_warnings
+                )
                 violations = check_guards(prev, result, config=self.config)
                 self.ledger.append(
                     "stage_refine",
@@ -235,6 +245,7 @@ class StagedRefinementEngine:
             stage_outcomes=tuple(outcomes),
             escalated=escalated,
             free_params=free,
+            backend_warnings=merge_warnings(backend_warnings),
         )
 
 

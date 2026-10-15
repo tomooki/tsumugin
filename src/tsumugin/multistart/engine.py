@@ -23,7 +23,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..backends.base import RefinementBackend, RefinementModel, RefinementResult, param_name
+from ..backends.base import (
+    RefinementBackend,
+    RefinementModel,
+    RefinementResult,
+    merge_warnings,
+    param_name,
+)
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
 from ..store.ledger import Ledger
 from .basin import BasinInfo, cluster_basins
@@ -49,6 +55,9 @@ class MultistartResult:
     promoted: tuple[Hypothesis, ...]  # 【昇格仮説】: 複数 basin 時のみ各 basin を昇格 (単一なら ())
     is_global_corroborated: bool  # 【傍証フラグ】: n_basins == 1 (大域最適の傍証あり)
     warnings: tuple[str, ...] = ()  # 【警告】: 全滅時の縮退警告など (既定 空)
+    # 【backend の警告】: 全 start の RefinementResult.warnings (出現順・重複なし)。自身の警告とは
+    #   別の欄 — 判別は両仮説のマルチスタートを束ねるので、混ぜると backend 分だけを重複除去できない。
+    backend_warnings: tuple[str, ...] = ()
 
 
 class MultistartEngine:
@@ -108,7 +117,7 @@ class MultistartEngine:
         )
 
         # 【フェーズ 2: direct refine】: 各 start を独立に精密化し発散を除外・カウント (D2/REQ-102) 🔵
-        surviving_indices, surviving_results, n_diverged = self._refine_starts(
+        surviving_indices, surviving_results, n_diverged, backend_warnings = self._refine_starts(
             starts, free_params, two_theta, intensity, weights
         )
 
@@ -165,6 +174,7 @@ class MultistartEngine:
             promoted=promoted,
             is_global_corroborated=is_global_corroborated,
             warnings=warnings,
+            backend_warnings=backend_warnings,
         )
 
     def _refine_starts(
@@ -174,7 +184,7 @@ class MultistartEngine:
         two_theta: np.ndarray,
         intensity: np.ndarray,
         weights: np.ndarray | None,
-    ) -> tuple[list[int], list[RefinementResult], int]:
+    ) -> tuple[list[int], list[RefinementResult], int, tuple[str, ...]]:
         """【ヘルパー関数】: 各 start を direct refine し発散除外済みの生存解列を返す。
 
         【機能概要】: N 組の初期値を start index 順に 1 回ずつ精密化 (staged 解放ループなし、
@@ -191,11 +201,13 @@ class MultistartEngine:
         @param two_theta: 観測 2θ 配列 (backend へ委譲)。
         @param intensity: 観測強度配列。
         @param weights: 観測重み (任意)。
-        @returns: (生存 start index 列 [昇順], 生存収束解列 [同順], 発散数) のタプル。
+        @returns: (生存 start index 列 [昇順], 生存収束解列 [同順], 発散数, backend の警告
+          [発散した start も含め出現順・重複なし]) のタプル。
         """
         surviving_indices: list[int] = []
         surviving_results: list[RefinementResult] = []
         n_diverged = 0
+        backend_warnings: list[str] = []
         for index, phases_i in enumerate(starts):
             model = RefinementModel(
                 phases=phases_i,
@@ -206,6 +218,7 @@ class MultistartEngine:
             )
             # 【direct 精密化】: staged 解放ループなし、max_cycles=ms_max_cycles で 1 回だけ 🔵
             result = self.backend.refine(model, max_cycles=self.config.ms_max_cycles)
+            backend_warnings.extend(result.warnings)
             self._record("multistart.start", {"start": index, "chi2": result.chi2})
             # 【発散除外】: chi2 非有限は例外化せず basin 対象外にして n_diverged へ加算 (REQ-102) 🔵
             if math.isfinite(result.chi2):
@@ -213,7 +226,7 @@ class MultistartEngine:
                 surviving_results.append(result)
             else:
                 n_diverged += 1
-        return surviving_indices, surviving_results, n_diverged
+        return surviving_indices, surviving_results, n_diverged, merge_warnings(backend_warnings)
 
     def _remap_basins(
         self, raw_basins: tuple[BasinInfo, ...], surviving_indices: list[int]

@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Iterable, Mapping, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -95,6 +96,43 @@ class RefinementBackend(Protocol):
 
     def refine(self, model: RefinementModel, *, max_cycles: int = 20) -> RefinementResult:
         ...
+
+
+# 値とみなす数字: 小数 (指数可) と ``=`` 直後の整数。相名・パスの数字 (A1.cif) は値でないので含めない
+_VALUE_RE = re.compile(r"[-+]?\d+\.\d+(?:[eE][-+]?\d+)?|(?<==)[-+]?\d+")
+_FOLDED_RE = re.compile(r" \[同種の文 ほか (\d+) 件\]$")
+
+
+def merge_warnings(*groups: Iterable[str]) -> tuple[str, ...]:
+    """backend の警告列を出現順に 1 本にする (同じ文は 1 回・同種の文は畳む)。
+
+    backend の ``RefinementResult.warnings`` を消費側の結果へ運ぶときに使う。
+
+    - **同じ文は 1 回**: GSAS の structure_ref 経路は同じ CIF なら精密化のたびに同じ吸着の
+      記録を返す。回数は数えない (同じ入力についての同じ記録で、別の事象ではない)。
+    - **値だけ違う同種の文は最初の 1 文 + 件数**: SimulatedBackend の μt・ノイズ推定の由来は
+      精密化ごとに値を埋め込むので、そのままでは逐次 20 フレームで 140 行になった (実測)。
+      数字 (小数と ``=`` 直後の整数) を伏せて同じになる文を同種とし、最初の文に
+      ``[同種の文 ほか N 件]`` を付ける。値ごとの詳細は個々の ``RefinementResult`` にある。
+      畳んだ文をさらに束ねても件数は足し合わされる (段階の結果 → 逐次の結果)。
+    """
+    first: dict[str, str] = {}  # 同種の鍵 -> 最初の文
+    seen: dict[str, set[str]] = {}  # 同種の鍵 -> 見た文 (同じ文は数えない)
+    folded: dict[str, int] = {}  # 同種の鍵 -> 畳み済みの文が抱えていた件数
+    for group in groups:
+        for warning in group:
+            match = _FOLDED_RE.search(warning)
+            text = warning[: match.start()] if match else warning
+            key = _VALUE_RE.sub("#", text)
+            first.setdefault(key, text)
+            seen.setdefault(key, set()).add(text)
+            if match:
+                folded[key] = folded.get(key, 0) + int(match.group(1))
+    merged: list[str] = []
+    for key, text in first.items():
+        rest = len(seen[key]) - 1 + folded.get(key, 0)
+        merged.append(f"{text} [同種の文 ほか {rest} 件]" if rest else text)
+    return tuple(merged)
 
 
 def default_weights(intensity: np.ndarray) -> np.ndarray:
