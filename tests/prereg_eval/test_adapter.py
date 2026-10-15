@@ -157,3 +157,13 @@ def test_short_bonds_none_if_any_phase_cannot_be_counted(tmp_path):
     o = outcome_from_result(_result(), histograms=[_hist(data)], phases=_PHASES,
                             checker=_quiet, bond_counter=lambda *a: (None, {"reason": "x"}))
     assert o.short_bonds is None
+
+
+def test_posthoc_threshold_matches_the_engines_convergence_gate():
+    from tsumugin.autorietveld.model import StabilityOptions
+    from tsumugin.prereg_eval.adapter import POSTHOC_MAX_SHIFT_ESD, posthoc_converged
+
+    assert POSTHOC_MAX_SHIFT_ESD == StabilityOptions().max_shift_esd == 1.0
+    assert posthoc_converged(0.7) is True and posthoc_converged(1.0) is True
+    assert posthoc_converged(1.01) is False
+    assert posthoc_converged(None) is None  # 共分散が無い = 判定できない (失敗にも成功にもしない)

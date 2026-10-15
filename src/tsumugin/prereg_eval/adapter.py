@@ -28,12 +28,24 @@ from pathlib import Path
 from .case import ArmOutcome
 from .structure import FitValue
 
-__all__ = ["fail_count", "fit_values", "observation_set_hash", "outcome_from_result", "result_chi2", "short_bond_total"]
+__all__ = ["POSTHOC_MAX_SHIFT_ESD", "fail_count", "posthoc_converged", "fit_values", "observation_set_hash", "outcome_from_result", "result_chi2", "short_bond_total"]
 
 _CELL_AXES = ("a", "b", "c", "alpha", "beta", "gamma")
 
 Checker = Callable[[str, str, object], dict]
 BondCounter = Callable[[str, str, object], tuple]
+
+
+#: P0 §1.2 の事後の収束検査の閾値 (P1.5 で凍結)。engine の収束判定 (`StabilityOptions.max_shift_esd`) と同じ値 —
+#   評価だけ別の物差しにしない。S-dev の全アームの実測は 0.0–0.72 (2026-10-15)。
+POSTHOC_MAX_SHIFT_ESD = 1.0
+
+
+def posthoc_converged(max_shift_esd: float | None) -> bool | None:
+    """事後の追加サイクルの max |shift|/esd が閾値以下か。値が無ければ None (判定できない)。"""
+    if max_shift_esd is None or not math.isfinite(max_shift_esd):
+        return None
+    return max_shift_esd <= POSTHOC_MAX_SHIFT_ESD
 
 
 def result_chi2(result: object) -> float | None:

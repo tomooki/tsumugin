@@ -73,7 +73,7 @@ def _claims(run):
 
 
 def run_case(case, results: Path, n_starts: int) -> dict:
-    from tsumugin.prereg_eval.adapter import outcome_from_result
+    from tsumugin.prereg_eval.adapter import outcome_from_result, posthoc_converged
     from tsumugin.prereg_eval.arms import run_arms
     from tsumugin.template.declarations import TemplateDeclarations
 
@@ -87,7 +87,8 @@ def run_case(case, results: Path, n_starts: int) -> dict:
         if run is None:
             out["arms"][name] = None
             continue
-        oc = outcome_from_result(run.result, histograms=run.histograms, phases=run.phases, error=run.error)
+        oc = outcome_from_result(run.result, histograms=run.histograms, phases=run.phases, error=run.error,
+                                 posthoc_converged=posthoc_converged(run.posthoc_shift_esd))
         out["arms"][name] = _summary(run, oc, _claims(run) if name in ("B-AB", "T-AB", "T-single", "B-single") else None)
     return out
 
