@@ -31,12 +31,12 @@
   "expected": [
     "origin fixed, same solution modulo translation"
   ],
-  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "generator_commit": "202033c56b471088cbf489f837a6eb91121b0516",
   "versions": {
     "numpy": "2.5.0",
     "gsas2": "5837"
   },
-  "pattern_sha256": "86ea5c43d26d3c469b382c98dc4879a3a664ec88661e601f6b22255b6ec74514",
+  "pattern_sha256": "ecc480b6744d55172f06d8f3d7f656c98743a4026458a1663ac80abeed4d8292",
   "start_phases_relative": [
     {
       "structure_path": "start_ZnO.cif",

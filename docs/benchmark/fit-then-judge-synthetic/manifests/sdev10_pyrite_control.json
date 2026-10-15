@@ -23,7 +23,7 @@
   "expected": [
     "control: no defect-specific detector should fire"
   ],
-  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "generator_commit": "202033c56b471088cbf489f837a6eb91121b0516",
   "versions": {
     "numpy": "2.5.0",
     "gsas2": "5837"

@@ -29,12 +29,12 @@
   "expected": [
     "stage 8 / 8R"
   ],
-  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "generator_commit": "202033c56b471088cbf489f837a6eb91121b0516",
   "versions": {
     "numpy": "2.5.0",
     "gsas2": "5837"
   },
-  "pattern_sha256": "99ef7bdcceb71bb7b68f9e1df5c1d25e55b28e776a6ed8d7df6e4119e7ba8a9e",
+  "pattern_sha256": "cd61da7d389be16901d0d00248919df123e6535ce121b0638bf401b12d4f1d7b",
   "start_phases_relative": [
     {
       "structure_path": "start_ZnO.cif",

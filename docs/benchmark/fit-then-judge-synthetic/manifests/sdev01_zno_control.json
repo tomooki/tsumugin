@@ -21,12 +21,12 @@
   "expected": [
     "control: no defect-specific detector should fire"
   ],
-  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "generator_commit": "202033c56b471088cbf489f837a6eb91121b0516",
   "versions": {
     "numpy": "2.5.0",
     "gsas2": "5837"
   },
-  "pattern_sha256": "b38607ac1cfaf23bf68d86d0313b676291c42129fbc08252ab4c16558a2b96e9",
+  "pattern_sha256": "2b789a49c6b3f7730129fb181d3956edbe7f3c92cf7fbc7472e1a12b3003402e",
   "start_phases_relative": [
     {
       "structure_path": "start_ZnO.cif",

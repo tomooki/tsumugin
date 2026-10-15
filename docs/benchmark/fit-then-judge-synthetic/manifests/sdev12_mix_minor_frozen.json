@@ -41,12 +41,12 @@
   "expected": [
     "cell-freezing falsification probe"
   ],
-  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "generator_commit": "202033c56b471088cbf489f837a6eb91121b0516",
   "versions": {
     "numpy": "2.5.0",
     "gsas2": "5837"
   },
-  "pattern_sha256": "d7dd6c29f6cfaa26ba2a89ede98e6471a456d74bfeb6c57c94708ea55758aeae",
+  "pattern_sha256": "5dae15d351d63265d2e509827017545901cceb4191d00509d50dddb8cb841a0f",
   "start_phases_relative": [
     {
       "structure_path": "start_ZnO.cif",
