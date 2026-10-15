@@ -10,6 +10,7 @@ import pytest
 from tsumugin.prereg_eval.freeze import FROZEN_COMPONENTS, component_files, freeze_manifest, frozen_versions
 
 ROOT = Path(__file__).resolve().parents[2]
+LF, CRLF = bytes([10]), bytes([13, 10])
 
 
 def test_every_listed_file_exists():
@@ -42,7 +43,7 @@ def test_manifest_hashes_each_file_and_records_the_p0_version():
     assert m["p0_commit"] == "abc123"
     entry = m["components"]["evaluation"]
     some = next(iter(entry["files"]))
-    assert entry["files"][some] == hashlib.sha256((ROOT / some).read_bytes()).hexdigest()
+    assert entry["files"][some] == hashlib.sha256((ROOT / some).read_bytes().replace(CRLF, LF)).hexdigest()
     assert set(m["components"]) == set(FROZEN_COMPONENTS)
     assert {"python", "numpy"} <= set(m["environment"])
 
@@ -83,3 +84,13 @@ def test_manifest_records_the_hpub_counts_and_the_drand_rule_with_round_left_ope
     assert d["round"] is None  # push の 24 時間後以降の最初の round を後で記録する
     assert set(d["labels"]) == {"h-pub", "h-pub-noref", "s-eval"}
     assert len(d["s_eval_population_snapshot_sha256"]) == 64
+
+
+def test_hash_does_not_depend_on_the_checkout_line_endings(tmp_path):
+    # core.autocrlf の有無で作業ツリーの改行が変わっても、凍結の sha256 は同じ (= git の blob と同じ LF の中身)
+    from tsumugin.prereg_eval.freeze import content_sha256
+
+    (tmp_path / "lf.txt").write_bytes(b"a" + LF + b"b" + LF)
+    (tmp_path / "crlf.txt").write_bytes(b"a" + CRLF + b"b" + CRLF)
+    assert content_sha256(tmp_path / "lf.txt") == content_sha256(tmp_path / "crlf.txt")
+    assert content_sha256(tmp_path / "lf.txt") == hashlib.sha256(b"a" + LF + b"b" + LF).hexdigest()

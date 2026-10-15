@@ -16,7 +16,7 @@ import json
 import platform
 from pathlib import Path
 
-__all__ = ["FROZEN_COMPONENTS", "component_files", "freeze_manifest", "frozen_versions"]
+__all__ = ["FROZEN_COMPONENTS", "component_files", "content_sha256", "freeze_manifest", "frozen_versions"]
 
 #: 部品 → リポジトリの根からの glob の列
 FROZEN_COMPONENTS: dict[str, tuple[str, ...]] = {
@@ -60,6 +60,11 @@ DRAND_RULE = {
     "labels": ["h-pub", "h-pub-noref", "s-eval"],
     "order": "凍結 → H-pub の抽出 → S-eval の生成 (P0 §6.3)",
 }
+
+
+def content_sha256(path: Path) -> str:
+    """改行を LF に揃えた中身の sha256 (= git の blob の中身)。``core.autocrlf`` の作業ツリーでも機械によらず同じ値。"""
+    return hashlib.sha256(Path(path).read_bytes().replace(bytes([13, 10]), bytes([10]))).hexdigest()
 
 
 def component_files(root: Path, name: str) -> list[Path]:
@@ -119,7 +124,7 @@ def freeze_manifest(root: Path, *, p0_commit: str) -> dict[str, object]:
     for name in FROZEN_COMPONENTS:
         files = component_files(Path(root), name)
         components[name] = {
-            "files": {f.relative_to(root).as_posix(): hashlib.sha256(f.read_bytes()).hexdigest() for f in files},
+            "files": {f.relative_to(root).as_posix(): content_sha256(f) for f in files},
         }
     from .hpub import SNAPSHOT_SHA256
 
