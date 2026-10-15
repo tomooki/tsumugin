@@ -270,7 +270,7 @@ def build_physical_problem(
             pos += k
 
     eval_max_cycles = config.eval_max_cycles
-    sink = warning_sink if warning_sink is not None else WarningCollector()
+    sink: WarningCollector = warning_sink if warning_sink is not None else WarningCollector()
 
     def log_likelihood(theta: np.ndarray) -> float:
         """joint 物理対数尤度 Σ_i -χ²_i(θ_i)/2 (backend 純評価・非有限は -inf)。"""
