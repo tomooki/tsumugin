@@ -50,7 +50,7 @@ def frozen_versions() -> dict[str, object]:
     """凍結する版の文字列と、調整した設定の値。"""
     from ..autorietveld.probe import ProbeConfig
     from ..claims.build import CLAIMS_VERSION
-    from ..claims.chemistry import CHEMISTRY_VERSION
+    from ..claims.chemistry import BVPARM_SHA256, CHEMISTRY_VERSION
     from ..claims.requests import DEFAULT_POLICY
     from ..claims.witness import WITNESS_VERSION
     from ..template.compile import TEMPLATE_VERSION
@@ -60,6 +60,7 @@ def frozen_versions() -> dict[str, object]:
         "template": TEMPLATE_VERSION,
         "policy": DEFAULT_POLICY,
         "checker": f"{CLAIMS_VERSION}|{WITNESS_VERSION}|{CHEMISTRY_VERSION}",
+        "bvparm_sha256": BVPARM_SHA256,  # 検査器の表 (リポジトリの外) — 中身は sha256 で固定
         "pass1_config": {k: _plain(v) for k, v in dataclasses.asdict(Pass1Config()).items()},
         "probe_config": {k: _plain(v) for k, v in dataclasses.asdict(ProbeConfig()).items()},
     }

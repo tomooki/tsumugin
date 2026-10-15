@@ -31,6 +31,9 @@ def test_versions_are_the_constants_in_the_code():
     v = frozen_versions()
     assert v["template"] == TEMPLATE_VERSION and v["policy"] == DEFAULT_POLICY
     assert v["checker"] == f"{CLAIMS_VERSION}|{WITNESS_VERSION}|{CHEMISTRY_VERSION}"
+    from tsumugin.claims.chemistry import BVPARM_SHA256
+
+    assert v["bvparm_sha256"] == BVPARM_SHA256 and len(v["bvparm_sha256"]) == 64
     assert set(v["pass1_config"]) >= {"alpha", "background_ladder"} and "cell_frac" in v["probe_config"]
 
 
