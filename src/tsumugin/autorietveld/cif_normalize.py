@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
     "Atom",
     "Structure",
+    "coord_rounding_error",
     "normalize_cif_for_gsas",
     "read_structure_cif",
     "write_gsas_cif",
@@ -28,7 +29,14 @@ _B_TO_U = 1.0 / (8.0 * math.pi**2)
 
 @dataclass(frozen=True)
 class Atom:
-    """原子サイト 1 個 (最小 CIF の 1 行)。🔵"""
+    """原子サイト 1 個 (最小 CIF の 1 行)。🔵
+
+    :param coord_error: x/y/z の**書かれた桁数**による丸め誤差の上限 (:func:`coord_rounding_error`)。
+        `read_structure_cif` が CIF のトークンから埋める — 座標は float になるので、``0.333`` が
+        1/3 の 3 桁表記だったことはここにしか残らない。特殊位置への吸着の許容差に使う
+        (`site_symmetry.snap_to_special_position`)。コードで組んだ原子は ``None`` (= 既定の許容差)。
+        比較・ハッシュには含めない (同じ座標を同じ原子とみなす従来の等価性を保つ)。
+    """
 
     label: str
     type_symbol: str
@@ -37,6 +45,7 @@ class Atom:
     z: float
     occ: float
     uiso: float
+    coord_error: "tuple[float, float, float] | None" = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,38 @@ class Structure:
     it_number: int | None
     atoms: tuple[Atom, ...]
     symops: tuple[str, ...] = ()
+
+
+def coord_rounding_error(token: str) -> float:
+    """座標トークンの丸め誤差の上限 (``0.3333`` → ``0.5e-4``)。
+
+    小数 2 桁以下 (``0``・``0.5``・``0.25``) は**厳密値**として扱い 0 を返す — 1/2・1/4 を書く
+    のに桁を省くのは普通で、それを ±0.005 の幅と読むと近くの一般位置を誤って吸着する。
+    1/3 を 2 桁 (``0.33``) で書く CIF はこの規則では拾えない (既定の許容差 1e-4 のまま)。
+    """
+    match = re.fullmatch(r"[+-]?\d*\.(\d+)", re.sub(r"\(.*?\)", "", token))
+    if match is None:
+        return 0.0
+    decimals = len(match.group(1))
+    return 0.5 * 10.0 ** (-decimals) if decimals >= 3 else 0.0
+
+
+def _coord_token(value: float, error: float | None) -> str:
+    """座標を書く。読んだ CIF の桁数が分かっていれば**その桁数で** (桁を足さない)。
+
+    `.5f` で書き直すと ``0.333`` が ``0.33300`` になり、特殊位置への吸着 (書かれた桁数を許容差に
+    する) から見て「1/3 から 1e-3 ずれた一般位置」を名乗ってしまう。桁数を知らない原子
+    (コードで組んだ原子・2 桁以下の厳密値) は従来どおり 5 桁。
+
+    読んだ桁数で書くのは**値がその桁の表記のまま**のときだけ — ``replace(atom, x=精密化値)`` は
+    ``coord_error`` を引き継ぐ (`claims.chemistry`) ので、動いた座標を読んだ桁数へ丸めない。
+    """
+    if error:
+        decimals = round(-math.log10(2.0 * error))
+        token = f"{value:.{decimals}f}"
+        if float(token) == value:
+            return token
+    return f"{value:.5f}"
 
 
 def _strip_esd(token: str) -> float:
@@ -168,8 +209,15 @@ def _read_symop_loop(lines: list[str]) -> tuple[str, ...]:
     return tuple(ops)
 
 
-def _read_atom_loop(lines: list[str]) -> list[Atom]:
-    """atom_site ループを走査し :class:`Atom` 列へ。"""
+def _atom_loop_rows(
+    lines: list[str],
+) -> tuple[dict[str, int], list[tuple[int, list[str]]], list[int]]:
+    """atom_site ループの (タグ → 列番号, [(行番号, トークン列)], 列不足で読み飛ばした行番号)。
+
+    行番号は ``lines`` の添字 — 座標だけを書き換える側 (`special_positions`) が同じ行を
+    引き当てられるように、読み手と書き換え手で同じ走査を共有する。列不足の行 (折り返された
+    原子行) は読み手が拾えないので、書き換え手はそれを知って記録する必要がある。
+    """
     label_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "_atom_site_label"), None)
     if label_idx is None:
         raise ValueError("CIF に _atom_site_label ループが見つかりません。")
@@ -186,9 +234,10 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
     if any(t not in col for t in need):
         raise ValueError("atom_site ループに分率座標列がありません。")
 
-    atoms: list[Atom] = []
-    for ln in lines[i:]:
-        s = ln.strip()
+    rows: list[tuple[int, list[str]]] = []
+    short: list[int] = []
+    for k in range(i, len(lines)):
+        s = lines[k].strip()
         # 空行はサイト行の区切りとして許容し読み飛ばす (一部 CIF ライタは行間に空行を挿む)。
         # ループ終端は構造トークン (loop_/_tag/#/;) でのみ判定する。
         if not s:
@@ -197,7 +246,17 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
             break
         row = s.split()
         if len(row) < len(tags):
+            short.append(k)
             continue
+        rows.append((k, row))
+    return col, rows, short
+
+
+def _read_atom_loop(lines: list[str]) -> list[Atom]:
+    """atom_site ループを走査し :class:`Atom` 列へ。"""
+    col, rows, _ = _atom_loop_rows(lines)
+    atoms: list[Atom] = []
+    for _, row in rows:
         label = row[col["_atom_site_label"]]
         if "_atom_site_type_symbol" in col:
             tsym = row[col["_atom_site_type_symbol"]]
@@ -220,6 +279,10 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
                 z=_strip_esd(row[col["_atom_site_fract_z"]]),
                 occ=occ,
                 uiso=uiso,
+                coord_error=tuple(  # type: ignore[arg-type]
+                    coord_rounding_error(row[col[t]])
+                    for t in ("_atom_site_fract_x", "_atom_site_fract_y", "_atom_site_fract_z")
+                ),
             )
         )
     return atoms
@@ -273,10 +336,11 @@ def write_gsas_cif(structure: Structure, out_path: str | Path, *, phase_name: st
         " _atom_site_U_iso_or_equiv",
     ]
     for at in structure.atoms:
-        lines.append(
-            f"{at.label} {at.type_symbol} {at.x:.5f} {at.y:.5f} {at.z:.5f} "
-            f"{at.occ:.4f} {at.uiso:.5f}"
+        x, y, z = (
+            _coord_token(value, None if at.coord_error is None else at.coord_error[k])
+            for k, value in enumerate((at.x, at.y, at.z))
         )
+        lines.append(f"{at.label} {at.type_symbol} {x} {y} {z} {at.occ:.4f} {at.uiso:.5f}")
     out = Path(out_path)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out

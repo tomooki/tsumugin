@@ -235,3 +235,50 @@ def test_normalize_refuses_a_source_cif_with_duplicate_labels(tmp_path):
     src.write_text(_CHECKCIF + "Na1 Na 1 0.1 0.2 0.3 1.0\n", encoding="utf-8")
     with pytest.raises(DuplicateAtomLabelError, match="Na1"):
         normalize_cif_for_gsas(src, tmp_path / "out.cif", phase_name="p")
+
+
+def test_rewritten_cif_keeps_the_written_precision_of_coordinates(tmp_path):
+    """★書き直しで座標に桁を足さない (`.5f` で ``0.333`` → ``0.33300`` にしない)。
+
+    特殊位置への吸着は CIF に**書かれた桁数**を許容差にする (`special_positions` / TOPAS)。
+    `edit_cif`・`place_d2o` が `write_gsas_cif` で書き直すと、3 桁の 1/3 が 5 桁の「1/3 から
+    1e-3 ずれた一般位置」を名乗り、吸着されずに多重度 3 倍で読まれる。
+    """
+    from tsumugin.autorietveld.cif_normalize import Atom, Structure, read_structure_cif, write_gsas_cif
+
+    src = tmp_path / "in.cif"
+    src.write_text(
+        "data_x\n_cell_length_a 3.25\n_cell_length_b 3.25\n_cell_length_c 5.2\n"
+        "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 120\n"
+        "_symmetry_space_group_name_H-M 'P 63 m c'\n"
+        "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n"
+        "_atom_site_fract_y\n_atom_site_fract_z\n_atom_site_U_iso_or_equiv\n"
+        "Zn1 Zn 0.333 0.6667 0 0.006\n",
+        encoding="utf-8",
+    )
+    structure = read_structure_cif(src)
+    computed = Atom(label="D1", type_symbol="D", x=0.123456789, y=0.5, z=0.25, occ=1.0, uiso=0.02)
+    out = write_gsas_cif(
+        Structure(**{**structure.__dict__, "atoms": (*structure.atoms, computed)}), tmp_path / "o.cif"
+    )
+    zn, d1 = read_structure_cif(out).atoms
+    assert zn.coord_error[:2] == structure.atoms[0].coord_error[:2] == (0.5e-3, 0.5e-4)
+    assert (zn.x, zn.y, zn.z) == (0.333, 0.6667, 0.0)
+    assert d1.x == pytest.approx(0.12346, abs=1e-12), "桁数を知らない原子は従来どおり 5 桁"
+
+
+def test_moved_coordinates_are_not_truncated_to_the_read_precision(tmp_path):
+    """★`replace(atom, x=精密化値)` は ``coord_error`` を引き継ぐ (`claims.chemistry`) — 読んだ桁数で
+    書くのは**値がその桁の表記のまま**のときだけ。精密化値を 3 桁に丸めて BVS/GII を測らない。"""
+    from dataclasses import replace
+
+    from tsumugin.autorietveld.cif_normalize import Atom, Structure, read_structure_cif, write_gsas_cif
+
+    read = Atom(label="O1", type_symbol="O", x=0.333, y=0.25, z=0.1, occ=1.0, uiso=0.01,
+                coord_error=(0.5e-3, 0.0, 0.5e-3))
+    moved = replace(read, x=0.3412345)
+    struct = Structure(a=5.0, b=5.0, c=5.0, alpha=90.0, beta=90.0, gamma=90.0,
+                       spacegroup_hm="P 1", it_number=1, atoms=(moved,))
+    (atom,) = read_structure_cif(write_gsas_cif(struct, tmp_path / "o.cif")).atoms
+    assert atom.x == pytest.approx(0.34123, abs=1e-12)
+    assert atom.z == 0.1 and atom.coord_error[2] == 0.5e-3  # 動いていない軸は読んだ桁数のまま

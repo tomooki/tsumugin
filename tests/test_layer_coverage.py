@@ -350,6 +350,10 @@ PACKAGE_COVERAGE: dict[str, str] = {
     # --- トップレベルモジュール (パッケージではないが ③ 向け能力/インフラを持ちうる) ---
     "pipeline": (FOUNDATIONAL, "単一パターン自動多相精密化 (M0)。submit_analysis の裏方"),
     "errors": (FOUNDATIONAL, "例外型の集約。全層が共有するインフラ"),
+    "site_symmetry": (
+        FOUNDATIONAL,
+        "サイト対称の射影・自由軸判定 (純 numpy)。GSAS/TOPAS の両経路が CIF を読む前に内部適用",
+    ),
 }
 
 

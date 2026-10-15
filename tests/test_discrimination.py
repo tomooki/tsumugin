@@ -1422,3 +1422,28 @@ def test_acceptance_real_dynesty_agrees_in_sign():
     assert result.adjudicated_by in ("nested", "laplace")
     assert result.nested_delta_evidence is not None
     assert result.nested_delta_evidence > 0.0
+
+
+def test_backend_warnings_reach_the_result_once():
+    """★backend の ``RefinementResult.warnings`` (例: 特殊位置へ吸着した原子) を判別結果へ運ぶ。
+
+    GSAS の structure_ref 経路には ledger が無く、吸着/見送りの記録は backend の ``warnings`` に
+    しか残らない。判別がそれを捨てると ② (`discriminate`) から見えない。全フレームで同じ文が出る
+    ので 1 回にまとめる。
+    """
+    from dataclasses import replace
+
+    class _Noting:
+        name = "noting"
+
+        def __init__(self):
+            self.inner = SimulatedBackend(peak_fwhm=0.2)
+
+        def refine(self, model, *, max_cycles=20):
+            result = self.inner.refine(model, max_cycles=max_cycles)
+            return replace(result, warnings=(*result.warnings, "相 A: 特殊位置へ吸着 (X1)"))
+
+    result = discriminate_interval(
+        _Noting(), _solid_solution_series(n_frames=4), (0, 3), (PHASE_A0,), config=CONFIG_FAST
+    )
+    assert list(result.warnings).count("相 A: 特殊位置へ吸着 (X1)") == 1, result.warnings

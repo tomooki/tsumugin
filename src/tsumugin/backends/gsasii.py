@@ -213,6 +213,7 @@ class GSASIIBackend:
             tmp_path = Path(tmp)
             # 【gpx 構築】: 共有ヘルパで instprm/xye 書き出し + 観測ヒストグラム/全相追加を行う。
             # 一時 refine.gpx を生成し、精密化フラグ設定・読み戻しは本メソッドで続ける 🔵
+            notes: list[str] = []
             gpx, hist, g2phases = self._build_project(
                 tmp_path / "refine.gpx",
                 tmp_path,
@@ -220,6 +221,7 @@ class GSASIIBackend:
                 two_theta,
                 intensity,
                 model.weights,
+                notes=notes,
             )
 
             for i, g2ph in enumerate(g2phases):
@@ -244,6 +246,7 @@ class GSASIIBackend:
                     converged=False,
                     n_cycles=max_cycles,
                     free_params=model.free_params,
+                    warnings=tuple(notes),
                 )
 
             x, yobs, w, ycalc = (
@@ -269,6 +272,7 @@ class GSASIIBackend:
             converged=converged,
             n_cycles=max_cycles if any_free else 1,
             free_params=model.free_params,
+            warnings=tuple(notes),
         )
 
     # ---- 内部ヘルパ -----------------------------------------------------
@@ -281,6 +285,8 @@ class GSASIIBackend:
         two_theta: np.ndarray,
         intensity: np.ndarray,
         weights: np.ndarray | None,
+        *,
+        notes: list[str] | None = None,
     ) -> tuple[object, object, list[object]]:
         """観測データ入り GSAS-II プロジェクトを構築する共有ヘルパ (D-Q8 単一情報源)。
 
@@ -295,6 +301,7 @@ class GSASIIBackend:
         :param two_theta: 観測 2θ グリッド
         :param intensity: 観測強度 (Yobs としてヒストグラムに埋め込む)
         :param weights: 観測重み。None なら _write_xye の統計重み既定
+        :param notes: 特殊位置の吸着/見送りの文を追記するリスト (:meth:`_add_phases`)
         :returns: (gpx, hist, g2phases) — 呼び出し側が用途固有処理を続けるためのハンドル
         """
         G2sc = _g2sc()
@@ -307,7 +314,7 @@ class GSASIIBackend:
         # 【プロジェクト構築】: gpx 生成 → 観測ヒストグラム追加 → 全相追加 🔵
         gpx = G2sc.G2Project(newgpx=str(gpx_path))
         hist = gpx.add_powder_histogram(str(datafile), str(instprm))
-        g2phases = self._add_phases(gpx, hist, phases, work_dir)
+        g2phases = self._add_phases(gpx, hist, phases, work_dir, notes=notes)
         return gpx, hist, g2phases
 
     def _recognized(
@@ -326,14 +333,38 @@ class GSASIIBackend:
                 cell_free.add(idx)
         return scale_free, cell_free
 
-    def _add_phases(self, gpx, hist, phases: Sequence[PhaseInstance], tmp_path: Path):
+    def _add_phases(
+        self,
+        gpx,
+        hist,
+        phases: Sequence[PhaseInstance],
+        tmp_path: Path,
+        *,
+        notes: list[str] | None = None,
+    ):
+        """相を gpx へ足す。``notes`` には特殊位置の吸着/見送りを 1 相 1 文で追記する。
+
+        この経路には ledger が無いので、吸着の記録は ``notes`` → ``RefinementResult.warnings``
+        でしか呼び手 (discriminate) に届かない。
+        """
+        from ..autorietveld.special_positions import snap_for_gsas
+
         g2phases = []
         for i, phase in enumerate(phases):
             if phase.structure_ref is not None:
                 # 【実 CIF 分岐 (Issue #130)】: 実結晶構造 (原子/空間群/参照セル) を読み、
                 #   格子だけ warm-start 値へ上書きする (discrimination の格子解放を反映)。
+                # 【特殊位置へ吸着してから読ませる】: GSAS-II は 4 桁の 1/3 を一般位置 (多重度 3 倍)
+                #   と読み、Rwp は良いまま完走する (`autorietveld.special_positions`)。
+                snap = snap_for_gsas(
+                    phase.structure_ref, tmp_path / "special-positions", phase_name=phase.phase_ref
+                )
+                note = snap.warning()
+                # 二相仮説の端成分は同じ CIF を指す — 同じ文を 1 回の結果に重ねない。
+                if note is not None and notes is not None and note not in notes:
+                    notes.append(note)
                 g2ph = gpx.add_phase(
-                    str(phase.structure_ref),
+                    snap.path,
                     phasename=f"phase{i}",
                     histograms=[hist],
                     fmthint="CIF",
