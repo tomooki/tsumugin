@@ -1,7 +1,8 @@
 """合成 `S-dev` の事例の定義 (fit-then-judge P0 §6)。生成は `generate.py`、パターンは追跡しない。
 
 構造は COD (CC0) から ID と sha256 で取る。**型で先に決め** (混合占有・極性・結合した特殊位置・多相)、
-どの化合物が `H-pub` の候補かを見ずに選んだ (規則: 鉱物名・空間群番号・化学式が一致する最小の COD ID、2026-10-15)。
+どの化合物が `H-pub` の候補かを見ずに選んだ (規則: 鉱物名・空間群番号・化学式が一致し、**凍結版の結晶化学検査で
+fail の無い**最小の COD ID、2026-10-15。forsterite は最小 ID 1572966 が Si–O 1.48 Å・GII 0.50 で真値に使えず 1572968)。
 ここに出る化合物は `H-pub` の候補から除く (P0 §3.2.1-2)。
 """
 
@@ -22,7 +23,7 @@ class Source:
 SOURCES: dict[str, Source] = {
     "ZnO": Source("1011258", "201954", "36048fbb028bb2b080971aa754b20cba27b27bb1b415e4c62d96d9d570fa795f", "Zn O",
                   "zincite"),
-    "Mg2SiO4": Source("1572966", "295660", "dc170b976eac15dd037111af3e949125800827d3197d356698b45a354c694a3b",
+    "Mg2SiO4": Source("1572968", "295660", "17000cd5654b305db3274b630bc1cdf2e9243fd2dfe6d023a45f15e790badad8",
                       "Mg2 Si O4", "forsterite"),
     "FeS2": Source("5000115", "202022", "2b4f67b13a18079079f987ed2785662a176364ddfae19e10d646da143337344d", "Fe S2",
                    "pyrite"),
