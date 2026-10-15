@@ -110,10 +110,18 @@ def _bindings(func: ast.AST, name: str) -> list[bool] | None:
         elif isinstance(node, ast.AnnAssign):
             if isinstance(node.target, ast.Name) and node.target.id == name:
                 found.append(_is_collector_annotation(node.annotation))
-        elif isinstance(node, (ast.AugAssign, ast.NamedExpr, ast.For, ast.With)):
-            targets = ast.walk(getattr(node, "target", None) or node)
+        else:
+            # その他の束縛 (+= / := / for / with … as / except … as) は集め口としての束縛ではない
+            if isinstance(node, (ast.AugAssign, ast.NamedExpr, ast.For, ast.AsyncFor)):
+                targets = [node.target]
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                targets = [item.optional_vars for item in node.items if item.optional_vars]
+            else:
+                targets = []
             if any(isinstance(t, ast.Name) and t.id == name and isinstance(t.ctx, ast.Store)
-                   for t in targets):
+                   for target in targets for t in ast.walk(target)):
+                found.append(False)
+            if isinstance(node, ast.ExceptHandler) and node.name == name:
                 found.append(False)
         stack.extend(ast.iter_child_nodes(node))
     return found or None
@@ -251,9 +259,21 @@ def test_guard_rule2_receiver_must_be_a_collector(tmp_path):
         "def rebound(backend, m):\n"                                    # 21
         "    c = WarningCollector()\n"                                  # 22
         "    c = Other()\n"                                             # 23
-        "    return c.collect(backend.refine(m)), list(c)\n",           # 24
+        "    return c.collect(backend.refine(m)), list(c)\n"            # 24
+        "def inside_with(backend, m, lock):\n"                          # 25
+        "    with lock:\n"                                              # 26
+        "        c = WarningCollector()\n"                              # 27
+        "        r = c.collect(backend.refine(m))\n"                    # 28
+        "    return r, c.merged()\n"                                    # 29
+        "def with_as(backend, m, ctx):\n"                               # 30
+        "    c = WarningCollector()\n"                                  # 31
+        "    with ctx as c:\n"                                          # 32
+        "        return c.collect(backend.refine(m)), list(c)\n"        # 33
+        "def for_target(backend, ms, cs):\n"                            # 34
+        "    for c in cs:\n"                                            # 35
+        "        c.collect(backend.refine(ms[0]))\n",                   # 36
     )
-    assert bad == [16, 18, 20, 24]
+    assert bad == [16, 18, 20, 24, 33, 36]  # with 本体の代入は束縛を壊さない (28 は合格)
 
 
 def test_guard_rule3_collector_must_be_read(tmp_path):
