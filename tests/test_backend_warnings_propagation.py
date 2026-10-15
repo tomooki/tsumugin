@@ -299,6 +299,36 @@ def test_discrimination_carries_multistart_backend_warnings_once():
     assert result.warnings.count("cycles-15") == 1
 
 
+class PhaseCountNoteBackend(CycleNoteBackend):
+    """相数と ``max_cycles`` を文に書く — 判別のどの仮説・どの段の警告かを見分ける。"""
+
+    def refine(self, model: RefinementModel, *, max_cycles: int = 20) -> RefinementResult:
+        result = super().refine(model, max_cycles=max_cycles)
+        return RefinementResult(
+            phases=result.phases, chi2=result.chi2, rwp=result.rwp, n_obs=result.n_obs,
+            n_params=result.n_params, converged=True, n_cycles=1,
+            free_params=result.free_params,
+            warnings=(f"phases-{len(model.phases)} cycles-{max_cycles}",),
+        )
+
+
+def test_discrimination_backend_warnings_follow_execution_order():
+    # 仮説 A 逐次 → A 端点マルチスタート → 仮説 B 逐次 → B 端点マルチスタート
+    from tsumugin.operando.discrimination import DiscriminationConfig, discriminate_interval
+
+    config = DiscriminationConfig(
+        seq_max_cycles=10, multistart=MultistartConfig(n_starts=2, ms_max_cycles=15)
+    )
+    series = FrameSeries(two_theta=GRID, intensities=np.ones((4, GRID.size)))
+    result = discriminate_interval(
+        PhaseCountNoteBackend(), series, (0, 3), (_phase(4.0, "A"),), config=config
+    )
+
+    tail = [w for w in result.warnings if w.startswith("phases-")]
+    assert tail == ["phases-1 cycles-10", "phases-1 cycles-15",
+                    "phases-2 cycles-10", "phases-2 cycles-15"]
+
+
 def _mcp_session(backend):
     from tsumugin.mcp.tools import AnalysisSession
     from tsumugin.model import Project
@@ -382,3 +412,28 @@ def test_real_gsas_skipped_snap_reaches_sequential_result(tmp_path):
 
     skipped = [w for w in result.backend_warnings if "zno" in w and "H-M" in w]
     assert len(skipped) == 1, result.backend_warnings
+
+
+def test_mcp_submit_joint_does_not_fold_its_own_warnings(monkeypatch):
+    """同種の文を畳むのは backend の警告だけ — 検証の警告は値違いでも別の行に残す。"""
+    from tsumugin.joint.model import JointHistogram
+    from tsumugin.joint.verification import JointVerificationResult
+    from tsumugin.mcp import tools as t
+
+    own = ("joint 検証: rwp=12.3 が残った", "joint 検証: rwp=15.1 が残った")
+    monkeypatch.setattr(
+        t, "verify_survivors",
+        lambda *a, **k: JointVerificationResult(
+            verified=(), joint_results={}, recommendations={}, warnings=own
+        ),
+    )
+    intensity = _observed(_phase(4.0, "A"))
+    response = t.submit_analysis(
+        _mcp_session(SimulatedBackend(peak_fwhm=0.2)),
+        GRID,
+        intensity,
+        [[_phase(4.05, "A")]],
+        histograms=(JointHistogram(two_theta=GRID, intensity=intensity, probe="xray"),),
+    )
+
+    assert response["warnings"][:2] == list(own)
