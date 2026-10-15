@@ -279,7 +279,9 @@ def test_refine_failure_strips_stale_sigma_from_returned_phases(monkeypatch):
         def do_refinements(self, *_args, **_kwargs):
             raise RuntimeError("synthetic do_refinements failure")
 
-    def _fake_build_project(self, gpx_path, work_dir, phases_arg, two_theta, intensity, weights):
+    def _fake_build_project(
+        self, gpx_path, work_dir, phases_arg, two_theta, intensity, weights, *, notes=None
+    ):
         return _FailingGpx(), None, []
 
     monkeypatch.setattr(GSASIIBackend, "_build_project", _fake_build_project)
