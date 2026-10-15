@@ -35,7 +35,13 @@ from typing import Sequence
 
 import numpy as np
 
-from ..backends.base import Curvature, RefinementBackend, RefinementModel, parse_param
+from ..backends.base import (
+    Curvature,
+    RefinementBackend,
+    RefinementModel,
+    WarningCollector,
+    parse_param,
+)
 from ..model import PhaseInstance, RefinementMetrics
 from .base import EvidenceProblem, PriorSpec
 from .prior import RestraintSpec, build_prior_from_restraints
@@ -187,7 +193,7 @@ def build_physical_problem(
     label: str,
     config: PhysicalProblemConfig,
     overrides: dict[str, PriorSpec] | None = None,
-    warning_sink: dict[str, None] | None = None,
+    warning_sink: WarningCollector | None = None,
 ) -> EvidenceProblem:
     """区間フレーム列から joint 物理 EvidenceProblem を構築する。Issue #76 / FR-122/125/313。
 
@@ -203,9 +209,9 @@ def build_physical_problem(
     【metrics】: 呼び側の合成 metrics (Σbic) をそのまま保持し、BIC フォールバック値を bic 一次と
       厳密一致に保つ (PR #75 ガード/メッセージング前提の維持)。
     【決定論 (NFR-102)】: 乱数不使用・sorted のみ。同一入力 2 回でビット同一。
-    【backend の警告】: 尤度評価の精密化が返す ``RefinementResult.warnings`` を ``warning_sink``
-      (呼び側の dict。出現順・同じ文は 1 回) へ足す。評価は sampler が何千回も呼ぶので文の列を
-      伸ばさずキーで重複を除く — 同種の文を畳むのは呼び側の merge_warnings。
+    【backend の警告】: 尤度評価の精密化が返す ``RefinementResult.warnings`` を呼び側の
+      ``warning_sink`` に集める (sampler が何千回も呼ぶが、集め口は同じ文を 1 回しか持たない)。
+      None なら集めた文は捨てる (呼び側が読まないと宣言した)。
 
     :raises ValueError: frames が空 / frame_index 重複 / 値を読めないパラメータを含むとき
       (呼び側がサロゲートへ縮退する契約)。
@@ -264,6 +270,7 @@ def build_physical_problem(
             pos += k
 
     eval_max_cycles = config.eval_max_cycles
+    sink = warning_sink if warning_sink is not None else WarningCollector()
 
     def log_likelihood(theta: np.ndarray) -> float:
         """joint 物理対数尤度 Σ_i -χ²_i(θ_i)/2 (backend 純評価・非有限は -inf)。"""
@@ -273,7 +280,7 @@ def build_physical_problem(
             phases = frame.phases
             for name, value in zip(names, arr[sl]):
                 phases = _write_param(phases, name, float(value))
-            result = backend.refine(
+            result = sink.collect(backend.refine(
                 RefinementModel(
                     phases=phases,
                     free_params=frozenset(),
@@ -282,9 +289,7 @@ def build_physical_problem(
                     weights=frame.weights,
                 ),
                 max_cycles=eval_max_cycles,
-            )
-            if warning_sink is not None:
-                warning_sink.update(dict.fromkeys(result.warnings))
+            ))
             chi2 = float(result.chi2)
             if not np.isfinite(chi2):
                 return float("-inf")

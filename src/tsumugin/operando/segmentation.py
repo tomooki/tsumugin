@@ -37,7 +37,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
-    merge_warnings,
+    WarningCollector,
     param_name,
 )
 from ..evidence.ic import BICBackend
@@ -141,9 +141,7 @@ def segment_series(
     # 【警告の決定論的集約】: 非有限フレーム除外の警告を first-seen 順で重複排除する (集合反復順非依存)。🔵
     seen_warnings: set[str] = set()
     warnings_list: list[str] = []
-    # 【backend の警告】: 区間評価は全フレームを精密化するので、同じ文 (GSAS の吸着記録など) を列に
-    #   積み上げず出現順のキーで重複を除く (同種の文を畳むのは最終化時の merge_warnings)。
-    backend_warnings: dict[str, None] = {}
+    backend_warnings = WarningCollector()
 
     def _remember(messages: list[str]) -> None:
         # 【重複排除】: 同一フレーム除外が複数区間で再出するため first-seen 順で 1 度だけ残す 🔵
@@ -169,8 +167,9 @@ def segment_series(
                 phases=warm, free_params=free, two_theta=two_theta, intensity=intensity
             )
             # 【direct refine】: staged 解放ループなし、seq_max_cycles で 1 回だけ精密化する 🔵
-            result = backend.refine(model, max_cycles=config.seq_max_cycles)
-            backend_warnings.update(dict.fromkeys(result.warnings))
+            result = backend_warnings.collect(
+                backend.refine(model, max_cycles=config.seq_max_cycles)
+            )
             chi2 = float(result.chi2)
             if math.isfinite(chi2):
                 # 【有限フレーム】: bic を加算し、成功相のみ次フレームへ warm 継承する 🔵
@@ -425,7 +424,7 @@ def _finalize_result(
     evidence_by_k: Mapping[int, float],
     partitions: list[Hypothesis],
     warnings_list: list[str],
-    backend_warnings: dict[str, None],
+    backend_warnings: WarningCollector,
 ) -> SegmentationResult:
     """採択境界から最終 result を組み、"segmentation.result" を ledger 記録して返す (2 経路共通)。
 
@@ -442,7 +441,7 @@ def _finalize_result(
     @param evidence_by_k: k 別合計コスト (dict 化して格納)。
     @param partitions: 各 k の分割仮説リスト (tuple 化して格納)。
     @param warnings_list: 縮退/非有限除外の警告リスト (tuple 化して格納)。
-    @param backend_warnings: 区間精密化の backend の警告 (評価順・merge_warnings で畳んで格納)。
+    @param backend_warnings: 区間精密化の backend の警告の集め口 (畳んで格納)。
     @returns: 全フィールド設定済みの frozen な SegmentationResult。
     """
     n_segments = len(boundaries) + 1
@@ -458,7 +457,7 @@ def _finalize_result(
         partitions=tuple(partitions),
         ledger=ledger,
         warnings=tuple(warnings_list),
-        backend_warnings=merge_warnings(backend_warnings),
+        backend_warnings=backend_warnings.merged(),
     )
 
 

@@ -40,7 +40,13 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from .._json import finite_or_none
-from ..backends.base import RefinementBackend, RefinementModel, merge_warnings, param_name
+from ..backends.base import (
+    RefinementBackend,
+    RefinementModel,
+    WarningCollector,
+    merge_warnings,
+    param_name,
+)
 from ..evidence.base import EvidenceBackend, EvidenceResult
 from ..evidence.ic import BICBackend
 from ..evidence.ranking import RankedHypothesis, rank
@@ -333,7 +339,7 @@ class HypothesisTreeSearch:
         eligible = self._prune_candidates(representatives, scores, ledger)
 
         # 【best-first 木探索】: 生存候補で組合せ仮説を評価・展開し全ノードを保持する 🔵 D1
-        backend_warnings: list[str] = []
+        backend_warnings = WarningCollector()
         hypotheses = self._explore(
             eligible, scores, normalized, two_theta, intensity, weights, ledger, backend_warnings
         )
@@ -478,7 +484,7 @@ class HypothesisTreeSearch:
         intensity: np.ndarray,
         weights: np.ndarray | None,
         ledger: Ledger,
-        backend_warnings: list[str],
+        backend_warnings: WarningCollector,
     ) -> dict[str, Hypothesis]:
         """best-first で相組合せ仮説の探索木を構築し全評価ノードを返す (D1)。🔵
 
@@ -543,7 +549,7 @@ class HypothesisTreeSearch:
         parent_id: str | None,
         node_id: str,
         ledger: Ledger,
-        backend_warnings: list[str],
+        backend_warnings: WarningCollector,
     ) -> Hypothesis:
         """1 ノード (相組合せ) を探索モード精密化し refined Hypothesis を返す (D2/REQ-003)。🔵
 
@@ -567,8 +573,9 @@ class HypothesisTreeSearch:
             weights=weights,
         )
         # 【探索モード精密化】: backend.refine を直呼びし max_cycles=explore_max_cycles を伝播 🔵
-        result = self._backend.refine(model, max_cycles=config.explore_max_cycles)
-        backend_warnings.extend(result.warnings)
+        result = backend_warnings.collect(
+            self._backend.refine(model, max_cycles=config.explore_max_cycles)
+        )
 
         chi2 = float(result.chi2)
         n_obs = int(result.n_obs)
@@ -692,7 +699,7 @@ class HypothesisTreeSearch:
         weights: np.ndarray | None,
         ledger: Ledger,
         snapshots: SnapshotStore,
-        backend_warnings: list[str],
+        backend_warnings: WarningCollector,
     ) -> SearchResult:
         """探索コアの後段で SearchResult の後処理フィールドを実体化する (TASK-0007)。🔵
 

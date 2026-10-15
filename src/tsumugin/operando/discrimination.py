@@ -68,6 +68,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
+    WarningCollector,
     merge_warnings,
     param_name,
 )
@@ -350,7 +351,7 @@ def discriminate_interval(
     nested_warnings: tuple[str, ...] = ()
     # 【物理尤度の backend の警告】: nested 裁定の尤度評価 (backend.refine) が返す文。裁定が途中で
     #   例外に落ちても、それまでに評価した精密化の文は残す (try の外に置く)。
-    likelihood_warnings: dict[str, None] = {}
+    likelihood_warnings = WarningCollector()
     if config.nested_arbitration is not None and queue_reason == _CLOSE_COMPETITOR:
         verdict_before_nested = verdict
         try:
@@ -535,7 +536,7 @@ def _refine_interval(
     sum_bic = 0.0
     rwps: list[float] = []
     warnings: list[str] = []
-    backend_warnings: list[str] = []
+    backend_warnings = WarningCollector()
     endpoint_phases: dict[int, tuple[PhaseInstance, ...]] = {}
     endpoint_results: dict[int, RefinementResult] = {}
     finite_frames: set[int] = set()
@@ -550,8 +551,7 @@ def _refine_interval(
             phases=base, free_params=free, two_theta=two_theta, intensity=intensity
         )
         # 【direct refine】: staged 解放ループなし、seq_max_cycles で 1 回だけ精密化する 🔵
-        result = backend.refine(model, max_cycles=seq_max_cycles)
-        backend_warnings.extend(result.warnings)
+        result = backend_warnings.collect(backend.refine(model, max_cycles=seq_max_cycles))
         chi2 = float(result.chi2)
         if math.isfinite(chi2):
             # 【有限フレーム】: 釣り合いモデル DOF の bic を加算する 🔵
@@ -590,7 +590,7 @@ def _refine_interval(
         endpoint_phases=endpoint_phases,
         endpoint_results=endpoint_results,
         warnings=tuple(warnings),
-        backend_warnings=merge_warnings(backend_warnings),
+        backend_warnings=backend_warnings.merged(),
         finite_frames=frozenset(finite_frames),
         frame_states=tuple(frame_states),
     )
@@ -986,7 +986,7 @@ def _build_problems(
     seq_b: _IntervalOutcome,
     backend: RefinementBackend,
     physical_config: PhysicalProblemConfig | None,
-    warning_sink: dict[str, None] | None = None,
+    warning_sink: WarningCollector | None = None,
 ) -> tuple[dict[str, EvidenceProblem], tuple[str, ...]]:
     """両仮説の EvidenceProblem を構築する (物理優先・失敗はサロゲート縮退 + 警告)。Issue #76。
 
@@ -1035,7 +1035,7 @@ def _run_nested_arbitration(
     *,
     backend: RefinementBackend,
     physical_config: PhysicalProblemConfig | None,
-    warning_sink: dict[str, None] | None = None,
+    warning_sink: WarningCollector | None = None,
 ) -> _NestedArbitrationOutcome:
     """close_competitor の 2 仮説 (A/B) のみを対象に nested/Laplace 裁定を実行する (FR-122/313)。
 
