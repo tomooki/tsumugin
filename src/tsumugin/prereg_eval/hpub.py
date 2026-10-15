@@ -21,6 +21,7 @@ from .synth import composition_fractions
 __all__ = [
     "STATUS_CONFIRMED",
     "RawHeader",
+    "decode_raw",
     "is_room_conditions",
     "normalize_mineral",
     "parse_raw_header",
@@ -56,6 +57,14 @@ class RawHeader:
     step: float | None
     monotonic: bool
     n_points: int
+
+
+def decode_raw(data: bytes) -> str:
+    """RRUFF のファイルは UTF-8 (``·`` などを含む)。UTF-8 で読めなければ latin-1。"""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1", errors="replace")
 
 
 def parse_raw_header(text: str) -> RawHeader:
@@ -113,6 +122,7 @@ def rruff_fractions(ideal: str) -> dict[str, float] | None:
     席の混合 (コンマ)・変数・空孔 (□)・REE などの総称は `synth.composition_fractions` が None にする。
     """
     s = re.sub(r"\^[^^]*\^", "", ideal).replace("_", "").strip()
+    s = s.translate(str.maketrans("[]{}", "()()"))  # 角括弧・波括弧は丸括弧と同じ (群のまとまり)
     m = _HYDRATE.search(s)
     parts = [s]
     if m:

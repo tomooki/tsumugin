@@ -33,6 +33,7 @@ FROZEN_COMPONENTS: dict[str, tuple[str, ...]] = {
         "docs/benchmark/fit-then-judge-synthetic/cases.py",
         "docs/benchmark/fit-then-judge-synthetic/generate.py",
     ),
+    "hpub_candidates": ("docs/benchmark/fit-then-judge-hpub/candidates.py", "src/tsumugin/prereg_eval/hpub.py"),
 }
 
 

@@ -62,6 +62,7 @@ def test_mineral_names_are_normalized():
         ("Zn^2+^O", {"Zn": 0.5, "O": 0.5}),
         ("Ca_5_(PO_4_)_3_F", {"Ca": 5 / 21, "P": 3 / 21, "O": 12 / 21, "F": 1 / 21}),
         ("Cu^2+^SO_4_·5H_2_O", {"Cu": 1 / 11, "S": 1 / 11, "O": 9 / 11}),  # H は除く、水の O は数える
+        ("Ca_2_[Al_2_SiO_7_]", {"Ca": 2 / 12, "Al": 2 / 12, "Si": 1 / 12, "O": 7 / 12}),  # 角括弧は丸括弧と同じ
     ],
 )
 def test_rruff_chemistry(ideal, expected):
@@ -97,3 +98,11 @@ def test_salted_hash_hides_the_id():
     a = salted_hash("s3cret", "R050419")
     assert len(a) == 64 and "R050419" not in a
     assert a != salted_hash("other", "R050419") and a == salted_hash("s3cret", "R050419")
+
+
+def test_header_bytes_are_decoded_as_utf8():
+    from tsumugin.prereg_eval.hpub import decode_raw
+
+    raw = _raw().replace("Zn^2+^O", "Cu^2+^SO_4_·5H_2_O").encode("utf-8")
+    h = parse_raw_header(decode_raw(raw))
+    assert rruff_fractions(h.ideal_chemistry) is not None  # latin-1 で読むと · が Â· に化けて解釈できない

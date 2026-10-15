@@ -33,6 +33,14 @@ source = "各ベンチの索引。個別の由来は各エントリを参照"
 provenance = "public"
 source = "Jana2020 Cookbook Example 02.6 'CaTeO3 cyclic'"
 
+[entries."fit-then-judge-hpub"]
+provenance = "public"
+source = "fit-then-judge P0 §3.2.1 の H-pub 候補一覧の生成スクリプト (RRUFF + COD のスナップショット 2026-10-13 を読む)"
+note = """
+追跡するのはスクリプトだけ。入力のスナップショット・候補の平文の ID・salt・実行の ledger はリポジトリの外
+(P0 §3.2.1-4)。public に置くのは件数と salt 付きハッシュだけ。RRUFF のデータは再配布しない (U14)。
+"""
+
 [entries."fit-then-judge-synthetic"]
 provenance = "synthetic"
 source = "fit-then-judge P0 §6 の合成 S-dev (COD の CC0 構造から GSAS-II calc-only + Poisson 雑音で生成)"
