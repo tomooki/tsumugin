@@ -1,0 +1,231 @@
+{
+ "T1": {
+  "data": {
+   "path": "m7/labdata/FAP.XRA",
+   "sha256": "b567c0cc2b022143002976824b5ba544ac09119d67a40b0fc1cf2d52d562d304"
+  },
+  "instrument": {
+   "path": "m7/labdata/INST_XRY.PRM",
+   "sha256": "baf39e98ec0ef091f2ad158317d1a6a3f16919b28d990f72404afc2d39e91bfe"
+  },
+  "declaration": {
+   "radiation": "xray_lab",
+   "geometry": "bragg_brentano",
+   "internal_standard": null,
+   "lattice_scope": "relative"
+  },
+  "phases": {
+   "FAP": {
+    "start": {
+     "path": "m7/labdata/FAP.cif",
+     "sha256": "f794f1cbcb22f993a949dbdc0f1bc21c514c8f2d8ae42f66426da63e3e9e3223"
+    },
+    "reference": {
+     "cod_id": "5000041",
+     "sha256": "54db2dde0aacf2404b5c666b559469750e0bed1cc8ea9ac2aef349fd2d69df8b",
+     "same_space_group": true,
+     "symops_used": [
+      "x,y,z",
+      "-y,x-y,z",
+      "y-x,-x,z",
+      "-x,-y,1/2+z",
+      "y,y-x,1/2+z",
+      "x-y,x,1/2+z",
+      "-x,-y,-z",
+      "y,y-x,-z",
+      "x-y,x,-z",
+      "x,y,1/2-z",
+      "-y,x-y,1/2-z",
+      "y-x,-x,1/2-z"
+     ],
+     "transform": "identity (出発の対称操作の像で直接対応)",
+     "pairs": {
+      "CA1": "Ca1",
+      "CA2": "Ca2",
+      "F4": "F1",
+      "O5": "O1",
+      "O6": "O2",
+      "O7": "O3",
+      "P3": "P1"
+     },
+     "unmatched": [],
+     "independent": true,
+     "free_coords": 12,
+     "free_coords_with_ref_esd": 12
+    }
+   }
+  }
+ },
+ "T3-xray": {
+  "data": {
+   "path": "PBSO4.XRA",
+   "sha256": "ca2da02fc7e17d2fc912de22a979f8101ba6140f2e8104f9d3aa64f030ca58bb"
+  },
+  "instrument": {
+   "path": "INST_XRY.PRM",
+   "sha256": "e59413059bc3b12a51f1c6eebc5d581470320d05a31f11a41dbb32e16d1d16b9"
+  },
+  "declaration": {
+   "radiation": "xray_lab",
+   "geometry": "bragg_brentano",
+   "internal_standard": null,
+   "lattice_scope": "relative"
+  },
+  "phases": {
+   "PbSO4": {
+    "start": {
+     "path": "PbSO4-Wyckoff.cif",
+     "sha256": "9bc19d0995561afd78a5f0563599c032751621da994e36c7570b4f515d9f0e2f"
+    },
+    "reference": {
+     "cod_id": null,
+     "evaluation": "P0 §1.4 (独立参照なし)"
+    }
+   }
+  }
+ },
+ "T4-11BM": {
+  "data": {
+   "path": "m7/tofcw/11BM_NAC.fxye",
+   "sha256": "e2b8ef256c97d896a38b131b934da5671831354f983ae28b3817e02dc71f3a20"
+  },
+  "instrument": {
+   "path": "m7/tofcw/11bm_gsas.prm",
+   "sha256": "27421cebb638c22d8e69ee5b25a6d1dcdae9b87329703251ae075709666173b9"
+  },
+  "declaration": {
+   "radiation": "xray_synchrotron",
+   "geometry": "debye_scherrer",
+   "internal_standard": null,
+   "lattice_scope": "relative"
+  },
+  "phases": {
+   "NAC": {
+    "start": {
+     "path": "m7/tofcw/NAC.cif",
+     "sha256": "5114102b35fce54723d697767d8c5416d133fd93374d0d607a023c05e9a13838"
+    },
+    "reference": {
+     "cod_id": "1000236",
+     "sha256": "41e0e8da5f819abd1a0956fae94b81f5b6f1bcc8f9079aa18a7fbebae6b734e8",
+     "same_space_group": true,
+     "symops_used": [
+      "x,y,z",
+      "z,x,y",
+      "y,z,x",
+      "1/2+x,1/2-y,-z",
+      "-z,1/2+x,1/2-y",
+      "1/2-y,-z,1/2+x",
+      "1/2-z,-x,1/2+y",
+      "1/2+y,1/2-z,-x",
+      "-y,1/2+z,1/2-x",
+      "1/2-x,-y,1/2+z",
+      "1/2+z,1/2-x,-y",
+      "-x,1/2+y,1/2-z",
+      "1/2+x,1/2+y,1/2+z",
+      "1/2+z,1/2+x,1/2+y",
+      "1/2+y,1/2+z,1/2+x",
+      "x,-y,1/2-z",
+      "1/2-z,x,-y",
+      "-y,1/2-z,x",
+      "-z,1/2-x,y",
+      "y,-z,1/2-x",
+      "1/2-y,z,-x",
+      "-x,1/2-y,z",
+      "z,-x,1/2-y",
+      "1/2-x,y,-z"
+     ],
+     "transform": "identity (出発の対称操作の像で直接対応)",
+     "pairs": {
+      "Al1": "Al1",
+      "Ca1": "Ca1",
+      "F1": "F1",
+      "F2": "F2",
+      "F3": "F3",
+      "Na1": "Na1"
+     },
+     "unmatched": [],
+     "independent": true,
+     "free_coords": 7,
+     "free_coords_with_ref_esd": 6
+    }
+   },
+   "CaF2": {
+    "start": {
+     "path": "m7/tofcw/CaF2.cif",
+     "sha256": "36945dcb86c0f3dc0c7f735d186f2aa21e905652cccc688922c91b142e097c21"
+    },
+    "reference": {
+     "cod_id": null,
+     "evaluation": "P0 §1.4 (独立参照なし)"
+    }
+   }
+  }
+ },
+ "CaTeO3-030": {
+  "data": {
+   "path": "m9/cateo3/NB-LM01MO_030.XRDML",
+   "sha256": "c884ec84b2821dbcf4ed2e1164131fc41f5afd04ed479fcd90e5f80baadbe12e"
+  },
+  "instrument": {
+   "path": "m9/cateo3/cateo3_CuKa.instprm",
+   "sha256": "2e39229021aa73761accdd6ca3b85dda7d249576920a8aa8972a8efb5ee61444"
+  },
+  "declaration": {
+   "radiation": "xray_lab",
+   "geometry": "bragg_brentano",
+   "internal_standard": null,
+   "lattice_scope": "relative"
+  },
+  "phases": {
+   "alpha": {
+    "start": {
+     "path": "m9/cateo3/alpha_CaTeO3_H2O.cif",
+     "sha256": "6908c61f43b8ae50760d5a8db199b517afdd5183d80738254aaeb31ac61cd40c"
+    },
+    "reference": {
+     "cod_id": null,
+     "evaluation": "P0 §1.4 (独立参照なし)"
+    }
+   }
+  }
+ },
+ "CaTeO3-180": {
+  "data": {
+   "path": "m9/cateo3/NB-LM01MO_180.XRDML",
+   "sha256": "fb0117c95493b1d5cf0beb1fe14d6b62fd0d2b71a1171a7584e71a6e996870bd"
+  },
+  "instrument": {
+   "path": "m9/cateo3/cateo3_CuKa.instprm",
+   "sha256": "2e39229021aa73761accdd6ca3b85dda7d249576920a8aa8972a8efb5ee61444"
+  },
+  "declaration": {
+   "radiation": "xray_lab",
+   "geometry": "bragg_brentano",
+   "internal_standard": null,
+   "lattice_scope": "relative"
+  },
+  "phases": {
+   "alpha": {
+    "start": {
+     "path": "m9/cateo3/alpha_CaTeO3_H2O.cif",
+     "sha256": "6908c61f43b8ae50760d5a8db199b517afdd5183d80738254aaeb31ac61cd40c"
+    },
+    "reference": {
+     "cod_id": null,
+     "evaluation": "P0 §1.4 (独立参照なし)"
+    }
+   },
+   "delta": {
+    "start": {
+     "path": "m9/cateo3/delta_CaTeO3.cif",
+     "sha256": "8f367cadedacc47ce1c41a1f42510f1a06d9361bfc5ba2f9886451831b4adf66"
+    },
+    "reference": {
+     "cod_id": null,
+     "evaluation": "P0 §1.4 (独立参照なし)"
+    }
+   }
+  }
+ }
+}

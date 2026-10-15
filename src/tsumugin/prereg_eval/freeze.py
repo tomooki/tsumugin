@@ -3,14 +3,16 @@
 版の文字列は「何を変えたら上げるか」を人が守る印で、**ファイルの sha256 が機械の正**。版を上げ忘れても、
 中身が変われば sha256 が変わる。一覧のファイルが無ければ止める (改名・移動で黙って凍結から外れない)。
 
-P0 §0 の項目のうち、ここで扱うのはコードと設定 (テンプレート・D・検査器・評価スクリプト・プローブ・合成の生成器)。
-準 hold-out の事例表・`H-pub` の候補一覧・drand の round は凍結の作業で別に足す。
+P0 §0 の項目: コードと設定 (テンプレート・D・検査器・評価スクリプト・プローブ・合成の生成器)・準 hold-out の事例表・
+`H-pub` の候補 manifest (salt 付きハッシュ) と共通の汎用装置パラメータ・置換アームの段順・収束の事後検査の閾値・
+drand の規則。drand の **round** は凍結 commit を push した 24 時間後以降に決まるので、ここでは空 (None) にして後で記録する。
 """
 
 from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import platform
 from pathlib import Path
 
@@ -33,7 +35,30 @@ FROZEN_COMPONENTS: dict[str, tuple[str, ...]] = {
         "docs/benchmark/fit-then-judge-synthetic/cases.py",
         "docs/benchmark/fit-then-judge-synthetic/generate.py",
     ),
-    "hpub_candidates": ("docs/benchmark/fit-then-judge-hpub/candidates.py", "src/tsumugin/prereg_eval/hpub.py"),
+    "hpub_candidates": (
+        "docs/benchmark/fit-then-judge-hpub/candidates.py",
+        "docs/benchmark/fit-then-judge-hpub/manifest.py",
+        "docs/benchmark/fit-then-judge-hpub/candidates_manifest.json",
+        "docs/benchmark/fit-then-judge-hpub/hpub_generic_lab.instprm",
+        "src/tsumugin/prereg_eval/hpub.py",
+        "src/tsumugin/prereg_eval/hpub_draw.py",
+    ),
+    "quasi_case_table": (
+        "docs/benchmark/fit-then-judge-quasi/case_table.py",
+        "docs/benchmark/fit-then-judge-quasi/case_table.json",
+        "src/tsumugin/prereg_eval/mapping.py",
+    ),
+}
+
+_HPUB_MANIFEST = "docs/benchmark/fit-then-judge-hpub/candidates_manifest.json"
+
+#: P0 §3.2.1-3 / §6.3: 種の作り方。round は push の 24 時間後以降の最初の drand round (凍結後に記録)
+DRAND_RULE = {
+    "round": None,
+    "when": "凍結 commit を GitHub に push した時刻 (サーバー側) の 24 時間後以降で最初の drand (League of Entropy) の round",
+    "seed": "int(sha256('<r>:<label>')[:8], 16)",
+    "labels": ["h-pub", "h-pub-noref", "s-eval"],
+    "order": "凍結 → H-pub の抽出 → S-eval の生成 (P0 §6.3)",
 }
 
 
@@ -56,6 +81,8 @@ def frozen_versions() -> dict[str, object]:
     from ..claims.witness import WITNESS_VERSION
     from ..template.compile import TEMPLATE_VERSION
     from ..template.pass1 import Pass1Config
+    from .adapter import POSTHOC_MAX_SHIFT_ESD
+    from .arms import PERMUTATIONS
 
     return {
         "template": TEMPLATE_VERSION,
@@ -64,6 +91,8 @@ def frozen_versions() -> dict[str, object]:
         "bvparm_sha256": BVPARM_SHA256,  # 検査器の表 (リポジトリの外) — 中身は sha256 で固定
         "pass1_config": {k: _plain(v) for k, v in dataclasses.asdict(Pass1Config()).items()},
         "probe_config": {k: _plain(v) for k, v in dataclasses.asdict(ProbeConfig()).items()},
+        "permutations": list(PERMUTATIONS),
+        "posthoc_max_shift_esd": POSTHOC_MAX_SHIFT_ESD,
     }
 
 
@@ -92,9 +121,15 @@ def freeze_manifest(root: Path, *, p0_commit: str) -> dict[str, object]:
         components[name] = {
             "files": {f.relative_to(root).as_posix(): hashlib.sha256(f.read_bytes()).hexdigest() for f in files},
         }
+    from .hpub import SNAPSHOT_SHA256
+
+    hpub = json.loads((Path(root) / _HPUB_MANIFEST).read_text(encoding="utf-8"))
     return {
         "p0_commit": p0_commit,
         "versions": frozen_versions(),
         "components": components,
+        # 候補の確定数 (G5)。ハッシュの一覧そのものは components の sha256 で固定される
+        "hpub": {k: hpub[k] for k in ("k_ref", "k_noref")} | {"n_ref": hpub["ref"]["n"], "n_noref": hpub["noref"]["n"]},
+        "drand": {**DRAND_RULE, "s_eval_population_snapshot_sha256": SNAPSHOT_SHA256["cod_dl/cod_all.csv"]},
         "environment": _environment(),
     }

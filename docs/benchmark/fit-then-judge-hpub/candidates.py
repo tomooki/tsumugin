@@ -48,14 +48,10 @@ from tsumugin.prereg_eval.hpub import (  # noqa: E402
     profile_shape_ok,
     publication_key,
     rruff_fractions,
+    SNAPSHOT_SHA256,
 )
 from tsumugin.prereg_eval.synth import EXCLUDED_COMPOUNDS, _same_composition, composition_fractions  # noqa: E402
 
-#: P0 §3.2.1-1 で固定したスナップショット
-SNAPSHOT_SHA256 = {
-    "rruff_dl/XY_RAW.zip": "948a133482bb3c99da80194cc2848933aee668129beb209150f7f850cd4b0587",
-    "cod_dl/cod_all.csv": "95f08e5dc85aaef0b0f020e148b46b4ba85977074c8c34d1987db9cc7ab9ecac",
-}
 
 #: ゲート確認に使った種 (P0 §3.2.1-10。名前で除く)
 GATE_SPECIES = ("fluorite", "anglesite", "quartz", "calcite", "corundum")

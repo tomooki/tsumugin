@@ -193,6 +193,13 @@ def publication_key(meta: Mapping[str, object]) -> str | None:
     return None
 
 
+#: P0 §3.2.1-1 で固定したスナップショット (リポジトリの外。`S-eval` の母集団も COD の同じスナップショット — §6.3)
+SNAPSHOT_SHA256 = {
+    "rruff_dl/XY_RAW.zip": "948a133482bb3c99da80194cc2848933aee668129beb209150f7f850cd4b0587",
+    "cod_dl/cod_all.csv": "95f08e5dc85aaef0b0f020e148b46b4ba85977074c8c34d1987db9cc7ab9ecac",
+}
+
+
 def salted_hash(salt: str, entry_id: str) -> str:
     """public の抽出 manifest に置く ID のハッシュ ``sha256(salt ‖ ID)``。"""
     return hashlib.sha256((salt + entry_id).encode("utf-8")).hexdigest()

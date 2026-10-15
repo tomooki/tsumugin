@@ -55,3 +55,31 @@ def test_required_components_from_p0_are_all_there():
 def test_missing_file_is_an_error_not_a_skip(tmp_path):
     with pytest.raises(FileNotFoundError):
         freeze_manifest(tmp_path, p0_commit="x")
+
+
+def test_freeze_covers_the_quasi_case_table_and_the_hpub_candidate_manifest():
+    # P0 §0: 準 hold-out の事例表・H-pub の候補一覧 (salt 付きハッシュ)・共通の汎用装置パラメータ
+    files = {f.relative_to(ROOT).as_posix() for f in component_files(ROOT, "quasi_case_table")}
+    assert "docs/benchmark/fit-then-judge-quasi/case_table.json" in files
+    files = {f.relative_to(ROOT).as_posix() for f in component_files(ROOT, "hpub_candidates")}
+    assert {"docs/benchmark/fit-then-judge-hpub/candidates_manifest.json",
+            "docs/benchmark/fit-then-judge-hpub/hpub_generic_lab.instprm"} <= files
+
+
+def test_versions_carry_the_permutation_list_and_the_posthoc_threshold():
+    from tsumugin.prereg_eval.adapter import POSTHOC_MAX_SHIFT_ESD
+    from tsumugin.prereg_eval.arms import PERMUTATIONS
+
+    v = frozen_versions()
+    assert v["permutations"] == list(PERMUTATIONS) and len(v["permutations"]) >= 4
+    assert v["posthoc_max_shift_esd"] == POSTHOC_MAX_SHIFT_ESD
+
+
+def test_manifest_records_the_hpub_counts_and_the_drand_rule_with_round_left_open():
+    m = freeze_manifest(ROOT, p0_commit="abc123")
+    h = m["hpub"]
+    assert {"n_ref", "k_ref", "n_noref", "k_noref"} <= set(h) and h["k_ref"] + h["k_noref"] <= 30
+    d = m["drand"]
+    assert d["round"] is None  # push の 24 時間後以降の最初の round を後で記録する
+    assert set(d["labels"]) == {"h-pub", "h-pub-noref", "s-eval"}
+    assert len(d["s_eval_population_snapshot_sha256"]) == 64
