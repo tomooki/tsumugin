@@ -33,6 +33,14 @@ source = "各ベンチの索引。個別の由来は各エントリを参照"
 provenance = "public"
 source = "Jana2020 Cookbook Example 02.6 'CaTeO3 cyclic'"
 
+[entries."fit-then-judge-synthetic"]
+provenance = "synthetic"
+source = "fit-then-judge P0 §6 の合成 S-dev (COD の CC0 構造から GSAS-II calc-only + Poisson 雑音で生成)"
+note = """
+追跡するのは生成器・事例の定義・manifest だけ。パターンと CIF は `results/` (gitignore) に再生成する
+(manifest の sha256 で同一性を確かめる)。構造の出典は COD の ID・svnrevision・sha256 (CC0)。
+"""
+
 [entries."calibration"]
 provenance = "synthetic"
 source = "確率較正ベンチ (合成仮説集合; 実測データを用いない)"
