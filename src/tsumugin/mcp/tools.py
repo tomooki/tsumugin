@@ -151,7 +151,16 @@ def submit_analysis(
             "mode": "joint",
             "n_survivors": len(verification.verified),
             "verified_ids": [h.id for h in verification.verified],
-            "warnings": list(verification.warnings),
+            # 検証の警告に続けて探索の警告 (平坦パターン等) と backend の警告 (GSAS の特殊位置
+            #   吸着の記録など — ledger の無い経路の唯一の記録) を載せる。同種の文を畳むのは
+            #   backend の警告だけ (backend_warnings は畳み済み) — 自身の警告は重複除去のみ
+            "warnings": list(
+                dict.fromkeys(
+                    verification.warnings
+                    + search_result.warnings
+                    + search_result.backend_warnings
+                )
+            ),
         }
         n_candidates = len(candidate_phase_sets)
     else:
@@ -181,6 +190,8 @@ def submit_analysis(
                 }
                 for rk in analysis.ranked
             ],
+            # backend の警告 (全候補の段階精密化を通して出現順・重複なし)
+            "warnings": list(analysis.backend_warnings),
         }
         n_candidates = len(candidate_phase_sets)
 

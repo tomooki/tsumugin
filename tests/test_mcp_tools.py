@@ -1088,6 +1088,7 @@ def test_submit_single_finite_or_none_serializable_with_failed_rwp(monkeypatch):
 
     class _Analysis:
         ranked = (_failed_ranked("hyp-0000"),)
+        backend_warnings = ()
 
     def fake_analyze(two_theta, intensity, candidate_phase_sets, **kwargs):
         return _Analysis()
@@ -1130,6 +1131,7 @@ def test_submit_single_finite_or_none_serializable_with_nan_probability(monkeypa
 
     class _Analysis:
         ranked = (nan_ranked,)
+        backend_warnings = ()
 
     monkeypatch.setattr(t, "analyze_single_pattern", lambda *a, **k: _Analysis())
 

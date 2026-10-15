@@ -64,7 +64,13 @@ from typing import Literal
 import numpy as np
 
 from .._json import finite_or_none
-from ..backends.base import RefinementBackend, RefinementModel, RefinementResult, param_name
+from ..backends.base import (
+    RefinementBackend,
+    RefinementModel,
+    RefinementResult,
+    merge_warnings,
+    param_name,
+)
 from ..evidence.ic import BICBackend
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
 from ..multistart import MultistartConfig, MultistartEngine, MultistartResult
@@ -283,7 +289,7 @@ def discriminate_interval(
     #   REQ-004「判別時マルチスタート必須」を両端点で満たすため start/end 両方で適用する。B の端成分格子は
     #   A 端点で既に固定済みのため、代表として end 端点結果のみ result へ格納する (start 側は必須適用の
     #   充足が目的で結果は保持しない)。🟡
-    _, multistart_two_phase = _endpoint_multistarts(
+    ms_b_start, multistart_two_phase = _endpoint_multistarts(
         engine, two_theta, series, start, end, seq_b.endpoint_phases, _TWO_PHASE_REFINE_SUFFIXES
     )
 
@@ -388,8 +394,13 @@ def discriminate_interval(
         + multistart_single.warnings + multistart_two_phase.warnings
         + nested_warnings
         # backend の警告 (例: GSAS の structure_ref 経路の特殊位置吸着 — ledger の無い経路の唯一の
-        #   記録)。全フレームで同じ文が出るので区間をまたいで 1 回にまとめる。
-        + tuple(dict.fromkeys(seq_a.backend_warnings + seq_b.backend_warnings))
+        #   記録)。全フレーム・全 start で同じ文が出るので逐次と端点マルチスタートをまたいで 1 回にまとめる
+        #   (結果に残さない start 側のマルチスタートも精密化はしているので含める)。
+        #   並びは実行順 (仮説 A 逐次 → A 端点 → 仮説 B 逐次 → B 端点)。
+        + merge_warnings(
+            seq_a.backend_warnings, ms_a_start.backend_warnings, multistart_single.backend_warnings,
+            seq_b.backend_warnings, ms_b_start.backend_warnings, multistart_two_phase.backend_warnings,
+        )
     )
 
     # ---- ledger 記録 (提供時のみ・"discrimination." 前置。nested 経路は arbitrate/nested 自身も追記) --
@@ -519,7 +530,7 @@ def _refine_interval(
     sum_bic = 0.0
     rwps: list[float] = []
     warnings: list[str] = []
-    backend_warnings: dict[str, None] = {}  # 出現順を保つ集合
+    backend_warnings: list[str] = []
     endpoint_phases: dict[int, tuple[PhaseInstance, ...]] = {}
     endpoint_results: dict[int, RefinementResult] = {}
     finite_frames: set[int] = set()
@@ -535,7 +546,7 @@ def _refine_interval(
         )
         # 【direct refine】: staged 解放ループなし、seq_max_cycles で 1 回だけ精密化する 🔵
         result = backend.refine(model, max_cycles=seq_max_cycles)
-        backend_warnings.update(dict.fromkeys(result.warnings))
+        backend_warnings.extend(result.warnings)
         chi2 = float(result.chi2)
         if math.isfinite(chi2):
             # 【有限フレーム】: 釣り合いモデル DOF の bic を加算する 🔵
@@ -574,7 +585,7 @@ def _refine_interval(
         endpoint_phases=endpoint_phases,
         endpoint_results=endpoint_results,
         warnings=tuple(warnings),
-        backend_warnings=tuple(backend_warnings),
+        backend_warnings=merge_warnings(backend_warnings),
         finite_frames=frozenset(finite_frames),
         frame_states=tuple(frame_states),
     )
