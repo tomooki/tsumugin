@@ -365,6 +365,11 @@ discriminate(
 
 - **`structure_ref`** (実 CIF パス) を各相に入れる。`identify_and_add_phase` の出力 CIF や
   `convert_pattern` の出力を渡せる。入れないと格子/scale のみの判別 (プレースホルダ構造) になる。
+- `structure_ref` の CIF は GSAS が読む前に**特殊位置へ吸着**される (4 桁の 1/3 を GSAS-II は
+  一般位置 = 多重度 3 倍と読み、Rwp は良いまま組成が壊れる)。`warnings` の
+  「特殊位置へ吸着した原子 …」は**入力 CIF の桁が足りなかった**記録 (入力 CIF は書き換えない)、
+  「特殊位置への吸着を見送った …」は**多重度を保証できていない**記録 — 後者が出たら理由
+  (対称操作ループ欠落・H-M 名の設定接尾辞など) を CIF 側で直してから判別を読む。
 - 端成分 2 相は **同構造・別格子** が前提 (`phase_ref` 共有)。異構造 2 相反応はスコープ外。
 - `verdict` が `undecided` のときは **確定を主張しない**。`escalations` に理由 (僅差/両仮説高 R/
   比較不能) が入る。僅差なら `config.nested_arbitration` を付けて再裁定を試す —

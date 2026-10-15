@@ -96,14 +96,21 @@ def _site_symmetry_images(
 
 
 def site_symmetry_projector(
-    symops: "tuple[str, ...]", position: "tuple[float, float, float]", *, tol: float = 1e-4
+    symops: "tuple[str, ...]",
+    position: "tuple[float, float, float]",
+    *,
+    tol: float = 1e-4,
+    coord_error: "tuple[float, float, float] | None" = None,
 ) -> np.ndarray:
     """サイト対称群の射影子 ``P = (1/|G|)·Σ R`` を返す。
 
     許される変位方向はこの ``P`` の像である (``P·v = v`` なら全 ``R`` で不変)。
+    ``coord_error`` は :func:`snap_to_special_position` と同じ意味 (同じサイト対称群を引く)。
     """
     point = np.asarray(position, dtype=float)
-    matrices = [rotation for rotation, _ in _site_symmetry_images(symops, point, tol)]
+    matrices = [
+        rotation for rotation, _ in _site_symmetry_images(symops, point, tol, coord_error)
+    ]
     if not matrices:
         return np.eye(3)
     return np.mean(np.stack(matrices, axis=0), axis=0)
@@ -202,16 +209,21 @@ def site_coord_axes(
     position: "tuple[float, float, float]",
     *,
     tol: float = 1e-4,
+    coord_error: "tuple[float, float, float] | None" = None,
 ) -> "tuple[tuple[str, ...], tuple[str, ...]]":
     """``(自由軸, 固定軸)`` を **1 回の射影子計算**で返す (:func:`free_coord_axes` /
     :func:`fixed_coord_axes` の本体)。
 
     射影子は全対称操作をパースして作るので安くない (192 操作 × 20 原子で 1 相 ~70 ms)。
     `backends.topas` は simulate/refine のたびに相を組み直すので、サイトごとに 2 回作らない。
+
+    ``coord_error`` を :func:`snap_to_special_position` に渡したなら**同じ値をここにも渡す** —
+    射影だけ桁数を見ると、(1/3, 2/3, z) へ載せた原子を既定の 1e-4 で m サイトと読み、対称で
+    値が固定される x/y を固定と言えない (3 桁の 1/3 で起きる)。
     """
     if not symops:
         return (), ()
-    projector = site_symmetry_projector(symops, position, tol=tol)
+    projector = site_symmetry_projector(symops, position, tol=tol, coord_error=coord_error)
     free: list[str] = []
     fixed: list[str] = []
     for index, axis in enumerate(_AXES):

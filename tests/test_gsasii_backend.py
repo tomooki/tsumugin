@@ -279,7 +279,9 @@ def test_refine_failure_strips_stale_sigma_from_returned_phases(monkeypatch):
         def do_refinements(self, *_args, **_kwargs):
             raise RuntimeError("synthetic do_refinements failure")
 
-    def _fake_build_project(self, gpx_path, work_dir, phases_arg, two_theta, intensity, weights):
+    def _fake_build_project(
+        self, gpx_path, work_dir, phases_arg, two_theta, intensity, weights, *, notes=None
+    ):
         return _FailingGpx(), None, []
 
     monkeypatch.setattr(GSASIIBackend, "_build_project", _fake_build_project)
@@ -449,3 +451,149 @@ def test_apply_cell_preserves_cif_angles_overrides_only_lengths():
     assert cell[1:4] == [8.0, 9.0, 10.0]  # a/b/c は上書きされる
     assert cell[4] == 90.0 and cell[5] == 95.0 and cell[6] == 90.0  # β=95 保持 (潰さない)
     assert cell[7] > 0.0  # 体積が再計算される (単斜セルの正の体積)
+
+
+# --- 特殊位置の吸着 (structure_ref 実 CIF 分岐; PR #251 の残り経路) ---
+
+
+class _FakeG2Phase:
+    def getHAPvalues(self, hist):
+        return {"Scale": [1.0]}
+
+
+class _RecordingGpx:
+    """``add_phase`` に渡された CIF パスを記録する (GSAS 非依存)。"""
+
+    def __init__(self):
+        self.paths: list[str] = []
+
+    def add_phase(self, path, **kwargs):
+        self.paths.append(str(path))
+        return _FakeG2Phase()
+
+
+def _zno_cif(tmp_path, **kwargs):
+    """`tests/autorietveld/test_special_position_snap._zno_cif` (4 桁の 1/3 の ZnO) を借りる。"""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parent / "autorietveld" / "test_special_position_snap.py"
+    spec = importlib.util.spec_from_file_location("_special_position_snap_fixtures", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._zno_cif(tmp_path, **kwargs)
+
+
+def _bare_backend() -> GSASIIBackend:
+    backend = object.__new__(GSASIIBackend)  # GSAS-II の有無を問わず _add_phases だけ測る
+    backend.wavelength = 1.5406
+    return backend
+
+
+def test_structure_ref_cif_is_snapped_before_gsas_reads_it(monkeypatch, tmp_path):
+    """★discriminate/compare の実 CIF 分岐も、GSAS が読む前に 4 桁の 1/3 を特殊位置へ載せる。
+
+    GSAS-II の ``SytSym`` は ``(0.3333, 0.6667, z)`` を一般位置 (多重度 3 倍) と読み、Rwp は良い
+    まま完走する (PR #251 実測)。吸着の記録は ``notes`` (→ ``RefinementResult.warnings``) に残す
+    — この経路には ledger が無い。
+    """
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+
+
+    monkeypatch.setattr("tsumugin.backends.gsasii._apply_cell", lambda g2ph, lattice: None)
+    cif = _zno_cif(tmp_path)
+    phase = PhaseInstance(
+        phase_ref="zno", lattice=LatticeParams(3.2495, 3.2495, 5.2069, gamma=120.0),
+        structure_ref=str(cif),
+    )
+    gpx = _RecordingGpx()
+    notes: list[str] = []
+    _bare_backend()._add_phases(gpx, object(), (phase,), tmp_path / "work", notes=notes)
+
+    (given,) = gpx.paths
+    assert given != str(cif), "元の CIF をそのまま GSAS に渡した"
+    atoms = {a.label: a for a in read_structure_cif(given).atoms}
+    assert atoms["Zn1"].x == pytest.approx(1 / 3, abs=1e-10)
+    assert atoms["O1"].y == pytest.approx(2 / 3, abs=1e-10)
+    assert cif.read_text(encoding="utf-8").count("0.3333") == 2, "入力 CIF は書き換えない"
+    (note,) = notes
+    assert "zno" in note and "Zn1" in note and "O1" in note
+
+
+def test_structure_ref_cif_needing_no_snap_adds_no_note(monkeypatch, tmp_path):
+    """動かす原子が無い相は元の CIF をそのまま渡し、``warnings`` に何も足さない。"""
+
+    monkeypatch.setattr("tsumugin.backends.gsasii._apply_cell", lambda g2ph, lattice: None)
+    cif = _zno_cif(tmp_path, zn=("0.333333333333", "0.666666666667", "0"),
+                   o=("0.333333333333", "0.666666666667", "0.3817"))
+    phase = PhaseInstance(phase_ref="zno", lattice=LatticeParams(3.25, 3.25, 5.21),
+                          structure_ref=str(cif))
+    gpx = _RecordingGpx()
+    notes: list[str] = []
+    _bare_backend()._add_phases(gpx, object(), (phase,), tmp_path / "work", notes=notes)
+    assert gpx.paths == [str(cif)]
+    assert notes == []
+
+
+def test_structure_ref_cif_that_cannot_be_snapped_is_reported(monkeypatch, tmp_path):
+    """射影できなかった相は**黙って素通しにしない** — 理由を ``warnings`` に残す。"""
+
+    monkeypatch.setattr("tsumugin.backends.gsasii._apply_cell", lambda g2ph, lattice: None)
+    cif = _zno_cif(tmp_path, with_symops=False)
+    text = cif.read_text(encoding="utf-8").replace("_symmetry_space_group_name_H-M 'P 63 m c'\n", "")
+    cif.write_text(text, encoding="utf-8")
+    phase = PhaseInstance(phase_ref="zno", lattice=LatticeParams(3.25, 3.25, 5.21),
+                          structure_ref=str(cif))
+    gpx = _RecordingGpx()
+    notes: list[str] = []
+    _bare_backend()._add_phases(gpx, object(), (phase,), tmp_path / "work", notes=notes)
+    assert gpx.paths == [str(cif)]
+    (note,) = notes
+    assert "zno" in note and "H-M" in note
+
+
+@pytest.mark.gsas
+def test_refine_reports_snapped_atoms_and_gsas_sees_multiplicity_two(tmp_path):
+    """★実 GSAS: 4 桁の 1/3 の ZnO を structure_ref で精密化 → 多重度 2・吸着は ``warnings`` に出る。"""
+    from GSASII import GSASIIscriptable as G2sc
+
+    from tsumugin.backends.gsasii import _write_instprm
+
+
+    backend = GSASIIBackend()
+    phase = PhaseInstance(
+        phase_ref="zno", lattice=LatticeParams(3.2495, 3.2495, 5.2069, gamma=120.0),
+        structure_ref=str(_zno_cif(tmp_path)),
+    )
+    instprm = tmp_path / "i.instprm"
+    _write_instprm(instprm, backend.wavelength)
+    gpx = G2sc.G2Project(newgpx=str(tmp_path / "s.gpx"))
+    hist = gpx.add_simulated_powder_histogram("t", str(instprm), 20.0, 80.0, Tstep=0.05)
+    backend._add_phases(gpx, hist, (phase,), tmp_path / "work")
+    g2ph = gpx.phases()[0]
+    cx, ct, cs, _ = g2ph.data["General"]["AtomPtrs"]
+    mult = {row[ct - 1]: int(row[cs + 1]) for row in g2ph.data["Atoms"]}
+    assert mult == {"Zn1": 2, "O1": 2}, mult
+
+    tt = np.arange(20.0, 80.0, 0.05)
+    y = backend.simulate((phase,), tt)
+    result = backend.refine(RefinementModel(
+        phases=(phase,), free_params=frozenset({param_name(0, "scale")}),
+        two_theta=tt, intensity=y,
+    ))
+    assert any("Zn1" in w and "zno" in w for w in result.warnings), result.warnings
+
+
+def test_phases_sharing_one_cif_add_one_note(monkeypatch, tmp_path):
+    """二相仮説の端成分 2 相は同じ CIF を指す — 同じ吸着の文を 1 回の結果に 2 回載せない。"""
+    monkeypatch.setattr("tsumugin.backends.gsasii._apply_cell", lambda g2ph, lattice: None)
+    cif = _zno_cif(tmp_path)
+    pair = tuple(
+        PhaseInstance(phase_ref="zno", lattice=LatticeParams(a, a, 5.21), structure_ref=str(cif))
+        for a in (3.24, 3.26)
+    )
+    gpx = _RecordingGpx()
+    notes: list[str] = []
+    _bare_backend()._add_phases(gpx, object(), pair, tmp_path / "work", notes=notes)
+    assert len(gpx.paths) == 2
+    assert len(notes) == 1, notes

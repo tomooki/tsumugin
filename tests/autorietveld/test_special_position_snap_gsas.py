@@ -3,7 +3,7 @@
 - カナリア: 4 桁の 1/3 を GSAS-II がそのまま読むと一般位置 (多重度 6) になる。GSAS-II の
   更新で直ったらこのテストが落ちる — そのときは吸着が要るかを再検討する。
 - 吸着後の CIF を読ませると 3m サイト (多重度 2)、自由軸 z は CIF の値のまま。
-- 空間群記号からの対称操作の補完 (`_gsas_space_group_symops`) が GSAS の群と一致する。
+- 空間群記号からの対称操作の補完 (`special_positions.gsas_space_group_symops`) が GSAS の群と一致する。
 """
 
 from __future__ import annotations
@@ -38,12 +38,12 @@ def test_gsas_reads_four_decimal_thirds_as_general_positions(tmp_path):
 @pytest.mark.parametrize("with_symops", [True, False], ids=["cif-symops", "space-group"])
 def test_snapped_cif_gives_multiplicity_two(tmp_path, with_symops):
     """★吸着後は 3m サイト (多重度 2)。自由軸 z は動かない。"""
-    from tsumugin.autorietveld.engine import _gsas_space_group_symops
+    from tsumugin.autorietveld.special_positions import gsas_space_group_symops
     from tsumugin.autorietveld.special_positions import snap_cif_special_positions
 
     report = snap_cif_special_positions(
         _zno_cif(tmp_path, with_symops=with_symops), tmp_path / "out", phase_name="ZnO",
-        space_group_symops=_gsas_space_group_symops,
+        space_group_symops=gsas_space_group_symops,
     )
     assert report.status == "snapped"
     assert report.symop_source == ("cif" if with_symops else "space_group")

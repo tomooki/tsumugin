@@ -229,12 +229,15 @@ def _site(
 ) -> TopasSite:
     """1 原子を `TopasSite` へ写す (特殊位置は厳密値へ吸着させる)。"""
     raw = (atom.x, atom.y, atom.z)
-    x, y, z = snap_to_special_position(symops, raw)
+    # 【許容差は CIF に書かれた桁数から】: 3 桁の 1/3 (``0.333``/``0.667``) は既定の 1e-4 では
+    #   特殊位置と認められず、TOPAS が一般位置 (多重度 3 倍) として読む。`Atom.coord_error` は
+    #   `read_structure_cif` がトークンから埋めた丸め誤差 (GSAS 経路の `special_positions` と同じ規則)。
+    x, y, z = snap_to_special_position(symops, raw, coord_error=atom.coord_error)
     # 【自由軸・固定軸は吸着前の座標で判定する】: 吸着は判定結果を変えないが (同じサイト対称群
     #   から出るので)、判定の入力を吸着後にすると「吸着が自分の判定根拠を作る」循環に
-    #   なる。1e-4 の許容差で拾えなかったサイトが吸着で拾えるようになる、という
-    #   取りこぼしの隠蔽を避ける。
-    free_axes, fixed_axes = site_coord_axes(symops, raw)
+    #   なる。拾えなかったサイトが吸着で拾えるようになる、という取りこぼしの隠蔽を避ける。
+    #   同じサイト対称群を引くために**同じ許容差** (coord_error) を渡す。
+    free_axes, fixed_axes = site_coord_axes(symops, raw, coord_error=atom.coord_error)
     return TopasSite(
         label=atom.label,
         element=to_topas_element(atom.type_symbol, ionic=ionic_scattering),
