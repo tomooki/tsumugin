@@ -1,0 +1,45 @@
+{
+  "case_id": "sdev08_fo_missing_atom",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "1572966",
+      "revision": "295660",
+      "sha256": "dc170b976eac15dd037111af3e949125800827d3197d356698b45a354c694a3b",
+      "license": "CC0",
+      "phase_name": "Mg2SiO4",
+      "formula": "Mg2 Si O4",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "lab_bb",
+  "max_counts": 100000.0,
+  "seed": 108,
+  "defects": [
+    {
+      "kind": 2,
+      "target": "Mg2SiO4.O1",
+      "magnitude": null,
+      "truth": "O1 O-2 (0.24610, 0.08540, 0.75000) occ=1.0000",
+      "start": "O1 absent"
+    }
+  ],
+  "mismatches": [],
+  "expected": [
+    "residual / judgment request"
+  ],
+  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "6566fe794f4abef168a0d0c7d83742b924f9ab51695c456ead1ef1b8c02d63de",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_Mg2SiO4.cif",
+      "phase_name": "Mg2SiO4",
+      "refine_cell": true
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "case_id": "sdev01_zno_control",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "1011258",
+      "revision": "201954",
+      "sha256": "36048fbb028bb2b080971aa754b20cba27b27bb1b415e4c62d96d9d570fa795f",
+      "license": "CC0",
+      "phase_name": "ZnO",
+      "formula": "Zn O",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "lab_bb",
+  "max_counts": 10000.0,
+  "seed": 101,
+  "defects": [],
+  "mismatches": [],
+  "expected": [
+    "control: no defect-specific detector should fire"
+  ],
+  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "b38607ac1cfaf23bf68d86d0313b676291c42129fbc08252ab4c16558a2b96e9",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_ZnO.cif",
+      "phase_name": "ZnO",
+      "refine_cell": true
+    }
+  ]
+}

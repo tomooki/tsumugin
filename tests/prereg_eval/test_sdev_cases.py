@@ -134,3 +134,15 @@ def test_manifest_records_true_and_starting_values(cifs, tmp_path):
     assert d.truth.startswith("O3 O (0.28000") and d.start.startswith("O3 O (") and d.truth != d.start
     m = gen.build_case(by["sdev12_mix_minor_frozen"], cifs, tmp_path / "f")["manifest"]
     assert "frozen" in m.defects[0].start and m.defects[0].truth.startswith("a=5.42000")
+
+
+def test_every_case_has_a_tracked_manifest_with_a_pattern_hash():
+    import json
+
+    from tsumugin.prereg_eval.synth import CaseManifest
+
+    for c in cases.CASES:
+        raw = json.loads((_DIR / "manifests" / f"{c.case_id}.json").read_text(encoding="utf-8"))
+        raw.pop("start_phases_relative")
+        m = CaseManifest.from_dict(raw)
+        assert m.case_id == c.case_id and len(m.pattern_sha256) == 64 and m.generator_commit

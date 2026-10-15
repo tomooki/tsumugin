@@ -1,0 +1,45 @@
+{
+  "case_id": "sdev06_fo_cell",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "1572966",
+      "revision": "295660",
+      "sha256": "dc170b976eac15dd037111af3e949125800827d3197d356698b45a354c694a3b",
+      "license": "CC0",
+      "phase_name": "Mg2SiO4",
+      "formula": "Mg2 Si O4",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "lab_bb",
+  "max_counts": 10000.0,
+  "seed": 106,
+  "defects": [
+    {
+      "kind": 6,
+      "target": "Mg2SiO4.cell factors=(0.98754, 0.98071, 0.98722)",
+      "magnitude": null,
+      "truth": "a=4.75420 b=10.20480 c=5.98390",
+      "start": "a=4.69498 b=10.00800 c=5.90745"
+    }
+  ],
+  "mismatches": [],
+  "expected": [
+    "recovered within convergence radius"
+  ],
+  "generator_commit": "419192f49338551e55a83c23af02e389fd39b5be",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "600a68d12c729ab580cde4e8c0e47f76945eb4ad568769f71fab5158977c5e73",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_Mg2SiO4.cif",
+      "phase_name": "Mg2SiO4",
+      "refine_cell": true
+    }
+  ]
+}
