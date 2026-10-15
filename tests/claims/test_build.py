@@ -320,3 +320,32 @@ def test_a_value_left_unrefined_in_one_start_is_not_promoted():
     assert c.determinacy is not Determinacy.DETERMINED
     assert c.determinacy is not Determinacy.INITIAL_VALUE_DEPENDENT
     assert any(w.kind == "provenance_varied" for w in c.witnesses)
+
+
+def _scored(gof, *, n_obs=1000, **kw):
+    return _result(stage_results=(StageResult("S0", 10.0, gof, 5, True),), final_gof=gof, n_obs=n_obs, **kw)
+
+
+def test_a_start_with_a_clearly_worse_fit_is_left_out_of_the_comparison():
+    """最良より χ² が有意に大きい開始点は「最良の解に届かなかった」— 値の一致の比較から外す (2026-10-15 ユーザー決定)。"""
+    lost = _scored(3.0, atom_coords={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.35, 0.1, 0.3)}})
+    claims = with_convergence(base_claims(_scored(1.2)), _ms([_scored(1.2), _scored(1.2), lost]))
+    c = claims["coord:P.O1.x"]
+    assert c.determinacy is not Determinacy.INITIAL_VALUE_DEPENDENT
+    assert c.determinacy is not Determinacy.DETERMINED  # 全開始点が揃っていないので昇格もしない
+
+
+def test_a_start_with_an_equivalent_fit_still_counts():
+    close = _scored(1.2001, atom_coords={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.35, 0.1, 0.3)}})
+    claims = with_convergence(base_claims(_scored(1.2)), _ms([_scored(1.2), _scored(1.2), close]))
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.INITIAL_VALUE_DEPENDENT
+
+
+def test_converged_starts_reports_kept_and_excluded():
+    from tsumugin.claims.build import converged_starts
+
+    kept, excluded = converged_starts(_ms([_scored(1.2), _scored(1.2), _scored(3.0)]))
+    assert len(kept) == 2 and len(excluded) == 1
+    # χ² を出せない (n_obs 不明) 開始点は判定できないので残す
+    kept, excluded = converged_starts(_ms([_scored(1.2, n_obs=0), _scored(3.0, n_obs=0), _scored(1.2, n_obs=0)]))
+    assert len(kept) == 3 and not excluded
