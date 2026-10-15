@@ -31,7 +31,7 @@
   "expected": [
     "origin fixed, same solution modulo translation"
   ],
-  "generator_commit": "202033c56b471088cbf489f837a6eb91121b0516",
+  "generator_commit": "881b353aec25674a6d9baf4ac2546e83050535c6",
   "versions": {
     "numpy": "2.5.0",
     "gsas2": "5837"

@@ -4,9 +4,9 @@
   "phases": [
     {
       "db": "COD",
-      "entry_id": "1572966",
+      "entry_id": "1572968",
       "revision": "295660",
-      "sha256": "dc170b976eac15dd037111af3e949125800827d3197d356698b45a354c694a3b",
+      "sha256": "17000cd5654b305db3274b630bc1cdf2e9243fd2dfe6d023a45f15e790badad8",
       "license": "CC0",
       "phase_name": "Mg2SiO4",
       "formula": "Mg2 Si O4",
@@ -21,20 +21,20 @@
       "kind": 6,
       "target": "Mg2SiO4.cell factors=(0.98754, 0.98071, 0.98722)",
       "magnitude": null,
-      "truth": "a=4.75420 b=10.20480 c=5.98390",
-      "start": "a=4.69498 b=10.00800 c=5.90745"
+      "truth": "a=4.75300 b=10.20840 c=5.98480",
+      "start": "a=4.69380 b=10.01153 c=5.90834"
     }
   ],
   "mismatches": [],
   "expected": [
     "recovered within convergence radius"
   ],
-  "generator_commit": "202033c56b471088cbf489f837a6eb91121b0516",
+  "generator_commit": "881b353aec25674a6d9baf4ac2546e83050535c6",
   "versions": {
     "numpy": "2.5.0",
     "gsas2": "5837"
   },
-  "pattern_sha256": "600a68d12c729ab580cde4e8c0e47f76945eb4ad568769f71fab5158977c5e73",
+  "pattern_sha256": "7f5770be0e5c53d580b93f35443876cc4279874e380f05d9ac3cba224ca262fc",
   "start_phases_relative": [
     {
       "structure_path": "start_Mg2SiO4.cif",
