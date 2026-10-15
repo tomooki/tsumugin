@@ -137,3 +137,43 @@ def test_any_valence_rows_are_the_fallback(tmp_path, monkeypatch):
     path, result = _zno(tmp_path)
     outcome, witness = ch.crystal_chemistry("P", path, result)["bvs_gii"]
     assert outcome == Check.PASS and witness.detail["gii"] < 0.1
+
+
+_PYRITE = """data_x
+_cell_length_a 5.4166
+_cell_length_b 5.4166
+_cell_length_c 5.4166
+_cell_angle_alpha 90
+_cell_angle_beta 90
+_cell_angle_gamma 90
+_symmetry_space_group_name_H-M 'P a -3'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_U_iso_or_equiv
+Fe1 Fe 0 0 0 1 0.004
+S1 S 0.3848 0.3848 0.3848 1 0.005
+"""
+
+
+def test_anion_anion_bonds_make_bond_valence_unevaluated(table, tmp_path):
+    """パイライトの S₂ のように陰イオン同士が結合していると結合原子価の模型が当てはまらない — fail にしない。"""
+    p = tmp_path / "pyrite.cif"
+    p.write_text(_PYRITE, encoding="utf-8")
+    result = SimpleNamespace(
+        refined_cells={"P": (5.4166, 5.4166, 5.4166, 90.0, 90.0, 90.0)},
+        atom_coords={"P": {"Fe1": (0.0, 0.0, 0.0), "S1": (0.3848, 0.3848, 0.3848)}},
+        atom_occupancy={"P": {"Fe1": 1.0, "S1": 1.0}},
+    )
+    outcome, witness = ch.crystal_chemistry("P", str(p), result)["bvs_gii"]
+    assert outcome == Check.UNEVALUATED and "anion" in witness.detail["reason"]
+
+
+def test_ordinary_oxides_are_not_caught_by_the_anion_rule(table, tmp_path):
+    path, result = _zno(tmp_path)
+    outcome, _ = ch.crystal_chemistry("P", path, result)["bvs_gii"]
+    assert outcome == Check.PASS

@@ -213,6 +213,31 @@ def _pair_table() -> tuple[dict | None, str]:
     return load_bv_pair_table(path), f"pair-table {path.name} sha256={'unchecked' if BVPARM_SHA256 is None else BVPARM_SHA256[:12]}"
 
 
+#: 陰イオン同士がこの倍率 × 原子半径の和より近ければ結合している (S₂ 二量体・過酸化物) とみなす
+_ANION_BOND_RATIO = 1.2
+
+
+def _anion_anion_bond(pmg, valences: Mapping[str, float]) -> str | None:
+    """陰イオン同士の結合があれば、その対の説明。結合原子価の模型 (陽イオン–陰イオンの結合だけ) が当てはまらない。"""
+    from pymatgen.core.periodic_table import Element
+
+    for i, site in enumerate(pmg):
+        an_i = [sp for sp in site.species if valences.get(sp.symbol, 0.0) < 0]
+        if not an_i:
+            continue
+        for nb in pmg.get_neighbors(site, _NEIGHBOR_CUTOFF):
+            for sp_i in an_i:
+                for sp_j in nb.species:
+                    if valences.get(sp_j.symbol, 0.0) >= 0:
+                        continue
+                    ri, rj = Element(sp_i.symbol).atomic_radius, Element(sp_j.symbol).atomic_radius
+                    if ri is None or rj is None:
+                        continue
+                    if float(nb.nn_distance) < _ANION_BOND_RATIO * (float(ri) + float(rj)):
+                        return f"anion-anion bond {sp_i.symbol}-{sp_j.symbol} {float(nb.nn_distance):.3f} A"
+    return None
+
+
 def _int_valence(v: float) -> int | None:
     r = round(v)
     return int(r) if abs(v - r) < 1e-6 else None
@@ -315,6 +340,10 @@ def _evaluate(phase: str, structure_path: str, result: object) -> dict[str, tupl
     table, method = _pair_table()
 
     def gii(pmg_, valences_):  # noqa: ANN001, ANN202
+        bond = _anion_anion_bond(pmg_, valences_)
+        if bond is not None:
+            # 模型の適用範囲の外 — 正しい構造を fail にしない (パイライトの S₂ で GII 1.17 だった, P1.5)
+            return Check.UNEVALUATED, {"reason": f"bond valence model not applicable: {bond}"}
         if table is not None:
             return _gii_pairs(pmg_, valences_, table)
         if method != "element-estimate":
