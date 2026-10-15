@@ -659,6 +659,34 @@ def test_physical_problem_reports_likelihood_refine_warnings_to_sink():
     assert tuple(sink) == (_skip_note("A"),)
 
 
+class RaisingAfterEvaluationNestedBackend:
+    """尤度を 1 回評価してから例外を投げる — 裁定が途中で失敗した経路。"""
+
+    def run_with_fallback(self, problem, *, ledger=None):
+        problem.log_likelihood(problem.map_point)
+        raise RuntimeError("nested exploded")
+
+
+def test_discrimination_keeps_likelihood_warnings_when_arbitration_raises():
+    # 裁定が例外で縮退しても、それまでに評価した精密化の文は残る (sink は try の外)
+    from tsumugin.nested.arbitration import ArbitrationConfig
+    from tsumugin.operando.discrimination import DiscriminationConfig, discriminate_interval
+
+    config = DiscriminationConfig(
+        seq_max_cycles=10, multistart=MultistartConfig(n_starts=2, ms_max_cycles=15),
+        nested_arbitration=ArbitrationConfig(),
+    )
+    series = FrameSeries(two_theta=GRID, intensities=np.ones((4, GRID.size)))
+    result = discriminate_interval(
+        CloseNoteBackend(), series, (0, 3), (_phase(4.0, "A"),),
+        config=config, nested_backend=RaisingAfterEvaluationNestedBackend(),
+    )
+
+    assert result.adjudicated_by == "bic"  # 縮退した上で
+    assert any("例外で失敗" in w for w in result.warnings)
+    assert "phases-1 cycles-1" in result.warnings
+
+
 def test_discrimination_carries_nested_likelihood_warnings_after_multistart():
     from tsumugin.nested.arbitration import ArbitrationConfig
     from tsumugin.operando.discrimination import DiscriminationConfig, discriminate_interval
