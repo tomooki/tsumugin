@@ -106,6 +106,43 @@ def _g2sc():
     return G2sc
 
 
+def _gsas_space_group_symops(hm: str) -> tuple[str, ...]:
+    """H-M 記号から GSAS-II 自身の空間群展開で一般位置を xyz 表記で返す。
+
+    CIF に対称操作ループが無いとき GSAS は H-M 名から群を作る — 同じ群で射影するために
+    GSAS の ``SpcGroup`` を使う (中心並進・反転を展開する)。
+    """
+    from GSASII import GSASIIspc as G2spc
+
+    err, sg = G2spc.SpcGroup(hm)
+    if err:
+        raise ValueError(G2spc.SGErrors(err))
+    ops: list[str] = []
+    signs = (1, -1) if sg["SGInv"] else (1,)
+    for cen in sg["SGCen"]:
+        for sign in signs:
+            for rotation, translation in sg["SGOps"]:
+                text = G2spc.MT2text((sign * rotation, sign * translation + cen))
+                ops.append(text.replace(" ", "").lower())
+    return tuple(ops)
+
+
+def _snap_special_positions(spec: PhaseSpec, out_dir: Path):
+    """GSAS に渡す前に CIF の原子を特殊位置へ射影する (CIF 以外は記録だけして素通し)。"""
+    from .special_positions import SnapReport, snap_cif_special_positions
+
+    if spec.format_hint.upper() != "CIF":
+        return SnapReport(
+            phase=spec.phase_name, status="skipped", path=spec.structure_path,
+            source=spec.structure_path,
+            reason=f"format_hint={spec.format_hint!r} (CIF 以外は射影しない)",
+        )
+    return snap_cif_special_positions(
+        spec.structure_path, out_dir, phase_name=spec.phase_name,
+        space_group_symops=_gsas_space_group_symops,
+    )
+
+
 class RefinementFailedError(RuntimeError):
     """GSAS-II の精密化が失敗したことを示す (段階ごとの inf 化 → revert 経路に載せるため)。"""
 
@@ -2761,8 +2798,16 @@ def run_auto_rietveld(
         # --- 相追加 ---
         g2phases = []
         for p in phases:
+            # 【特殊位置へ吸着してから読ませる】: GSAS-II はサイト対称・多重度を座標の一致で
+            #   決め、4 桁の 1/3 を一般位置 (多重度 3 倍) と読む。Rwp は良いまま完走するので、
+            #   読む前に射影し、どの原子をどれだけ動かしたかを残す (`special_positions`)。
+            #   記録は「動かした」「射影できなかった」ときだけ — 何も起きなかった相に行を足すと
+            #   既定経路の ledger (ハッシュ鎖・診断を出さない契約) が全 CIF で変わる。
+            snap = _snap_special_positions(p, tmp_path / "special-positions")
+            if snap.status != "unchanged":
+                ledger.append("m7_special_position_snap", snap.to_dict())
             ph = gpx.add_phase(
-                p.structure_path,
+                snap.path,
                 phasename=p.phase_name,
                 histograms=g2hists,
                 fmthint=p.format_hint,
