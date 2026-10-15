@@ -321,7 +321,12 @@ def test_default_run_emits_no_stability_entries(monkeypatch):
     #   ``m7_gpx_*`` は 2026-08-20 規定 (NFR-108) で既定経路が**成果物を保存するようになった**
     #   ため増えた行で、診断ではなく**実際に起きた状態変化の記録** (P2/NFR-105 の追記対象)。
     #   保存を止めれば消える (`save_gpx=False`) — 下の姉妹テストで確認している。
-    assert kinds <= {"m7_stage", "m7_stage_error", "m7_gpx_saved", "m7_gpx_error"}, kinds
+    #   ``m7_special_position_snap`` も診断ではなく入力への処置の記録 (2026-10-15): 原子を特殊
+    #   位置へ動かした・射影できなかったときだけ出る。T1 は相を GSAS .EXP で渡すので「CIF 以外は
+    #   射影しない」の skipped が 1 行出る (動かす原子が無い CIF なら行は出ない)。
+    assert kinds <= {
+        "m7_stage", "m7_stage_error", "m7_gpx_saved", "m7_gpx_error", "m7_special_position_snap"
+    }, kinds
     assert "m7_gpx_saved" in kinds, "既定経路で成果物が保存されていない (NFR-108)"
     assert all(
         "unconverged" not in s.note and "noop" not in s.note for s in result.stage_results
@@ -340,7 +345,8 @@ def test_save_gpx_false_leaves_only_stage_entries():
     run_auto_rietveld(hists, phases, recipe=recipe, ledger=ledger, max_cyc=3, save_gpx=False)
 
     kinds = {e.kind for e in ledger.entries}
-    assert kinds <= {"m7_stage", "m7_stage_error"}, kinds
+    # ``m7_special_position_snap`` は上のテストの注記どおり保存とは独立の入力処置の記録。
+    assert kinds <= {"m7_stage", "m7_stage_error", "m7_special_position_snap"}, kinds
 
 
 @pytest.mark.skipif(not _data_present(), reason="M7 T1 データ未取得")

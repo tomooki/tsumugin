@@ -261,3 +261,16 @@ def test_engine_records_non_cif_phases_as_skipped(monkeypatch, tmp_path):
         {"phase": "X", "status": "skipped", "symop_source": None, "moved": [],
          "reason": "format_hint='EXP' (CIF 以外は射影しない)", "path": str(tmp_path / "x.EXP")}
     ]
+
+
+def test_engine_adds_no_ledger_row_when_nothing_moved(monkeypatch, tmp_path):
+    """既定経路の ledger は状態変化の記録だけ (`test_stability_gates_gsas`) — 動かす原子が
+    無い相は行を足さず、元の CIF をそのまま GSAS に渡す。"""
+    src = _zno_cif(
+        tmp_path,
+        zn=("0.333333333333", "0.666666666667", "0.0"),
+        o=("0.333333333333", "0.666666666667", "0.3817"),
+    )
+    seen, entries = _run_engine(monkeypatch, [PhaseSpec(structure_path=str(src), phase_name="ZnO")])
+    assert entries == []
+    assert seen["ZnO"] == src.read_text(encoding="utf-8")

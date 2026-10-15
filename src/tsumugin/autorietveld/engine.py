@@ -2800,8 +2800,11 @@ def run_auto_rietveld(
             # 【特殊位置へ吸着してから読ませる】: GSAS-II はサイト対称・多重度を座標の一致で
             #   決め、4 桁の 1/3 を一般位置 (多重度 3 倍) と読む。Rwp は良いまま完走するので、
             #   読む前に射影し、どの原子をどれだけ動かしたかを残す (`special_positions`)。
+            #   記録は「動かした」「射影できなかった」ときだけ — 何も起きなかった相に行を足すと
+            #   既定経路の ledger (ハッシュ鎖・診断を出さない契約) が全 CIF で変わる。
             snap = _snap_special_positions(p, tmp_path / "special-positions")
-            ledger.append("m7_special_position_snap", snap.to_dict())
+            if snap.status != "unchanged":
+                ledger.append("m7_special_position_snap", snap.to_dict())
             ph = gpx.add_phase(
                 snap.path,
                 phasename=p.phase_name,
