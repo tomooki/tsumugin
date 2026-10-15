@@ -168,8 +168,12 @@ def _read_symop_loop(lines: list[str]) -> tuple[str, ...]:
     return tuple(ops)
 
 
-def _read_atom_loop(lines: list[str]) -> list[Atom]:
-    """atom_site ループを走査し :class:`Atom` 列へ。"""
+def _atom_loop_rows(lines: list[str]) -> tuple[dict[str, int], list[tuple[int, list[str]]]]:
+    """atom_site ループの (タグ → 列番号, [(行番号, トークン列)]) を返す。
+
+    行番号は ``lines`` の添字 — 座標だけを書き換える側 (`special_positions`) が同じ行を
+    引き当てられるように、読み手と書き換え手で同じ走査を共有する。
+    """
     label_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "_atom_site_label"), None)
     if label_idx is None:
         raise ValueError("CIF に _atom_site_label ループが見つかりません。")
@@ -186,9 +190,9 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
     if any(t not in col for t in need):
         raise ValueError("atom_site ループに分率座標列がありません。")
 
-    atoms: list[Atom] = []
-    for ln in lines[i:]:
-        s = ln.strip()
+    rows: list[tuple[int, list[str]]] = []
+    for k in range(i, len(lines)):
+        s = lines[k].strip()
         # 空行はサイト行の区切りとして許容し読み飛ばす (一部 CIF ライタは行間に空行を挿む)。
         # ループ終端は構造トークン (loop_/_tag/#/;) でのみ判定する。
         if not s:
@@ -198,6 +202,15 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
         row = s.split()
         if len(row) < len(tags):
             continue
+        rows.append((k, row))
+    return col, rows
+
+
+def _read_atom_loop(lines: list[str]) -> list[Atom]:
+    """atom_site ループを走査し :class:`Atom` 列へ。"""
+    col, rows = _atom_loop_rows(lines)
+    atoms: list[Atom] = []
+    for _, row in rows:
         label = row[col["_atom_site_label"]]
         if "_atom_site_type_symbol" in col:
             tsym = row[col["_atom_site_type_symbol"]]
