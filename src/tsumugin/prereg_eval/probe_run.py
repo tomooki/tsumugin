@@ -73,6 +73,33 @@ def _add_atom_flag(ph, flag: str) -> None:
             row[ct + 1] = flags + flag
 
 
+def _ungroup_uiso(gpx, ph) -> int:
+    """対象相の Uiso の等値拘束を外す (共位置の原子 = 混合占有の席どうしの拘束は残す — 同じ席の Uiso は物理)。外した数。
+
+    拘束の変数は `G2VarObj` で、相と原子はランダム ID で指す (読み込んだだけの gpx では名前が ``?::AUiso:?`` のまま) —
+    engine の `_coord_constrained_axes` と同じく ``var.phase`` / ``var.atom`` / ``var.name`` で照合する。
+    """
+    phase_rid = ph.data["ranId"]
+    general = ph.data["General"]
+    cx, _ct, _cs, cia = (int(v) for v in general["AtomPtrs"])
+    pos = {row[cia + 8]: tuple(round(float(v), 6) for v in row[cx:cx + 3]) for row in ph.data["Atoms"]}
+    kept, removed = [], 0
+    for con in gpx.data["Constraints"]["data"].get("Phase", []):
+        kind = con[-1] if con and isinstance(con[-1], str) else ""
+        terms = [t[1] for t in con if isinstance(t, (list, tuple)) and len(t) >= 2]
+        uiso_atoms = [
+            getattr(v, "atom", None) for v in terms
+            if getattr(v, "phase", None) == phase_rid and str(getattr(v, "name", "")) == "AUiso"
+        ]
+        if kind == "e" and terms and len(uiso_atoms) == len(terms):
+            if len({pos.get(a) for a in uiso_atoms}) > 1:  # 位置の違う原子をまとめた組 = テンプレートの選択
+                removed += 1
+                continue
+        kept.append(con)
+    gpx.data["Constraints"]["data"]["Phase"] = kept
+    return removed
+
+
 def _release(gpx, probe_id: str, phase: str | None) -> None:
     if probe_id == "zero_fixed":
         for h in gpx.histograms():
@@ -83,6 +110,11 @@ def _release(gpx, probe_id: str, phase: str | None) -> None:
         _add_atom_flag(_phase(gpx, phase), "X")  # type: ignore[arg-type]
     elif probe_id == "minor_uiso_frozen":
         _add_atom_flag(_phase(gpx, phase), "U")  # type: ignore[arg-type]
+    elif probe_id == "uiso_grouping":
+        ph = _phase(gpx, phase)  # type: ignore[arg-type]
+        if _ungroup_uiso(gpx, ph) == 0:
+            raise ValueError("no Uiso grouping to undo")
+        _add_atom_flag(ph, "U")
     else:
         raise ValueError(f"実行できないプローブ: {probe_id!r}")
 
@@ -92,7 +124,7 @@ def _delta_columns(gpx, added: list[str], probe_id: str, phase: str | None) -> l
     if probe_id == "zero_fixed":
         return [np.array([delta_zero()[0] if n.endswith(":Zero") else 0.0 for n in added])]
     ph = _phase(gpx, phase)  # type: ignore[arg-type]
-    if probe_id in ("minor_coords_frozen", "minor_uiso_frozen"):
+    if probe_id in ("minor_coords_frozen", "minor_uiso_frozen", "uiso_grouping"):
         cell = ph.data["General"]["Cell"][1:4]
         cols = []
         for i, n in enumerate(added):
@@ -100,7 +132,7 @@ def _delta_columns(gpx, added: list[str], probe_id: str, phase: str | None) -> l
             if probe_id == "minor_coords_frozen" and ":dA" in n:
                 axis = "xyz".index(n.split(":dA")[1][0])
                 v[i] = _COORD_ANG / float(cell[axis])
-            elif probe_id == "minor_uiso_frozen" and ":AUiso:" in n:
+            elif probe_id in ("minor_uiso_frozen", "uiso_grouping") and ":AUiso:" in n:
                 v[i] = delta_uiso(1)[0]
             else:
                 return None
