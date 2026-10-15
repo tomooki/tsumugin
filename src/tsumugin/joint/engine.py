@@ -24,6 +24,7 @@ joint 全体は例外を投げない (staged.py の chi2=inf 非例外化の流�
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 
@@ -31,6 +32,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
+    merge_warnings,
 )
 from ..model import PhaseInstance, strip_lattice_sigma
 from ..store.ledger import Ledger
@@ -140,6 +142,7 @@ def _run_joint(
     tuple[RefinementResult, ...],
     tuple[float, ...],
     tuple[int, ...],
+    tuple[str, ...],
 ]:
     """簡易ブロック座標降下で joint 精密化を回す共通コア (D2)。
 
@@ -147,13 +150,16 @@ def _run_joint(
     共有相 phases を次サイクルへ持ち越す。共有相がビット同一で安定したら収束打ち切り。
     失敗ヒストは chi2=inf のまま伝播し、当該ヒストでは共有相を更新しない。
 
-    :returns: (最終共有相, 各ヒスト最終結果 (入力順), 実効重み, 失敗ヒスト index 列)
+    :returns: (最終共有相, 各ヒスト最終結果 (入力順), 実効重み, 失敗ヒスト index 列,
+        backend の警告)。backend の警告は**全サイクル**の精密化から集める (per_results は最終
+        サイクルしか持たないので、そこから拾うと前のサイクルの文が落ちる)。
     """
     weights = weighting.resolve(model)
     n_hist = len(model.histograms)
     phases = model.phases
 
     per_results: list[RefinementResult] = [None] * n_hist  # type: ignore[list-item]
+    backend_warnings: list[str] = []
 
     if ledger is not None:
         ledger.append(
@@ -172,6 +178,7 @@ def _run_joint(
             free = _histogram_free(model, k)
             res = _refine_one(backend, phases, hist, free, max_cycles=max_cycles)
             per_results[k] = res
+            backend_warnings.extend(res.warnings)
             # 共有相の χ² 和更新: 成功ヒストのみ更新結果を次へ伝播する (失敗ヒストは据え置き)。
             if not _is_failure(res):
                 phases = res.phases
@@ -192,7 +199,7 @@ def _run_joint(
             break
 
     failed = tuple(k for k in range(n_hist) if _is_failure(per_results[k]))
-    return phases, tuple(per_results), weights, failed
+    return phases, tuple(per_results), weights, failed, merge_warnings(backend_warnings)
 
 
 def _phases_identical(
@@ -335,11 +342,14 @@ def refine_joint(
     【失敗の非例外化】1 ヒスト失敗は chi2=inf へ変換し集約 chi2=inf へ伝播、warnings に
     失敗ヒスト index を明示する (例外化しない, EDGE-001/REQ-007)。
     【決定論】ヒスト順・パラメータ順固定で 2 回実行ビット同一 (NFR-102)。
+    【backend の警告】返り値は backend と同じ契約 (RefinementResult) なので、各ヒストの精密化の
+    警告 (merge_warnings 済み) を集約の警告に続けて ``warnings`` に載せる。
     """
-    phases, per_results, weights, failed = _run_joint(
+    phases, per_results, weights, failed, backend_warnings = _run_joint(
         backend, model, weighting, max_cycles, ledger
     )
     aggregate = _build_aggregate(phases, per_results, weights, failed)
+    aggregate = replace(aggregate, warnings=aggregate.warnings + backend_warnings)
     if ledger is not None:
         ledger.append(
             "joint_refine_result",
@@ -361,8 +371,9 @@ def refine_joint_detailed(
     集約 RefinementResult に加え、各ヒストの ``PerHistogramMetrics``
     (hist_index/probe/rwp/chi2/scale/sigma_source) を入力順 tuple で返す。σ 由来は
     ``weighting.sigma_source`` から取り、warnings に σ 由来 / 失敗ヒストを明示する。
+    backend の警告は ``backend_warnings`` に分けて持つ (``aggregate.warnings`` には載せない)。
     """
-    phases, per_results, weights, failed = _run_joint(
+    phases, per_results, weights, failed, backend_warnings = _run_joint(
         backend, model, weighting, max_cycles, ledger
     )
     aggregate = _build_aggregate(phases, per_results, weights, failed)
@@ -403,4 +414,5 @@ def refine_joint_detailed(
         aggregate=aggregate,
         per_histogram=tuple(per_metrics),
         warnings=warnings_out,
+        backend_warnings=backend_warnings,
     )

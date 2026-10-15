@@ -24,7 +24,7 @@ import math
 from dataclasses import dataclass, replace
 from typing import Mapping
 
-from ..backends.base import RefinementBackend, RefinementResult, param_name
+from ..backends.base import RefinementBackend, RefinementResult, merge_warnings, param_name
 from ..evidence.base import EvidenceBackend
 from ..model import Hypothesis, RefinementMetrics
 from ..search.tree import SearchResult
@@ -48,12 +48,14 @@ class JointVerificationResult:
     - ``joint_results``: 仮説 ID → ``JointRefinementResult`` (集約 + ヒスト別詳細, REQ-006)。
     - ``recommendations``: 仮説 ID → コントラスト占有率解放推奨 tuple (提案のみ, REQ-011)。
     - ``warnings``: 生存仮説ゼロ等の縮退警告。
+    - ``backend_warnings``: 全生存仮説の joint 精密化の backend の警告 (ID 昇順に merge_warnings)。
     """
 
     verified: tuple[Hypothesis, ...]
     joint_results: Mapping[str, JointRefinementResult]
     recommendations: Mapping[str, tuple[OccupancyReleaseRecommendation, ...]]
     warnings: tuple[str, ...] = ()
+    backend_warnings: tuple[str, ...] = ()
 
 
 def _metrics_from_aggregate(
@@ -192,4 +194,7 @@ def verify_survivors(
         joint_results=joint_results,
         recommendations=recommendations,
         warnings=tuple(warnings),
+        backend_warnings=merge_warnings(
+            *(joint_results[sid].backend_warnings for sid in survivor_ids)
+        ),
     )
