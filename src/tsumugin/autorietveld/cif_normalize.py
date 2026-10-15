@@ -168,11 +168,14 @@ def _read_symop_loop(lines: list[str]) -> tuple[str, ...]:
     return tuple(ops)
 
 
-def _atom_loop_rows(lines: list[str]) -> tuple[dict[str, int], list[tuple[int, list[str]]]]:
-    """atom_site ループの (タグ → 列番号, [(行番号, トークン列)]) を返す。
+def _atom_loop_rows(
+    lines: list[str],
+) -> tuple[dict[str, int], list[tuple[int, list[str]]], list[int]]:
+    """atom_site ループの (タグ → 列番号, [(行番号, トークン列)], 列不足で読み飛ばした行番号)。
 
     行番号は ``lines`` の添字 — 座標だけを書き換える側 (`special_positions`) が同じ行を
-    引き当てられるように、読み手と書き換え手で同じ走査を共有する。
+    引き当てられるように、読み手と書き換え手で同じ走査を共有する。列不足の行 (折り返された
+    原子行) は読み手が拾えないので、書き換え手はそれを知って記録する必要がある。
     """
     label_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "_atom_site_label"), None)
     if label_idx is None:
@@ -191,6 +194,7 @@ def _atom_loop_rows(lines: list[str]) -> tuple[dict[str, int], list[tuple[int, l
         raise ValueError("atom_site ループに分率座標列がありません。")
 
     rows: list[tuple[int, list[str]]] = []
+    short: list[int] = []
     for k in range(i, len(lines)):
         s = lines[k].strip()
         # 空行はサイト行の区切りとして許容し読み飛ばす (一部 CIF ライタは行間に空行を挿む)。
@@ -201,14 +205,15 @@ def _atom_loop_rows(lines: list[str]) -> tuple[dict[str, int], list[tuple[int, l
             break
         row = s.split()
         if len(row) < len(tags):
+            short.append(k)
             continue
         rows.append((k, row))
-    return col, rows
+    return col, rows, short
 
 
 def _read_atom_loop(lines: list[str]) -> list[Atom]:
     """atom_site ループを走査し :class:`Atom` 列へ。"""
-    col, rows = _atom_loop_rows(lines)
+    col, rows, _ = _atom_loop_rows(lines)
     atoms: list[Atom] = []
     for _, row in rows:
         label = row[col["_atom_site_label"]]

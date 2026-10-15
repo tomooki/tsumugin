@@ -25,7 +25,8 @@ from typing import Any, Callable
 import numpy as np
 
 from ..site_symmetry import snap_to_special_position
-from .cif_normalize import _atom_loop_rows, _strip_esd, read_structure_cif
+from .cif_normalize import _HM_TAGS, _atom_loop_rows, _scalar, _strip_esd, read_structure_cif
+from .lattice import direct_metric_from_cell
 
 __all__ = ["SnapReport", "snap_cif_special_positions"]
 
@@ -41,12 +42,15 @@ class SnapReport:
         渡した) / ``"skipped"`` (射影できなかった・元の CIF を渡した。理由は ``reason``)
     :param symop_source: ``"cif"`` (CIF の対称操作ループ) / ``"space_group"`` (CIF に無く
         空間群記号から引いた) / ``None`` (引く前に止まった)
-    :param path: GSAS に渡すパス
+    :param path: GSAS に渡すパス (吸着した写しは実行ごとの一時ディレクトリにある)
+    :param source: 入力 CIF のパス。ledger にはこちらを書く — 一時パスを入れると同じ入力の
+        記録が実行ごとに変わり (ハッシュ鎖・NFR-102)、実行後には存在しないファイルを指す。
     """
 
     phase: str
     status: str
     path: str
+    source: str
     symop_source: str | None = None
     moved: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     reason: str | None = None
@@ -58,7 +62,7 @@ class SnapReport:
             "symop_source": self.symop_source,
             "moved": [dict(m) for m in self.moved],
             "reason": self.reason,
-            "path": self.path,
+            "path": self.source,
         }
 
 
@@ -74,15 +78,6 @@ def _coord_error(token: str) -> float:
         return 0.0
     decimals = len(match.group(1))
     return 0.5 * 10.0 ** (-decimals) if decimals >= 3 else 0.0
-
-
-def _metric(structure) -> np.ndarray:
-    """分率座標の計量テンソル G (|Δ|² = Δᵀ·G·Δ, Å²)。"""
-    a, b, c = structure.a, structure.b, structure.c
-    ca, cb, cg = (math.cos(math.radians(v)) for v in (structure.alpha, structure.beta, structure.gamma))
-    return np.array(
-        [[a * a, a * b * cg, a * c * cb], [a * b * cg, b * b, b * c * ca], [a * c * cb, b * c * ca, c * c]]
-    )
 
 
 def _format(value: float) -> str:
@@ -108,7 +103,7 @@ def snap_cif_special_positions(
     src = Path(path)
 
     def skipped(reason: str, source: str | None = None) -> SnapReport:
-        return SnapReport(phase=phase_name, status="skipped", path=str(src),
+        return SnapReport(phase=phase_name, status="skipped", path=str(src), source=str(src),
                           symop_source=source, reason=reason)
 
     try:
@@ -123,11 +118,23 @@ def snap_cif_special_positions(
     if sum(1 for ln in lines if ln.strip() == "_atom_site_label") > 1:
         # 複数 data ブロック: GSAS がどのブロックを読むかをここでは決められない。
         return skipped("atom_site ループが複数ある (どのブロックを GSAS が読むか決められない)")
+    col, rows, short = _atom_loop_rows(lines)
+    if short:
+        # 折り返された原子行は読み手が拾えない — その原子だけ黙って素通しにしない。
+        return skipped(f"atom_site ループに列の足りない (折り返された) 行がある: 行 {[k + 1 for k in short]}")
 
     if structure.symops:
         symops, source = structure.symops, "cif"
     else:
         source = "space_group"
+        hm = _scalar(lines, _HM_TAGS)
+        if hm is None:
+            # 読み手は H-M 名が無いと 'P 1' を仮定するが、GSAS は IT 番号や Hall 記号から本当の
+            # 群を作る。P1 で「動かす原子なし」と言うと無言の素通しになる。
+            return skipped("CIF に対称操作も H-M 名も無い (空間群を決められない)", source)
+        if ":" in hm:
+            # 原点選択・軸設定の接尾辞は GSAS の CIF 読みと SpcGroup の解釈がずれうる — 推測しない。
+            return skipped(f"H-M 名 {hm!r} に設定の接尾辞がある (対称操作ループが要る)", source)
         try:
             symops = tuple(space_group_symops(structure.spacegroup_hm))
         except Exception as exc:  # noqa: BLE001 — 理由として記録して素通しにする
@@ -141,9 +148,10 @@ def snap_cif_special_positions(
                 f"CIF に対称操作が無く、空間群 {structure.spacegroup_hm!r} から引けない", source
             )
 
-    col, rows = _atom_loop_rows(lines)
     axis_cols = [col[t] for t in _AXIS_TAGS]
-    metric = _metric(structure)
+    metric = direct_metric_from_cell(
+        (structure.a, structure.b, structure.c, structure.alpha, structure.beta, structure.gamma)
+    )
     moved: list[dict[str, Any]] = []
     for index, row in rows:
         tokens = [row[k] for k in axis_cols]
@@ -170,7 +178,9 @@ def snap_cif_special_positions(
         pieces[index] = indent + " ".join(new_row) + ending
 
     if not moved:
-        return SnapReport(phase=phase_name, status="unchanged", path=str(src), symop_source=source)
+        return SnapReport(
+            phase=phase_name, status="unchanged", path=str(src), source=str(src), symop_source=source
+        )
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -182,6 +192,6 @@ def snap_cif_special_positions(
         target = out / f"{safe}.special-positions-{n}.cif"
     target.write_bytes("".join(pieces).encode("latin-1"))
     return SnapReport(
-        phase=phase_name, status="snapped", path=str(target), symop_source=source,
+        phase=phase_name, status="snapped", path=str(target), source=str(src), symop_source=source,
         moved=tuple(moved),
     )

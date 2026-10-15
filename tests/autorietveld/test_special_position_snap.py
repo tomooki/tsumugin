@@ -192,6 +192,70 @@ def test_unreadable_cif_is_recorded_and_passed_through(tmp_path):
     assert report["reason"]
 
 
+def test_ledger_payload_is_deterministic(tmp_path):
+    """★同じ CIF の記録はビット同一 (NFR-102) — 一時ディレクトリのパスを payload に入れない。"""
+    from tsumugin.autorietveld.special_positions import snap_cif_special_positions
+
+    src = _zno_cif(tmp_path)
+    a, b = (
+        snap_cif_special_positions(
+            src, tmp_path / name, phase_name="ZnO", space_group_symops=_no_space_group_lookup
+        )
+        for name in ("run-a", "run-b")
+    )
+    assert a.path != b.path
+    assert a.to_dict() == b.to_dict()
+    assert a.to_dict()["path"] == str(src)
+
+
+def test_cif_without_symops_or_hm_name_is_skipped_not_snapped_as_p1(tmp_path):
+    """★H-M 名も対称操作も無い CIF を P1 として「動かす原子なし」と言わない — GSAS は IT 番号や
+    Hall 記号から本当の群を作るので、射影できなかったと記録する。"""
+    from tsumugin.autorietveld.special_positions import snap_cif_special_positions
+
+    src = _zno_cif(tmp_path, with_symops=False)
+    text = src.read_text(encoding="utf-8").replace(
+        "_symmetry_space_group_name_H-M 'P 63 m c'", "_space_group_IT_number 186"
+    )
+    src.write_text(text, encoding="utf-8")
+    # 実物の補完 (GSAS の SpcGroup) は既定の 'P 1' に恒等操作だけを返す — 例外にはならない。
+    report = snap_cif_special_positions(
+        src, tmp_path / "out", phase_name="ZnO", space_group_symops=lambda hm: ("x,y,z",)
+    )
+    assert report.status == "skipped", report.to_dict()
+
+
+def test_wrapped_atom_rows_are_recorded_as_skipped(tmp_path):
+    """★折り返された原子行は読み手が拾えない — その原子を黙って素通しにせず skipped と記録する。"""
+    from tsumugin.autorietveld.special_positions import snap_cif_special_positions
+
+    src = _zno_cif(tmp_path)
+    text = src.read_text(encoding="utf-8").replace(
+        "Zn1 Zn 0.3333 0.6667 0.0000 0.0060", "Zn1 Zn 0.3333 0.6667\n0.0000 0.0060"
+    )
+    src.write_text(text, encoding="utf-8")
+    report = snap_cif_special_positions(
+        src, tmp_path / "out", phase_name="ZnO", space_group_symops=_no_space_group_lookup
+    )
+    assert report.status == "skipped", report.to_dict()
+    assert "折り返" in report.reason
+
+
+def test_origin_choice_suffix_is_not_guessed(tmp_path):
+    """★原点選択付きの H-M (``:2``) を空間群記号から引くと GSAS の読みと設定がずれうる — 推測せず
+    skipped と記録する (CIF に対称操作ループがあればそちらを使うので問題にならない)。"""
+    from tsumugin.autorietveld.special_positions import snap_cif_special_positions
+
+    src = _zno_cif(tmp_path, with_symops=False)
+    src.write_text(src.read_text(encoding="utf-8").replace("'P 63 m c'", "'F d -3 m :1'"),
+                   encoding="utf-8")
+    # 引けてしまう補完 (設定違いの群) でも射影しない。
+    report = snap_cif_special_positions(
+        src, tmp_path / "out", phase_name="ZnO", space_group_symops=lambda hm: _P63MC_OPS
+    )
+    assert report.status == "skipped", report.to_dict()
+
+
 # ---------------------------------------------------------------- engine 配線 (偽 GSAS)
 
 

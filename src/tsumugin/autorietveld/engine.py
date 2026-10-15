@@ -134,6 +134,7 @@ def _snap_special_positions(spec: PhaseSpec, out_dir: Path):
     if spec.format_hint.upper() != "CIF":
         return SnapReport(
             phase=spec.phase_name, status="skipped", path=spec.structure_path,
+            source=spec.structure_path,
             reason=f"format_hint={spec.format_hint!r} (CIF 以外は射影しない)",
         )
     return snap_cif_special_positions(
