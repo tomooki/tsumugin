@@ -40,7 +40,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from .._json import finite_or_none
-from ..backends.base import RefinementBackend, RefinementModel, param_name
+from ..backends.base import RefinementBackend, RefinementModel, merge_warnings, param_name
 from ..evidence.base import EvidenceBackend, EvidenceResult
 from ..evidence.ic import BICBackend
 from ..evidence.ranking import RankedHypothesis, rank
@@ -110,6 +110,10 @@ class SearchResult:
     ledger: Ledger  # 全操作を理由付き記録 🔵 REQ-402
     snapshots: SnapshotStore  # 実体を返す 🔵
     warnings: tuple[str, ...] = ()  # 縮退警告 (EDGE-003 等) 🟡
+    # backend の警告 (探索ノード + 最終フル精密化の RefinementResult.warnings を出現順・重複なしで)。
+    #   GSAS の structure_ref 経路の特殊位置吸着の記録はここにしか残らない。to_summary の
+    #   "warnings" には自身の警告に続けて載る。
+    backend_warnings: tuple[str, ...] = ()
 
     def to_summary(self) -> dict:
         """``/api/result`` スキーマ準拠の JSON 化可能な純 dict を返す (D6 / api-endpoints.md)。🟡
@@ -170,7 +174,7 @@ class SearchResult:
                 for pk in self.unmatched.unmatched_observed
             ],
             "extra_calculated": [float(v) for v in self.unmatched.extra_calculated],
-            "warnings": list(self.warnings),
+            "warnings": list(self.warnings) + list(self.backend_warnings),
             "n_hypotheses": len(self.hypotheses),
         }
 
@@ -329,7 +333,10 @@ class HypothesisTreeSearch:
         eligible = self._prune_candidates(representatives, scores, ledger)
 
         # 【best-first 木探索】: 生存候補で組合せ仮説を評価・展開し全ノードを保持する 🔵 D1
-        hypotheses = self._explore(eligible, scores, normalized, two_theta, intensity, weights, ledger)
+        backend_warnings: list[str] = []
+        hypotheses = self._explore(
+            eligible, scores, normalized, two_theta, intensity, weights, ledger, backend_warnings
+        )
 
         # 【ランキング (一次)】: 全 refined ノードを BIC 昇順+softmax でランクする 🔵 REQ-201
         ranked = self._rank(hypotheses, ledger)
@@ -346,6 +353,7 @@ class HypothesisTreeSearch:
             weights=weights,
             ledger=ledger,
             snapshots=snapshots,
+            backend_warnings=backend_warnings,
         )
 
     # ---- パイプライン各段 (純関数的ヘルパ) --------------------------------
@@ -470,6 +478,7 @@ class HypothesisTreeSearch:
         intensity: np.ndarray,
         weights: np.ndarray | None,
         ledger: Ledger,
+        backend_warnings: list[str],
     ) -> dict[str, Hypothesis]:
         """best-first で相組合せ仮説の探索木を構築し全評価ノードを返す (D1)。🔵
 
@@ -490,7 +499,8 @@ class HypothesisTreeSearch:
             node_id = f"hyp-{counter:04d}"  # 【ID 採番】: 評価順連番 (入力順非依存) 🔵 M0 規約
             counter += 1
             hyp = self._evaluate_node(
-                combo, normalized, two_theta, intensity, weights, parent_id, node_id, ledger
+                combo, normalized, two_theta, intensity, weights, parent_id, node_id, ledger,
+                backend_warnings,
             )
             hypotheses[node_id] = hyp
             combo_to_id[combo] = node_id
@@ -533,6 +543,7 @@ class HypothesisTreeSearch:
         parent_id: str | None,
         node_id: str,
         ledger: Ledger,
+        backend_warnings: list[str],
     ) -> Hypothesis:
         """1 ノード (相組合せ) を探索モード精密化し refined Hypothesis を返す (D2/REQ-003)。🔵
 
@@ -557,6 +568,7 @@ class HypothesisTreeSearch:
         )
         # 【探索モード精密化】: backend.refine を直呼びし max_cycles=explore_max_cycles を伝播 🔵
         result = self._backend.refine(model, max_cycles=config.explore_max_cycles)
+        backend_warnings.extend(result.warnings)
 
         chi2 = float(result.chi2)
         n_obs = int(result.n_obs)
@@ -680,6 +692,7 @@ class HypothesisTreeSearch:
         weights: np.ndarray | None,
         ledger: Ledger,
         snapshots: SnapshotStore,
+        backend_warnings: list[str],
     ) -> SearchResult:
         """探索コアの後段で SearchResult の後処理フィールドを実体化する (TASK-0007)。🔵
 
@@ -730,6 +743,9 @@ class HypothesisTreeSearch:
             ledger=ledger,
             snapshots=snapshots,
             warnings=warnings,
+            backend_warnings=merge_warnings(
+                backend_warnings, *(r.backend_warnings for r in final_reports.values())
+            ),
         )
 
     def _extract_good_cluster(

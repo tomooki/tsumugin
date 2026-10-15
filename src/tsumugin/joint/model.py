@@ -73,3 +73,6 @@ class JointRefinementResult:
     aggregate: RefinementResult  # 【単一集約結果 (rank/evidence へ渡す)】 (REQ-006)
     per_histogram: tuple[PerHistogramMetrics, ...]  # 【ヒスト別指標 (順序=入力順)】 (REQ-402)
     warnings: tuple[str, ...] = ()  # 【σ 由来 / 失敗ヒスト明示】 (REQ-009/EDGE-001)
+    # 【backend の警告】: 全サイクル・全ヒストの RefinementResult.warnings (merge_warnings 済み)。
+    #   自身の警告とは別の欄 — 束ねる側 (verify_survivors / ②) が backend 分だけを畳めるように。
+    backend_warnings: tuple[str, ...] = ()

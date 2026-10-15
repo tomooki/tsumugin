@@ -11,7 +11,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
-from .backends.base import RefinementBackend
+from .backends.base import RefinementBackend, merge_warnings
 from .backends.simulated import SimulatedBackend
 from .evidence.base import EvidenceBackend
 from .evidence.ic import BICBackend
@@ -28,6 +28,8 @@ class AnalysisResult:
     reports: Mapping[str, RefinementReport]
     ledger: Ledger
     snapshots: SnapshotStore
+    # backend の警告 (全候補の段階精密化を通して出現順・重複なし)
+    backend_warnings: tuple[str, ...] = ()
 
 
 def analyze_single_pattern(
@@ -76,5 +78,9 @@ def analyze_single_pattern(
          "probabilities": [r.probability for r in ranked]},
     )
     return AnalysisResult(
-        ranked=ranked, reports=reports, ledger=ledger, snapshots=store
+        ranked=ranked,
+        reports=reports,
+        ledger=ledger,
+        snapshots=store,
+        backend_warnings=merge_warnings(*(r.backend_warnings for r in reports.values())),
     )

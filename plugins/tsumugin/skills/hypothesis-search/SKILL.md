@@ -117,5 +117,10 @@ description: 多仮説の相同定・裁定を進める (③ 判断層)。MCP �
 ## 前提
 
 - `submit_analysis` で session を確立してから他ツールを呼ぶ (探索結果が無いと空応答)。
+- `submit_analysis` / `list_hypotheses` の `warnings` には精密化バックエンドの警告も載る
+  (同じ文は 1 回、値だけ違う同種の文は最初の 1 文 + `[同種の文 ほか N 件]`。joint 経路は探索と
+  joint 検証精密化の両方の分)。
+  「特殊位置への吸着を見送った …」は `structure_ref` の CIF の**多重度を保証できていない**記録 —
+  理由 (対称操作ループ欠落・H-M 名の設定接尾辞など) を CIF 側で直してからランキングを読む。
 - `export_gpx` は GSAS-II 導入が要る。未導入なら error dict。
 - `chem_context` の降格を効かせるには相の組成 (formula/element_system) の供給が要る。

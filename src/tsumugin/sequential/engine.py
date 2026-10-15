@@ -21,7 +21,13 @@ from typing import Literal, Mapping, Sequence
 
 import numpy as np
 
-from ..backends.base import RefinementBackend, RefinementModel, RefinementResult, param_name
+from ..backends.base import (
+    RefinementBackend,
+    RefinementModel,
+    RefinementResult,
+    merge_warnings,
+    param_name,
+)
 from ..evidence.base import EvidenceBackend
 from ..evidence.ic import BICBackend
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
@@ -92,6 +98,9 @@ class SequentialResult:
     ledger: Ledger  # 全操作を理由付き記録 (adopt/reject 含む) 🔵
     snapshots: SnapshotStore  # スナップショットストア実体 🔵
     warnings: tuple[str, ...] = ()  # 失敗フレーム等の警告 (既定 空) 🔵
+    # backend の警告 (frame0 staged・後続 direct・局所探索の RefinementResult.warnings を出現順・
+    #   重複なしで)。GSAS の structure_ref 経路の特殊位置吸着の記録はここにしか残らない。
+    backend_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -187,6 +196,7 @@ class SequentialEngine:
         records: list[FrameRecord] = []
         search_results: dict[int, SearchResult] = {}
         warnings: list[str] = []
+        backend_warnings: list[str] = []
         rwp_history: list[float] = []  # 成功フレームのみ (非有限を robust z に渡さない) 🔵
         lattice_history: list[dict[str, float]] = []  # 主相 (phases[0]) の格子 a/b/c 🔵
         # 【未マッチピークの位置ビンごと連続出現カウンタ (TASK-0031 較正 / Issue #3)】: 強度閾値以上の
@@ -217,6 +227,9 @@ class SequentialEngine:
             # 【初回確立レポート】: frame0 staged 経路でのみ返る report を出力契約用に保持する 🔵
             if fr.staged_report is not None:
                 first_frame_report = fr.staged_report
+                backend_warnings.extend(fr.staged_report.backend_warnings)
+            if direct_result is not None:
+                backend_warnings.extend(direct_result.warnings)
 
             # 【失敗フレームの継続 (EDGE-002)】: 非有限は例外化せず None 化して直近成功から継続する 🔵
             if not (math.isfinite(chi2_raw) and math.isfinite(rwp_raw)):
@@ -286,6 +299,7 @@ class SequentialEngine:
                     list(current_phases) + list(self._candidates),
                 )
                 search_results[i] = sr
+                backend_warnings.extend(sr.backend_warnings)
 
                 # 【採択判定 (D3)】: 相集合が現行と異なり evidence 改善時のみ採択、そうでなければ棄却 🔵
                 adopted, new_phases, new_metrics = self._decide(sr, current_phases, direct_result)
@@ -339,6 +353,7 @@ class SequentialEngine:
             ledger=ledger,
             snapshots=snapshots,
             warnings=tuple(warnings),
+            backend_warnings=merge_warnings(backend_warnings),
         )
 
     # ---- 内部ヘルパ (純関数的) --------------------------------------------
