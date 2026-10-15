@@ -85,6 +85,19 @@ def coord_rounding_error(token: str) -> float:
     return 0.5 * 10.0 ** (-decimals) if decimals >= 3 else 0.0
 
 
+def _coord_token(value: float, error: float | None) -> str:
+    """座標を書く。読んだ CIF の桁数が分かっていれば**その桁数で** (桁を足さない)。
+
+    `.5f` で書き直すと ``0.333`` が ``0.33300`` になり、特殊位置への吸着 (書かれた桁数を許容差に
+    する) から見て「1/3 から 1e-3 ずれた一般位置」を名乗ってしまう。桁数を知らない原子
+    (コードで組んだ原子・2 桁以下の厳密値) は従来どおり 5 桁。
+    """
+    if error:
+        decimals = round(-math.log10(2.0 * error))
+        return f"{value:.{decimals}f}"
+    return f"{value:.5f}"
+
+
 def _strip_esd(token: str) -> float:
     """``6.95976(2)`` / ``-0.2(19)`` の esd を捨てて float 化。"""
     return float(re.sub(r"\(.*?\)", "", token))
@@ -318,10 +331,11 @@ def write_gsas_cif(structure: Structure, out_path: str | Path, *, phase_name: st
         " _atom_site_U_iso_or_equiv",
     ]
     for at in structure.atoms:
-        lines.append(
-            f"{at.label} {at.type_symbol} {at.x:.5f} {at.y:.5f} {at.z:.5f} "
-            f"{at.occ:.4f} {at.uiso:.5f}"
+        x, y, z = (
+            _coord_token(value, None if at.coord_error is None else at.coord_error[k])
+            for k, value in enumerate((at.x, at.y, at.z))
         )
+        lines.append(f"{at.label} {at.type_symbol} {x} {y} {z} {at.occ:.4f} {at.uiso:.5f}")
     out = Path(out_path)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out

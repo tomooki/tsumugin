@@ -360,7 +360,8 @@ class GSASIIBackend:
                     phase.structure_ref, tmp_path / "special-positions", phase_name=phase.phase_ref
                 )
                 note = snap.warning()
-                if note is not None and notes is not None:
+                # 二相仮説の端成分は同じ CIF を指す — 同じ文を 1 回の結果に重ねない。
+                if note is not None and notes is not None and note not in notes:
                     notes.append(note)
                 g2ph = gpx.add_phase(
                     snap.path,

@@ -582,3 +582,18 @@ def test_refine_reports_snapped_atoms_and_gsas_sees_multiplicity_two(tmp_path):
         two_theta=tt, intensity=y,
     ))
     assert any("Zn1" in w and "zno" in w for w in result.warnings), result.warnings
+
+
+def test_phases_sharing_one_cif_add_one_note(monkeypatch, tmp_path):
+    """二相仮説の端成分 2 相は同じ CIF を指す — 同じ吸着の文を 1 回の結果に 2 回載せない。"""
+    monkeypatch.setattr("tsumugin.backends.gsasii._apply_cell", lambda g2ph, lattice: None)
+    cif = _zno_cif(tmp_path)
+    pair = tuple(
+        PhaseInstance(phase_ref="zno", lattice=LatticeParams(a, a, 5.21), structure_ref=str(cif))
+        for a in (3.24, 3.26)
+    )
+    gpx = _RecordingGpx()
+    notes: list[str] = []
+    _bare_backend()._add_phases(gpx, object(), pair, tmp_path / "work", notes=notes)
+    assert len(gpx.paths) == 2
+    assert len(notes) == 1, notes
