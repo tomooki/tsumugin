@@ -348,6 +348,9 @@ def discriminate_interval(
     nested_delta_evidence: float | None = None
     nested_arbitration_result: ArbitrationResult | None = None
     nested_warnings: tuple[str, ...] = ()
+    # 【物理尤度の backend の警告】: nested 裁定の尤度評価 (backend.refine) が返す文。裁定が途中で
+    #   例外に落ちても、それまでに評価した精密化の文は残す (try の外に置く)。
+    likelihood_warnings: dict[str, None] = {}
     if config.nested_arbitration is not None and queue_reason == _CLOSE_COMPETITOR:
         verdict_before_nested = verdict
         try:
@@ -358,6 +361,7 @@ def discriminate_interval(
                 hyp_single, hyp_two_phase, seq_a, seq_b,
                 config.close_threshold, config.nested_arbitration, active_nested_backend, ledger,
                 backend=backend, physical_config=config.physical_problem,
+                warning_sink=likelihood_warnings,
             )
             adjudicated_by = nested_outcome.adjudicated_by
             nested_delta_evidence = nested_outcome.delta
@@ -396,10 +400,11 @@ def discriminate_interval(
         # backend の警告 (例: GSAS の structure_ref 経路の特殊位置吸着 — ledger の無い経路の唯一の
         #   記録)。全フレーム・全 start で同じ文が出るので逐次と端点マルチスタートをまたいで 1 回にまとめる
         #   (結果に残さない start 側のマルチスタートも精密化はしているので含める)。
-        #   並びは実行順 (仮説 A 逐次 → A 端点 → 仮説 B 逐次 → B 端点)。
+        #   並びは実行順 (仮説 A 逐次 → A 端点 → 仮説 B 逐次 → B 端点 → nested 裁定の尤度評価)。
         + merge_warnings(
             seq_a.backend_warnings, ms_a_start.backend_warnings, multistart_single.backend_warnings,
             seq_b.backend_warnings, ms_b_start.backend_warnings, multistart_two_phase.backend_warnings,
+            likelihood_warnings,
         )
     )
 
@@ -981,6 +986,7 @@ def _build_problems(
     seq_b: _IntervalOutcome,
     backend: RefinementBackend,
     physical_config: PhysicalProblemConfig | None,
+    warning_sink: dict[str, None] | None = None,
 ) -> tuple[dict[str, EvidenceProblem], tuple[str, ...]]:
     """両仮説の EvidenceProblem を構築する (物理優先・失敗はサロゲート縮退 + 警告)。Issue #76。
 
@@ -1004,6 +1010,7 @@ def _build_problems(
                     metrics=_surrogate_metrics(seq),
                     label=label,
                     config=physical_config,
+                    warning_sink=warning_sink,
                 )
             except ValueError as exc:
                 warnings.append(
@@ -1028,6 +1035,7 @@ def _run_nested_arbitration(
     *,
     backend: RefinementBackend,
     physical_config: PhysicalProblemConfig | None,
+    warning_sink: dict[str, None] | None = None,
 ) -> _NestedArbitrationOutcome:
     """close_competitor の 2 仮説 (A/B) のみを対象に nested/Laplace 裁定を実行する (FR-122/313)。
 
@@ -1052,7 +1060,7 @@ def _run_nested_arbitration(
       束ねた結果。
     """
     problems, problem_warnings = _build_problems(
-        hyp_single, hyp_two_phase, seq_a, seq_b, backend, physical_config
+        hyp_single, hyp_two_phase, seq_a, seq_b, backend, physical_config, warning_sink
     )
     # 【full_nested 強制】: close_threshold/temperature は呼び出し側設定を尊重しつつ、対象抽出だけを
     #   full_nested で上書きする 🟡

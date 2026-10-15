@@ -33,7 +33,13 @@ from typing import Mapping
 
 import numpy as np
 
-from ..backends.base import RefinementBackend, RefinementModel, RefinementResult, param_name
+from ..backends.base import (
+    RefinementBackend,
+    RefinementModel,
+    RefinementResult,
+    merge_warnings,
+    param_name,
+)
 from ..evidence.ic import BICBackend
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
 from ..sequential.series import FrameSeries
@@ -84,6 +90,9 @@ class SegmentationResult:
     partitions: tuple[Hypothesis, ...]  # 【分割仮説】: 各 k の分割を 1 個の Hypothesis 化 (D6) 🔵 REQ-014
     ledger: Ledger  # 【台帳】: 記録済み ledger (入力 or 内部新規生成) 🔵
     warnings: tuple[str, ...] = ()  # 【警告】: 縮退 (n<2/全滅) ・非有限フレーム除外の理由 🔵
+    # 【backend の警告】: 評価した全区間の精密化の RefinementResult.warnings (merge_warnings 済み)。
+    #   自身の警告とは別の欄。区間コストはメモ化されるので同じ区間の精密化は 1 回ぶんしか入らない。
+    backend_warnings: tuple[str, ...] = ()
 
 
 def segment_series(
@@ -132,6 +141,7 @@ def segment_series(
     # 【警告の決定論的集約】: 非有限フレーム除外の警告を first-seen 順で重複排除する (集合反復順非依存)。🔵
     seen_warnings: set[str] = set()
     warnings_list: list[str] = []
+    backend_warnings: list[str] = []
 
     def _remember(messages: list[str]) -> None:
         # 【重複排除】: 同一フレーム除外が複数区間で再出するため first-seen 順で 1 度だけ残す 🔵
@@ -158,6 +168,7 @@ def segment_series(
             )
             # 【direct refine】: staged 解放ループなし、seq_max_cycles で 1 回だけ精密化する 🔵
             result = backend.refine(model, max_cycles=config.seq_max_cycles)
+            backend_warnings.extend(result.warnings)
             chi2 = float(result.chi2)
             if math.isfinite(chi2):
                 # 【有限フレーム】: bic を加算し、成功相のみ次フレームへ warm 継承する 🔵
@@ -205,7 +216,9 @@ def segment_series(
     if degrade_message is not None:
         warnings_list.append(degrade_message)
         # 【縮退確定】: 境界なし (k=1) で最終化する (貪欲挿入経路と同一の finalize を共用) 🔵
-        return _finalize_result(active_ledger, (), evidence_by_k, partitions, warnings_list)
+        return _finalize_result(
+            active_ledger, (), evidence_by_k, partitions, warnings_list, backend_warnings
+        )
 
     # ---- 貪欲挿入 (粗グリッド → ±G 細密スキャン)・改善閾値打ち切り ---------------------------
     current_boundaries: tuple[int, ...] = ()
@@ -248,7 +261,8 @@ def segment_series(
 
     # 【採択確定】: 貪欲挿入で確定した境界で最終化する (縮退経路と同一の finalize を共用) 🔵
     return _finalize_result(
-        active_ledger, current_boundaries, evidence_by_k, partitions, warnings_list
+        active_ledger, current_boundaries, evidence_by_k, partitions, warnings_list,
+        backend_warnings,
     )
 
 
@@ -409,6 +423,7 @@ def _finalize_result(
     evidence_by_k: Mapping[int, float],
     partitions: list[Hypothesis],
     warnings_list: list[str],
+    backend_warnings: list[str],
 ) -> SegmentationResult:
     """採択境界から最終 result を組み、"segmentation.result" を ledger 記録して返す (2 経路共通)。
 
@@ -425,6 +440,7 @@ def _finalize_result(
     @param evidence_by_k: k 別合計コスト (dict 化して格納)。
     @param partitions: 各 k の分割仮説リスト (tuple 化して格納)。
     @param warnings_list: 縮退/非有限除外の警告リスト (tuple 化して格納)。
+    @param backend_warnings: 区間精密化の backend の警告 (評価順・merge_warnings で畳んで格納)。
     @returns: 全フィールド設定済みの frozen な SegmentationResult。
     """
     n_segments = len(boundaries) + 1
@@ -440,6 +456,7 @@ def _finalize_result(
         partitions=tuple(partitions),
         ledger=ledger,
         warnings=tuple(warnings_list),
+        backend_warnings=merge_warnings(backend_warnings),
     )
 
 

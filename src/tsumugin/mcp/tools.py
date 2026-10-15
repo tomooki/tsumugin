@@ -24,7 +24,7 @@ from typing import Literal, Mapping, Sequence
 import numpy as np
 
 from .._json import finite_or_none
-from ..backends.base import RefinementBackend
+from ..backends.base import RefinementBackend, merge_warnings
 from ..errors import GSASUnavailableError, MEMUnavailableError
 from ..evidence.base import EvidenceBackend
 from ..evidence.ic import BICBackend
@@ -153,12 +153,15 @@ def submit_analysis(
             "verified_ids": [h.id for h in verification.verified],
             # 検証の警告に続けて探索の警告 (平坦パターン等) と backend の警告 (GSAS の特殊位置
             #   吸着の記録など — ledger の無い経路の唯一の記録) を載せる。同種の文を畳むのは
-            #   backend の警告だけ (backend_warnings は畳み済み) — 自身の警告は重複除去のみ
+            #   backend の警告だけ — 自身の警告は重複除去のみ。backend の警告は探索 → joint 検証の
+            #   実行順に束ね直す (別々の精密化なので二重には数えない)
             "warnings": list(
                 dict.fromkeys(
                     verification.warnings
                     + search_result.warnings
-                    + search_result.backend_warnings
+                    + merge_warnings(
+                        search_result.backend_warnings, verification.backend_warnings
+                    )
                 )
             ),
         }
