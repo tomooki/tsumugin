@@ -20,7 +20,12 @@ import json
 import numpy as np
 import pytest
 
-from tsumugin.backends.base import RefinementModel, RefinementResult, merge_warnings
+from tsumugin.backends.base import (
+    RefinementModel,
+    RefinementResult,
+    WarningCollector,
+    merge_warnings,
+)
 from tsumugin.backends.simulated import SimulatedBackend
 from tsumugin.model import LatticeParams, PhaseInstance
 from tsumugin.multistart import MultistartConfig
@@ -646,13 +651,13 @@ def test_physical_problem_reports_likelihood_refine_warnings_to_sink():
         frame_index=0, phases=(phase,), free_params=frozenset({"phase0.scale"}),
         two_theta=GRID, intensity=_observed(phase),
     )
-    sink: dict[str, None] = {}
+    sink = WarningCollector()
     problem = build_physical_problem(
         WarningBackend(), (frame,),
         metrics=RefinementMetrics(rwp=1.0, gof=1.0, chi2=1.0, n_obs=1, n_params=0),
         label="single", config=PhysicalProblemConfig(), warning_sink=sink,
     )
-    assert sink == {}  # 構築だけでは精密化しない
+    assert list(sink) == []  # 構築だけでは精密化しない
     problem.log_likelihood(problem.map_point)
     problem.log_likelihood(problem.map_point)
 

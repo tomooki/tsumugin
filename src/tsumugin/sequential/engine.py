@@ -25,7 +25,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
-    merge_warnings,
+    WarningCollector,
     param_name,
 )
 from ..evidence.base import EvidenceBackend
@@ -196,7 +196,7 @@ class SequentialEngine:
         records: list[FrameRecord] = []
         search_results: dict[int, SearchResult] = {}
         warnings: list[str] = []
-        backend_warnings: list[str] = []
+        backend_warnings = WarningCollector()
         rwp_history: list[float] = []  # 成功フレームのみ (非有限を robust z に渡さない) 🔵
         lattice_history: list[dict[str, float]] = []  # 主相 (phases[0]) の格子 a/b/c 🔵
         # 【未マッチピークの位置ビンごと連続出現カウンタ (TASK-0031 較正 / Issue #3)】: 強度閾値以上の
@@ -217,7 +217,8 @@ class SequentialEngine:
             # 【frame 精密化 (D2 の 2 段構え)】: frame0 staged フル確立 / 後続 warm start direct を
             #   ヘルパへ委譲し、両経路を同一形 (_FrameRefinement) に正規化する 🔵
             fr = self._refine_frame(
-                i, tuple(initial_phases), warm_phases, two_theta, intensity_i, ledger, snapshots
+                i, tuple(initial_phases), warm_phases, two_theta, intensity_i, ledger, snapshots,
+                backend_warnings,
             )
             refined = fr.phases
             frame_metrics = fr.metrics
@@ -227,9 +228,7 @@ class SequentialEngine:
             # 【初回確立レポート】: frame0 staged 経路でのみ返る report を出力契約用に保持する 🔵
             if fr.staged_report is not None:
                 first_frame_report = fr.staged_report
-                backend_warnings.extend(fr.staged_report.backend_warnings)
-            if direct_result is not None:
-                backend_warnings.extend(direct_result.warnings)
+                backend_warnings.extend_merged(fr.staged_report.backend_warnings)
 
             # 【失敗フレームの継続 (EDGE-002)】: 非有限は例外化せず None 化して直近成功から継続する 🔵
             if not (math.isfinite(chi2_raw) and math.isfinite(rwp_raw)):
@@ -299,7 +298,7 @@ class SequentialEngine:
                     list(current_phases) + list(self._candidates),
                 )
                 search_results[i] = sr
-                backend_warnings.extend(sr.backend_warnings)
+                backend_warnings.extend_merged(sr.backend_warnings)
 
                 # 【採択判定 (D3)】: 相集合が現行と異なり evidence 改善時のみ採択、そうでなければ棄却 🔵
                 adopted, new_phases, new_metrics = self._decide(sr, current_phases, direct_result)
@@ -353,7 +352,7 @@ class SequentialEngine:
             ledger=ledger,
             snapshots=snapshots,
             warnings=tuple(warnings),
-            backend_warnings=merge_warnings(backend_warnings),
+            backend_warnings=backend_warnings.merged(),
         )
 
     # ---- 内部ヘルパ (純関数的) --------------------------------------------
@@ -367,6 +366,7 @@ class SequentialEngine:
         intensity_i: np.ndarray,
         ledger: Ledger,
         snapshots: SnapshotStore,
+        backend_warnings: WarningCollector,
     ) -> _FrameRefinement:
         """1 フレームを D2 の 2 段構えで精密化し ``_FrameRefinement`` に正規化する。🔵 D2
 
@@ -377,6 +377,7 @@ class SequentialEngine:
         🔵 信頼性レベル: dataflow.md 後続フレーム / architecture.md D2 に依拠。
         @param i: フレーム index (0 が初回)。
         @param warm_phases: 直近成功フレームの確定 phases (None のとき initial_phases を用いる)。
+        @param backend_warnings: direct refine の backend の警告の集め口 (staged 経路は report が持つ)。
         @returns: 精密化経路に依らず正規化された 1 フレーム分の精密化結果束。
         """
         config = self._config
@@ -396,7 +397,7 @@ class SequentialEngine:
         # 【warm start】: 直近成功フレームの phases を継承 (inherit に従う)。frame0 は initial 直用 🔵
         base = warm_phases if warm_phases is not None else initial_phases
         ws = base if i == 0 else self._warm_start(base, config.inherit)
-        direct = self._direct_refine(ws, two_theta, intensity_i)
+        direct = self._direct_refine(ws, two_theta, intensity_i, backend_warnings)
         return _FrameRefinement(
             phases=direct.phases,
             metrics=self._metrics_from_result(direct),
@@ -407,7 +408,11 @@ class SequentialEngine:
         )
 
     def _direct_refine(
-        self, phases: tuple[PhaseInstance, ...], two_theta: np.ndarray, intensity: np.ndarray
+        self,
+        phases: tuple[PhaseInstance, ...],
+        two_theta: np.ndarray,
+        intensity: np.ndarray,
+        backend_warnings: WarningCollector,
     ) -> RefinementResult:
         """後続フレームの direct refine (scale + 格子 a/b/c、max_cycles=seq_max_cycles)。🔵 D2
 
@@ -423,7 +428,9 @@ class SequentialEngine:
             phases=phases, free_params=free, two_theta=two_theta, intensity=intensity
         )
         # 【サイクル数伝播】: 後続フレームは seq_max_cycles を伝播 (frame0 staged=20 / 探索=5 と識別可能) 🔵
-        return self._backend.refine(model, max_cycles=self._config.seq_max_cycles)
+        return backend_warnings.collect(
+            self._backend.refine(model, max_cycles=self._config.seq_max_cycles)
+        )
 
     def _warm_start(
         self, phases: tuple[PhaseInstance, ...], inherit: str

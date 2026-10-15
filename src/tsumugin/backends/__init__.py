@@ -7,6 +7,8 @@ from .base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
+    WarningCollector,
+    merge_warnings,
     param_name,
     parse_param,
 )
@@ -16,6 +18,8 @@ __all__ = [
     "RefinementBackend",
     "RefinementModel",
     "RefinementResult",
+    "WarningCollector",
+    "merge_warnings",
     "param_name",
     "parse_param",
 ]

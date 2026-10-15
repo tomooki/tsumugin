@@ -137,6 +137,44 @@ def merge_warnings(*groups: Iterable[str]) -> tuple[str, ...]:
     return tuple(merged)
 
 
+class WarningCollector:
+    """``refine`` の消費側が backend の警告を集める唯一の口。
+
+    消費側は ``backend.refine(...)`` を**その場で** ``collect`` に渡す
+    (``result = collector.collect(backend.refine(model))``) — `tests/test_warning_collector.py`
+    の静的ガードがこの形を全呼び出しに強制する (読み忘れが痕跡を残さないため、集めることを
+    呼び出しの形そのものにする)。最後に ``merged()`` を結果の ``backend_warnings`` に載せる。
+
+    - ``collect``: backend の生の文。**同じ文は 1 回だけ持つ** — ``merge_warnings`` は同じ文を
+      数えないので結果は全部並べた場合と同じで、尤度評価のように何千回も呼ぶ経路でも列が伸びない。
+    - ``extend_merged``: 子の結果の ``backend_warnings`` (畳み済み)。件数を数え直すので重複除去せず
+      そのまま足す。**同じ精密化の文を ``collect`` と両方で渡さないこと** (件数が二重計上される)。
+    - 反復は足した順の文 — ``merge_warnings(…, collector)`` で他の群と束ねられる。
+    """
+
+    __slots__ = ("_items", "_raw")
+
+    def __init__(self) -> None:
+        self._items: list[str] = []
+        self._raw: set[str] = set()
+
+    def collect(self, result: RefinementResult) -> RefinementResult:
+        for warning in result.warnings:
+            if warning not in self._raw:
+                self._raw.add(warning)
+                self._items.append(warning)
+        return result
+
+    def extend_merged(self, warnings: Iterable[str]) -> None:
+        self._items.extend(warnings)
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def merged(self) -> tuple[str, ...]:
+        return merge_warnings(self._items)
+
+
 def default_weights(intensity: np.ndarray) -> np.ndarray:
     """``RefinementModel.weights`` が未指定のときの統計重み ``w = 1/max(y, 1)``。
 

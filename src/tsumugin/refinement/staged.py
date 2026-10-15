@@ -17,7 +17,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
-    merge_warnings,
+    WarningCollector,
     param_name,
 )
 from ..model import PhaseInstance, RefinementMetrics
@@ -96,7 +96,7 @@ class StagedRefinementEngine:
         two_theta: np.ndarray,
         intensity: np.ndarray,
         weights: np.ndarray | None,
-        backend_warnings: list[str],
+        backend_warnings: WarningCollector,
     ) -> RefinementResult:
         model = RefinementModel(
             phases=phases,
@@ -105,9 +105,7 @@ class StagedRefinementEngine:
             intensity=intensity,
             weights=weights,
         )
-        result = self.backend.refine(model)
-        backend_warnings.extend(result.warnings)
-        return result
+        return backend_warnings.collect(self.backend.refine(model))
 
     def run(
         self,
@@ -120,7 +118,7 @@ class StagedRefinementEngine:
         two_theta = np.asarray(two_theta, dtype=float)
         intensity = np.asarray(intensity, dtype=float)
         n_phases = len(phases)
-        backend_warnings: list[str] = []
+        backend_warnings = WarningCollector()
 
         # ベースライン: 何も解放せずに現状を評価し、以後のガード/改善比較の基準にする。
         prev = self._refine(phases, frozenset(), two_theta, intensity, weights, backend_warnings)
@@ -245,7 +243,7 @@ class StagedRefinementEngine:
             stage_outcomes=tuple(outcomes),
             escalated=escalated,
             free_params=free,
-            backend_warnings=merge_warnings(backend_warnings),
+            backend_warnings=backend_warnings.merged(),
         )
 
 

@@ -32,7 +32,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
-    merge_warnings,
+    WarningCollector,
 )
 from ..model import PhaseInstance, strip_lattice_sigma
 from ..store.ledger import Ledger
@@ -77,6 +77,7 @@ def _refine_one(
     free: frozenset[str],
     *,
     max_cycles: int,
+    backend_warnings: WarningCollector,
 ) -> RefinementResult:
     """1 ヒストを精密化する。例外は chi2=inf 結果へ変換する (非例外化, EDGE-001)。
 
@@ -92,7 +93,7 @@ def _refine_one(
         weights=hist.weights,
     )
     try:
-        return backend.refine(model, max_cycles=max_cycles)
+        return backend_warnings.collect(backend.refine(model, max_cycles=max_cycles))
     except Exception:
         return RefinementResult(
             phases=phases,
@@ -159,7 +160,7 @@ def _run_joint(
     phases = model.phases
 
     per_results: list[RefinementResult] = [None] * n_hist  # type: ignore[list-item]
-    backend_warnings: list[str] = []
+    backend_warnings = WarningCollector()
 
     if ledger is not None:
         ledger.append(
@@ -176,9 +177,11 @@ def _run_joint(
         for k in range(n_hist):
             hist = model.histograms[k]
             free = _histogram_free(model, k)
-            res = _refine_one(backend, phases, hist, free, max_cycles=max_cycles)
+            res = _refine_one(
+                backend, phases, hist, free,
+                max_cycles=max_cycles, backend_warnings=backend_warnings,
+            )
             per_results[k] = res
-            backend_warnings.extend(res.warnings)
             # 共有相の χ² 和更新: 成功ヒストのみ更新結果を次へ伝播する (失敗ヒストは据え置き)。
             if not _is_failure(res):
                 phases = res.phases
@@ -199,7 +202,7 @@ def _run_joint(
             break
 
     failed = tuple(k for k in range(n_hist) if _is_failure(per_results[k]))
-    return phases, tuple(per_results), weights, failed, merge_warnings(backend_warnings)
+    return phases, tuple(per_results), weights, failed, backend_warnings.merged()
 
 
 def _phases_identical(
