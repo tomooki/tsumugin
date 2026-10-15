@@ -11,8 +11,12 @@
 
 - 構造は**入力 CIF の非対称単位に精密化後の格子・座標・占有率を差し込んで**組む (対称操作は CIF の
   ものを使う)。どれかの原子が結果に無い・CIF を読めない・pymatgen が無い → 3 検査とも ``unevaluated``。
-- 結合原子価は pymatgen 同梱の O'Keeffe–Brese 元素パラメータ (``bond_valence.BV_PARAMS``) で
-  占有率を重み付けて計算し (`_bv_sum`)、リポジトリに表を複製しない。酸化数は**入力構造**に ``BVAnalyzer`` を掛けて元素ごとに決める
+- 結合原子価は **Brown の対ごとの表** (``bvparm2020.cif``, IUCr) の R₀・B で計算する (crystal-chemistry/2, P1.5)。
+  表はリポジトリに置かず (`TSUMUGIN_BVPARM` か ``~/.tsumugin/bvparm2020.cif``)、sha256 を `BVPARM_SHA256` で照合する。
+  同じ対の行が複数あれば**ファイルの最初の行**、無ければ価数 9 (任意) の行。表にあるのに対が無ければ ``bvs_gii`` は
+  ``unevaluated`` (推定で埋めない)。**表が無ければ** 従来の O'Keeffe–Brese 元素パラメータの推定 (`_bv_sum`) に戻り、
+  証人に ``method: element-estimate`` と書く。元素推定は Zn–O で R₀ を約 0.1 Å 過小に見積もり、正しい wurtzite ZnO を
+  GII 0.51 で fail にした (2026-10-15, 合成 S-dev) のが表に替えた理由。酸化数は**入力構造**に ``BVAnalyzer`` を掛けて元素ごとに決める
   (精密化後の占有率がずれて電荷が合わなくなったことを、入力の酸化数で検出するため)。決められなければ
   ``bvs_gii``・``charge_neutrality`` は ``unevaluated``。
 - 閾値は経験則 (GII は Salinas-Sanchez らの目安) で P1.5 で調整する (`CHEMISTRY_VERSION`)。
@@ -21,7 +25,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 import tempfile
 import warnings
 from dataclasses import replace
@@ -30,9 +36,14 @@ from typing import Mapping
 
 from .model import Check, Witness, worse_check
 
-__all__ = ["CHEMISTRY_CHECKS", "CHEMISTRY_VERSION", "crystal_chemistry", "short_bonds"]
+__all__ = ["BVPARM_SHA256", "CHEMISTRY_CHECKS", "CHEMISTRY_VERSION", "crystal_chemistry", "load_bv_pair_table",
+           "short_bonds"]
 
-CHEMISTRY_VERSION = "crystal-chemistry/1"
+CHEMISTRY_VERSION = "crystal-chemistry/2"
+
+#: Brown の bvparm2020.cif (IUCr, 2020-11-25) の sha256。None にすると照合しない (試験用)
+BVPARM_SHA256: str | None = "ec073207e070f8e42e49734d11ebe93de4012cc0af07016a99920877688e9a68"
+_ANY_VALENCE = 9
 CHEMISTRY_CHECKS = ("short_contact", "bvs_gii", "charge_neutrality")
 
 _SHORT_CONTACT_RATIO = 0.7
@@ -162,6 +173,86 @@ def _gii(pmg, valences: Mapping[str, float]) -> tuple[Check, dict]:
     return (Check.FAIL if gii > _GII_FAIL else Check.PASS), {"gii": gii, "limit": _GII_FAIL}
 
 
+def load_bv_pair_table(path: str | Path) -> dict[tuple[str, int, str, int], tuple[float, float]]:
+    """bvparm の表 ((元素1, 価数1, 元素2, 価数2) → (R₀, B))。同じ対はファイルの最初の行が勝つ。"""
+    table: dict[tuple[str, int, str, int], tuple[float, float]] = {}
+    in_loop = False
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if s.startswith("_valence_param_details"):
+            in_loop = True
+            continue
+        if not in_loop or not s or s.startswith(("#", "_", "loop_")):
+            continue
+        parts = s.split()
+        if len(parts) < 6:
+            continue
+        try:
+            key = (parts[0], int(parts[1]), parts[2], int(parts[3]))
+            val = (float(parts[4]), float(parts[5]))
+        except ValueError:
+            continue
+        table.setdefault(key, val)
+    return table
+
+
+def _bvparm_path() -> Path:
+    env = os.environ.get("TSUMUGIN_BVPARM")
+    return Path(env) if env else Path.home() / ".tsumugin" / "bvparm2020.cif"
+
+
+def _pair_table() -> tuple[dict | None, str]:
+    """(表, 方法) — 表が無ければ (None, "element-estimate")、sha256 が違えば (None, "sha256 mismatch ...")。"""
+    path = _bvparm_path()
+    if not path.is_file():
+        return None, "element-estimate"
+    if BVPARM_SHA256 is not None:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != BVPARM_SHA256:
+            return None, f"bvparm sha256 mismatch ({digest[:12]} != {BVPARM_SHA256[:12]})"
+    return load_bv_pair_table(path), f"pair-table {path.name} sha256={'unchecked' if BVPARM_SHA256 is None else BVPARM_SHA256[:12]}"
+
+
+def _int_valence(v: float) -> int | None:
+    r = round(v)
+    return int(r) if abs(v - r) < 1e-6 else None
+
+
+def _gii_pairs(pmg, valences: Mapping[str, float], table: Mapping) -> tuple[Check, dict]:
+    """対ごとの表で GII。陽イオン–陰イオンの対が表に無ければ unevaluated (推定で埋めない)。"""
+    missing: set[str] = set()
+    devs: list[float] = []
+    for site in pmg:
+        neighbors = pmg.get_neighbors(site, _NEIGHBOR_CUTOFF)
+        occ = sum(site.species.values())
+        total = 0.0
+        for sp_i, amt_i in site.species.items():
+            vi = _int_valence(valences[sp_i.symbol])
+            for nb in neighbors:
+                for sp_j, amt_j in nb.species.items():
+                    vj = _int_valence(valences[sp_j.symbol])
+                    if vi is None or vj is None:
+                        missing.add(f"{sp_i.symbol}/{sp_j.symbol} (non-integer valence)")
+                        continue
+                    if vi * vj >= 0:
+                        continue  # 同符号の対は結合原子価に入れない
+                    cat, vc, an, va = (sp_i.symbol, vi, sp_j.symbol, vj) if vi > 0 else (sp_j.symbol, vj, sp_i.symbol, vi)
+                    params = table.get((cat, vc, an, va)) or table.get((cat, _ANY_VALENCE, an, va))
+                    if params is None:
+                        missing.add(f"{cat}{vc:+d}-{an}{va:+d}")
+                        continue
+                    r0, b = params
+                    total += (amt_i / occ) * float(amt_j) * math.exp((r0 - float(nb.nn_distance)) / b)
+        expected = sum(abs(valences[el.symbol]) * amt for el, amt in site.species.items()) / occ
+        devs.append((total - expected) ** 2)
+    if missing:
+        return Check.UNEVALUATED, {"reason": f"pairs not in table: {sorted(missing)}"}
+    if not devs:
+        return Check.UNEVALUATED, {"reason": "no_sites"}
+    gii = math.sqrt(sum(devs) / len(devs))
+    return (Check.FAIL if gii > _GII_FAIL else Check.PASS), {"gii": gii, "limit": _GII_FAIL}
+
+
 def _charge(pmg, valences: Mapping[str, float]) -> tuple[Check, dict]:
     comp = pmg.composition
     total = sum(valences[el.symbol] * amt for el, amt in comp.items())
@@ -221,12 +312,22 @@ def _evaluate(phase: str, structure_path: str, result: object) -> dict[str, tupl
         out["bvs_gii"] = (Check.UNEVALUATED, witness(reason))
         out["charge_neutrality"] = (Check.UNEVALUATED, witness(reason))
         return out
-    for name, fn in (("bvs_gii", _gii), ("charge_neutrality", _charge)):
+    table, method = _pair_table()
+
+    def gii(pmg_, valences_):  # noqa: ANN001, ANN202
+        if table is not None:
+            return _gii_pairs(pmg_, valences_, table)
+        if method != "element-estimate":
+            return Check.UNEVALUATED, {"reason": method}  # 表はあるが版が違う — 推定に黙って戻らない
+        return _gii(pmg_, valences_)
+
+    for name, fn in (("bvs_gii", gii), ("charge_neutrality", _charge)):
         try:
             outcome, detail = fn(pmg, valences)
         except Exception as exc:  # noqa: BLE001 — パラメータの無い元素など
             outcome, detail = Check.UNEVALUATED, {"reason": f"{type(exc).__name__}: {exc}"}
-        out[name] = (outcome, witness({**detail, "valences": dict(valences)}))
+        extra = {"method": method} if name == "bvs_gii" else {}
+        out[name] = (outcome, witness({**detail, **extra, "valences": dict(valences)}))
     return out
 
 
