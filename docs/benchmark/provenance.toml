@@ -33,6 +33,14 @@ source = "各ベンチの索引。個別の由来は各エントリを参照"
 provenance = "public"
 source = "Jana2020 Cookbook Example 02.6 'CaTeO3 cyclic'"
 
+[entries."fit-then-judge-quasi"]
+provenance = "public"
+source = "fit-then-judge P0 §3.1 (U10) 準 hold-out の事例表の照合スクリプト (出発 CIF = GSAS-II チュートリアル / 参照 = COD)"
+note = """
+追跡するのはスクリプトだけ。標準出力は判定と件数 (空間群一致・対応原子数・esd の付いた自由座標数・印字精度での全一致) のみで、
+座標・esd は表示しない。原子の対応表と sha256 はリポジトリの外の私有ファイルに書く。参照 CIF は開発のコードから読まない (P0 §3.1)。
+"""
+
 [entries."fit-then-judge-hpub"]
 provenance = "public"
 source = "fit-then-judge P0 §3.2.1 の H-pub 候補一覧の生成スクリプト (RRUFF + COD のスナップショット 2026-10-13 を読む)"

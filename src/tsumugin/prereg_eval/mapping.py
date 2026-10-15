@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -37,6 +38,12 @@ class AtomMapping:
     @property
     def ok(self) -> bool:
         return not self.unmatched
+
+
+def _element(type_symbol: str) -> str:
+    """``"Ca2+"`` / ``"O2-"`` / ``"ca"`` → 元素記号 (酸化数の表記を落とす)。"""
+    m = re.match(r"\s*([A-Za-z]{1,2})", type_symbol)
+    return m.group(1).capitalize() if m else type_symbol.strip()
 
 
 def _metric(s: Structure) -> np.ndarray:
@@ -75,7 +82,7 @@ def map_atoms(start: Structure, ref: Structure, max_distance: float = MAX_PAIR_D
     for sa in start.atoms:
         p = np.array([sa.x, sa.y, sa.z])
         for ra in ref.atoms:
-            if ra.type_symbol.strip().capitalize() != sa.type_symbol.strip().capitalize():
+            if _element(ra.type_symbol) != _element(sa.type_symbol):
                 continue
             dist, r, t = _nearest_image(p, np.array([ra.x, ra.y, ra.z]), ops, g)
             if dist <= max_distance:
@@ -143,3 +150,11 @@ def same_to_printed_precision(
                 return False
             compared += 1
     return compared > 0
+
+
+def esd_of(token: str) -> float | None:
+    """CIF の ``0.1234(5)`` → 0.0005。括弧が無い・0 なら None (esd の無い値は §1.3 で unevaluated)。"""
+    m = re.fullmatch(r"\s*[+-]?(\d*)(?:\.(\d*))?\((\d+)\)\s*", token)
+    if not m or int(m.group(3)) == 0:
+        return None
+    return int(m.group(3)) * 10.0 ** -len(m.group(2) or "")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tsumugin.autorietveld.cif_normalize import Atom, Structure
-from tsumugin.prereg_eval.mapping import map_atoms, reference_values, same_to_printed_precision
+from tsumugin.prereg_eval.mapping import esd_of, map_atoms, reference_values, same_to_printed_precision
 
 # P 2/m 相当の小さな対称操作 (恒等・反転) — 対称像を通した対応を試す
 _OPS = ("x,y,z", "-x,-y,-z")
@@ -69,3 +69,14 @@ def test_independence_is_lost_when_every_value_matches_to_printed_precision():
 
 def test_nothing_to_compare_is_not_evidence_of_copying():
     assert not same_to_printed_precision({}, {"coord:P.O1": (0.4, 0.1, 0.25)})
+
+
+@pytest.mark.parametrize("token, esd", [("0.1234(5)", 0.0005), ("0.12(12)", 0.12), ("1.5(3)", 0.3),
+                                        ("0.25", None), ("0.1234(0)", None), ("12(2)", 2.0), ("?", None)])
+def test_esd_is_read_from_the_parenthesised_digits(token, esd):
+    assert esd_of(token) == (None if esd is None else pytest.approx(esd))
+
+
+def test_charged_type_symbols_match_their_element():
+    ref = _s([Atom("Ca", "Ca2+", 0.10, 0.20, 0.30, 1.0, 0.01), Atom("Ox", "O2-", 0.40, 0.10, 0.25, 1.0, 0.01)])
+    assert map_atoms(START, ref).ok
