@@ -93,6 +93,10 @@ HOLDOUT_TOKENS = (
     "pbso4.xra",  # T3 の X 線ヒストグラム (中性子単独は hold-out ではない)
     "inst_xry",
     "11bm",  # T4 の 11-BM ヒストグラム (TOF は hold-out ではない)
+    # H-pub の入力 (P0 §3.2.1-9: 以後の開発で RRUFF の測定パターンを使わない)
+    "xy_raw",
+    "rruff",
+    "tsumugin-holdout-data",
 )
 
 _TESTS = Path(__file__).resolve().parent
