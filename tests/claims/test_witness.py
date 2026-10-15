@@ -190,3 +190,32 @@ def test_a_real_detection_is_reported_even_when_coverage_is_low():
     assert check is Check.FAIL
     lo, hi = witness.detail["window_two_theta"]
     assert lo <= 11.5 <= hi
+
+
+#: 実験室の細いピーク: 刻み 0.02° に FWHM ≈ 0.05° (2.5 刻み)。σ = 0.0212° → W = (σ·100)² ≈ 4.5 centideg²
+_TT_LAB = np.arange(10.0, 80.0, 0.02)
+_PROFILE_LAB = {"U": 0.0, "V": 0.0, "W": 4.5, "X": 0.0, "Y": 0.0}
+
+
+def _lab_noise(seed=0):
+    rng = np.random.default_rng(seed)
+    return rng.normal(0.0, 1.0, _TT_LAB.size), np.ones(_TT_LAB.size)
+
+
+def test_resolved_narrow_peaks_still_get_windows():
+    """FWHM が刻みの 2.5 倍しかない実験室のパターンでも窓が作れる (窓を刻みより細くしない — P1.5 の S-dev で
+    窓が 1 つも作れず ``no_window`` / ``insufficient_coverage`` で全値を止めていた)。"""
+    resid, sigma = _lab_noise()
+    check, witness = residual_window_witness(_TT_LAB, resid, sigma, _REFL, _PROFILE_LAB)
+    assert check is Check.PASS, witness.detail
+    assert witness.detail["n_windows"] / _TT_LAB.size > 0.05
+
+
+def test_a_narrow_missing_phase_peak_is_found():
+    resid, sigma = _lab_noise()
+    s = 0.05 / 2.3548
+    peak = 8.0 * np.exp(-0.5 * ((_TT_LAB - 37.0) / s) ** 2)
+    check, witness = residual_window_witness(_TT_LAB, resid + peak, sigma, _REFL, _PROFILE_LAB)
+    assert check is Check.FAIL
+    lo, hi = witness.detail["window_two_theta"]
+    assert lo - 0.05 <= 37.0 <= hi + 0.05
