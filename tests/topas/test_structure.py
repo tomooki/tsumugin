@@ -436,3 +436,49 @@ def test_rendered_coordinates_satisfy_the_topas_site_merge_tolerance():
         assert residual < SITE_MERGE_TOLERANCE, (
             f"{label}: 残差 {residual:.3e} — TOPAS が特殊位置を一般位置へ展開する"
         )
+
+
+def test_three_decimal_thirds_from_the_cif_are_snapped(tmp_path):
+    """★CIF に 3 桁で書かれた 1/3 (``0.333``/``0.667``) を TOPAS 経路も特殊位置へ載せる。
+
+    既定の許容差 1e-4 では拾えない (像のずれ 1e-3)。GSAS 経路 (`special_positions`) と同じく
+    **CIF に書かれた桁数**から許容差を決める — `read_structure_cif` は float を返すので、桁数は
+    `Atom.coord_error` で運ぶ。拾えないと TOPAS は多重度を 3 倍に読む (#172 と同型)。
+    """
+    from tsumugin.autorietveld.cif_normalize import read_structure_cif
+
+    ops = (
+        "x,y,z", "-y,x-y,z", "-x+y,-x,z", "-x,-y,z+1/2", "y,-x+y,z+1/2", "x-y,x,z+1/2",
+        "-y,-x,z", "-x+y,y,z", "x,x-y,z", "y,x,z+1/2", "x-y,-y,z+1/2", "-x,-x+y,z+1/2",
+    )
+    cif = tmp_path / "ZnO.cif"
+    cif.write_text("\n".join([
+        "data_ZnO", "_cell_length_a 3.2495", "_cell_length_b 3.2495", "_cell_length_c 5.2069",
+        "_cell_angle_alpha 90", "_cell_angle_beta 90", "_cell_angle_gamma 120",
+        "_symmetry_space_group_name_H-M 'P 63 m c'", "_symmetry_Int_Tables_number 186",
+        "loop_", "_symmetry_equiv_pos_as_xyz", *[f"'{op}'" for op in ops],
+        "loop_", "_atom_site_label", "_atom_site_type_symbol", "_atom_site_fract_x",
+        "_atom_site_fract_y", "_atom_site_fract_z", "_atom_site_U_iso_or_equiv",
+        "Zn1 Zn 0.333 0.667 0.000 0.006",
+        "O1 O 0.333 0.667 0.382(3) 0.008",
+    ]) + "\n", encoding="utf-8")
+    structure = read_structure_cif(cif)
+    assert structure.atoms[1].coord_error == (0.5e-3, 0.5e-3, 0.5e-3)
+
+    sites = {s.label: s for s in structure_to_topas_phase(structure, "ZnO").sites}
+    for label in ("Zn1", "O1"):
+        assert abs(sites[label].x.value - 1 / 3) < 1e-12, label
+        assert abs(sites[label].y.value - 2 / 3) < 1e-12, label
+        assert sites[label].free_coord_axes == ("z",), label
+        # 軸判定も同じ許容差で: 3m の x/y は対称で値が固定される (m サイトとしか読めないと空)
+        assert sites[label].fixed_coord_axes == ("x", "y"), label
+    assert sites["O1"].z.value == 0.382  # 自由軸は CIF の値のまま
+
+
+def test_atoms_built_in_code_keep_the_default_tolerance():
+    """コードで組んだ `Atom` (桁数を知らない) は従来どおり既定の 1e-4 — 3 桁の 1/3 は動かさない。"""
+    struct = _hexagonal(
+        (Atom(label="CA1", type_symbol="Ca", x=0.333, y=0.667, z=0.0019, occ=1.0, uiso=0.006),)
+    )
+    site = structure_to_topas_phase(struct, "FAP").sites[0]
+    assert (site.x.value, site.y.value) == (0.333, 0.667)

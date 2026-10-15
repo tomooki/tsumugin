@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
     "Atom",
     "Structure",
+    "coord_rounding_error",
     "normalize_cif_for_gsas",
     "read_structure_cif",
     "write_gsas_cif",
@@ -28,7 +29,14 @@ _B_TO_U = 1.0 / (8.0 * math.pi**2)
 
 @dataclass(frozen=True)
 class Atom:
-    """原子サイト 1 個 (最小 CIF の 1 行)。🔵"""
+    """原子サイト 1 個 (最小 CIF の 1 行)。🔵
+
+    :param coord_error: x/y/z の**書かれた桁数**による丸め誤差の上限 (:func:`coord_rounding_error`)。
+        `read_structure_cif` が CIF のトークンから埋める — 座標は float になるので、``0.333`` が
+        1/3 の 3 桁表記だったことはここにしか残らない。特殊位置への吸着の許容差に使う
+        (`site_symmetry.snap_to_special_position`)。コードで組んだ原子は ``None`` (= 既定の許容差)。
+        比較・ハッシュには含めない (同じ座標を同じ原子とみなす従来の等価性を保つ)。
+    """
 
     label: str
     type_symbol: str
@@ -37,6 +45,7 @@ class Atom:
     z: float
     occ: float
     uiso: float
+    coord_error: "tuple[float, float, float] | None" = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,20 @@ class Structure:
     it_number: int | None
     atoms: tuple[Atom, ...]
     symops: tuple[str, ...] = ()
+
+
+def coord_rounding_error(token: str) -> float:
+    """座標トークンの丸め誤差の上限 (``0.3333`` → ``0.5e-4``)。
+
+    小数 2 桁以下 (``0``・``0.5``・``0.25``) は**厳密値**として扱い 0 を返す — 1/2・1/4 を書く
+    のに桁を省くのは普通で、それを ±0.005 の幅と読むと近くの一般位置を誤って吸着する。
+    1/3 を 2 桁 (``0.33``) で書く CIF はこの規則では拾えない (既定の許容差 1e-4 のまま)。
+    """
+    match = re.fullmatch(r"[+-]?\d*\.(\d+)", re.sub(r"\(.*?\)", "", token))
+    if match is None:
+        return 0.0
+    decimals = len(match.group(1))
+    return 0.5 * 10.0 ** (-decimals) if decimals >= 3 else 0.0
 
 
 def _strip_esd(token: str) -> float:
@@ -238,6 +261,10 @@ def _read_atom_loop(lines: list[str]) -> list[Atom]:
                 z=_strip_esd(row[col["_atom_site_fract_z"]]),
                 occ=occ,
                 uiso=uiso,
+                coord_error=tuple(  # type: ignore[arg-type]
+                    coord_rounding_error(row[col[t]])
+                    for t in ("_atom_site_fract_x", "_atom_site_fract_y", "_atom_site_fract_z")
+                ),
             )
         )
     return atoms

@@ -80,3 +80,19 @@ def test_site_symmetry_module_does_not_import_a_backend():
         node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     } | {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     assert not any(("topas" in name) or ("GSASII" in name) for name in imported), imported
+
+
+def test_site_axes_use_the_written_precision():
+    """★自由軸・固定軸の判定も、射影と**同じ許容差**で行う (3 桁の 1/3 は 3m サイト)。
+
+    ``(0.333, 0.667, z)`` は既定の 1e-4 では鏡映 ``-y,-x,z`` 上の m サイト (x/y は結束して動ける)
+    としか読めない。射影だけ桁数を見て (1/3, 2/3, z) へ載せ、軸判定は m サイトのまま —
+    だと、**値が対称で固定される** x/y を「固定」と言えず、座標 esd ``0.0`` の根拠を失う。
+    """
+    from tsumugin.site_symmetry import site_coord_axes
+
+    position = (0.333, 0.667, 0.25)
+    assert site_coord_axes(P63MC, position) == (("z",), ()), "既定の挙動は変えない"
+    assert site_coord_axes(P63MC, position, coord_error=(0.5e-3, 0.5e-3, 0.5e-2)) == (
+        ("z",), ("x", "y"),
+    )
