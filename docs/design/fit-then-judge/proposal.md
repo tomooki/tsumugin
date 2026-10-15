@@ -78,7 +78,7 @@ principles §3 の `Claim = (value, evidence, scope, refuter)` を 1 種類だ�
 | 軸 | 値域と順序 (左ほど強い) | 合成 (開始点間・依存の伝播) |
 |---|---|---|
 | `determinacy` | `exact` (対称性で厳密) > `determined` (証人あり) > `locally_stable` (初期値プローブで戻った) > `esd_only` (esd>0 だけ) > `undetermined_esd` > `initial_value_dependent` > `unconverged` > `undeterminable(証人)` | **最小** (弱い方)。開始点間で値が kσ を超えて割れたら `initial_value_dependent` に落とす |
-| `provenance` | 集合 ⊆ {`refined`, `input`, `symmetry`, `origin_fix`, `pruned`, `declared(id)`, `policy_default(版)`} (順序なし) | **和集合**。開始点間で異なれば `determinacy` を `initial_value_dependent` に落とす |
+| `provenance` | 集合 ⊆ {`refined`, `input`, `symmetry`, `origin_fix`, `pruned`, `declared(id)`, `policy_default(版)`} (順序なし) | **和集合**。~~開始点間で異なれば `determinacy` を `initial_value_dependent` に落とす~~ → **改訂 (2026-10-15, P1.5, ユーザー決定)**: 出自の違いだけでは落とさない。値が開始点の一致の許容幅を超えて割れたときだけ `initial_value_dependent`。出自が違ったことは証人 `provenance_varied` に残し、その値は `determined` に上げない (ある開始点では精密化していないので試験したとは言えない) |
 | `correlations` | 相手の集合 (\|ρ\| が閾値超) | 和集合 (推移閉包はとらない — §3.3) |
 | `scope` | `absolute` / `relative_within_sample` (同一試料・同一測定内の比・差にのみ有効) | 弱い方 (`relative`) |
 | `checks` | 検査ごとに `fail` > `unevaluated` > `pass` | 検査ごとに最大 (悪い方) |

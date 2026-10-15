@@ -26,14 +26,14 @@ from typing import Mapping
 
 from ..autorietveld.agreement import AgreementTolerances, is_agreement, parameter_agreements
 from ..autorietveld.model import AutoRietveldResult
-from .model import Check, Claim, Determinacy, Scope, Witness, compose, weaker_determinacy
+from .model import PROVENANCE_VARIED, Check, Claim, Determinacy, Scope, Witness, compose, weaker_determinacy
 
 __all__ = ["CLAIMS_VERSION", "base_claims", "with_convergence", "with_probe"]
 
 #: claims の写像規則の版 (② の出力・sidecar に記録する)。
 # 1B/1: 入力値を昇格しない・`locally_stable` (初期値プローブ)・座標の証人は動かした座標だけ・
 #   テンプレートの判断要求と `declared:*` の出自 (fit-then-judge P1-1B)。
-CLAIMS_VERSION = "fit-then-judge/1B/1"
+CLAIMS_VERSION = "fit-then-judge/1B/2"  # /2 (P1.5): 出自の違いだけでは初期値依存にしない
 
 _CELL_AXES = ("a", "b", "c", "alpha", "beta", "gamma")
 #: esd ≥ |値| を「決まっていない」とする種類 (格子・座標・プロファイルは値の原点が任意なので除く)。
@@ -258,6 +258,8 @@ def with_convergence(
             and all(is_agreement(v[0]) for v in found)
             and claim.determinacy is Determinacy.ESD_ONLY
             and "refined" in claim.provenance  # 解放しなかった入力値は「決まった」のではない
+            # 開始点で出自が違った (ある開始点では精密化しなかった) 値は試験したとは言えない
+            and not any(w.kind == PROVENANCE_VARIED for w in claim.witnesses)
             and (
                 claim.param_class != "coord"
                 or (coords_tested and (not moved_coords or key in moved_coords))

@@ -344,16 +344,26 @@ class Claim:
         )
 
 
+#: 開始点で出自が違った値の証人の種類 (`compose`)
+PROVENANCE_VARIED = "provenance_varied"
+
+
 def compose(a: Claim, b: Claim) -> Claim:
     """同じ値の 2 つの主張 (開始点違い・依存の伝播) を合成する (proposal §3.1 の合成規則)。
 
-    値と esd は ``a`` のもの (呼び手が採用した方) を残す。出自が違えば初期値に依存している。
+    値と esd は ``a`` のもの (呼び手が採用した方) を残す。
+
+    **出自の違いだけでは初期値依存にしない** (2026-10-15 ユーザー決定。proposal §3.1 の合成規則を改訂)。値が割れたかは
+    開始点の一致の比較 (`build.with_convergence`) が決める。出自が違ったことは証人 ``provenance_varied`` に残し、
+    `with_convergence` はその値を `determined` に上げない (精密化しなかった開始点がある値は試験したとは言えない)。
+    以前は「ある開始点で段が採用されなかった」だけで、値が一致していても初期値依存として止めていた (P1.5 の S-dev)。
     """
     if a.key != b.key:
         raise ValueError(f"違う値の主張は合成できません (key: {a.key!r} と {b.key!r})")
     determinacy = weaker_determinacy(a.determinacy, b.determinacy)
+    varied: tuple[Witness, ...] = ()
     if a.provenance != b.provenance:
-        determinacy = weaker_determinacy(determinacy, Determinacy.INITIAL_VALUE_DEPENDENT)
+        varied = (Witness(PROVENANCE_VARIED, {"provenances": sorted(a.provenance | b.provenance)}),)
     checks = dict(a.checks)
     for name, outcome in b.checks.items():
         checks[name] = worse_check(checks[name], outcome) if name in checks else outcome
@@ -365,5 +375,5 @@ def compose(a: Claim, b: Claim) -> Claim:
         scope=_weaker_scope(a.scope, b.scope),
         checks=checks,
         gate=a.gate | b.gate,
-        witnesses=a.witnesses + tuple(w for w in b.witnesses if w not in a.witnesses),
+        witnesses=a.witnesses + tuple(w for w in b.witnesses + varied if w not in a.witnesses),
     )
