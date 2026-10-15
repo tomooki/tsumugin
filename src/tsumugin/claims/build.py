@@ -203,8 +203,10 @@ def with_convergence(
     starts = tuple(getattr(multistart, "starts", ()))
     results = [s.result for s in starts]
 
+    # 出自の合成も値の一致と同じ開始点 (使える = 有限・validity を通った) に限る。validity に落ちた開始点
+    #   (別ベイスンに落ちた等) は比較から外しているのに、出自の違いで値を初期値依存にしていた (P1.5)。
     for r in results:
-        if r is None:
+        if not _usable(r):
             continue
         for key, other in base_claims(r).items():
             if key in out:

@@ -283,3 +283,11 @@ def test_pruning_one_cell_term_demotes_only_the_axes_that_depend_on_it():
     assert claims["cell:P.c"].provenance == {"pruned"}
     assert claims["cell:P.a"].provenance == {"refined"}
     assert claims["cell:P.b"].provenance == {"refined"}
+
+
+def test_an_invalid_start_does_not_count_as_a_different_provenance():
+    """validity に落ちた開始点は値の一致の比較から外す — 出自の合成からも外す (P1.5: 格子 ±0.7% で別ベイスンに
+    落ちて validity に落ちた開始点が、出自の違いで値を初期値依存にしていた)。"""
+    bad_pruned = _result(frozen_parameters=("0::dAx:1",), validity=ValidityReport(passed=False))
+    claims = with_convergence(base_claims(_result()), _ms([_result(), _result(), bad_pruned]))
+    assert claims["coord:P.O1.x"].determinacy is not Determinacy.INITIAL_VALUE_DEPENDENT
