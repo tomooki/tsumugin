@@ -265,3 +265,20 @@ def test_rewritten_cif_keeps_the_written_precision_of_coordinates(tmp_path):
     assert zn.coord_error[:2] == structure.atoms[0].coord_error[:2] == (0.5e-3, 0.5e-4)
     assert (zn.x, zn.y, zn.z) == (0.333, 0.6667, 0.0)
     assert d1.x == pytest.approx(0.12346, abs=1e-12), "桁数を知らない原子は従来どおり 5 桁"
+
+
+def test_moved_coordinates_are_not_truncated_to_the_read_precision(tmp_path):
+    """★`replace(atom, x=精密化値)` は ``coord_error`` を引き継ぐ (`claims.chemistry`) — 読んだ桁数で
+    書くのは**値がその桁の表記のまま**のときだけ。精密化値を 3 桁に丸めて BVS/GII を測らない。"""
+    from dataclasses import replace
+
+    from tsumugin.autorietveld.cif_normalize import Atom, Structure, read_structure_cif, write_gsas_cif
+
+    read = Atom(label="O1", type_symbol="O", x=0.333, y=0.25, z=0.1, occ=1.0, uiso=0.01,
+                coord_error=(0.5e-3, 0.0, 0.5e-3))
+    moved = replace(read, x=0.3412345)
+    struct = Structure(a=5.0, b=5.0, c=5.0, alpha=90.0, beta=90.0, gamma=90.0,
+                       spacegroup_hm="P 1", it_number=1, atoms=(moved,))
+    (atom,) = read_structure_cif(write_gsas_cif(struct, tmp_path / "o.cif")).atoms
+    assert atom.x == pytest.approx(0.34123, abs=1e-12)
+    assert atom.z == 0.1 and atom.coord_error[2] == 0.5e-3  # 動いていない軸は読んだ桁数のまま

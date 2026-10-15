@@ -91,10 +91,15 @@ def _coord_token(value: float, error: float | None) -> str:
     `.5f` で書き直すと ``0.333`` が ``0.33300`` になり、特殊位置への吸着 (書かれた桁数を許容差に
     する) から見て「1/3 から 1e-3 ずれた一般位置」を名乗ってしまう。桁数を知らない原子
     (コードで組んだ原子・2 桁以下の厳密値) は従来どおり 5 桁。
+
+    読んだ桁数で書くのは**値がその桁の表記のまま**のときだけ — ``replace(atom, x=精密化値)`` は
+    ``coord_error`` を引き継ぐ (`claims.chemistry`) ので、動いた座標を読んだ桁数へ丸めない。
     """
     if error:
         decimals = round(-math.log10(2.0 * error))
-        return f"{value:.{decimals}f}"
+        token = f"{value:.{decimals}f}"
+        if float(token) == value:
+            return token
     return f"{value:.5f}"
 
 
