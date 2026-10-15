@@ -102,7 +102,9 @@ def _composition_match(a: dict[str, float], b: dict[str, float], relaxed: bool) 
     return set(a) == set(b) if relaxed else _same_composition(a, b)
 
 
-def stage_metadata(snapshot: Path, *, relaxed: bool = False) -> tuple[dict[str, int], dict[str, dict]]:
+def stage_metadata(
+    snapshot: Path, *, relaxed: bool = False, include_noref: bool = False
+) -> tuple[dict[str, int], dict[str, dict]]:
     """(段階ごとの件数, 種 → 内部記録)。内部記録は表示しない。"""
     counts: Counter[str] = Counter()
     species: dict[str, dict] = {}
@@ -177,17 +179,21 @@ def stage_metadata(snapshot: Path, *, relaxed: bool = False) -> tuple[dict[str, 
             and (pk := publication_key(r)) is not None and pk != start_pub
             and (r.get("sgNumber") or "") == (start.get("sgNumber") or "")
         ]
+        rec["has_ref_candidates"] = bool(refs)
         if not refs:
             counts["drop_no_independent_reference_candidate"] += 1
-            del species[name]
-            continue
+            if not include_noref:
+                del species[name]
+                continue
         rec["entries"] = [
             {"file": r["file"], "pub": publication_key(r), "sg": (r.get("sgNumber") or ""),
              "rev": (r.get("svnrevision") or "").strip(), "powder": (r.get("method") or "").strip().lower() == "powder diffraction",
              "title": r.get("title") or ""}
             for r in ok
         ]
-    counts["species_after_metadata"] = len(species)
+    counts["species_after_metadata"] = sum(1 for r in species.values() if r.get("has_ref_candidates"))
+    if include_noref:
+        counts["noref_pool_after_metadata"] = sum(1 for r in species.values() if not r.get("has_ref_candidates"))
     return dict(counts), species
 
 
@@ -225,9 +231,13 @@ def _cif_usable(entry: dict, cache: Path, counts: Counter) -> str | None:
     return text
 
 
-def stage_cif(species: dict[str, dict], cache: Path) -> tuple[dict[str, int], dict[str, dict]]:
+def stage_cif(
+    species: dict[str, dict], cache: Path, *, include_noref: bool = False
+) -> tuple[dict[str, int], dict[str, dict], dict[str, dict]]:
+    """(件数, 参照あり, 参照なし)。参照なし (P0 v1.5 §3.2.1-11) は参照の条件**だけ**を満たさない種。"""
     counts: Counter[str] = Counter()
     final: dict[str, dict] = {}
+    noref: dict[str, dict] = {}
     for name, rec in species.items():
         start = start_text = None
         for e in rec["entries"]:
@@ -242,6 +252,9 @@ def stage_cif(species: dict[str, dict], cache: Path) -> tuple[dict[str, int], di
         if n_free is None or n_free < 3:
             counts["drop_free_coordinates_lt3"] += 1
             continue
+        if not rec.get("has_ref_candidates"):
+            noref[name] = {"rruff_id": rec["rruff_id"], "start": start["file"]}
+            continue
         refs = [e for e in rec["entries"] if e is not start and not e["file"].startswith("9")
                 and e["pub"] is not None and e["pub"] != start["pub"] and e["sg"] == start["sg"]]
         refs.sort(key=lambda e: (e["powder"], int(e["file"])))
@@ -253,10 +266,14 @@ def stage_cif(species: dict[str, dict], cache: Path) -> tuple[dict[str, int], di
                 break
         if ref is None:
             counts["drop_no_reference_with_esd"] += 1
+            if include_noref:
+                noref[name] = {"rruff_id": rec["rruff_id"], "start": start["file"]}
             continue
         final[name] = {"rruff_id": rec["rruff_id"], "start": start["file"], "reference": ref["file"]}
     counts["candidates"] = len(final)
-    return dict(counts), final
+    if include_noref:
+        counts["noref_candidates"] = len(noref)
+    return dict(counts), final, noref
 
 
 def main() -> int:
@@ -267,27 +284,32 @@ def main() -> int:
     ap.add_argument("--private-out", default="", help="候補の平文 ID の書き出し先 (リポジトリの外)")
     ap.add_argument("--ledger", default="")
     ap.add_argument("--relaxed", action="store_true", help="P0 G5 の緩め方 (元素の集合の一致) を使う")
+    ap.add_argument("--include-noref", action="store_true",
+                    help="P0 v1.5 §3.2.1-11 の参照なしの候補も作る (出発構造の CIF を多数取得する)")
     args = ap.parse_args()
     snapshot = Path(args.snapshot)
     shas = {rel: _sha(snapshot / rel) for rel in SNAPSHOT_SHA256}
     for rel, want in SNAPSHOT_SHA256.items():
         if shas[rel] != want:
             raise SystemExit(f"snapshot {rel} sha256 mismatch")
-    counts, species = stage_metadata(snapshot, relaxed=args.relaxed)
+    counts, species = stage_metadata(snapshot, relaxed=args.relaxed, include_noref=args.include_noref)
     if args.stage == "cif":
         if not args.cif_cache:
             raise SystemExit("--cif-cache が要る (リポジトリの外)")
-        cif_counts, final = stage_cif(species, Path(args.cif_cache))
+        cif_counts, final, noref = stage_cif(species, Path(args.cif_cache), include_noref=args.include_noref)
         counts.update({f"cif_{k}": v for k, v in cif_counts.items()})
         if args.private_out:
+            order = lambda r: _rruff_id_number(r["rruff_id"])  # noqa: E731
             Path(args.private_out).write_text(json.dumps(
-                sorted(final.values(), key=lambda r: _rruff_id_number(r["rruff_id"])), indent=1), encoding="utf-8")
+                {"ref": sorted(final.values(), key=order), "noref": sorted(noref.values(), key=order)}, indent=1),
+                encoding="utf-8")
     for k in sorted(counts):
         print(f"{k}: {counts[k]}")
     if args.ledger:
         with Path(args.ledger).open("a", encoding="utf-8") as f:
             f.write(json.dumps({
                 "time": datetime.now(timezone.utc).isoformat(), "stage": args.stage, "relaxed": args.relaxed,
+                "include_noref": args.include_noref,
                 "script_sha256": _sha(Path(__file__)), "inputs": shas, "counts": counts,
             }) + "\n")
     return 0
