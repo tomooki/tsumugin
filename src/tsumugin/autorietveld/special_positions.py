@@ -7,7 +7,7 @@ GSAS-II は原子のサイト対称と多重度を ``GSASIIspc.SytSym`` で**座
 軸の esd (0.7・4.5)・結晶化学の GII (~0.5)・組成だけで、Rwp からは見えない。
 
 ここでは `tsumugin.site_symmetry.snap_to_special_position` で射影し、動いた原子だけを書き換えた
-CIF の写しを GSAS に渡す。許容差は**書かれた桁数**から決める (:func:`_coord_error`): その桁数では
+CIF の写しを GSAS に渡す。許容差は**書かれた桁数**から決める (`cif_normalize.coord_rounding_error`): その桁数では
 特殊位置と区別できない点は特殊位置に載せ、区別できる変位 (4 桁で 1/3 から 3e-4) は残す。
 
 入力 CIF は書き換えない。写しは座標トークン以外をバイト単位で保つ (`write_gsas_cif` で
@@ -25,10 +25,17 @@ from typing import Any, Callable
 import numpy as np
 
 from ..site_symmetry import snap_to_special_position
-from .cif_normalize import _HM_TAGS, _atom_loop_rows, _scalar, _strip_esd, read_structure_cif
+from .cif_normalize import (
+    _HM_TAGS,
+    _atom_loop_rows,
+    _scalar,
+    _strip_esd,
+    coord_rounding_error,
+    read_structure_cif,
+)
 from .lattice import direct_metric_from_cell
 
-__all__ = ["SnapReport", "snap_cif_special_positions"]
+__all__ = ["SnapReport", "gsas_space_group_symops", "snap_cif_special_positions", "snap_for_gsas"]
 
 _AXIS_TAGS = ("_atom_site_fract_x", "_atom_site_fract_y", "_atom_site_fract_z")
 _NOISE = 1e-12
@@ -65,19 +72,53 @@ class SnapReport:
             "path": self.source,
         }
 
+    def warning(self) -> str | None:
+        """ledger の無い経路 (``RefinementResult.warnings`` 等) に載せる 1 文。何も起きなければ None。
 
-def _coord_error(token: str) -> float:
-    """座標トークンの丸め誤差の上限 (``0.3333`` → ``0.5e-4``)。
+        ``"unchanged"`` は None — 何もしなかった相の文を毎回足すと、本当に見るべき文が埋もれる。
+        """
+        if self.status == "snapped":
+            moved = ", ".join(f"{m['label']} ({m['shift_angstrom']:.2g} Å)" for m in self.moved)
+            return (
+                f"相 {self.phase}: GSAS-II が読む前に特殊位置へ吸着した原子 {moved} "
+                f"(入力 {self.source}; 書かれた桁数では特殊位置と区別できない座標)"
+            )
+        if self.status == "skipped":
+            return f"相 {self.phase}: 特殊位置への吸着を見送った (入力 {self.source}) — {self.reason}"
+        return None
 
-    小数 2 桁以下 (``0``・``0.5``・``0.25``) は**厳密値**として扱い 0 を返す — 1/2・1/4 を書く
-    のに桁を省くのは普通で、それを ±0.005 の幅と読むと近くの一般位置を誤って吸着する。
-    1/3 を 2 桁 (``0.33``) で書く CIF はこの規則では拾えない (既定の許容差 1e-4 のまま)。
+
+def gsas_space_group_symops(hm: str) -> tuple[str, ...]:
+    """H-M 記号から GSAS-II 自身の空間群展開で一般位置を xyz 表記で返す (GSAS 遅延 import)。
+
+    CIF に対称操作ループが無いとき GSAS は H-M 名から群を作る — 同じ群で射影するために
+    GSAS の ``SpcGroup`` を使う (中心並進・反転を展開する)。
     """
-    match = re.fullmatch(r"[+-]?\d*\.(\d+)", re.sub(r"\(.*?\)", "", token))
-    if match is None:
-        return 0.0
-    decimals = len(match.group(1))
-    return 0.5 * 10.0 ** (-decimals) if decimals >= 3 else 0.0
+    from GSASII import GSASIIspc as G2spc
+
+    err, sg = G2spc.SpcGroup(hm)
+    if err:
+        raise ValueError(G2spc.SGErrors(err))
+    ops: list[str] = []
+    signs = (1, -1) if sg["SGInv"] else (1,)
+    for cen in sg["SGCen"]:
+        for sign in signs:
+            for rotation, translation in sg["SGOps"]:
+                text = G2spc.MT2text((sign * rotation, sign * translation + cen))
+                ops.append(text.replace(" ", "").lower())
+    return tuple(ops)
+
+
+def snap_for_gsas(path: str | Path, out_dir: str | Path, *, phase_name: str) -> SnapReport:
+    """GSAS-II の ``add_phase`` に CIF を渡す経路の共通入口 (対称操作の補完は GSAS 自身の群)。
+
+    `engine.run_auto_rietveld` (ledger に記録)・`backends.gsasii` の structure_ref 分岐と
+    `cell_refine.refine_structure_cell` (``warnings`` に記録) が使う。``add_phase`` には
+    ``report.path`` を渡す。
+    """
+    return snap_cif_special_positions(
+        path, out_dir, phase_name=phase_name, space_group_symops=gsas_space_group_symops
+    )
 
 
 def _format(value: float) -> str:
@@ -156,7 +197,7 @@ def snap_cif_special_positions(
     for index, row in rows:
         tokens = [row[k] for k in axis_cols]
         original = tuple(_strip_esd(t) for t in tokens)
-        error = tuple(_coord_error(t) for t in tokens)
+        error = tuple(coord_rounding_error(t) for t in tokens)
         snapped = snap_to_special_position(symops, original, coord_error=error)
         delta = np.subtract(snapped, original)
         # 既に特殊位置にある原子 (0.5・0.25) の最小二乗の丸め (~1e-17) を「動いた」と数えない。

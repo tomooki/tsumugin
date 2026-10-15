@@ -182,6 +182,9 @@ class _IntervalOutcome:
     # 【フレーム精密化状態 (Issue #76)】: 有限フレームの精密化済み状態 (phases/free/曲率/データ) を
     #   frame_index 昇順で保持し、物理 EvidenceProblem 構築 (`nested.physical`) の材料にする 🟡
     frame_states: tuple[FrameState, ...] = ()
+    # 【backend の警告】: RefinementResult.warnings (出現順・重複なし)。GSAS の structure_ref 経路の
+    #   特殊位置吸着の記録はここにしか残らない (ledger が無い)。
+    backend_warnings: tuple[str, ...] = ()
 
 
 def discriminate_interval(
@@ -384,6 +387,9 @@ def discriminate_interval(
         seq_a.warnings + seq_b.warnings
         + multistart_single.warnings + multistart_two_phase.warnings
         + nested_warnings
+        # backend の警告 (例: GSAS の structure_ref 経路の特殊位置吸着 — ledger の無い経路の唯一の
+        #   記録)。全フレームで同じ文が出るので区間をまたいで 1 回にまとめる。
+        + tuple(dict.fromkeys(seq_a.backend_warnings + seq_b.backend_warnings))
     )
 
     # ---- ledger 記録 (提供時のみ・"discrimination." 前置。nested 経路は arbitrate/nested 自身も追記) --
@@ -513,6 +519,7 @@ def _refine_interval(
     sum_bic = 0.0
     rwps: list[float] = []
     warnings: list[str] = []
+    backend_warnings: dict[str, None] = {}  # 出現順を保つ集合
     endpoint_phases: dict[int, tuple[PhaseInstance, ...]] = {}
     endpoint_results: dict[int, RefinementResult] = {}
     finite_frames: set[int] = set()
@@ -528,6 +535,7 @@ def _refine_interval(
         )
         # 【direct refine】: staged 解放ループなし、seq_max_cycles で 1 回だけ精密化する 🔵
         result = backend.refine(model, max_cycles=seq_max_cycles)
+        backend_warnings.update(dict.fromkeys(result.warnings))
         chi2 = float(result.chi2)
         if math.isfinite(chi2):
             # 【有限フレーム】: 釣り合いモデル DOF の bic を加算する 🔵
@@ -566,6 +574,7 @@ def _refine_interval(
         endpoint_phases=endpoint_phases,
         endpoint_results=endpoint_results,
         warnings=tuple(warnings),
+        backend_warnings=tuple(backend_warnings),
         finite_frames=frozenset(finite_frames),
         frame_states=tuple(frame_states),
     )

@@ -178,3 +178,89 @@ def test_refine_structure_cell_recovers_mp_like_anisotropic_error_on_real_data()
     assert abs(res.cell[1] - lat.b) < 0.05
     assert res.prealign_cell is not None
     assert res.method in ("prealign+cell", "prealign")  # 発散して none に落ちていない
+
+
+# --- 特殊位置の吸着 (PR #251 の残り経路) ---
+
+
+def _fake_gsas(monkeypatch, tmp_path):
+    """GSAS-II を模す (`refine_structure_cell` が触る面だけ)。``add_phase`` のパスを記録する。"""
+    import sys
+    import types
+
+    seen: dict[str, str] = {}
+
+    class _Phase:
+        data: dict = {}
+
+        def get_cell(self):
+            return {"length_a": 3.2495, "length_b": 3.2495, "length_c": 5.2069,
+                    "angle_alpha": 90.0, "angle_beta": 90.0, "angle_gamma": 120.0}
+
+        def set_refinements(self, refs):
+            pass
+
+    class _Hist:
+        def set_refinements(self, refs):
+            pass
+
+    class _Project:
+        def __init__(self, newgpx):
+            self.path = Path(newgpx)
+            self.data = {"Controls": {"data": {}},
+                         "Covariance": {"data": {"Rvals": {"Rwp": 10.0, "converged": True}}}}
+
+        def add_powder_histogram(self, *args, **kwargs):
+            return _Hist()
+
+        def add_phase(self, path, **kwargs):
+            from tsumugin.autorietveld.cif_normalize import read_structure_cif
+
+            seen["path"] = str(path)
+            seen["atoms"] = {a.label: a for a in read_structure_cif(path).atoms}  # 一時ファイル
+            return _Phase()
+
+        def set_refinement(self, refs):
+            pass
+
+        def do_refinements(self, refs):
+            pass
+
+        def save(self):
+            self.path.write_bytes(b"gpx")
+
+    scriptable = types.SimpleNamespace(G2Project=_Project, SetPrintLevel=lambda level: None)
+    package = types.ModuleType("GSASII")
+    package.GSASIIscriptable = scriptable
+    monkeypatch.setitem(sys.modules, "GSASII", package)
+    monkeypatch.setitem(sys.modules, "GSASII.GSASIIscriptable", scriptable)
+    return seen
+
+
+def test_refine_structure_cell_hands_gsas_the_snapped_cif(monkeypatch, tmp_path):
+    """★セル研磨も GSAS が読む前に 4 桁の 1/3 を特殊位置へ載せ、吸着を ``warnings`` に残す。
+
+    GSAS-II は ``(0.3333, 0.6667, z)`` を一般位置 (多重度 3 倍) と読む (PR #251 実測)。
+    構造因子が 3 倍の原子で計算されたまま「平坦なセル研磨」をしない。
+    """
+    from .test_special_position_snap import _zno_cif
+
+    seen = _fake_gsas(monkeypatch, tmp_path)
+    cif = _zno_cif(tmp_path)
+    res = refine_structure_cell(str(cif), str(tmp_path / "d.xye"), str(tmp_path / "i.instprm"))
+
+    assert seen["path"] != str(cif), "元の CIF をそのまま GSAS に渡した"
+    atoms = seen["atoms"]
+    assert atoms["Zn1"].x == pytest.approx(1 / 3, abs=1e-10)
+    assert any("Zn1" in w for w in res.warnings), res.warnings
+
+
+def test_refine_structure_cell_needing_no_snap_has_no_warnings(monkeypatch, tmp_path):
+    from .test_special_position_snap import _zno_cif
+
+    seen = _fake_gsas(monkeypatch, tmp_path)
+    cif = _zno_cif(tmp_path, zn=("0.333333333333", "0.666666666667", "0"),
+                   o=("0.333333333333", "0.666666666667", "0.3817"))
+    res = refine_structure_cell(str(cif), str(tmp_path / "d.xye"), str(tmp_path / "i.instprm"))
+    assert seen["path"] == str(cif)
+    assert res.warnings == ()

@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from .lattice import Cell6, LatticeSolution
+from .special_positions import snap_for_gsas
 
 __all__ = [
     "CellRefinementResult",
@@ -53,6 +54,9 @@ class CellRefinementResult:
     method: str  # "prealign" / "prealign+cell" / "cell" / "none" 🔵
     n_matched: int  # プリアラインでマッチした反射数 (0=プリアラインなし) 🔵
     prealign_cell: Cell6 | None = None  # プリアライン段の格子 (GSAS 研磨前) 🔵
+    # 特殊位置の吸着/見送り (`special_positions.SnapReport.warning`)。GSAS 研磨なしは空 (GSAS に
+    # CIF を渡していない)。
+    warnings: tuple[str, ...] = ()
 
 
 def _crystal_system_of(structure: object) -> str:
@@ -272,7 +276,14 @@ def refine_structure_cell(
         hist = gpx.add_powder_histogram(data_path, instrument_path, fmthint=fmthint)
         if two_theta_limits is not None:
             hist.set_refinements({"Limits": list(two_theta_limits)})
-        ph = gpx.add_phase(structure_path, phasename="cellref", histograms=[hist], fmthint="CIF")
+        # 【特殊位置へ吸着してから読ませる】: GSAS-II は 4 桁の 1/3 を一般位置 (多重度 3 倍) と
+        #   読む (`special_positions`)。構造因子が狂ったままの「平坦なセル研磨」にしない。
+        snap = snap_for_gsas(
+            structure_path, tmp_path / "special-positions", phase_name=Path(structure_path).stem
+        )
+        note = snap.warning()
+        warnings = () if note is None else (note,)
+        ph = gpx.add_phase(snap.path, phasename="cellref", histograms=[hist], fmthint="CIF")
         if seed_cell is not None:
             _set_cell(ph, seed_cell)
         gpx.data["Controls"]["data"]["max cyc"] = max_cyc
@@ -317,6 +328,7 @@ def refine_structure_cell(
         method=method,
         n_matched=n_matched,
         prealign_cell=prealign_cell,
+        warnings=warnings,
     )
 
 
