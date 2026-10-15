@@ -45,8 +45,10 @@ note = """
 provenance = "public"
 source = "fit-then-judge P0 §3.2.1 の H-pub 候補一覧の生成スクリプト (RRUFF + COD のスナップショット 2026-10-13 を読む)"
 note = """
-追跡するのはスクリプトだけ。入力のスナップショット・候補の平文の ID・salt・実行の ledger はリポジトリの外
-(P0 §3.2.1-4)。public に置くのは件数と salt 付きハッシュだけ。RRUFF のデータは再配布しない (U14)。
+追跡するのはスクリプト (candidates.py / manifest.py) と、凍結時に commit する候補 manifest (candidates_manifest.json:
+salt 付き ID ハッシュ・件数・除外理由の種類ごとの件数) と全事例に共通の汎用装置パラメータ (hpub_generic_lab.instprm:
+S-dev の生成器で宣言した合成の値そのまま = synthetic)。入力のスナップショット・候補の平文の ID・salt・実行の ledger は
+リポジトリの外 (P0 §3.2.1-4)。RRUFF のデータは再配布しない (U14)。
 """
 
 [entries."fit-then-judge-synthetic"]
