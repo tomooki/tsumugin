@@ -31,6 +31,9 @@ def _load(name):
 cases = _load("cases")
 
 _HEAD = """data_x
+loop_
+_symmetry_equiv_pos_as_xyz
+{ops}
 _cell_length_a {a}
 _cell_length_b {b}
 _cell_length_c {c}
@@ -48,16 +51,19 @@ _atom_site_occupancy
 _atom_site_U_iso_or_equiv
 """
 _CIFS = {
-    "ZnO": (dict(a=3.25, b=3.25, c=5.2, g=120, sg="P 63 m c"),
+    "ZnO": (dict(a=3.25, b=3.25, c=5.2, g=120, sg="P 63 m c",
+                 ops="\n".join(f"'{op}'" for op in (
+                     "x,y,z", "-y,x-y,z", "-x+y,-x,z", "-x,-y,z+1/2", "y,-x+y,z+1/2", "x-y,x,z+1/2",
+                     "-y,-x,z", "-x+y,y,z", "x,x-y,z", "y,x,z+1/2", "x-y,-y,z+1/2", "-x,-x+y,z+1/2"))),
             ["Zn1 Zn 0.3333 0.6667 0 1 0.01", "O1 O 0.3333 0.6667 0.38 1 0.01"]),
-    "Mg2SiO4": (dict(a=4.75, b=10.2, c=5.98, g=90, sg="P b n m"),
+    "Mg2SiO4": (dict(a=4.75, b=10.2, c=5.98, g=90, sg="P b n m", ops="'x,y,z'"),
                 ["Mg1 Mg 0 0 0 1 0.01", "Mg2 Mg 0.99 0.28 0.25 1 0.01", "Si1 Si 0.43 0.09 0.25 1 0.01",
                  "O1 O 0.77 0.09 0.25 1 0.01", "O2 O 0.22 0.45 0.25 1 0.01", "O3 O 0.28 0.16 0.03 1 0.01"]),
-    "FeS2": (dict(a=5.42, b=5.42, c=5.42, g=90, sg="P a -3"),
+    "FeS2": (dict(a=5.42, b=5.42, c=5.42, g=90, sg="P a -3", ops="'x,y,z'"),
              ["Fe1 Fe 0 0 0 1 0.01", "S1 S 0.384 0.384 0.384 1 0.01"]),
-    "MgAl2O4": (dict(a=8.08, b=8.08, c=8.08, g=90, sg="F d -3 m"),
+    "MgAl2O4": (dict(a=8.08, b=8.08, c=8.08, g=90, sg="F d -3 m", ops="'x,y,z'"),
                 ["Mg1 Mg 0 0 0 1 0.01", "Al1 Al 0.625 0.625 0.625 1 0.01", "O1 O 0.385 0.385 0.385 1 0.01"]),
-    "TiO2": (dict(a=4.59, b=4.59, c=2.96, g=90, sg="P 42/m n m"),
+    "TiO2": (dict(a=4.59, b=4.59, c=2.96, g=90, sg="P 42/m n m", ops="'x,y,z'"),
              ["Ti Ti 0 0 0 1 0.01", "O O 0.305 0.305 0 1 0.01"]),
 }
 
@@ -146,3 +152,11 @@ def test_every_case_has_a_tracked_manifest_with_a_pattern_hash():
         raw.pop("start_phases_relative")
         m = CaseManifest.from_dict(raw)
         assert m.case_id == c.case_id and len(m.pattern_sha256) == 64 and m.generator_commit
+
+
+def test_special_positions_are_snapped_before_writing(cifs, tmp_path):
+    gen = _load("generate")
+    by = {c.case_id: c for c in cases.CASES}
+    b = gen.build_case(by["sdev01_zno_control"], cifs, tmp_path / "s")
+    text = Path(b["truth_paths"]["ZnO"]).read_text()
+    assert "0.33333 0.66667" in text  # 0.3333 のままだと GSAS が 2b を多重度 6 と読む

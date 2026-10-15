@@ -73,8 +73,25 @@ def _mix_fe(s: Structure, fraction: float) -> Structure:
     return replace(s, atoms=tuple(atoms))
 
 
+def _snap(s: Structure) -> Structure:
+    """特殊位置を対称操作の不変部分空間へ射影する。
+
+    COD の CIF は 1/3 を ``0.3333`` と書くことが多く、GSAS-II はそれを特殊位置と認めない (P6₃mc の 2b を
+    多重度 6 の m(110) と判定し、原子が 3 重になったまま精密化が完走する — 2026-10-15 実測)。真値の構造が
+    意図した構造であるように、生成の前に厳密な特殊位置へ載せる。
+    """
+    from tsumugin.topas.symmetry import snap_to_special_position
+
+    if not s.symops:
+        raise RuntimeError("対称操作の無い CIF は特殊位置を確かめられない")
+    atoms = tuple(
+        replace(a, **dict(zip("xyz", snap_to_special_position(s.symops, (a.x, a.y, a.z))))) for a in s.atoms
+    )
+    return replace(s, atoms=atoms)
+
+
 def truth_structure(pd: PhaseDef, cif: Path) -> Structure:
-    s = read_structure_cif(cif)
+    s = _snap(read_structure_cif(cif))
     return _mix_fe(s, pd.mixed_fe) if pd.mixed_fe else s
 
 
