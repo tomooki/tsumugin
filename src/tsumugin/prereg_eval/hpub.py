@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 import statistics
 import unicodedata
 from collections.abc import Mapping
@@ -20,6 +21,11 @@ from .synth import composition_fractions
 
 __all__ = [
     "STATUS_CONFIRMED",
+    "atom_site_rows",
+    "cif_tags",
+    "cod_revision",
+    "free_coordinate_count",
+    "has_all_free_esds",
     "RawHeader",
     "decode_raw",
     "is_room_conditions",
@@ -190,3 +196,130 @@ def publication_key(meta: Mapping[str, object]) -> str | None:
 def salted_hash(salt: str, entry_id: str) -> str:
     """public の抽出 manifest に置く ID のハッシュ ``sha256(salt ‖ ID)``。"""
     return hashlib.sha256((salt + entry_id).encode("utf-8")).hexdigest()
+
+
+# --- CIF の検査 (値は表示しない — 有無と件数だけを返す) ----------------------------------------
+
+
+def _loops(text: str) -> list[tuple[list[str], list[str]]]:
+    """CIF の loop_ を (見出しの列, 値のトークン列) で返す (; で始まる複数行の文字列は扱わない)。"""
+    loops: list[tuple[list[str], list[str]]] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().lower() != "loop_":
+            i += 1
+            continue
+        i += 1
+        heads: list[str] = []
+        while i < len(lines) and lines[i].strip().startswith("_"):
+            heads.append(lines[i].strip().split()[0].lower())
+            i += 1
+        values: list[str] = []
+        while i < len(lines):
+            t = lines[i].strip()
+            if t.lower() == "loop_" or t.startswith(("_", "data_")) or t.startswith(";"):
+                break
+            if t and not t.startswith("#"):
+                try:
+                    values.extend(shlex.split(t, posix=True))
+                except ValueError:
+                    values.extend(t.split())
+            i += 1
+        loops.append((heads, values))
+    return loops
+
+
+def atom_site_rows(text: str) -> list[dict[str, str]]:
+    """``_atom_site_*`` のループの行 (値は生の文字列。esd の括弧を残す)。"""
+    for heads, values in _loops(text):
+        if "_atom_site_fract_x" in heads:
+            n = len(heads)
+            return [dict(zip(heads, values[k:k + n])) for k in range(0, len(values) - n + 1, n)]
+    return []
+
+
+def cif_tags(text: str) -> dict[str, str]:
+    """ループの外の 1 値のタグ (小文字のタグ名 → 生の値)。"""
+    out: dict[str, str] = {}
+    in_loop = False
+    for line in text.splitlines():
+        t = line.strip()
+        if t.lower() == "loop_":
+            in_loop = True
+            continue
+        if not t.startswith("_"):
+            if t and not t.startswith("#"):
+                in_loop = in_loop and not t.startswith("data_")
+            continue
+        parts = t.split(None, 1)
+        if len(parts) == 2 and not in_loop:
+            out[parts[0].lower()] = parts[1].strip().strip("'\"")
+        elif len(parts) == 2:
+            in_loop = False
+            out[parts[0].lower()] = parts[1].strip().strip("'\"")
+    return out
+
+
+def cod_revision(text: str) -> str | None:
+    m = re.search(r"#\$Revision:\s*(\d+)\s*\$", text)
+    return m.group(1) if m else None
+
+
+def _symops(text: str) -> tuple[str, ...]:
+    for heads, values in _loops(text):
+        for tag in ("_symmetry_equiv_pos_as_xyz", "_space_group_symop_operation_xyz"):
+            if tag in heads:
+                n = len(heads)
+                k = heads.index(tag)
+                return tuple(values[j + k] for j in range(0, len(values) - n + 1, n))
+    return ()
+
+
+def _strip(token: str) -> float | None:
+    try:
+        return float(re.sub(r"\(.*?\)", "", token))
+    except ValueError:
+        return None
+
+
+def _is_hydrogen(row: dict[str, str]) -> bool:
+    sym = row.get("_atom_site_type_symbol") or row.get("_atom_site_label") or ""
+    el = re.match(r"[A-Za-z]{1,2}", sym)
+    return bool(el) and el.group(0).capitalize() in ("H", "D")
+
+
+def _free_axes(text: str) -> list[tuple[dict[str, str], tuple[str, ...]]] | None:
+    from ..topas.symmetry import free_coord_axes
+
+    ops = _symops(text)
+    if not ops:
+        return None
+    out = []
+    for row in atom_site_rows(text):
+        if _is_hydrogen(row):
+            continue
+        xyz = [_strip(row.get(f"_atom_site_fract_{a}", "")) for a in "xyz"]
+        if any(v is None for v in xyz):
+            return None
+        out.append((row, free_coord_axes(ops, tuple(xyz))))  # type: ignore[arg-type]
+    return out
+
+
+def free_coordinate_count(text: str) -> int | None:
+    """H 以外の原子の自由座標の数 (サイト対称で決まる自由軸)。対称操作が無ければ None。"""
+    axes = _free_axes(text)
+    return None if axes is None else sum(len(a) for _, a in axes)
+
+
+def has_all_free_esds(text: str) -> bool:
+    """H 以外の全原子の自由座標すべてに 0 でない esd が括弧で付いているか。決められなければ False。"""
+    axes = _free_axes(text)
+    if not axes:
+        return False
+    for row, free in axes:
+        for a in free:
+            m = re.search(r"\((\d+)\)", row.get(f"_atom_site_fract_{a}", ""))
+            if m is None or int(m.group(1)) == 0:
+                return False
+    return True

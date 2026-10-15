@@ -6,8 +6,11 @@
 
 - ``metadata``: RRUFF のヘッダ (許された項目だけ) と COD のメタデータで絞る (パターンの形・STATUS・1 種 1 標本・
   組成の一致・常温常圧のメタデータ・除外・出発構造の有無・別出版物で AMCSD 由来でない参照の候補の有無)。CIF は取得しない。
-- ``cif`` (未実装・ユーザーの承認後): 候補の COD の CIF を取得し、CIF のタグの常温常圧・空間群の一致・自由座標の esd・
-  自由座標 3 以上を検査して確定する。
+- ``cif`` (2026-10-15 にユーザーが取得を承認): 候補の COD の CIF をミラーから取得 (キャッシュはリポジトリの外) し、
+  CSV の ``svnrevision`` と CIF の ``#$Revision$`` の一致・CIF のタグの常温常圧・自由座標 3 以上 (出発構造)・
+  H 以外の全自由座標の esd (参照構造) を検査して確定する。自由軸はサイト対称から (`topas.symmetry` の射影 =
+  GSAS の ``GetCSxinel`` と同じ意味)。esd は**参照構造自身の自由軸**で見る (出発と同じ空間群なので同じ Wyckoff の組。
+  原子の対応は §3.2.1-6 で後から作る)。
 
 入力のスナップショットは sha256 を照合してから読む (P0 §3.2.1-1 の固定)。走らせるたびに私的な ledger
 (``--ledger``、リポジトリの外) に、スクリプトの sha256・入力の sha256・段階ごとの件数を追記する (何度走らせたかを隠さない)。
@@ -34,6 +37,10 @@ from cases import SOURCES as SDEV_SOURCES  # noqa: E402
 
 from tsumugin.prereg_eval.hpub import (  # noqa: E402
     STATUS_CONFIRMED,
+    cif_tags,
+    cod_revision,
+    free_coordinate_count,
+    has_all_free_esds,
     decode_raw,
     is_room_conditions,
     normalize_mineral,
@@ -174,17 +181,90 @@ def stage_metadata(snapshot: Path, *, relaxed: bool = False) -> tuple[dict[str, 
             counts["drop_no_independent_reference_candidate"] += 1
             del species[name]
             continue
-        rec["start"] = start["file"]
-        rec["ref_candidates"] = [r["file"] for r in sorted(
-            refs, key=lambda r: ((r.get("method") or "").strip().lower() == "powder diffraction", int(r["file"])))]
+        rec["entries"] = [
+            {"file": r["file"], "pub": publication_key(r), "sg": (r.get("sgNumber") or ""),
+             "rev": (r.get("svnrevision") or "").strip(), "powder": (r.get("method") or "").strip().lower() == "powder diffraction",
+             "title": r.get("title") or ""}
+            for r in ok
+        ]
     counts["species_after_metadata"] = len(species)
     return dict(counts), species
+
+
+_MIRROR = "https://qiserver.ugr.es/cod/{id}.cif"
+
+
+def _fetch(cod_id: str, cache: Path) -> str | None:
+    import time
+    import urllib.request
+
+    path = cache / f"{cod_id}.cif"
+    if not path.exists():
+        cache.mkdir(parents=True, exist_ok=True)
+        try:
+            with urllib.request.urlopen(_MIRROR.format(id=cod_id), timeout=60) as r:  # noqa: S310 — 固定の COD ミラー
+                path.write_bytes(r.read())
+        except OSError:
+            return None
+        time.sleep(0.2)  # ミラーに負荷を掛けない
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _cif_usable(entry: dict, cache: Path, counts: Counter) -> str | None:
+    """取得でき・版が CSV と一致し・CIF のタグが常温常圧なら CIF の本文。"""
+    text = _fetch(entry["file"], cache)
+    if text is None:
+        counts["cif_unavailable"] += 1
+        return None
+    if cod_revision(text) != entry["rev"]:
+        counts["cif_revision_mismatch"] += 1
+        return None
+    if not is_room_conditions({}, cif_tags(text), entry["title"]):
+        counts["cif_not_room_conditions"] += 1
+        return None
+    return text
+
+
+def stage_cif(species: dict[str, dict], cache: Path) -> tuple[dict[str, int], dict[str, dict]]:
+    counts: Counter[str] = Counter()
+    final: dict[str, dict] = {}
+    for name, rec in species.items():
+        start = start_text = None
+        for e in rec["entries"]:
+            text = _cif_usable(e, cache, counts)
+            if text is not None:
+                start, start_text = e, text
+                break
+        if start is None:
+            counts["drop_no_usable_start"] += 1
+            continue
+        n_free = free_coordinate_count(start_text)
+        if n_free is None or n_free < 3:
+            counts["drop_free_coordinates_lt3"] += 1
+            continue
+        refs = [e for e in rec["entries"] if e is not start and not e["file"].startswith("9")
+                and e["pub"] is not None and e["pub"] != start["pub"] and e["sg"] == start["sg"]]
+        refs.sort(key=lambda e: (e["powder"], int(e["file"])))
+        ref = None
+        for e in refs:
+            text = _cif_usable(e, cache, counts)
+            if text is not None and has_all_free_esds(text):
+                ref = e
+                break
+        if ref is None:
+            counts["drop_no_reference_with_esd"] += 1
+            continue
+        final[name] = {"rruff_id": rec["rruff_id"], "start": start["file"], "reference": ref["file"]}
+    counts["candidates"] = len(final)
+    return dict(counts), final
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--snapshot", required=True)
-    ap.add_argument("--stage", choices=("metadata",), default="metadata")
+    ap.add_argument("--stage", choices=("metadata", "cif"), default="metadata")
+    ap.add_argument("--cif-cache", default="")
+    ap.add_argument("--private-out", default="", help="候補の平文 ID の書き出し先 (リポジトリの外)")
     ap.add_argument("--ledger", default="")
     ap.add_argument("--relaxed", action="store_true", help="P0 G5 の緩め方 (元素の集合の一致) を使う")
     args = ap.parse_args()
@@ -193,7 +273,15 @@ def main() -> int:
     for rel, want in SNAPSHOT_SHA256.items():
         if shas[rel] != want:
             raise SystemExit(f"snapshot {rel} sha256 mismatch")
-    counts, _species = stage_metadata(snapshot, relaxed=args.relaxed)
+    counts, species = stage_metadata(snapshot, relaxed=args.relaxed)
+    if args.stage == "cif":
+        if not args.cif_cache:
+            raise SystemExit("--cif-cache が要る (リポジトリの外)")
+        cif_counts, final = stage_cif(species, Path(args.cif_cache))
+        counts.update({f"cif_{k}": v for k, v in cif_counts.items()})
+        if args.private_out:
+            Path(args.private_out).write_text(json.dumps(
+                sorted(final.values(), key=lambda r: _rruff_id_number(r["rruff_id"])), indent=1), encoding="utf-8")
     for k in sorted(counts):
         print(f"{k}: {counts[k]}")
     if args.ledger:
