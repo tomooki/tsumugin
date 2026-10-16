@@ -95,9 +95,9 @@ def test_jittered_starts_keep_a_mixed_site_colocated(tmp_path, monkeypatch):
 
     for seed in (1, 2, 3):
         jittered = run(seed)
-        assert jittered.coord_jitter_axes_moved == 1, "共位置の組の自由度 1 つだけを数える"
         s, se = jittered.atom_coords["FeSSe"]["S1"], jittered.atom_coords["FeSSe"]["Se1"]
         assert max(abs(a - b) for a, b in zip(s, se)) < 1e-9, (
             f"種 {seed}: 精密化後に S1 {s} と Se1 {se} の共位置が開いた — 出発点で別々に振った"
         )
+        assert jittered.coord_jitter_axes_moved == 1, "共位置の組の自由度 1 つだけを数える"
         assert abs(s[0] - bs[0]) < 1e-4, f"種 {seed}: 摂動なしの x={bs[0]} へ戻らない ({s[0]})"

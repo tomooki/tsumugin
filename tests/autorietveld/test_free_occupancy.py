@@ -304,3 +304,25 @@ def test_colocated_atoms_on_a_tied_special_position_equate_only_the_independent_
     assert not any(e[0] in ("0::dAy:0", "0::dAz:0") for e in coords), "従属軸を等値にした"
     for c in ("dAx", "dAy", "dAz"):
         assert (f"0::{c}:2", f"0::{c}:3") in coords, "一般位置は 3 軸とも等値"
+
+
+def test_colocated_group_with_differing_site_symmetry_is_rejected():
+    """組の原子の site symmetry が違う (= 本当は共位置でない・桁落ちで特殊位置から外れた) なら精密化の前に止める。
+
+    3 軸の等値へ黙って戻すと、結束した側で GSAS が ``Constraint error`` を出し座標の段が毎回 revert される
+    (座標を精密化しないフィットが完走する)。TOPAS (`structure_to_topas_phase`) も同じ入力を拒む。
+    """
+    import pytest
+
+    from tsumugin.autorietveld.engine import _setup_constraints
+    from tsumugin.errors import InvalidPhaseSpecError
+
+    csx = {"x x x": [[1, 1, 1], [1.0, 1.0, 1.0], [1, 1, 1]], "1": [[1, 2, 3], [1.0, 1.0, 1.0], [1, 2, 3]]}
+
+    class _Ph:
+        id = 0
+        data = {"Atoms": [["S1", "S", "x x x"], ["Se1", "Se", "1"]], "General": {"AtomPtrs": [3, 1, 2, 9]}}
+
+    spec = PhaseSpec(structure_path="x.cif", phase_name="p", mixed_occupancy_groups=(("S1", "Se1"),))
+    with pytest.raises(InvalidPhaseSpecError, match="site symmetry"):
+        _setup_constraints(_FakeGpx(), [_Ph()], [], [spec], getcsxinel=csx.__getitem__)

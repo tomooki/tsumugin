@@ -1439,7 +1439,12 @@ def _equiv_positions(gpx, pid, idxs, axes: "Sequence[int]" = (0, 1, 2)) -> None:
 
 
 def _independent_axes(ph, idxs, getcsxinel=None) -> "tuple[int, ...]":
-    """共位置の組の座標の独立変数 (結束の代表軸)。site symmetry が読めない・組で食い違うなら 3 軸 (従来どおり)。"""
+    """共位置の組の座標の独立変数 (結束の代表軸)。site symmetry が読めないなら 3 軸 (従来どおり)。
+
+    :raises InvalidPhaseSpecError: 組の原子の site symmetry が食い違う (本当は共位置でない・桁落ちで特殊位置から
+        外れた)。3 軸の等値へ黙って戻すと結束した側で GSAS が ``Constraint error`` を出し、座標の段が毎回 revert
+        される。TOPAS (`structure_to_topas_phase`) も同じ入力を拒む
+    """
     if getcsxinel is None:
         try:
             from GSASII import GSASIIspc as G2spc
@@ -1449,9 +1454,16 @@ def _independent_axes(ph, idxs, getcsxinel=None) -> "tuple[int, ...]":
             return (0, 1, 2)
     try:
         cs = int(ph.data["General"]["AtomPtrs"][2])
-        syms = {str(ph.data["Atoms"][i][cs]) for i in idxs}
-        if len(syms) != 1:
-            return (0, 1, 2)
+        syms = {str(ph.data["Atoms"][i][cs]).strip() for i in idxs}
+    except Exception:  # noqa: BLE001 — 読めなければ従来の 3 軸
+        return (0, 1, 2)
+    if len(syms) != 1:
+        ct = int(ph.data["General"]["AtomPtrs"][1])
+        labels = [str(ph.data["Atoms"][i][ct - 1]) for i in idxs]
+        raise InvalidPhaseSpecError(
+            f"共位置の組 {labels} の原子の site symmetry が違います ({sorted(syms)})。組の原子は同じ座標に置いてください"
+        )
+    try:
         return tuple(rep for rep, _members in tied_axis_groups(getcsxinel, syms.pop()))
     except Exception:  # noqa: BLE001 — 読めなければ従来の 3 軸
         return (0, 1, 2)
