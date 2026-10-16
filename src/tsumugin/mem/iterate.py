@@ -22,7 +22,7 @@ from typing import Literal
 
 import numpy as np
 
-from ..backends.base import RefinementBackend, RefinementModel, merge_warnings
+from ..backends.base import RefinementBackend, RefinementModel, WarningCollector
 from ..joint.model import JointRefinementResult
 from ..model import PhaseInstance
 from ..model.project import Probe
@@ -89,27 +89,28 @@ def _with_phases(
 
 
 def _refine_once(
-    backend: RefinementBackend, phases: tuple[PhaseInstance, ...]
-) -> tuple[tuple[PhaseInstance, ...], tuple[str, ...]]:
+    backend: RefinementBackend,
+    phases: tuple[PhaseInstance, ...],
+    backend_warnings: WarningCollector,
+) -> tuple[PhaseInstance, ...]:
     """現在 phases から自己無撞着な合成パターンを組み、scale を再精密化して phases を更新する。🔵
 
     MPF の「再精密化」段を決定論的に表現する。前方モデル (backend.simulate 相当) が使えない
     抽象 RefinementBackend でも動くよう、RefinementModel を組み backend.refine に委譲する。
     観測は現 phases から生成した合成パターンを用いる (親 phases は改変せず新 phases を返す)。
-    精密化した backend の警告も返す (精密化しなかったときは空)。
+    精密化した backend の警告は ``backend_warnings`` に集める。
     """
     # 【自己無撞着観測】: SimulatedBackend は simulate を持つ。持たない backend は phases 不変で返す。
     simulate = getattr(backend, "simulate", None)
     if simulate is None:
-        return phases, ()
+        return phases
     two_theta = np.arange(15.0, 60.0, 0.05)
     intensity = simulate(phases, two_theta)
     free = frozenset(f"phase{i}.scale" for i in range(len(phases)))
     model = RefinementModel(
         phases=phases, free_params=free, two_theta=two_theta, intensity=intensity
     )
-    result = backend.refine(model)
-    return result.phases, result.warnings
+    return backend_warnings.collect(backend.refine(model)).phases
 
 
 def run_mem_rietveld(
@@ -142,7 +143,7 @@ def run_mem_rietveld(
 
     cycles: list[MEMRietveldCycle] = []
     warnings: list[str] = []
-    backend_warnings: list[str] = []
+    backend_warnings = WarningCollector()
     stop_reason: Literal["converged", "max_iter", "diverged"] = "max_iter"
 
     # 【現在 phases】: 親 phases を起点に反復する。親自体は改変せず新 phases を都度作る (P2)。
@@ -163,8 +164,7 @@ def run_mem_rietveld(
         min_density = float(mem_result.density_map.min_density)
 
         # 【再精密化段】: MEM 密度更新後に scale を再精密化した新 phases を得る (親不変)。
-        current_phases, refine_warnings = _refine_once(backend, current_phases)
-        backend_warnings.extend(refine_warnings)
+        current_phases = _refine_once(backend, current_phases, backend_warnings)
 
         # 【子スナップショット追記 (REQ-025/202/P2)】: 各サイクルの phases を追記型で保存する。
         snap = snapshots.save(current_phases, label=f"mem_rietveld_iter{iteration}")
@@ -235,5 +235,5 @@ def run_mem_rietveld(
         cycles=tuple(cycles),
         stop_reason=stop_reason,
         warnings=tuple(warnings),
-        backend_warnings=merge_warnings(backend_warnings),
+        backend_warnings=backend_warnings.merged(),
     )

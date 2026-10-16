@@ -27,7 +27,7 @@ from ..backends.base import (
     RefinementBackend,
     RefinementModel,
     RefinementResult,
-    merge_warnings,
+    WarningCollector,
     param_name,
 )
 from ..model import Hypothesis, PhaseInstance, RefinementMetrics
@@ -207,7 +207,7 @@ class MultistartEngine:
         surviving_indices: list[int] = []
         surviving_results: list[RefinementResult] = []
         n_diverged = 0
-        backend_warnings: list[str] = []
+        backend_warnings = WarningCollector()
         for index, phases_i in enumerate(starts):
             model = RefinementModel(
                 phases=phases_i,
@@ -217,8 +217,9 @@ class MultistartEngine:
                 weights=weights,
             )
             # 【direct 精密化】: staged 解放ループなし、max_cycles=ms_max_cycles で 1 回だけ 🔵
-            result = self.backend.refine(model, max_cycles=self.config.ms_max_cycles)
-            backend_warnings.extend(result.warnings)
+            result = backend_warnings.collect(
+                self.backend.refine(model, max_cycles=self.config.ms_max_cycles)
+            )
             self._record("multistart.start", {"start": index, "chi2": result.chi2})
             # 【発散除外】: chi2 非有限は例外化せず basin 対象外にして n_diverged へ加算 (REQ-102) 🔵
             if math.isfinite(result.chi2):
@@ -226,7 +227,7 @@ class MultistartEngine:
                 surviving_results.append(result)
             else:
                 n_diverged += 1
-        return surviving_indices, surviving_results, n_diverged, merge_warnings(backend_warnings)
+        return surviving_indices, surviving_results, n_diverged, backend_warnings.merged()
 
     def _remap_basins(
         self, raw_basins: tuple[BasinInfo, ...], surviving_indices: list[int]
