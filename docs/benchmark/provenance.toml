@@ -43,6 +43,14 @@ note = """
 開発のコードから読まない (P0 §3.1)。
 """
 
+[entries."fit-then-judge-tutorial"]
+provenance = "public"
+source = "fit-then-judge P1.5 段階 2: GSAS-II 公式チュートリアル (https://github.com/AdvancedPhotonSource/GSAS-II-tutorials) の公開データで全アームを回すスクリプト"
+note = """
+追跡するのはスクリプトだけ。入力は docs/benchmark/testdata/ (取得手順はそこの README)、結果は results/ (既定で gitignore)。
+使った化合物は開発用の化合物として H-pub の候補から除く (candidates.py の DEV_COMPOUNDS)。
+"""
+
 [entries."fit-then-judge-hpub"]
 provenance = "public"
 source = "fit-then-judge P0 §3.2.1 の H-pub 候補一覧の生成スクリプト (RRUFF + COD のスナップショット 2026-10-13 を読む)"
