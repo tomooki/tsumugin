@@ -276,3 +276,45 @@ def test_shifts_record_the_actual_displacement_in_phase_b_too():
     d = abs(atoms[0][3] - 0.38)
     assert set(shifts) == {"p.S1.x", "p.S1.y", "p.S1.z"}
     assert all(v == pytest.approx(d, abs=1e-15) for v in shifts.values())
+
+
+def test_colocated_atoms_receive_the_same_shift():
+    """★共位置の組 (混合占有・``position_equiv_groups``) は**同じ変位**で動かす。
+
+    非トートロジー: engine は共位置を座標**シフト**の等値 (`_equiv_positions`) で保つだけで、値を揃え
+    直さない。原子ごとに別の乱数を掛けると、出発点で開いた共位置のずれが精密化後も残り、開始点ごとに
+    違う値になる (P1.5 の S-dev: 混合占有の Fe2/Mg2 が T-AB でだけ x が 0.08 Å 割れ、偽の
+    「初期値依存」で全値が止まった)。
+    """
+    atoms = [_atom("Fe2", (0.99, 0.28, 0.25)), _atom("Mg2", (0.99, 0.28, 0.25)), _atom("O1", (0.1, 0.2, 0.3))]
+    moved: list[str] = []
+    n = _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel,
+                            colocated={"p": (("Fe2", "Mg2"),)}, moved=moved)
+
+    assert atoms[0][3:6] == atoms[1][3:6], "共位置が開いた"
+    assert atoms[0][3:6] != [0.99, 0.28, 0.25], "動いていない"
+    assert n == 6, "独立変数は組の 3 + O1 の 3 (組の従属側は数えない)"
+    assert {"p.Fe2.x", "p.Mg2.x"} <= set(moved)
+
+
+def test_colocated_group_is_skipped_whole_when_one_member_is_frozen():
+    atoms = [_atom("Fe2", (0.99, 0.28, 0.25)), _atom("Mg2", (0.99, 0.28, 0.25))]
+    _apply_coord_jitter([_FakePhase("p", atoms)], {"p": 0.05}, 7, _getcsxinel,
+                        frozen={"p": ("Fe2",)}, colocated={"p": (("Fe2", "Mg2"),)})
+    assert atoms[0][3:6] == atoms[1][3:6] == [0.99, 0.28, 0.25]
+
+
+def test_no_colocated_groups_is_bit_identical_to_before():
+    a = [_atom("O1", (0.1, 0.2, 0.3)), _atom("O2", (0.4, 0.5, 0.6))]
+    b = [list(r) for r in a]
+    _apply_coord_jitter([_FakePhase("p", a)], {"p": 0.05}, 7, _getcsxinel)
+    _apply_coord_jitter([_FakePhase("p", b)], {"p": 0.05}, 7, _getcsxinel, colocated={"p": ()})
+    assert a == b
+
+
+def test_colocated_groups_come_from_mixed_occupancy_and_position_equivalence():
+    from tsumugin.autorietveld.engine import _colocated_groups
+    from tsumugin.autorietveld.model import PhaseSpec
+
+    spec = PhaseSpec(structure_path="x.cif", phase_name="p", mixed_occupancy_groups=(("Fe2", "Mg2"),), position_equiv_groups=(("H1", "D1"),))
+    assert _colocated_groups([spec]) == {"p": (("Fe2", "Mg2"), ("H1", "D1"))}

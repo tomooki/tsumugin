@@ -278,3 +278,29 @@ def test_recipe_adds_occupancy_stage_for_free_occ_only():
     phase = PhaseSpec("m.cif", "NaCuHCF", free_occupancy_labels=("Ow",))
     stages = build_recipe([hist], [phase])
     assert any("occupancy" in s.flags for s in stages)
+
+
+def test_colocated_atoms_on_a_tied_special_position_equate_only_the_independent_axis():
+    """★共位置の組が結束した特殊位置 (x,x,x) にあると、dAy/dAz は既にサイト対称で dAx の従属変数。
+
+    それを原子間でさらに等値にすると GSAS は ``Constraint error`` で精密化を拒み、座標の段が毎回
+    revert される (= 座標を一度も精密化しないフィットが完走する。合成 Fe(S,Se)2 で実測)。
+    独立変数 (結束の代表軸) だけを等値にする。
+    """
+    from tsumugin.autorietveld.engine import _setup_constraints
+
+    csx = {"x x x": [[1, 1, 1], [1.0, 1.0, 1.0], [1, 1, 1]], "1": [[1, 2, 3], [1.0, 1.0, 1.0], [1, 2, 3]]}
+
+    class _Ph:
+        id = 0
+        data = {"Atoms": [["S1", "S", "x x x"], ["Se1", "Se", "x x x"], ["Fe2", "Fe", "1"], ["Mg2", "Mg", "1"]],
+                "General": {"AtomPtrs": [3, 1, 2, 9]}}
+
+    gpx = _FakeGpx()
+    spec = PhaseSpec(structure_path="x.cif", phase_name="p", mixed_occupancy_groups=(("S1", "Se1"), ("Fe2", "Mg2")))
+    _setup_constraints(gpx, [_Ph()], [], [spec], getcsxinel=csx.__getitem__)
+    coords = [e for e in gpx.equiv if "::dA" in e[0]]
+    assert ("0::dAx:0", "0::dAx:1") in coords
+    assert not any(e[0] in ("0::dAy:0", "0::dAz:0") for e in coords), "従属軸を等値にした"
+    for c in ("dAx", "dAy", "dAz"):
+        assert (f"0::{c}:2", f"0::{c}:3") in coords, "一般位置は 3 軸とも等値"
