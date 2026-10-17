@@ -1418,19 +1418,55 @@ def _bound_hit_baseline(
     return set(frozen_before) | set(rescue_frozen)
 
 
-def _equiv_positions(gpx, pid, idxs) -> None:
+def _equiv_positions(gpx, pid, idxs, axes: "Sequence[int]" = (0, 1, 2)) -> None:
     """原子群の座標 (dAx/dAy/dAz shift) を等値拘束する (共有サイト/共位置を保つ)。
 
     GSAS-II の座標精密化は shift 変数 (dAx 等) で行うため、shift を等値にすれば共位置の原子が
-    同じだけ動き相対位置を保つ (初期共位置が前提)。特殊位置で解放座標が無い成分は GSAS 側で無視される。
+    同じだけ動き相対位置を保つ (初期共位置が前提)。
+
+    :param axes: 等値にする軸 (`_independent_axes`)。結束した特殊位置 (x,x,x 等) の従属軸 (dAy/dAz) は既に
+        サイト対称で代表軸の従属変数なので、原子間でさらに等値にすると GSAS が ``Constraint error`` で精密化を
+        拒む (座標の段が毎回 revert され、座標を一度も精密化しないフィットが完走する)。代表軸だけを渡す
     """
     if len(idxs) < 2:
         return
-    for coord in ("dAx", "dAy", "dAz"):
+    for axis in axes:
+        coord = ("dAx", "dAy", "dAz")[axis]
         try:
             gpx.add_EquivConstr([f"{pid}::{coord}:{i}" for i in idxs])
         except Exception:
             pass
+
+
+def _independent_axes(ph, idxs, getcsxinel=None) -> "tuple[int, ...]":
+    """共位置の組の座標の独立変数 (結束の代表軸)。site symmetry が読めないなら 3 軸 (従来どおり)。
+
+    :raises InvalidPhaseSpecError: 組の原子の site symmetry が食い違う (本当は共位置でない・桁落ちで特殊位置から
+        外れた)。3 軸の等値へ黙って戻すと結束した側で GSAS が ``Constraint error`` を出し、座標の段が毎回 revert
+        される。TOPAS (`structure_to_topas_phase`) も同じ入力を拒む
+    """
+    if getcsxinel is None:
+        try:
+            from GSASII import GSASIIspc as G2spc
+
+            getcsxinel = G2spc.GetCSxinel
+        except Exception:  # noqa: BLE001 — GSAS 無しは従来の 3 軸
+            return (0, 1, 2)
+    try:
+        cs = int(ph.data["General"]["AtomPtrs"][2])
+        syms = {str(ph.data["Atoms"][i][cs]).strip() for i in idxs}
+    except Exception:  # noqa: BLE001 — 読めなければ従来の 3 軸
+        return (0, 1, 2)
+    if len(syms) != 1:
+        ct = int(ph.data["General"]["AtomPtrs"][1])
+        labels = [str(ph.data["Atoms"][i][ct - 1]) for i in idxs]
+        raise InvalidPhaseSpecError(
+            f"共位置の組 {labels} の原子の site symmetry が違います ({sorted(syms)})。組の原子は同じ座標に置いてください"
+        )
+    try:
+        return tuple(rep for rep, _members in tied_axis_groups(getcsxinel, syms.pop()))
+    except Exception:  # noqa: BLE001 — 読めなければ従来の 3 軸
+        return (0, 1, 2)
 
 
 def _known_label_groups(groups, labels) -> tuple[tuple[str, ...], ...]:
@@ -1473,7 +1509,7 @@ def _checked_uiso_groups(spec: PhaseSpec, labels: "list[str]") -> tuple[tuple[st
     return merged
 
 
-def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
+def _setup_constraints(gpx, g2phases, g2hists, specs, getcsxinel=None) -> None:
     """占有率和=1・Uiso 等価 (混合占有) と相分率和=1 (多相) の制約を登録する (REQ-102/104)。
 
     占有率和=1 (add_EqnConstr) がないと占有率解放が発散し、Uiso 等価 (add_EquivConstr) が
@@ -1506,15 +1542,16 @@ def _setup_constraints(gpx, g2phases, g2hists, specs) -> None:
                 gpx.add_EquivConstr(uisos)
             for frac in fracs:
                 _bound_occupancy(gpx, frac)
-            # 共有サイトは共位置: 座標 (dAx/dAy/dAz) も等値拘束する。
-            _equiv_positions(gpx, pid, idxs)
+            # 共有サイトは共位置: 座標 (dAx/dAy/dAz) も等値拘束する (結束した特殊位置は代表軸だけ)。
+            _equiv_positions(gpx, pid, idxs, _independent_axes(ph, idxs, getcsxinel))
         for group in uiso_groups:
             idxs = [label_to_idx[lab] for lab in group if lab in label_to_idx]
             if len(idxs) >= 2:
                 gpx.add_EquivConstr([f"{pid}::AUiso:{i}" for i in idxs])
         # 明示的な座標等値グループ (共位置 H/D 対など)。
         for group in spec.position_equiv_groups:
-            _equiv_positions(gpx, pid, [label_to_idx[lab] for lab in group])
+            idxs = [label_to_idx[lab] for lab in group]
+            _equiv_positions(gpx, pid, idxs, _independent_axes(ph, idxs, getcsxinel))
         for lab in spec.free_occupancy_labels:
             _bound_occupancy(gpx, f"{pid}::Afrac:{label_to_idx[lab]}")
         # 占有率等値 (D₂O の D を親水 O に連動): add_EquivConstr で 1 変数に束ねる。
@@ -1630,6 +1667,17 @@ def _coord_jitter_skips(
     return skip, origin_axes
 
 
+def _colocated_groups(specs) -> "dict[str, tuple[tuple[str, ...], ...]]":
+    """相名 → 共位置の原子ラベルの組 (座標シフトを等値にする組 = `_setup_constraints` の `_equiv_positions` と同じ:
+    混合占有の組と ``position_equiv_groups``。重なる組は推移的に合併する)。座標の初期摂動で組を一緒に動かすのに使う。"""
+    out: dict[str, tuple[tuple[str, ...], ...]] = {}
+    for spec in specs:
+        groups = merge_equiv_groups(spec.mixed_occupancy_groups, spec.position_equiv_groups)
+        if groups:
+            out[spec.phase_name] = tuple(tuple(g) for g in groups)
+    return out
+
+
 def _apply_polar_origin(gpx, g2phases, specs, getcsxinel=None) -> list[dict]:
     """`PhaseSpec.fix_polar_origin` の相に、極性方向の原点固定を登録する (fit-then-judge P1a)。
 
@@ -1701,6 +1749,7 @@ def _apply_coord_jitter(
     sign: int = 1,
     moved: "list[str] | None" = None,
     shifts: "dict[str, float] | None" = None,
+    colocated: "Mapping[str, Sequence[Sequence[str]]] | None" = None,
 ) -> int:
     """原子座標に**対称性を壊さない**初期摂動を掛ける (マルチスタートの構造軸)。
 
@@ -1738,6 +1787,12 @@ def _apply_coord_jitter(
         「この座標は試験した」を判定するのに使う
     :param shifts: 与えると、同じキー → 実際に動かした分率の絶対値を書く。結束の組の従属軸は係数比ぶんしか
         動かないので、claims は「振った量が許容幅を超えたか」を軸ごとにこれで判定する
+    :param colocated: 相名 → 共位置の原子ラベルの組 (`_colocated_groups`: 混合占有・``position_equiv_groups``)。
+        組の原子には**同じ変位**を掛ける (乱数は組の最初の原子で 1 回だけ引く)。engine は共位置を座標シフトの
+        等値 (`_equiv_positions`) で保つだけで値を揃え直さないので、原子ごとに別の乱数を掛けると出発点で開いた
+        共位置のずれが最終座標に残り、偽の「初期値依存」になる (P1.5 の S-dev, 混合占有の Fe2/Mg2)。
+        組の 1 原子でも凍結なら組ごと動かさず、軸単位の固定 (``frozen_axes``) は組の和集合を全員に当てる。
+        組の無い入力はビット同一
     :returns: **実際に動かした独立変数の数** (結束の組は 3 軸を書き換えても 1 と数える — 書き換えた軸の一覧は
         ``moved``)。0 は「この軸では試験していない」を意味し、呼び出し側はそれを傍証と呼んではならない
         (高対称構造では全軸が固定され得る)
@@ -1772,13 +1827,26 @@ def _apply_coord_jitter(
             str(lab): {int(a) for a in axes}
             for lab, axes in ((frozen_axes or {}).get(ph.name, {}) or {}).items()
         }
+        # 共位置の組: 1 原子でも凍結なら組ごと凍結、軸の固定は組の和集合 (全員が同じだけ動くように)
+        group_of: dict[str, int] = {}
+        for gi, group in enumerate((colocated or {}).get(ph.name, ()) or ()):
+            labels = [str(lab) for lab in group]
+            if any(lab in skip for lab in labels):
+                skip.update(labels)
+            held_union = set().union(*(skip_axes.get(lab, set()) for lab in labels))
+            for lab in labels:
+                group_of[lab] = gi
+                if held_union:
+                    skip_axes[lab] = set(held_union)
+        group_delta: dict[tuple[int, int], float] = {}
         for row in atoms:
             label = str(row[ct - 1])
             if skip and label in skip:
                 continue
+            gi = group_of.get(label)
             # 0 = 対称固定は触らない / 結束軸は代表の乱数 1 回ぶんを係数どおり従属軸にも掛ける
             #   (GSAS は精密化前に従属座標を揃え直さないので、代表だけ動かすと結束が壊れたまま残る)
-            for _rep, members in tied_axis_groups(getcsxinel, row[cs]):
+            for rep_axis, members in tied_axis_groups(getcsxinel, row[cs]):
                 held = skip_axes.get(label, ())
                 if any(m in held for m, _ in members):
                     # 軸単位で固定された座標 (極性原点の hold 等) を含む組は動かさない — 結束の組は
@@ -1790,7 +1858,11 @@ def _apply_coord_jitter(
                 span = max(
                     abs(ratio) * (lengths[m] if lengths[m] > 0 else 1.0) for m, ratio in members
                 )
-                if fixed_magnitude:
+                shared = None if gi is None else group_delta.get((gi, rep_axis))
+                if shared is not None:
+                    # 共位置の組の 2 番目以降: 最初の原子と同じ変位 (乱数を引かない・独立変数に数えない)
+                    delta = shared
+                elif fixed_magnitude:
                     # 大きさは amp に固定、向きだけ乱数 (± の 2 開始点で sign が反転する)
                     unit = 1.0 if float(rng.uniform(-1.0, 1.0)) >= 0.0 else -1.0
                     delta = sign * unit * float(amp) / span
@@ -1803,7 +1875,10 @@ def _apply_coord_jitter(
                     continue
                 for m, value in shifted:
                     row[cx + m] = value
-                n_moved += 1
+                if shared is None:
+                    n_moved += 1
+                    if gi is not None:
+                        group_delta[(gi, rep_axis)] = delta
                 for m, ratio in members:
                     key = f"{ph.name}.{label}.{'xyz'[m]}"
                     if moved is not None:
@@ -2867,6 +2942,7 @@ def run_auto_rietveld(
             n_jittered = _apply_coord_jitter(
                 g2phases, initial_coord_jitter, jitter_seed, frozen=skip,
                 frozen_axes=origin_axes, moved=jitter_moved, shifts=jitter_shift,
+                colocated=_colocated_groups(phases),
             )
             entry = {
                 "seed": int(jitter_seed),
