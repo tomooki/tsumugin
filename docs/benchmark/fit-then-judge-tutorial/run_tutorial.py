@@ -33,7 +33,17 @@ def _garnet(td: Path):
     return [hist], [phase], "garnet"
 
 
-CASES = {"garnet": _garnet}
+def _cucr2o4(td: Path):
+    """GSAS-II "Parametric sequential fitting" の先頭フレーム (11-BM, CuCr₂O₄ + 不純物 CuO)。"""
+    d = td / "m9" / "cucr2o4"
+    hist = HistogramSpec(data_path=str(d / "OH_00.fxye"), instrument_path=str(d / "OH_00.prm"),
+                         radiation=Radiation.XRAY_SYNCHROTRON, geometry=Geometry.DEBYE_SCHERRER, data_format="FXYE")
+    phases = [PhaseSpec(str(d / "CuCr2O4.cif"), "CuCr2O4"), PhaseSpec(str(d / "CuO.cif"), "CuO")]
+    return [hist], phases, "CuCr2O4"
+
+
+#: garnet は CW 中性子でテンプレートの範囲外 (CW X 線だけ, proposal §2) — 基準経路だけが回る (2026-10-16 実測)
+CASES = {"garnet": _garnet, "cucr2o4": _cucr2o4}
 
 
 def run_case(name: str, td: Path, results: Path, n_starts: int) -> dict:
