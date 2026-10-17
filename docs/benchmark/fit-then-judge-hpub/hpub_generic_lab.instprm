@@ -1,0 +1,16 @@
+#GSAS-II instrument parameter file; created by tsumugin
+Type:PXC
+Bank:1.0
+Lam1:1.540593
+Lam2:1.544414
+I(L2)/I(L1):0.5000
+Zero:0.000000
+Polariz.:0.7000
+Azimuth:0.0
+U:2.0
+V:-2.0
+W:5.0
+X:0.0
+Y:0.0
+Z:0.0
+SH/L:0.002

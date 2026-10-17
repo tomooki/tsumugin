@@ -229,9 +229,23 @@ def test_weaker_labels_are_not_promoted_by_agreement():
     assert claims["uiso:P.O1"].determinacy is Determinacy.UNDETERMINED_ESD
 
 
-def test_provenance_that_differs_between_starts_is_initial_value_dependent():
+def test_provenance_that_differs_between_starts_is_recorded_but_not_promoted():
+    """値が一致していれば出自の違いだけでは初期値依存にしない。ただし精密化しなかった開始点がある値は
+    試験したとは言えないので `determined` にも上げない (2026-10-15 ユーザー決定)。"""
     pruned = _result(frozen_parameters=("0::dAx:1",))
     claims = with_convergence(base_claims(_result()), _ms([_result(), _result(), pruned]))
+    c = claims["coord:P.O1.x"]
+    # 剪定した開始点の主張 (undetermined_esd) との合成は弱い方 — 初期値依存でも determined でもない
+    assert c.determinacy not in (Determinacy.INITIAL_VALUE_DEPENDENT, Determinacy.DETERMINED)
+    assert any(w.kind == "provenance_varied" for w in c.witnesses)
+    # 出自が揃った値 (同じ原子の y) は従来どおり昇格する
+    assert claims["coord:P.O1.y"].determinacy is Determinacy.DETERMINED
+
+
+def test_provenance_varied_values_that_split_are_still_initial_value_dependent():
+    pruned_moved = _result(frozen_parameters=("0::dAx:1",),
+                           atom_coords={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.35, 0.1, 0.3)}})
+    claims = with_convergence(base_claims(_result()), _ms([_result(), _result(), pruned_moved]))
     assert claims["coord:P.O1.x"].determinacy is Determinacy.INITIAL_VALUE_DEPENDENT
 
 
@@ -283,3 +297,55 @@ def test_pruning_one_cell_term_demotes_only_the_axes_that_depend_on_it():
     assert claims["cell:P.c"].provenance == {"pruned"}
     assert claims["cell:P.a"].provenance == {"refined"}
     assert claims["cell:P.b"].provenance == {"refined"}
+
+
+def test_an_invalid_start_does_not_count_as_a_different_provenance():
+    """validity に落ちた開始点は値の一致の比較から外す — 出自の合成からも外す (P1.5: 格子 ±0.7% で別ベイスンに
+    落ちて validity に落ちた開始点が、出自の違いで値を初期値依存にしていた)。"""
+    bad_pruned = _result(frozen_parameters=("0::dAx:1",), validity=ValidityReport(passed=False))
+    claims = with_convergence(base_claims(_result()), _ms([_result(), _result(), bad_pruned]))
+    c = claims["coord:P.O1.x"]
+    assert c.determinacy is Determinacy.ESD_ONLY  # 剪定した (validity に落ちた) 開始点の弱い主張を合成しない
+    assert not any(w.kind == "provenance_varied" for w in c.witnesses)
+
+
+def test_a_value_left_unrefined_in_one_start_is_not_promoted():
+    """ある開始点では O1.x を精密化しなかった (esd なし = input)。値は一致しても determined にはしない。"""
+    unrefined = _result(final_covariance=CovarianceRecord(  # この開始点では O1.x (0::dAx:1) が varyList に無い
+        vary_list=("0::A0", "0::dAy:1", "0::AUiso:0", "0::AUiso:1", "0:0:Scale", ":0:U"),
+        dependent=(), correlations=(),
+    ))
+    claims = with_convergence(base_claims(_result()), _ms([_result(), _result(), unrefined]))
+    c = claims["coord:P.O1.x"]
+    assert c.determinacy is not Determinacy.DETERMINED
+    assert c.determinacy is not Determinacy.INITIAL_VALUE_DEPENDENT
+    assert any(w.kind == "provenance_varied" for w in c.witnesses)
+
+
+def _scored(gof, *, n_obs=1000, **kw):
+    return _result(stage_results=(StageResult("S0", 10.0, gof, 5, True),), final_gof=gof, n_obs=n_obs, **kw)
+
+
+def test_a_start_with_a_clearly_worse_fit_is_left_out_of_the_comparison():
+    """最良より χ² が有意に大きい開始点は「最良の解に届かなかった」— 値の一致の比較から外す (2026-10-15 ユーザー決定)。"""
+    lost = _scored(3.0, atom_coords={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.35, 0.1, 0.3)}})
+    claims = with_convergence(base_claims(_scored(1.2)), _ms([_scored(1.2), _scored(1.2), lost]))
+    c = claims["coord:P.O1.x"]
+    assert c.determinacy is not Determinacy.INITIAL_VALUE_DEPENDENT
+    assert c.determinacy is not Determinacy.DETERMINED  # 全開始点が揃っていないので昇格もしない
+
+
+def test_a_start_with_an_equivalent_fit_still_counts():
+    close = _scored(1.2001, atom_coords={"P": {"Pb": (0.0, 0.0, 0.0), "O1": (0.35, 0.1, 0.3)}})
+    claims = with_convergence(base_claims(_scored(1.2)), _ms([_scored(1.2), _scored(1.2), close]))
+    assert claims["coord:P.O1.x"].determinacy is Determinacy.INITIAL_VALUE_DEPENDENT
+
+
+def test_converged_starts_reports_kept_and_excluded():
+    from tsumugin.claims.build import converged_starts
+
+    kept, excluded = converged_starts(_ms([_scored(1.2), _scored(1.2), _scored(3.0)]))
+    assert len(kept) == 2 and len(excluded) == 1
+    # χ² を出せない (n_obs 不明) 開始点は判定できないので残す
+    kept, excluded = converged_starts(_ms([_scored(1.2, n_obs=0), _scored(3.0, n_obs=0), _scored(1.2, n_obs=0)]))
+    assert len(kept) == 3 and not excluded

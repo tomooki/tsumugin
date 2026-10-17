@@ -33,6 +33,50 @@ source = "各ベンチの索引。個別の由来は各エントリを参照"
 provenance = "public"
 source = "Jana2020 Cookbook Example 02.6 'CaTeO3 cyclic'"
 
+[entries."fit-then-judge-quasi"]
+provenance = "public"
+source = "fit-then-judge P0 §3.1 (U10) 準 hold-out の事例表の照合スクリプト (出発 CIF = GSAS-II チュートリアル / 参照 = COD)"
+note = """
+追跡するのはスクリプトだけ。標準出力は判定と件数 (空間群一致・対応原子数・esd の付いた自由座標数・印字精度での全一致) のみで、
+座標・esd は表示しない。事例表 case_table.json (5 事例のファイル sha256・宣言・参照の COD ID と sha256・対称操作の記号・
+原子ラベルの対応) は値を含まないので追跡する (凍結 manifest が sha256 で固定する)。参照 CIF そのものはリポジトリの外で、
+開発のコードから読まない (P0 §3.1)。
+"""
+
+[entries."fit-then-judge-tutorial"]
+provenance = "public"
+source = "fit-then-judge P1.5 段階 2: GSAS-II 公式チュートリアル (https://github.com/AdvancedPhotonSource/GSAS-II-tutorials) の公開データで全アームを回すスクリプト"
+note = """
+追跡するのはスクリプトだけ。入力は docs/benchmark/testdata/ (取得手順はそこの README)、結果は results/ (既定で gitignore)。
+使った化合物は開発用の化合物として H-pub の候補から除く (candidates.py の DEV_COMPOUNDS)。
+"""
+
+[entries."fit-then-judge-freeze"]
+provenance = "public"
+source = "fit-then-judge P1.5 の凍結 manifest (P0 §0): 凍結する部品のファイルの sha256・版・置換の一覧・事後検査の閾値・H-pub の候補の確定数・drand の規則"
+note = """
+値はリポジトリ内のファイルのハッシュと設定だけで、測定値を含まない。drand の round は凍結 commit を push した 24 時間後以降に
+決まるので空のまま (抽出 manifest の側に記録する)。
+"""
+
+[entries."fit-then-judge-hpub"]
+provenance = "public"
+source = "fit-then-judge P0 §3.2.1 の H-pub 候補一覧の生成スクリプト (RRUFF + COD のスナップショット 2026-10-13 を読む)"
+note = """
+追跡するのはスクリプト (candidates.py / manifest.py) と、凍結時に commit する候補 manifest (candidates_manifest.json:
+salt 付き ID ハッシュ・件数・除外理由の種類ごとの件数) と全事例に共通の汎用装置パラメータ (hpub_generic_lab.instprm:
+S-dev の生成器で宣言した合成の値そのまま = synthetic)。入力のスナップショット・候補の平文の ID・salt・実行の ledger は
+リポジトリの外 (P0 §3.2.1-4)。RRUFF のデータは再配布しない (U14)。
+"""
+
+[entries."fit-then-judge-synthetic"]
+provenance = "synthetic"
+source = "fit-then-judge P0 §6 の合成 S-dev (COD の CC0 構造から GSAS-II calc-only + Poisson 雑音で生成)"
+note = """
+追跡するのは生成器・事例の定義・manifest だけ。パターンと CIF は `results/` (gitignore) に再生成する
+(manifest の sha256 で同一性を確かめる)。構造の出典は COD の ID・svnrevision・sha256 (CC0)。
+"""
+
 [entries."calibration"]
 provenance = "synthetic"
 source = "確率較正ベンチ (合成仮説集合; 実測データを用いない)"

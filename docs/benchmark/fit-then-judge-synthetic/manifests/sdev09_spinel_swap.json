@@ -1,0 +1,47 @@
+{
+  "case_id": "sdev09_spinel_swap",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "5000120",
+      "revision": "176451",
+      "sha256": "c4102e57cfd9d427196b1ad2a353d87f1b3383eddb3177c7e9bc32c90c99df3f",
+      "license": "CC0",
+      "phase_name": "MgAl2O4",
+      "formula": "Mg Al2 O4",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "lab_bb",
+  "max_counts": 10000.0,
+  "seed": 109,
+  "defects": [
+    {
+      "kind": 1,
+      "target": "MgAl2O4.Mg1/Al1",
+      "magnitude": null,
+      "truth": "Mg1 Mg2+ (0.00000, 0.00000, 0.00000) occ=1.0000; Al1 Al3+ (0.62500, 0.62500, 0.62500) occ=1.0000",
+      "start": "Mg1 Al3+ (0.00000, 0.00000, 0.00000) occ=1.0000; Al1 Mg2+ (0.62500, 0.62500, 0.62500) occ=1.0000"
+    }
+  ],
+  "mismatches": [
+    "asymmetry"
+  ],
+  "expected": [
+    "crystal-chemistry fail or short bond"
+  ],
+  "generator_commit": "881b353aec25674a6d9baf4ac2546e83050535c6",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "76235925f62b0baced9f31eab212601b717fd7e0f988839a0850935b33a83eb7",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_MgAl2O4.cif",
+      "phase_name": "MgAl2O4",
+      "refine_cell": true
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "case_id": "sdev04_zno_pref",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "1011258",
+      "revision": "201954",
+      "sha256": "36048fbb028bb2b080971aa754b20cba27b27bb1b415e4c62d96d9d570fa795f",
+      "license": "CC0",
+      "phase_name": "ZnO",
+      "formula": "Zn O",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "lab_bb",
+  "max_counts": 100000.0,
+  "seed": 104,
+  "defects": [
+    {
+      "kind": 10,
+      "target": "ZnO.001",
+      "magnitude": 0.8,
+      "truth": "March-Dollase r=0.8 axis=(0, 0, 1)",
+      "start": "no preferred orientation in the model"
+    }
+  ],
+  "mismatches": [],
+  "expected": [
+    "stage 8 / 8R"
+  ],
+  "generator_commit": "881b353aec25674a6d9baf4ac2546e83050535c6",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "cd61da7d389be16901d0d00248919df123e6535ce121b0638bf401b12d4f1d7b",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_ZnO.cif",
+      "phase_name": "ZnO",
+      "refine_cell": true
+    }
+  ]
+}

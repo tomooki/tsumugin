@@ -33,7 +33,9 @@ from .model import Check, Witness
 __all__ = ["WITNESS_VERSION", "cw_fwhm_deg", "residual_window_witness"]
 
 #: 証人の規則の版 (閾値・除外幅を変えたら上げる)。
-WITNESS_VERSION = "residual-window/3"
+WITNESS_VERSION = "residual-window/4"
+#: 窓の幅の下限 (刻みの倍数)。4 ≤ k ≤ 4.44 の非整数 (境界を格子点に置かず、帯の端が 0.9·w に届く)
+_MIN_WINDOW_STEPS = 4.2
 
 _GAUSS_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))  # σ → FWHM
 #: GSAS の getFWHM と同じくガウス分散の下限 (centideg²) — 負の U,V,W で幅が虚数にならない。
@@ -117,13 +119,24 @@ def residual_window_witness(
     if idx.size == 0:
         return _unevaluated("no_window")
 
+    # 【窓を刻みより細くしない (residual-window/4, P1.5)】: 窓は中央 ±FWHM/2・両側の帯 FWHM/2 で、帯に 2 点・中央に
+    #   3 点を要る。FWHM が刻みの数倍しかない実験室のパターン (0.05° / 0.02°) では帯が 1 点しか持てず、窓が 1 つも
+    #   作れなかった (S-dev で全値を止めた)。ピークが分解されている (FWHM ≥ 刻み) 点だけ窓の幅を 4.2 刻みまで広げる。
+    #   分解されていない (FWHM < 刻み) 点は広げない — 1 点しか持たないピークを窓で語らない (従来どおり no_window)。
+    diffs = np.diff(tt)
+    step = float(np.median(diffs[diffs > 0])) if np.any(diffs > 0) else 0.0
+    # 4.2 刻み: (1) 窓の境界 (±w/2・±w) を格子点の上に置かない — ちょうど 4 刻みだと境界が浮動小数の誤差で格子点の内外に
+    #   割れ、窓の 97% が消えた。(2) 帯の端の点が 0.9·w に届く条件 (下の ok) は floor(w/刻み) ≥ 0.9·w/刻み を要り、
+    #   4 ≤ w/刻み ≤ 4.44 でだけ満たす (4.5 では窓が 1 つも作れない)。
+    win = np.where(fwhm >= step, np.maximum(fwhm, _MIN_WINDOW_STEPS * step), fwhm) if step > 0.0 else fwhm
+
     # 1 周目: 区間ごとに背景のゆっくりした合わなさを除く (±background_fwhm FWHM の局所中央値)。
     segments: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
     for segment in np.split(away, np.flatnonzero(np.diff(away) > 1) + 1):
         run = segment[usable[segment]]
         if run.size == 0:
             continue
-        x, y, e, w = tt[run], r[run], s[run], fwhm[run]
+        x, y, e, w = tt[run], r[run], s[run], win[run]
         lo_bg = np.searchsorted(x, x - background_fwhm * w)
         hi_bg = np.searchsorted(x, x + background_fwhm * w, side="right")
         hp = y - np.array([np.median(y[i:j]) for i, j in zip(lo_bg, hi_bg)])

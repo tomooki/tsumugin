@@ -1,0 +1,39 @@
+{
+  "case_id": "sdev10_pyrite_control",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "5000115",
+      "revision": "202022",
+      "sha256": "2b4f67b13a18079079f987ed2785662a176364ddfae19e10d646da143337344d",
+      "license": "CC0",
+      "phase_name": "FeS2",
+      "formula": "Fe S2",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "sync_ds",
+  "max_counts": 10000.0,
+  "seed": 110,
+  "defects": [],
+  "mismatches": [
+    "amorphous_hump"
+  ],
+  "expected": [
+    "control: no defect-specific detector should fire"
+  ],
+  "generator_commit": "881b353aec25674a6d9baf4ac2546e83050535c6",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "d7d1709f55c819f068816f4f29903c9b1a27b7a40d4c0c8847e41a95e1259b11",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_FeS2.cif",
+      "phase_name": "FeS2",
+      "refine_cell": true
+    }
+  ]
+}

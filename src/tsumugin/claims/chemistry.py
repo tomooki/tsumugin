@@ -11,8 +11,12 @@
 
 - 構造は**入力 CIF の非対称単位に精密化後の格子・座標・占有率を差し込んで**組む (対称操作は CIF の
   ものを使う)。どれかの原子が結果に無い・CIF を読めない・pymatgen が無い → 3 検査とも ``unevaluated``。
-- 結合原子価は pymatgen 同梱の O'Keeffe–Brese 元素パラメータ (``bond_valence.BV_PARAMS``) で
-  占有率を重み付けて計算し (`_bv_sum`)、リポジトリに表を複製しない。酸化数は**入力構造**に ``BVAnalyzer`` を掛けて元素ごとに決める
+- 結合原子価は **Brown の対ごとの表** (``bvparm2020.cif``, IUCr) の R₀・B で計算する (crystal-chemistry/2, P1.5)。
+  表はリポジトリに置かず (`TSUMUGIN_BVPARM` か ``~/.tsumugin/bvparm2020.cif``)、sha256 を `BVPARM_SHA256` で照合する。
+  同じ対の行が複数あれば**ファイルの最初の行**、無ければ価数 9 (任意) の行。表にあるのに対が無ければ ``bvs_gii`` は
+  ``unevaluated`` (推定で埋めない)。**表が無ければ** 従来の O'Keeffe–Brese 元素パラメータの推定 (`_bv_sum`) に戻り、
+  証人に ``method: element-estimate`` と書く。元素推定は Zn–O で R₀ を約 0.1 Å 過小に見積もり、正しい wurtzite ZnO を
+  GII 0.51 で fail にした (2026-10-15, 合成 S-dev) のが表に替えた理由。酸化数は**入力構造**に ``BVAnalyzer`` を掛けて元素ごとに決める
   (精密化後の占有率がずれて電荷が合わなくなったことを、入力の酸化数で検出するため)。決められなければ
   ``bvs_gii``・``charge_neutrality`` は ``unevaluated``。
 - 閾値は経験則 (GII は Salinas-Sanchez らの目安) で P1.5 で調整する (`CHEMISTRY_VERSION`)。
@@ -21,7 +25,10 @@
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import math
+import os
 import tempfile
 import warnings
 from dataclasses import replace
@@ -30,9 +37,14 @@ from typing import Mapping
 
 from .model import Check, Witness, worse_check
 
-__all__ = ["CHEMISTRY_CHECKS", "CHEMISTRY_VERSION", "crystal_chemistry"]
+__all__ = ["BVPARM_SHA256", "CHEMISTRY_CHECKS", "CHEMISTRY_VERSION", "crystal_chemistry", "load_bv_pair_table",
+           "short_bonds"]
 
-CHEMISTRY_VERSION = "crystal-chemistry/1"
+CHEMISTRY_VERSION = "crystal-chemistry/3"
+
+#: Brown の bvparm2020.cif (IUCr, 2020-11-25) の sha256。None にすると照合しない (試験用)
+BVPARM_SHA256: str | None = "ec073207e070f8e42e49734d11ebe93de4012cc0af07016a99920877688e9a68"
+_ANY_VALENCE = 9
 CHEMISTRY_CHECKS = ("short_contact", "bvs_gii", "charge_neutrality")
 
 _SHORT_CONTACT_RATIO = 0.7
@@ -162,6 +174,127 @@ def _gii(pmg, valences: Mapping[str, float]) -> tuple[Check, dict]:
     return (Check.FAIL if gii > _GII_FAIL else Check.PASS), {"gii": gii, "limit": _GII_FAIL}
 
 
+def load_bv_pair_table(path: str | Path) -> dict[tuple[str, int, str, int], tuple[float, float]]:
+    """bvparm の表 ((元素1, 価数1, 元素2, 価数2) → (R₀, B))。同じ対はファイルの最初の行が勝つ。"""
+    table: dict[tuple[str, int, str, int], tuple[float, float]] = {}
+    in_loop = False
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if s.startswith("_valence_param_details"):
+            in_loop = True
+            continue
+        if not in_loop or not s or s.startswith(("#", "_", "loop_")):
+            continue
+        parts = s.split()
+        if len(parts) < 6:
+            continue
+        try:
+            key = (parts[0], int(parts[1]), parts[2], int(parts[3]))
+            val = (float(parts[4]), float(parts[5]))
+        except ValueError:
+            continue
+        table.setdefault(key, val)
+    return table
+
+
+def _bvparm_path() -> Path:
+    env = os.environ.get("TSUMUGIN_BVPARM")
+    return Path(env) if env else Path.home() / ".tsumugin" / "bvparm2020.cif"
+
+
+def _pair_table() -> tuple[dict | None, str]:
+    """(表, 方法) — 表が無ければ (None, "element-estimate")、sha256 が違えば (None, "sha256 mismatch ...")。
+
+    読み込みと sha256 の照合は (パス・更新時刻・大きさ・期待する sha256) ごとに 1 回だけ (`_cached_pair_table`)。
+    検査は相・開始点・アームごとに呼ばれ、毎回 ~1 MB を読んで照合していた。
+    """
+    path = _bvparm_path()
+    try:
+        st = path.stat()
+    except OSError:
+        return None, "element-estimate"
+    if not path.is_file():
+        return None, "element-estimate"
+    return _cached_pair_table(str(path), st.st_mtime_ns, st.st_size, BVPARM_SHA256)
+
+
+@functools.lru_cache(maxsize=4)
+def _cached_pair_table(path: str, _mtime_ns: int, _size: int, expected: str | None) -> tuple[dict | None, str]:
+    p = Path(path)
+    if expected is not None:
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        if digest != expected:
+            return None, f"bvparm sha256 mismatch ({digest[:12]} != {expected[:12]})"
+    return load_bv_pair_table(p), f"pair-table {p.name} sha256={'unchecked' if expected is None else expected[:12]}"
+
+
+#: 陰イオン同士がこの倍率 × 原子半径の和より近ければ結合している (S₂ 二量体・過酸化物) とみなす。1.2 では O–O が
+#   1.44 Å で過酸化物 (~1.49 Å) を拾えなかった (crystal-chemistry/3)。1.3 で O–O 1.56 Å・S–S 2.6 Å (パイライト 2.16 Å)。
+#   通常の酸化物の O–O は 2.4 Å 以上
+_ANION_BOND_RATIO = 1.3
+
+
+def _anion_anion_bond(pmg, valences: Mapping[str, float]) -> str | None:
+    """陰イオン同士の結合があれば、その対の説明。結合原子価の模型 (陽イオン–陰イオンの結合だけ) が当てはまらない。"""
+    from pymatgen.core.periodic_table import Element
+
+    for i, site in enumerate(pmg):
+        an_i = [sp for sp in site.species if valences.get(sp.symbol, 0.0) < 0]
+        if not an_i:
+            continue
+        for nb in pmg.get_neighbors(site, _NEIGHBOR_CUTOFF):
+            for sp_i in an_i:
+                for sp_j in nb.species:
+                    if valences.get(sp_j.symbol, 0.0) >= 0:
+                        continue
+                    ri, rj = Element(sp_i.symbol).atomic_radius, Element(sp_j.symbol).atomic_radius
+                    if ri is None or rj is None:
+                        continue
+                    if float(nb.nn_distance) < _ANION_BOND_RATIO * (float(ri) + float(rj)):
+                        return f"anion-anion bond {sp_i.symbol}-{sp_j.symbol} {float(nb.nn_distance):.3f} A"
+    return None
+
+
+def _int_valence(v: float) -> int | None:
+    r = round(v)
+    return int(r) if abs(v - r) < 1e-6 else None
+
+
+def _gii_pairs(pmg, valences: Mapping[str, float], table: Mapping) -> tuple[Check, dict]:
+    """対ごとの表で GII。陽イオン–陰イオンの対が表に無ければ unevaluated (推定で埋めない)。"""
+    missing: set[str] = set()
+    devs: list[float] = []
+    for site in pmg:
+        neighbors = pmg.get_neighbors(site, _NEIGHBOR_CUTOFF)
+        occ = sum(site.species.values())
+        total = 0.0
+        for sp_i, amt_i in site.species.items():
+            vi = _int_valence(valences[sp_i.symbol])
+            for nb in neighbors:
+                for sp_j, amt_j in nb.species.items():
+                    vj = _int_valence(valences[sp_j.symbol])
+                    if vi is None or vj is None:
+                        missing.add(f"{sp_i.symbol}/{sp_j.symbol} (non-integer valence)")
+                        continue
+                    if vi * vj >= 0:
+                        continue  # 同符号の対は結合原子価に入れない
+                    cat, vc, an, va = (sp_i.symbol, vi, sp_j.symbol, vj) if vi > 0 else (sp_j.symbol, vj, sp_i.symbol, vi)
+                    params = table.get((cat, vc, an, va)) or table.get((cat, _ANY_VALENCE, an, va))
+                    if params is None:
+                        missing.add(f"{cat}{vc:+d}-{an}{va:+d}")
+                        continue
+                    r0, b = params
+                    total += (amt_i / occ) * float(amt_j) * math.exp((r0 - float(nb.nn_distance)) / b)
+        expected = sum(abs(valences[el.symbol]) * amt for el, amt in site.species.items()) / occ
+        devs.append((total - expected) ** 2)
+    if missing:
+        return Check.UNEVALUATED, {"reason": f"pairs not in table: {sorted(missing)}"}
+    if not devs:
+        return Check.UNEVALUATED, {"reason": "no_sites"}
+    gii = math.sqrt(sum(devs) / len(devs))
+    return (Check.FAIL if gii > _GII_FAIL else Check.PASS), {"gii": gii, "limit": _GII_FAIL}
+
+
 def _charge(pmg, valences: Mapping[str, float]) -> tuple[Check, dict]:
     comp = pmg.composition
     total = sum(valences[el.symbol] * amt for el, amt in comp.items())
@@ -221,10 +354,87 @@ def _evaluate(phase: str, structure_path: str, result: object) -> dict[str, tupl
         out["bvs_gii"] = (Check.UNEVALUATED, witness(reason))
         out["charge_neutrality"] = (Check.UNEVALUATED, witness(reason))
         return out
-    for name, fn in (("bvs_gii", _gii), ("charge_neutrality", _charge)):
+    table, method = _pair_table()
+
+    def gii(pmg_, valences_):  # noqa: ANN001, ANN202
+        # 模型が当てはまるかは**化合物の化学** (入力構造) で決める — 精密化後の構造で判定すると、格子が潰れて陰イオン同士が
+        #   近づいた誤った構造が「模型の範囲外」として GII の fail を逃れる (酸化数を入力構造で決めるのと同じ理由)
+        bond = _anion_anion_bond(pmg_input, valences_)
+        if bond is not None:
+            # 模型の適用範囲の外 — 正しい構造を fail にしない (パイライトの S₂ で GII 1.17 だった, P1.5)
+            return Check.UNEVALUATED, {"reason": f"bond valence model not applicable: {bond}"}
+        if table is not None:
+            return _gii_pairs(pmg_, valences_, table)
+        if method != "element-estimate":
+            return Check.UNEVALUATED, {"reason": method}  # 表はあるが版が違う — 推定に黙って戻らない
+        return _gii(pmg_, valences_)
+
+    for name, fn in (("bvs_gii", gii), ("charge_neutrality", _charge)):
         try:
             outcome, detail = fn(pmg, valences)
         except Exception as exc:  # noqa: BLE001 — パラメータの無い元素など
             outcome, detail = Check.UNEVALUATED, {"reason": f"{type(exc).__name__}: {exc}"}
-        out[name] = (outcome, witness({**detail, "valences": dict(valences)}))
+        extra = {"method": method} if name == "bvs_gii" else {}
+        out[name] = (outcome, witness({**detail, **extra, "valences": dict(valences)}))
     return out
+
+
+def _cartesian_sigma(esd: object, lattice_lengths: tuple[float, float, float]) -> float:
+    """原子 1 つの位置の esd を、方向によらない 1 次元の σ (Å) に畳む (対角近似)。
+
+    軸ごとの σ_x·|a| を二乗平均して √3 で割る (等方とみなしたときの 1 方向あたりの σ)。精密化しなかった軸は 0。
+    """
+    if not isinstance(esd, (tuple, list)) or len(esd) != 3:
+        return 0.0
+    total = 0.0
+    for s, length in zip(esd, lattice_lengths):
+        if s is not None and math.isfinite(float(s)):
+            total += (float(s) * length) ** 2
+    return math.sqrt(total / 3.0)
+
+
+def short_bonds(phase: str, structure_path: str, result: object) -> tuple[int | None, dict]:
+    """P0 §1.4 の短結合の外れ ``b``: 第一配位圏 (``_NEIGHBOR_CUTOFF`` 以内) の結合のうち
+    ``d + 3σ_d < d_min`` のものの数。``d_min`` は ``short_contact`` と同じ表 (原子半径の和 × 0.7)。
+
+    - σ_d は両端の原子の位置の esd を対角近似で合成する (`_cartesian_sigma`)。格子の esd は入れない。
+    - 対称で等価な結合は 1 本に数える (非対称単位のラベルの対と距離で同一視)。分割サイトの対は除く。
+    - 例外は送出しない。組めなければ ``(None, {"reason": ...})`` (0 にしない)。
+    """
+    try:
+        import pymatgen  # noqa: F401
+        from pymatgen.core.periodic_table import Element
+
+        _, refined = _refined_structure(structure_path, phase, result)
+        pmg = _to_pymatgen(refined, phase)
+    except Exception as exc:  # noqa: BLE001 — 組めなければ数えていない
+        return None, {"reason": f"structure_unavailable: {type(exc).__name__}: {exc}"}
+    esd = getattr(result, "atom_coord_esd", {}).get(phase) or {}
+    lengths = (float(refined.a), float(refined.b), float(refined.c))
+    seen: set[tuple[str, str, float]] = set()
+    bonds: list[dict] = []
+    for i, site in enumerate(pmg):
+        for nb in pmg.get_neighbors(site, _NEIGHBOR_CUTOFF):
+            if nb.index <= i:
+                continue
+            occ_i = sum(site.species.values())
+            occ_j = sum(nb.species.values())
+            if occ_i < 1.0 - 1e-6 and occ_j < 1.0 - 1e-6 and occ_i + occ_j <= 1.0 + 1e-2:
+                continue
+            d = float(nb.nn_distance)
+            li, lj = str(site.label), str(nb.label)
+            sigma_d = math.hypot(_cartesian_sigma(esd.get(li), lengths), _cartesian_sigma(esd.get(lj), lengths))
+            for el_i in site.species:
+                for el_j in nb.species:
+                    ri = Element(el_i.symbol).atomic_radius
+                    rj = Element(el_j.symbol).atomic_radius
+                    if ri is None or rj is None:
+                        continue
+                    d_min = _SHORT_CONTACT_RATIO * (float(ri) + float(rj))
+                    if d + 3.0 * sigma_d < d_min:
+                        labels = sorted((li, lj))
+                        key = (labels[0], labels[1], round(d, 3))
+                        if key not in seen:
+                            seen.add(key)
+                            bonds.append({"labels": labels, "distance": d, "sigma": sigma_d, "d_min": d_min})
+    return len(bonds), {"bonds": bonds, "ratio": _SHORT_CONTACT_RATIO, "version": CHEMISTRY_VERSION}

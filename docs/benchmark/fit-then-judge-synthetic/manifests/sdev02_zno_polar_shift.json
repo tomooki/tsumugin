@@ -1,0 +1,47 @@
+{
+  "case_id": "sdev02_zno_polar_shift",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "1011258",
+      "revision": "201954",
+      "sha256": "36048fbb028bb2b080971aa754b20cba27b27bb1b415e4c62d96d9d570fa795f",
+      "license": "CC0",
+      "phase_name": "ZnO",
+      "formula": "Zn O",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "sync_ds",
+  "max_counts": 100000.0,
+  "seed": 102,
+  "defects": [
+    {
+      "kind": 9,
+      "target": "ZnO.z",
+      "magnitude": 0.032799291600344296,
+      "truth": "origin as in COD",
+      "start": "all atoms shifted along z by 0.03280"
+    }
+  ],
+  "mismatches": [
+    "asymmetry"
+  ],
+  "expected": [
+    "origin fixed, same solution modulo translation"
+  ],
+  "generator_commit": "881b353aec25674a6d9baf4ac2546e83050535c6",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "ecc480b6744d55172f06d8f3d7f656c98743a4026458a1663ac80abeed4d8292",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_ZnO.cif",
+      "phase_name": "ZnO",
+      "refine_cell": true
+    }
+  ]
+}

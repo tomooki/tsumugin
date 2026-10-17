@@ -26,14 +26,14 @@ from typing import Mapping
 
 from ..autorietveld.agreement import AgreementTolerances, is_agreement, parameter_agreements
 from ..autorietveld.model import AutoRietveldResult
-from .model import Check, Claim, Determinacy, Scope, Witness, compose, weaker_determinacy
+from .model import PROVENANCE_VARIED, Check, Claim, Determinacy, Scope, Witness, compose, weaker_determinacy
 
 __all__ = ["CLAIMS_VERSION", "base_claims", "with_convergence", "with_probe"]
 
 #: claims の写像規則の版 (② の出力・sidecar に記録する)。
 # 1B/1: 入力値を昇格しない・`locally_stable` (初期値プローブ)・座標の証人は動かした座標だけ・
 #   テンプレートの判断要求と `declared:*` の出自 (fit-then-judge P1-1B)。
-CLAIMS_VERSION = "fit-then-judge/1B/1"
+CLAIMS_VERSION = "fit-then-judge/1B/3"  # /2: 出自の違いだけでは初期値依存にしない・/3: 明らかに悪い開始点を比較から外す (P1.5)
 
 _CELL_AXES = ("a", "b", "c", "alpha", "beta", "gamma")
 #: esd ≥ |値| を「決まっていない」とする種類 (格子・座標・プロファイルは値の原点が任意なので除く)。
@@ -187,6 +187,53 @@ def _usable(result: AutoRietveldResult | None) -> bool:
     )
 
 
+#: 最良の開始点より χ² が有意に大きい開始点を比較から外す閾値: ``Δχ²/GOF²_best`` > χ²₁ の 99% 点
+#   (2026-10-15 ユーザー決定, P1.5)。母数の数は同じ (同じ手順) なので自由度 1 の分位点で「区別できる」を判定する。
+WORSE_START_CRITICAL = 6.634896601021214
+
+
+def _start_chi2(result: object) -> tuple[float | None, float | None]:
+    """(χ², GOF²) — 最後に受理された段から。評価スクリプト (`prereg_eval.adapter.result_chi2`) と同じ
+    `accepted_stage` + `chi2_from_stage` を使う (開始点を外す χ² と評価の χ² がずれないように)。出せなければ (None, None)。"""
+    from ..autorietveld.search import accepted_stage
+    from ..evidence.fitstats import chi2_from_stage
+
+    stage = accepted_stage(result)  # type: ignore[arg-type]
+    n_obs = int(getattr(result, "n_obs", 0) or 0)
+    gof = None if stage is None else _finite(getattr(stage, "gof", None))
+    if gof is None or n_obs <= 0:
+        return None, None
+    chi2 = chi2_from_stage(gof=gof, n_obs=n_obs, n_params=int(stage.n_params))
+    if chi2 is None:
+        return None, None
+    return chi2, chi2 / (n_obs - int(stage.n_params))
+
+
+def converged_starts(multistart: object | None) -> tuple[list[object], list[object]]:
+    """(比較に使う開始点の結果, 外した開始点の結果)。
+
+    使える (有限・validity を通った) 開始点のうち、最良の χ² より ``Δχ²/GOF²_best`` が `WORSE_START_CRITICAL` を超えて
+    大きいものは「最良の解に届かなかった = 収束の失敗」として外す。格子 ±0.7% の開始点が細いピークで別の解に落ち、
+    Rwp 5 倍のまま validity を通って、正しい値まで初期値依存にしていた (P1.5 の S-dev)。χ² を出せない開始点は判定
+    できないので残す。R1-4 の「割れた」も同じ選び方で数える。
+    """
+    if multistart is None:
+        return [], []
+    usable = [s.result for s in getattr(multistart, "starts", ()) if _usable(s.result)]
+    scored = [(r, *_start_chi2(r)) for r in usable]
+    known = [(c, g) for _, c, g in scored if c is not None]
+    if not known:
+        return usable, []
+    best_chi2, best_gof2 = min(known, key=lambda t: t[0])
+    kept, excluded = [], []
+    for r, c, _g in scored:
+        if c is not None and best_gof2 and (c - best_chi2) / best_gof2 > WORSE_START_CRITICAL:
+            excluded.append(r)
+        else:
+            kept.append(r)
+    return kept, excluded
+
+
 def with_convergence(
     claims: Mapping[str, Claim], multistart: object | None
 ) -> dict[str, Claim]:
@@ -201,17 +248,16 @@ def with_convergence(
     if multistart is None:
         return out
     starts = tuple(getattr(multistart, "starts", ()))
-    results = [s.result for s in starts]
 
-    for r in results:
-        if r is None:
-            continue
+    # 比較に使う開始点 = 使える (有限・validity を通った) うち、最良より明らかに悪い fit に落ちていないもの
+    #   (`converged_starts`)。出自の合成も同じ開始点に限る (P1.5)。
+    valid, excluded = converged_starts(multistart)
+    for r in valid:
         for key, other in base_claims(r).items():
             if key in out:
                 out[key] = compose(out[key], other)
 
-    valid = [r for r in results if _usable(r)]
-    all_valid = len(starts) >= 2 and len(valid) == len(starts)
+    all_valid = len(starts) >= 2 and len(valid) == len(starts) and not excluded
     witness_ok = all_valid and bool(getattr(multistart, "perturbation_applied", False))
     # 座標の摂動を頼んだのに 1 軸も動かなかった (高対称・全原子凍結) なら座標は試験していない
     #   (multistart の傍証条件 `perturbation_had_no_effect` と同じ)。格子だけ振った一致は座標の証人にしない。
@@ -225,7 +271,7 @@ def with_convergence(
     #   hold や凍結で振っていない座標まで「試験した」と数える (fit-then-judge P1-1B)
     #   記録が 1 つも無い (TOPAS 等の engine は記録しない) ときだけ件数の規則へ戻る。使える開始点だけを数える (N9)
     moved_coords = {
-        f"coord:{k}" for r in results if _usable(r)
+        f"coord:{k}" for r in valid
         for k in getattr(r, "coord_jitter_moved", ())
     }
     tolerances = AgreementTolerances()
@@ -256,6 +302,8 @@ def with_convergence(
             and all(is_agreement(v[0]) for v in found)
             and claim.determinacy is Determinacy.ESD_ONLY
             and "refined" in claim.provenance  # 解放しなかった入力値は「決まった」のではない
+            # 開始点で出自が違った (ある開始点では精密化しなかった) 値は試験したとは言えない
+            and not any(w.kind == PROVENANCE_VARIED for w in claim.witnesses)
             and (
                 claim.param_class != "coord"
                 or (coords_tested and (not moved_coords or key in moved_coords))

@@ -27,6 +27,17 @@ def _restore_numpy_errstate():
         np.seterr(**saved)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_bv_pair_table(tmp_path_factory, monkeypatch):
+    """結合原子価の対ごとの表 (bvparm) を**この機械に有るか無いか**で結果を変えさせない (P1.5)。
+
+    検査器は ``TSUMUGIN_BVPARM`` か ``~/.tsumugin/bvparm2020.cif`` を探す。開発機に表を置くと、表の無い CI と
+    結晶化学の結果が変わる (CLAUDE.md の CI 行: 「開発機には入っているのでローカルでは不可視」な依存)。既定は
+    「表が無い」(元素の推定) に揃え、表を使うテストは自分で ``TSUMUGIN_BVPARM`` を差す。
+    """
+    monkeypatch.setenv("TSUMUGIN_BVPARM", str(tmp_path_factory.getbasetemp() / "no-bvparm-table.cif"))
+
+
 @pytest.fixture(scope="session")
 def _gpx_test_root(tmp_path_factory):
     """テスト実行中の成果物 (.gpx) の集約先 (セッション 1 つ)。"""

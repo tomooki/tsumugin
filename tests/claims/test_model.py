@@ -78,11 +78,13 @@ def test_compose_across_starts():
     assert got.checks["crystal_chemistry"] is Check.FAIL
 
 
-def test_compose_with_different_provenance_is_initial_value_dependent():
-    """開始点で出自が違う (片方は精密化、片方は剪定) なら値は初期値に依存している。"""
+def test_compose_with_different_provenance_records_it_without_downgrading():
+    """出自の違いだけでは初期値依存にしない (2026-10-15 ユーザー決定, proposal §3.1 の改訂)。値が割れたかは
+    開始点の一致の比較 (`with_convergence`) が決める。違ったことは証人 ``provenance_varied`` に残す。"""
     got = compose(_claim(), _claim(provenance=frozenset({"pruned"})))
     assert got.provenance == {"refined", "pruned"}
-    assert got.determinacy is Determinacy.INITIAL_VALUE_DEPENDENT
+    assert got.determinacy is Determinacy.ESD_ONLY
+    assert any(w.kind == "provenance_varied" for w in got.witnesses)
 
 
 def test_compose_refuses_different_values_keys():

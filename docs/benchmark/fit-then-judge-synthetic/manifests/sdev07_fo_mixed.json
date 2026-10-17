@@ -1,0 +1,57 @@
+{
+  "case_id": "sdev07_fo_mixed",
+  "case_set": "S-dev",
+  "phases": [
+    {
+      "db": "COD",
+      "entry_id": "1572968",
+      "revision": "295660",
+      "sha256": "17000cd5654b305db3274b630bc1cdf2e9243fd2dfe6d023a45f15e790badad8",
+      "license": "CC0",
+      "phase_name": "Mg2SiO4",
+      "formula": "Mg2 Si O4",
+      "wt_fraction": 1.0
+    }
+  ],
+  "instrument": "sync_ds",
+  "max_counts": 100000.0,
+  "seed": 107,
+  "defects": [
+    {
+      "kind": 3,
+      "target": "Mg2SiO4.M2",
+      "magnitude": 0.19728038791003866,
+      "truth": "Mg2 Mg+2 (0.99290, 0.27775, 0.25000) occ=0.8500; Fe2 Fe+2 (0.99290, 0.27775, 0.25000) occ=0.1500",
+      "start": "Mg2 Mg+2 (0.99290, 0.27775, 0.25000) occ=0.6527; Fe2 Fe+2 (0.99290, 0.27775, 0.25000) occ=0.3473"
+    }
+  ],
+  "mismatches": [
+    "amorphous_hump"
+  ],
+  "expected": [
+    "recovered by sum=1 + equal Uiso"
+  ],
+  "generator_commit": "881b353aec25674a6d9baf4ac2546e83050535c6",
+  "versions": {
+    "numpy": "2.5.0",
+    "gsas2": "5837"
+  },
+  "pattern_sha256": "5a62816524b468407bc7adf3cc21f6d4bc72417b83b3fde372a08bbd1f1e1d19",
+  "start_phases_relative": [
+    {
+      "structure_path": "start_Mg2SiO4.cif",
+      "phase_name": "Mg2SiO4",
+      "refine_cell": true,
+      "mixed_occupancy_groups": [
+        [
+          "Mg1",
+          "Fe1"
+        ],
+        [
+          "Mg2",
+          "Fe2"
+        ]
+      ]
+    }
+  ]
+}

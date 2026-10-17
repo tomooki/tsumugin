@@ -113,6 +113,15 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "反復を続ける**唯一の JSON 経路でもある。⚠ operando (`sequential_rietveld`) へは"
         "**意図的に露出しない** (REQ-SAR-502: フレーム数 × 候補数が時間予算に収まらない)",
     ),
+    "prereg_eval (fit-then-judge P1.5)": (
+        UNEXPOSED,
+        "**意図的な非露出**: P0 で事前登録した評価 (アーム・W_i・c(N)・反証条件) の計算で、"
+        "P2 で 1 回だけ回す実験の道具であって解析の機能ではない。② に出すと ③ が「自分の解析の"
+        "良し悪しを測る道具」と読み、hold-out を何度も評価する経路を作ってしまう (P0 §3.4 の "
+        "「1 回だけ」に反する)。同じ理由で、評価のためだけに足した engine の事後の収束検査 "
+        "`autorietveld.engine.posthoc_shift_esd` (P0 §1.2) も ② に出さない — ③ の収束確認は既存の "
+        "`convergence_verdict`・マルチスタートが担う。設計は `docs/design/fit-then-judge/p15-architecture.md`",
+    ),
     "recipe axes (build_recipe の opt-in 軸)": (
         UNEXPOSED,
         "**意図的な非露出**: `build_recipe(profile_granularity=, background_escalation=)` は "
@@ -307,6 +316,7 @@ PACKAGE_COVERAGE: dict[str, str] = {
     "gpxstore": "gpx artifact retention (規定 2026-08-20)",
     "claims": "claims (fit-then-judge 1A)",
     "template": "template (fit-then-judge 1B)",
+    "prereg_eval": "prereg_eval (fit-then-judge P1.5)",
     "operando": "echem sync (M3/FR-311)",  # ← Issue #99: これまで宣言リストに 1 行も無かった
     # --- 基盤 (③ に露出する独立能力ではない — 露出済みツールが内部で使うインフラ) ---
     "model": (FOUNDATIONAL, "不変 dataclass 群 (§4)。全層が共有する型であり単独能力ではない"),

@@ -1,0 +1,134 @@
+{
+ "components": {
+  "checker": {
+   "files": {
+    "src/tsumugin/claims/build.py": "853ec2bc2f450a9ddd0f3d46a823d940ac6293b82313df16085db8e04fbb9f59",
+    "src/tsumugin/claims/chemistry.py": "6ffe240622c6acd8c81bc783c60862fe03bab4f9bdb8676397b39dd94523bd2b",
+    "src/tsumugin/claims/model.py": "c65862187dd780fe2dd878b07fa605beb3d8ad97d0009a5c47e9c8d7a2a45480",
+    "src/tsumugin/claims/publication.py": "9f241c51b3d671e6a0068a709dce5e4f2cb0296c760aca815ecbfa94c0543b1d",
+    "src/tsumugin/claims/witness.py": "5817cfef242c82ab6d22310cd16d38ed25bfb57a0f950525f875325082497251"
+   }
+  },
+  "evaluation": {
+   "files": {
+    "src/tsumugin/evidence/fitstats.py": "d5e5f24038a9e11d1675abf02ea01bac762498bc4b212867a65eec6383f87b50",
+    "src/tsumugin/prereg_eval/__init__.py": "8e520ba91a4171fac86cedc7e76051db60eba711901e188d1a47942fb2a65878",
+    "src/tsumugin/prereg_eval/adapter.py": "83acef1522a0f65e4efbdf75d9ccc6368ceacf32932520f0756591e591ede52b",
+    "src/tsumugin/prereg_eval/arms.py": "43bf5b322485f6b108699d7d54cdae837aa4ed50aefa819ad3561afc6212cd1e",
+    "src/tsumugin/prereg_eval/case.py": "5ac1c313922d087d7ea221e3feec25acf105e63d95e7c8728caf66924d991a48",
+    "src/tsumugin/prereg_eval/criteria.py": "5c031f79851031b835181ecc80a281081c250a36ed556321fdbfa25f27a578ab",
+    "src/tsumugin/prereg_eval/defects.py": "7e64a0f5a111d2ca4e16ba341f9b8cb17485bd44b2b32d15d8ff7a65d5e1e147",
+    "src/tsumugin/prereg_eval/falsify.py": "e40f3bf41fe57cdf91f29469ee748d72a80193db6ed1a3cfc5044a89c0c7c5f8",
+    "src/tsumugin/prereg_eval/freeze.py": "759d196c5ce4fde2d8780796e5492e7ee165c30126e77508ccb7ca6807f14900",
+    "src/tsumugin/prereg_eval/hpub.py": "eb1b0adfc672d7904958a647e17194a998589f0a9b613cc6a695a47373643264",
+    "src/tsumugin/prereg_eval/hpub_draw.py": "b893f69bd3348817645a529d73a81ec065fc3329c02b46eaeee1d3da248415fc",
+    "src/tsumugin/prereg_eval/mapping.py": "605d37fc81e89c655ba17961e93daf62cb93e40004c4f1ddbe44fdaba2d7b636",
+    "src/tsumugin/prereg_eval/onea.py": "c513841224a222217ce34db185af5c673de65c0af47c4ba0d19df9de958b1222",
+    "src/tsumugin/prereg_eval/probe_run.py": "b914453ea4f3805bf6963a72618d83707b56cf70da3a5be00e363c9400c23301",
+    "src/tsumugin/prereg_eval/probes.py": "5ecedfd453d8b54d49a0f63720e72a3c9f84b97b6138a3217bdc6fa0adb71c80",
+    "src/tsumugin/prereg_eval/stats.py": "7256a2ffd90e8b05c1234ecb4e330477f62d381a822ba11cc0922be67f5bf23a",
+    "src/tsumugin/prereg_eval/structure.py": "4a91fec09d335fc2ba15d3c192eef44cfbf2532589e2226926694a8d7d981da3",
+    "src/tsumugin/prereg_eval/synth.py": "3721cea058fee5a0039b156c05f390deb2817cac2aa166cb26e5b3138aba9a36",
+    "src/tsumugin/prereg_eval/synth_gsas.py": "82e2ae3f9e15e9534546683e0399be12818354b6ca7b35939e7caba954fd2b26",
+    "src/tsumugin/prereg_eval/values.py": "92c0bcadad414ba4da548929ae03d2806f8833236516d2fa7a85516b8d1d0f88"
+   }
+  },
+  "hpub_candidates": {
+   "files": {
+    "docs/benchmark/fit-then-judge-hpub/candidates.py": "51d40f7ab070ee35a1d19b0a4b4f33d2b0408f2a9bec6e0695e22d77e63426d7",
+    "docs/benchmark/fit-then-judge-hpub/candidates_manifest.json": "e3b479241a35072e1cf276d1139232da3458cfebb5b3be96104a496d85fb0047",
+    "docs/benchmark/fit-then-judge-hpub/hpub_generic_lab.instprm": "488b779f399faf1687dae1716a2fe2a10fefe41040bcaf2037d14552db98b3c3",
+    "docs/benchmark/fit-then-judge-hpub/manifest.py": "a11e8a0ade766a44c1aea30f3b06efc14d3493e88946335706d4bb3d03ca1e0f",
+    "src/tsumugin/prereg_eval/hpub.py": "eb1b0adfc672d7904958a647e17194a998589f0a9b613cc6a695a47373643264",
+    "src/tsumugin/prereg_eval/hpub_draw.py": "b893f69bd3348817645a529d73a81ec065fc3329c02b46eaeee1d3da248415fc"
+   }
+  },
+  "policy": {
+   "files": {
+    "src/tsumugin/claims/requests.py": "895d3b7bea28790f9d359537d5f3851b4025defd5398598de48b4f793a11f757"
+   }
+  },
+  "probe": {
+   "files": {
+    "src/tsumugin/autorietveld/agreement.py": "7156b4ae70b1b92ab5535a0a18a277e94965c347cb4e0eba87263ec7659363c3",
+    "src/tsumugin/autorietveld/probe.py": "5889d2a47365b2ba3e4e7d5558180164fc2214ce9a1cc5d6629ad9d7ee16e75f"
+   }
+  },
+  "quasi_case_table": {
+   "files": {
+    "docs/benchmark/fit-then-judge-quasi/case_table.json": "12d74c0109dceefb618d1f2c38553993769b59355141efd10a9ab81068031068",
+    "docs/benchmark/fit-then-judge-quasi/case_table.py": "b9bba5851e0f63b4c21ab9332f75ff73a9270fd7faabc8001878e73742f5af35",
+    "src/tsumugin/prereg_eval/mapping.py": "605d37fc81e89c655ba17961e93daf62cb93e40004c4f1ddbe44fdaba2d7b636"
+   }
+  },
+  "synthetic_generator": {
+   "files": {
+    "docs/benchmark/fit-then-judge-synthetic/cases.py": "3764e5e3ace70febe546a71cc031c38e7d114315f1a3def48bf67a75a57637eb",
+    "docs/benchmark/fit-then-judge-synthetic/generate.py": "57865e61509fd20168ac99272bb0a306d73d50723a4e2f406f6774d609f20afe"
+   }
+  },
+  "template": {
+   "files": {
+    "src/tsumugin/template/__init__.py": "79c5a9d033f23ef98b04a83ef893dcfb8d9ab09d5b9a39938c1a92bf7dc2a5eb",
+    "src/tsumugin/template/compile.py": "2dd4b82482ff1408bf7c065be79c142a3cb046ec4e9ddb7c84079356f8affdbc",
+    "src/tsumugin/template/declarations.py": "fa3427a3a2d0c2278b7e247df926834d96bd4eb6031ff26532c8609d4b7ef41a",
+    "src/tsumugin/template/pass1.py": "39225271e484f5510ece85a65318507362e7ec7f1628d14e1afb16f5a86ef34a",
+    "src/tsumugin/template/uiso.py": "581dc97c8dc1f7c70441f9738e68278a01dca810f384c85e93b5c157ba58dc43"
+   }
+  }
+ },
+ "drand": {
+  "labels": [
+   "h-pub",
+   "h-pub-noref",
+   "s-eval"
+  ],
+  "order": "凍結 → H-pub の抽出 → S-eval の生成 (P0 §6.3)",
+  "round": null,
+  "s_eval_population_snapshot_sha256": "95f08e5dc85aaef0b0f020e148b46b4ba85977074c8c34d1987db9cc7ab9ecac",
+  "seed": "int(sha256('<r>:<label>')[:8], 16)",
+  "when": "凍結 commit を GitHub に push した時刻 (サーバー側) の 24 時間後以降で最初の drand (League of Entropy) の round"
+ },
+ "environment": {
+  "gsas2": "5837",
+  "numpy": "2.5.0",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.12"
+ },
+ "generated_at": "2026-10-17T14:41:34.054104+00:00",
+ "hpub": {
+  "k_noref": 16,
+  "k_ref": 14,
+  "n_noref": 738,
+  "n_ref": 14
+ },
+ "p0_commit": "d0b1977ceff675ddcc3e14ee1ff42d1e8088ed34",
+ "versions": {
+  "bvparm_sha256": "ec073207e070f8e42e49734d11ebe93de4012cc0af07016a99920877688e9a68",
+  "checker": "fit-then-judge/1B/3|residual-window/4|crystal-chemistry/3",
+  "pass1_config": {
+   "alpha": 0.01,
+   "background_ladder": [
+    12,
+    18,
+    24
+   ],
+   "target_tie_ratio": 0.8
+  },
+  "permutations": [
+   "swap_T1_T2",
+   "swap_T5_T6",
+   "T8_before_T5",
+   "T7_before_T6"
+  ],
+  "policy": "D-1A/1",
+  "posthoc_max_shift_esd": 1.0,
+  "probe_config": {
+   "cell_frac": 0.001,
+   "coord_jitter_ang": 0.05,
+   "max_cyc": 12,
+   "seed": 0
+  },
+  "template": "fit-then-judge/1B/1"
+ }
+}
