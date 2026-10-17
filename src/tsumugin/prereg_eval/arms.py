@@ -168,13 +168,23 @@ def _guard(arm: str, fn: Callable[[], ArmRun]) -> ArmRun:
 
 
 def _with_posthoc(run: ArmRun, posthoc: Callable[[str], float | None]) -> ArmRun:
-    path = str(getattr(run.result, "gpx_path", "") or "")
-    if run.result is None or not path:
+    """全アームの最終 gpx に同じ事後検査を掛ける。**回らなければアームの失敗** (P0 §1.2)。
+
+    保存した gpx が無い・値が出ない (共分散が無い) ときも失敗にする — 黙って通すと、gpx を残せたアームだけが事後検査を
+    受ける非対称になる。
+    """
+    if run.result is None:
         return run
+    path = str(getattr(run.result, "gpx_path", "") or "")
+    if not path:
+        return replace(run, error="posthoc: no saved gpx to check")
     try:
-        return replace(run, posthoc_shift_esd=posthoc(path))
+        value = posthoc(path)
     except Exception as exc:  # noqa: BLE001 — 事後検査が回らない = 未収束扱い (呼び手が失敗に畳む)
         return replace(run, error=f"posthoc: {type(exc).__name__}: {exc}"[:500])
+    if value is None:
+        return replace(run, error="posthoc: max |shift|/esd is None (no covariance)")
+    return replace(run, posthoc_shift_esd=value)
 
 
 def run_arms(

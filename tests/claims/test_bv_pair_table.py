@@ -125,7 +125,7 @@ def test_a_table_with_the_wrong_hash_is_refused(table, monkeypatch, tmp_path):
 
 
 def test_version_was_bumped():
-    assert ch.CHEMISTRY_VERSION == "crystal-chemistry/2"
+    assert ch.CHEMISTRY_VERSION == "crystal-chemistry/3"
 
 
 def test_any_valence_rows_are_the_fallback(tmp_path, monkeypatch):
@@ -177,3 +177,33 @@ def test_ordinary_oxides_are_not_caught_by_the_anion_rule(table, tmp_path):
     path, result = _zno(tmp_path)
     outcome, _ = ch.crystal_chemistry("P", path, result)["bvs_gii"]
     assert outcome == Check.PASS
+
+
+def test_peroxide_o_o_bond_is_caught_by_the_anion_rule():
+    """過酸化物の O–O (1.49 Å) も陰イオン同士の結合として拾う。
+
+    以前の倍率 1.2 × 原子半径の和は O–O で 1.44 Å で、過酸化物の結合長 (~1.49 Å) より短く、docstring の
+    「過酸化物」を拾えていなかった (正しい BaO₂ が GII fail になる)。通常の酸化物の O–O (≥ 2.4 Å) は拾わない。
+    """
+    from pymatgen.core import Lattice, Structure
+
+    c = 6.80
+    z = 1.49 / (2 * c)
+    bao2 = Structure(Lattice.tetragonal(3.82, c), ["Ba", "O", "O"], [[0, 0, 0], [0, 0, z], [0, 0, -z]])
+    assert ch._anion_anion_bond(bao2, {"Ba": 2.0, "O": -1.0}) is not None
+    far = Structure(Lattice.tetragonal(3.82, c), ["Ba", "O", "O"], [[0, 0, 0], [0, 0, 0.18], [0, 0, -0.18]])
+    assert ch._anion_anion_bond(far, {"Ba": 2.0, "O": -1.0}) is None  # O–O 2.45 Å
+
+
+def test_table_is_read_once_until_the_file_changes(table, monkeypatch):
+    """表の読み込みと照合は同じファイルなら 1 回だけ (検査は相・開始点・アームごとに呼ばれる)。中身が変われば読み直す。"""
+    calls = []
+    real = ch.load_bv_pair_table
+    monkeypatch.setattr(ch, "load_bv_pair_table", lambda path: calls.append(path) or real(path))
+    ch._cached_pair_table.cache_clear()
+    first = ch._pair_table()
+    second = ch._pair_table()
+    assert first == second and len(calls) == 1
+    table.write_text(table.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+    ch._pair_table()
+    assert len(calls) == 2

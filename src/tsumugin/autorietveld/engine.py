@@ -17,6 +17,7 @@ import contextlib
 import math
 import shutil
 import tempfile
+import warnings
 from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 from pathlib import Path
@@ -3709,13 +3710,19 @@ def _coord_constrained_axes(gpx, ph) -> dict[str, set[int]]:
 
 
 @with_blas_threads
-def posthoc_shift_esd(gpx_path: str, *, cycles: int = 1, blas_threads: int | None = None) -> float | None:
+def posthoc_shift_esd(
+    gpx_path: str, *, cycles: int = 1, blas_threads: int | None = None, save: bool = True
+) -> float | None:
     """保存した最終 gpx の**写し**で ``cycles`` サイクルだけ精密化し直し、最終サイクルの ``max |shift|/esd`` を返す
     (fit-then-judge P0 §1.2 の事後の収束検査)。
 
     フラグは変えない。経路ごとの収束判定と違い、**全アームの最終状態に同じ物差しを当てる**ためのもの (テンプレートだけが
     自前の収束確認を持つ非対称を消す)。保存した成果物は書き換えない。共分散が無ければ None。精密化の失敗は
     `RefinementFailedError` として送出する (呼び手が「未収束 = 失敗」に畳む)。
+
+    :param save: **規定どおり成果物を残す** (2026-08-20「全解析で保存する」)。元の gpx の隣に ``<元の名前>.posthoc.gpx``
+        (既にあれば連番) を書き、索引にも載せる。精密化が失敗したときも残す (検査に落ちた理由を検算できるように)。
+        保存の失敗で検査を落とさない
     """
     if cycles < 1:
         raise ValueError(f"cycles は 1 以上です: {cycles!r}")
@@ -3725,9 +3732,38 @@ def posthoc_shift_esd(gpx_path: str, *, cycles: int = 1, blas_threads: int | Non
         shutil.copyfile(gpx_path, copy)
         gpx = g2sc.G2Project(gpxfile=str(copy))
         gpx.data["Controls"]["data"]["max cyc"] = int(cycles)
-        _refine_once(gpx)
-        value = read_diagnostics(gpx).max_shift_esd
+        value = None
+        try:
+            _refine_once(gpx)
+            value = read_diagnostics(gpx).max_shift_esd
+        finally:
+            if save:
+                _keep_posthoc_artifact(gpx, copy, Path(gpx_path), value)
     return None if value is None else float(value)
+
+
+def _keep_posthoc_artifact(gpx, copy: Path, src: Path, max_shift_esd: "float | None") -> None:
+    """事後検査の写しを元の gpx の隣へ残し、索引に載せる。失敗しても検査は落とさない。"""
+    try:
+        gpx.save()
+        target = _unique_path(src.parent, f"{src.stem}.posthoc", ".gpx")
+        shutil.copyfile(copy, target)
+        source_rows = [
+            row for row in read_manifest(str(src.parent))
+            if Path(str(row.get("path", ""))).name == src.name
+        ]
+        data_paths = tuple(source_rows[-1].get("data_paths", ())) if source_rows else ()
+        _record_artifact(
+            str(src.parent),
+            ManifestEntry(
+                path=str(target), role="posthoc", label="posthoc", index=None,
+                data_paths=tuple(str(d) for d in data_paths), phases=(), rwp=None, gof=None,
+                extra={"source_gpx": str(src), "max_shift_esd": max_shift_esd},
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — 保存の失敗で事後検査を落とさない (検査の値は呼び手へ返る)
+        # 黙って保存を諦めない (規定 2026-08-20) — 値は返すが、残せなかったことは警告で知らせる
+        warnings.warn(f"事後検査の成果物を保存できない: {type(exc).__name__}: {exc}"[:300], RuntimeWarning, stacklevel=2)
 
 
 @with_blas_threads

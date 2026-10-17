@@ -55,9 +55,14 @@ def result_chi2(result: object) -> float | None:
 
     stage = accepted_stage(result)  # type: ignore[arg-type]
     n_obs = int(getattr(result, "n_obs", 0) or 0)
-    if stage is None or n_obs <= 0:
+    gof = None if stage is None else getattr(stage, "gof", None)
+    if gof is None or n_obs <= 0:
         return None
-    return chi2_from_stage(gof=float(stage.gof), n_obs=n_obs, n_params=int(stage.n_params))
+    try:
+        gof = float(gof)
+    except (TypeError, ValueError):
+        return None
+    return chi2_from_stage(gof=gof, n_obs=n_obs, n_params=int(stage.n_params))
 
 
 def observation_set_hash(histograms: Sequence[object]) -> str | None:

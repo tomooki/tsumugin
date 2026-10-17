@@ -137,6 +137,24 @@ def test_posthoc_failure_marks_the_arm():
     assert "posthoc" in arms["B-single"].error
 
 
+def test_posthoc_that_cannot_be_computed_marks_the_arm_failed():
+    """事後検査が回らない (保存した gpx が無い・共分散が無く値が None) アームを「収束した」側に数えない (P0 §1.2)。
+
+    以前は None のまま `posthoc_converged(None) = None` → 失敗扱いされず、gpx を残せたアームだけが事後検査を受ける
+    非対称になっていた。
+    """
+    arms = run_arms(("H",), ("P",), "DECL", runners=Fake().runners(posthoc=lambda path: None))
+    assert "posthoc" in arms["B-single"].error and "None" in arms["B-single"].error
+
+    class NoGpx(Fake):
+        def single(self, h, p, *, recipe, **kw):
+            super().single(h, p, recipe=recipe, **kw)
+            return _res("single", gpx="")
+
+    arms = run_arms(("H",), ("P",), "DECL", runners=NoGpx().runners())
+    assert "posthoc" in arms["B-single"].error and "gpx" in arms["B-single"].error
+
+
 def test_permutations_without_their_stages_are_not_run():
     f = Fake()
     arms = run_arms(("H",), ("P",), "DECL", runners=f.runners(), permutations=("swap_T1_T2",))

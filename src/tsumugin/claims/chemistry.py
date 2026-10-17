@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import math
 import os
@@ -39,7 +40,7 @@ from .model import Check, Witness, worse_check
 __all__ = ["BVPARM_SHA256", "CHEMISTRY_CHECKS", "CHEMISTRY_VERSION", "crystal_chemistry", "load_bv_pair_table",
            "short_bonds"]
 
-CHEMISTRY_VERSION = "crystal-chemistry/2"
+CHEMISTRY_VERSION = "crystal-chemistry/3"
 
 #: Brown の bvparm2020.cif (IUCr, 2020-11-25) の sha256。None にすると照合しない (試験用)
 BVPARM_SHA256: str | None = "ec073207e070f8e42e49734d11ebe93de4012cc0af07016a99920877688e9a68"
@@ -202,19 +203,35 @@ def _bvparm_path() -> Path:
 
 
 def _pair_table() -> tuple[dict | None, str]:
-    """(表, 方法) — 表が無ければ (None, "element-estimate")、sha256 が違えば (None, "sha256 mismatch ...")。"""
+    """(表, 方法) — 表が無ければ (None, "element-estimate")、sha256 が違えば (None, "sha256 mismatch ...")。
+
+    読み込みと sha256 の照合は (パス・更新時刻・大きさ・期待する sha256) ごとに 1 回だけ (`_cached_pair_table`)。
+    検査は相・開始点・アームごとに呼ばれ、毎回 ~1 MB を読んで照合していた。
+    """
     path = _bvparm_path()
+    try:
+        st = path.stat()
+    except OSError:
+        return None, "element-estimate"
     if not path.is_file():
         return None, "element-estimate"
-    if BVPARM_SHA256 is not None:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if digest != BVPARM_SHA256:
-            return None, f"bvparm sha256 mismatch ({digest[:12]} != {BVPARM_SHA256[:12]})"
-    return load_bv_pair_table(path), f"pair-table {path.name} sha256={'unchecked' if BVPARM_SHA256 is None else BVPARM_SHA256[:12]}"
+    return _cached_pair_table(str(path), st.st_mtime_ns, st.st_size, BVPARM_SHA256)
 
 
-#: 陰イオン同士がこの倍率 × 原子半径の和より近ければ結合している (S₂ 二量体・過酸化物) とみなす
-_ANION_BOND_RATIO = 1.2
+@functools.lru_cache(maxsize=4)
+def _cached_pair_table(path: str, _mtime_ns: int, _size: int, expected: str | None) -> tuple[dict | None, str]:
+    p = Path(path)
+    if expected is not None:
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        if digest != expected:
+            return None, f"bvparm sha256 mismatch ({digest[:12]} != {expected[:12]})"
+    return load_bv_pair_table(p), f"pair-table {p.name} sha256={'unchecked' if expected is None else expected[:12]}"
+
+
+#: 陰イオン同士がこの倍率 × 原子半径の和より近ければ結合している (S₂ 二量体・過酸化物) とみなす。1.2 では O–O が
+#   1.44 Å で過酸化物 (~1.49 Å) を拾えなかった (crystal-chemistry/3)。1.3 で O–O 1.56 Å・S–S 2.6 Å (パイライト 2.16 Å)。
+#   通常の酸化物の O–O は 2.4 Å 以上
+_ANION_BOND_RATIO = 1.3
 
 
 def _anion_anion_bond(pmg, valences: Mapping[str, float]) -> str | None:
@@ -340,7 +357,9 @@ def _evaluate(phase: str, structure_path: str, result: object) -> dict[str, tupl
     table, method = _pair_table()
 
     def gii(pmg_, valences_):  # noqa: ANN001, ANN202
-        bond = _anion_anion_bond(pmg_, valences_)
+        # 模型が当てはまるかは**化合物の化学** (入力構造) で決める — 精密化後の構造で判定すると、格子が潰れて陰イオン同士が
+        #   近づいた誤った構造が「模型の範囲外」として GII の fail を逃れる (酸化数を入力構造で決めるのと同じ理由)
+        bond = _anion_anion_bond(pmg_input, valences_)
         if bond is not None:
             # 模型の適用範囲の外 — 正しい構造を fail にしない (パイライトの S₂ で GII 1.17 だった, P1.5)
             return Check.UNEVALUATED, {"reason": f"bond valence model not applicable: {bond}"}

@@ -167,3 +167,12 @@ def test_posthoc_threshold_matches_the_engines_convergence_gate():
     assert posthoc_converged(0.7) is True and posthoc_converged(1.0) is True
     assert posthoc_converged(1.01) is False
     assert posthoc_converged(None) is None  # 共分散が無い = 判定できない (失敗にも成功にもしない)
+
+
+def test_chi2_is_none_not_a_crash_when_the_accepted_stage_has_no_gof():
+    from types import SimpleNamespace
+
+    from tsumugin.prereg_eval.adapter import result_chi2
+
+    stage = SimpleNamespace(gof=None, n_params=3, reverted=False)
+    assert result_chi2(SimpleNamespace(stage_results=(stage,), n_obs=100)) is None

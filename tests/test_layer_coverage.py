@@ -118,7 +118,9 @@ LAYER1_FEATURES: dict[str, tuple[str, str]] = {
         "**意図的な非露出**: P0 で事前登録した評価 (アーム・W_i・c(N)・反証条件) の計算で、"
         "P2 で 1 回だけ回す実験の道具であって解析の機能ではない。② に出すと ③ が「自分の解析の"
         "良し悪しを測る道具」と読み、hold-out を何度も評価する経路を作ってしまう (P0 §3.4 の "
-        "「1 回だけ」に反する)。設計は `docs/design/fit-then-judge/p15-architecture.md`",
+        "「1 回だけ」に反する)。同じ理由で、評価のためだけに足した engine の事後の収束検査 "
+        "`autorietveld.engine.posthoc_shift_esd` (P0 §1.2) も ② に出さない — ③ の収束確認は既存の "
+        "`convergence_verdict`・マルチスタートが担う。設計は `docs/design/fit-then-judge/p15-architecture.md`",
     ),
     "recipe axes (build_recipe の opt-in 軸)": (
         UNEXPOSED,

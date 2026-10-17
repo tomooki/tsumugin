@@ -193,16 +193,20 @@ WORSE_START_CRITICAL = 6.634896601021214
 
 
 def _start_chi2(result: object) -> tuple[float | None, float | None]:
-    """(χ², GOF²) — 最後に受理された段の GOF・母数と ``n_obs`` から。出せなければ (None, None)。"""
-    stages = [st for st in getattr(result, "stage_results", ()) if not getattr(st, "reverted", False)]
+    """(χ², GOF²) — 最後に受理された段から。評価スクリプト (`prereg_eval.adapter.result_chi2`) と同じ
+    `accepted_stage` + `chi2_from_stage` を使う (開始点を外す χ² と評価の χ² がずれないように)。出せなければ (None, None)。"""
+    from ..autorietveld.search import accepted_stage
+    from ..evidence.fitstats import chi2_from_stage
+
+    stage = accepted_stage(result)  # type: ignore[arg-type]
     n_obs = int(getattr(result, "n_obs", 0) or 0)
-    if not stages:
+    gof = None if stage is None else _finite(getattr(stage, "gof", None))
+    if gof is None or n_obs <= 0:
         return None, None
-    gof = _finite(getattr(stages[-1], "gof", None))
-    n_params = int(getattr(stages[-1], "n_params", 0) or 0)
-    if gof is None or n_obs - n_params <= 0:
+    chi2 = chi2_from_stage(gof=gof, n_obs=n_obs, n_params=int(stage.n_params))
+    if chi2 is None:
         return None, None
-    return gof**2 * (n_obs - n_params), gof**2
+    return chi2, chi2 / (n_obs - int(stage.n_params))
 
 
 def converged_starts(multistart: object | None) -> tuple[list[object], list[object]]:
