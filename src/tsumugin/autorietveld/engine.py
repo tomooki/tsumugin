@@ -3754,10 +3754,13 @@ def _keep_posthoc_artifact(gpx, copy: Path, src: Path, max_shift_esd: "float | N
         ]
         data_paths = tuple(source_rows[-1].get("data_paths", ())) if source_rows else ()
         phases = tuple(str(x) for x in source_rows[-1].get("phases", ())) if source_rows else ()
-        try:
-            rwp, gof, _nvar = _rvals(gpx)
-        except Exception:  # noqa: BLE001 — 精密化が失敗した写しは R 値を持たない
-            rwp, gof = None, None
+        rwp, gof = None, None
+        if max_shift_esd is not None:
+            # 精密化が失敗した写しの Covariance は元の fit のまま — その R 値を事後検査の値として載せない
+            try:
+                rwp, gof, _nvar = _rvals(gpx)
+            except Exception:  # noqa: BLE001
+                rwp, gof = None, None
         _record_artifact(
             str(src.parent),
             ManifestEntry(
