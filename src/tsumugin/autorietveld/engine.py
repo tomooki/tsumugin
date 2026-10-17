@@ -3753,11 +3753,16 @@ def _keep_posthoc_artifact(gpx, copy: Path, src: Path, max_shift_esd: "float | N
             if Path(str(row.get("path", ""))).name == src.name
         ]
         data_paths = tuple(source_rows[-1].get("data_paths", ())) if source_rows else ()
+        phases = tuple(str(x) for x in source_rows[-1].get("phases", ())) if source_rows else ()
+        try:
+            rwp, gof, _nvar = _rvals(gpx)
+        except Exception:  # noqa: BLE001 — 精密化が失敗した写しは R 値を持たない
+            rwp, gof = None, None
         _record_artifact(
             str(src.parent),
             ManifestEntry(
                 path=str(target), role="posthoc", label="posthoc", index=None,
-                data_paths=tuple(str(d) for d in data_paths), phases=(), rwp=None, gof=None,
+                data_paths=tuple(str(d) for d in data_paths), phases=phases, rwp=rwp, gof=gof,
                 extra={"source_gpx": str(src), "max_shift_esd": max_shift_esd},
             ),
         )

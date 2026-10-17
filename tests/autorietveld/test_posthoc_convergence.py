@@ -59,3 +59,4 @@ def test_posthoc_refinement_is_kept_beside_the_source_and_indexed(tmp_path, monk
     assert len(kept) == 2, kept  # 2 回目は連番 (上書きしない)
     rows = [r for r in read_manifest(str(src.parent)) if r.get("role") == "posthoc"]
     assert len(rows) == 2 and all(r["source_gpx"] == str(src) for r in rows)  # extra は行に平らに入る
+    assert all(r["phases"] == ["ZnO"] and r["rwp"] is not None for r in rows)  # どの fit の写しかを 1 行で
