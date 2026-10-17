@@ -51,6 +51,14 @@ note = """
 使った化合物は開発用の化合物として H-pub の候補から除く (candidates.py の DEV_COMPOUNDS)。
 """
 
+[entries."fit-then-judge-freeze"]
+provenance = "public"
+source = "fit-then-judge P1.5 の凍結 manifest (P0 §0): 凍結する部品のファイルの sha256・版・置換の一覧・事後検査の閾値・H-pub の候補の確定数・drand の規則"
+note = """
+値はリポジトリ内のファイルのハッシュと設定だけで、測定値を含まない。drand の round は凍結 commit を push した 24 時間後以降に
+決まるので空のまま (抽出 manifest の側に記録する)。
+"""
+
 [entries."fit-then-judge-hpub"]
 provenance = "public"
 source = "fit-then-judge P0 §3.2.1 の H-pub 候補一覧の生成スクリプト (RRUFF + COD のスナップショット 2026-10-13 を読む)"
